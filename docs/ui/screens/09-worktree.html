@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Forge TUI — Worktree isolation</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="desktop">
+    <div class="term">
+      <div class="titlebar">
+        <div class="dots"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span></div>
+        <div class="title">forge — isolation: worktree</div>
+        <div class="badge">TUI</div>
+      </div>
+      <div class="statusbar">
+        <span class="brand">FORGE</span>
+        <span class="sep">│</span>
+        <span class="pill info">running</span>
+        <span class="pill ok">worktree on</span>
+        <div class="right">
+          <span>main cwd clean</span>
+        </div>
+      </div>
+      <div class="main">
+        <div class="chat">
+          <div class="messages">
+            <div class="banner info">File edits isolated in temporary git worktree (CTX-03)</div>
+            <div class="msg system">
+              <div class="role">workspace</div>
+              <div class="body">Primary:  <span class="dim">/Users/dev/Projects/acme-api</span>
+Worktree: <span class="accent">/Users/dev/Projects/acme-api/.forge/worktrees/a1b2c3d4</span>
+Branch:   <span class="ok">forge/a1b2c3d4-rate-limit</span>
+
+Edits land only in the worktree until you merge or discard.</div>
+            </div>
+            <div class="msg tool">
+              <div class="role">tool</div>
+              <div class="tool-card done">
+                <div class="head">
+                  <span class="name">write_file</span>
+                  <span class="dim">src/http/middleware/rate_limit.rs</span>
+                  <span class="state ok">✓ worktree</span>
+                </div>
+                <div class="body">+184 lines · isolated path
+<span class="dim">primary working tree untouched</span></div>
+              </div>
+            </div>
+            <div class="msg assistant">
+              <div class="role">assistant</div>
+              <div class="body">Scaffold is in the worktree. Say when to <span class="accent">/worktree merge</span> or discard.</div>
+            </div>
+          </div>
+          <div class="inputbar">
+            <div class="inputbox">
+              <span class="prompt">❯</span>
+              <span class="text placeholder">/worktree merge | discard</span>
+            </div>
+            <div class="hints">
+              <span><kbd>/worktree merge</kbd></span>
+              <span><kbd>/worktree discard</kbd></span>
+            </div>
+          </div>
+        </div>
+        <div class="sidebar">
+          <div class="side-section">
+            <h3>Isolation</h3>
+            <div class="side-row"><span class="k">mode</span><span class="v accent">worktree</span></div>
+            <div class="side-row"><span class="k">dirty files</span><span class="v">3</span></div>
+            <div class="side-row"><span class="k">primary</span><span class="v ok">clean</span></div>
+          </div>
+          <div class="side-section">
+            <h3>Actions</h3>
+            <div class="side-row"><span class="k">merge</span><span class="v">into branch</span></div>
+            <div class="side-row"><span class="k">discard</span><span class="v warn">drop worktree</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="footerbar">
+        <span>CTX-03</span>
+        <span>unapproved mutations stay isolated</span>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

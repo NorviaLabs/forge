@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Forge TUI — Evaluator report</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="desktop">
+    <div class="term">
+      <div class="titlebar">
+        <div class="dots"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span></div>
+        <div class="title">forge — generator + evaluator</div>
+        <div class="badge">TUI</div>
+      </div>
+      <div class="statusbar">
+        <span class="brand">FORGE</span>
+        <span class="sep">│</span>
+        <span class="pill warn">repair</span>
+        <span class="pill">eval gate on</span>
+        <div class="right">
+          <span>generator a1b2… · evaluator e9f0…</span>
+        </div>
+      </div>
+      <div class="main">
+        <div class="chat">
+          <div class="messages">
+            <div class="msg system">
+              <div class="role">feedback · EVAL-01</div>
+              <div class="body">Dual-sensor gate after implementation step.</div>
+            </div>
+            <div class="msg tool">
+              <div class="role">sensor · deterministic</div>
+              <div class="tool-card blocked">
+                <div class="head">
+                  <span class="name">cargo test -p acme-api rate_limit</span>
+                  <span class="state danger">✗ failed</span>
+                </div>
+                <div class="body">2 passed · 1 failed
+test public_api_returns_429_when_exceeded … FAILED
+<span class="dim">offload: .forge/offload/test_e9f0.log</span></div>
+              </div>
+            </div>
+            <div class="msg system">
+              <div class="role">evaluator report</div>
+              <div class="body"><span class="warn">Independent Evaluator session (clean context)</span>
+
+Criteria: 429 after N requests on /v1/public/*
+Finding: limiter middleware registered after route groups;
+         public routes never enter the layer.
+Repair:  attach layer on public Router nest; re-run tests.
+
+<span class="accent">→ enqueued repair task for Generator</span></div>
+            </div>
+            <div class="msg assistant">
+              <div class="role">generator · repair</div>
+              <div class="body">Got the evaluator report. Moving the rate-limit layer onto the public nest…</div>
+            </div>
+          </div>
+          <div class="inputbar">
+            <div class="inputbox" style="opacity:0.7">
+              <span class="prompt">❯</span>
+              <span class="text placeholder">Repair loop running…</span>
+            </div>
+            <div class="hints">
+              <span>Evaluator does not share Generator history</span>
+            </div>
+          </div>
+        </div>
+        <div class="sidebar">
+          <div class="side-section">
+            <h3>Feedback</h3>
+            <div class="side-row"><span class="k">sensors</span><span class="v danger">fail</span></div>
+            <div class="side-row"><span class="k">evaluator</span><span class="v warn">report</span></div>
+            <div class="side-row"><span class="k">repairs</span><span class="v">1 open</span></div>
+          </div>
+          <div class="side-section">
+            <h3>Sessions</h3>
+            <div class="side-row"><span class="k">generator</span><span class="v">a1b2c3d4</span></div>
+            <div class="side-row"><span class="k">evaluator</span><span class="v">e9f0aa12</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="footerbar">
+        <span>opt-in dual-sensor</span>
+        <span>clean evaluator context</span>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

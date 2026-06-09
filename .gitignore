@@ -1,0 +1,34 @@
+# Rust / Cargo
+/target/
+**/*.rs.bk
+Cargo.lock
+# Keep workspace lockfile once published; ignore until crates exist if preferred
+# (uncomment next line only if you want lockfile committed for binaries)
+# !Cargo.lock
+
+# Forge runtime
+.forge/
+
+# Secrets & env
+.env
+.env.*
+!.env.example
+*.pem
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Logs & coverage
+*.log
+coverage/
+lcov.info
+
+# Python (local tooling only, if any)
+__pycache__/
+.venv/
+venv/

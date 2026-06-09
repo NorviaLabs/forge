@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Forge TUI — HITL approval</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="desktop">
+    <div class="term">
+      <div class="titlebar">
+        <div class="dots"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span></div>
+        <div class="title">forge — ~/Projects/acme-api</div>
+        <div class="badge">TUI</div>
+      </div>
+      <div class="statusbar">
+        <span class="brand">FORGE</span>
+        <span class="sep">│</span>
+        <span class="pill warn">awaiting_hitl</span>
+        <span class="pill info">session a1b2c3d4</span>
+        <div class="right">
+          <span>compute released</span>
+          <span class="sep">│</span>
+          <span>ctx 41%</span>
+        </div>
+      </div>
+      <div class="main">
+        <div class="chat">
+          <div class="messages">
+            <div class="msg assistant">
+              <div class="role">assistant</div>
+              <div class="body">Ready to push the branch and open the change. This requires approval.</div>
+            </div>
+            <div class="msg tool">
+              <div class="role">tool · blocked</div>
+              <div class="tool-card blocked">
+                <div class="head">
+                  <span class="name">bash</span>
+                  <span class="dim">git push -u origin feat/rate-limit</span>
+                  <span class="state warn">⏸ HITL</span>
+                </div>
+                <div class="body">Risk: network + remote write
+Policy: high-risk git remote
+<span class="dim">journal: hitl_wait · no active compute (DUR-03)</span></div>
+              </div>
+            </div>
+          </div>
+          <div class="inputbar">
+            <div class="inputbox">
+              <span class="prompt">❯</span>
+              <span class="text placeholder">Waiting for approval… use dialog or /approve /deny</span>
+            </div>
+            <div class="hints">
+              <span><kbd>/approve</kbd></span>
+              <span><kbd>/deny</kbd></span>
+              <span><kbd>/status</kbd></span>
+            </div>
+          </div>
+        </div>
+        <div class="sidebar">
+          <div class="side-section">
+            <h3>Session</h3>
+            <div class="side-row"><span class="k">status</span><span class="v warn">awaiting_hitl</span></div>
+            <div class="side-row"><span class="k">resume</span><span class="v">token ready</span></div>
+          </div>
+          <div class="side-section">
+            <h3>Policy</h3>
+            <div class="side-row"><span class="k">class</span><span class="v warn">high-risk</span></div>
+            <div class="side-row"><span class="k">tool</span><span class="v">bash</span></div>
+            <div class="side-row"><span class="k">network</span><span class="v danger">egress</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="overlay">
+        <div class="modal">
+          <div class="mhead">
+            <h2>Human approval required</h2>
+            <span class="tag">HITL</span>
+          </div>
+          <div class="mbody">Tool:  bash
+Args:  git push -u origin feat/rate-limit
+Why:   remote write / network egress
+
+Secrets are not shown. Process may exit; approve later with
+the same session id — journal will resume without redoing
+completed steps.</div>
+          <div class="mfoot">
+            <span class="btn">Deny <span class="dim">d</span></span>
+            <span class="btn warn">Details</span>
+            <span class="btn primary">Approve <span class="dim">a</span></span>
+          </div>
+        </div>
+      </div>
+      <div class="footerbar">
+        <span>DUR-03 durable pause</span>
+        <span>session survives process exit</span>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

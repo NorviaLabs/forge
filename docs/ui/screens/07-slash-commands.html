@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Forge TUI — Slash command palette</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="desktop">
+    <div class="term">
+      <div class="titlebar">
+        <div class="dots"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span></div>
+        <div class="title">forge — ~/Projects/acme-api</div>
+        <div class="badge">TUI</div>
+      </div>
+      <div class="statusbar">
+        <span class="brand">FORGE</span>
+        <span class="sep">│</span>
+        <span class="pill ok">idle</span>
+        <span class="pill info">session a1b2c3d4</span>
+        <div class="right"><span>ctx 22%</span></div>
+      </div>
+      <div class="main">
+        <div class="chat">
+          <div class="messages">
+            <div class="msg system">
+              <div class="role">system</div>
+              <div class="body dim">Surface-local commands do not call the model.</div>
+            </div>
+          </div>
+          <div class="inputbar">
+            <div class="inputbox">
+              <span class="prompt">❯</span>
+              <span class="text">/<span class="cursor"></span></span>
+            </div>
+            <div class="hints">
+              <span>non-LLM commands</span>
+              <span><kbd>↑↓</kbd> select · <kbd>Enter</kbd> run · <kbd>Esc</kbd> dismiss</span>
+            </div>
+          </div>
+        </div>
+        <div class="sidebar">
+          <div class="side-section">
+            <h3>Session</h3>
+            <div class="side-row"><span class="k">status</span><span class="v ok">idle</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="overlay">
+        <div class="palette">
+          <div class="search">
+            <span class="p">/</span>
+            <span style="color:var(--text)">re<span class="cursor"></span></span>
+          </div>
+          <div class="items">
+            <div class="item active">
+              <span class="cmd">/resume</span>
+              <span class="desc">Resume session by id</span>
+            </div>
+            <div class="item">
+              <span class="cmd">/reset</span>
+              <span class="desc">Force handoff + clear context</span>
+            </div>
+            <div class="item">
+              <span class="cmd">/status</span>
+              <span class="desc">Session, budget, journal cursor</span>
+            </div>
+            <div class="item">
+              <span class="cmd">/model</span>
+              <span class="desc">Switch provider/model (config only)</span>
+            </div>
+            <div class="item">
+              <span class="cmd">/approve</span>
+              <span class="desc">Approve pending HITL tool</span>
+            </div>
+            <div class="item">
+              <span class="cmd">/deny</span>
+              <span class="desc">Deny pending HITL tool</span>
+            </div>
+            <div class="item">
+              <span class="cmd">/worktree</span>
+              <span class="desc">Merge or discard isolated worktree</span>
+            </div>
+            <div class="item">
+              <span class="cmd">/cancel</span>
+              <span class="desc">Cancel current turn</span>
+            </div>
+            <div class="item">
+              <span class="cmd">/compact</span>
+              <span class="desc">Request context compaction path</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="footerbar">
+        <span>slash commands · surface-local</span>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

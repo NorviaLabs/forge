@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Forge TUI — Validation / tool error recovery</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="desktop">
+    <div class="term">
+      <div class="titlebar">
+        <div class="dots"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span></div>
+        <div class="title">forge — schema validation</div>
+        <div class="badge">TUI</div>
+      </div>
+      <div class="statusbar">
+        <span class="brand">FORGE</span>
+        <span class="sep">│</span>
+        <span class="pill info">running</span>
+        <span class="pill warn">validation retry</span>
+        <div class="right"><span>CORE-01</span></div>
+      </div>
+      <div class="main">
+        <div class="chat">
+          <div class="messages">
+            <div class="msg tool">
+              <div class="role">tool · rejected</div>
+              <div class="tool-card blocked">
+                <div class="head">
+                  <span class="name">read_file</span>
+                  <span class="dim">invalid args</span>
+                  <span class="state danger">✗ schema</span>
+                </div>
+                <div class="body">Error: path: expected string, got number
+       offset: expected u64 ≥ 1, got -4
+
+<span class="dim">Side effects not executed · journaled validation failure</span>
+<span class="warn">→ automatic validation retry prompt to model</span></div>
+              </div>
+            </div>
+            <div class="msg system">
+              <div class="role">harness</div>
+              <div class="body">Tool <span class="accent">read_file</span> rejected before execution.
+Contract requires:
+  path: string (workspace-relative or absolute under root)
+  offset?: u64
+  limit?: u64
+
+Re-prompting the model to correct arguments…</div>
+            </div>
+            <div class="msg assistant">
+              <div class="role">assistant · retry</div>
+              <div class="body">Correcting the tool call with a string path and non-negative offset…</div>
+            </div>
+          </div>
+          <div class="inputbar">
+            <div class="inputbox" style="opacity:0.7">
+              <span class="prompt">❯</span>
+              <span class="text placeholder">Validation recovery in progress…</span>
+            </div>
+            <div class="hints">
+              <span>invalid args never reach sandbox</span>
+            </div>
+          </div>
+        </div>
+        <div class="sidebar">
+          <div class="side-section">
+            <h3>Tool contract</h3>
+            <div class="side-row"><span class="k">name</span><span class="v">read_file</span></div>
+            <div class="side-row"><span class="k">schema</span><span class="v ok">enforced</span></div>
+            <div class="side-row"><span class="k">side effects</span><span class="v ok">none</span></div>
+          </div>
+          <div class="side-section">
+            <h3>Retries</h3>
+            <div class="side-row"><span class="k">validation</span><span class="v warn">1</span></div>
+            <div class="side-row"><span class="k">max</span><span class="v">3</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="footerbar">
+        <span>schema-validated tool protocol</span>
+        <span>fail closed before side effects</span>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

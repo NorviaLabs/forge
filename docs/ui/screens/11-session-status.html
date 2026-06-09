@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Forge TUI — Session status</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="desktop">
+    <div class="term">
+      <div class="titlebar">
+        <div class="dots"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span></div>
+        <div class="title">forge — /status</div>
+        <div class="badge">TUI</div>
+      </div>
+      <div class="statusbar">
+        <span class="brand">FORGE</span>
+        <span class="sep">│</span>
+        <span class="pill ok">idle</span>
+        <span class="pill info">session a1b2c3d4</span>
+        <div class="right"><span>/status</span></div>
+      </div>
+      <div class="main full">
+        <div class="chat">
+          <div class="messages">
+            <div class="msg system">
+              <div class="role">status</div>
+              <div class="body"><span class="accent">Session</span>
+  id          a1b2c3d4
+  status      idle
+  surface     tui
+  role        generator
+  created     2026-07-22T11:58:02Z
+  journal     .forge/sessions/a1b2c3d4.db  cursor #1847
+
+<span class="accent">Model</span>
+  provider    anthropic
+  model       claude-sonnet
+  switch      config-only (/model)
+
+<span class="accent">Context</span>
+  used        56k / 200k  (28%)
+  threshold   reset at 80%
+  offloads    7 blobs
+  handoff     progress.json present
+
+<span class="accent">Workspace</span>
+  root        ~/Projects/acme-api  (cwd default)
+  worktree    off
+  agents.md   loaded
+
+<span class="accent">Governance</span>
+  principal   local-dev
+  tools       12 allowed · 2 denied (hidden)
+  hitl        none pending
+  sandbox     light (worktree+cwd)
+
+<span class="accent">Observability</span>
+  trace       7f3a91c21
+  otel        enabled</div>
+            </div>
+          </div>
+          <div class="inputbar">
+            <div class="inputbox">
+              <span class="prompt">❯</span>
+              <span class="text placeholder">Describe a task or paste an error…<span class="cursor"></span></span>
+            </div>
+            <div class="hints">
+              <span><kbd>/status</kbd> refresh</span>
+              <span><kbd>/resume</kbd> other session</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="footerbar">
+        <span>surface-local · no model call</span>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
