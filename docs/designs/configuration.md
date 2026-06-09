@@ -3,9 +3,10 @@
 **Status:** Draft  
 **Owner:** Mohit Ranka  
 **Last updated:** 22 Jul 2026  
+**Phase:** **1 only** (exclusive) — Phase 1 config keys only  
 **PRD:** Portability NFRs, multi-provider  
 **Architecture:** §9, decisions #12, #15  
-**Related:** [model-providers.md](./model-providers.md), [governance.md](./governance.md), [surfaces.md](./surfaces.md)
+**Related:** [model-providers.md](./model-providers.md), [surfaces.md](./surfaces.md)
 
 ---
 
@@ -53,41 +54,17 @@ model = "claude-sonnet"
 backend = "sqlite"
 path = ".forge/sessions"
 
-[context]
-offload_token_threshold = 2000
-reset_usage_ratio = 0.80
-offload_dir = ".forge/offload"
-progress_path = ".forge/progress.json"
-
-[sandbox]
-profile = "light"      # light | container | ebpf (later)
-
-[hitl]
-# patterns or classes requiring approval
-require_for = ["network:git_push", "exec:unrestricted"]
-
 [[mcp.servers]]
 id = "example"
 transport = "stdio"
 command = "…"
 args = []
 
-[acl]
-# principal defaults for local tui
-default_principal = "local-dev"
-
-[[acl.rules]]
-principal = "local-dev"
-allow = ["*"]
-deny = ["bash:rm -rf *"]  # illustrative pattern language TBD
-
-[otel]
-enabled = false
-endpoint = ""
-
 [tui]
 # theme / show_sidebar etc. later
 ```
+
+**Phase 2+ keys** (not owned by this doc): context/offload/progress, sandbox, hitl, acl, otel — defined in Phase 2/3 designs ([context-lifecycle.md](./context-lifecycle.md), [governance.md](./governance.md), [observability.md](./observability.md)).
 
 ### 3.3 Env overrides (examples)
 
@@ -126,13 +103,12 @@ endpoint = ""
 | Conflicting project vs user keys | Project wins over user; CLI/env win over both |
 | Relative journal path + changed cwd mid-run | Freeze root at session start |
 
-## 6. Phase / rollout
+## 6. Phase ownership
 
-| Phase | Scope |
-|-------|-------|
-| 1 | model, journal, mcp list, workspace, basic tui/headless |
-| 2 | acl, hitl, sandbox, context thresholds |
-| 3 | otel export, channel configs |
+| Item | Phase |
+|------|-------|
+| This entire document (Phase 1 keys) | **1** |
+| Exit | `forge.toml` + env run a Phase 1 session |
 
 ## 7. Open questions
 

@@ -3,9 +3,10 @@
 **Status:** Draft  
 **Owner:** Mohit Ranka  
 **Last updated:** 22 Jul 2026  
+**Phase:** **3 only** (exclusive)  
 **PRD:** EVAL-01  
-**Architecture:** §4.7, §5.9  
-**Related:** [agent-loop.md](./agent-loop.md), [tool-protocol.md](./tool-protocol.md), [surfaces.md](./surfaces.md)
+**Architecture:** §4.7, §5.9, §14 Phase 3  
+**Related:** [agent-loop.md](./agent-loop.md) (Phase 1 hooks)
 
 ---
 
@@ -98,13 +99,12 @@ struct FeedbackGate { sensors: Vec<Box<dyn Sensor>>, evaluator: Option<Evaluator
 | Evaluator loops forever | Max eval rounds per gate (e.g. 3) then surface to human |
 | Generator ignores repairs | Re-enqueue until max rounds; then fail session or HITL |
 
-## 6. Phase / rollout
+## 6. Phase ownership
 
-| Phase | Scope |
-|-------|-------|
-| 1 | None required (hooks optional no-ops) |
-| 2 | Sensor runners optional |
-| 3 | Full dual-sensor + benchmarks |
+| Item | Phase |
+|------|-------|
+| This entire document | **3** |
+| Exit | EVAL-01 quality target on benchmark suite |
 
 ## 7. Open questions
 

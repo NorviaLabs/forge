@@ -3,133 +3,102 @@
 **Status:** Draft  
 **Owner:** Mohit Ranka  
 **Last updated:** 22 Jul 2026  
-**PRD:** CORE-01 (tools), DUR-*, CTX-*, EVAL-01 (gates)  
-**Architecture:** §5 Runtime flows  
-**Related:** [tool-protocol.md](./tool-protocol.md), [durable-execution.md](./durable-execution.md), [context-lifecycle.md](./context-lifecycle.md)
+**Phase:** **1 only** (exclusive)  
+**PRD:** CORE-01 (with tools), DUR-01/02 (journal hooks)  
+**Architecture:** §5 Runtime flows (Phase 1 path)  
+**Related:** [tool-protocol.md](./tool-protocol.md), [durable-execution.md](./durable-execution.md), [model-providers.md](./model-providers.md)
 
 ---
 
 ## 1. Problem / context
 
-The harness must drive a reliable plan–act–observe cycle: assemble context, call the model, execute tools, manage budget/HITL/eval gates, and terminate cleanly—without graph DSLs.
+Drive a reliable plan–act–observe cycle for the Phase 1 coding agent: assemble context, call model, execute tools, terminate cleanly—without graph DSLs.
 
 ## 2. Goals & non-goals
 
 **Goals**
 
-- Single clear control loop for Generator sessions (Evaluator is a separate session; see feedback design).  
+- Single Generator loop for Phase 1 sessions.  
 - Journal-before-side-effect for model and tool steps.  
-- Composable gates: context reset, HITL, evaluation, max turns.  
-- Prunable complexity (decaying scaffolding): gates are config-optional where possible.
+- Sequential tool calls within a turn.  
+- Termination via max turns, cancel, or final assistant message without tools.
 
-**Non-goals**
+**Non-goals (other phases own these)**
 
-- Multi-agent graph runtime as the primary API.  
-- Holding compute during durable HITL waits.  
+- Context budget hard-reset → [context-lifecycle.md](./context-lifecycle.md) (Phase 2).  
+- Durable HITL pause → [durable-hitl.md](./durable-hitl.md) (Phase 2).  
+- Evaluator gate → [feedback-evaluator.md](./feedback-evaluator.md) (Phase 3).  
 - Surfaces implementing their own loops.
+
+Phase 1 may leave **extension points** (hooks) that later phases register; Phase 1 must run with hooks no-op.
 
 ## 3. Design
 
-### 3.1 Loop sketch
+### 3.1 Phase 1 loop
 
 ```text
 while session.status == running:
-  if context_usage >= threshold:
-    handoff_reset()                    # CTX-02
-  messages = context.assemble()
+  messages = context.assemble()          # simple window; no Phase 2 handoff
   journal(model_request)
-  outcome = model.complete(messages)   # stream to surface
-  journal(model_response metadata + content refs)
+  outcome = model.complete(messages)
+  journal(model_response)
   if outcome.tool_calls:
-    for call in tool_calls:
-      run_tool_pipeline(call)          # validate → ACL → HITL? → exec
-      if session.status == awaiting_hitl: return
-  if eval_gate_enabled and at_boundary:
-    feedback.run_gate()                # may enqueue repairs
+    for call in tool_calls:              # sequential
+      validate → journal tool_intent → execute → journal tool_result
   if terminal_condition: break
 ```
 
-### 3.2 Session statuses
+### 3.2 Statuses (Phase 1)
 
 | Status | Meaning |
 |--------|---------|
 | `running` | Active loop |
-| `awaiting_hitl` | Paused; no compute reservation |
 | `completed` | Success terminal |
 | `failed` | Error terminal |
-| `compacted` | Optional marker after hard reset mid-task (still `running` afterward) |
 
-### 3.3 Termination conditions
+`awaiting_hitl` is **Phase 2** only.
 
-Any of:
+### 3.3 Extension points (no-op in Phase 1)
 
-- Model returns final assistant message with **no** tool calls and task considered done (heuristic: no further user message; optional success criteria later).  
-- `max_turns` reached (config).  
-- Unrecoverable error (provider down, cancel).  
-- User `/cancel` or surface cancel.  
-- Explicit success criteria (Phase 3+ with Evaluator).
+Later phases may register:
 
-### 3.4 Tool pipeline (per call)
+- `before_model`: context reset (Phase 2)  
+- `after_tools`: eval gate (Phase 3)  
+- `on_tool_policy`: HITL (Phase 2)  
 
-1. Schema validate ([tool-protocol](./tool-protocol.md)).  
-2. Journal `tool_intent` (**before** side effects).  
-3. Governance: ACL + policy class (allow / deny / hitl).  
-4. If HITL → journal `hitl_wait`, set `awaiting_hitl`, **return** (process may exit).  
-5. Vault inject → sandbox execute.  
-6. Journal `tool_result` (or failure).  
-7. Context ingest or offload.
+Phase 1 binary must not require these modules at runtime.
 
-### 3.5 Ordering guarantees
+### 3.4 Feedforward constraints
 
-- No model call or tool execute without a prior journal record of intent (DUR-01).  
-- Tool calls in one model turn run **sequentially** in Phase 1 (simpler reasoning about journal order). Parallel tools are an open question for later.  
-- Context assembly is the only rewriter of the next prompt payload.
-
-### 3.6 Feedforward constraints
-
-Applied before listing tools / calling model:
-
-- `disallowed_tools` / ACL deny sets  
-- `max_turns`, optional cost/token caps  
-- sandbox profile for the session  
+- `max_turns`  
+- Simple deny-tool name list (optional config)  
+- Full ACL/vault is Phase 2  
 
 ## 4. Interfaces
 
-Surface → core:
+- `submit_user_message`, `cancel`, drive-until-terminal (headless)
 
-- `submit_user_message(session_id, text)`  
-- `cancel(session_id)`  
-- `resume_hitl(session_id, decision)`  
-- `tick` / drive until pause or terminal (headless)
-
-Core emits **agent events** (architecture §4.4) for surfaces; does not know about ratatui widgets.
-
-## 5. Failure modes & edge cases
+## 5. Failure modes
 
 | Case | Behavior |
 |------|----------|
-| Stream interrupted mid-model | Journal partial/error; fail or resume policy (open) |
-| Tool fails | Journal failure; model sees error tool message; loop continues unless fatal |
-| Nested cancel during tool | Cooperative cancel; journal incomplete intent |
-| Eval gate fails open? | Never; sensor failure → treat as fail + report |
+| Tool failure | Journal failure; model sees error; continue unless fatal |
+| Cancel mid-tool | Cooperative cancel; incomplete intent fail-safe |
+| Provider down | Session failed |
 
-## 6. Phase / rollout
+## 6. Phase ownership
 
-| Phase | Scope |
-|-------|-------|
-| 1 | Loop + built-ins + journal + streams; sequential tools |
-| 2 | Handoff reset integration, durable HITL, worktree paths |
-| 3 | Eval gate default-off; multi-channel ingress still uses same loop |
+| Item | Phase |
+|------|-------|
+| This entire document | **1** |
+| Exit | Multi-turn coding task completes in TUI/headless with tools + journal |
 
 ## 7. Open questions
 
-1. Parallel tool execution within a turn.  
-2. Whether “final answer” is explicit (`end_turn`) or implicit.  
-3. Mid-stream crash: treat as failed model step vs retry.
+1. Explicit `end_turn` vs implicit final message.  
+2. Parallel tools (post–Phase 1 only).
 
 ## Related docs
 
 - [durable-execution.md](./durable-execution.md)  
 - [tool-protocol.md](./tool-protocol.md)  
-- [feedback-evaluator.md](./feedback-evaluator.md)  
-- [../architecture.md](../architecture.md) §5  

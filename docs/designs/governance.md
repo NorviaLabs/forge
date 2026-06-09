@@ -3,9 +3,10 @@
 **Status:** Draft  
 **Owner:** Mohit Ranka  
 **Last updated:** 22 Jul 2026  
+**Phase:** **2 only** (exclusive)  
 **PRD:** SEC-01, SEC-02, SEC-03  
-**Architecture:** §2.2 Trust boundaries, §10  
-**Related:** [tool-protocol.md](./tool-protocol.md), [durable-execution.md](./durable-execution.md), [observability.md](./observability.md)
+**Architecture:** §2.2, §10, §14 Phase 2  
+**Related:** [tool-protocol.md](./tool-protocol.md), [durable-hitl.md](./durable-hitl.md)
 
 ---
 
@@ -116,13 +117,13 @@ trait Sandbox {
 | ACL misconfig allows all on channel | Mitigate with secure defaults for channel principals |
 | Sandbox escape | Defense in depth; audit; do not claim perfect isolation on `light` |
 
-## 6. Phase / rollout
+## 6. Phase ownership
 
-| Phase | Scope |
-|-------|-------|
-| 1 | light sandbox, simple deny lists optional, env credentials |
-| 2 | vault inject, dynamic ACL, container, HITL classes, eBPF optional |
-| 3 | SIEM export, SCIM-backed principals |
+| Item | Phase |
+|------|-------|
+| This entire document | **2** |
+| Exit | SEC-01/02/03 metrics met |
+| SCIM principals / SIEM stream | [fleet-plugins.md](./fleet-plugins.md) (Phase 3) |
 
 ## 7. Open questions
 

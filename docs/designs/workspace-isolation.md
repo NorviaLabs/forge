@@ -3,9 +3,10 @@
 **Status:** Draft  
 **Owner:** Mohit Ranka  
 **Last updated:** 22 Jul 2026  
+**Phase:** **2 only** (exclusive)  
 **PRD:** CTX-03  
-**Architecture:** §5, tools, sandbox light profile  
-**Related:** [context-lifecycle.md](./context-lifecycle.md), [tool-protocol.md](./tool-protocol.md), [tui-commands.md](./tui-commands.md)
+**Architecture:** §14 Phase 2  
+**Related:** [context-lifecycle.md](./context-lifecycle.md), [tool-protocol.md](./tool-protocol.md)
 
 ---
 
@@ -93,13 +94,13 @@ impl WorktreeManager {
 | Orphan worktrees | `forge doctor` / startup GC optional later |
 | User edits primary mid-session | Document risk; isolation does not lock primary |
 
-## 6. Phase / rollout
+## 6. Phase ownership
 
-| Phase | Scope |
-|-------|-------|
-| 1 | Optional stub; paths use cwd |
-| 2 | Full worktree lifecycle + `/worktree` |
-| 3 | Stricter merge HITL for channels |
+| Item | Phase |
+|------|-------|
+| This entire document | **2** |
+| TUI commands | `/worktree status\|merge\|discard` |
+| Exit | File edits isolated until merge/discard (CTX-03) |
 
 ## 7. Open questions
 

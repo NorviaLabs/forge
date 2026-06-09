@@ -167,7 +167,7 @@ done
 
 **When:** User types `/` — surface-local, non-LLM.  
 **Architecture:** §5.11.  
-**Canonical catalog:** [designs/tui-commands.md](./designs/tui-commands.md) (authoritative list, args, phase, req mapping).
+**Phase 1 catalog:** [designs/tui-commands.md](./designs/tui-commands.md). Phase 2+ commands live in their phase design docs (HITL, context, worktree).
 
 ![Slash commands](./ui/images/07-slash-commands.png)
 

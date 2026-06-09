@@ -1,6 +1,6 @@
 # Forge — Product Requirements Document
 
-**Version:** 0.4  
+**Version:** 0.5  
 **Status:** Draft  
 **Owner:** Mohit Ranka  
 **Last updated:** 22 Jul 2026  
@@ -139,7 +139,7 @@ Every harness component encodes an assumption about what the model cannot yet do
 ## 6. Goals
 
 1. Deliver a **schema-validated, low-abstraction** tool and agent core with high AI-codability (easy for humans and coding models to extend).
-2. Provide **native dual protocol** support: MCP (tools) + ACP (clients / IDE / TUI / headless).
+2. Provide **native protocol** support: **MCP** for tools and **ACP** for IDE clients (delivered in successive product phases).
 3. Embed **durable execution** with process-crash recovery and no duplicate side effects.
 4. Automate **context lifecycle**: payload offloading, token budgets, `progress.json` / `AGENTS.md` handoff resets.
 5. Support **git worktree isolation** for unapproved or experimental file mutations.
@@ -187,7 +187,8 @@ Product capabilities group into five areas (implementation detail in architectur
 | Module ID | Requirement name | Specification | Acceptance metric / target | Priority |
 |-----------|------------------|---------------|----------------------------|----------|
 | **CORE-01** | Schema-validated tool protocol | Every tool has a declared input/output contract. Invalid arguments are rejected **before** side effects; the model is prompted to correct them. Tool listings exposed to models match those contracts. | No unhandled invalid-arg paths to side effects; 100% listed tools have enforceable schemas | P0 (Critical) |
-| **CORE-02** | Dual protocol support (MCP + ACP) | Harness natively speaks MCP for tool discovery/invocation and ACP for client/IDE integration. | Interoperates with standard MCP servers and ACP-compliant clients without per-surface custom bridges | P0 (Critical) |
+| **CORE-02** | MCP tool protocol | Harness natively discovers and invokes tools via MCP; MCP tools share the same validation and dispatch path as built-ins. | Interoperates with standard MCP servers without custom per-server bridges | P0 (Critical) |
+| **CORE-03** | ACP client protocol | Harness serves ACP for IDE (and similar) clients; same agent loop and journal as TUI/headless—no second agent implementation. | ACP-compliant IDE client runs a full session without a custom bridge | P0 (Critical) |
 | **DUR-01** | Embedded event journaling | Every model invocation, tool execution, and state transition is recorded in an append-only event log **before** side effects run. | Zero missing state records on abrupt shutdown; journal write latency target &lt; 5 ms per step | P0 (Critical) |
 | **DUR-02** | Process crash recovery | On restart, reconstruct session state from the journal; reuse completed tool/model results without re-executing them. | 100% state recovery success; zero duplicate external side effects on replay | P0 (Critical) |
 | **DUR-03** | Durable human-in-the-loop | High-risk operations pause without holding active compute; resume when an approval is received, including across process restarts. | No active compute while waiting; seamless resume after restart | P1 (High) |
@@ -202,7 +203,7 @@ Product capabilities group into five areas (implementation detail in architectur
 
 ### 9.2 Priority summary
 
-- **P0 (Critical):** CORE-01, CORE-02, DUR-01, DUR-02, CTX-01, CTX-02, SEC-01, SEC-02  
+- **P0 (Critical):** CORE-01, CORE-02, CORE-03, DUR-01, DUR-02, CTX-01, CTX-02, SEC-01, SEC-02  
 - **P1 (High):** DUR-03, CTX-03, SEC-03, EVAL-01, OBS-01  
 
 ---
@@ -237,7 +238,8 @@ Product capabilities group into five areas (implementation detail in architectur
 | # | Criterion | How measured |
 |---|-----------|--------------|
 | 1 | Invalid tool args are rejected and recover via validation prompts | Schema/compliance tests |
-| 2 | MCP servers and ACP clients interoperate without custom bridges per surface | Integration tests (TUI, headless, one IDE client) |
+| 2a | MCP servers interoperate without custom bridges | Integration tests with ≥1 real MCP server |
+| 2b | ACP IDE client runs full sessions on the same core | Integration test with one ACP-compliant client |
 | 3 | Process kill mid-task resumes with no duplicate side effects | Chaos/crash recovery tests against event journal |
 | 4 | Large tool payloads do not blow context; handoff resets preserve alignment at 100+ turns | Token accounting + long-horizon harness |
 | 5 | No secrets in transcripts or default trace attributes | Redaction/security tests |
@@ -261,63 +263,95 @@ Product capabilities group into five areas (implementation detail in architectur
 
 ## 13. Rollout roadmap
 
-Phases are **deterministic**: each requirement has exactly one owning phase. A phase is **complete** only when every item in its exit criteria is done. Priority (P0/P1) is severity, not a license to move work across phases.
+### Rules (non-negotiable)
 
-### Requirement → phase map
+1. **Non-overlapping scope** — Each req ID and each design doc belongs to **exactly one** phase.  
+2. **Product-complete phases** — Shipping a phase means a **usable product** for that phase’s users, not a half-built platform. Later phases add capabilities; they do not redefine Phase 1.  
+3. **Deterministic exit** — A phase is done only when all of its exit criteria pass. No capacity-based deferral into another phase.  
+4. **Priority ≠ phase** — P0/P1 is severity; phase is delivery ownership.
 
-| Req ID | Phase | Notes |
-|--------|-------|--------|
-| CORE-01 | **1** | Schema-validated tools + registry |
-| CORE-02 (MCP) | **1** | Tool discovery/call via MCP |
-| CORE-02 (ACP) | **2** | IDE/client protocol bridge |
+### Requirement → phase map (exclusive)
+
+| Req ID | Phase | Product role |
+|--------|-------|----------------|
+| CORE-01 | **1** | Schema-validated tools |
+| CORE-02 | **1** | MCP tool protocol |
 | DUR-01, DUR-02 | **1** | Journal + crash recovery |
+| CORE-03 | **2** | ACP client protocol |
+| CTX-01, CTX-02, CTX-03 | **2** | Long-horizon context + worktree |
 | DUR-03 | **2** | Durable HITL |
-| CTX-01, CTX-02, CTX-03 | **2** | Offload, handoff reset, worktree |
-| SEC-01, SEC-02, SEC-03 | **2** | Vault, ACL, sandbox depth |
-| EVAL-01 | **3** | Generator / Evaluator dual-sensor |
-| OBS-01 | **3** | OTEL export (local `tracing` OK earlier as scaffold) |
-| Multi-channel gateway | **3** | Slack / Telegram / webhooks |
-| SCIM + SIEM plugins | **3** | Fleet / enterprise export |
+| SEC-01, SEC-02, SEC-03 | **2** | Enterprise governance |
+| EVAL-01 | **3** | Dual-sensor quality loop |
+| OBS-01 | **3** | Distributed tracing export |
+| CH-01 (channels) | **3** | Multi-channel ingress |
+| FLEET-01 (SCIM/SIEM) | **3** | Enterprise fleet plugins |
 
-### Phase 1 — Core foundation & protocols
+### Design doc → phase map (exclusive)
 
-**In scope (must ship):**
+See [designs/README.md](./designs/README.md). No design doc may list multiple phases as owners.
 
-1. Schema-validated tool core and agent loop (CORE-01)  
-2. Built-in coding tools; sequential tool calls within a turn  
-3. Multi-provider model client: OpenAI-compatible, Anthropic, xAI  
-4. Event journal + process crash recovery (DUR-01, DUR-02)  
-5. MCP tool bridge (CORE-02 MCP)  
-6. Terminal TUI + headless surfaces  
+---
 
-**Out of scope for Phase 1:** ACP, context offload/reset, worktree isolation, vault/ACL enterprise path, durable HITL, Evaluator, OTEL export, channels.
+### Phase 1 — Coding agent (complete product)
 
-**Exit criteria:** CORE-01, CORE-02 (MCP), DUR-01, DUR-02 demonstrable via TUI and headless; journal resume with zero duplicate side effects on completed steps.
+**Product:** A local/CI **coding agent** operators can run today: typed tools, MCP, multi-provider models, crash-safe sessions, TUI + headless.
 
-### Phase 2 — Context lifecycle & security gateway
+**Users served:** Application developers, coding operators, CI automation.
 
-**In scope (must ship):**
+| In scope | Out of scope (later phases only) |
+|----------|-----------------------------------|
+| CORE-01, CORE-02, DUR-01, DUR-02 | CORE-03, all CTX-*, DUR-03, all SEC-*, EVAL-01, OBS-01, CH-01, FLEET-01 |
+| Built-ins, sequential tools, 3 model adapters | ACP IDE, worktrees, vault/ACL enterprise, HITL durable pause |
+| TUI + headless | Channels, Evaluator, OTEL export |
+| SQLite journal, light process isolation | Container/eBPF, multi-instance DB |
 
-1. ACP client bridge — completes CORE-02  
-2. Payload offload + token budget (CTX-01)  
-3. Structured reset + `progress.json` / `AGENTS.md` (CTX-02)  
-4. Git worktree isolation (CTX-03)  
-5. Durable HITL (DUR-03)  
-6. Vault credential injection + dynamic tool ACLs (SEC-01, SEC-02)  
-7. Hardened sandbox profiles including container; eBPF when platform allows (SEC-03)  
+**Exit criteria (product complete):**
 
-**Exit criteria:** All CTX-*, SEC-*, DUR-03, and CORE-02 (ACP) accepted against PRD metrics.
+1. Operator completes multi-step coding tasks in TUI with built-ins + ≥1 MCP server.  
+2. Headless CI job runs and exits with documented codes; `--resume` restores after kill.  
+3. CORE-01/02, DUR-01/02 acceptance metrics met.  
+4. No Phase 2/3 feature is required for the above to work.
 
-### Phase 3 — Feedback & multi-channel fleet
+---
 
-**In scope (must ship):**
+### Phase 2 — Enterprise long-horizon harness (complete product)
 
-1. Dual-sensor feedback Generator / Evaluator (EVAL-01)  
-2. OpenTelemetry export (OBS-01)  
-3. Multi-channel background routing (Slack, Telegram, webhooks) with restricted ACLs  
-4. SCIM provisioning and SIEM audit export plugins  
+**Product:** Phase 1 agent **plus** long-horizon context control, workspace isolation, human approval, zero-trust tool governance, and **IDE (ACP)** access to the **same** durable core.
 
-**Exit criteria:** EVAL-01, OBS-01, and channel/fleet features accepted against PRD metrics.
+**Users served:** Platform engineers, SRE/security, team leads (HITL), IDE users.
+
+| In scope | Out of scope |
+|----------|--------------|
+| CORE-03, CTX-01/02/03, DUR-03, SEC-01/02/03 | EVAL-01, OBS-01, CH-01, FLEET-01 |
+| ACP surface, offload/handoff, worktree, vault/ACL, container sandbox | Multi-channel fleet, SCIM, SIEM plugins, dual-agent eval |
+
+**Exit criteria (product complete):**
+
+1. ACP client runs a full durable session (CORE-03).  
+2. 100+ turn style tasks survive handoff reset; large tools offload (CTX-01/02).  
+3. Worktree isolation works (CTX-03); HITL pause/resume across restart (DUR-03).  
+4. SEC-01/02/03 metrics met; Phase 1 workflows still work unchanged.  
+5. No Phase 3 feature is required for the above.
+
+---
+
+### Phase 3 — Quality, fleet & fleet (complete product)
+
+**Product:** Phase 2 harness **plus** dual-sensor quality loops, production observability export, multi-channel task ingress (restricted ACLs), and fleet plugins (SCIM/SIEM).
+
+**Users served:** Multi-channel operators, platform/SRE at org scale, quality-sensitive agent programs.
+
+| In scope | Out of scope |
+|----------|--------------|
+| EVAL-01, OBS-01, CH-01, FLEET-01 | Redefining Phase 1/2 core contracts |
+
+**Exit criteria (product complete):**
+
+1. Generator/Evaluator opt-in gate meets EVAL-01 target.  
+2. OTEL export covers model/tool/step spans (OBS-01).  
+3. Channel ingress cannot obtain broad repo tools by default (CH-01).  
+4. SCIM/SIEM plugins load without core forks (FLEET-01).  
+5. Phase 1 and Phase 2 products remain fully usable.
 
 ---
 

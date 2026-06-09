@@ -3,9 +3,11 @@
 **Status:** Draft  
 **Owner:** Mohit Ranka  
 **Last updated:** 22 Jul 2026  
-**PRD:** DUR-01, DUR-02, DUR-03  
-**Architecture:** §4.5 Event journal, §5.4–5.5  
-**Related:** [agent-loop.md](./agent-loop.md), [tool-protocol.md](./tool-protocol.md), [governance.md](./governance.md)
+**Phase:** **1 only** (exclusive)  
+**PRD:** DUR-01, DUR-02  
+**Architecture:** §4.5 Event journal, §5.4  
+**Related:** [agent-loop.md](./agent-loop.md), [tool-protocol.md](./tool-protocol.md)  
+**Not this doc:** Durable HITL (DUR-03) → [durable-hitl.md](./durable-hitl.md) (Phase 2)
 
 ---
 
@@ -19,8 +21,8 @@ Agent runs cross process lifetimes. Crashes mid-tool or mid-model must not doubl
 
 - Append-only journal; **record intent before side effects**.  
 - Replay restores state; completed tool/model steps are cached, not re-run.  
-- Durable HITL without holding compute.  
-- Phase 1: SQLite via sqlx; later shared DB for multi-instance.
+- Phase 1 storage: SQLite via sqlx.  
+- Multi-instance DB backends are out of Phase 1 (future; not Phase 2 HITL).
 
 **Non-goals**
 
@@ -42,23 +44,21 @@ Agent runs cross process lifetimes. Crashes mid-tool or mid-model must not doubl
 | `payload` | Typed JSON |
 | `trace_id` | Optional OTEL correlation |
 
-### 3.2 Event kinds (initial)
+### 3.2 Event kinds (Phase 1)
 
 | Type | Purpose |
 |------|---------|
 | `session_created` | Bootstrap metadata |
-| `user_message` | Operator/channel input |
+| `user_message` | Operator input |
 | `model_request` | Messages hash / refs + tool list snapshot |
 | `model_response` | Content and/or blob refs + usage |
-| `tool_intent` | Name + args (redacted secrets) **before** execute |
-| `tool_result` | Success/failure payload or offload ref |
+| `tool_intent` | Name + args (redacted) **before** execute |
+| `tool_result` | Success/failure payload |
 | `tool_validation_failed` | Schema rejection |
 | `state_patch` | Small non-prompt state |
-| `hitl_wait` | Approval payload (redacted) |
-| `hitl_resume` | approve/deny + actor |
-| `context_reset` | Handoff artifact pointers |
 | `session_status` | Status transitions |
-| `checkpoint` | Optional compaction marker |
+
+**Not in Phase 1** (defined elsewhere): `hitl_wait` / `hitl_resume` → [durable-hitl.md](./durable-hitl.md); `context_reset` → [context-lifecycle.md](./context-lifecycle.md).
 
 ### 3.3 Record-before-side-effect (DUR-01)
 
@@ -77,26 +77,11 @@ Write latency target &lt; 5 ms per step (NFR); use SQLite WAL and batched fsync 
    - If matching `tool_result` exists → use cached result; **do not execute**.  
    - If no result → **fail-safe**: mark failed, or retry **only if** tool declared `idempotent` and policy allows.  
 4. For completed `model_response` → do not re-call LLM.  
-5. If last status is `awaiting_hitl`, restore wait; do not auto-approve.  
-6. Resume loop at next pending work.
+5. Resume loop at next pending work (Phase 1 has no HITL wait state).
 
-### 3.5 Durable HITL (DUR-03)
+### 3.5 Storage (Phase 1)
 
-1. Policy requires approval → append `hitl_wait` → status `awaiting_hitl`.  
-2. Process may exit; no busy wait.  
-3. Approval arrives (TUI/ACP/API) → append `hitl_resume` → re-authorize → execute (new `tool_intent` if needed for clarity—or continue original intent if still open; prefer **explicit** resume then execute with journal linkage).  
-4. Deny → append result denied; model informed.
-
-**Recommendation:** On approve, journal a linked execute path so audit is clear; never execute without a post-resume authorization check.
-
-### 3.6 Storage
-
-| Phase | Backend |
-|-------|---------|
-| 1 | SQLite file per session or shared file with `session_id` index (`.forge/sessions/`) |
-| 2+ | Postgres option for multi-instance |
-
-Payloads larger than a threshold store as offload blobs; journal keeps URI + hash.
+SQLite under `.forge/sessions/` (per-session or multi-session file—open question). Large payloads may be referenced by URI only when Phase 2 offload exists; Phase 1 may truncate or refuse oversized tool bodies.
 
 ## 4. Interfaces
 
@@ -117,22 +102,20 @@ trait Journal {
 | Disk full | Fail closed; surface error |
 | Corrupt tail | Truncate to last valid seq if checksum/length allows; else refuse resume |
 
-## 6. Phase / rollout
+## 6. Phase ownership
 
-| Phase | Scope |
-|-------|-------|
-| 1 | SQLite journal, replay, session resume IDs (DUR-01, DUR-02) |
-| 2 | HITL wait/resume (DUR-03), stronger redaction |
-| 3 | Multi-instance backend (Postgres), export hooks |
+| Item | Phase |
+|------|-------|
+| This entire document | **1** |
+| Exit | Kill -9 mid-task; resume without re-executing completed tools/model steps |
 
 ## 7. Open questions
 
 1. One DB file per session vs single multi-session DB.  
-2. How long to retain journals by default.  
-3. Whether model_request stores full messages or content-addressed blobs only.
+2. Journal retention default.  
+3. Full messages vs content-addressed blobs in `model_request`.
 
 ## Related docs
 
 - [agent-loop.md](./agent-loop.md)  
-- [context-lifecycle.md](./context-lifecycle.md)  
-- [observability.md](./observability.md)  
+- [durable-hitl.md](./durable-hitl.md) (Phase 2 — not implemented here)  

@@ -3,9 +3,10 @@
 **Status:** Draft  
 **Owner:** Mohit Ranka  
 **Last updated:** 22 Jul 2026  
+**Phase:** **1 only** (exclusive)  
 **PRD:** CORE-01  
-**Architecture:** §4.2 Tools, §10 Security  
-**Related:** [agent-loop.md](./agent-loop.md), [governance.md](./governance.md), [protocols-mcp-acp.md](./protocols-mcp-acp.md)
+**Architecture:** §4.2 Tools  
+**Related:** [agent-loop.md](./agent-loop.md), [protocol-mcp.md](./protocol-mcp.md)
 
 ---
 
@@ -110,13 +111,13 @@ trait Tool: Send + Sync {
 | Handler panic / timeout | Failed `tool_result`; no silent success |
 | MCP server down | Discovery/call error; tools absent or call fails closed |
 
-## 6. Phase / rollout
+## 6. Phase ownership
 
-| Phase | Scope |
-|-------|-------|
-| 1 | Built-ins + schema validation + registry; MCP tools before Phase 1 ends |
-| 2 | Tighter coupling to vault inject metadata; richer side_effect_class policies |
-| 3 | Channel principals with restricted default tool sets |
+| Item | Phase |
+|------|-------|
+| This entire document | **1** |
+| MCP discovery | [protocol-mcp.md](./protocol-mcp.md) (also Phase 1) |
+| Vault/ACL policy | [governance.md](./governance.md) (Phase 2) |
 
 ## 7. Open questions
 

@@ -1,6 +1,6 @@
 # Forge — Architecture
 
-**Version:** 0.4  
+**Version:** 0.5  
 **Status:** Draft  
 **Owner:** Mohit Ranka  
 **Last updated:** 22 Jul 2026  
@@ -38,7 +38,7 @@ The product sits in the agentic stack as follows:
 Aligned with [prd.md](./prd.md) §6 (wording here is architecture-oriented).
 
 1. Schema-validated, low-abstraction core (Rust types + serde/schemars); high AI-codability  
-2. Native **MCP** (tools) in Phase 1 + **ACP** (clients / IDE) in Phase 2 — both required for CORE-02 complete
+2. Native **MCP** tools (CORE-02, Phase 1) and **ACP** clients (CORE-03, Phase 2) — exclusive phase ownership
 3. Event-sourced durable execution with crash recovery and no duplicate side effects  
 4. Automated context lifecycle: token budgets, payload offload, `progress.json` / `AGENTS.md` handoffs  
 5. Git worktree isolation for experimental or unapproved file mutations  
@@ -301,20 +301,13 @@ Events surfaces consume (may be projected from journal + live stream):
 
 Append-only log (SQLite single-node; Postgres multi-instance):
 
-| Record types (illustrative) | Purpose |
-|----------------------------|---------|
-| `session_created` | Bootstrap metadata |
-| `user_message` | Operator / channel input |
-| `model_request` / `model_response` | LLM I/O (content may reference offloaded blobs) |
-| `tool_intent` / `tool_result` | Record-before-side-effect; results cached for replay |
-| `tool_validation_failed` | Schema rejection before side effects (CORE-01) |
-| `state_patch` | Intermediate variables outside model context |
-| `hitl_wait` / `hitl_resume` | Durable approval gates |
-| `context_reset` | Handoff artifact pointers after hard reset |
-| `session_status` | Status transitions |
-| `checkpoint` | Optional compaction markers |
+| Record types | Phase | Purpose |
+|--------------|-------|---------|
+| `session_created`, `user_message`, `model_*`, `tool_*`, `tool_validation_failed`, `state_patch`, `session_status` | **1** | Core journal ([durable-execution.md](./designs/durable-execution.md)) |
+| `hitl_wait` / `hitl_resume` | **2** | Durable HITL ([durable-hitl.md](./designs/durable-hitl.md)) |
+| `context_reset` | **2** | Handoff ([context-lifecycle.md](./designs/context-lifecycle.md)) |
 
-Canonical field-level envelope and replay rules: [designs/durable-execution.md](./designs/durable-execution.md).
+Envelope + Phase 1 replay: [designs/durable-execution.md](./designs/durable-execution.md).
 
 **Replay rule:** On restart, rebuild in-memory session; for completed `tool_intent`s, return cached `tool_result` without re-execution; do not re-call LLM for completed model steps (DUR-02).
 
@@ -593,9 +586,10 @@ flowchart LR
 
 ### 5.11 Slash commands / surface-local commands (non-LLM)
 
-Surface-local commands do not hit the model. **Canonical catalog:** [designs/tui-commands.md](./designs/tui-commands.md).
+Surface-local commands do not hit the model.
 
-Illustrative set: `/resume`, `/cancel`, `/status`, `/model`, `/reset`, `/compact`, `/approve`, `/deny`, `/worktree`, `/help`, `/journal`, `/tools`, `/cost`, `/quit`.
+- **Phase 1 catalog (canonical):** [designs/tui-commands.md](./designs/tui-commands.md)  
+- **Phase 2 commands:** owned by [durable-hitl.md](./designs/durable-hitl.md), [context-lifecycle.md](./designs/context-lifecycle.md), [workspace-isolation.md](./designs/workspace-isolation.md) — not listed in the Phase 1 catalog.
 
 ---
 
@@ -826,75 +820,56 @@ Immutable audit log: tool invocations, arg payloads (redacted), model response m
 
 ---
 
-## 14. Implementation order (deterministic)
+## 14. Implementation order (deterministic, product-complete)
 
-Aligned with [prd.md](./prd.md) §13. Each phase has fixed **scope**, **ordered build steps**, and **exit criteria**. No “if capacity” deferrals—work either belongs to this phase or the next.
+Aligned with [prd.md](./prd.md) §13. Each phase is a **complete product**. Req IDs and design docs do not cross phases.
 
-### Phase ownership (single source with PRD)
+### Phase ownership (exclusive)
 
-| Phase | Owns (req IDs) |
-|-------|----------------|
-| **1** | CORE-01, CORE-02 (MCP only), DUR-01, DUR-02 |
-| **2** | CORE-02 (ACP), CTX-01, CTX-02, CTX-03, DUR-03, SEC-01, SEC-02, SEC-03 |
-| **3** | EVAL-01, OBS-01, multi-channel, SCIM, SIEM plugins |
+| Phase | Product name | Owns (req IDs only) | Design docs (only) |
+|-------|--------------|---------------------|--------------------|
+| **1** | Coding agent | CORE-01, CORE-02, DUR-01, DUR-02 | tool-protocol, agent-loop, model-providers, durable-execution, protocol-mcp, configuration, tui-commands, surfaces |
+| **2** | Enterprise long-horizon harness | CORE-03, CTX-01/02/03, DUR-03, SEC-01/02/03 | protocol-acp, durable-hitl, context-lifecycle, workspace-isolation, governance |
+| **3** | Quality, ops & fleet | EVAL-01, OBS-01, CH-01, FLEET-01 | feedback-evaluator, observability, channels, fleet-plugins |
 
-### Phase 1 — Core foundation & protocol engine
-
-**Build order (strict):**
-
-1. Workspace skeleton + `forge-types` / config (TOML + env)  
-2. Schema package + tool registry (CORE-01)  
-3. Unified model client + stream normalization (OpenAI-compatible, Anthropic, xAI)  
-4. Agent loop + built-in coding tools (sequential tools within a turn)  
-5. Event journal + crash recovery (DUR-01, DUR-02)  
-6. MCP bridge (CORE-02 MCP) — `forge-mcp`  
-7. TUI + headless surfaces — `forge-tui`, `forge-cli`  
-
-**Phase 1 exit criteria:**
-
-- Invalid tool args rejected before side effects; validation retry works (CORE-01)  
-- MCP tools list/call through registry + ACL hook point (CORE-02 MCP)  
-- Kill process mid-task; resume with no duplicate completed side effects (DUR-01, DUR-02)  
-- Same session runnable via TUI and headless  
-
-**Not in Phase 1:** ACP, CTX-*, SEC-* enterprise path, DUR-03, EVAL-01, OBS-01 export, channels.
-
-### Phase 2 — Context lifecycle & security gateway
+### Phase 1 — Coding agent
 
 **Build order (strict):**
 
-1. ACP session transport (CORE-02 ACP) — `forge-acp`  
-2. Payload offload + token budget (CTX-01)  
-3. Structured reset + `.forge/progress.json` / `AGENTS.md` (CTX-02)  
-4. Git worktree isolation (CTX-03)  
-5. Durable HITL wait/resume (DUR-03)  
-6. Vault injection + dynamic tool ACLs (SEC-01, SEC-02)  
-7. Container sandbox; eBPF profile where host supports it (SEC-03)  
+1. Workspace skeleton + `forge-types` / config  
+2. Tool registry + schemas (CORE-01)  
+3. Model client + three adapters  
+4. Agent loop + built-ins (sequential tools)  
+5. Journal + resume (DUR-01, DUR-02)  
+6. MCP bridge (CORE-02) — `forge-mcp`  
+7. TUI + headless — `forge-tui`, `forge-cli`  
 
-**Phase 2 exit criteria:**
+**Exit:** Usable coding agent in TUI/CI with MCP + crash resume; Phase 2 features not required.
 
-- ACP client can drive the same loop as TUI (CORE-02 complete)  
-- Offload ≥ 80% bloat reduction on large tools; handoff reset at threshold (CTX-01, CTX-02)  
-- Worktree isolation for file edits (CTX-03)  
-- HITL pause releases compute; resume across restart (DUR-03)  
-- Secrets never in prompts/default traces; denied tools hidden from model list (SEC-01, SEC-02)  
-- Sandbox policy enforcement for local tool exec (SEC-03)  
-
-### Phase 3 — Feedback & multi-channel fleet
+### Phase 2 — Enterprise long-horizon harness
 
 **Build order (strict):**
 
-1. Dual-sensor feedback Generator / Evaluator (EVAL-01)  
-2. OpenTelemetry export + SIEM-oriented audit export (OBS-01)  
-3. Channel gateway (Slack, Telegram, webhooks) with restricted default ACLs  
-4. SCIM provisioning plugins  
+1. ACP (CORE-03) — `forge-acp`  
+2. Offload + budget (CTX-01)  
+3. Handoff reset (CTX-02)  
+4. Worktree isolation (CTX-03)  
+5. Durable HITL (DUR-03)  
+6. Vault + ACL (SEC-01, SEC-02)  
+7. Container/eBPF sandbox (SEC-03)  
 
-**Phase 3 exit criteria:**
+**Exit:** Long-horizon + secured + IDE path complete; Phase 1 still works; Phase 3 not required.
 
-- Eval gate meets quality target vs single-pass baseline (EVAL-01)  
-- Full step coverage exportable via OTEL (OBS-01)  
-- Channel ingress cannot obtain broad repo tools by default  
-- SCIM/SIEM plugins load without core changes  
+### Phase 3 — Quality, ops & fleet
+
+**Build order (strict):**
+
+1. Dual-sensor feedback (EVAL-01)  
+2. OTEL export (OBS-01)  
+3. Channel gateway (CH-01)  
+4. SCIM + SIEM plugins (FLEET-01)  
+
+**Exit:** Fleet/quality/ops product complete; Phase 1–2 products unchanged.
 
 ---
 
@@ -952,12 +927,7 @@ Forge is the **harness** between models and the real world: a typed tool bus, an
 
 - PRD: [prd.md](./prd.md)  
 - TUI UI reference (screens & workflows): [ui.md](./ui.md)  
-- Design docs index: [designs/README.md](./designs/README.md)  
-  - [tool-protocol](./designs/tool-protocol.md) · [agent-loop](./designs/agent-loop.md) · [model-providers](./designs/model-providers.md)  
-  - [durable-execution](./designs/durable-execution.md) · [protocols-mcp-acp](./designs/protocols-mcp-acp.md)  
-  - [configuration](./designs/configuration.md) · [tui-commands](./designs/tui-commands.md) · [surfaces](./designs/surfaces.md)  
-  - [context-lifecycle](./designs/context-lifecycle.md) · [workspace-isolation](./designs/workspace-isolation.md) · [governance](./designs/governance.md)  
-  - [feedback-evaluator](./designs/feedback-evaluator.md) · [observability](./designs/observability.md)  
+- Design docs index (phase-partitioned): [designs/README.md](./designs/README.md)  
 
 ---
 
@@ -977,7 +947,7 @@ Forge is the **harness** between models and the real world: a typed tool bus, an
 | 10 | Crate layout | **Workspace monorepo, many crates** aligned to modules in §3 |
 | 11 | Model providers (Phase 1) | **Direct APIs + thin trait**; ship **OpenAI-compatible, Anthropic, and xAI** thin adapters early |
 | 12 | Config | **TOML file + env overrides** (e.g. `forge.toml` / `~/.config/forge/config.toml`; secrets/CI via env) |
-| 13 | Protocol phase ownership | **Phase 1:** built-ins + loop + journal + **MCP**. **Phase 2:** **ACP** (completes CORE-02). No capacity-based deferral. |
+| 13 | Protocol phase ownership | **Phase 1 CORE-02 = MCP only.** **Phase 2 CORE-03 = ACP only.** Exclusive; no split ownership of one req ID. |
 | 14 | License | **MIT** |
 | 15 | Workspace root | **Default to process cwd** when not specified (CLI flag / config optional override) |
 | 16 | Handoff progress file | **`.forge/progress.json`** under workspace (configurable) |
@@ -991,7 +961,7 @@ Forge is the **harness** between models and the real world: a typed tool bus, an
 | Type-safe tool registry | Trait objects or enum dispatch + compile-time registered builtins; runtime MCP tools as schema-validated JSON |
 | Event journal | Append-only rows in **SQLite via sqlx**; typed event envelope (`serde_json`) with schema version field |
 | Unified model client | `async trait` (e.g. `ModelClient`) + adapters: OpenAI-compatible, Anthropic, xAI |
-| Surfaces | Phase 1: `forge-tui` (ratatui) + `forge-cli` headless; Phase 2: `forge-acp` |
+| Surfaces | Phase 1: `forge-tui` + `forge-cli`; Phase 2: `forge-acp`; Phase 3: channel adapters |
 | Config | TOML (`forge.toml` or XDG config path) merged with env overrides |
 | Workspace root | Default **cwd**; override via CLI flag and/or config when specified |
 | Observability | `tracing` + OpenTelemetry exporter crates |
@@ -1001,13 +971,13 @@ Suggested workspace crates (initial): `forge-types`, `forge-core`, `forge-durabl
 
 ### Phase 1 vertical slice
 
-Same strict order as §14 Phase 1 build steps (workspace → tools → model → loop → journal → MCP → TUI/headless). ACP is **Phase 2 step 1**, not optional Phase 1 work.
+Same strict order as §14 Phase 1. ACP is **CORE-03 / Phase 2 only**.
 
 ---
 
 ## Open questions
 
-Resolved defaults: `progress.json` path (`.forge/progress.json`); sequential tools in Phase 1; **ACP owns Phase 2** (decision #13); phase rollout is deterministic (PRD §13 / architecture §14).
+Resolved: `progress.json` path; sequential tools Phase 1; **CORE-02=MCP / CORE-03=ACP**; exclusive phase + design-doc ownership (PRD §13).
 
 | # | Question | Options / notes | Decision |
 |---|----------|-----------------|----------|

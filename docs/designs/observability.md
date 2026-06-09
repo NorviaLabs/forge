@@ -3,9 +3,12 @@
 **Status:** Draft  
 **Owner:** Mohit Ranka  
 **Last updated:** 22 Jul 2026  
+**Phase:** **3 only** (exclusive)  
 **PRD:** OBS-01  
-**Architecture:** §11  
-**Related:** [durable-execution.md](./durable-execution.md), [governance.md](./governance.md), [agent-loop.md](./agent-loop.md)
+**Architecture:** §11, §14 Phase 3  
+**Related:** [fleet-plugins.md](./fleet-plugins.md)  
+
+Phase 1–2 may use local `tracing` logs without implementing this design.
 
 ---
 
@@ -93,13 +96,12 @@ Track harness overhead toward &lt; 15 ms and journal write &lt; 5 ms (design tar
 | Partial flush on crash | Best-effort; journal remains source of truth |
 | User disables OTEL | Zero-cost no-op layer |
 
-## 6. Phase / rollout
+## 6. Phase ownership
 
-| Phase | Scope |
-|-------|-------|
-| 1 | `tracing` logs + optional local fmt |
-| 2 | richer internal spans |
-| 3 | OTLP export, SIEM-oriented audit export |
+| Item | Phase |
+|------|-------|
+| This entire document | **3** |
+| Exit | OTEL export covers model/tool/step (OBS-01) |
 
 ## 7. Open questions
 

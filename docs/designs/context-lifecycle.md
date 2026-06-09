@@ -3,9 +3,10 @@
 **Status:** Draft  
 **Owner:** Mohit Ranka  
 **Last updated:** 22 Jul 2026  
+**Phase:** **2 only** (exclusive)  
 **PRD:** CTX-01, CTX-02  
-**Architecture:** §4.6, §5.8  
-**Related:** [agent-loop.md](./agent-loop.md), [workspace-isolation.md](./workspace-isolation.md), [durable-execution.md](./durable-execution.md)
+**Architecture:** §4.6, §5.8, §14 Phase 2  
+**Related:** [workspace-isolation.md](./workspace-isolation.md), [durable-execution.md](./durable-execution.md) (Phase 1 journal)
 
 ---
 
@@ -125,15 +126,13 @@ trait ContextEngine {
 | Threshold crossed mid-tool-batch | Finish tool pipeline; reset before next model call |
 | Empty progress after reset | Still reload AGENTS.md + workspace |
 
-## 6. Phase / rollout
+## 6. Phase ownership
 
-| Phase | Scope |
-|-------|-------|
-| 1 | Basic usage accounting optional; full offload/reset in Phase 2 |
-| 2 | CTX-01, CTX-02 production behavior |
-| 3 | Richer memory backends optional |
-
-Architecture Phase 1 focuses on loop+journal; implement minimal stubs if needed so APIs exist.
+| Item | Phase |
+|------|-------|
+| This entire document | **2** |
+| TUI commands | `/reset`, `/compact`, `/cost` (Phase 2 only) |
+| Exit | Offload + handoff metrics met (CTX-01, CTX-02) |
 
 ## 7. Open questions
 

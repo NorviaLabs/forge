@@ -3,9 +3,10 @@
 **Status:** Draft  
 **Owner:** Mohit Ranka  
 **Last updated:** 22 Jul 2026  
+**Phase:** **1 only** (exclusive)  
 **PRD:** Multi-provider portability (Goals §6, NFR §10.3)  
-**Architecture:** §4.3 LLM stream events, decisions #11  
-**Related:** [agent-loop.md](./agent-loop.md), [configuration.md](./configuration.md), [governance.md](./governance.md)
+**Architecture:** §4.3, decision #11  
+**Related:** [agent-loop.md](./agent-loop.md), [configuration.md](./configuration.md)
 
 ---
 
@@ -109,13 +110,13 @@ Adapters map vendor SSE/JSON streams → this envelope.
 | Malformed tool JSON from model | Validation layer handles after stream end |
 | Partial stream drop | Surface error; journal error event |
 
-## 6. Phase / rollout
+## 6. Phase ownership
 
-| Phase | Scope |
-|-------|-------|
-| 1 | Three thin adapters + streaming + tools |
-| 2 | Stronger vault-backed credential wiring |
-| 3 | Broader provider set as needed |
+| Item | Phase |
+|------|-------|
+| This entire document | **1** |
+| Exit | Config switch among OpenAI-compatible, Anthropic, xAI without code changes |
+| Vault-backed secrets | [governance.md](./governance.md) Phase 2 (Phase 1 uses env) |
 
 ## 7. Open questions
 
