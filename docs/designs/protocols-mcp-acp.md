@@ -19,7 +19,7 @@ Tool ecosystems standardize on **MCP**. Client/IDE transport is fragmenting; **A
 
 - Discover and call MCP tools through the same registry/ACL/validation path as built-ins.  
 - Serve ACP clients with the same agent loop and journal (no second agent implementation).  
-- Phase 1: **MCP required** before Phase 1 ends; **ACP** at Phase 1 tail if capacity allows, otherwise Phase 2 start (CORE-02 fully met by then). Matches PRD §13 and architecture decision #13.
+- Phase 1: **MCP** (required). Phase 2: **ACP** (required; first Phase 2 deliverable). CORE-02 is complete only after Phase 2. Matches PRD §13 and architecture decision #13.
 
 **Non-goals**
 
@@ -73,13 +73,12 @@ args = ["-y", "some-mcp-server"]
 - Does not call model or MCP directly.  
 - Session resume IDs and HITL must be expressible over ACP (map to protocol constructs as the ACP surface matures).
 
-### 3.4 Phase depth (from architecture decisions)
+### 3.4 Phase depth (deterministic)
 
-| Milestone | Protocol depth |
-|-----------|----------------|
-| Early Phase 1 | Built-ins + loop + journal |
-| Late Phase 1 | MCP bridge |
-| Phase 1 tail / Phase 2 | ACP server/session |
+| Phase | Protocol depth | Exit |
+|-------|----------------|------|
+| **1** | Built-ins + loop + journal + **MCP** bridge | MCP list/call through registry |
+| **2** | **ACP** server/session (first Phase 2 item) | IDE client drives same loop; CORE-02 complete |
 
 ## 4. Interfaces
 
@@ -98,12 +97,12 @@ args = ["-y", "some-mcp-server"]
 
 ## 6. Phase / rollout
 
-See table in §3.4. Channel protocols are **not** ACP; see future channels design.
+See table in §3.4. Channel protocols are **not** ACP (Phase 3 adapters).
 
 ## 7. Open questions
 
 1. HTTP MCP auth patterns (OAuth) timeline.  
-2. ACP feature subset for Phase 1 tail (streaming, permissions).  
+2. ACP feature subset for Phase 2 (streaming, permissions, HITL mapping).  
 3. Whether Forge also **exposes** an MCP server facade of its built-ins (out of scope initially).
 
 ## Related docs

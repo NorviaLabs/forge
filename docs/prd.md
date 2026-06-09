@@ -261,37 +261,63 @@ Product capabilities group into five areas (implementation detail in architectur
 
 ## 13. Rollout roadmap
 
-### Phase 1 — Core foundation & protocols (Weeks 1–8)
+Phases are **deterministic**: each requirement has exactly one owning phase. A phase is **complete** only when every item in its exit criteria is done. Priority (P0/P1) is severity, not a license to move work across phases.
 
-- Schema-validated tool core and agent loop  
-- Step-level event journaling and process crash recovery  
-- Model multi-provider client (OpenAI-compatible, Anthropic, xAI)  
-- **MCP** tool bridge (CORE-02 tools half)  
-- Terminal TUI and headless interfaces  
-- **ACP** client bridge starts at Phase 1 tail if capacity allows; otherwise Phase 2 start  
+### Requirement → phase map
 
-**Primary reqs:** CORE-01, CORE-02 (MCP required; ACP by Phase 2 start), DUR-01, DUR-02  
+| Req ID | Phase | Notes |
+|--------|-------|--------|
+| CORE-01 | **1** | Schema-validated tools + registry |
+| CORE-02 (MCP) | **1** | Tool discovery/call via MCP |
+| CORE-02 (ACP) | **2** | IDE/client protocol bridge |
+| DUR-01, DUR-02 | **1** | Journal + crash recovery |
+| DUR-03 | **2** | Durable HITL |
+| CTX-01, CTX-02, CTX-03 | **2** | Offload, handoff reset, worktree |
+| SEC-01, SEC-02, SEC-03 | **2** | Vault, ACL, sandbox depth |
+| EVAL-01 | **3** | Generator / Evaluator dual-sensor |
+| OBS-01 | **3** | OTEL export (local `tracing` OK earlier as scaffold) |
+| Multi-channel gateway | **3** | Slack / Telegram / webhooks |
+| SCIM + SIEM plugins | **3** | Fleet / enterprise export |
 
-### Phase 2 — Context lifecycle & security gateway (Weeks 9–16)
+### Phase 1 — Core foundation & protocols
 
-- Context lifecycle: payload offloading, worktree isolation, handoff resets  
-- Governance gateway: OAuth2 (or equivalent), dynamic tool ACLs, secret injection  
-- Durable HITL (DUR-03)  
-- Hardened sandbox profiles  
-- ACP completed if not finished in Phase 1  
+**In scope (must ship):**
 
-**Primary reqs:** CTX-01, CTX-02, CTX-03, SEC-01, SEC-02, SEC-03, DUR-03 (+ CORE-02 ACP if deferred)  
+1. Schema-validated tool core and agent loop (CORE-01)  
+2. Built-in coding tools; sequential tool calls within a turn  
+3. Multi-provider model client: OpenAI-compatible, Anthropic, xAI  
+4. Event journal + process crash recovery (DUR-01, DUR-02)  
+5. MCP tool bridge (CORE-02 MCP)  
+6. Terminal TUI + headless surfaces  
 
-### Phase 3 — Feedback & multi-channel fleet (Weeks 17–24)
+**Out of scope for Phase 1:** ACP, context offload/reset, worktree isolation, vault/ACL enterprise path, durable HITL, Evaluator, OTEL export, channels.
 
-- Dual-sensor feedback (Generator / Evaluator)  
-- Multi-channel background routing (e.g. Slack, Telegram, webhooks)  
-- Observability integrations (OpenTelemetry export)  
-- SCIM provisioning and SIEM audit export plugins  
+**Exit criteria:** CORE-01, CORE-02 (MCP), DUR-01, DUR-02 demonstrable via TUI and headless; journal resume with zero duplicate side effects on completed steps.
 
-**Primary reqs:** EVAL-01, OBS-01 + multi-channel / fleet features  
+### Phase 2 — Context lifecycle & security gateway
 
-**Note on priority vs phase:** P0 requirements (e.g. SEC-01/SEC-02, CTX-01/CTX-02) are *critical for the product* but may ship in Phase 2 if they depend on Phase 1 foundations. Phase assignment is delivery order; priority is severity.
+**In scope (must ship):**
+
+1. ACP client bridge — completes CORE-02  
+2. Payload offload + token budget (CTX-01)  
+3. Structured reset + `progress.json` / `AGENTS.md` (CTX-02)  
+4. Git worktree isolation (CTX-03)  
+5. Durable HITL (DUR-03)  
+6. Vault credential injection + dynamic tool ACLs (SEC-01, SEC-02)  
+7. Hardened sandbox profiles including container; eBPF when platform allows (SEC-03)  
+
+**Exit criteria:** All CTX-*, SEC-*, DUR-03, and CORE-02 (ACP) accepted against PRD metrics.
+
+### Phase 3 — Feedback & multi-channel fleet
+
+**In scope (must ship):**
+
+1. Dual-sensor feedback Generator / Evaluator (EVAL-01)  
+2. OpenTelemetry export (OBS-01)  
+3. Multi-channel background routing (Slack, Telegram, webhooks) with restricted ACLs  
+4. SCIM provisioning and SIEM audit export plugins  
+
+**Exit criteria:** EVAL-01, OBS-01, and channel/fleet features accepted against PRD metrics.
 
 ---
 

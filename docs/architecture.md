@@ -38,7 +38,7 @@ The product sits in the agentic stack as follows:
 Aligned with [prd.md](./prd.md) §6 (wording here is architecture-oriented).
 
 1. Schema-validated, low-abstraction core (Rust types + serde/schemars); high AI-codability  
-2. Native **MCP** (tools) + **ACP** (clients / IDE / TUI / headless) — MCP in Phase 1; ACP by Phase 2 start  
+2. Native **MCP** (tools) in Phase 1 + **ACP** (clients / IDE) in Phase 2 — both required for CORE-02 complete
 3. Event-sourced durable execution with crash recovery and no duplicate side effects  
 4. Automated context lifecycle: token budgets, payload offload, `progress.json` / `AGENTS.md` handoffs  
 5. Git worktree isolation for experimental or unapproved file mutations  
@@ -826,38 +826,75 @@ Immutable audit log: tool invocations, arg payloads (redacted), model response m
 
 ---
 
-## 14. Suggested rebuild / implementation order
+## 14. Implementation order (deterministic)
 
-Aligned with PRD roadmap.
+Aligned with [prd.md](./prd.md) §13. Each phase has fixed **scope**, **ordered build steps**, and **exit criteria**. No “if capacity” deferrals—work either belongs to this phase or the next.
 
-### Phase 1 — Core foundation & protocol engine (Weeks 1–8)
+### Phase ownership (single source with PRD)
 
-Aligned with architecture decision #13 and [prd.md](./prd.md) §13.
+| Phase | Owns (req IDs) |
+|-------|----------------|
+| **1** | CORE-01, CORE-02 (MCP only), DUR-01, DUR-02 |
+| **2** | CORE-02 (ACP), CTX-01, CTX-02, CTX-03, DUR-03, SEC-01, SEC-02, SEC-03 |
+| **3** | EVAL-01, OBS-01, multi-channel, SCIM, SIEM plugins |
 
-1. Schema package + tool registry (CORE-01)  
-2. Unified model client + stream normalization  
-3. Agent loop + built-in coding tools (sequential tool calls within a turn)  
-4. Event journal + crash recovery (DUR-01, DUR-02)  
-5. **MCP** bridge (CORE-02 tools)  
-6. TUI + headless surfaces  
-7. **ACP** session transport if capacity allows (else first item of Phase 2)  
+### Phase 1 — Core foundation & protocol engine
 
-### Phase 2 — Context lifecycle & security gateway (Weeks 9–16)
+**Build order (strict):**
 
-1. ACP completed if deferred from Phase 1  
+1. Workspace skeleton + `forge-types` / config (TOML + env)  
+2. Schema package + tool registry (CORE-01)  
+3. Unified model client + stream normalization (OpenAI-compatible, Anthropic, xAI)  
+4. Agent loop + built-in coding tools (sequential tools within a turn)  
+5. Event journal + crash recovery (DUR-01, DUR-02)  
+6. MCP bridge (CORE-02 MCP) — `forge-mcp`  
+7. TUI + headless surfaces — `forge-tui`, `forge-cli`  
+
+**Phase 1 exit criteria:**
+
+- Invalid tool args rejected before side effects; validation retry works (CORE-01)  
+- MCP tools list/call through registry + ACL hook point (CORE-02 MCP)  
+- Kill process mid-task; resume with no duplicate completed side effects (DUR-01, DUR-02)  
+- Same session runnable via TUI and headless  
+
+**Not in Phase 1:** ACP, CTX-*, SEC-* enterprise path, DUR-03, EVAL-01, OBS-01 export, channels.
+
+### Phase 2 — Context lifecycle & security gateway
+
+**Build order (strict):**
+
+1. ACP session transport (CORE-02 ACP) — `forge-acp`  
 2. Payload offload + token budget (CTX-01)  
-3. Structured reset + `progress.json` / `AGENTS.md` (CTX-02)  
+3. Structured reset + `.forge/progress.json` / `AGENTS.md` (CTX-02)  
 4. Git worktree isolation (CTX-03)  
-5. Durable HITL (DUR-03)  
-6. Vault injection + dynamic ACLs (SEC-01, SEC-02)  
-7. Container sandbox + eBPF hooks (SEC-03)  
+5. Durable HITL wait/resume (DUR-03)  
+6. Vault injection + dynamic tool ACLs (SEC-01, SEC-02)  
+7. Container sandbox; eBPF profile where host supports it (SEC-03)  
 
-### Phase 3 — Feedback & multi-channel fleet (Weeks 17–24)
+**Phase 2 exit criteria:**
 
-1. Dual-sensor feedback (EVAL-01)  
-2. Full OTEL + SIEM export (OBS-01)  
-3. Channel gateway (Slack, Telegram, webhooks) with restricted ACLs  
+- ACP client can drive the same loop as TUI (CORE-02 complete)  
+- Offload ≥ 80% bloat reduction on large tools; handoff reset at threshold (CTX-01, CTX-02)  
+- Worktree isolation for file edits (CTX-03)  
+- HITL pause releases compute; resume across restart (DUR-03)  
+- Secrets never in prompts/default traces; denied tools hidden from model list (SEC-01, SEC-02)  
+- Sandbox policy enforcement for local tool exec (SEC-03)  
+
+### Phase 3 — Feedback & multi-channel fleet
+
+**Build order (strict):**
+
+1. Dual-sensor feedback Generator / Evaluator (EVAL-01)  
+2. OpenTelemetry export + SIEM-oriented audit export (OBS-01)  
+3. Channel gateway (Slack, Telegram, webhooks) with restricted default ACLs  
 4. SCIM provisioning plugins  
+
+**Phase 3 exit criteria:**
+
+- Eval gate meets quality target vs single-pass baseline (EVAL-01)  
+- Full step coverage exportable via OTEL (OBS-01)  
+- Channel ingress cannot obtain broad repo tools by default  
+- SCIM/SIEM plugins load without core changes  
 
 ---
 
@@ -940,7 +977,7 @@ Forge is the **harness** between models and the real world: a typed tool bus, an
 | 10 | Crate layout | **Workspace monorepo, many crates** aligned to modules in §3 |
 | 11 | Model providers (Phase 1) | **Direct APIs + thin trait**; ship **OpenAI-compatible, Anthropic, and xAI** thin adapters early |
 | 12 | Config | **TOML file + env overrides** (e.g. `forge.toml` / `~/.config/forge/config.toml`; secrets/CI via env) |
-| 13 | Phase 1 protocol depth | **Built-ins + loop + journal first**, then **MCP before Phase 1 ends**; ACP may land at Phase 1 tail or Phase 2 start |
+| 13 | Protocol phase ownership | **Phase 1:** built-ins + loop + journal + **MCP**. **Phase 2:** **ACP** (completes CORE-02). No capacity-based deferral. |
 | 14 | License | **MIT** |
 | 15 | Workspace root | **Default to process cwd** when not specified (CLI flag / config optional override) |
 | 16 | Handoff progress file | **`.forge/progress.json`** under workspace (configurable) |
@@ -954,7 +991,7 @@ Forge is the **harness** between models and the real world: a typed tool bus, an
 | Type-safe tool registry | Trait objects or enum dispatch + compile-time registered builtins; runtime MCP tools as schema-validated JSON |
 | Event journal | Append-only rows in **SQLite via sqlx**; typed event envelope (`serde_json`) with schema version field |
 | Unified model client | `async trait` (e.g. `ModelClient`) + adapters: OpenAI-compatible, Anthropic, xAI |
-| Surfaces | `forge-tui` (ratatui), `forge` binary for headless; ACP crate at Phase 1 tail or Phase 2 |
+| Surfaces | Phase 1: `forge-tui` (ratatui) + `forge-cli` headless; Phase 2: `forge-acp` |
 | Config | TOML (`forge.toml` or XDG config path) merged with env overrides |
 | Workspace root | Default **cwd**; override via CLI flag and/or config when specified |
 | Observability | `tracing` + OpenTelemetry exporter crates |
@@ -962,21 +999,15 @@ Forge is the **harness** between models and the real world: a typed tool bus, an
 
 Suggested workspace crates (initial): `forge-types`, `forge-core`, `forge-durable`, `forge-context`, `forge-governance`, `forge-feedback`, `forge-mcp`, `forge-acp`, `forge-obs`, `forge-tui`, `forge-cli` (binary).
 
-### Phase 1 vertical slice (ordered)
+### Phase 1 vertical slice
 
-1. Workspace skeleton + `forge-types` / config (TOML + env)  
-2. Built-in tools + agent loop (`forge-core`)  
-3. Event journal + resume (`forge-durable` + sqlx/SQLite)  
-4. Model trait + OpenAI-compatible, Anthropic, xAI adapters  
-5. TUI + headless (`forge-tui`, `forge-cli`)  
-6. MCP bridge before Phase 1 close (`forge-mcp`)  
-7. ACP optional at Phase 1 tail (`forge-acp`) or start of Phase 2  
+Same strict order as §14 Phase 1 build steps (workspace → tools → model → loop → journal → MCP → TUI/headless). ACP is **Phase 2 step 1**, not optional Phase 1 work.
 
 ---
 
 ## Open questions
 
-Resolved defaults that used to be open: `progress.json` path (`.forge/progress.json`); sequential tools in Phase 1; ACP timing (decision #13).
+Resolved defaults: `progress.json` path (`.forge/progress.json`); sequential tools in Phase 1; **ACP owns Phase 2** (decision #13); phase rollout is deterministic (PRD §13 / architecture §14).
 
 | # | Question | Options / notes | Decision |
 |---|----------|-----------------|----------|

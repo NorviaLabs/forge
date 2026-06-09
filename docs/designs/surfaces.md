@@ -34,7 +34,7 @@ Forge must present one harness through TUI, headless CI, ACP IDE, and later chan
 |---------|-------|-------|--------|-------|
 | **TUI** | 1 | stdin keys, slash cmds | ratatui panels, modals | Primary interactive |
 | **Headless** | 1 | CLI args, prompt file | logs, JSON, exit code | CI resume |
-| **ACP** | 1 tail / 2 | ACP messages | ACP streams | IDE clients |
+| **ACP** | 2 | ACP messages | ACP streams | IDE clients; first Phase 2 deliverable |
 | **Channels** | 3 | Slack/TG/webhook | channel messages | Restricted ACL default |
 
 ### 3.2 Hard rules
@@ -96,10 +96,10 @@ trait Surface: Send {
 
 ## 6. Phase / rollout
 
-| Phase | Deliver |
-|-------|---------|
-| 1 | TUI + headless |
-| 2 | ACP |
+| Phase | Deliver (fixed) |
+|-------|------------------|
+| 1 | TUI + headless only |
+| 2 | ACP (required) |
 | 3 | Channels |
 
 ## 7. Open questions

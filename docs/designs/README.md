@@ -20,7 +20,7 @@ Design docs sit between the product contract and the system overview:
 | [agent-loop.md](./agent-loop.md) | CORE-01, loop | 1 | Plan–act–observe control, termination, gates |
 | [model-providers.md](./model-providers.md) | multi-provider | 1 | Unified client, stream events, config switch |
 | [durable-execution.md](./durable-execution.md) | DUR-01, DUR-02, DUR-03 | 1–2 | Journal, replay, durable HITL |
-| [protocols-mcp-acp.md](./protocols-mcp-acp.md) | CORE-02 | 1–2 | MCP in Phase 1; ACP by Phase 2 start |
+| [protocols-mcp-acp.md](./protocols-mcp-acp.md) | CORE-02 | 1 (MCP) · 2 (ACP) | MCP Phase 1; ACP Phase 2 (fixed) |
 | [configuration.md](./configuration.md) | portability NFRs | 1 | TOML + env, workspace root, defaults |
 | [tui-commands.md](./tui-commands.md) | multi-surface | 1 | **Canonical** slash-command catalog |
 | [surfaces.md](./surfaces.md) | multi-surface | 1–3 | TUI / headless / ACP adapter rules |
@@ -34,7 +34,7 @@ Design docs sit between the product contract and the system overview:
 
 ### Priority vs phase
 
-PRD **P0** means critical for the product; **phase** means delivery order. Several P0 items (CTX-01/02, SEC-01/02) ship in **Phase 2** because they depend on Phase 1 loop + journal. CORE-02 is P0: MCP is Phase 1; ACP may complete at Phase 2 start.
+PRD **P0/P1** = severity. **Phase** = hard delivery assignment (see [prd.md](../prd.md) §13). No capacity-based deferral: CORE-02 MCP is Phase 1; CORE-02 ACP is Phase 2; CTX/SEC/DUR-03 are Phase 2; EVAL/OBS/channels are Phase 3.
 
 ## Suggested reading order
 
@@ -78,7 +78,7 @@ When editing docs, verify:
 |-------|------|
 | Req IDs | Every CORE/DUR/CTX/SEC/EVAL/OBS id appears in PRD + ≥1 design doc |
 | Phases | PRD §13 ↔ architecture §14 ↔ designs README phase column |
-| ACP | MCP Phase 1; ACP by Phase 2 start (decision #13) |
+| ACP | MCP Phase 1; ACP Phase 2 only (decision #13) |
 | progress.json | Schema + default path `.forge/progress.json` match architecture §6.3 and context-lifecycle |
 | Journal events | Architecture table ⊆ durable-execution kinds |
 | Slash commands | Canonical only in [tui-commands.md](./tui-commands.md); ui/architecture point here |
