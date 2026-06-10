@@ -1,0 +1,17 @@
+[package]
+name = "forge-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Configuration loading for Forge (TOML + env)"
+
+[dependencies]
+forge-types = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+toml = { workspace = true }
+dirs = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

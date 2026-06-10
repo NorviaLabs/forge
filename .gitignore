@@ -1,10 +1,7 @@
 # Rust / Cargo
 /target/
 **/*.rs.bk
-Cargo.lock
-# Keep workspace lockfile once published; ignore until crates exist if preferred
-# (uncomment next line only if you want lockfile committed for binaries)
-# !Cargo.lock
+# Commit Cargo.lock for reproducible CLI builds
 
 # Forge runtime
 .forge/
