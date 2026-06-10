@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/forge-types",
     "crates/forge-config",
+    "crates/forge-tools",
 ]
 
 [workspace.package]

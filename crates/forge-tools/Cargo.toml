@@ -1,0 +1,20 @@
+[package]
+name = "forge-tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Schema-validated tool protocol (CORE-01)"
+
+[dependencies]
+forge-types = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+jsonschema = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tempfile = { workspace = true }
