@@ -6,6 +6,7 @@ members = [
     "crates/forge-tools",
     "crates/forge-model",
     "crates/forge-durable",
+    "crates/forge-core",
 ]
 
 [workspace.package]
