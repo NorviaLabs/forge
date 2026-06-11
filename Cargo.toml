@@ -7,6 +7,9 @@ members = [
     "crates/forge-model",
     "crates/forge-durable",
     "crates/forge-core",
+    "crates/forge-mcp",
+    "crates/forge-tui",
+    "crates/forge-cli",
 ]
 
 [workspace.package]
