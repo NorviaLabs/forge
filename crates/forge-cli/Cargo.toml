@@ -1,0 +1,33 @@
+[package]
+name = "forge-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Forge CLI — headless + simple TUI entrypoints"
+default-run = "forge"
+
+[[bin]]
+name = "forge"
+path = "src/main.rs"
+
+[dependencies]
+forge-config = { workspace = true }
+forge-core = { workspace = true }
+forge-model = { workspace = true }
+forge-tools = { workspace = true }
+forge-mcp = { workspace = true }
+forge-tui = { workspace = true }
+forge-types = { workspace = true }
+forge-durable = { workspace = true }
+clap = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+assert_cmd = "2"
+predicates = "3"
