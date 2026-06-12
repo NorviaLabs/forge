@@ -1,0 +1,16 @@
+[package]
+name = "forge-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "TUI slash commands and terminal surface (Phase 1)"
+
+[dependencies]
+forge-types = { workspace = true }
+forge-core = { workspace = true }
+forge-tools = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
