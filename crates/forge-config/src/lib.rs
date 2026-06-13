@@ -334,10 +334,60 @@ fn resolve_workspace(
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::sync::Mutex;
     use tempfile::tempdir;
+
+    /// Serializes tests that touch process env (rustc may run tests in parallel).
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    const FORGE_ENV_KEYS: &[&str] = &[
+        "FORGE_MODEL_PROVIDER",
+        "FORGE_MODEL_ID",
+        "FORGE_API_KEY",
+        "FORGE_WORKSPACE",
+        "FORGE_JOURNAL_PATH",
+        "FORGE_OTEL_ENDPOINT",
+    ];
+
+    /// Clears FORGE_* env vars for the duration of a test; restores on drop.
+    struct EnvGuard {
+        saved: Vec<(String, Option<String>)>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl EnvGuard {
+        fn clear_forge_env() -> Self {
+            let lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let mut saved = Vec::new();
+            for key in FORGE_ENV_KEYS {
+                saved.push(((*key).to_string(), env::var(key).ok()));
+                env::remove_var(key);
+            }
+            Self {
+                saved,
+                _lock: lock,
+            }
+        }
+
+        fn set(&self, key: &str, value: &str) {
+            env::set_var(key, value);
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (key, val) in self.saved.drain(..) {
+                match val {
+                    Some(v) => env::set_var(&key, v),
+                    None => env::remove_var(&key),
+                }
+            }
+        }
+    }
 
     #[test]
     fn defaults_workspace_to_cwd() {
+        let _g = EnvGuard::clear_forge_env();
         let cfg = Config::load(ConfigOverrides::default()).unwrap();
         assert!(cfg.workspace_root().is_absolute() || cfg.workspace_root() == Path::new("."));
         assert_eq!(cfg.model.provider, ModelProviderKind::OpenaiCompatible);
@@ -346,6 +396,7 @@ mod tests {
 
     #[test]
     fn project_toml_overrides_defaults() {
+        let _g = EnvGuard::clear_forge_env();
         let dir = tempdir().unwrap();
         let path = dir.path().join("forge.toml");
         let mut f = fs::File::create(&path).unwrap();
@@ -384,6 +435,7 @@ args = ["hi"]
 
     #[test]
     fn env_overrides_file() {
+        let g = EnvGuard::clear_forge_env();
         let dir = tempdir().unwrap();
         let path = dir.path().join("forge.toml");
         fs::write(
@@ -396,18 +448,12 @@ model = "from-file"
         )
         .unwrap();
 
-        // Safety: only set within test process; restore after.
-        let prev = env::var("FORGE_MODEL_ID").ok();
-        env::set_var("FORGE_MODEL_ID", "from-env");
+        g.set("FORGE_MODEL_ID", "from-env");
         let cfg = Config::load(ConfigOverrides {
             config_path: Some(path),
             ..Default::default()
         })
         .unwrap();
-        match prev {
-            Some(v) => env::set_var("FORGE_MODEL_ID", v),
-            None => env::remove_var("FORGE_MODEL_ID"),
-        }
 
         assert_eq!(cfg.model.model, "from-env");
         assert_eq!(cfg.model.provider, ModelProviderKind::Anthropic);
@@ -415,6 +461,9 @@ model = "from-file"
 
     #[test]
     fn cli_overrides_env() {
+        let g = EnvGuard::clear_forge_env();
+        g.set("FORGE_MODEL_PROVIDER", "anthropic");
+        g.set("FORGE_MODEL_ID", "from-env");
         let cfg = Config::load(ConfigOverrides {
             model_provider: Some("xai".into()),
             model_id: Some("grok".into()),
@@ -427,6 +476,7 @@ model = "from-file"
 
     #[test]
     fn invalid_provider_errors() {
+        let _g = EnvGuard::clear_forge_env();
         let err = Config::load(ConfigOverrides {
             model_provider: Some("nope".into()),
             ..Default::default()
@@ -437,6 +487,7 @@ model = "from-file"
 
     #[test]
     fn journal_dir_resolves_under_workspace() {
+        let _g = EnvGuard::clear_forge_env();
         let dir = tempdir().unwrap();
         let cfg = Config::load(ConfigOverrides {
             workspace: Some(dir.path().to_path_buf()),
