@@ -591,6 +591,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
 
 [[package]]
+name = "forge-acp"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "forge-core",
+ "forge-model",
+ "forge-tools",
+ "forge-types",
+ "forge-workspace",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "forge-cli"
 version = "0.1.0"
 dependencies = [
@@ -605,6 +624,7 @@ dependencies = [
  "forge-tools",
  "forge-tui",
  "forge-types",
+ "forge-workspace",
  "predicates",
  "serde_json",
  "tempfile",
@@ -628,15 +648,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "forge-context"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "forge-types",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "uuid",
+]
+
+[[package]]
 name = "forge-core"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "forge-config",
+ "forge-context",
  "forge-durable",
+ "forge-governance",
  "forge-model",
  "forge-tools",
  "forge-types",
+ "forge-workspace",
  "serde",
  "serde_json",
  "tempfile",
@@ -658,6 +696,20 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "forge-governance"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "forge-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
  "tracing",
  "uuid",
 ]
@@ -728,6 +780,17 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "thiserror",
+ "uuid",
+]
+
+[[package]]
+name = "forge-workspace"
+version = "0.1.0"
+dependencies = [
+ "forge-types",
+ "serde",
+ "tempfile",
  "thiserror",
  "uuid",
 ]

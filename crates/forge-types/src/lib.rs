@@ -1,4 +1,4 @@
-//! Shared types for Forge Phase 1.
+//! Shared types for Forge (Phase 1 + 2).
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -120,6 +120,11 @@ pub enum JournalEventType {
     ToolValidationFailed,
     StatePatch,
     SessionStatus,
+    /// Phase 2 — durable HITL
+    HitlWait,
+    HitlResume,
+    /// Phase 2 — context handoff
+    ContextReset,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -141,6 +146,95 @@ pub struct ToolDescriptor {
     pub input_schema: serde_json::Value,
     pub side_effect_class: SideEffectClass,
     pub idempotent: bool,
+}
+
+/// Progress handoff artifact (CTX-02). Default path: `.forge/progress.json`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProgressDocument {
+    pub version: u32,
+    pub goal: String,
+    #[serde(default)]
+    pub completed: Vec<String>,
+    #[serde(default)]
+    pub in_progress: String,
+    #[serde(default)]
+    pub blockers: Vec<String>,
+    #[serde(default)]
+    pub next_actions: Vec<String>,
+    #[serde(default)]
+    pub workspace_ref: String,
+    pub session_id: String,
+    pub updated_at: String,
+}
+
+impl ProgressDocument {
+    pub fn new(session_id: SessionId, goal: impl Into<String>) -> Self {
+        Self {
+            version: 1,
+            goal: goal.into(),
+            completed: vec![],
+            in_progress: String::new(),
+            blockers: vec![],
+            next_actions: vec![],
+            workspace_ref: String::new(),
+            session_id: session_id.to_string(),
+            updated_at: Utc::now().to_rfc3339(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PolicyDecision {
+    Allow,
+    Deny,
+    Hitl,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Principal {
+    pub id: String,
+    #[serde(default)]
+    pub roles: Vec<String>,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+    #[serde(default)]
+    pub surface: String,
+}
+
+impl Principal {
+    pub fn local_dev() -> Self {
+        Self {
+            id: "local-dev".into(),
+            roles: vec!["admin".into()],
+            scopes: vec!["*".into()],
+            surface: "tui".into(),
+        }
+    }
+
+    pub fn restricted(surface: &str) -> Self {
+        Self {
+            id: format!("restricted-{surface}"),
+            roles: vec!["restricted".into()],
+            scopes: vec![],
+            surface: surface.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HitlDecision {
+    Approve,
+    Deny,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HitlPayload {
+    pub call_id: String,
+    pub tool: String,
+    pub args_redacted: serde_json::Value,
+    pub reason: String,
 }
 
 #[cfg(test)]

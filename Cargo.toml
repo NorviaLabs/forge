@@ -10,6 +10,10 @@ members = [
     "crates/forge-mcp",
     "crates/forge-tui",
     "crates/forge-cli",
+    "crates/forge-governance",
+    "crates/forge-context",
+    "crates/forge-workspace",
+    "crates/forge-acp",
 ]
 
 [workspace.package]
@@ -51,3 +55,9 @@ forge-durable = { path = "crates/forge-durable" }
 forge-core = { path = "crates/forge-core" }
 forge-mcp = { path = "crates/forge-mcp" }
 forge-tui = { path = "crates/forge-tui" }
+forge-governance = { path = "crates/forge-governance" }
+forge-context = { path = "crates/forge-context" }
+forge-workspace = { path = "crates/forge-workspace" }
+forge-acp = { path = "crates/forge-acp" }
+sha2 = "0.10"
+hex = "0.4"
