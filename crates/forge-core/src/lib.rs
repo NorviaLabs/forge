@@ -153,12 +153,6 @@ impl AgentSession {
             name: None,
         });
 
-        let mut last = ModelResponse {
-            text: String::new(),
-            tool_calls: vec![],
-            usage: None,
-        };
-
         for turn in 0..self.max_turns {
             info!(turn, "model step");
             self.journal
@@ -174,7 +168,7 @@ impl AgentSession {
                 tools,
                 model: String::new(),
             };
-            last = self.model.complete(req).await?;
+            let last = self.model.complete(req).await?;
 
             self.journal
                 .append_model_response(
