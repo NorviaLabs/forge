@@ -1,0 +1,19 @@
+[package]
+name = "forge-context"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Context lifecycle: offload + handoff (CTX-01/02)"
+
+[dependencies]
+forge-types = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+sha2 = "0.10"
+hex = "0.4"
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
