@@ -49,6 +49,8 @@ pub struct ReplayState {
     pub incomplete_intents: Vec<String>,
     pub user_messages: Vec<String>,
     pub events: Vec<JournalEvent>,
+    /// Phase 2: pending HITL payload if status is AwaitingHitl
+    pub pending_hitl: Option<serde_json::Value>,
 }
 
 impl Journal {
@@ -223,6 +225,39 @@ impl Journal {
         .await
     }
 
+    /// Phase 2 DUR-03: durable HITL wait (record before releasing compute).
+    pub async fn append_hitl_wait(
+        &self,
+        session_id: SessionId,
+        payload: &serde_json::Value,
+    ) -> Result<u64, JournalError> {
+        self.append(session_id, JournalEventType::HitlWait, payload.clone())
+            .await
+    }
+
+    pub async fn append_hitl_resume(
+        &self,
+        session_id: SessionId,
+        decision: &str,
+        actor: &str,
+    ) -> Result<u64, JournalError> {
+        self.append(
+            session_id,
+            JournalEventType::HitlResume,
+            json!({ "decision": decision, "actor": actor }),
+        )
+        .await
+    }
+
+    pub async fn append_context_reset(
+        &self,
+        session_id: SessionId,
+        meta: Value,
+    ) -> Result<u64, JournalError> {
+        self.append(session_id, JournalEventType::ContextReset, meta)
+            .await
+    }
+
     pub async fn replay(&self, session_id: SessionId) -> Result<ReplayState, JournalError> {
         let sid = session_id.to_string();
         let rows = sqlx::query(
@@ -243,6 +278,7 @@ impl Journal {
             incomplete_intents: Vec::new(),
             user_messages: Vec::new(),
             events: Vec::new(),
+            pending_hitl: None,
         };
 
         let mut open_intents: HashMap<String, String> = HashMap::new();
@@ -294,6 +330,17 @@ impl Journal {
                         state.status = s;
                     }
                 }
+                JournalEventType::HitlWait => {
+                    state.pending_hitl = Some(payload.clone());
+                    state.status = SessionStatus::AwaitingHitl;
+                }
+                JournalEventType::HitlResume => {
+                    state.pending_hitl = None;
+                    if state.status == SessionStatus::AwaitingHitl {
+                        state.status = SessionStatus::Running;
+                    }
+                }
+                JournalEventType::ContextReset => {}
                 _ => {}
             }
 
@@ -358,6 +405,26 @@ mod tests {
         let cached = Journal::cached_tool_result(&state2, "c1").unwrap();
         assert_eq!(cached.output.content, "ok");
         assert_eq!(state2.user_messages, vec!["hi".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn hitl_wait_resume_replay() {
+        let dir = tempdir().unwrap();
+        let sid = new_session_id();
+        let j = Journal::open(dir.path(), sid).await.unwrap();
+        j.append_session_created(sid).await.unwrap();
+        j.append_hitl_wait(sid, &json!({"call_id": "c1", "tool": "bash"}))
+            .await
+            .unwrap();
+        let st = j.replay(sid).await.unwrap();
+        assert_eq!(st.status, SessionStatus::AwaitingHitl);
+        assert!(st.pending_hitl.is_some());
+        j.append_hitl_resume(sid, "approve", "tui:test")
+            .await
+            .unwrap();
+        let st2 = j.replay(sid).await.unwrap();
+        assert_eq!(st2.status, SessionStatus::Running);
+        assert!(st2.pending_hitl.is_none());
     }
 
     #[tokio::test]
