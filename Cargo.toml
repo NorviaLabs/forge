@@ -14,6 +14,10 @@ members = [
     "crates/forge-context",
     "crates/forge-workspace",
     "crates/forge-acp",
+    "crates/forge-feedback",
+    "crates/forge-obs",
+    "crates/forge-channels",
+    "crates/forge-fleet",
 ]
 
 [workspace.package]
@@ -59,5 +63,9 @@ forge-governance = { path = "crates/forge-governance" }
 forge-context = { path = "crates/forge-context" }
 forge-workspace = { path = "crates/forge-workspace" }
 forge-acp = { path = "crates/forge-acp" }
+forge-feedback = { path = "crates/forge-feedback" }
+forge-obs = { path = "crates/forge-obs" }
+forge-channels = { path = "crates/forge-channels" }
+forge-fleet = { path = "crates/forge-fleet" }
 sha2 = "0.10"
 hex = "0.4"

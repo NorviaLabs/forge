@@ -610,6 +610,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "forge-channels"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "forge-core",
+ "forge-governance",
+ "forge-model",
+ "forge-tools",
+ "forge-types",
+ "forge-workspace",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "forge-cli"
 version = "0.1.0"
 dependencies = [
@@ -701,6 +721,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "forge-feedback"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "forge-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "forge-fleet"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "forge-governance",
+ "forge-obs",
+ "forge-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "uuid",
+]
+
+[[package]]
 name = "forge-governance"
 version = "0.1.0"
 dependencies = [
@@ -743,6 +792,20 @@ dependencies = [
  "serde_json",
  "thiserror",
  "tokio",
+]
+
+[[package]]
+name = "forge-obs"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "forge-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
