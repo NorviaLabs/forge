@@ -2,15 +2,15 @@
 
 mod commands;
 
-pub use commands::{help_text, parse_slash, CommandError, SlashCommand};
+pub use commands::{help_text, parse_slash, CommandError, SlashCommand, WorktreeAction};
 
-/// Headless exit codes (surfaces.md).
+/// Headless exit codes (surfaces.md + Phase 2 HITL).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
 pub enum ExitCode {
     Success = 0,
     Failed = 1,
-    // 2 reserved for Phase 2 awaiting_hitl
+    AwaitingHitl = 2,
     Canceled = 3,
     ConfigError = 4,
 }
@@ -29,6 +29,7 @@ mod tests {
     fn exit_codes_match_design() {
         assert_eq!(ExitCode::Success.code(), 0);
         assert_eq!(ExitCode::Failed.code(), 1);
+        assert_eq!(ExitCode::AwaitingHitl.code(), 2);
         assert_eq!(ExitCode::Canceled.code(), 3);
         assert_eq!(ExitCode::ConfigError.code(), 4);
     }

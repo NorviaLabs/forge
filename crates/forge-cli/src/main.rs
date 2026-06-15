@@ -1,4 +1,4 @@
-//! Forge CLI — Phase 1 headless + interactive REPL surfaces (surfaces.md).
+//! Forge CLI — Phase 1 + Phase 2 surfaces.
 
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
@@ -10,56 +10,58 @@ use forge_core::{AgentSession, LoopConfig};
 use forge_mcp::{register_static_mcp, McpManager, StaticMcpTool};
 use forge_model::{client_from_config, MockModelClient, ModelClient};
 use forge_tools::ToolRegistry;
-use forge_tui::{help_text, parse_slash, ExitCode, SlashCommand};
-use forge_types::ModelResponse;
+use forge_tui::{help_text, parse_slash, ExitCode, SlashCommand, WorktreeAction};
+use forge_types::{HitlDecision, ModelResponse, SessionStatus};
+use forge_workspace::IsolationMode;
 use serde_json::json;
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
 #[derive(Parser, Debug)]
-#[command(name = "forge", version, about = "Forge AI agent harness (Phase 1)")]
+#[command(name = "forge", version, about = "Forge AI agent harness (Phase 1–2)")]
 struct Cli {
-    /// Path to forge.toml
     #[arg(long, global = true)]
     config: Option<PathBuf>,
-    /// Workspace root (default: cwd)
     #[arg(long, global = true)]
     workspace: Option<PathBuf>,
-    /// Model provider: openai_compatible | anthropic | xai
     #[arg(long, global = true)]
     provider: Option<String>,
-    /// Model id
     #[arg(long, global = true)]
     model: Option<String>,
-    /// Use mock model (no network)
     #[arg(long, global = true)]
     mock: bool,
+    /// Enable git worktree isolation (Phase 2 CTX-03)
+    #[arg(long, global = true)]
+    worktree: bool,
     #[command(subcommand)]
     command: Commands,
 }
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Headless single-shot (or multi-turn with --mock tools demo)
     Run {
-        /// User prompt
         prompt: String,
-        /// Resume session id
         #[arg(long)]
         resume: Option<Uuid>,
-        /// Max agent turns
         #[arg(long, default_value_t = 8)]
         max_turns: u32,
     },
-    /// Interactive REPL (simple TUI surface)
     Repl {
         #[arg(long)]
         resume: Option<Uuid>,
         #[arg(long, default_value_t = 16)]
         max_turns: u32,
     },
-    /// Print version / health
     Status,
+    /// Phase 2: resolve HITL for a resumed session
+    Approve {
+        #[arg(long)]
+        session: Uuid,
+    },
+    Deny {
+        #[arg(long)]
+        session: Uuid,
+    },
 }
 
 #[tokio::main]
@@ -94,7 +96,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     match cli.command {
         Commands::Status => {
             println!(
-                "forge 0.1.0 phase1\nworkspace {}\nprovider {} model {}",
+                "forge 0.2.0 phase2\nworkspace {}\nprovider {} model {}",
                 cfg.workspace_root().display(),
                 cfg.model.provider.as_str(),
                 cfg.model.model
@@ -106,23 +108,21 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             resume,
             max_turns,
         } => {
-            let mut session = open_session(&cfg, cli.mock, max_turns, resume).await?;
-            let resp = session.run_user_message(&prompt).await?;
-            print_response(&resp);
+            let mut session =
+                open_session(&cfg, cli.mock, max_turns, resume, cli.worktree).await?;
+            let _resp = session.run_user_message(&prompt).await?;
+            print_session_tail(&session);
             println!("session_id={}", session.session_id);
-            Ok(if session.status == forge_types::SessionStatus::Completed {
-                ExitCode::Success
-            } else {
-                ExitCode::Failed
-            })
+            Ok(exit_for_status(session.status))
         }
         Commands::Repl {
             resume,
             max_turns,
         } => {
-            let mut session = open_session(&cfg, cli.mock, max_turns, resume).await?;
+            let mut session =
+                open_session(&cfg, cli.mock, max_turns, resume, cli.worktree).await?;
             println!("Forge REPL — session {}", session.session_id);
-            println!("Type a message or /help. Ctrl-D to quit.\n");
+            println!("{}", help_text());
             let stdin = io::stdin();
             let mut stdout = io::stdout();
             for line in stdin.lock().lines() {
@@ -137,10 +137,12 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                         Ok(SlashCommand::Help { .. }) => print!("{}", help_text()),
                         Ok(SlashCommand::Status) => {
                             println!(
-                                "session={} status={:?} tools={}",
+                                "session={} status={:?} tools={} ctx_usage={:.1}% hitl={:?}",
                                 session.session_id,
                                 session.status,
-                                session.list_tools().len()
+                                session.list_tools().len(),
+                                session.context_usage_ratio() * 100.0,
+                                session.pending_hitl.as_ref().map(|p| &p.tool)
                             );
                         }
                         Ok(SlashCommand::Tools) => {
@@ -149,38 +151,124 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                             }
                         }
                         Ok(SlashCommand::Resume { session_id }) => {
-                            session =
-                                open_session(&cfg, cli.mock, max_turns, Some(session_id)).await?;
+                            session = open_session(
+                                &cfg,
+                                cli.mock,
+                                max_turns,
+                                Some(session_id),
+                                cli.worktree,
+                            )
+                            .await?;
                             println!("resumed {}", session.session_id);
                         }
-                        Ok(SlashCommand::Cancel) => {
-                            println!("cancel acknowledged (idle)");
-                        }
+                        Ok(SlashCommand::Cancel) => println!("cancel acknowledged"),
                         Ok(SlashCommand::Model { provider, model }) => {
-                            println!(
-                                "model switch requested provider={provider:?} model={model:?} (restart to apply)"
-                            );
+                            println!("model switch requested provider={provider:?} model={model:?}");
                         }
                         Ok(SlashCommand::Journal { tail }) => {
                             let n = tail.unwrap_or(10);
-                            println!("journal: last events in session (see .forge/sessions); showing recent agent events (up to {n})");
-                            for e in session.events.iter().rev().take(n).collect::<Vec<_>>().into_iter().rev() {
+                            for e in session
+                                .events
+                                .iter()
+                                .rev()
+                                .take(n)
+                                .collect::<Vec<_>>()
+                                .into_iter()
+                                .rev()
+                            {
                                 println!("  [{}] {}", e.kind, e.detail);
                             }
                         }
+                        Ok(SlashCommand::Approve) => {
+                            session
+                                .resolve_hitl(HitlDecision::Approve, "tui")
+                                .await?;
+                            println!("approved");
+                        }
+                        Ok(SlashCommand::Deny) => {
+                            session.resolve_hitl(HitlDecision::Deny, "tui").await?;
+                            println!("denied");
+                        }
+                        Ok(SlashCommand::Reset) | Ok(SlashCommand::Compact) => {
+                            session.force_context_reset_async().await?;
+                            println!("context reset + progress.json written");
+                        }
+                        Ok(SlashCommand::Cost) => {
+                            println!(
+                                "context usage ratio: {:.2}%",
+                                session.context_usage_ratio() * 100.0
+                            );
+                        }
+                        Ok(SlashCommand::Worktree { action }) => match action {
+                            WorktreeAction::Status => {
+                                println!(
+                                    "{}",
+                                    session
+                                        .worktree_status()
+                                        .unwrap_or_else(|| "worktree off".into())
+                                );
+                            }
+                            WorktreeAction::Merge => {
+                                session.worktree_merge()?;
+                                println!("worktree merged");
+                            }
+                            WorktreeAction::Discard { confirm } => {
+                                if !confirm {
+                                    println!("confirm with /worktree discard --yes");
+                                } else {
+                                    session.worktree_discard()?;
+                                    println!("worktree discarded");
+                                }
+                            }
+                        },
                         Err(e) => println!("{e}"),
                     }
                     stdout.flush()?;
                     continue;
                 }
                 match session.run_user_message(line).await {
-                    Ok(resp) => print_response(&resp),
+                    Ok(resp) => {
+                        print_response(&resp);
+                        if session.status == SessionStatus::AwaitingHitl {
+                            println!("(awaiting HITL — /approve or /deny)");
+                        }
+                    }
                     Err(e) => println!("error: {e}"),
                 }
                 stdout.flush()?;
             }
             Ok(ExitCode::Success)
         }
+        Commands::Approve { session } => {
+            let mut s = open_session(&cfg, cli.mock, 8, Some(session), cli.worktree).await?;
+            s.resolve_hitl(HitlDecision::Approve, "cli").await?;
+            println!("approved");
+            Ok(ExitCode::Success)
+        }
+        Commands::Deny { session } => {
+            let mut s = open_session(&cfg, cli.mock, 8, Some(session), cli.worktree).await?;
+            s.resolve_hitl(HitlDecision::Deny, "cli").await?;
+            println!("denied");
+            Ok(ExitCode::Success)
+        }
+    }
+}
+
+fn exit_for_status(status: SessionStatus) -> ExitCode {
+    match status {
+        SessionStatus::Completed => ExitCode::Success,
+        SessionStatus::AwaitingHitl => ExitCode::AwaitingHitl,
+        SessionStatus::Failed => ExitCode::Failed,
+        SessionStatus::Running => ExitCode::Success,
+    }
+}
+
+fn print_session_tail(session: &AgentSession) {
+    for e in session.events.iter().rev().take(5).collect::<Vec<_>>().into_iter().rev() {
+        eprintln!("[{}] {}", e.kind, e.detail);
+    }
+    if let Some(ref h) = session.pending_hitl {
+        println!("pending_hitl tool={} reason={}", h.tool, h.reason);
     }
 }
 
@@ -189,10 +277,11 @@ async fn open_session(
     mock: bool,
     max_turns: u32,
     resume: Option<Uuid>,
+    worktree: bool,
 ) -> anyhow::Result<AgentSession> {
     let model: Arc<dyn ModelClient> = if mock {
         Arc::new(MockModelClient::script(vec![ModelResponse {
-            text: "Mock model ready. (Use --mock for offline runs.)".into(),
+            text: "Mock model ready.".into(),
             tool_calls: vec![],
             usage: None,
         }]))
@@ -200,9 +289,9 @@ async fn open_session(
         match client_from_config(cfg) {
             Ok(c) => Arc::from(c),
             Err(e) => {
-                eprintln!("warning: model client: {e}; falling back to --mock behavior");
+                eprintln!("warning: model client: {e}; using mock");
                 Arc::new(MockModelClient::script(vec![ModelResponse {
-                    text: format!("(offline mock) model unavailable: {e}"),
+                    text: format!("(offline mock) {e}"),
                     tool_calls: vec![],
                     usage: None,
                 }]))
@@ -211,7 +300,6 @@ async fn open_session(
     };
 
     let mut tools = ToolRegistry::new();
-    // Demo static MCP tool always available (no subprocess) for CORE-02 path in tests/dev.
     register_static_mcp(
         &mut tools,
         "demo",
@@ -235,22 +323,26 @@ async fn open_session(
         }],
     );
 
-    // Optional real MCP servers from config
     if !cfg.mcp.servers.is_empty() {
         let mut mgr = McpManager::new();
         let errors = mgr.connect_all(&cfg.mcp.servers).await;
         for e in errors {
             eprintln!("mcp: {e}");
         }
-        if let Err(e) = mgr.register_into(&mut tools).await {
-            eprintln!("mcp register: {e}");
-        }
+        let _ = mgr.register_into(&mut tools).await;
     }
 
     let loop_cfg = LoopConfig {
         max_turns,
         workspace: cfg.workspace_root().to_path_buf(),
         journal_dir: cfg.journal_dir(),
+        isolation: if worktree {
+            IsolationMode::Worktree
+        } else {
+            IsolationMode::Off
+        },
+        enable_context_lifecycle: true,
+        enable_governance: true,
     };
 
     let session = if let Some(id) = resume {

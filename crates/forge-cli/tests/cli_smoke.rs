@@ -9,7 +9,7 @@ fn status_exits_zero() {
         .arg("status")
         .assert()
         .success()
-        .stdout(predicate::str::contains("forge 0.1.0"));
+        .stdout(predicate::str::contains("forge 0.2.0"));
 }
 
 #[test]

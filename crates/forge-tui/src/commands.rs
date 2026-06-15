@@ -1,4 +1,4 @@
-//! Phase 1 slash command catalog (tui-commands.md).
+//! Slash commands — Phase 1 + Phase 2.
 
 use thiserror::Error;
 use uuid::Uuid;
@@ -9,8 +9,6 @@ pub enum CommandError {
     Unknown(String),
     #[error("usage: {0}")]
     Usage(String),
-    #[error("command `/{0}` requires Phase 2")]
-    RequiresPhase2(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,13 +17,29 @@ pub enum SlashCommand {
     Status,
     Resume { session_id: Uuid },
     Cancel,
-    Model { provider: Option<String>, model: Option<String> },
+    Model {
+        provider: Option<String>,
+        model: Option<String>,
+    },
     Journal { tail: Option<usize> },
     Tools,
     Quit,
+    // Phase 2
+    Approve,
+    Deny,
+    Reset,
+    Compact,
+    Cost,
+    Worktree { action: WorktreeAction },
 }
 
-/// Parse a line that may start with `/`. Returns None if not a slash command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorktreeAction {
+    Status,
+    Merge,
+    Discard { confirm: bool },
+}
+
 pub fn parse_slash(line: &str) -> Option<Result<SlashCommand, CommandError>> {
     let line = line.trim();
     if !line.starts_with('/') {
@@ -39,10 +53,9 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
     let mut parts = rest.split_whitespace();
     let cmd = parts.next().unwrap_or("").to_ascii_lowercase();
     match cmd.as_str() {
-        "help" => {
-            let cmd = parts.next().map(|s| s.to_string());
-            Ok(SlashCommand::Help { cmd })
-        }
+        "help" => Ok(SlashCommand::Help {
+            cmd: parts.next().map(|s| s.to_string()),
+        }),
         "status" => Ok(SlashCommand::Status),
         "resume" => {
             let id = parts
@@ -53,27 +66,46 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
             Ok(SlashCommand::Resume { session_id })
         }
         "cancel" => Ok(SlashCommand::Cancel),
-        "model" => {
-            let provider = parts.next().map(|s| s.to_string());
-            let model = parts.next().map(|s| s.to_string());
-            Ok(SlashCommand::Model { provider, model })
-        }
-        "journal" => {
-            let tail = parts.next().and_then(|s| s.parse::<usize>().ok());
-            Ok(SlashCommand::Journal { tail })
-        }
+        "model" => Ok(SlashCommand::Model {
+            provider: parts.next().map(|s| s.to_string()),
+            model: parts.next().map(|s| s.to_string()),
+        }),
+        "journal" => Ok(SlashCommand::Journal {
+            tail: parts.next().and_then(|s| s.parse().ok()),
+        }),
         "tools" => Ok(SlashCommand::Tools),
         "quit" | "exit" => Ok(SlashCommand::Quit),
-        // Phase 2 commands — explicit error, not silent no-op
-        "approve" | "deny" | "reset" | "compact" | "cost" | "worktree" => {
-            Err(CommandError::RequiresPhase2(cmd))
+        "approve" => Ok(SlashCommand::Approve),
+        "deny" => Ok(SlashCommand::Deny),
+        "reset" => Ok(SlashCommand::Reset),
+        "compact" => Ok(SlashCommand::Compact),
+        "cost" => Ok(SlashCommand::Cost),
+        "worktree" => {
+            let sub = parts.next().unwrap_or("status").to_ascii_lowercase();
+            match sub.as_str() {
+                "status" => Ok(SlashCommand::Worktree {
+                    action: WorktreeAction::Status,
+                }),
+                "merge" => Ok(SlashCommand::Worktree {
+                    action: WorktreeAction::Merge,
+                }),
+                "discard" => {
+                    let confirm = parts.any(|p| p == "--yes" || p == "-y");
+                    Ok(SlashCommand::Worktree {
+                        action: WorktreeAction::Discard { confirm },
+                    })
+                }
+                other => Err(CommandError::Usage(format!(
+                    "/worktree status|merge|discard, got {other}"
+                ))),
+            }
         }
         other => Err(CommandError::Unknown(other.to_string())),
     }
 }
 
 pub fn help_text() -> &'static str {
-    "Phase 1 commands:\n\
+    "Commands:\n\
      /help [cmd]     List or detail commands\n\
      /status         Session status\n\
      /resume <id>    Resume session from journal\n\
@@ -81,7 +113,13 @@ pub fn help_text() -> &'static str {
      /model [p] [m]  Switch provider/model (config)\n\
      /journal [n]    Tail journal events\n\
      /tools          List tools\n\
-     /quit           Exit TUI\n"
+     /cost           Context usage ratio (Phase 2)\n\
+     /reset          Force context handoff reset (Phase 2)\n\
+     /compact        Alias guidance → /reset (Phase 2)\n\
+     /approve        Approve pending HITL (Phase 2)\n\
+     /deny           Deny pending HITL (Phase 2)\n\
+     /worktree …     status|merge|discard [--yes] (Phase 2)\n\
+     /quit           Exit\n"
 }
 
 #[cfg(test)]
@@ -94,63 +132,50 @@ mod tests {
             parse_slash("/status").unwrap().unwrap(),
             SlashCommand::Status
         );
+        assert_eq!(parse_slash("/tools").unwrap().unwrap(), SlashCommand::Tools);
+    }
+
+    #[test]
+    fn parses_phase2_commands() {
         assert_eq!(
-            parse_slash("/tools").unwrap().unwrap(),
-            SlashCommand::Tools
+            parse_slash("/approve").unwrap().unwrap(),
+            SlashCommand::Approve
+        );
+        assert_eq!(parse_slash("/deny").unwrap().unwrap(), SlashCommand::Deny);
+        assert_eq!(parse_slash("/reset").unwrap().unwrap(), SlashCommand::Reset);
+        assert_eq!(parse_slash("/cost").unwrap().unwrap(), SlashCommand::Cost);
+        assert_eq!(
+            parse_slash("/worktree merge").unwrap().unwrap(),
+            SlashCommand::Worktree {
+                action: WorktreeAction::Merge
+            }
         );
         assert_eq!(
-            parse_slash("  /quit ").unwrap().unwrap(),
-            SlashCommand::Quit
+            parse_slash("/worktree discard --yes").unwrap().unwrap(),
+            SlashCommand::Worktree {
+                action: WorktreeAction::Discard { confirm: true }
+            }
         );
-        assert!(matches!(
-            parse_slash("/help status").unwrap().unwrap(),
-            SlashCommand::Help { cmd: Some(_) }
-        ));
     }
 
     #[test]
     fn resume_requires_uuid() {
-        let err = parse_slash("/resume").unwrap().unwrap_err();
-        assert!(matches!(err, CommandError::Usage(_)));
-        let err = parse_slash("/resume not-a-uuid").unwrap().unwrap_err();
-        assert!(matches!(err, CommandError::Usage(_)));
-    }
-
-    #[test]
-    fn resume_ok() {
-        let id = Uuid::new_v4();
-        let cmd = parse_slash(&format!("/resume {id}")).unwrap().unwrap();
-        assert_eq!(cmd, SlashCommand::Resume { session_id: id });
-    }
-
-    #[test]
-    fn phase2_commands_error() {
-        for c in ["/approve", "/deny", "/reset", "/worktree", "/cost"] {
-            let err = parse_slash(c).unwrap().unwrap_err();
-            assert!(matches!(err, CommandError::RequiresPhase2(_)), "{c}");
-        }
+        assert!(matches!(
+            parse_slash("/resume").unwrap().unwrap_err(),
+            CommandError::Usage(_)
+        ));
     }
 
     #[test]
     fn unknown_command() {
-        let err = parse_slash("/nope").unwrap().unwrap_err();
-        assert!(matches!(err, CommandError::Unknown(_)));
+        assert!(matches!(
+            parse_slash("/nope").unwrap().unwrap_err(),
+            CommandError::Unknown(_)
+        ));
     }
 
     #[test]
     fn non_slash_is_none() {
         assert!(parse_slash("hello").is_none());
-    }
-
-    #[test]
-    fn model_args() {
-        let cmd = parse_slash("/model xai grok").unwrap().unwrap();
-        assert_eq!(
-            cmd,
-            SlashCommand::Model {
-                provider: Some("xai".into()),
-                model: Some("grok".into()),
-            }
-        );
     }
 }

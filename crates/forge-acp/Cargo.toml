@@ -1,0 +1,24 @@
+[package]
+name = "forge-acp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "ACP client protocol surface (CORE-03)"
+
+[dependencies]
+forge-types = { workspace = true }
+forge-core = { workspace = true }
+forge-tools = { workspace = true }
+forge-model = { workspace = true }
+forge-workspace = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
