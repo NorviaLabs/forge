@@ -88,6 +88,11 @@ pub fn sandbox_for(profile: SandboxProfile) -> Box<dyn Sandbox> {
     }
 }
 
+#[allow(dead_code)]
+fn _ensure_sandbox_for_linked() {
+    let _ = sandbox_for(SandboxProfile::Light);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
