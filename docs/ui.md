@@ -1,16 +1,16 @@
 # Forge — TUI UI reference
 
-**Version:** 0.2  
-**Status:** Draft mockups  
+**Version:** 0.3  
+**Status:** Draft mockups — **implementation target for Phase 4**  
 **Owner:** Mohit Ranka  
-**Last updated:** 22 Jul 2026  
-**Related:** [prd.md](./prd.md) · [architecture.md](./architecture.md) · [designs/README.md](./designs/README.md) · [designs/tui-commands.md](./designs/tui-commands.md)  
+**Last updated:** 23 Jul 2026  
+**Related:** [prd.md](./prd.md) · [architecture.md](./architecture.md) · [designs/README.md](./designs/README.md) · Phase 4: [tui-shell](./designs/tui-shell.md) · [tui-conversation](./designs/tui-conversation.md) · [tui-sidebar](./designs/tui-sidebar.md) · [tui-overlays](./designs/tui-overlays.md)
 
 ---
 
 ## Purpose
 
-Visual reference for the **terminal TUI** surface (`forge-tui` / ratatui). Mockups are **design targets**, not screenshots of a shipped binary. They align with PRD multi-surface goals and architecture §5 / §8 flows.
+Visual reference for the **full-screen terminal TUI** surface (`forge tui` / ratatui). Mockups are **Phase 4 design targets** (see PRD §13 Phase 4), not screenshots of a shipped binary. Phases 1–3 may use line-mode `repl` / headless; Phase 4 owns the ratatui app.
 
 | Asset | Path |
 |-------|------|
@@ -293,7 +293,8 @@ Suggested ratatui split: top `Paragraph`/spans status; horizontal split chat | s
 
 ## Related docs
 
-- Product requirements: [prd.md](./prd.md)  
-- Architecture & flows: [architecture.md](./architecture.md)  
+- Product requirements: [prd.md](./prd.md) (Phase 4 / TUI-01…04)  
+- Architecture & flows: [architecture.md](./architecture.md) §14 Phase 4  
 - Design docs: [designs/README.md](./designs/README.md)  
-- Slash commands (canonical): [designs/tui-commands.md](./designs/tui-commands.md)  
+- Phase 4 designs: [tui-shell](./designs/tui-shell.md) · [tui-conversation](./designs/tui-conversation.md) · [tui-sidebar](./designs/tui-sidebar.md) · [tui-overlays](./designs/tui-overlays.md)  
+- Slash command parse catalog: [designs/tui-commands.md](./designs/tui-commands.md) (Phase 1; palette consumes it)

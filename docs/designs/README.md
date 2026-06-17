@@ -1,7 +1,7 @@
 # Forge — Design documents
 
 **Status:** Draft  
-**Last updated:** 22 Jul 2026  
+**Last updated:** 23 Jul 2026  
 
 | Layer | Document | Owns |
 |-------|----------|------|
@@ -12,9 +12,9 @@
 
 ## Rules
 
-1. **Exclusive phase ownership** — Each design doc’s header **Phase:** field is a single number (1, 2, or 3). No “1–2” docs.  
+1. **Exclusive phase ownership** — Each design doc’s header **Phase:** field is a single number (1–4). No multi-phase owners.  
 2. **Exclusive req ownership** — Each PRD req ID appears in exactly one design doc as primary owner.  
-3. **Product-complete phases** — See [prd.md](../prd.md) §13: Phase 1 coding agent, Phase 2 enterprise harness, Phase 3 fleet/quality.  
+3. **Product-complete phases** — See [prd.md](../prd.md) §13: Phase 1 coding agent, Phase 2 enterprise harness, Phase 3 fleet/quality, Phase 4 full-screen TUI.  
 4. **Cross-phase references** are allowed as *dependencies* (“builds on Phase 1 journal”) but must not re-specify the other phase’s design.
 
 ## Index by phase
@@ -51,6 +51,17 @@
 | [channels.md](./channels.md) | CH-01 | Multi-channel ingress |
 | [fleet-plugins.md](./fleet-plugins.md) | FLEET-01 | SCIM + SIEM plugins |
 
+### Phase 4 — Full-screen terminal TUI
+
+| Document | PRD reqs | Summary |
+|----------|----------|---------|
+| [tui-shell.md](./tui-shell.md) | TUI-01 | ratatui app loop, status/input/footer layout |
+| [tui-conversation.md](./tui-conversation.md) | TUI-02 | Messages, tool cards, banners |
+| [tui-sidebar.md](./tui-sidebar.md) | TUI-03 | Session / budget / ACL / journal panels |
+| [tui-overlays.md](./tui-overlays.md) | TUI-04 | HITL modal, slash palette, model picker |
+
+Visual source of truth: [../ui.md](../ui.md). Phase 1 `surfaces` / line-mode `repl` remain; Phase 4 is the operator-grade full-screen surface.
+
 ## Reading order
 
 **Phase 1:** tool-protocol → agent-loop → model-providers → durable-execution → protocol-mcp → configuration → surfaces → tui-commands  
@@ -58,6 +69,8 @@
 **Phase 2:** protocol-acp → context-lifecycle → workspace-isolation → durable-hitl → governance  
 
 **Phase 3:** feedback-evaluator → observability → channels → fleet-plugins  
+
+**Phase 4:** tui-shell → tui-conversation → tui-sidebar → tui-overlays  
 
 ## Template
 

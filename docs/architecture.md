@@ -1,9 +1,9 @@
 # Forge — Architecture
 
-**Version:** 0.5  
+**Version:** 0.6  
 **Status:** Draft  
 **Owner:** Mohit Ranka  
-**Last updated:** 22 Jul 2026  
+**Last updated:** 23 Jul 2026  
 **Related PRD:** [prd.md](./prd.md)  
 **Related TUI UI:** [ui.md](./ui.md)  
 **Related designs:** [designs/README.md](./designs/README.md)  
@@ -44,7 +44,7 @@ Aligned with [prd.md](./prd.md) §6 (wording here is architecture-oriented).
 5. Git worktree isolation for experimental or unapproved file mutations  
 6. Zero-trust governance: vault credential injection, dynamic tool ACLs, progressive sandbox depth  
 7. Dual-sensor feedback: deterministic checks + independent Evaluator agent (opt-in)  
-8. Multi-surface interfaces: TUI, headless CI, ACP IDE, multi-channel gateway  
+8. Multi-surface interfaces: full-screen terminal TUI, headless CI, ACP IDE, multi-channel gateway  
 9. OpenTelemetry-compatible traces across model, tool, and step boundaries  
 10. Multi-provider models via a single configuration switch  
 
@@ -831,6 +831,7 @@ Aligned with [prd.md](./prd.md) §13. Each phase is a **complete product**. Req 
 | **1** | Coding agent | CORE-01, CORE-02, DUR-01, DUR-02 | tool-protocol, agent-loop, model-providers, durable-execution, protocol-mcp, configuration, tui-commands, surfaces |
 | **2** | Enterprise long-horizon harness | CORE-03, CTX-01/02/03, DUR-03, SEC-01/02/03 | protocol-acp, durable-hitl, context-lifecycle, workspace-isolation, governance |
 | **3** | Quality, ops & fleet | EVAL-01, OBS-01, CH-01, FLEET-01 | feedback-evaluator, observability, channels, fleet-plugins |
+| **4** | Full-screen terminal TUI | TUI-01, TUI-02, TUI-03, TUI-04 | tui-shell, tui-conversation, tui-sidebar, tui-overlays |
 
 ### Phase 1 — Coding agent
 
@@ -842,9 +843,9 @@ Aligned with [prd.md](./prd.md) §13. Each phase is a **complete product**. Req 
 4. Agent loop + built-ins (sequential tools)  
 5. Journal + resume (DUR-01, DUR-02)  
 6. MCP bridge (CORE-02) — `forge-mcp`  
-7. TUI + headless — `forge-tui`, `forge-cli`  
+7. Line-mode REPL + headless — `forge-tui` (commands/exit codes), `forge-cli`  
 
-**Exit:** Usable coding agent in TUI/CI with MCP + crash resume; Phase 2 features not required.
+**Exit:** Usable coding agent in REPL/CI with MCP + crash resume; Phase 2–4 features not required.
 
 ### Phase 2 — Enterprise long-horizon harness
 
@@ -870,6 +871,29 @@ Aligned with [prd.md](./prd.md) §13. Each phase is a **complete product**. Req 
 4. SCIM + SIEM plugins (FLEET-01)  
 
 **Exit:** Fleet/quality/ops product complete; Phase 1–2 products unchanged.
+
+### Phase 4 — Full-screen terminal TUI
+
+**Product:** Operator-facing **ratatui** application implementing [ui.md](./ui.md) layout and screens 01–12 (information architecture, not pixel-perfect OS chrome).
+
+**Build order (strict):**
+
+1. **TUI-01** shell — app event loop, status bar, footer, input bar, pane layout (`tui-shell`)  
+2. **TUI-02** conversation — message list, tool cards, run/stream banners (`tui-conversation`)  
+3. **TUI-03** sidebar — session, context meter, ACL/tool counts, journal tail (`tui-sidebar`)  
+4. **TUI-04** overlays — HITL modal, slash palette, model picker (`tui-overlays`)  
+5. Wire `forge tui` entrypoint to `AgentSession` (same core as `repl` / headless); keep `repl` as fallback  
+
+**Crate focus:** expand `forge-tui` into a real app module tree; `forge-cli` gains `tui` subcommand. No second agent loop.
+
+**Exit:**
+
+- Full-screen session without line-mode REPL  
+- Sidebar live updates; HITL + `/` palette keyboard-complete  
+- Secrets redacted in all panes  
+- Headless + `repl` unchanged  
+
+**Not Phase 4:** Web UI, IDE chrome, new harness protocols.
 
 ---
 
@@ -911,7 +935,7 @@ Illustrative Rust workspace layout (crate names align with §3 / decisions table
 | `forge-governance` — sandbox | Container/eBPF execution |
 | `forge-governance` — audit | Immutable audit records |
 | `forge-feedback` | Dual-agent orchestration + sensors |
-| `forge-tui` / `forge-cli` | Interactive terminal + headless CI entrypoint |
+| `forge-tui` / `forge-cli` | Phase 1: commands + REPL/headless; Phase 4: full-screen ratatui `forge tui` |
 | `forge-channels` (later) | Slack/Telegram/webhooks |
 | `forge-obs` | `tracing` + OpenTelemetry |
 
@@ -961,7 +985,7 @@ Forge is the **harness** between models and the real world: a typed tool bus, an
 | Type-safe tool registry | Trait objects or enum dispatch + compile-time registered builtins; runtime MCP tools as schema-validated JSON |
 | Event journal | Append-only rows in **SQLite via sqlx**; typed event envelope (`serde_json`) with schema version field |
 | Unified model client | `async trait` (e.g. `ModelClient`) + adapters: OpenAI-compatible, Anthropic, xAI |
-| Surfaces | Phase 1: `forge-tui` + `forge-cli`; Phase 2: `forge-acp`; Phase 3: channel adapters |
+| Surfaces | Phase 1: line-mode `repl` + headless `forge-cli`; Phase 2: `forge-acp`; Phase 3: channels; Phase 4: full-screen ratatui `forge tui` |
 | Config | TOML (`forge.toml` or XDG config path) merged with env overrides |
 | Workspace root | Default **cwd**; override via CLI flag and/or config when specified |
 | Observability | `tracing` + OpenTelemetry exporter crates |

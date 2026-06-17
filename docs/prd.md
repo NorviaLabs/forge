@@ -1,9 +1,9 @@
 # Forge — Product Requirements Document
 
-**Version:** 0.5  
+**Version:** 0.6  
 **Status:** Draft  
 **Owner:** Mohit Ranka  
-**Last updated:** 22 Jul 2026  
+**Last updated:** 23 Jul 2026  
 **Related architecture:** [architecture.md](./architecture.md)  
 **Related TUI UI:** [ui.md](./ui.md)  
 **Related designs:** [designs/README.md](./designs/README.md)  
@@ -145,7 +145,7 @@ Every harness component encodes an assumption about what the model cannot yet do
 5. Support **git worktree isolation** for unapproved or experimental file mutations.
 6. Enforce **zero-trust governance**: vault credential injection, dynamic tool ACLs, progressive sandbox depth.
 7. Ship **dual-sensor feedback** (deterministic checks + independent Evaluator agent).
-8. Expose **multi-surface interfaces**: TUI, headless CI, IDE via ACP, multi-channel gateway.
+8. Expose **multi-surface interfaces**: full-screen terminal TUI, headless CI, IDE via ACP, multi-channel gateway.
 9. Emit **standard distributed traces** across model, tool, and step boundaries (OpenTelemetry-compatible).
 10. Support **multi-provider models** via configuration only (no application rewrites).
 
@@ -200,11 +200,15 @@ Product capabilities group into five areas (implementation detail in architectur
 | **SEC-03** | Behavioral sandboxing | Local tool execution runs under isolation policy that can block unauthorized network egress, syscalls, or file access (depth increases by phase). | Policy breaches blocked; enforcement latency target &lt; 1 ms for kernel-backed profiles when enabled | P1 (High) |
 | **EVAL-01** | Dual-sensor feedback loop | Run deterministic checks (linters, tests) alongside an independent Evaluator agent; route failures back to the Generator for repair. | &gt; 40% relative improvement in first-pass quality vs single-pass baseline | P1 (High) |
 | **OBS-01** | Distributed tracing | Emit standard traces for model calls, tool latencies, token usage, and step transitions (OpenTelemetry-compatible). | Full step coverage; exportable to common observability backends | P1 (High) |
+| **TUI-01** | Full-screen TUI shell | Interactive full-terminal UI (not line-mode REPL only) with status bar, main pane, sidebar, input, and footer matching [ui.md](./ui.md) layout regions. | Operator can complete a session entirely in the TUI without using `repl` line mode | P0 (Critical) |
+| **TUI-02** | Conversation & tool presentation | Chat shows user/assistant/system messages and tool cards (running/done/blocked); supports streaming/status while the agent runs; redacts secrets. | Tool cards and message roles distinguishable; no raw secrets in UI | P0 (Critical) |
+| **TUI-03** | Live session sidebar | Sidebar shows session id/status, context budget meter, tool ACL summary, and recent journal/events. | Values update after turns without leaving the TUI | P1 (High) |
+| **TUI-04** | Overlays & palettes | Modal overlays for HITL approve/deny, slash-command palette (`/`), and model picker; keyboard-first (no mouse required). | HITL and `/` flows completable via keys alone per [ui.md](./ui.md) screens 04, 07, 08 | P0 (Critical) |
 
 ### 9.2 Priority summary
 
-- **P0 (Critical):** CORE-01, CORE-02, CORE-03, DUR-01, DUR-02, CTX-01, CTX-02, SEC-01, SEC-02  
-- **P1 (High):** DUR-03, CTX-03, SEC-03, EVAL-01, OBS-01  
+- **P0 (Critical):** CORE-01, CORE-02, CORE-03, DUR-01, DUR-02, CTX-01, CTX-02, SEC-01, SEC-02, TUI-01, TUI-02, TUI-04  
+- **P1 (High):** DUR-03, CTX-03, SEC-03, EVAL-01, OBS-01, TUI-03  
 
 ---
 
@@ -285,6 +289,10 @@ Product capabilities group into five areas (implementation detail in architectur
 | OBS-01 | **3** | Distributed tracing export |
 | CH-01 (channels) | **3** | Multi-channel ingress |
 | FLEET-01 (SCIM/SIEM) | **3** | Enterprise fleet plugins |
+| TUI-01 | **4** | Full-screen TUI shell (layout chrome) |
+| TUI-02 | **4** | Conversation + tool cards |
+| TUI-03 | **4** | Session sidebar |
+| TUI-04 | **4** | HITL / slash / model overlays |
 
 ### Design doc → phase map (exclusive)
 
@@ -300,17 +308,17 @@ See [designs/README.md](./designs/README.md). No design doc may list multiple ph
 
 | In scope | Out of scope (later phases only) |
 |----------|-----------------------------------|
-| CORE-01, CORE-02, DUR-01, DUR-02 | CORE-03, all CTX-*, DUR-03, all SEC-*, EVAL-01, OBS-01, CH-01, FLEET-01 |
+| CORE-01, CORE-02, DUR-01, DUR-02 | CORE-03, all CTX-*, DUR-03, all SEC-*, EVAL-01, OBS-01, CH-01, FLEET-01, all TUI-* |
 | Built-ins, sequential tools, 3 model adapters | ACP IDE, worktrees, vault/ACL enterprise, HITL durable pause |
-| TUI + headless | Channels, Evaluator, OTEL export |
+| **Line-mode REPL** + headless CLI | Full-screen ratatui TUI (Phase 4), channels, Evaluator, OTEL export |
 | SQLite journal, light process isolation | Container/eBPF, multi-instance DB |
 
 **Exit criteria (product complete):**
 
-1. Operator completes multi-step coding tasks in TUI with built-ins + ≥1 MCP server.  
+1. Operator completes multi-step coding tasks via **headless or line-mode REPL** with built-ins + ≥1 MCP server.  
 2. Headless CI job runs and exits with documented codes; `--resume` restores after kill.  
 3. CORE-01/02, DUR-01/02 acceptance metrics met.  
-4. No Phase 2/3 feature is required for the above to work.
+4. No Phase 2/3/4 feature is required for the above to work.
 
 ---
 
@@ -355,6 +363,33 @@ See [designs/README.md](./designs/README.md). No design doc may list multiple ph
 
 ---
 
+### Phase 4 — Full-screen terminal TUI (complete product)
+
+**Product:** Phases 1–3 harness capabilities **plus** a **proper full-terminal interactive TUI** (ratatui) that realizes the screens and layout in [ui.md](./ui.md). Replaces “REPL-only” as the primary interactive surface while keeping `repl` and headless available.
+
+**Users served:** Coding agent operators who need session visibility (budget, tools, journal), HITL modals, and keyboard-driven slash workflows without leaving the terminal.
+
+| In scope | Out of scope |
+|----------|--------------|
+| TUI-01, TUI-02, TUI-03, TUI-04 | Redefining core harness protocols; GUI/web IDE chrome; pixel-perfect font metrics |
+| Full-screen layout: status · chat · sidebar · input · footer | Channel-native UIs, ACP IDE chrome (already Phase 2/3) |
+| Tool cards, streaming/run state, validation banners | New agent algorithms (use existing core) |
+| HITL modal, `/` command palette, model picker overlays | Mouse-only workflows |
+
+**Visual source of truth:** [ui.md](./ui.md) + `docs/ui/images/*` mockups (screens 01–12). Implementation may simplify chrome (no OS window traffic lights) but **must** preserve layout regions and information hierarchy.
+
+**Exit criteria (product complete):**
+
+1. `forge tui` (or equivalent) opens a full-screen session UI matching layout regions in ui.md.  
+2. Operator can send messages, see assistant/tool activity, and complete a mock or live multi-step task without line-mode `repl`.  
+3. Sidebar reflects session status, context usage, tool list/ACL summary, and recent events (TUI-03).  
+4. HITL approve/deny works via modal or `/approve`/`/deny` inside the TUI (TUI-04).  
+5. Slash palette (`/`) lists Phase 1–3 commands already defined; Phase 2/3 features remain backend-driven.  
+6. Headless + line-mode `repl` still work unchanged.  
+7. No raw secrets rendered in chat, tool args, or sidebar.
+
+---
+
 ## 14. Strategic takeaways
 
 The agent ecosystem is moving from rapid-prototype abstractions (loose roles, heavy graphs, unmonitored single-process runtimes) toward **production-grade harness engineering**. Long-horizon reliability depends less on prompt tweaks and more on:
@@ -364,8 +399,9 @@ The agent ecosystem is moving from rapid-prototype abstractions (loose roles, he
 - Active context lifecycle and workspace isolation  
 - Open dual-protocol support (MCP + ACP)  
 - Governance, auditability, and observability  
+- Operator-grade terminal UX (full-screen TUI) without sacrificing headless CI  
 
-Forge is specified to occupy that intersection: low abstraction tax, enterprise durability, and portable model/client integration.
+Forge is specified to occupy that intersection: low abstraction tax, enterprise durability, portable model/client integration, and a first-class terminal surface.
 
 ---
 
