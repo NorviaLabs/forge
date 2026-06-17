@@ -18,7 +18,7 @@ use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
 #[derive(Parser, Debug)]
-#[command(name = "forge", version, about = "Forge AI agent harness (Phase 1–2)")]
+#[command(name = "forge", version, about = "Forge AI agent harness (Phase 1–3)")]
 struct Cli {
     #[arg(long, global = true)]
     config: Option<PathBuf>,
@@ -62,6 +62,29 @@ enum Commands {
         #[arg(long)]
         session: Uuid,
     },
+    /// Phase 3: run feedback sensors in workspace (EVAL-01)
+    Feedback {
+        /// Shell command sensor (repeatable)
+        #[arg(long = "sensor", default_value = "echo ok")]
+        sensors: Vec<String>,
+        /// Criteria text for evaluator
+        #[arg(long, default_value = "all sensors pass")]
+        criteria: String,
+    },
+    /// Phase 3: simulate channel ingress with restricted ACL (CH-01)
+    Channel {
+        /// slack | telegram | webhook
+        #[arg(long, default_value = "webhook")]
+        kind: String,
+        text: String,
+    },
+    /// Phase 3: load fleet plugins / export demo SIEM (FLEET-01)
+    Fleet {
+        #[arg(long, default_value_t = true)]
+        scim: bool,
+        #[arg(long, default_value_t = true)]
+        siem: bool,
+    },
 }
 
 #[tokio::main]
@@ -96,7 +119,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     match cli.command {
         Commands::Status => {
             println!(
-                "forge 0.2.0 phase2\nworkspace {}\nprovider {} model {}",
+                "forge 0.3.0 phase3\nworkspace {}\nprovider {} model {}",
                 cfg.workspace_root().display(),
                 cfg.model.provider.as_str(),
                 cfg.model.model
@@ -249,6 +272,153 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             let mut s = open_session(&cfg, cli.mock, 8, Some(session), cli.worktree).await?;
             s.resolve_hitl(HitlDecision::Deny, "cli").await?;
             println!("denied");
+            Ok(ExitCode::Success)
+        }
+        Commands::Feedback { sensors, criteria } => {
+            use forge_feedback::{
+                CommandSensor, FeedbackConfig, FeedbackGate, SensorContext,
+            };
+            use std::sync::Arc;
+            let mut gate = FeedbackGate::new(FeedbackConfig {
+                enabled: true,
+                evaluator_enabled: true,
+                sensor_commands: sensors.clone(),
+                ..Default::default()
+            });
+            for s in &sensors {
+                gate = gate.with_sensor(Arc::new(CommandSensor::new(s.clone())));
+            }
+            let out = gate
+                .run_gate(
+                    &SensorContext {
+                        workspace: cfg.workspace_root().to_path_buf(),
+                    },
+                    &criteria,
+                )
+                .await
+                .map_err(|e| anyhow::anyhow!(e))?;
+            println!(
+                "feedback passed={} repairs={} sensors={}",
+                out.passed,
+                out.repairs.len(),
+                out.sensor_reports.len()
+            );
+            for r in &out.sensor_reports {
+                println!("  sensor={} status={:?} {}", r.sensor, r.status, r.summary);
+            }
+            for t in &out.repairs {
+                println!("  repair: {} — {}", t.sensor, t.summary);
+            }
+            Ok(if out.passed {
+                ExitCode::Success
+            } else {
+                ExitCode::Failed
+            })
+        }
+        Commands::Channel { kind, text } => {
+            use forge_channels::{ChannelGateway, ChannelKind, ChannelMessage};
+            use forge_model::MockModelClient;
+            let kind = match kind.to_ascii_lowercase().as_str() {
+                "slack" => ChannelKind::Slack,
+                "telegram" => ChannelKind::Telegram,
+                _ => ChannelKind::Webhook,
+            };
+            let model: Arc<dyn ModelClient> = if cli.mock {
+                Arc::new(MockModelClient::script(vec![ModelResponse {
+                    text: "channel reply".into(),
+                    tool_calls: vec![],
+                    usage: None,
+                }]))
+            } else {
+                match client_from_config(&cfg) {
+                    Ok(c) => Arc::from(c),
+                    Err(_) => Arc::new(MockModelClient::script(vec![ModelResponse {
+                        text: "channel reply (mock)".into(),
+                        tool_calls: vec![],
+                        usage: None,
+                    }])),
+                }
+            };
+            let gw = ChannelGateway::new(
+                cfg.workspace_root().to_path_buf(),
+                cfg.journal_dir(),
+                model,
+            );
+            let resp = gw
+                .handle_message(ChannelMessage {
+                    channel: kind,
+                    channel_id: "cli".into(),
+                    user_id: "operator".into(),
+                    text,
+                    thread_id: None,
+                })
+                .await
+                .map_err(|e| anyhow::anyhow!(e))?;
+            println!("session_id={}", resp.session_id);
+            println!("tools_visible={:?}", resp.tools_visible);
+            println!("{}", resp.text);
+            assert!(
+                !resp.tools_visible.iter().any(|t| t == "bash" || t == "write_file"),
+                "channel must not expose broad tools"
+            );
+            Ok(ExitCode::Success)
+        }
+        Commands::Fleet { scim, siem } => {
+            use forge_fleet::{FleetConfig, FleetPluginRegistry, ScimUser, SiemEncoding};
+            use forge_governance::{AuditEvent, AuditLog};
+            use forge_types::PolicyDecision;
+            let dir = cfg.workspace_root().join(".forge/fleet");
+            let reg = FleetPluginRegistry::load(&FleetConfig {
+                scim_enabled: scim,
+                siem_enabled: siem,
+                siem_path: Some(dir.join("siem.jsonl")),
+                siem_encoding: SiemEncoding::JsonlOtlp,
+            })
+            .map_err(|e| anyhow::anyhow!(e))?;
+            println!("plugins={:?}", reg.list_plugins());
+            if let Some(mut scim_p) = reg.scim {
+                scim_p
+                    .create_user(ScimUser {
+                        id: "demo".into(),
+                        user_name: "demo".into(),
+                        active: true,
+                        roles: vec!["dev".into()],
+                    })
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                println!("scim: provisioned user demo");
+            }
+            if let Some(siem_p) = reg.siem {
+                let log = AuditLog::default();
+                log.push(AuditEvent {
+                    session_id: "demo".into(),
+                    principal: "cli".into(),
+                    tool: "status".into(),
+                    args_redacted: json!({}),
+                    decision: PolicyDecision::Allow,
+                    policy_id: "default".into(),
+                    result: "ok".into(),
+                    duration_ms: 1,
+                    trace_id: None,
+                });
+                let n = siem_p
+                    .export_audit(&log.snapshot())
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                println!("siem: exported {n} events");
+            }
+            // Optional obs export demo
+            use forge_obs::{init, OtelConfig};
+            let obs = init(&OtelConfig {
+                enabled: true,
+                endpoint: None,
+                export_path: Some(dir.join("otel.jsonl")),
+            });
+            let sid = obs.start_session("demo", "cli", &cfg.model.model);
+            let turn = obs.start_turn(&sid, 0);
+            let m = obs.start_model(&turn, cfg.model.provider.as_str(), &cfg.model.model);
+            obs.end_model(&m, 1, 0, 0);
+            let path = dir.join("otel.jsonl");
+            let n = obs.export_jsonl_file(&path).map_err(|e| anyhow::anyhow!(e))?;
+            println!("obs: exported {n} records to {}", path.display());
             Ok(ExitCode::Success)
         }
     }

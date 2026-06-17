@@ -20,6 +20,11 @@ forge-tui = { workspace = true }
 forge-types = { workspace = true }
 forge-durable = { workspace = true }
 forge-workspace = { workspace = true }
+forge-governance = { workspace = true }
+forge-feedback = { workspace = true }
+forge-obs = { workspace = true }
+forge-channels = { workspace = true }
+forge-fleet = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
