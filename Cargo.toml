@@ -49,7 +49,7 @@ futures = "0.3"
 bytes = "1"
 jsonschema = "0.28"
 crossterm = "0.28"
-ratatui = "0.29"
+ratatui = "0.27"
 
 forge-types = { path = "crates/forge-types" }
 forge-config = { path = "crates/forge-config" }

@@ -1,10 +1,15 @@
-//! TUI commands (tui-commands.md) and lightweight surface helpers (surfaces.md Phase 1).
+//! Forge terminal UI — slash commands + full-screen shell foundation (Phase 4 TUI-01).
 
 mod commands;
+mod layout;
+mod theme;
+mod widgets;
 
 pub use commands::{help_text, parse_slash, CommandError, SlashCommand, WorktreeAction};
+pub use layout::{is_too_small, split_areas, LayoutRegions, MIN_HEIGHT, MIN_WIDTH};
+pub use widgets::{FooterModel, InputModel, StatusModel};
 
-/// Headless exit codes (surfaces.md + Phase 2 HITL).
+/// Headless / process exit codes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
 pub enum ExitCode {

@@ -3,7 +3,7 @@ name = "forge-tui"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "TUI slash commands and terminal surface (Phase 1)"
+description = "Full-screen Forge TUI (Phase 4) + slash commands"
 
 [dependencies]
 forge-types = { workspace = true }
@@ -12,5 +12,6 @@ forge-tools = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
+ratatui = { workspace = true }
 
 [dev-dependencies]
