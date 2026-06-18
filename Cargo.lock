@@ -886,11 +886,15 @@ name = "forge-tui"
 version = "0.1.0"
 dependencies = [
  "forge-core",
+ "forge-model",
  "forge-tools",
  "forge-types",
+ "forge-workspace",
  "ratatui",
  "serde",
+ "tempfile",
  "thiserror",
+ "tokio",
  "uuid",
 ]
 

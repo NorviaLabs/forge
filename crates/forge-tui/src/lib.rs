@@ -1,14 +1,16 @@
-//! Forge terminal UI — slash commands + Phase 4 shell and conversation (TUI-01/02).
+//! Forge terminal UI — slash commands + Phase 4 shell, conversation, sidebar (TUI-01–03).
 
 mod commands;
 mod conversation;
 mod layout;
+mod sidebar;
 mod theme;
 mod widgets;
 
 pub use commands::{help_text, parse_slash, CommandError, SlashCommand, WorktreeAction};
 pub use conversation::{ChatItem, ConversationModel, ToolCardState};
 pub use layout::{is_too_small, split_areas, LayoutRegions, MIN_HEIGHT, MIN_WIDTH};
+pub use sidebar::SidebarModel;
 pub use widgets::{FooterModel, InputModel, StatusModel};
 
 /// Headless / process exit codes.
