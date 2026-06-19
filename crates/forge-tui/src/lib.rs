@@ -1,15 +1,22 @@
-//! Forge terminal UI — slash commands + Phase 4 shell, conversation, sidebar (TUI-01–03).
+//! Forge terminal UI — slash commands (Phase 1–3) + full-screen ratatui app (Phase 4).
 
+mod app;
 mod commands;
 mod conversation;
 mod layout;
+mod overlays;
 mod sidebar;
 mod theme;
 mod widgets;
 
+pub use app::{run_tui, TuiApp, TuiError, TuiRuntimeConfig};
 pub use commands::{help_text, parse_slash, CommandError, SlashCommand, WorktreeAction};
 pub use conversation::{ChatItem, ConversationModel, ToolCardState};
 pub use layout::{is_too_small, split_areas, LayoutRegions, MIN_HEIGHT, MIN_WIDTH};
+pub use overlays::{
+    default_models, default_palette_items, filter_palette, handle_overlay_key, Key as OverlayKey,
+    Overlay, OverlayAction,
+};
 pub use sidebar::SidebarModel;
 pub use widgets::{FooterModel, InputModel, StatusModel};
 

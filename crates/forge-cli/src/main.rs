@@ -10,7 +10,9 @@ use forge_core::{AgentSession, LoopConfig};
 use forge_mcp::{register_static_mcp, McpManager, StaticMcpTool};
 use forge_model::{client_from_config, MockModelClient, ModelClient};
 use forge_tools::ToolRegistry;
-use forge_tui::{help_text, parse_slash, ExitCode, SlashCommand, WorktreeAction};
+use forge_tui::{
+    help_text, parse_slash, run_tui, ExitCode, SlashCommand, TuiRuntimeConfig, WorktreeAction,
+};
 use forge_types::{HitlDecision, ModelResponse, SessionStatus};
 use forge_workspace::IsolationMode;
 use serde_json::json;
@@ -18,7 +20,7 @@ use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
 #[derive(Parser, Debug)]
-#[command(name = "forge", version, about = "Forge AI agent harness (Phase 1–3)")]
+#[command(name = "forge", version, about = "Forge AI agent harness (Phase 1–4)")]
 struct Cli {
     #[arg(long, global = true)]
     config: Option<PathBuf>,
@@ -50,6 +52,13 @@ enum Commands {
         #[arg(long)]
         resume: Option<Uuid>,
         #[arg(long, default_value_t = 16)]
+        max_turns: u32,
+    },
+    /// Phase 4: full-screen terminal TUI (ratatui)
+    Tui {
+        #[arg(long)]
+        resume: Option<Uuid>,
+        #[arg(long, default_value_t = 32)]
         max_turns: u32,
     },
     Status,
@@ -119,12 +128,29 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     match cli.command {
         Commands::Status => {
             println!(
-                "forge 0.3.0 phase3\nworkspace {}\nprovider {} model {}",
+                "forge 0.4.0 phase4\nworkspace {}\nprovider {} model {}",
                 cfg.workspace_root().display(),
                 cfg.model.provider.as_str(),
                 cfg.model.model
             );
             Ok(ExitCode::Success)
+        }
+        Commands::Tui {
+            resume,
+            max_turns,
+        } => {
+            let session =
+                open_session(&cfg, cli.mock, max_turns, resume, cli.worktree).await?;
+            let runtime = TuiRuntimeConfig {
+                model_label: cfg.model.model.clone(),
+                provider: cfg.model.provider.as_str().into(),
+                cwd: cfg.workspace_root().to_path_buf(),
+                version: "forge 0.4.0".into(),
+            };
+            let code = run_tui(session, runtime)
+                .await
+                .map_err(|e| anyhow::anyhow!(e))?;
+            Ok(code)
         }
         Commands::Run {
             prompt,

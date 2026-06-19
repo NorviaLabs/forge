@@ -7,7 +7,7 @@
 | **License** | [MIT](./LICENSE) |
 | **Repo** | [NorviaLabs/forge](https://github.com/NorviaLabs/forge) |
 | **Language** | Rust (Tokio) |
-| **Status** | **Phases 1–3 implemented** |
+| **Status** | **Phases 1–4 implemented** |
 
 ---
 
@@ -18,6 +18,7 @@
 | **1** | Coding agent (tools, MCP, journal, CLI/REPL) | ✓ |
 | **2** | Enterprise long-horizon (ACP, context, worktree, HITL, governance) | ✓ |
 | **3** | Quality, ops & fleet (Evaluator, OTEL, channels, SCIM/SIEM) | ✓ |
+| **4** | Full-screen terminal TUI (shell, conversation, sidebar, overlays) | ✓ |
 
 ---
 
@@ -27,7 +28,7 @@
 git clone git@github.com:NorviaLabs/forge.git
 cd forge
 cargo build --release -p forge-cli
-./target/release/forge status   # forge 0.3.0 phase3
+./target/release/forge status   # forge 0.4.0 phase4
 ```
 
 ---
@@ -38,6 +39,9 @@ cargo build --release -p forge-cli
 # Offline
 ./target/release/forge --mock run "hello"
 ./target/release/forge --mock repl
+
+# Phase 4 full-screen TUI (ratatui)
+./target/release/forge --mock tui
 
 # Live model
 export FORGE_API_KEY=…
@@ -63,6 +67,7 @@ export FORGE_MODEL_ID=gpt-4.1-mini
 |---------|-------|-------------|
 | `status` | 1 | Version, workspace, model |
 | `run` / `repl` | 1 | Headless / interactive agent |
+| `tui` | 4 | Full-screen ratatui TUI (`/` palette, HITL modal) |
 | `approve` / `deny` | 2 | HITL for a session |
 | `feedback` | 3 | Run dual-sensor gate (EVAL-01) |
 | `channel` | 3 | Restricted-ACL channel ingress (CH-01) |
@@ -89,6 +94,16 @@ export FORGE_MODEL_ID=gpt-4.1-mini
 | `forge-obs` | [observability.md](./docs/designs/observability.md) |
 | `forge-channels` | [channels.md](./docs/designs/channels.md) |
 | `forge-fleet` | [fleet-plugins.md](./docs/designs/fleet-plugins.md) |
+
+### Phase 4
+Full-screen UI in `forge-tui` + `forge tui` CLI entry:
+
+| Design | Module(s) |
+|--------|-----------|
+| [tui-shell.md](./docs/designs/tui-shell.md) | `layout`, `theme`, `widgets/{status,input,footer}` |
+| [tui-conversation.md](./docs/designs/tui-conversation.md) | `conversation` |
+| [tui-sidebar.md](./docs/designs/tui-sidebar.md) | `sidebar` |
+| [tui-overlays.md](./docs/designs/tui-overlays.md) | `overlays`, `app` |
 
 ---
 
