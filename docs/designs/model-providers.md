@@ -6,7 +6,8 @@
 **Phase:** **1 only** (exclusive)  
 **PRD:** Multi-provider portability (Goals §6, NFR §10.3)  
 **Architecture:** §4.3, decision #11  
-**Related:** [agent-loop.md](./agent-loop.md), [configuration.md](./configuration.md)
+**Related:** [agent-loop.md](./agent-loop.md), [configuration.md](./configuration.md)  
+**Later expansion:** Phase 5 universal catalog via LiteLLM **SDK** — [litellm-providers.md](./litellm-providers.md) (MDL-01); does not change this Phase 1 design
 
 ---
 

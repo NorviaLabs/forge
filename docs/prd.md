@@ -1,6 +1,6 @@
 # Forge — Product Requirements Document
 
-**Version:** 0.6  
+**Version:** 0.7  
 **Status:** Draft  
 **Owner:** Mohit Ranka  
 **Last updated:** 23 Jul 2026  
@@ -147,7 +147,8 @@ Every harness component encodes an assumption about what the model cannot yet do
 7. Ship **dual-sensor feedback** (deterministic checks + independent Evaluator agent).
 8. Expose **multi-surface interfaces**: full-screen terminal TUI, headless CI, IDE via ACP, multi-channel gateway.
 9. Emit **standard distributed traces** across model, tool, and step boundaries (OpenTelemetry-compatible).
-10. Support **multi-provider models** via configuration only (no application rewrites).
+10. Support **multi-provider models** via configuration only (no application rewrites).  
+11. (Phase 5) Reach the **broad provider catalog** via the **LiteLLM Python SDK (library)**, not the LiteLLM Proxy gateway.
 
 ---
 
@@ -161,8 +162,9 @@ Every harness component encodes an assumption about what the model cannot yet do
 | Always-on gateway as the sole code-execution path | Multi-channel ingress must not over-grant repo/tool rights |
 | Proprietary single-client lock-in | Prefer open MCP + ACP |
 | Opaque “agent as black box” without audit logs | Enterprise requires immutable invocation records |
+| **LiteLLM Proxy as required infrastructure** | Phase 5 uses the **LiteLLM library/SDK** inside a Forge-owned worker; an org-wide LLM gateway is optional and out of scope |
 
-Phase-scoped deferrals (see §13): multi-channel fleet, SCIM, deep kernel sandboxing, SIEM plugins may ship after core durability and protocols.
+Phase-scoped deferrals (see §13): multi-channel fleet, SCIM, deep kernel sandboxing, SIEM plugins may ship after core durability and protocols. Universal provider coverage via LiteLLM is **Phase 5**.
 
 ---
 
@@ -234,6 +236,8 @@ Product capabilities group into five areas (implementation detail in architectur
 
 - Unified interface for major providers (cloud APIs and local inference servers).
 - Switching providers requires **configuration only**—no changes to tool definitions, agent logic, or durable state schemas.
+- **Phase 1:** Thin native adapters (OpenAI-compatible, Anthropic, xAI) behind `ModelClient`.
+- **Phase 5 (MDL-01):** Optional **LiteLLM Python SDK** backend for the long-tail provider matrix (100+ models/providers). Must use the **library** (`litellm.completion` / streaming)—**not** a requirement to run LiteLLM Proxy.
 
 ---
 
@@ -293,6 +297,7 @@ Product capabilities group into five areas (implementation detail in architectur
 | TUI-02 | **4** | Conversation + tool cards |
 | TUI-03 | **4** | Session sidebar |
 | TUI-04 | **4** | HITL / slash / model overlays |
+| MDL-01 | **5** | Universal providers via LiteLLM SDK (not Proxy) |
 
 ### Design doc → phase map (exclusive)
 
@@ -390,6 +395,33 @@ See [designs/README.md](./designs/README.md). No design doc may list multiple ph
 
 ---
 
+### Phase 5 — Universal model providers via LiteLLM SDK (complete product)
+
+**Product:** Phases 1–4 harness **plus** config-only access to LiteLLM’s full provider catalog through the **LiteLLM Python library (SDK)**. Forge remains a Rust harness; the SDK runs in a **Forge-managed Python worker**. The **LiteLLM Proxy** gateway is **not** required and is **not** part of this phase.
+
+**Users served:** Operators and platforms that must switch among many cloud/local models without waiting for first-party Rust adapters.
+
+| In scope | Out of scope |
+|----------|--------------|
+| **MDL-01** — LiteLLM SDK-backed `ModelClient` | Deploying or operating **LiteLLM Proxy** as product infra |
+| Config: `provider = "litellm"` + LiteLLM model string | Replacing Phase 1 native adapters as the default path |
+| Normalize LiteLLM responses/streams into existing Forge envelopes | Guaranteeing identical quality across all upstream models |
+| Secrets via env/vault into worker process (not model context) | Pure-Rust reimplementation of every LiteLLM provider |
+| Optional long-lived worker to avoid SDK cold-import cost | Changing tool, journal, or agent-loop contracts |
+
+**Depends on:** Phase 1 `ModelClient` + config switch (native adapters remain for zero-Python / CI / mock).
+
+**Exit criteria (product complete):**
+
+1. With Python + `litellm` installed, operator sets config to LiteLLM backend and a LiteLLM model id (e.g. `anthropic/…`, `openai/…`, `xai/…`) and completes a multi-step agent task without code changes.  
+2. Tool calls and text stream into the same normalized events as Phase 1 adapters.  
+3. At least three distinct LiteLLM model strings smoke-test (live or recorded) against the harness.  
+4. Without the LiteLLM backend configured, Phase 1 native adapters and `--mock` still work with **no Python dependency**.  
+5. Docs and defaults do **not** require LiteLLM Proxy.  
+6. API keys never appear in journal model-visible fields, TUI panes, or default OTEL attributes.
+
+---
+
 ## 14. Strategic takeaways
 
 The agent ecosystem is moving from rapid-prototype abstractions (loose roles, heavy graphs, unmonitored single-process runtimes) toward **production-grade harness engineering**. Long-horizon reliability depends less on prompt tweaks and more on:
@@ -400,6 +432,7 @@ The agent ecosystem is moving from rapid-prototype abstractions (loose roles, he
 - Open dual-protocol support (MCP + ACP)  
 - Governance, auditability, and observability  
 - Operator-grade terminal UX (full-screen TUI) without sacrificing headless CI  
+- Broad model portability (native adapters + optional LiteLLM SDK for the long tail)  
 
 Forge is specified to occupy that intersection: low abstraction tax, enterprise durability, portable model/client integration, and a first-class terminal surface.
 

@@ -1,6 +1,6 @@
 # Forge — Architecture
 
-**Version:** 0.6  
+**Version:** 0.7  
 **Status:** Draft  
 **Owner:** Mohit Ranka  
 **Last updated:** 23 Jul 2026  
@@ -28,7 +28,7 @@ The product sits in the agentic stack as follows:
 
 | Layer | Role in Forge |
 |-------|----------------|
-| **Model** | External reasoning engine (Anthropic, OpenAI, xAI Grok, Google ADK, Ollama/vLLM) via a unified client |
+| **Model** | External reasoning engine (Anthropic, OpenAI, xAI Grok, Google ADK, Ollama/vLLM, and LiteLLM’s long-tail catalog in Phase 5) via a unified client |
 | **Harness** | Forge proper: plan–act–observe loop, tools, context, durability, security, feedback |
 | **Runtime** | Execution constraints: containers/microVMs, eBPF policy, git worktrees, host/CI process |
 | **Agent** | Complete system = model + Forge harness + runtime for end-to-end tasks |
@@ -46,7 +46,7 @@ Aligned with [prd.md](./prd.md) §6 (wording here is architecture-oriented).
 7. Dual-sensor feedback: deterministic checks + independent Evaluator agent (opt-in)  
 8. Multi-surface interfaces: full-screen terminal TUI, headless CI, ACP IDE, multi-channel gateway  
 9. OpenTelemetry-compatible traces across model, tool, and step boundaries  
-10. Multi-provider models via a single configuration switch  
+10. Multi-provider models via a single configuration switch (Phase 1 native adapters; Phase 5 optional LiteLLM **SDK**, not Proxy)  
 
 ### Non-goals
 
@@ -283,6 +283,8 @@ Normalized events from any provider stream (provider-agnostic):
 | `error` | Provider/transport failure |
 
 Adapters map vendor streams → this envelope so `core` and `surfaces` never branch on provider.
+
+**Phase 5:** `LiteLlmModelClient` maps LiteLLM SDK results/streams into the same envelope. The agent loop never imports LiteLLM or branches on vendor strings.
 
 ### 4.4 Agent events (UI / surface layer)
 
@@ -832,6 +834,7 @@ Aligned with [prd.md](./prd.md) §13. Each phase is a **complete product**. Req 
 | **2** | Enterprise long-horizon harness | CORE-03, CTX-01/02/03, DUR-03, SEC-01/02/03 | protocol-acp, durable-hitl, context-lifecycle, workspace-isolation, governance |
 | **3** | Quality, ops & fleet | EVAL-01, OBS-01, CH-01, FLEET-01 | feedback-evaluator, observability, channels, fleet-plugins |
 | **4** | Full-screen terminal TUI | TUI-01, TUI-02, TUI-03, TUI-04 | tui-shell, tui-conversation, tui-sidebar, tui-overlays |
+| **5** | Universal model providers | MDL-01 | litellm-providers |
 
 ### Phase 1 — Coding agent
 
@@ -895,13 +898,48 @@ Aligned with [prd.md](./prd.md) §13. Each phase is a **complete product**. Req 
 
 **Not Phase 4:** Web UI, IDE chrome, new harness protocols.
 
+### Phase 5 — Universal model providers (LiteLLM SDK)
+
+**Product:** Config-only access to LiteLLM’s provider catalog using the **LiteLLM Python library**, behind the existing `ModelClient` trait. **Does not** require LiteLLM Proxy.
+
+**Build order (strict):**
+
+1. Python package `forge-litellm-worker` — stdio/JSON-RPC; calls `litellm.completion` / async/stream APIs (SDK only)  
+2. Rust `LiteLlmModelClient` in `forge-model` — spawn/reuse worker; map request/response to Forge types  
+3. Config factory: `provider = "litellm"` + LiteLLM model string; env keys LiteLLM already understands  
+4. Prefer **long-lived worker** (cold import cost); optional per-call mode for debugging  
+5. Smoke matrix: ≥3 LiteLLM model ids; secrets redaction; Phase 1 native path still default without Python  
+
+**Crate / package focus:** `forge-model` (client), optional `workers/forge-litellm-worker` (Python), config keys in `forge-config`. No second agent loop.
+
+**Exit:**
+
+- Config switch reaches many providers via LiteLLM model strings  
+- Same stream/tool envelope as Phase 1 adapters  
+- Native adapters + `--mock` work with zero Python  
+- Docs never mandate LiteLLM Proxy  
+
+**Not Phase 5:** Org LLM gateway/proxy product; new tool protocols; replacing Phase 1 adapters.
+
+```text
+AgentSession → dyn ModelClient
+                 ├─ Mock / OpenAI-compat / native (Phase 1)
+                 └─ LiteLlmModelClient (Phase 5)
+                        │ stdio JSON-RPC
+                        ▼
+                   forge-litellm-worker
+                        │ import litellm  # library, not proxy server
+                        ▼
+                   upstream provider APIs
+```
+
 ---
 
 ## 15. Extension points
 
 | Extension | Hook |
 |-----------|------|
-| New model provider | Implement unified client adapter; register in config |
+| New model provider | **Prefer** LiteLLM model id with Phase 5 backend; add a native Rust adapter only when latency/deps require it |
 | New MCP server | Declarative config; tools appear after ACL filter |
 | New built-in tool | serde/schemars types + handler; optional policy trait |
 | New surface | ACP-compatible client or thin adapter on agent events |
@@ -923,7 +961,8 @@ Illustrative Rust workspace layout (crate names align with §3 / decisions table
 | `forge-core` — builtin tools | Read/write, bash, git, grep |
 | `forge-mcp` | MCP discovery and call bridge |
 | `forge-acp` | ACP server/session |
-| `forge-core` — model client | Unified multi-provider client trait + adapters |
+| `forge-model` — model client | Unified `ModelClient` trait; Phase 1 native adapters; Phase 5 LiteLLM client |
+| `workers/forge-litellm-worker` | Phase 5 only: Python process using LiteLLM **SDK** (not Proxy) |
 | `forge-durable` — journal | Append-only log, replay, resume (sqlx/SQLite) |
 | `forge-durable` — hitl | Wait/resume tokens |
 | `forge-context` — budget | Token accounting |
@@ -970,6 +1009,7 @@ Forge is the **harness** between models and the real world: a typed tool bus, an
 | 9 | Project memory file | **`AGENTS.md` primary**; optional aliases later |
 | 10 | Crate layout | **Workspace monorepo, many crates** aligned to modules in §3 |
 | 11 | Model providers (Phase 1) | **Direct APIs + thin trait**; ship **OpenAI-compatible, Anthropic, and xAI** thin adapters early |
+| 18 | Universal providers (Phase 5) | **LiteLLM Python SDK in a Forge-managed worker** (stdio/JSON-RPC). **Not** LiteLLM Proxy. Native adapters remain default when Python/LiteLLM absent |
 | 12 | Config | **TOML file + env overrides** (e.g. `forge.toml` / `~/.config/forge/config.toml`; secrets/CI via env) |
 | 13 | Protocol phase ownership | **Phase 1 CORE-02 = MCP only.** **Phase 2 CORE-03 = ACP only.** Exclusive; no split ownership of one req ID. |
 | 14 | License | **MIT** |
@@ -984,7 +1024,8 @@ Forge is the **harness** between models and the real world: a typed tool bus, an
 | Schema-validated tool I/O | `serde::Serialize/Deserialize` + `schemars::JsonSchema` on tool input/output types |
 | Type-safe tool registry | Trait objects or enum dispatch + compile-time registered builtins; runtime MCP tools as schema-validated JSON |
 | Event journal | Append-only rows in **SQLite via sqlx**; typed event envelope (`serde_json`) with schema version field |
-| Unified model client | `async trait` (e.g. `ModelClient`) + adapters: OpenAI-compatible, Anthropic, xAI |
+| Unified model client | `async trait` (e.g. `ModelClient`) + Phase 1 adapters: OpenAI-compatible, Anthropic, xAI; Phase 5: `LiteLlmModelClient` → Python worker |
+| LiteLLM (Phase 5) | Optional **Python** runtime + `litellm` package; long-lived worker preferred; **no** proxy server required |
 | Surfaces | Phase 1: line-mode `repl` + headless `forge-cli`; Phase 2: `forge-acp`; Phase 3: channels; Phase 4: full-screen ratatui `forge tui` |
 | Config | TOML (`forge.toml` or XDG config path) merged with env overrides |
 | Workspace root | Default **cwd**; override via CLI flag and/or config when specified |

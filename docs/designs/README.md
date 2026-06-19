@@ -3,6 +3,8 @@
 **Status:** Draft  
 **Last updated:** 23 Jul 2026  
 
+**Product phases in force:** 1–4 implemented; **5 specified** (LiteLLM SDK providers).
+
 | Layer | Document | Owns |
 |-------|----------|------|
 | Product | [../prd.md](../prd.md) | Outcomes, req IDs, **exclusive phase map** |
@@ -12,9 +14,9 @@
 
 ## Rules
 
-1. **Exclusive phase ownership** — Each design doc’s header **Phase:** field is a single number (1–4). No multi-phase owners.  
+1. **Exclusive phase ownership** — Each design doc’s header **Phase:** field is a single number (1–5). No multi-phase owners.  
 2. **Exclusive req ownership** — Each PRD req ID appears in exactly one design doc as primary owner.  
-3. **Product-complete phases** — See [prd.md](../prd.md) §13: Phase 1 coding agent, Phase 2 enterprise harness, Phase 3 fleet/quality, Phase 4 full-screen TUI.  
+3. **Product-complete phases** — See [prd.md](../prd.md) §13: Phase 1 coding agent, Phase 2 enterprise harness, Phase 3 fleet/quality, Phase 4 full-screen TUI, Phase 5 LiteLLM universal providers.  
 4. **Cross-phase references** are allowed as *dependencies* (“builds on Phase 1 journal”) but must not re-specify the other phase’s design.
 
 ## Index by phase
@@ -25,7 +27,7 @@
 |----------|----------|---------|
 | [tool-protocol.md](./tool-protocol.md) | CORE-01 | Schemas, registry, validation retry |
 | [agent-loop.md](./agent-loop.md) | loop (CORE-01 path) | Plan–act–observe (no HITL/eval/handoff) |
-| [model-providers.md](./model-providers.md) | multi-provider | Unified client, 3 adapters |
+| [model-providers.md](./model-providers.md) | multi-provider (Phase 1) | Unified client, 3 native adapters |
 | [durable-execution.md](./durable-execution.md) | DUR-01, DUR-02 | Journal + crash recovery |
 | [protocol-mcp.md](./protocol-mcp.md) | CORE-02 | MCP discovery/call |
 | [configuration.md](./configuration.md) | config NFR | Phase 1 TOML/env keys only |
@@ -62,6 +64,12 @@
 
 Visual source of truth: [../ui.md](../ui.md). Phase 1 `surfaces` / line-mode `repl` remain; Phase 4 is the operator-grade full-screen surface.
 
+### Phase 5 — Universal model providers (LiteLLM SDK)
+
+| Document | PRD reqs | Summary |
+|----------|----------|---------|
+| [litellm-providers.md](./litellm-providers.md) | MDL-01 | LiteLLM **library/SDK** worker; not Proxy; long-tail providers |
+
 ## Reading order
 
 **Phase 1:** tool-protocol → agent-loop → model-providers → durable-execution → protocol-mcp → configuration → surfaces → tui-commands  
@@ -71,6 +79,8 @@ Visual source of truth: [../ui.md](../ui.md). Phase 1 `surfaces` / line-mode `re
 **Phase 3:** feedback-evaluator → observability → channels → fleet-plugins  
 
 **Phase 4:** tui-shell → tui-conversation → tui-sidebar → tui-overlays  
+
+**Phase 5:** litellm-providers (builds on Phase 1 model-providers)  
 
 ## Template
 
