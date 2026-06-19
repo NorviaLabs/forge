@@ -30,7 +30,8 @@ Forge is Rust. This phase integrates the **LiteLLM library (SDK)**—not the Lit
 - Requiring or shipping **LiteLLM Proxy** (gateway, virtual keys, admin UI).  
 - Guaranteeing identical model quality across vendors.  
 - Replacing the agent loop, tools, or journal.  
-- Pure-Rust reimplementation of every LiteLLM provider.
+- Pure-Rust reimplementation of every LiteLLM provider.  
+- Adopting **`fast-litellm`** as the multi-provider backend (see §7).
 
 ## 3. Design
 
@@ -112,3 +113,15 @@ Request payload carries messages, tool schemas, model id, sampling params. Respo
 2. Stream events match Phase 1 envelope.  
 3. CI default remains mock/native without Python.  
 4. Docs never state Proxy as required.
+
+## 7. Ecosystem evaluation (pre-implementation)
+
+Evaluated before building MDL-01. None replace the Python LiteLLM **SDK** for full catalog coverage.
+
+| Project | What it is | Fit for Forge Phase 5 |
+|---------|------------|------------------------|
+| **[fast-litellm](https://github.com/neul-labs/fast-litellm)** (neul-labs) | PyO3 **acceleration** of Python LiteLLM (connection pool, rate limit, token counting). Still requires `import litellm`. Crate is `cdylib` for Python wheels, not a normal app client. | **Not primary.** Optional later: speed up the Python worker only. Does **not** remove Python or add providers. |
+| **[litellm-rust](https://github.com/avivsinai/litellm-rust)** (avivsinai) | Minimal **Rust SDK** port; library only (no proxy). Chat/stream/tools for OpenAI-compatible, Anthropic, Gemini, xAI, Z.AI. MSRV 1.88+. | **Not MDL-01.** Useful pure-Rust multi-provider helper with **small** coverage; overlaps Phase 1 native adapters. May inform future native work—not a 100+ provider substitute. |
+| **litellm-rs** / official LiteLLM Rust gateway work | High-perf **gateway/proxy** path | **Out of scope** (proxy product; conflicts with decision #18). |
+
+**Conclusion:** Phase 5 remains **Python LiteLLM library in a Forge-managed worker**. `fast-litellm` is not a Rust translation of the provider matrix.

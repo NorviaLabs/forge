@@ -919,7 +919,7 @@ Aligned with [prd.md](./prd.md) §13. Each phase is a **complete product**. Req 
 - Native adapters + `--mock` work with zero Python  
 - Docs never mandate LiteLLM Proxy  
 
-**Not Phase 5:** Org LLM gateway/proxy product; new tool protocols; replacing Phase 1 adapters.
+**Not Phase 5:** Org LLM gateway/proxy product; new tool protocols; replacing Phase 1 adapters; treating **`fast-litellm`** as a pure-Rust LiteLLM replacement (it is PyO3 acceleration *of* Python LiteLLM only—see [litellm-providers.md](./designs/litellm-providers.md) §7).
 
 ```text
 AgentSession → dyn ModelClient
@@ -929,6 +929,7 @@ AgentSession → dyn ModelClient
                         ▼
                    forge-litellm-worker
                         │ import litellm  # library, not proxy server
+                        │ # optional later: import fast_litellm  (accel only)
                         ▼
                    upstream provider APIs
 ```
@@ -1009,7 +1010,7 @@ Forge is the **harness** between models and the real world: a typed tool bus, an
 | 9 | Project memory file | **`AGENTS.md` primary**; optional aliases later |
 | 10 | Crate layout | **Workspace monorepo, many crates** aligned to modules in §3 |
 | 11 | Model providers (Phase 1) | **Direct APIs + thin trait**; ship **OpenAI-compatible, Anthropic, and xAI** thin adapters early |
-| 18 | Universal providers (Phase 5) | **LiteLLM Python SDK in a Forge-managed worker** (stdio/JSON-RPC). **Not** LiteLLM Proxy. Native adapters remain default when Python/LiteLLM absent |
+| 18 | Universal providers (Phase 5) | **LiteLLM Python SDK in a Forge-managed worker** (stdio/JSON-RPC). **Not** LiteLLM Proxy. **Not** `fast-litellm` as primary backend (PyO3 accel of Python LiteLLM only). Native adapters remain default when Python/LiteLLM absent. `litellm-rust` is optional limited pure-Rust multi-provider—not full catalog |
 | 12 | Config | **TOML file + env overrides** (e.g. `forge.toml` / `~/.config/forge/config.toml`; secrets/CI via env) |
 | 13 | Protocol phase ownership | **Phase 1 CORE-02 = MCP only.** **Phase 2 CORE-03 = ACP only.** Exclusive; no split ownership of one req ID. |
 | 14 | License | **MIT** |
