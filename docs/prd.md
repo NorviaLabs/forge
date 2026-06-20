@@ -299,6 +299,8 @@ Product capabilities group into five areas (implementation detail in architectur
 | TUI-04 | **4** | HITL / slash / model overlays |
 | MDL-01 | **5** | Universal providers via LiteLLM SDK (not Proxy) |
 
+Phase 5 design set (all exclusive Phase 5): [litellm-providers.md](./designs/litellm-providers.md) (primary), [litellm-worker.md](./designs/litellm-worker.md), [litellm-wire.md](./designs/litellm-wire.md), [litellm-normalization.md](./designs/litellm-normalization.md), [litellm-config.md](./designs/litellm-config.md).
+
 ### Design doc → phase map (exclusive)
 
 See [designs/README.md](./designs/README.md). No design doc may list multiple phases as owners.

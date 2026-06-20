@@ -66,6 +66,8 @@ args = []
 
 **Phase 2+ keys** (not owned by this doc): context/offload/progress, sandbox, hitl, acl, otel — defined in Phase 2/3 designs ([context-lifecycle.md](./context-lifecycle.md), [governance.md](./governance.md), [observability.md](./observability.md)).
 
+**Phase 5 keys** (not owned by this doc): `provider = "litellm"`, `[model.litellm]` — [litellm-config.md](./litellm-config.md).
+
 ### 3.3 Env overrides (examples)
 
 | Env | Maps to |

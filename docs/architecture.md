@@ -834,7 +834,7 @@ Aligned with [prd.md](./prd.md) §13. Each phase is a **complete product**. Req 
 | **2** | Enterprise long-horizon harness | CORE-03, CTX-01/02/03, DUR-03, SEC-01/02/03 | protocol-acp, durable-hitl, context-lifecycle, workspace-isolation, governance |
 | **3** | Quality, ops & fleet | EVAL-01, OBS-01, CH-01, FLEET-01 | feedback-evaluator, observability, channels, fleet-plugins |
 | **4** | Full-screen terminal TUI | TUI-01, TUI-02, TUI-03, TUI-04 | tui-shell, tui-conversation, tui-sidebar, tui-overlays |
-| **5** | Universal model providers | MDL-01 | litellm-providers |
+| **5** | Universal model providers | MDL-01 | litellm-providers, litellm-worker, litellm-wire, litellm-normalization, litellm-config |
 
 ### Phase 1 — Coding agent
 
@@ -904,11 +904,12 @@ Aligned with [prd.md](./prd.md) §13. Each phase is a **complete product**. Req 
 
 **Build order (strict):**
 
-1. Python package `forge-litellm-worker` — stdio/JSON-RPC; calls `litellm.completion` / async/stream APIs (SDK only)  
-2. Rust `LiteLlmModelClient` in `forge-model` — spawn/reuse worker; map request/response to Forge types  
-3. Config factory: `provider = "litellm"` + LiteLLM model string; env keys LiteLLM already understands  
-4. Prefer **long-lived worker** (cold import cost); optional per-call mode for debugging  
-5. Smoke matrix: ≥3 LiteLLM model ids; secrets redaction; Phase 1 native path still default without Python  
+1. Config keys + `ModelProviderKind::Litellm` — [litellm-config.md](./designs/litellm-config.md)  
+2. Wire protocol fixtures + mock worker — [litellm-wire.md](./designs/litellm-wire.md)  
+3. Python package `forge-litellm-worker` — [litellm-worker.md](./designs/litellm-worker.md); `litellm.completion` / stream (SDK only)  
+4. Normalization complete + stream — [litellm-normalization.md](./designs/litellm-normalization.md)  
+5. Rust `LiteLlmModelClient` + factory — [litellm-providers.md](./designs/litellm-providers.md)  
+6. Smoke matrix: ≥3 LiteLLM model ids; secrets redaction; Phase 1 native path still default without Python  
 
 **Crate / package focus:** `forge-model` (client), optional `workers/forge-litellm-worker` (Python), config keys in `forge-config`. No second agent loop.
 
