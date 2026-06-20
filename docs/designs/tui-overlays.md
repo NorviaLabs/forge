@@ -62,7 +62,7 @@ On approve/deny: call `session.resolve_hitl` then close overlay.
 
 ### 3.4 Model picker
 
-- Rows: openai_compatible / anthropic / xai (+ current highlight).  
+- Rows: configured / common LiteLLM model strings (Phase 5); not a hard-coded native-only triad.  
 - Selection sets provider/model for **next** session or prints “restart to apply” consistent with current CLI behavior until hot-swap exists.
 
 ## 4. Interfaces

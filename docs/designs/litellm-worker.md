@@ -14,7 +14,7 @@
 
 LiteLLM’s provider matrix lives in **Python**. Forge must call the **SDK library** (`import litellm`) without embedding CPython in the main binary and without running LiteLLM **Proxy**.
 
-A **Forge-managed worker process** is the process boundary: Rust owns lifecycle; Python owns provider HTTP.
+A **Forge-managed worker process** is the process boundary: Rust owns lifecycle; Python owns **all** production provider HTTP (Phase 5 removes native Rust adapters—this worker is not optional for live runs).
 
 ## 2. Goals & non-goals
 

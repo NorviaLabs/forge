@@ -7,7 +7,7 @@
 **PRD:** Multi-provider portability (Goals §6, NFR §10.3)  
 **Architecture:** §4.3, decision #11  
 **Related:** [agent-loop.md](./agent-loop.md), [configuration.md](./configuration.md)  
-**Later expansion:** Phase 5 universal catalog via LiteLLM **SDK** — [litellm-providers.md](./litellm-providers.md) (MDL-01); does not change this Phase 1 design
+**Superseded for production (Phase 5):** Native HTTP adapters are **removed** in Phase 5. Sole production path is LiteLLM SDK — [litellm-providers.md](./litellm-providers.md) (MDL-01). This doc remains the Phase 1 historical design and the source of the `ModelClient` / stream envelope contract.
 
 ---
 
@@ -115,8 +115,9 @@ Adapters map vendor SSE/JSON streams → this envelope.
 
 | Item | Phase |
 |------|-------|
-| This entire document | **1** |
-| Exit | Config switch among OpenAI-compatible, Anthropic, xAI without code changes |
+| This entire document (native adapters + early matrix) | **1** |
+| Exit (Phase 1) | Config switch among OpenAI-compatible, Anthropic, xAI without code changes |
+| Production path after Phase 5 | **LiteLLM only** — natives deleted; see [litellm-providers.md](./litellm-providers.md) |
 | Vault-backed secrets | [governance.md](./governance.md) Phase 2 (Phase 1 uses env) |
 
 ## 7. Open questions

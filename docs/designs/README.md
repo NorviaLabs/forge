@@ -68,11 +68,11 @@ Visual source of truth: [../ui.md](../ui.md). Phase 1 `surfaces` / line-mode `re
 
 | Document | PRD reqs | Summary |
 |----------|----------|---------|
-| [litellm-providers.md](./litellm-providers.md) | **MDL-01** (primary) | Product architecture, Rust `LiteLlmModelClient`, factory, ecosystem eval |
+| [litellm-providers.md](./litellm-providers.md) | **MDL-01** (primary) | Sole production client (LiteLLM); **remove** Phase 1 natives; mock for CI |
 | [litellm-worker.md](./litellm-worker.md) | MDL-01 (supporting) | Python process, packaging, lifecycle, secrets env |
 | [litellm-wire.md](./litellm-wire.md) | MDL-01 (supporting) | stdio NDJSON / JSON-RPC methods & events |
 | [litellm-normalization.md](./litellm-normalization.md) | MDL-01 (supporting) | LiteLLM complete/stream → Forge envelope |
-| [litellm-config.md](./litellm-config.md) | MDL-01 (supporting) | Phase 5-only TOML/env keys (`provider=litellm`) |
+| [litellm-config.md](./litellm-config.md) | MDL-01 (supporting) | Live=litellm / mock only; migrate old provider enums |
 
 ## Reading order
 

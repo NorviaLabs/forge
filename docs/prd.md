@@ -236,8 +236,8 @@ Product capabilities group into five areas (implementation detail in architectur
 
 - Unified interface for major providers (cloud APIs and local inference servers).
 - Switching providers requires **configuration only**—no changes to tool definitions, agent logic, or durable state schemas.
-- **Phase 1:** Thin native adapters (OpenAI-compatible, Anthropic, xAI) behind `ModelClient`.
-- **Phase 5 (MDL-01):** Optional **LiteLLM Python SDK** backend for the long-tail provider matrix (100+ models/providers). Must use the **library** (`litellm.completion` / streaming)—**not** a requirement to run LiteLLM Proxy.
+- **Phase 1 (historical):** Thin native adapters (OpenAI-compatible, Anthropic, xAI) behind `ModelClient`.
+- **Phase 5 (MDL-01):** **Single production path** — **LiteLLM Python SDK** (library, not Proxy) for **all** providers, including those formerly served by native adapters. Dual native+LiteLLM stacks are removed so operators and code maintain one client. **Mock** remains for offline CI only.
 
 ---
 
@@ -399,28 +399,33 @@ See [designs/README.md](./designs/README.md). No design doc may list multiple ph
 
 ### Phase 5 — Universal model providers via LiteLLM SDK (complete product)
 
-**Product:** Phases 1–4 harness **plus** config-only access to LiteLLM’s full provider catalog through the **LiteLLM Python library (SDK)**. Forge remains a Rust harness; the SDK runs in a **Forge-managed Python worker**. The **LiteLLM Proxy** gateway is **not** required and is **not** part of this phase.
+**Product:** Phases 1–4 harness with model I/O **consolidated** onto the **LiteLLM Python library (SDK)** in a Forge-managed worker. **Remove Phase 1 native HTTP adapters** (OpenAI-compatible, Anthropic, xAI clients). One production path for all providers—no parallel “native vs LiteLLM” stacks. The **LiteLLM Proxy** gateway is **not** required. **`--mock`** remains for offline CI without Python/network.
 
-**Users served:** Operators and platforms that must switch among many cloud/local models without waiting for first-party Rust adapters.
+**Users served:** Operators and platforms that want every provider through one config surface and one maintenance path.
+
+**Why remove native adapters:** Two production clients (hand-rolled Rust + LiteLLM) duplicate auth, streaming, tool encoding, and failure handling. LiteLLM already covers OpenAI, Anthropic, xAI, and the long tail. Keeping natives forces forever dual support for no product gain once Phase 5 ships.
 
 | In scope | Out of scope |
 |----------|--------------|
-| **MDL-01** — LiteLLM SDK-backed `ModelClient` | Deploying or operating **LiteLLM Proxy** as product infra |
-| Config: `provider = "litellm"` + LiteLLM model string | Replacing Phase 1 native adapters as the default path |
-| Normalize LiteLLM responses/streams into existing Forge envelopes | Guaranteeing identical quality across all upstream models |
-| Secrets via env/vault into worker process (not model context) | Pure-Rust reimplementation of every LiteLLM provider |
-| Optional long-lived worker to avoid SDK cold-import cost | Changing tool, journal, or agent-loop contracts |
+| **MDL-01** — LiteLLM SDK as **sole** production `ModelClient` | Deploying or operating **LiteLLM Proxy** as product infra |
+| **Delete** Phase 1 native provider adapters from product path | Keeping dual native+LiteLLM production stacks |
+| Config: LiteLLM model strings (e.g. `anthropic/…`, `openai/…`) | Guaranteeing identical quality across all upstream models |
+| Normalize LiteLLM responses/streams into existing Forge envelopes | Pure-Rust reimplementation of every LiteLLM provider |
+| Long-lived worker; secrets via env/vault into worker | Changing tool, journal, or agent-loop contracts |
+| **Mock** client for unit/CI tests | Requiring network for pure unit tests |
 
-**Depends on:** Phase 1 `ModelClient` + config switch (native adapters remain for zero-Python / CI / mock).
+**Depends on:** Phase 1 `ModelClient` trait + agent loop (adapters behind the trait change; trait stays).
 
 **Exit criteria (product complete):**
 
-1. With Python + `litellm` installed, operator sets config to LiteLLM backend and a LiteLLM model id (e.g. `anthropic/…`, `openai/…`, `xai/…`) and completes a multi-step agent task without code changes.  
-2. Tool calls and text stream into the same normalized events as Phase 1 adapters.  
-3. At least three distinct LiteLLM model strings smoke-test (live or recorded) against the harness.  
-4. Without the LiteLLM backend configured, Phase 1 native adapters and `--mock` still work with **no Python dependency**.  
-5. Docs and defaults do **not** require LiteLLM Proxy.  
-6. API keys never appear in journal model-visible fields, TUI panes, or default OTEL attributes.
+1. Production model calls go **only** through the LiteLLM worker (no native OpenAI/Anthropic/xAI HTTP clients left in `forge-model` product path).  
+2. Operator with Python + `litellm` completes multi-step tasks using LiteLLM model ids (including former native providers: OpenAI, Anthropic, xAI).  
+3. Tool calls and text stream into the same normalized events as before.  
+4. At least three distinct LiteLLM model strings smoke-test (live or recorded).  
+5. `--mock` / unit tests work **without** Python; live/default non-mock path **requires** worker + LiteLLM.  
+6. Docs and defaults do **not** require LiteLLM Proxy.  
+7. API keys never appear in journal model-visible fields, TUI panes, or default OTEL attributes.  
+8. Migration notes: map old `provider=anthropic|xai|openai_compatible` configs → LiteLLM model strings.
 
 ---
 
@@ -434,7 +439,7 @@ The agent ecosystem is moving from rapid-prototype abstractions (loose roles, he
 - Open dual-protocol support (MCP + ACP)  
 - Governance, auditability, and observability  
 - Operator-grade terminal UX (full-screen TUI) without sacrificing headless CI  
-- Broad model portability (native adapters + optional LiteLLM SDK for the long tail)  
+- Broad model portability through a **single** LiteLLM SDK path (Phase 5)  
 
 Forge is specified to occupy that intersection: low abstraction tax, enterprise durability, portable model/client integration, and a first-class terminal surface.
 

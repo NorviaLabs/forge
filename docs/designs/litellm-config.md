@@ -4,125 +4,136 @@
 **Owner:** Mohit Ranka  
 **Last updated:** 23 Jul 2026  
 **Phase:** **5 only** (exclusive)  
-**PRD:** MDL-01 (supporting — config surface)  
+**PRD:** MDL-01 (supporting — config surface + migration)  
 **Architecture:** §9, §14 Phase 5, decision #12 / #18  
-**Related:** [litellm-providers.md](./litellm-providers.md), [litellm-worker.md](./litellm-worker.md), [configuration.md](./configuration.md) (Phase 1 only)
+**Related:** [litellm-providers.md](./litellm-providers.md), [litellm-worker.md](./litellm-worker.md), [configuration.md](./configuration.md) (Phase 1 merge rules only)
 
 ---
 
 ## 1. Problem / context
 
-Phase 1 [configuration.md](./configuration.md) owns TOML/env merge for early keys and must not grow multi-phase ownership. Phase 5 needs **exclusive** keys for the LiteLLM backend, worker paths, and timeouts—without forcing Python on default installs.
+Phase 5 makes LiteLLM the **only** production model backend and **removes** native provider adapters. Config must:
+
+1. Express LiteLLM model strings cleanly.  
+2. **Migrate** Phase 1 `provider = anthropic | xai | openai_compatible` configs so operators are not stranded.  
+3. Keep **mock** for CI without Python.  
+4. Avoid a second “native vs litellm” switch.
 
 ## 2. Goals & non-goals
 
 **Goals**
 
-- Config-only switch: `provider = "litellm"` + LiteLLM model string.  
+- One live config shape: model string (+ optional worker settings).  
+- Explicit migration from Phase 1 provider enums.  
 - Same merge precedence as Phase 1 (CLI > env > project TOML > user TOML > defaults).  
-- Sensible defaults for python/module paths.  
-- Fail fast with install hints when LiteLLM path is selected but unusable.
+- Fail fast if live mode cannot start the worker—**no** fallback to deleted natives.
 
 **Non-goals**
 
-- Remote config service.  
-- Storing API keys in TOML as the recommended path.  
-- LiteLLM Proxy URL as a first-class required setting.
+- Parallel `provider=openai_compatible` production path.  
+- LiteLLM Proxy URL as required setting.  
+- Storing API keys in TOML as recommended practice.
 
 ## 3. Design
 
-### 3.1 TOML keys (Phase 5)
+### 3.1 Canonical Phase 5 TOML
 
 ```toml
 [model]
-provider = "litellm"   # new enum variant
-model = "openai/gpt-4.1-mini"   # LiteLLM model string when provider=litellm
+# Live (default for non-mock runs once Phase 5 ships):
+provider = "litellm"   # or omit if litellm is the sole live default
+model = "anthropic/claude-sonnet-4-20250514"
 
-# Phase 5 optional block (ignored unless provider=litellm)
+# Offline CI:
+# provider = "mock"
+# model = "mock"
+
 [model.litellm]
-python = "python3"                    # executable
-module = "forge_litellm_worker"       # python -m …
-# worker_path = "/abs/path/to/__main__.py"  # alternative to module
+python = "python3"
+module = "forge_litellm_worker"
 request_timeout_secs = 120
 startup_timeout_secs = 30
-lifecycle = "long_lived"              # long_lived | per_call
-# extra_env = { "LITELLM_LOG" = "ERROR" }  # optional non-secret
+lifecycle = "long_lived"   # long_lived | per_call
 ```
 
-**Model string:** Pass through to LiteLLM unchanged (e.g. `anthropic/…`, `gemini/…`, `openrouter/…`).
+### 3.2 Provider enum (post–Phase 5)
 
-### 3.2 Provider enum
+| Value | Client | Notes |
+|-------|--------|-------|
+| **`litellm`** | `LiteLlmModelClient` | **Sole production** path |
+| **`mock`** | `MockModelClient` | CI / `--mock` only |
+| `openai_compatible` | — | **Removed**; migrate |
+| `anthropic` | — | **Removed**; migrate |
+| `xai` | — | **Removed**; migrate |
 
-Extend Phase 1 `ModelProviderKind` (name illustrative):
+### 3.3 Migration from Phase 1 configs
 
-| Value | Client |
-|-------|--------|
-| `openai_compatible` | Phase 1 |
-| `anthropic` | Phase 1 |
-| `xai` | Phase 1 |
-| `mock` | Phase 1 / CLI `--mock` |
-| **`litellm`** | **Phase 5** `LiteLlmModelClient` |
+On load, if deprecated provider is seen:
 
-Unknown values: config error at load/start.
+| Old `provider` | Old `model` (example) | Migrated |
+|----------------|----------------------|----------|
+| `openai_compatible` | `gpt-4.1-mini` | `provider=litellm`, `model=openai/gpt-4.1-mini` (or pass-through if already `org/model`) |
+| `anthropic` | `claude-sonnet` | `provider=litellm`, `model=anthropic/<model>` |
+| `xai` | `grok-…` | `provider=litellm`, `model=xai/<model>` |
 
-### 3.3 Env overrides
+**Policy (implementation choice, pick one and document in release notes):**
+
+1. **Auto-migrate with warning** (preferred for minor UX pain), or  
+2. **Hard error** with exact replacement TOML printed.
+
+Do **not** silently call removed native HTTP clients.
+
+`base_url` for openai-compatible locals: map to LiteLLM custom provider / `api_base` via worker `extra` or LiteLLM env—document in worker README (not a second Rust client).
+
+### 3.4 Env overrides
 
 | Env | Maps to |
 |-----|---------|
-| `FORGE_MODEL_PROVIDER=litellm` | `model.provider` |
-| `FORGE_MODEL_ID` | `model.model` (LiteLLM string when provider is litellm) |
+| `FORGE_MODEL_PROVIDER` | `model.provider` (`litellm` \| `mock` only after Phase 5) |
+| `FORGE_MODEL_ID` | `model.model` (LiteLLM string) |
 | `FORGE_LITELLM_PYTHON` | `model.litellm.python` |
 | `FORGE_LITELLM_MODULE` | `model.litellm.module` |
 | `FORGE_LITELLM_LIFECYCLE` | `model.litellm.lifecycle` |
-| `FORGE_LITELLM_REQUEST_TIMEOUT_SECS` | `model.litellm.request_timeout_secs` |
-| `FORGE_LITELLM_STARTUP_TIMEOUT_SECS` | `model.litellm.startup_timeout_secs` |
+| `FORGE_LITELLM_REQUEST_TIMEOUT_SECS` | timeouts |
+| `FORGE_LITELLM_STARTUP_TIMEOUT_SECS` | timeouts |
 
-Provider credentials remain LiteLLM’s own env vars (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, …)—not re-defined here. `FORGE_API_KEY` may continue as a dev convenience mapped only for native clients; document that LiteLLM path prefers vendor-specific env names.
+Credentials: LiteLLM’s env vars (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `XAI_API_KEY`, …).
 
-### 3.4 CLI
+### 3.5 CLI
 
 | Flag | Behavior |
 |------|----------|
-| `--provider litellm` | Sets provider |
-| `--model <string>` | Model id / LiteLLM string |
-| `--mock` | Forces mock client; wins over litellm for offline tests |
+| `--provider litellm` | Live path |
+| `--provider mock` / `--mock` | Mock client |
+| `--model <string>` | LiteLLM model id |
+| `--provider anthropic` (etc.) | Reject or migrate per §3.3 |
 
-No `forge litellm-proxy` command.
-
-### 3.5 Defaults
+### 3.6 Defaults
 
 | Key | Default |
 |-----|---------|
+| Live provider | `litellm` (when not `--mock`) |
 | `python` | `python3` |
 | `module` | `forge_litellm_worker` |
 | `lifecycle` | `long_lived` |
-| `request_timeout_secs` | `120` |
-| `startup_timeout_secs` | `30` |
+| timeouts | 120s request / 30s startup |
 
-### 3.6 Validation rules
+### 3.7 Validation
 
 | Condition | Result |
 |-----------|--------|
-| `provider=litellm` and empty `model` | Config error |
-| `lifecycle` not in enum | Config error |
-| Timeouts ≤ 0 | Config error |
-| `provider=litellm` and worker ping fails | Runtime/startup error with install hint (not silent fallback to native) |
-| `provider!=litellm` | Ignore `[model.litellm]` block (warn if present in strict mode) |
-
-### 3.7 TUI / `/model`
-
-Phase 4 model picker and `/model` may set provider + model labels. Applying `litellm` mid-session: same policy as Phase 1 open question (prefer next session or re-create client). Document chosen behavior at implementation time; default recommendation: **rebuild client for session** when provider/model changes if no in-flight turn.
+| Live + empty model | Config error |
+| Live + worker ping fails | Startup error + install hint; **no** native fallback |
+| Deprecated provider without migration | Error or warn+migrate |
+| `provider=mock` | Skip worker entirely |
 
 ## 4. Interfaces
 
 ```rust
-// sketch — forge-config
 pub enum ModelProviderKind {
-    OpenaiCompatible,
-    Anthropic,
-    Xai,
+    Litellm,
     Mock,
-    Litellm, // Phase 5
+    // Deprecated variants may exist only for parse+migrate, then collapse
 }
 
 pub struct LitellmConfig {
@@ -133,30 +144,24 @@ pub struct LitellmConfig {
     pub startup_timeout_secs: u64,
     pub lifecycle: LitellmLifecycle,
 }
-
-pub enum LitellmLifecycle {
-    LongLived,
-    PerCall,
-}
 ```
 
 ## 5. Failure modes
 
 | Case | Behavior |
 |------|----------|
-| TOML has litellm keys but old binary | Unknown key warn / ignore until upgrade |
-| Env sets litellm without model | Fail at session open |
-| Python path not executable | Startup error |
+| Old binary vs new config | Fine |
+| New binary vs old provider enum | Migrate or error—never native HTTP |
+| Missing Python on live run | Clear install message |
 
 ## 6. Phase ownership
 
 | Item | Phase |
 |------|-------|
-| This entire document / litellm keys | **5** |
-| Base merge order & Phase 1 keys | **1** ([configuration.md](./configuration.md)) |
+| This document | **5** |
+| Base merge order | **1** ([configuration.md](./configuration.md)) |
 
 ## Related docs
 
-- [configuration.md](./configuration.md)  
 - [litellm-providers.md](./litellm-providers.md)  
-- [litellm-worker.md](./litellm-worker.md)  
+- [configuration.md](./configuration.md)  

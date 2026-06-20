@@ -46,7 +46,7 @@ Aligned with [prd.md](./prd.md) §6 (wording here is architecture-oriented).
 7. Dual-sensor feedback: deterministic checks + independent Evaluator agent (opt-in)  
 8. Multi-surface interfaces: full-screen terminal TUI, headless CI, ACP IDE, multi-channel gateway  
 9. OpenTelemetry-compatible traces across model, tool, and step boundaries  
-10. Multi-provider models via a single configuration switch (Phase 1 native adapters; Phase 5 optional LiteLLM **SDK**, not Proxy)  
+10. Multi-provider models via a single configuration switch (Phase 1: thin native adapters; Phase 5: **LiteLLM SDK only** for production—natives removed; not Proxy)  
 
 ### Non-goals
 
@@ -898,41 +898,43 @@ Aligned with [prd.md](./prd.md) §13. Each phase is a **complete product**. Req 
 
 **Not Phase 4:** Web UI, IDE chrome, new harness protocols.
 
-### Phase 5 — Universal model providers (LiteLLM SDK)
+### Phase 5 — Universal model providers (LiteLLM SDK only)
 
-**Product:** Config-only access to LiteLLM’s provider catalog using the **LiteLLM Python library**, behind the existing `ModelClient` trait. **Does not** require LiteLLM Proxy.
+**Product:** **One** production model path — LiteLLM Python **library** in a Forge-managed worker. **Remove** Phase 1 native HTTP adapters so OpenAI, Anthropic, xAI, and the long tail share the same code. **Does not** require LiteLLM Proxy. **Mock** remains for offline CI.
+
+**Rationale:** Dual stacks (native Rust + LiteLLM) double maintenance for streaming, tools, retries, and auth with no operator benefit once LiteLLM covers the same vendors.
 
 **Build order (strict):**
 
-1. Config keys + `ModelProviderKind::Litellm` — [litellm-config.md](./designs/litellm-config.md)  
+1. Config + migration from old provider enums — [litellm-config.md](./designs/litellm-config.md)  
 2. Wire protocol fixtures + mock worker — [litellm-wire.md](./designs/litellm-wire.md)  
-3. Python package `forge-litellm-worker` — [litellm-worker.md](./designs/litellm-worker.md); `litellm.completion` / stream (SDK only)  
+3. Python package `forge-litellm-worker` — [litellm-worker.md](./designs/litellm-worker.md); SDK only  
 4. Normalization complete + stream — [litellm-normalization.md](./designs/litellm-normalization.md)  
-5. Rust `LiteLlmModelClient` + factory — [litellm-providers.md](./designs/litellm-providers.md)  
-6. Smoke matrix: ≥3 LiteLLM model ids; secrets redaction; Phase 1 native path still default without Python  
+5. Rust `LiteLlmModelClient` + factory; **delete** native adapter modules — [litellm-providers.md](./designs/litellm-providers.md)  
+6. Smoke matrix: ≥3 LiteLLM model ids (include former native vendors); secrets redaction; mock path without Python  
 
-**Crate / package focus:** `forge-model` (client), optional `workers/forge-litellm-worker` (Python), config keys in `forge-config`. No second agent loop.
+**Crate / package focus:** `forge-model` (LiteLLM client + mock only), `workers/forge-litellm-worker`, `forge-config`. No second agent loop.
 
 **Exit:**
 
-- Config switch reaches many providers via LiteLLM model strings  
-- Same stream/tool envelope as Phase 1 adapters  
-- Native adapters + `--mock` work with zero Python  
+- Production calls use LiteLLM worker only  
+- Same stream/tool envelope as Phase 1  
+- Native OpenAI/Anthropic/xAI clients **gone** from product path  
+- `--mock` works without Python; live path requires worker + litellm  
 - Docs never mandate LiteLLM Proxy  
 
-**Not Phase 5:** Org LLM gateway/proxy product; new tool protocols; replacing Phase 1 adapters; treating **`fast-litellm`** as a pure-Rust LiteLLM replacement (it is PyO3 acceleration *of* Python LiteLLM only—see [litellm-providers.md](./designs/litellm-providers.md) §7).
+**Not Phase 5:** Org LLM gateway/proxy product; new tool protocols; keeping dual native+LiteLLM production clients; treating **`fast-litellm`** as a pure-Rust LiteLLM replacement (see [litellm-providers.md](./designs/litellm-providers.md)).
 
 ```text
 AgentSession → dyn ModelClient
-                 ├─ Mock / OpenAI-compat / native (Phase 1)
-                 └─ LiteLlmModelClient (Phase 5)
+                 ├─ MockModelClient          (CI / --mock only)
+                 └─ LiteLlmModelClient       (sole production path)
                         │ stdio JSON-RPC
                         ▼
                    forge-litellm-worker
                         │ import litellm  # library, not proxy server
-                        │ # optional later: import fast_litellm  (accel only)
                         ▼
-                   upstream provider APIs
+                   all upstream providers (incl. OpenAI, Anthropic, xAI, …)
 ```
 
 ---
@@ -963,7 +965,7 @@ Illustrative Rust workspace layout (crate names align with §3 / decisions table
 | `forge-core` — builtin tools | Read/write, bash, git, grep |
 | `forge-mcp` | MCP discovery and call bridge |
 | `forge-acp` | ACP server/session |
-| `forge-model` — model client | Unified `ModelClient` trait; Phase 1 native adapters; Phase 5 LiteLLM client |
+| `forge-model` — model client | `ModelClient` trait; Phase 1 natives (until Phase 5); Phase 5: LiteLLM client + mock only |
 | `workers/forge-litellm-worker` | Phase 5 only: Python process using LiteLLM **SDK** (not Proxy) |
 | `forge-durable` — journal | Append-only log, replay, resume (sqlx/SQLite) |
 | `forge-durable` — hitl | Wait/resume tokens |
@@ -1010,8 +1012,8 @@ Forge is the **harness** between models and the real world: a typed tool bus, an
 | 8 | Generator / Evaluator | **Opt-in per task** (single Generator default) |
 | 9 | Project memory file | **`AGENTS.md` primary**; optional aliases later |
 | 10 | Crate layout | **Workspace monorepo, many crates** aligned to modules in §3 |
-| 11 | Model providers (Phase 1) | **Direct APIs + thin trait**; ship **OpenAI-compatible, Anthropic, and xAI** thin adapters early |
-| 18 | Universal providers (Phase 5) | **LiteLLM Python SDK in a Forge-managed worker** (stdio/JSON-RPC). **Not** LiteLLM Proxy. **Not** `fast-litellm` as primary backend (PyO3 accel of Python LiteLLM only). Native adapters remain default when Python/LiteLLM absent. `litellm-rust` is optional limited pure-Rust multi-provider—not full catalog |
+| 11 | Model providers (Phase 1) | **Direct APIs + thin trait**; ship **OpenAI-compatible, Anthropic, and xAI** thin adapters early (**superseded for production in Phase 5**) |
+| 18 | Universal providers (Phase 5) | **LiteLLM Python SDK as the only production `ModelClient`** (stdio worker). **Remove** Phase 1 native HTTP adapters. **Not** LiteLLM Proxy. **Not** `fast-litellm` as primary. **Mock** only for offline CI. No dual production stacks |
 | 12 | Config | **TOML file + env overrides** (e.g. `forge.toml` / `~/.config/forge/config.toml`; secrets/CI via env) |
 | 13 | Protocol phase ownership | **Phase 1 CORE-02 = MCP only.** **Phase 2 CORE-03 = ACP only.** Exclusive; no split ownership of one req ID. |
 | 14 | License | **MIT** |
@@ -1026,8 +1028,8 @@ Forge is the **harness** between models and the real world: a typed tool bus, an
 | Schema-validated tool I/O | `serde::Serialize/Deserialize` + `schemars::JsonSchema` on tool input/output types |
 | Type-safe tool registry | Trait objects or enum dispatch + compile-time registered builtins; runtime MCP tools as schema-validated JSON |
 | Event journal | Append-only rows in **SQLite via sqlx**; typed event envelope (`serde_json`) with schema version field |
-| Unified model client | `async trait` (e.g. `ModelClient`) + Phase 1 adapters: OpenAI-compatible, Anthropic, xAI; Phase 5: `LiteLlmModelClient` → Python worker |
-| LiteLLM (Phase 5) | Optional **Python** runtime + `litellm` package; long-lived worker preferred; **no** proxy server required |
+| Unified model client | `async trait` `ModelClient`; Phase 5 production: `LiteLlmModelClient` → worker only; `MockModelClient` for tests |
+| LiteLLM (Phase 5) | **Required** for live model calls: **Python** + `litellm`; long-lived worker preferred; **no** proxy server; natives deleted |
 | Surfaces | Phase 1: line-mode `repl` + headless `forge-cli`; Phase 2: `forge-acp`; Phase 3: channels; Phase 4: full-screen ratatui `forge tui` |
 | Config | TOML (`forge.toml` or XDG config path) merged with env overrides |
 | Workspace root | Default **cwd**; override via CLI flag and/or config when specified |
