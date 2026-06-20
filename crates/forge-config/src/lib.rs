@@ -1,4 +1,4 @@
-//! Phase 1 configuration: TOML + env overrides (configuration.md).
+//! Configuration: TOML + env overrides (Phase 1 merge rules + Phase 5 LiteLLM).
 
 use std::env;
 use std::fs;
@@ -13,35 +13,140 @@ pub enum ConfigError {
     Io(#[from] std::io::Error),
     #[error("toml parse error: {0}")]
     Toml(#[from] toml::de::Error),
-    #[error("invalid model provider `{0}` (expected openai_compatible | anthropic | xai)")]
+    #[error(
+        "invalid model provider `{0}` (expected litellm | mock; deprecated openai_compatible|anthropic|xai migrate to litellm)"
+    )]
     InvalidProvider(String),
     #[error("{0}")]
     Message(String),
 }
 
+/// Phase 5: sole production backend is LiteLLM; mock is offline CI only.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelProviderKind {
-    OpenaiCompatible,
-    Anthropic,
-    Xai,
+    Litellm,
+    Mock,
+}
+
+/// Result of parsing a provider string, including optional model-id migration prefix.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedProvider {
+    pub kind: ModelProviderKind,
+    /// If set, prefix model id as `{prefix}/{model}` when model has no `/`.
+    pub model_prefix: Option<&'static str>,
+    /// True when the input used a Phase 1 native provider name.
+    pub migrated_from_native: bool,
 }
 
 impl ModelProviderKind {
     pub fn parse(s: &str) -> Result<Self, ConfigError> {
+        Ok(Self::parse_with_migration(s)?.kind)
+    }
+
+    /// Accept Phase 5 kinds and migrate deprecated Phase 1 natives to LiteLLM.
+    pub fn parse_with_migration(s: &str) -> Result<ParsedProvider, ConfigError> {
         match s.trim().to_ascii_lowercase().as_str() {
-            "openai_compatible" | "openai" | "openai-compatible" => Ok(Self::OpenaiCompatible),
-            "anthropic" => Ok(Self::Anthropic),
-            "xai" | "grok" => Ok(Self::Xai),
+            "litellm" => Ok(ParsedProvider {
+                kind: Self::Litellm,
+                model_prefix: None,
+                migrated_from_native: false,
+            }),
+            "mock" => Ok(ParsedProvider {
+                kind: Self::Mock,
+                model_prefix: None,
+                migrated_from_native: false,
+            }),
+            "openai_compatible" | "openai" | "openai-compatible" => Ok(ParsedProvider {
+                kind: Self::Litellm,
+                model_prefix: Some("openai"),
+                migrated_from_native: true,
+            }),
+            "anthropic" => Ok(ParsedProvider {
+                kind: Self::Litellm,
+                model_prefix: Some("anthropic"),
+                migrated_from_native: true,
+            }),
+            "xai" | "grok" => Ok(ParsedProvider {
+                kind: Self::Litellm,
+                model_prefix: Some("xai"),
+                migrated_from_native: true,
+            }),
             other => Err(ConfigError::InvalidProvider(other.to_string())),
         }
     }
 
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::OpenaiCompatible => "openai_compatible",
-            Self::Anthropic => "anthropic",
-            Self::Xai => "xai",
+            Self::Litellm => "litellm",
+            Self::Mock => "mock",
+        }
+    }
+}
+
+/// Apply LiteLLM model-string migration for deprecated native providers.
+pub fn migrate_model_id(model: &str, prefix: Option<&str>) -> String {
+    let Some(prefix) = prefix else {
+        return model.to_string();
+    };
+    if model.contains('/') {
+        model.to_string()
+    } else {
+        format!("{prefix}/{model}")
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LitellmLifecycle {
+    LongLived,
+    PerCall,
+}
+
+impl Default for LitellmLifecycle {
+    fn default() -> Self {
+        Self::LongLived
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LitellmConfig {
+    #[serde(default = "default_litellm_python")]
+    pub python: String,
+    #[serde(default = "default_litellm_module")]
+    pub module: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_path: Option<String>,
+    #[serde(default = "default_request_timeout")]
+    pub request_timeout_secs: u64,
+    #[serde(default = "default_startup_timeout")]
+    pub startup_timeout_secs: u64,
+    #[serde(default)]
+    pub lifecycle: LitellmLifecycle,
+}
+
+fn default_litellm_python() -> String {
+    "python3".into()
+}
+fn default_litellm_module() -> String {
+    "forge_litellm_worker".into()
+}
+fn default_request_timeout() -> u64 {
+    120
+}
+fn default_startup_timeout() -> u64 {
+    30
+}
+
+impl Default for LitellmConfig {
+    fn default() -> Self {
+        Self {
+            python: default_litellm_python(),
+            module: default_litellm_module(),
+            worker_path: None,
+            request_timeout_secs: default_request_timeout(),
+            startup_timeout_secs: default_startup_timeout(),
+            lifecycle: LitellmLifecycle::default(),
         }
     }
 }
@@ -52,18 +157,21 @@ pub struct ModelConfig {
     pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
-    /// Dev-only; prefer env `FORGE_API_KEY`. Never logged by callers.
+    /// Dev-only; prefer env. Never logged by callers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
+    #[serde(default)]
+    pub litellm: LitellmConfig,
 }
 
 impl Default for ModelConfig {
     fn default() -> Self {
         Self {
-            provider: ModelProviderKind::OpenaiCompatible,
-            model: "gpt-4.1-mini".into(),
+            provider: ModelProviderKind::Litellm,
+            model: "openai/gpt-4.1-mini".into(),
             base_url: None,
             api_key: None,
+            litellm: LitellmConfig::default(),
         }
     }
 }
@@ -232,6 +340,17 @@ struct ModelConfigFile {
     model: Option<String>,
     base_url: Option<String>,
     api_key: Option<String>,
+    litellm: Option<LitellmConfigFile>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct LitellmConfigFile {
+    python: Option<String>,
+    module: Option<String>,
+    worker_path: Option<String>,
+    request_timeout_secs: Option<u64>,
+    startup_timeout_secs: Option<u64>,
+    lifecycle: Option<String>,
 }
 
 impl ConfigFile {
@@ -240,19 +359,26 @@ impl ConfigFile {
             cfg.workspace_root = Some(w);
         }
         if let Some(m) = self.model {
+            let mut prefix = None;
             if let Some(p) = m.provider {
-                if let Ok(kind) = ModelProviderKind::parse(&p) {
-                    cfg.model.provider = kind;
+                if let Ok(parsed) = ModelProviderKind::parse_with_migration(&p) {
+                    cfg.model.provider = parsed.kind;
+                    prefix = parsed.model_prefix;
                 }
             }
             if let Some(model) = m.model {
-                cfg.model.model = model;
+                cfg.model.model = migrate_model_id(&model, prefix);
+            } else if let Some(p) = prefix {
+                cfg.model.model = migrate_model_id(&cfg.model.model, Some(p));
             }
             if m.base_url.is_some() {
                 cfg.model.base_url = m.base_url;
             }
             if m.api_key.is_some() {
                 cfg.model.api_key = m.api_key;
+            }
+            if let Some(l) = m.litellm {
+                apply_litellm_file(&mut cfg.model.litellm, l);
             }
         }
         if let Some(j) = self.journal {
@@ -267,12 +393,41 @@ impl ConfigFile {
     }
 }
 
+fn apply_litellm_file(dst: &mut LitellmConfig, src: LitellmConfigFile) {
+    if let Some(p) = src.python {
+        dst.python = p;
+    }
+    if let Some(m) = src.module {
+        dst.module = m;
+    }
+    if src.worker_path.is_some() {
+        dst.worker_path = src.worker_path;
+    }
+    if let Some(t) = src.request_timeout_secs {
+        dst.request_timeout_secs = t;
+    }
+    if let Some(t) = src.startup_timeout_secs {
+        dst.startup_timeout_secs = t;
+    }
+    if let Some(life) = src.lifecycle {
+        dst.lifecycle = match life.to_ascii_lowercase().as_str() {
+            "per_call" | "per-call" => LitellmLifecycle::PerCall,
+            _ => LitellmLifecycle::LongLived,
+        };
+    }
+}
+
 fn apply_env(cfg: &mut Config) -> Result<(), ConfigError> {
+    let mut prefix = None;
     if let Ok(p) = env::var("FORGE_MODEL_PROVIDER") {
-        cfg.model.provider = ModelProviderKind::parse(&p)?;
+        let parsed = ModelProviderKind::parse_with_migration(&p)?;
+        cfg.model.provider = parsed.kind;
+        prefix = parsed.model_prefix;
     }
     if let Ok(m) = env::var("FORGE_MODEL_ID") {
-        cfg.model.model = m;
+        cfg.model.model = migrate_model_id(&m, prefix);
+    } else if let Some(p) = prefix {
+        cfg.model.model = migrate_model_id(&cfg.model.model, Some(p));
     }
     if let Ok(k) = env::var("FORGE_API_KEY") {
         cfg.model.api_key = Some(k);
@@ -283,15 +438,42 @@ fn apply_env(cfg: &mut Config) -> Result<(), ConfigError> {
     if let Ok(j) = env::var("FORGE_JOURNAL_PATH") {
         cfg.journal.path = j;
     }
+    if let Ok(p) = env::var("FORGE_LITELLM_PYTHON") {
+        cfg.model.litellm.python = p;
+    }
+    if let Ok(m) = env::var("FORGE_LITELLM_MODULE") {
+        cfg.model.litellm.module = m;
+    }
+    if let Ok(life) = env::var("FORGE_LITELLM_LIFECYCLE") {
+        cfg.model.litellm.lifecycle = match life.to_ascii_lowercase().as_str() {
+            "per_call" | "per-call" => LitellmLifecycle::PerCall,
+            _ => LitellmLifecycle::LongLived,
+        };
+    }
+    if let Ok(t) = env::var("FORGE_LITELLM_REQUEST_TIMEOUT_SECS") {
+        if let Ok(n) = t.parse() {
+            cfg.model.litellm.request_timeout_secs = n;
+        }
+    }
+    if let Ok(t) = env::var("FORGE_LITELLM_STARTUP_TIMEOUT_SECS") {
+        if let Ok(n) = t.parse() {
+            cfg.model.litellm.startup_timeout_secs = n;
+        }
+    }
     Ok(())
 }
 
 fn apply_overrides(cfg: &mut Config, o: &ConfigOverrides) -> Result<(), ConfigError> {
+    let mut prefix = None;
     if let Some(ref p) = o.model_provider {
-        cfg.model.provider = ModelProviderKind::parse(p)?;
+        let parsed = ModelProviderKind::parse_with_migration(p)?;
+        cfg.model.provider = parsed.kind;
+        prefix = parsed.model_prefix;
     }
     if let Some(ref m) = o.model_id {
-        cfg.model.model = m.clone();
+        cfg.model.model = migrate_model_id(m, prefix);
+    } else if let Some(p) = prefix {
+        cfg.model.model = migrate_model_id(&cfg.model.model, Some(p));
     }
     if let Some(ref k) = o.api_key {
         cfg.model.api_key = Some(k.clone());
@@ -347,6 +529,11 @@ mod tests {
         "FORGE_WORKSPACE",
         "FORGE_JOURNAL_PATH",
         "FORGE_OTEL_ENDPOINT",
+        "FORGE_LITELLM_PYTHON",
+        "FORGE_LITELLM_MODULE",
+        "FORGE_LITELLM_LIFECYCLE",
+        "FORGE_LITELLM_REQUEST_TIMEOUT_SECS",
+        "FORGE_LITELLM_STARTUP_TIMEOUT_SECS",
     ];
 
     /// Clears FORGE_* env vars for the duration of a test; restores on drop.
@@ -390,7 +577,9 @@ mod tests {
         let _g = EnvGuard::clear_forge_env();
         let cfg = Config::load(ConfigOverrides::default()).unwrap();
         assert!(cfg.workspace_root().is_absolute() || cfg.workspace_root() == Path::new("."));
-        assert_eq!(cfg.model.provider, ModelProviderKind::OpenaiCompatible);
+        assert_eq!(cfg.model.provider, ModelProviderKind::Litellm);
+        assert_eq!(cfg.model.model, "openai/gpt-4.1-mini");
+        assert_eq!(cfg.model.litellm.python, "python3");
         assert_eq!(cfg.journal.backend, "sqlite");
     }
 
@@ -405,8 +594,11 @@ mod tests {
             r#"
 workspace_root = "{ws}"
 [model]
-provider = "anthropic"
-model = "claude-sonnet"
+provider = "litellm"
+model = "anthropic/claude-sonnet"
+[model.litellm]
+python = "python3.12"
+request_timeout_secs = 60
 [journal]
 path = "my-sessions"
 [[mcp.servers]]
@@ -425,12 +617,49 @@ args = ["hi"]
         })
         .unwrap();
 
-        assert_eq!(cfg.model.provider, ModelProviderKind::Anthropic);
-        assert_eq!(cfg.model.model, "claude-sonnet");
+        assert_eq!(cfg.model.provider, ModelProviderKind::Litellm);
+        assert_eq!(cfg.model.model, "anthropic/claude-sonnet");
+        assert_eq!(cfg.model.litellm.python, "python3.12");
+        assert_eq!(cfg.model.litellm.request_timeout_secs, 60);
         assert_eq!(cfg.journal.path, "my-sessions");
         assert_eq!(cfg.mcp.servers.len(), 1);
         assert_eq!(cfg.mcp.servers[0].id, "demo");
         assert_eq!(cfg.resolved_workspace, dir.path());
+    }
+
+    #[test]
+    fn migrates_deprecated_anthropic_provider() {
+        let _g = EnvGuard::clear_forge_env();
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("forge.toml");
+        fs::write(
+            &path,
+            r#"
+[model]
+provider = "anthropic"
+model = "claude-sonnet"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load(ConfigOverrides {
+            config_path: Some(path),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(cfg.model.provider, ModelProviderKind::Litellm);
+        assert_eq!(cfg.model.model, "anthropic/claude-sonnet");
+    }
+
+    #[test]
+    fn migrate_model_id_skips_when_already_slashed() {
+        assert_eq!(
+            migrate_model_id("anthropic/claude", Some("anthropic")),
+            "anthropic/claude"
+        );
+        assert_eq!(
+            migrate_model_id("claude", Some("anthropic")),
+            "anthropic/claude"
+        );
     }
 
     #[test]
@@ -442,36 +671,46 @@ args = ["hi"]
             &path,
             r#"
 [model]
-provider = "anthropic"
+provider = "litellm"
 model = "from-file"
 "#,
         )
         .unwrap();
 
-        g.set("FORGE_MODEL_ID", "from-env");
+        g.set("FORGE_MODEL_ID", "openai/from-env");
         let cfg = Config::load(ConfigOverrides {
             config_path: Some(path),
             ..Default::default()
         })
         .unwrap();
 
-        assert_eq!(cfg.model.model, "from-env");
-        assert_eq!(cfg.model.provider, ModelProviderKind::Anthropic);
+        assert_eq!(cfg.model.model, "openai/from-env");
+        assert_eq!(cfg.model.provider, ModelProviderKind::Litellm);
     }
 
     #[test]
     fn cli_overrides_env() {
         let g = EnvGuard::clear_forge_env();
-        g.set("FORGE_MODEL_PROVIDER", "anthropic");
+        g.set("FORGE_MODEL_PROVIDER", "litellm");
         g.set("FORGE_MODEL_ID", "from-env");
         let cfg = Config::load(ConfigOverrides {
-            model_provider: Some("xai".into()),
-            model_id: Some("grok".into()),
+            model_provider: Some("mock".into()),
+            model_id: Some("mock".into()),
             ..Default::default()
         })
         .unwrap();
-        assert_eq!(cfg.model.provider, ModelProviderKind::Xai);
-        assert_eq!(cfg.model.model, "grok");
+        assert_eq!(cfg.model.provider, ModelProviderKind::Mock);
+        assert_eq!(cfg.model.model, "mock");
+    }
+
+    #[test]
+    fn litellm_env_overrides() {
+        let g = EnvGuard::clear_forge_env();
+        g.set("FORGE_LITELLM_PYTHON", "/usr/bin/python3");
+        g.set("FORGE_LITELLM_LIFECYCLE", "per_call");
+        let cfg = Config::load(ConfigOverrides::default()).unwrap();
+        assert_eq!(cfg.model.litellm.python, "/usr/bin/python3");
+        assert_eq!(cfg.model.litellm.lifecycle, LitellmLifecycle::PerCall);
     }
 
     #[test]
