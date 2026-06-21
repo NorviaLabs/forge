@@ -7,7 +7,7 @@
 | **License** | [MIT](./LICENSE) |
 | **Repo** | [NorviaLabs/forge](https://github.com/NorviaLabs/forge) |
 | **Language** | Rust (Tokio) |
-| **Status** | **Phases 1–4 implemented** |
+| **Status** | **Phases 1–5 implemented** |
 
 ---
 
@@ -19,6 +19,7 @@
 | **2** | Enterprise long-horizon (ACP, context, worktree, HITL, governance) | ✓ |
 | **3** | Quality, ops & fleet (Evaluator, OTEL, channels, SCIM/SIEM) | ✓ |
 | **4** | Full-screen terminal TUI (shell, conversation, sidebar, overlays) | ✓ |
+| **5** | Universal providers via LiteLLM SDK (sole production path) | ✓ |
 
 ---
 
@@ -28,7 +29,9 @@
 git clone git@github.com:NorviaLabs/forge.git
 cd forge
 cargo build --release -p forge-cli
-./target/release/forge status   # forge 0.4.0 phase4
+# Live model path also needs the Python worker:
+pip install -e workers/forge-litellm-worker
+./target/release/forge status   # forge 0.5.0 phase5
 ```
 
 ---
@@ -36,17 +39,18 @@ cargo build --release -p forge-cli
 ## Quick start
 
 ```bash
-# Offline
+# Offline (no Python / LiteLLM required)
 ./target/release/forge --mock run "hello"
 ./target/release/forge --mock repl
 
 # Phase 4 full-screen TUI (ratatui)
 ./target/release/forge --mock tui
 
-# Live model
-export FORGE_API_KEY=…
-export FORGE_MODEL_PROVIDER=openai_compatible
-export FORGE_MODEL_ID=gpt-4.1-mini
+# Live model (Phase 5: LiteLLM SDK worker — not Proxy)
+pip install -e workers/forge-litellm-worker
+export OPENAI_API_KEY=…   # or ANTHROPIC_API_KEY / XAI_API_KEY / …
+export FORGE_MODEL_PROVIDER=litellm
+export FORGE_MODEL_ID=openai/gpt-4.1-mini
 ./target/release/forge run "Summarize this repo"
 
 # Phase 2
@@ -94,6 +98,15 @@ export FORGE_MODEL_ID=gpt-4.1-mini
 | `forge-obs` | [observability.md](./docs/designs/observability.md) |
 | `forge-channels` | [channels.md](./docs/designs/channels.md) |
 | `forge-fleet` | [fleet-plugins.md](./docs/designs/fleet-plugins.md) |
+
+### Phase 5
+| Piece | Design |
+|-------|--------|
+| `workers/forge-litellm-worker` | [litellm-worker.md](./docs/designs/litellm-worker.md) |
+| `forge-model` (`LiteLlmModelClient`) | [litellm-providers.md](./docs/designs/litellm-providers.md) |
+| Config `provider=litellm` | [litellm-config.md](./docs/designs/litellm-config.md) |
+
+Native OpenAI/Anthropic/xAI HTTP adapters removed; production uses LiteLLM only. `--mock` for CI.
 
 ### Phase 4
 Full-screen UI in `forge-tui` + `forge tui` CLI entry:

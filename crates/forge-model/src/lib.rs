@@ -1,9 +1,11 @@
-//! Model providers — Phase 5 wire + normalization.
+//! Model providers — Phase 5 LiteLLM SDK worker; mock for CI.
 
+mod litellm_client;
 mod mock;
 mod normalize;
 mod wire;
 
+pub use litellm_client::LiteLlmModelClient;
 pub use mock::MockModelClient;
 pub use normalize::{complete_result_from_value, forge_messages_to_wire, tools_to_openai_functions};
 pub use wire::{error_codes, CompleteParams, WireEnvelope, WireErrorBody, WireType, WIRE_VERSION};
@@ -19,7 +21,7 @@ pub enum ModelError {
     Http(String),
     #[error("provider error: {0}")]
     Provider(String),
-    #[error("missing API key")]
+    #[error("missing API key (set provider env keys for LiteLLM or model.api_key)")]
     MissingApiKey,
     #[error("transport: {0}")]
     Transport(String),
@@ -43,16 +45,18 @@ pub trait ModelClient: Send + Sync {
     async fn complete(&self, req: ModelRequest) -> Result<ModelResponse, ModelError>;
 }
 
+/// Phase 5: mock or LiteLLM worker only (native HTTP adapters removed).
 pub fn client_from_config(cfg: &Config) -> Result<Box<dyn ModelClient>, ModelError> {
     match cfg.model.provider {
         ModelProviderKind::Mock => Ok(Box::new(MockModelClient::script(vec![ModelResponse {
-            text: "mock".into(),
+            text: "mock idle — configure a response script in tests".into(),
             tool_calls: vec![],
             usage: None,
         }]))),
-        ModelProviderKind::Litellm => Err(ModelError::Other(
-            "LiteLLM client not wired yet (Phase 5 in progress)".into(),
-        )),
+        ModelProviderKind::Litellm => {
+            let client = LiteLlmModelClient::from_config(cfg)?;
+            Ok(Box::new(client))
+        }
     }
 }
 
@@ -104,5 +108,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.tool_calls[0].name, "read_file");
+    }
+
+    #[test]
+    fn factory_mock() {
+        let mut cfg = Config::default();
+        cfg.model.provider = ModelProviderKind::Mock;
+        let c = client_from_config(&cfg).unwrap();
+        // type erased — just ensure constructs
+        let _ = c;
     }
 }
