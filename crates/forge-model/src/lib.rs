@@ -1,9 +1,11 @@
-//! Model providers — Phase 5 wire protocol foundation.
+//! Model providers — Phase 5 wire + normalization.
 
 mod mock;
+mod normalize;
 mod wire;
 
 pub use mock::MockModelClient;
+pub use normalize::{complete_result_from_value, forge_messages_to_wire, tools_to_openai_functions};
 pub use wire::{error_codes, CompleteParams, WireEnvelope, WireErrorBody, WireType, WIRE_VERSION};
 
 use async_trait::async_trait;
@@ -57,7 +59,7 @@ pub fn client_from_config(cfg: &Config) -> Result<Box<dyn ModelClient>, ModelErr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use forge_types::MessageRole;
+    use forge_types::{MessageRole, ToolCall};
 
     #[tokio::test]
     async fn mock_returns_text() {
@@ -80,5 +82,27 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.text, "hello");
+    }
+
+    #[tokio::test]
+    async fn mock_tool_call() {
+        let client = MockModelClient::script(vec![ModelResponse {
+            text: "".into(),
+            tool_calls: vec![ToolCall {
+                id: "1".into(),
+                name: "read_file".into(),
+                arguments: serde_json::json!({"path": "a.txt"}),
+            }],
+            usage: None,
+        }]);
+        let resp = client
+            .complete(ModelRequest {
+                messages: vec![],
+                tools: vec![],
+                model: "mock".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(resp.tool_calls[0].name, "read_file");
     }
 }
