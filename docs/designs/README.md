@@ -3,7 +3,7 @@
 **Status:** Draft  
 **Last updated:** 23 Jul 2026  
 
-**Product phases in force:** 1–4 implemented; **5 specified** (LiteLLM SDK providers).
+**Product phases in force:** 1–5 implemented; **6 specified** (`/connect`, xAI Grok, OpenCode Go).
 
 | Layer | Document | Owns |
 |-------|----------|------|
@@ -14,9 +14,9 @@
 
 ## Rules
 
-1. **Exclusive phase ownership** — Each design doc’s header **Phase:** field is a single number (1–5). No multi-phase owners.  
+1. **Exclusive phase ownership** — Each design doc’s header **Phase:** field is a single number (1–6). No multi-phase owners.  
 2. **Exclusive req ownership** — Each PRD req ID appears in exactly one design doc as primary owner.  
-3. **Product-complete phases** — See [prd.md](../prd.md) §13: Phase 1 coding agent, Phase 2 enterprise harness, Phase 3 fleet/quality, Phase 4 full-screen TUI, Phase 5 LiteLLM universal providers.  
+3. **Product-complete phases** — See [prd.md](../prd.md) §13: Phase 1 coding agent, Phase 2 enterprise harness, Phase 3 fleet/quality, Phase 4 full-screen TUI, Phase 5 LiteLLM, Phase 6 connect profiles.  
 4. **Cross-phase references** are allowed as *dependencies* (“builds on Phase 1 journal”) but must not re-specify the other phase’s design.
 
 ## Index by phase
@@ -86,6 +86,17 @@ Visual source of truth: [../ui.md](../ui.md). Phase 1 `surfaces` / line-mode `re
 
 **Phase 5:** litellm-providers → litellm-config → litellm-worker → litellm-wire → litellm-normalization  
 (builds on Phase 1 model-providers + configuration merge rules)  
+
+**Phase 6:** connect-command → provider-xai-grok → provider-opencode-go  
+(builds on Phase 5 LiteLLM path + Phase 1/4 slash UX)  
+
+### Phase 6 — Connected providers (`/connect`)
+
+| Document | PRD reqs | Summary |
+|----------|----------|---------|
+| [connect-command.md](./connect-command.md) | **CONN-01** | `/connect` flow, profile registry, credential store |
+| [provider-xai-grok.md](./provider-xai-grok.md) | **PROV-01** | xAI Grok profile (`XAI_API_KEY`, `xai/…` models) |
+| [provider-opencode-go.md](./provider-opencode-go.md) | **PROV-02** | OpenCode Go profile (auth URL, API key, recommended models) |
 
 ## Template
 

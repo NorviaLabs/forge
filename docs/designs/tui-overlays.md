@@ -62,7 +62,8 @@ On approve/deny: call `session.resolve_hitl` then close overlay.
 
 ### 3.4 Model picker
 
-- Rows: configured / common LiteLLM model strings (Phase 5); not a hard-coded native-only triad.  
+- Rows: configured / common LiteLLM model strings (Phase 5); after Phase 6 `/connect`, include models from connected profiles (Grok, OpenCode Go).  
+- Phase 6 also adds a **connect** overlay entry points via `/connect` (see [connect-command.md](./connect-command.md))—not a separate product client.  
 - Selection sets provider/model for **next** session or prints “restart to apply” consistent with current CLI behavior until hot-swap exists.
 
 ## 4. Interfaces

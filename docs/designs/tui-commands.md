@@ -25,6 +25,7 @@ Phase 1 operators need non-LLM session control. **This catalog is Phase 1 comman
 **Non-goals**
 
 - Phase 2: `/approve`, `/deny` → [durable-hitl.md](./durable-hitl.md); `/reset`, `/compact`, `/cost` → [context-lifecycle.md](./context-lifecycle.md); `/worktree` → [workspace-isolation.md](./workspace-isolation.md).  
+- Phase 6: `/connect` → [connect-command.md](./connect-command.md) (xAI Grok, OpenCode Go profiles).  
 - Plugin commands.
 
 ## 3. Phase 1 catalog
@@ -64,3 +65,4 @@ Phase 1 operators need non-LLM session control. **This catalog is Phase 1 comman
 - [durable-hitl.md](./durable-hitl.md) (Phase 2 commands)  
 - [context-lifecycle.md](./context-lifecycle.md) (Phase 2 commands)  
 - [workspace-isolation.md](./workspace-isolation.md) (Phase 2 commands)  
+- [connect-command.md](./connect-command.md) (Phase 6 `/connect`)  

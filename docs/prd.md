@@ -1,6 +1,6 @@
 # Forge — Product Requirements Document
 
-**Version:** 0.7  
+**Version:** 0.8  
 **Status:** Draft  
 **Owner:** Mohit Ranka  
 **Last updated:** 23 Jul 2026  
@@ -148,7 +148,8 @@ Every harness component encodes an assumption about what the model cannot yet do
 8. Expose **multi-surface interfaces**: full-screen terminal TUI, headless CI, IDE via ACP, multi-channel gateway.
 9. Emit **standard distributed traces** across model, tool, and step boundaries (OpenTelemetry-compatible).
 10. Support **multi-provider models** via configuration only (no application rewrites).  
-11. (Phase 5) Reach the **broad provider catalog** via the **LiteLLM Python SDK (library)**, not the LiteLLM Proxy gateway.
+11. (Phase 5) Reach the **broad provider catalog** via the **LiteLLM Python SDK (library)**, not the LiteLLM Proxy gateway.  
+12. (Phase 6) Ship a first-class **`/connect`** flow for productized providers, starting with **xAI Grok** and **OpenCode Go**, without reintroducing dual model-client stacks.
 
 ---
 
@@ -164,7 +165,7 @@ Every harness component encodes an assumption about what the model cannot yet do
 | Opaque “agent as black box” without audit logs | Enterprise requires immutable invocation records |
 | **LiteLLM Proxy as required infrastructure** | Phase 5 uses the **LiteLLM library/SDK** inside a Forge-owned worker; an org-wide LLM gateway is optional and out of scope |
 
-Phase-scoped deferrals (see §13): multi-channel fleet, SCIM, deep kernel sandboxing, SIEM plugins may ship after core durability and protocols. Universal provider coverage via LiteLLM is **Phase 5**.
+Phase-scoped deferrals (see §13): multi-channel fleet, SCIM, deep kernel sandboxing, SIEM plugins may ship after core durability and protocols. Universal provider coverage via LiteLLM is **Phase 5**. Productized connect UX for xAI Grok and OpenCode Go is **Phase 6**.
 
 ---
 
@@ -238,6 +239,7 @@ Product capabilities group into five areas (implementation detail in architectur
 - Switching providers requires **configuration only**—no changes to tool definitions, agent logic, or durable state schemas.
 - **Phase 1 (historical):** Thin native adapters (OpenAI-compatible, Anthropic, xAI) behind `ModelClient`.
 - **Phase 5 (MDL-01):** **Single production path** — **LiteLLM Python SDK** (library, not Proxy) for **all** providers, including those formerly served by native adapters. Dual native+LiteLLM stacks are removed so operators and code maintain one client. **Mock** remains for offline CI only.
+- **Phase 6 (CONN-01, PROV-01, PROV-02):** **`/connect`** onboarding for **xAI Grok** and **OpenCode Go** product profiles; still uses the Phase 5 LiteLLM path under the hood. Credentials stored securely; never shown in transcripts or default traces.
 
 ---
 
@@ -298,8 +300,13 @@ Product capabilities group into five areas (implementation detail in architectur
 | TUI-03 | **4** | Session sidebar |
 | TUI-04 | **4** | HITL / slash / model overlays |
 | MDL-01 | **5** | Universal providers via LiteLLM SDK (not Proxy) |
+| CONN-01 | **6** | `/connect` command — interactive provider auth & profile select |
+| PROV-01 | **6** | xAI Grok first-class connect profile |
+| PROV-02 | **6** | OpenCode Go first-class connect profile |
 
 Phase 5 design set (all exclusive Phase 5): [litellm-providers.md](./designs/litellm-providers.md) (primary), [litellm-worker.md](./designs/litellm-worker.md), [litellm-wire.md](./designs/litellm-wire.md), [litellm-normalization.md](./designs/litellm-normalization.md), [litellm-config.md](./designs/litellm-config.md).
+
+Phase 6 design set (all exclusive Phase 6): [connect-command.md](./designs/connect-command.md) (CONN-01 primary), [provider-xai-grok.md](./designs/provider-xai-grok.md) (PROV-01), [provider-opencode-go.md](./designs/provider-opencode-go.md) (PROV-02).
 
 ### Design doc → phase map (exclusive)
 
@@ -429,6 +436,37 @@ See [designs/README.md](./designs/README.md). No design doc may list multiple ph
 
 ---
 
+### Phase 6 — Connected providers: xAI Grok, OpenCode Go & `/connect` (complete product)
+
+**Product:** Phases 1–5 harness **plus** a first-class **`/connect`** slash command that walks operators through authenticating and selecting **productized provider profiles**. Phase 6 ships two profiles end-to-end:
+
+1. **xAI Grok** — Grok models via xAI credentials (routed through the Phase 5 LiteLLM production path; LiteLLM model strings such as `xai/…`).  
+2. **OpenCode Go** — [OpenCode Go](https://opencode.ai/go) low-cost coding-model subscription / API access, connected with an operator UX similar to OpenCode’s `/connect` (select profile → obtain/paste API key → store → select recommended model).
+
+**Users served:** Operators who want guided setup for Grok and OpenCode Go without editing TOML by hand or learning raw LiteLLM model ids first.
+
+**Depends on:** Phase 5 LiteLLM sole production `ModelClient`; Phase 4 TUI slash palette (optional but primary UX); Phase 1 line-mode REPL still accepts `/connect`.
+
+| In scope | Out of scope |
+|----------|--------------|
+| **CONN-01** — `/connect` interactive flow (TUI + REPL) | Reintroducing native multi-client HTTP stacks (Phase 5 decision stands) |
+| **PROV-01** — xAI Grok profile (key, default models, smoke) | Building or reselling OpenCode Go billing |
+| **PROV-02** — OpenCode Go profile (key, base URL / model catalog, smoke) | Supporting every OpenCode provider (only Go + Grok required here) |
+| Secure local credential storage (env + user config; vault when Phase 2 present) | LiteLLM Proxy as required gateway |
+| Update `/model` / model picker to list connected profiles’ models | Changing agent-loop / tool contracts |
+
+**Exit criteria (product complete):**
+
+1. Operator runs `/connect`, selects **xAI Grok**, supplies an API key (or confirms env `XAI_API_KEY`), and completes a multi-step task using a Grok model id.  
+2. Operator runs `/connect`, selects **OpenCode Go**, supplies the Go API key after signing in at the OpenCode auth surface, and completes a multi-step task with a recommended Go model.  
+3. Credentials never appear in journal model-visible fields, chat, sidebar, or default OTEL attributes.  
+4. `/connect` works from full-screen TUI and line-mode REPL; headless may use flags/env equivalent (`forge connect` optional).  
+5. Connected profiles still invoke models only via Phase 5 LiteLLM worker (no second production client).  
+6. Mock / CI path remains unchanged (no connect required).  
+7. Docs describe both profiles and the `/connect` UX; no requirement to run LiteLLM Proxy.
+
+---
+
 ## 14. Strategic takeaways
 
 The agent ecosystem is moving from rapid-prototype abstractions (loose roles, heavy graphs, unmonitored single-process runtimes) toward **production-grade harness engineering**. Long-horizon reliability depends less on prompt tweaks and more on:
@@ -440,6 +478,7 @@ The agent ecosystem is moving from rapid-prototype abstractions (loose roles, he
 - Governance, auditability, and observability  
 - Operator-grade terminal UX (full-screen TUI) without sacrificing headless CI  
 - Broad model portability through a **single** LiteLLM SDK path (Phase 5)  
+- Guided **`/connect`** onboarding for key product providers (Phase 6: xAI Grok, OpenCode Go)  
 
 Forge is specified to occupy that intersection: low abstraction tax, enterprise durability, portable model/client integration, and a first-class terminal surface.
 
