@@ -1,5 +1,6 @@
-//! Slash commands — Phase 1 + Phase 2.
+//! Slash commands — Phase 1 + Phase 2 + Phase 6 `/connect`.
 
+use forge_connect::ConnectAction;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -31,6 +32,8 @@ pub enum SlashCommand {
     Compact,
     Cost,
     Worktree { action: WorktreeAction },
+    /// Phase 6 — provider connect flow
+    Connect(ConnectAction),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,6 +103,13 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
                 ))),
             }
         }
+        "connect" => {
+            let rest: Vec<&str> = parts.collect();
+            let args = rest.join(" ");
+            forge_connect::parse_connect_args(&args)
+                .map(SlashCommand::Connect)
+                .map_err(|e| CommandError::Usage(e.to_string()))
+        }
         other => Err(CommandError::Unknown(other.to_string())),
     }
 }
@@ -111,6 +121,7 @@ pub fn help_text() -> &'static str {
      /resume <id>    Resume session from journal\n\
      /cancel         Cancel current turn\n\
      /model [p] [m]  Switch provider/model (config)\n\
+     /connect …      Connect provider (xai | opencode_go | list | status) (Phase 6)\n\
      /journal [n]    Tail journal events\n\
      /tools          List tools\n\
      /cost           Context usage ratio (Phase 2)\n\
@@ -177,5 +188,35 @@ mod tests {
     #[test]
     fn non_slash_is_none() {
         assert!(parse_slash("hello").is_none());
+    }
+
+    #[test]
+    fn parses_connect_commands() {
+        use forge_connect::ConnectAction;
+        assert_eq!(
+            parse_slash("/connect").unwrap().unwrap(),
+            SlashCommand::Connect(ConnectAction::Open)
+        );
+        assert_eq!(
+            parse_slash("/connect list").unwrap().unwrap(),
+            SlashCommand::Connect(ConnectAction::List)
+        );
+        assert_eq!(
+            parse_slash("/connect status").unwrap().unwrap(),
+            SlashCommand::Connect(ConnectAction::Status)
+        );
+        assert_eq!(
+            parse_slash("/connect xai").unwrap().unwrap(),
+            SlashCommand::Connect(ConnectAction::Connect {
+                profile_id: "xai".into(),
+                api_key: None
+            })
+        );
+        assert_eq!(
+            parse_slash("/connect disconnect xai").unwrap().unwrap(),
+            SlashCommand::Connect(ConnectAction::Disconnect {
+                profile_id: Some("xai".into())
+            })
+        );
     }
 }

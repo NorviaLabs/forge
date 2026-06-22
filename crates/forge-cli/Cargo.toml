@@ -25,6 +25,7 @@ forge-feedback = { workspace = true }
 forge-obs = { workspace = true }
 forge-channels = { workspace = true }
 forge-fleet = { workspace = true }
+forge-connect = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

@@ -9,6 +9,9 @@ use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
+use forge_connect::{
+    builtin_registry, handle_connect_action, ConnectAction, ConnectRegistry, CredentialStore,
+};
 use forge_core::{AgentSession, LoopError};
 use forge_types::HitlDecision;
 use ratatui::backend::CrosstermBackend;
@@ -55,6 +58,9 @@ pub struct TuiApp {
     pub status_message: String,
     pub runtime: TuiRuntimeConfig,
     pub last_exit: ExitCode,
+    pub connect_registry: ConnectRegistry,
+    pub connect_store: CredentialStore,
+    pub connect_profile: Option<String>,
 }
 
 impl TuiApp {
@@ -70,6 +76,35 @@ impl TuiApp {
             status_message: String::new(),
             runtime,
             last_exit: ExitCode::Success,
+            connect_registry: builtin_registry(),
+            connect_store: CredentialStore::user_default(),
+            connect_profile: None,
+        }
+    }
+
+    fn handle_connect(&mut self, action: ConnectAction) {
+        let mut model = Some(self.runtime.model_label.clone());
+        match handle_connect_action(
+            action,
+            &self.connect_registry,
+            &self.connect_store,
+            &mut self.connect_profile,
+            &mut model,
+        ) {
+            Ok(msg) => {
+                if let Some(m) = model {
+                    self.runtime.model_label = m;
+                    self.runtime.provider = "litellm".into();
+                }
+                self.status_message = msg.lines().next().unwrap_or("ok").to_string();
+                // Multi-line list: keep full message for status when short
+                if msg.lines().count() > 1 {
+                    self.status_message = msg.replace('\n', " · ");
+                }
+            }
+            Err(e) => {
+                self.status_message = e.to_string();
+            }
         }
     }
 
@@ -306,6 +341,9 @@ impl TuiApp {
                 }
                 Ok(SlashCommand::Cancel) => {
                     self.status_message = "cancel".into();
+                }
+                Ok(SlashCommand::Connect(action)) => {
+                    self.handle_connect(action);
                 }
                 Err(e) => {
                     self.status_message = e.to_string();

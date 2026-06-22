@@ -681,6 +681,7 @@ dependencies = [
  "clap",
  "forge-channels",
  "forge-config",
+ "forge-connect",
  "forge-core",
  "forge-durable",
  "forge-feedback",
@@ -710,6 +711,17 @@ dependencies = [
  "forge-types",
  "serde",
  "serde_json",
+ "tempfile",
+ "thiserror",
+ "toml",
+]
+
+[[package]]
+name = "forge-connect"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "serde",
  "tempfile",
  "thiserror",
  "toml",
@@ -878,6 +890,7 @@ dependencies = [
  "chrono",
  "crossterm 0.28.1",
  "forge-config",
+ "forge-connect",
  "forge-core",
  "forge-model",
  "forge-tools",

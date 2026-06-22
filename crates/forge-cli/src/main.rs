@@ -10,6 +10,9 @@ use forge_core::{AgentSession, LoopConfig};
 use forge_mcp::{register_static_mcp, McpManager, StaticMcpTool};
 use forge_model::{client_from_config, MockModelClient, ModelClient};
 use forge_tools::ToolRegistry;
+use forge_connect::{
+    builtin_registry, handle_connect_action, ConnectAction, CredentialStore,
+};
 use forge_tui::{
     help_text, parse_slash, run_tui, ExitCode, SlashCommand, TuiRuntimeConfig, WorktreeAction,
 };
@@ -94,6 +97,17 @@ enum Commands {
         #[arg(long, default_value_t = true)]
         siem: bool,
     },
+    /// Phase 6: connect a product provider profile (xai | opencode_go)
+    Connect {
+        /// Profile id, or list|status|disconnect
+        profile: Option<String>,
+        /// Optional API key (prefer env / interactive; do not log)
+        #[arg(long)]
+        key: Option<String>,
+        /// Read API key from file (one line)
+        #[arg(long)]
+        key_file: Option<PathBuf>,
+    },
 }
 
 #[tokio::main]
@@ -128,11 +142,60 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     match cli.command {
         Commands::Status => {
             println!(
-                "forge 0.5.0 phase5\nworkspace {}\nprovider {} model {}",
+                "forge 0.6.0 phase6\nworkspace {}\nprovider {} model {}",
                 cfg.workspace_root().display(),
                 cfg.model.provider.as_str(),
                 cfg.model.model
             );
+            Ok(ExitCode::Success)
+        }
+        Commands::Connect {
+            profile,
+            key,
+            key_file,
+        } => {
+            let reg = builtin_registry();
+            let store = CredentialStore::user_default();
+            let mut active_profile = None;
+            let mut active_model = Some(cfg.model.model.clone());
+            let action = match profile.as_deref() {
+                None | Some("list") => ConnectAction::List,
+                Some("status") => ConnectAction::Status,
+                Some("disconnect") => ConnectAction::Disconnect { profile_id: None },
+                Some(id) => {
+                    let api_key = if let Some(k) = key {
+                        Some(k)
+                    } else if let Some(path) = key_file {
+                        Some(
+                            std::fs::read_to_string(&path)
+                                .map_err(|e| anyhow::anyhow!(e))?
+                                .lines()
+                                .next()
+                                .unwrap_or("")
+                                .trim()
+                                .to_string(),
+                        )
+                    } else {
+                        None
+                    };
+                    ConnectAction::Connect {
+                        profile_id: id.to_string(),
+                        api_key,
+                    }
+                }
+            };
+            let msg = handle_connect_action(
+                action,
+                &reg,
+                &store,
+                &mut active_profile,
+                &mut active_model,
+            )
+            .map_err(|e| anyhow::anyhow!(e))?;
+            println!("{msg}");
+            if let Some(m) = active_model {
+                println!("hint: set FORGE_MODEL_ID={m} or model in forge.toml");
+            }
             Ok(ExitCode::Success)
         }
         Commands::Tui {
@@ -145,7 +208,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 model_label: cfg.model.model.clone(),
                 provider: cfg.model.provider.as_str().into(),
                 cwd: cfg.workspace_root().to_path_buf(),
-                version: "forge 0.5.0".into(),
+                version: "forge 0.6.0".into(),
             };
             let code = run_tui(session, runtime)
                 .await
@@ -172,6 +235,10 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 open_session(&cfg, cli.mock, max_turns, resume, cli.worktree).await?;
             println!("Forge REPL — session {}", session.session_id);
             println!("{}", help_text());
+            let connect_reg = builtin_registry();
+            let connect_store = CredentialStore::user_default();
+            let mut connect_profile: Option<String> = None;
+            let mut connect_model: Option<String> = Some(cfg.model.model.clone());
             let stdin = io::stdin();
             let mut stdout = io::stdout();
             for line in stdin.lock().lines() {
@@ -213,6 +280,18 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                         Ok(SlashCommand::Cancel) => println!("cancel acknowledged"),
                         Ok(SlashCommand::Model { provider, model }) => {
                             println!("model switch requested provider={provider:?} model={model:?}");
+                        }
+                        Ok(SlashCommand::Connect(action)) => {
+                            match handle_connect_action(
+                                action,
+                                &connect_reg,
+                                &connect_store,
+                                &mut connect_profile,
+                                &mut connect_model,
+                            ) {
+                                Ok(msg) => println!("{msg}"),
+                                Err(e) => println!("{e}"),
+                            }
                         }
                         Ok(SlashCommand::Journal { tail }) => {
                             let n = tail.unwrap_or(10);

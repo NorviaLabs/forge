@@ -12,6 +12,7 @@ forge-tools = { workspace = true }
 forge-config = { workspace = true }
 forge-model = { workspace = true }
 forge-workspace = { workspace = true }
+forge-connect = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
