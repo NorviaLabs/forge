@@ -72,3 +72,31 @@ fn fleet_plugins_load() {
         .success()
         .stdout(predicate::str::contains("plugins="));
 }
+
+#[test]
+fn connect_list_shows_profiles() {
+    Command::cargo_bin("forge")
+        .unwrap()
+        .args(["connect", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("xai"))
+        .stdout(predicate::str::contains("opencode_go"));
+}
+
+#[test]
+fn connect_xai_with_key_no_secret_leak() {
+    let dir = tempdir().unwrap();
+    // Isolate credentials path via HOME
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(home.join(".config/forge")).unwrap();
+    Command::cargo_bin("forge")
+        .unwrap()
+        .env("HOME", &home)
+        .args(["connect", "xai", "--key", "super-secret-xai-key"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("xAI Grok"))
+        .stdout(predicate::str::contains("xai/grok"))
+        .stdout(predicate::str::contains("super-secret-xai-key").not());
+}

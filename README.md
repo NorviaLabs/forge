@@ -7,7 +7,7 @@
 | **License** | [MIT](./LICENSE) |
 | **Repo** | [NorviaLabs/forge](https://github.com/NorviaLabs/forge) |
 | **Language** | Rust (Tokio) |
-| **Status** | **Phases 1–5 implemented** |
+| **Status** | **Phases 1–6 implemented** |
 
 ---
 
@@ -20,6 +20,7 @@
 | **3** | Quality, ops & fleet (Evaluator, OTEL, channels, SCIM/SIEM) | ✓ |
 | **4** | Full-screen terminal TUI (shell, conversation, sidebar, overlays) | ✓ |
 | **5** | Universal providers via LiteLLM SDK (sole production path) | ✓ |
+| **6** | `/connect` + xAI Grok + OpenCode Go profiles | ✓ |
 
 ---
 
@@ -31,7 +32,7 @@ cd forge
 cargo build --release -p forge-cli
 # Live model path also needs the Python worker:
 pip install -e workers/forge-litellm-worker
-./target/release/forge status   # forge 0.5.0 phase5
+./target/release/forge status   # forge 0.6.0 phase6
 ```
 
 ---
@@ -53,6 +54,12 @@ export FORGE_MODEL_PROVIDER=litellm
 export FORGE_MODEL_ID=openai/gpt-4.1-mini
 ./target/release/forge run "Summarize this repo"
 
+# Phase 6: connect product profiles (keys stored under ~/.config/forge/credentials.toml)
+./target/release/forge connect list
+./target/release/forge connect xai --key "$XAI_API_KEY"
+./target/release/forge connect opencode_go --key "$OPENCODE_API_KEY"
+# or in TUI/REPL: /connect list · /connect xai
+
 # Phase 2
 ./target/release/forge --worktree --mock run "edit safely"
 ./target/release/forge approve --session <uuid>
@@ -72,6 +79,7 @@ export FORGE_MODEL_ID=openai/gpt-4.1-mini
 | `status` | 1 | Version, workspace, model |
 | `run` / `repl` | 1 | Headless / interactive agent |
 | `tui` | 4 | Full-screen ratatui TUI (`/` palette, HITL modal) |
+| `connect` | 6 | Connect xAI Grok or OpenCode Go (`list` / profile / key) |
 | `approve` / `deny` | 2 | HITL for a session |
 | `feedback` | 3 | Run dual-sensor gate (EVAL-01) |
 | `channel` | 3 | Restricted-ACL channel ingress (CH-01) |
@@ -107,6 +115,13 @@ export FORGE_MODEL_ID=openai/gpt-4.1-mini
 | Config `provider=litellm` | [litellm-config.md](./docs/designs/litellm-config.md) |
 
 Native OpenAI/Anthropic/xAI HTTP adapters removed; production uses LiteLLM only. `--mock` for CI.
+
+### Phase 6
+| Piece | Design |
+|-------|--------|
+| `forge-connect` | [connect-command.md](./docs/designs/connect-command.md) |
+| xAI Grok profile | [provider-xai-grok.md](./docs/designs/provider-xai-grok.md) |
+| OpenCode Go profile | [provider-opencode-go.md](./docs/designs/provider-opencode-go.md) |
 
 ### Phase 4
 Full-screen UI in `forge-tui` + `forge tui` CLI entry:

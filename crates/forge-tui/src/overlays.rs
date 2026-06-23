@@ -77,6 +77,10 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
             desc: "Switch provider/model".into(),
         },
         PaletteItem {
+            cmd: "/connect".into(),
+            desc: "Connect xAI Grok or OpenCode Go".into(),
+        },
+        PaletteItem {
             cmd: "/quit".into(),
             desc: "Exit TUI".into(),
         },
@@ -84,20 +88,26 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
 }
 
 pub fn default_models() -> Vec<ModelItem> {
-    vec![
+    // Phase 5/6: LiteLLM model strings (provider field = litellm routing label)
+    let mut items = vec![
         ModelItem {
-            provider: "openai_compatible".into(),
-            model: "gpt-4.1-mini".into(),
+            provider: "litellm".into(),
+            model: "openai/gpt-4.1-mini".into(),
         },
         ModelItem {
-            provider: "anthropic".into(),
-            model: "claude-sonnet".into(),
+            provider: "litellm".into(),
+            model: "anthropic/claude-sonnet".into(),
         },
-        ModelItem {
-            provider: "xai".into(),
-            model: "grok".into(),
-        },
-    ]
+    ];
+    for p in forge_connect::builtin_registry().profiles() {
+        for m in &p.default_models {
+            items.push(ModelItem {
+                provider: "litellm".into(),
+                model: m.clone(),
+            });
+        }
+    }
+    items
 }
 
 impl Overlay {
@@ -436,8 +446,9 @@ mod tests {
         let mut o = Overlay::model_open();
         let a = handle_overlay_key(&mut o, Key::Enter);
         match a {
-            OverlayAction::SelectModel { provider, .. } => {
-                assert_eq!(provider, "openai_compatible");
+            OverlayAction::SelectModel { provider, model } => {
+                assert_eq!(provider, "litellm");
+                assert!(model.contains('/') || !model.is_empty());
             }
             _ => panic!("expected model select"),
         }
