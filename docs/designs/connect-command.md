@@ -15,24 +15,26 @@
 
 Phase 5 unifies all live inference on the LiteLLM SDK worker. Operators still need a **guided way** to attach credentials and pick a productized backend—especially **xAI Grok** and **OpenCode Go**—without hand-editing TOML or memorizing model strings.
 
-OpenCode popularized a **`/connect`** flow: pick a provider → open auth if needed → paste API key → use recommended models. Forge adopts the same operator pattern for its first-class profiles.
+OpenCode popularized **`/connect`**. Forge adopts that pattern with **Phase 6.1** auth modes: **xAI Grok = OAuth**; **OpenCode Go = API key with mandatory TUI prompt**.
 
 ## 2. Goals & non-goals
 
 **Goals**
 
 - Slash command **`/connect`** in full-screen TUI and line-mode REPL.  
-- Extensible **connect profile** registry (Phase 6 ships Grok + OpenCode Go).  
-- Store credentials securely (user config secrets file and/or env; vault when Phase 2 SEC-01 available).  
-- Activate a LiteLLM model string + worker env for the session (and optionally persist for next launch).  
-- Never print secrets in chat, journal model-visible fields, sidebar, or default OTEL.
+- Extensible **connect profile** registry (Grok + OpenCode Go).  
+- Store API keys **and** OAuth tokens securely (`credentials.toml` 0600 / env / vault).  
+- Activate a LiteLLM model string + worker env for the session.  
+- Never print secrets in chat, journal model-visible fields, sidebar, or default OTEL.  
+- Branch UX by **`auth_mode`** ([connect-auth-modes.md](./connect-auth-modes.md)).
 
 **Non-goals**
 
 - A second production HTTP client (Phase 5 LiteLLM path remains sole).  
-- Full multi-tenant OAuth server inside Forge.  
+- Full multi-tenant OAuth *authorization server* inside Forge (Forge is OAuth *client* only).  
 - Billing or account management for OpenCode Go / xAI.  
-- Replacing `/model` (complementary: connect establishes credentials; model picks id).
+- Replacing `/model`.  
+- API-key paste as primary path for **xAI Grok**.
 
 ## 3. Design
 
