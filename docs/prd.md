@@ -1,6 +1,6 @@
 # Forge — Product Requirements Document
 
-**Version:** 0.8  
+**Version:** 0.8.1  
 **Status:** Draft  
 **Owner:** Mohit Ranka  
 **Last updated:** 23 Jul 2026  
@@ -239,7 +239,8 @@ Product capabilities group into five areas (implementation detail in architectur
 - Switching providers requires **configuration only**—no changes to tool definitions, agent logic, or durable state schemas.
 - **Phase 1 (historical):** Thin native adapters (OpenAI-compatible, Anthropic, xAI) behind `ModelClient`.
 - **Phase 5 (MDL-01):** **Single production path** — **LiteLLM Python SDK** (library, not Proxy) for **all** providers, including those formerly served by native adapters. Dual native+LiteLLM stacks are removed so operators and code maintain one client. **Mock** remains for offline CI only.
-- **Phase 6 (CONN-01, PROV-01, PROV-02):** **`/connect`** onboarding for **xAI Grok** and **OpenCode Go** product profiles; still uses the Phase 5 LiteLLM path under the hood. Credentials stored securely; never shown in transcripts or default traces.
+- **Phase 6 (CONN-01, PROV-01, PROV-02):** **`/connect`** onboarding for **xAI Grok** and **OpenCode Go**; still uses the Phase 5 LiteLLM path.  
+- **Phase 6.1:** **xAI Grok connects via OAuth** (not API-key paste). **OpenCode Go TUI must explicitly prompt for API key** when connecting.
 
 ---
 
@@ -306,7 +307,7 @@ Product capabilities group into five areas (implementation detail in architectur
 
 Phase 5 design set (all exclusive Phase 5): [litellm-providers.md](./designs/litellm-providers.md) (primary), [litellm-worker.md](./designs/litellm-worker.md), [litellm-wire.md](./designs/litellm-wire.md), [litellm-normalization.md](./designs/litellm-normalization.md), [litellm-config.md](./designs/litellm-config.md).
 
-Phase 6 design set (all exclusive Phase 6): [connect-command.md](./designs/connect-command.md) (CONN-01 primary), [provider-xai-grok.md](./designs/provider-xai-grok.md) (PROV-01), [provider-opencode-go.md](./designs/provider-opencode-go.md) (PROV-02).
+Phase 6 design set (all exclusive Phase 6): [connect-command.md](./designs/connect-command.md) (CONN-01 primary), [connect-auth-modes.md](./designs/connect-auth-modes.md) (6.1 auth modes), [provider-xai-grok.md](./designs/provider-xai-grok.md) (PROV-01, OAuth), [provider-opencode-go.md](./designs/provider-opencode-go.md) (PROV-02, TUI API key prompt).
 
 ### Design doc → phase map (exclusive)
 
@@ -438,10 +439,10 @@ See [designs/README.md](./designs/README.md). No design doc may list multiple ph
 
 ### Phase 6 — Connected providers: xAI Grok, OpenCode Go & `/connect` (complete product)
 
-**Product:** Phases 1–5 harness **plus** a first-class **`/connect`** slash command that walks operators through authenticating and selecting **productized provider profiles**. Phase 6 ships two profiles end-to-end:
+**Product:** Phases 1–5 harness **plus** a first-class **`/connect`** slash command that walks operators through authenticating and selecting **productized provider profiles**. Phase 6 ships two profiles end-to-end (auth refined in **6.1**):
 
-1. **xAI Grok** — Grok models via xAI credentials (routed through the Phase 5 LiteLLM production path; LiteLLM model strings such as `xai/…`).  
-2. **OpenCode Go** — [OpenCode Go](https://opencode.ai/go) low-cost coding-model subscription / API access, connected with an operator UX similar to OpenCode’s `/connect` (select profile → obtain/paste API key → store → select recommended model).
+1. **xAI Grok** — Grok models via **OAuth** login to xAI account infrastructure (not API-key paste). Inference still uses Phase 5 LiteLLM (`xai/…` model strings) with tokens injected into the worker.  
+2. **OpenCode Go** — [OpenCode Go](https://opencode.ai/go) subscription / API access: select profile → open auth URL → **explicitly enter API key** (TUI masked prompt required) → store → recommended model.
 
 **Users served:** Operators who want guided setup for Grok and OpenCode Go without editing TOML by hand or learning raw LiteLLM model ids first.
 
@@ -450,20 +451,29 @@ See [designs/README.md](./designs/README.md). No design doc may list multiple ph
 | In scope | Out of scope |
 |----------|--------------|
 | **CONN-01** — `/connect` interactive flow (TUI + REPL) | Reintroducing native multi-client HTTP stacks (Phase 5 decision stands) |
-| **PROV-01** — xAI Grok profile (key, default models, smoke) | Building or reselling OpenCode Go billing |
-| **PROV-02** — OpenCode Go profile (key, base URL / model catalog, smoke) | Supporting every OpenCode provider (only Go + Grok required here) |
-| Secure local credential storage (env + user config; vault when Phase 2 present) | LiteLLM Proxy as required gateway |
-| Update `/model` / model picker to list connected profiles’ models | Changing agent-loop / tool contracts |
+| **PROV-01** — xAI Grok profile (**OAuth**, default models, smoke) | Building or reselling OpenCode Go / xAI billing |
+| **PROV-02** — OpenCode Go profile (**API key**, TUI must prompt for key) | Supporting every OpenCode provider (only Go + Grok required here) |
+| Secure storage of API keys **and** OAuth tokens | LiteLLM Proxy as required gateway |
+| Auth-mode branching (OAuth vs API key) | Changing agent-loop / tool contracts |
+| Update `/model` / model picker to list connected profiles’ models | Silent OpenCode Go connect without a key step in TUI |
+
+#### Phase 6.1 amendments (normative)
+
+| Profile | Auth | TUI requirement |
+|---------|------|-----------------|
+| **xAI Grok** | **OAuth** (browser and/or device code) | **No** API-key field; OAuth progress UI only |
+| **OpenCode Go** | **API key** | **Must** show masked “Enter API key” when connecting (`tui_always_prompt`) |
 
 **Exit criteria (product complete):**
 
-1. Operator runs `/connect`, selects **xAI Grok**, supplies an API key (or confirms env `XAI_API_KEY`), and completes a multi-step task using a Grok model id.  
-2. Operator runs `/connect`, selects **OpenCode Go**, supplies the Go API key after signing in at the OpenCode auth surface, and completes a multi-step task with a recommended Go model.  
-3. Credentials never appear in journal model-visible fields, chat, sidebar, or default OTEL attributes.  
-4. `/connect` works from full-screen TUI and line-mode REPL; headless may use flags/env equivalent (`forge connect` optional).  
+1. Operator runs `/connect`, selects **xAI Grok**, completes **OAuth** (not API-key paste), and completes a multi-step task using a Grok model id.  
+2. Operator runs `/connect`, selects **OpenCode Go**; **TUI prompts for API key**; after key entry, completes a multi-step task with a recommended Go model.  
+3. Credentials / tokens never appear in journal model-visible fields, chat, sidebar, or default OTEL attributes.  
+4. `/connect` works from full-screen TUI and line-mode REPL; headless may use `forge connect` (OAuth interactive or Go `--key` / `--key-file`).  
 5. Connected profiles still invoke models only via Phase 5 LiteLLM worker (no second production client).  
 6. Mock / CI path remains unchanged (no connect required).  
-7. Docs describe both profiles and the `/connect` UX; no requirement to run LiteLLM Proxy.
+7. Docs describe OAuth for Grok, explicit API-key TUI for OpenCode Go; no LiteLLM Proxy requirement.  
+8. `forge connect xai --key …` is rejected (OAuth-only); OpenCode Go accepts key via prompt or flags.
 
 ---
 

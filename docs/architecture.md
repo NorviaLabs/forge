@@ -1,6 +1,6 @@
 # Forge — Architecture
 
-**Version:** 0.8  
+**Version:** 0.8.1  
 **Status:** Draft  
 **Owner:** Mohit Ranka  
 **Last updated:** 23 Jul 2026  
@@ -836,7 +836,7 @@ Aligned with [prd.md](./prd.md) §13. Each phase is a **complete product**. Req 
 | **3** | Quality, ops & fleet | EVAL-01, OBS-01, CH-01, FLEET-01 | feedback-evaluator, observability, channels, fleet-plugins |
 | **4** | Full-screen terminal TUI | TUI-01, TUI-02, TUI-03, TUI-04 | tui-shell, tui-conversation, tui-sidebar, tui-overlays |
 | **5** | Universal model providers | MDL-01 | litellm-providers, litellm-worker, litellm-wire, litellm-normalization, litellm-config |
-| **6** | Connected providers + `/connect` | CONN-01, PROV-01, PROV-02 | connect-command, provider-xai-grok, provider-opencode-go |
+| **6** | Connected providers + `/connect` | CONN-01, PROV-01, PROV-02 | connect-command, connect-auth-modes (6.1), provider-xai-grok (OAuth), provider-opencode-go (TUI API key) |
 
 ### Phase 1 — Coding agent
 
@@ -943,31 +943,40 @@ AgentSession → dyn ModelClient
 
 **Product:** Operator-facing **connect profiles** so xAI Grok and OpenCode Go work with guided auth, without forking the Phase 5 model client.
 
+**Phase 6.1 auth (normative):**
+
+| Profile | Auth | TUI |
+|---------|------|-----|
+| xAI Grok | **OAuth** (browser / device code vs `accounts.x.ai`) | OAuth overlay only — **no** API-key field |
+| OpenCode Go | **API key** | **Must** prompt for API key (masked modal) |
+
 **Build order (strict):**
 
 1. Connect profile registry + secure credential store — [connect-command.md](./designs/connect-command.md)  
-2. `/connect` slash command + TUI/REPL flow (list → select → key → verify → set active model)  
-3. **PROV-01** xAI Grok profile — [provider-xai-grok.md](./designs/provider-xai-grok.md)  
-4. **PROV-02** OpenCode Go profile — [provider-opencode-go.md](./designs/provider-opencode-go.md)  
-5. Wire active profile → LiteLLM model string + worker env keys  
-6. Smoke: Grok + OpenCode Go completes with tools; secrets redacted  
+2. Auth modes (OAuth vs API key) — [connect-auth-modes.md](./designs/connect-auth-modes.md)  
+3. `/connect` slash command + TUI/REPL dispatch by `auth_mode`  
+4. **PROV-01** xAI Grok OAuth — [provider-xai-grok.md](./designs/provider-xai-grok.md)  
+5. **PROV-02** OpenCode Go API key + TUI prompt — [provider-opencode-go.md](./designs/provider-opencode-go.md)  
+6. Wire active profile → LiteLLM model string + worker env (tokens or keys)  
+7. Smoke: Grok (OAuth fixture) + OpenCode Go (key); secrets redacted  
 
-**Crate focus:** `forge-tui` (slash + overlay), `forge-config` / small `forge-connect` helper for profiles, `forge-model` unchanged as sole production path (only env/model ids change).
+**Crate focus:** `forge-connect` (profiles, store, OAuth client), `forge-tui` (mode-specific overlays), `forge-model` unchanged as sole production path.
 
 **Exit:**
 
-- `/connect` selects and activates Grok or OpenCode Go  
-- Keys never in journal/UI/OTEL  
+- `/connect` activates Grok via **OAuth** and OpenCode Go via **prompted API key**  
+- Tokens/keys never in journal/UI/OTEL  
 - Live calls still only via LiteLLM worker  
 - Mock path unchanged  
 
-**Not Phase 6:** OpenCode product fork; billing for Go; every OpenCode provider; reintroducing native multi-adapters.
+**Not Phase 6:** OpenCode product fork; billing; every OpenCode provider; reintroducing native multi-adapters; API-key primary UX for Grok.
 
 ```text
 Operator: /connect
-    → pick profile (xAI Grok | OpenCode Go | …)
-    → store credential (user config / env / vault)
-    → set model id (xai/… or opencode-go/…)
+    → pick profile
+         ├─ xAI Grok      → OAuth → store tokens
+         └─ OpenCode Go   → TUI API key modal → store key
+    → set model id (xai/… or go recommended)
     → LiteLlmModelClient (Phase 5) + worker env
 ```
 
@@ -1049,7 +1058,7 @@ Forge is the **harness** between models and the real world: a typed tool bus, an
 | 10 | Crate layout | **Workspace monorepo, many crates** aligned to modules in §3 |
 | 11 | Model providers (Phase 1) | **Direct APIs + thin trait**; ship **OpenAI-compatible, Anthropic, and xAI** thin adapters early (**superseded for production in Phase 5**) |
 | 18 | Universal providers (Phase 5) | **LiteLLM Python SDK as the only production `ModelClient`** (stdio worker). **Remove** Phase 1 native HTTP adapters. **Not** LiteLLM Proxy. **Not** `fast-litellm` as primary. **Mock** only for offline CI. No dual production stacks |
-| 19 | Connected providers (Phase 6) | **`/connect`** UX + product profiles for **xAI Grok** and **OpenCode Go**. Profiles configure credentials + LiteLLM model strings; **no** second production `ModelClient` |
+| 19 | Connected providers (Phase 6) | **`/connect`** UX + profiles for **xAI Grok** and **OpenCode Go**. **No** second production `ModelClient`. **6.1:** Grok = **OAuth**; OpenCode Go = **API key with mandatory TUI prompt** |
 | 12 | Config | **TOML file + env overrides** (e.g. `forge.toml` / `~/.config/forge/config.toml`; secrets/CI via env) |
 | 13 | Protocol phase ownership | **Phase 1 CORE-02 = MCP only.** **Phase 2 CORE-03 = ACP only.** Exclusive; no split ownership of one req ID. |
 | 14 | License | **MIT** |
@@ -1066,7 +1075,8 @@ Forge is the **harness** between models and the real world: a typed tool bus, an
 | Event journal | Append-only rows in **SQLite via sqlx**; typed event envelope (`serde_json`) with schema version field |
 | Unified model client | `async trait` `ModelClient`; Phase 5 production: `LiteLlmModelClient` → worker only; `MockModelClient` for tests |
 | LiteLLM (Phase 5) | **Required** for live model calls: **Python** + `litellm`; long-lived worker preferred; **no** proxy server; natives deleted |
-| Connect profiles (Phase 6) | Registry of product providers; `/connect` writes credentials + active model; still `LiteLlmModelClient` |
+| Connect profiles (Phase 6) | Registry + `/connect`; still `LiteLlmModelClient` |
+| Connect auth (6.1) | `AuthMode::Oauth` (xAI) vs `AuthMode::ApiKey` + TUI prompt (OpenCode Go); tokens/keys in 0600 store |
 | Surfaces | Phase 1: line-mode `repl` + headless `forge-cli`; Phase 2: `forge-acp`; Phase 3: channels; Phase 4: full-screen ratatui `forge tui`; Phase 6: `/connect` in TUI + REPL |
 | Config | TOML (`forge.toml` or XDG config path) merged with env overrides |
 | Workspace root | Default **cwd**; override via CLI flag and/or config when specified |

@@ -4,9 +4,10 @@
 **Owner:** Mohit Ranka  
 **Last updated:** 23 Jul 2026  
 **Phase:** **6 only** (exclusive)  
+**Revision:** **6.1** — OAuth vs API-key auth modes  
 **PRD:** CONN-01 (primary)  
-**Architecture:** §14 Phase 6, decision #19  
-**Related:** [provider-xai-grok.md](./provider-xai-grok.md), [provider-opencode-go.md](./provider-opencode-go.md), [litellm-providers.md](./litellm-providers.md) (Phase 5), [tui-commands.md](./tui-commands.md) (Phase 1 catalog), [tui-overlays.md](./tui-overlays.md)
+**Architecture:** §14 Phase 6 / 6.1, decision #19  
+**Related:** [connect-auth-modes.md](./connect-auth-modes.md), [provider-xai-grok.md](./provider-xai-grok.md), [provider-opencode-go.md](./provider-opencode-go.md), [litellm-providers.md](./litellm-providers.md) (Phase 5), [tui-commands.md](./tui-commands.md), [tui-overlays.md](./tui-overlays.md)
 
 ---
 
@@ -45,22 +46,29 @@ OpenCode popularized a **`/connect`** flow: pick a provider → open auth if nee
 | `/connect status` | Show active profile id, model string, key source (env \| file \| vault)—**never** key material |
 | `/connect disconnect [profile_id]` | Clear stored key for profile; keep env-only keys untouched |
 
-Optional CLI (headless): `forge connect [--provider xai|opencode_go] [--key-file …]` — same semantics; no secret in argv logs.
+Optional CLI: `forge connect <profile>` — OAuth profiles start login; API-key profiles accept `--key` / `--key-file` or TTY prompt. **No secrets in logs.**
 
 ### 3.2 Interactive flow (normative)
 
 ```text
-1. List connect profiles (id, title, connected badge)
+1. List connect profiles (id, title, auth mode badge, connected badge)
 2. Operator selects one
-3. If profile needs external signup: print URL (e.g. OpenCode auth) — browser optional
-4. Prompt: API key (masked input in TUI; line-mode uses secure read if available)
-5. Optional: verify with a cheap model ping via LiteLLM worker
-6. Persist credential (see §3.4)
-7. Set active model to profile default (or offer model pick)
-8. Confirm: "Connected xAI Grok · model xai/grok-…"
+3. Branch on auth_mode (Phase 6.1):
+   A. Oauth (xAI Grok):
+      - Show auth instructions + start browser and/or device-code flow
+      - Do NOT show API-key text field
+      - On success store OAuth tokens
+   B. ApiKey with tui_always_prompt (OpenCode Go):
+      - Show signup URL
+      - TUI MUST open masked "Enter API key" modal (required)
+      - Optional secondary: use existing env key
+      - Persist API key
+4. Optional: verify with a cheap model ping via LiteLLM worker
+5. Set active model to profile default (or offer model pick)
+6. Confirm without secrets: "Connected <title> · model … · key_source=oauth|file|env|provided"
 ```
 
-TUI: reuse overlay patterns from [tui-overlays.md](./tui-overlays.md) (list + modal input). REPL: numbered list + prompts.
+TUI: overlays from [tui-overlays.md](./tui-overlays.md) + auth-mode-specific modals ([connect-auth-modes.md](./connect-auth-modes.md)). REPL: OAuth poll vs secure key read.
 
 ### 3.3 Connect profile schema
 
@@ -69,32 +77,29 @@ struct ConnectProfile {
     id: String,                 // "xai" | "opencode_go"
     title: String,              // "xAI Grok" | "OpenCode Go"
     description: String,
-    /// Env vars the worker should see (first present wins for API key).
-    api_key_env: Vec<String>,   // e.g. ["XAI_API_KEY"]
-    /// Optional OpenAI-compatible or LiteLLM base URL for this profile.
+    auth_mode: AuthMode,        // Phase 6.1 — see connect-auth-modes.md
+    /// Env names for ApiKey mode (first present wins). Empty for pure OAuth profiles.
+    api_key_env: Vec<String>,
     default_base_url: Option<String>,
-    /// LiteLLM model strings recommended after connect.
     default_models: Vec<String>,
-    /// Optional docs URL for signup.
     auth_url: Option<String>,
-    /// How to map into LiteLLM (usually model prefix or custom provider).
     litellm_provider_prefix: String,
 }
 ```
 
-Built-in profiles are registered at startup; plugins may add more later via the same registry (out of Phase 6 scope unless trivial).
+Built-in profiles registered at startup.
 
 ### 3.4 Credential storage
 
 | Priority (read) | Location |
 |-----------------|----------|
-| 1 | Process env (already set `XAI_API_KEY` etc.) |
-| 2 | User secrets file: `~/.config/forge/credentials.toml` (mode 0600) or OS keychain if available later |
+| 1 | Process env (API-key profiles) |
+| 2 | User secrets: `~/.config/forge/credentials.toml` (mode 0600) — API keys **and** OAuth token blobs |
 | 3 | Phase 2 vault injection into worker env |
 
-**Never** commit credentials to project `forge.toml`. Project config may only reference `model = "xai/…"` after connect.
+**Never** commit credentials to project `forge.toml`.
 
-Wire to worker: parent process sets env for `forge-litellm-worker` spawn (existing Phase 5 rule: keys in env, not wire JSON).
+Wire to worker: parent injects env for `forge-litellm-worker` (keys/tokens in env, **not** NDJSON).
 
 ### 3.5 Relationship to `/model`
 
