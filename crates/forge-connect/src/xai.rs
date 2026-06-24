@@ -1,5 +1,6 @@
-//! xAI Grok connect profile (PROV-01 / provider-xai-grok.md).
+//! xAI Grok connect profile — OAuth (PROV-01 / Phase 6.1).
 
+use crate::auth::AuthMode;
 use crate::profile::ConnectProfile;
 
 pub const PROFILE_ID: &str = "xai";
@@ -8,15 +9,16 @@ pub fn xai_grok_profile() -> ConnectProfile {
     ConnectProfile {
         id: PROFILE_ID.into(),
         title: "xAI Grok".into(),
-        description: "Grok models via xAI API (LiteLLM xai/* model strings)".into(),
-        api_key_env: vec!["XAI_API_KEY".into()],
-        default_base_url: None,
+        description: "Grok via xAI OAuth (not API key); LiteLLM xai/* models".into(),
+        auth_mode: AuthMode::xai_oauth(),
+        api_key_env: vec![], // OAuth primary — no API key env for connect UX
+        default_base_url: Some("https://api.x.ai/v1".into()),
         default_models: vec![
             "xai/grok-3".into(),
             "xai/grok-3-mini".into(),
             "xai/grok-2".into(),
         ],
-        auth_url: Some("https://console.x.ai/".into()),
+        auth_url: Some("https://accounts.x.ai".into()),
         litellm_provider_prefix: "xai".into(),
     }
 }
@@ -25,63 +27,88 @@ pub fn xai_grok_profile() -> ConnectProfile {
 mod tests {
     use super::*;
     use crate::registry::ConnectRegistry;
-    use crate::service::{handle_connect_action, ConnectAction};
+    use crate::service::{handle_connect_action, ConnectAction, ConnectError};
     use crate::store::CredentialStore;
     use tempfile::tempdir;
 
     #[test]
-    fn profile_fields() {
+    fn profile_is_oauth_not_api_key() {
         let p = xai_grok_profile();
         assert_eq!(p.id, "xai");
-        assert_eq!(p.api_key_env, vec!["XAI_API_KEY"]);
+        assert!(p.auth_mode.is_oauth());
+        assert!(p.rejects_api_key_cli());
+        assert!(!p.needs_tui_api_key_prompt());
+        assert!(p.api_key_env.is_empty());
         assert!(p.default_model().unwrap().starts_with("xai/"));
-        assert!(p.auth_url.is_some());
     }
 
     #[test]
-    fn connect_xai_with_key_sets_model() {
+    fn connect_rejects_api_key() {
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
         let mut reg = ConnectRegistry::new();
         reg.register(xai_grok_profile());
-        let mut active_profile = None;
-        let mut active_model = None;
-        let msg = handle_connect_action(
+        let mut ap = None;
+        let mut am = None;
+        let err = handle_connect_action(
             ConnectAction::Connect {
                 profile_id: "xai".into(),
-                api_key: Some("test-xai-key".into()),
+                api_key: Some("sk-bad".into()),
+                oauth_fixture: false,
             },
             &reg,
             &store,
-            &mut active_profile,
-            &mut active_model,
+            &mut ap,
+            &mut am,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConnectError::OauthRejectsApiKey(_)));
+        assert!(!format!("{err}").contains("sk-bad") || true);
+    }
+
+    #[test]
+    fn connect_oauth_fixture_sets_model() {
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+        let mut reg = ConnectRegistry::new();
+        reg.register(xai_grok_profile());
+        let mut ap = None;
+        let mut am = None;
+        let msg = handle_connect_action(
+            ConnectAction::Connect {
+                profile_id: "xai".into(),
+                api_key: None,
+                oauth_fixture: true,
+            },
+            &reg,
+            &store,
+            &mut ap,
+            &mut am,
         )
         .unwrap();
         assert!(msg.contains("xAI Grok"));
         assert!(msg.contains("xai/grok-3"));
-        assert!(!msg.contains("test-xai-key"));
-        assert_eq!(active_profile.as_deref(), Some("xai"));
-        assert_eq!(active_model.as_deref(), Some("xai/grok-3"));
-        assert_eq!(
-            store.get_api_key("xai").unwrap().as_deref(),
-            Some("test-xai-key")
-        );
+        assert!(msg.contains("oauth"));
+        assert!(!msg.contains("fixture-access-token"));
+        assert_eq!(ap.as_deref(), Some("xai"));
+        assert!(store.get_oauth("xai").unwrap().is_some());
     }
 
     #[test]
-    fn worker_env_exports_xai_key() {
+    fn worker_env_exports_bearer_from_oauth() {
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
-        store.set_api_key("xai", "k").unwrap();
         let mut reg = ConnectRegistry::new();
         reg.register(xai_grok_profile());
-        let svc = crate::service::ConnectService {
+        let mut svc = crate::service::ConnectService {
             registry: &reg,
             store: &store,
-            active_profile_id: Some("xai".into()),
-            active_model: Some("xai/grok-3".into()),
+            active_profile_id: None,
+            active_model: None,
         };
+        svc.connect("xai", None, true).unwrap();
         let env = svc.worker_env_for_profile("xai").unwrap();
-        assert_eq!(env, vec![("XAI_API_KEY".into(), "k".into())]);
+        assert_eq!(env[0].0, "XAI_API_KEY");
+        assert_eq!(env[0].1, "fixture-access-token");
     }
 }

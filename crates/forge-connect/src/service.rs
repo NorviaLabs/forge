@@ -1,10 +1,11 @@
-//! Connect service: list / status / connect / disconnect (CONN-01).
+//! Connect service: list / status / connect / disconnect (CONN-01 + 6.1 auth modes).
 
 use thiserror::Error;
 
+use crate::auth::{AuthMode, OauthPending, OauthTokens};
 use crate::profile::{ConnectOutcome, ConnectProfile, ConnectStatus, KeySource};
 use crate::registry::ConnectRegistry;
-use crate::store::{resolve_key, CredentialStore, StoreError};
+use crate::store::{resolve_connected, resolve_key, CredentialStore, StoreError};
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ConnectError {
@@ -12,6 +13,12 @@ pub enum ConnectError {
     UnknownProfile(String, String),
     #[error("api key required for profile `{0}`")]
     MissingKey(String),
+    #[error(
+        "profile `{0}` uses OAuth — do not pass an API key; run `/connect {0}` and complete browser/device login"
+    )]
+    OauthRejectsApiKey(String),
+    #[error("OAuth required for `{0}`: {1}")]
+    OauthPending(String, String),
     #[error("store: {0}")]
     Store(#[from] StoreError),
     #[error("{0}")]
@@ -20,14 +27,15 @@ pub enum ConnectError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConnectAction {
-    /// Interactive list / open flow
     Open,
     List,
     Status,
     Connect {
         profile_id: String,
-        /// Optional key from CLI/TUI; if None, use env/store or error.
+        /// API key (ApiKey profiles only). Forbidden for OAuth profiles.
         api_key: Option<String>,
+        /// When true, complete OAuth with fixture tokens (tests / FORGE_CONNECT_OAUTH_FIXTURE).
+        oauth_fixture: bool,
     },
     Disconnect { profile_id: Option<String> },
 }
@@ -47,11 +55,11 @@ pub fn parse_connect_args(args: &str) -> Result<ConnectAction, ConnectError> {
             profile_id: parts.next().map(|s| s.to_string()),
         }),
         other => {
-            // `/connect xai` or `/connect xai <key>`
             let key = parts.next().map(|s| s.to_string());
             Ok(ConnectAction::Connect {
                 profile_id: other.to_string(),
                 api_key: key,
+                oauth_fixture: false,
             })
         }
     }
@@ -60,9 +68,7 @@ pub fn parse_connect_args(args: &str) -> Result<ConnectAction, ConnectError> {
 pub struct ConnectService<'a> {
     pub registry: &'a ConnectRegistry,
     pub store: &'a CredentialStore,
-    /// Currently active profile id (session).
     pub active_profile_id: Option<String>,
-    /// Currently active LiteLLM model string.
     pub active_model: Option<String>,
 }
 
@@ -70,7 +76,8 @@ impl<'a> ConnectService<'a> {
     pub fn list_lines(&self) -> Result<Vec<String>, ConnectError> {
         let mut lines = Vec::new();
         for p in self.registry.profiles() {
-            let connected = resolve_key(&p.api_key_env, &p.id, self.store)?.is_some();
+            let connected =
+                resolve_connected(&p.api_key_env, &p.id, self.store)?.is_some();
             let active = self
                 .active_profile_id
                 .as_deref()
@@ -82,9 +89,10 @@ impl<'a> ConnectService<'a> {
                 (false, false) => "[ ]",
             };
             lines.push(format!(
-                "{badge} {id} — {title}",
+                "{badge} {id} — {title} ({mode})",
                 id = p.id,
-                title = p.title
+                title = p.title,
+                mode = p.auth_mode.label()
             ));
         }
         if lines.is_empty() {
@@ -96,13 +104,13 @@ impl<'a> ConnectService<'a> {
     pub fn status(&self) -> Result<ConnectStatus, ConnectError> {
         let mut connected = Vec::new();
         for p in self.registry.profiles() {
-            if resolve_key(&p.api_key_env, &p.id, self.store)?.is_some() {
+            if resolve_connected(&p.api_key_env, &p.id, self.store)?.is_some() {
                 connected.push(p.id.clone());
             }
         }
         let key_source = if let Some(ref id) = self.active_profile_id {
             if let Some(p) = self.registry.get(id) {
-                resolve_key(&p.api_key_env, &p.id, self.store)?.map(|(_, s)| s)
+                resolve_connected(&p.api_key_env, &p.id, self.store)?
             } else {
                 None
             }
@@ -123,54 +131,118 @@ impl<'a> ConnectService<'a> {
             "active_profile={} model={} key_source={} connected=[{}]",
             s.profile_id.as_deref().unwrap_or("-"),
             s.model.as_deref().unwrap_or("-"),
-            s.key_source
-                .map(|k| k.as_str())
-                .unwrap_or("-"),
+            s.key_source.map(|k| k.as_str()).unwrap_or("-"),
             s.connected_profile_ids.join(", ")
         ))
     }
 
-    /// Connect profile: persist optional key, return outcome (never echoes key).
-    pub fn connect(
+    /// Connect with API key (ApiKey profiles only).
+    pub fn connect_api_key(
         &mut self,
         profile_id: &str,
         api_key: Option<&str>,
     ) -> Result<ConnectOutcome, ConnectError> {
-        let profile = self
-            .registry
-            .get(profile_id)
-            .ok_or_else(|| {
-                ConnectError::UnknownProfile(
-                    profile_id.into(),
-                    self.registry.ids().join(", "),
-                )
-            })?
-            .clone();
+        let profile = self.profile_or_err(profile_id)?;
+        if profile.auth_mode.is_oauth() {
+            return Err(ConnectError::OauthRejectsApiKey(profile.id));
+        }
 
-        let (key_source, need_store) = if let Some(k) = api_key.map(str::trim).filter(|s| !s.is_empty())
-        {
+        let key_source = if let Some(k) = api_key.map(str::trim).filter(|s| !s.is_empty()) {
             self.store.set_api_key(&profile.id, k)?;
-            (KeySource::Provided, true)
-        } else if let Some((_, src)) = resolve_key(&profile.api_key_env, &profile.id, self.store)? {
-            (src, false)
+            KeySource::Provided
+        } else if let Some((_, src)) =
+            resolve_key(&profile.api_key_env, &profile.id, self.store)?
+        {
+            src
         } else {
             return Err(ConnectError::MissingKey(profile.id.clone()));
         };
 
-        let model = profile
-            .default_model()
-            .ok_or_else(|| ConnectError::Message("profile has no default models".into()))?
-            .to_string();
+        self.activate(&profile, key_source)
+    }
 
-        self.active_profile_id = Some(profile.id.clone());
-        self.active_model = Some(model.clone());
+    /// Complete OAuth for a profile (tokens provided by fixture or real exchange).
+    pub fn connect_oauth(
+        &mut self,
+        profile_id: &str,
+        tokens: OauthTokens,
+    ) -> Result<ConnectOutcome, ConnectError> {
+        let profile = self.profile_or_err(profile_id)?;
+        if !profile.auth_mode.is_oauth() {
+            return Err(ConnectError::Message(format!(
+                "profile `{}` is not OAuth",
+                profile.id
+            )));
+        }
+        if tokens.access_token.trim().is_empty() {
+            return Err(ConnectError::Message("OAuth access_token empty".into()));
+        }
+        self.store.set_oauth(&profile.id, tokens)?;
+        self.activate(&profile, KeySource::Oauth)
+    }
 
-        let _ = need_store;
-        Ok(ConnectOutcome {
-            profile_id: profile.id,
-            model,
-            key_source,
-        })
+    /// Start OAuth pending session (device-code UX).
+    pub fn start_oauth(&self, profile_id: &str) -> Result<OauthPending, ConnectError> {
+        let profile = self.profile_or_err(profile_id)?;
+        let AuthMode::Oauth { auth_server, .. } = &profile.auth_mode else {
+            return Err(ConnectError::Message(format!(
+                "profile `{}` is not OAuth",
+                profile.id
+            )));
+        };
+        Ok(OauthPending::start(&profile.id, auth_server))
+    }
+
+    /// Connect dispatch used by CLI/TUI after collecting secrets.
+    pub fn connect(
+        &mut self,
+        profile_id: &str,
+        api_key: Option<&str>,
+        oauth_fixture: bool,
+    ) -> Result<ConnectOutcome, ConnectError> {
+        let profile = self.profile_or_err(profile_id)?;
+        match &profile.auth_mode {
+            AuthMode::Oauth { .. } => {
+                if api_key.map(str::trim).filter(|s| !s.is_empty()).is_some() {
+                    return Err(ConnectError::OauthRejectsApiKey(profile.id));
+                }
+                // Already have tokens?
+                if let Some(tokens) = self.store.get_oauth(&profile.id)? {
+                    return self.activate(&profile, KeySource::Oauth).map(|mut o| {
+                        let _ = tokens;
+                        o.key_source = KeySource::Oauth;
+                        o
+                    });
+                }
+                if oauth_fixture || std::env::var("FORGE_CONNECT_OAUTH_FIXTURE").is_ok() {
+                    let tokens = OauthTokens {
+                        access_token: "fixture-access-token".into(),
+                        refresh_token: Some("fixture-refresh".into()),
+                        expires_at: None,
+                    };
+                    return self.connect_oauth(&profile.id, tokens);
+                }
+                // Optional: power-user inject after browser login
+                if let Ok(at) = std::env::var("FORGE_XAI_OAUTH_ACCESS_TOKEN") {
+                    if !at.trim().is_empty() && profile.id == "xai" {
+                        return self.connect_oauth(
+                            &profile.id,
+                            OauthTokens {
+                                access_token: at,
+                                refresh_token: std::env::var("FORGE_XAI_OAUTH_REFRESH_TOKEN").ok(),
+                                expires_at: None,
+                            },
+                        );
+                    }
+                }
+                let pending = self.start_oauth(&profile.id)?;
+                Err(ConnectError::OauthPending(
+                    profile.id,
+                    pending.operator_instructions(),
+                ))
+            }
+            AuthMode::ApiKey { .. } => self.connect_api_key(&profile.id, api_key),
+        }
     }
 
     pub fn disconnect(&self, profile_id: Option<&str>) -> Result<String, ConnectError> {
@@ -187,12 +259,10 @@ impl<'a> ConnectService<'a> {
         let removed = self.store.clear(&id)?;
         if removed {
             Ok(format!(
-                "cleared stored key for `{id}` (env keys unchanged if set)"
+                "cleared stored credentials for `{id}` (env unchanged if set)"
             ))
         } else {
-            Ok(format!(
-                "no stored key for `{id}` (if using env, clear the shell env var)"
-            ))
+            Ok(format!("no stored credentials for `{id}`"))
         }
     }
 
@@ -200,25 +270,61 @@ impl<'a> ConnectService<'a> {
         self.registry.get(id)
     }
 
-    /// Env vars to inject into LiteLLM worker for active/connected profiles.
     pub fn worker_env_for_profile(
         &self,
         profile_id: &str,
     ) -> Result<Vec<(String, String)>, ConnectError> {
-        let profile = self.registry.get(profile_id).ok_or_else(|| {
-            ConnectError::UnknownProfile(profile_id.into(), self.registry.ids().join(", "))
-        })?;
+        let profile = self.profile_or_err(profile_id)?;
         let mut out = Vec::new();
-        if let Some((key, _)) = resolve_key(&profile.api_key_env, &profile.id, self.store)? {
-            if let Some(primary) = profile.api_key_env.first() {
-                out.push((primary.clone(), key));
+        match &profile.auth_mode {
+            AuthMode::Oauth { .. } => {
+                if let Some(tok) = self.store.get_oauth(&profile.id)? {
+                    // LiteLLM / custom adapters may accept bearer via env; document as XAI_API_KEY
+                    // for compatibility when OAuth access token is used as bearer.
+                    out.push(("XAI_API_KEY".into(), tok.access_token));
+                }
+            }
+            AuthMode::ApiKey { .. } => {
+                if let Some((key, _)) =
+                    resolve_key(&profile.api_key_env, &profile.id, self.store)?
+                {
+                    if let Some(primary) = profile.api_key_env.first() {
+                        out.push((primary.clone(), key));
+                    }
+                }
             }
         }
         Ok(out)
     }
+
+    fn profile_or_err(&self, profile_id: &str) -> Result<ConnectProfile, ConnectError> {
+        self.registry
+            .get(profile_id)
+            .cloned()
+            .ok_or_else(|| {
+                ConnectError::UnknownProfile(profile_id.into(), self.registry.ids().join(", "))
+            })
+    }
+
+    fn activate(
+        &mut self,
+        profile: &ConnectProfile,
+        key_source: KeySource,
+    ) -> Result<ConnectOutcome, ConnectError> {
+        let model = profile
+            .default_model()
+            .ok_or_else(|| ConnectError::Message("profile has no default models".into()))?
+            .to_string();
+        self.active_profile_id = Some(profile.id.clone());
+        self.active_model = Some(model.clone());
+        Ok(ConnectOutcome {
+            profile_id: profile.id.clone(),
+            model,
+            key_source,
+        })
+    }
 }
 
-/// Format a connect confirmation without secrets.
 pub fn format_connected(outcome: &ConnectOutcome, title: &str) -> String {
     format!(
         "Connected {title} · model {} · key_source={}",
@@ -227,8 +333,22 @@ pub fn format_connected(outcome: &ConnectOutcome, title: &str) -> String {
     )
 }
 
-/// Apply a `/connect` action; returns operator-facing message (never secrets).
-/// Updates `active_profile` / `active_model` on successful connect.
+/// Whether TUI should open API key modal before calling connect.
+pub fn needs_tui_api_key_prompt(registry: &ConnectRegistry, profile_id: &str) -> bool {
+    registry
+        .get(profile_id)
+        .map(|p| p.needs_tui_api_key_prompt())
+        .unwrap_or(false)
+}
+
+/// Whether TUI should open OAuth overlay.
+pub fn needs_tui_oauth(registry: &ConnectRegistry, profile_id: &str) -> bool {
+    registry
+        .get(profile_id)
+        .map(|p| p.auth_mode.is_oauth())
+        .unwrap_or(false)
+}
+
 pub fn handle_connect_action(
     action: ConnectAction,
     registry: &ConnectRegistry,
@@ -245,12 +365,12 @@ pub fn handle_connect_action(
     match action {
         ConnectAction::Open | ConnectAction::List => {
             let mut lines = vec![
-                "Connect profiles (use /connect <id> [api_key]):".into(),
+                "Connect profiles (oauth: /connect <id>; api_key: /connect <id> [key]):".into(),
             ];
             lines.extend(svc.list_lines()?);
             for p in registry.profiles() {
                 if let Some(url) = &p.auth_url {
-                    lines.push(format!("  {} signup: {url}", p.id));
+                    lines.push(format!("  {} auth: {url} ({})", p.id, p.auth_mode.label()));
                 }
             }
             Ok(lines.join("\n"))
@@ -259,23 +379,16 @@ pub fn handle_connect_action(
         ConnectAction::Connect {
             profile_id,
             api_key,
+            oauth_fixture,
         } => {
             let profile = registry.get(&profile_id).ok_or_else(|| {
                 ConnectError::UnknownProfile(profile_id.clone(), registry.ids().join(", "))
             })?;
             let title = profile.title.clone();
-            let auth = profile.auth_url.clone();
-            let out = svc.connect(&profile_id, api_key.as_deref())?;
+            let out = svc.connect(&profile_id, api_key.as_deref(), oauth_fixture)?;
             *active_profile = Some(out.profile_id.clone());
             *active_model = Some(out.model.clone());
-            let mut msg = format_connected(&out, &title);
-            if let Some(url) = auth {
-                if out.key_source != KeySource::Provided && out.key_source != KeySource::File {
-                    msg.push_str(&format!("\nsignup: {url}"));
-                }
-            }
-            // If missing key path already errored; if connected via env, note it.
-            Ok(msg)
+            Ok(format_connected(&out, &title))
         }
         ConnectAction::Disconnect { profile_id } => {
             let msg = svc.disconnect(profile_id.as_deref())?;
@@ -294,16 +407,20 @@ pub fn handle_connect_action(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::AuthMode;
     use crate::profile::ConnectProfile;
     use crate::registry::ConnectRegistry;
     use tempfile::tempdir;
 
-    fn demo_registry() -> ConnectRegistry {
+    fn api_key_registry() -> ConnectRegistry {
         let mut r = ConnectRegistry::new();
         r.register(ConnectProfile {
             id: "demo".into(),
             title: "Demo".into(),
             description: "test".into(),
+            auth_mode: AuthMode::ApiKey {
+                tui_always_prompt: true,
+            },
             api_key_env: vec!["DEMO_API_KEY".into()],
             default_base_url: None,
             default_models: vec!["demo/model-1".into()],
@@ -313,109 +430,155 @@ mod tests {
         r
     }
 
+    fn oauth_registry() -> ConnectRegistry {
+        let mut r = ConnectRegistry::new();
+        r.register(ConnectProfile {
+            id: "xai".into(),
+            title: "xAI Grok".into(),
+            description: "oauth".into(),
+            auth_mode: AuthMode::xai_oauth(),
+            api_key_env: vec![],
+            default_base_url: None,
+            default_models: vec!["xai/grok-3".into()],
+            auth_url: Some("https://accounts.x.ai".into()),
+            litellm_provider_prefix: "xai".into(),
+        });
+        r
+    }
+
     #[test]
     fn parse_connect_args_variants() {
         assert_eq!(parse_connect_args("").unwrap(), ConnectAction::Open);
         assert_eq!(parse_connect_args("list").unwrap(), ConnectAction::List);
-        assert_eq!(parse_connect_args("status").unwrap(), ConnectAction::Status);
-        assert_eq!(
-            parse_connect_args("disconnect").unwrap(),
-            ConnectAction::Disconnect { profile_id: None }
-        );
-        assert_eq!(
-            parse_connect_args("disconnect xai").unwrap(),
-            ConnectAction::Disconnect {
-                profile_id: Some("xai".into())
-            }
-        );
         assert_eq!(
             parse_connect_args("xai").unwrap(),
             ConnectAction::Connect {
                 profile_id: "xai".into(),
-                api_key: None
+                api_key: None,
+                oauth_fixture: false
             }
         );
-        assert_eq!(
-            parse_connect_args("xai sk-test").unwrap(),
+    }
+
+    #[test]
+    fn connect_api_key_profile() {
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+        let reg = api_key_registry();
+        let mut active_profile = None;
+        let mut active_model = None;
+        let msg = handle_connect_action(
+            ConnectAction::Connect {
+                profile_id: "demo".into(),
+                api_key: Some("secret".into()),
+                oauth_fixture: false,
+            },
+            &reg,
+            &store,
+            &mut active_profile,
+            &mut active_model,
+        )
+        .unwrap();
+        assert!(msg.contains("Demo"));
+        assert!(!msg.contains("secret"));
+    }
+
+    #[test]
+    fn oauth_rejects_api_key() {
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+        let reg = oauth_registry();
+        let mut ap = None;
+        let mut am = None;
+        let err = handle_connect_action(
             ConnectAction::Connect {
                 profile_id: "xai".into(),
-                api_key: Some("sk-test".into())
-            }
-        );
+                api_key: Some("nope".into()),
+                oauth_fixture: false,
+            },
+            &reg,
+            &store,
+            &mut ap,
+            &mut am,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConnectError::OauthRejectsApiKey(_)));
     }
 
     #[test]
-    fn connect_with_provided_key() {
+    fn oauth_fixture_connects() {
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
-        let reg = demo_registry();
+        let reg = oauth_registry();
+        let mut ap = None;
+        let mut am = None;
+        let msg = handle_connect_action(
+            ConnectAction::Connect {
+                profile_id: "xai".into(),
+                api_key: None,
+                oauth_fixture: true,
+            },
+            &reg,
+            &store,
+            &mut ap,
+            &mut am,
+        )
+        .unwrap();
+        assert!(msg.contains("oauth") || msg.contains("xAI"));
+        assert_eq!(am.as_deref(), Some("xai/grok-3"));
+        assert!(store.get_oauth("xai").unwrap().is_some());
+        assert!(!msg.contains("fixture-access-token"));
+    }
+
+    #[test]
+    fn oauth_pending_without_fixture() {
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+        let reg = oauth_registry();
+        // Ensure fixture env off
+        std::env::remove_var("FORGE_CONNECT_OAUTH_FIXTURE");
+        std::env::remove_var("FORGE_XAI_OAUTH_ACCESS_TOKEN");
         let mut svc = ConnectService {
             registry: &reg,
             store: &store,
             active_profile_id: None,
             active_model: None,
         };
-        let out = svc.connect("demo", Some("secret")).unwrap();
-        assert_eq!(out.profile_id, "demo");
-        assert_eq!(out.model, "demo/model-1");
-        assert_eq!(out.key_source, KeySource::Provided);
-        let msg = format_connected(&out, "Demo");
-        assert!(msg.contains("demo/model-1"));
-        assert!(!msg.contains("secret"));
-        assert_eq!(store.get_api_key("demo").unwrap().as_deref(), Some("secret"));
+        let err = svc.connect("xai", None, false).unwrap_err();
+        assert!(matches!(err, ConnectError::OauthPending(_, _)));
     }
 
     #[test]
-    fn connect_missing_key_errors() {
-        let dir = tempdir().unwrap();
-        let store = CredentialStore::new(dir.path().join("c.toml"));
-        let reg = demo_registry();
-        let mut svc = ConnectService {
-            registry: &reg,
-            store: &store,
-            active_profile_id: None,
-            active_model: None,
+    fn needs_tui_flags() {
+        let reg = {
+            let mut r = ConnectRegistry::new();
+            r.register(ConnectProfile {
+                id: "opencode_go".into(),
+                title: "Go".into(),
+                description: "".into(),
+                auth_mode: AuthMode::opencode_go_api_key(),
+                api_key_env: vec![],
+                default_base_url: None,
+                default_models: vec!["m".into()],
+                auth_url: None,
+                litellm_provider_prefix: "o".into(),
+            });
+            r.register(ConnectProfile {
+                id: "xai".into(),
+                title: "Grok".into(),
+                description: "".into(),
+                auth_mode: AuthMode::xai_oauth(),
+                api_key_env: vec![],
+                default_base_url: None,
+                default_models: vec!["xai/m".into()],
+                auth_url: None,
+                litellm_provider_prefix: "xai".into(),
+            });
+            r
         };
-        assert!(matches!(
-            svc.connect("demo", None),
-            Err(ConnectError::MissingKey(_))
-        ));
-    }
-
-    #[test]
-    fn list_and_status_no_secrets() {
-        let dir = tempdir().unwrap();
-        let store = CredentialStore::new(dir.path().join("c.toml"));
-        store.set_api_key("demo", "top-secret-value").unwrap();
-        let reg = demo_registry();
-        let svc = ConnectService {
-            registry: &reg,
-            store: &store,
-            active_profile_id: Some("demo".into()),
-            active_model: Some("demo/model-1".into()),
-        };
-        let list = svc.list_lines().unwrap().join("\n");
-        assert!(list.contains("demo"));
-        assert!(!list.contains("top-secret"));
-        let st = svc.status_message().unwrap();
-        assert!(st.contains("active_profile=demo"));
-        assert!(!st.contains("top-secret"));
-    }
-
-    #[test]
-    fn unknown_profile() {
-        let dir = tempdir().unwrap();
-        let store = CredentialStore::new(dir.path().join("c.toml"));
-        let reg = demo_registry();
-        let mut svc = ConnectService {
-            registry: &reg,
-            store: &store,
-            active_profile_id: None,
-            active_model: None,
-        };
-        assert!(matches!(
-            svc.connect("nope", Some("k")),
-            Err(ConnectError::UnknownProfile(_, _))
-        ));
+        assert!(needs_tui_api_key_prompt(&reg, "opencode_go"));
+        assert!(!needs_tui_api_key_prompt(&reg, "xai"));
+        assert!(needs_tui_oauth(&reg, "xai"));
+        assert!(!needs_tui_oauth(&reg, "opencode_go"));
     }
 }

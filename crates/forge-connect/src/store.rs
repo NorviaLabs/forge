@@ -1,4 +1,4 @@
-//! Credential store — ~/.config/forge/credentials.toml (connect-command.md §3.4).
+//! Credential store — keys + OAuth tokens (connect-command.md §3.4, Phase 6.1).
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::auth::OauthTokens;
 use crate::profile::KeySource;
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -21,12 +22,15 @@ pub enum StoreError {
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct CredentialsFile {
-    /// profile_id → api key
+    /// profile_id → api key (ApiKey profiles)
     #[serde(default)]
     keys: BTreeMap<String, String>,
+    /// profile_id → oauth tokens
+    #[serde(default)]
+    oauth: BTreeMap<String, OauthTokens>,
 }
 
-/// File-backed credential store. Keys are never returned in Display/Debug of public status APIs.
+/// File-backed credential store. Secrets are never returned in status Display APIs.
 pub struct CredentialStore {
     path: PathBuf,
 }
@@ -36,7 +40,6 @@ impl CredentialStore {
         Self { path }
     }
 
-    /// Default: `~/.config/forge/credentials.toml`
     pub fn user_default() -> Self {
         let path = dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
@@ -58,21 +61,50 @@ impl CredentialStore {
         let mut file = self.load()?;
         file.keys
             .insert(profile_id.to_string(), key.trim().to_string());
+        // Connecting via API key clears oauth for that profile
+        file.oauth.remove(profile_id);
+        self.save(&file)
+    }
+
+    pub fn get_oauth(&self, profile_id: &str) -> Result<Option<OauthTokens>, StoreError> {
+        let file = self.load()?;
+        Ok(file.oauth.get(profile_id).cloned())
+    }
+
+    pub fn set_oauth(&self, profile_id: &str, tokens: OauthTokens) -> Result<(), StoreError> {
+        let mut file = self.load()?;
+        file.oauth.insert(profile_id.to_string(), tokens);
+        // OAuth supersedes stored API key for this profile
+        file.keys.remove(profile_id);
         self.save(&file)
     }
 
     pub fn clear(&self, profile_id: &str) -> Result<bool, StoreError> {
         let mut file = self.load()?;
-        let removed = file.keys.remove(profile_id).is_some();
+        let removed_key = file.keys.remove(profile_id).is_some();
+        let removed_oauth = file.oauth.remove(profile_id).is_some();
+        let removed = removed_key || removed_oauth;
         if removed {
             self.save(&file)?;
         }
         Ok(removed)
     }
 
+    pub fn is_connected(&self, profile_id: &str) -> Result<bool, StoreError> {
+        let file = self.load()?;
+        Ok(file.keys.contains_key(profile_id) || file.oauth.contains_key(profile_id))
+    }
+
     pub fn list_profile_ids(&self) -> Result<Vec<String>, StoreError> {
         let file = self.load()?;
-        Ok(file.keys.keys().cloned().collect())
+        let mut ids: Vec<String> = file.keys.keys().cloned().collect();
+        for k in file.oauth.keys() {
+            if !ids.iter().any(|i| i == k) {
+                ids.push(k.clone());
+            }
+        }
+        ids.sort();
+        Ok(ids)
     }
 
     fn load(&self) -> Result<CredentialsFile, StoreError> {
@@ -109,7 +141,7 @@ impl CredentialStore {
     }
 }
 
-/// Resolve key: env (first matching profile env name) then file store.
+/// Resolve API key: env then file (ApiKey profiles).
 pub fn resolve_key(
     profile_env_names: &[String],
     profile_id: &str,
@@ -130,6 +162,18 @@ pub fn resolve_key(
     Ok(None)
 }
 
+/// Whether profile has usable credentials (API key path or OAuth tokens).
+pub fn resolve_connected(
+    profile_env_names: &[String],
+    profile_id: &str,
+    store: &CredentialStore,
+) -> Result<Option<KeySource>, StoreError> {
+    if store.get_oauth(profile_id)?.is_some() {
+        return Ok(Some(KeySource::Oauth));
+    }
+    Ok(resolve_key(profile_env_names, profile_id, store)?.map(|(_, s)| s))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,9 +185,36 @@ mod tests {
         let store = CredentialStore::new(dir.path().join("credentials.toml"));
         assert!(store.get_api_key("xai").unwrap().is_none());
         store.set_api_key("xai", "secret-key").unwrap();
-        assert_eq!(store.get_api_key("xai").unwrap().as_deref(), Some("secret-key"));
+        assert_eq!(
+            store.get_api_key("xai").unwrap().as_deref(),
+            Some("secret-key")
+        );
         assert!(store.clear("xai").unwrap());
         assert!(store.get_api_key("xai").unwrap().is_none());
+    }
+
+    #[test]
+    fn oauth_roundtrip() {
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+        store
+            .set_oauth(
+                "xai",
+                OauthTokens {
+                    access_token: "at".into(),
+                    refresh_token: Some("rt".into()),
+                    expires_at: None,
+                },
+            )
+            .unwrap();
+        let t = store.get_oauth("xai").unwrap().unwrap();
+        assert_eq!(t.access_token, "at");
+        assert_eq!(t.refresh_token.as_deref(), Some("rt"));
+        assert!(store.is_connected("xai").unwrap());
+        assert_eq!(
+            resolve_connected(&[], "xai", &store).unwrap(),
+            Some(KeySource::Oauth)
+        );
     }
 
     #[test]
@@ -166,13 +237,9 @@ mod tests {
         let store = CredentialStore::new(dir.path().join("c.toml"));
         store.set_api_key("xai", "from-file").unwrap();
         std::env::set_var("FORGE_TEST_XAI_KEY", "from-env");
-        let r = resolve_key(
-            &["FORGE_TEST_XAI_KEY".into()],
-            "xai",
-            &store,
-        )
-        .unwrap()
-        .unwrap();
+        let r = resolve_key(&["FORGE_TEST_XAI_KEY".into()], "xai", &store)
+            .unwrap()
+            .unwrap();
         assert_eq!(r.0, "from-env");
         assert_eq!(r.1, KeySource::Env);
         std::env::remove_var("FORGE_TEST_XAI_KEY");

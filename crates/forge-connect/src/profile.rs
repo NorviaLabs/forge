@@ -1,13 +1,16 @@
-//! Connect profile schema (connect-command.md §3.3).
+//! Connect profile schema (connect-command.md §3.3 + 6.1 auth_mode).
 
 use serde::{Deserialize, Serialize};
+
+use crate::auth::AuthMode;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConnectProfile {
     pub id: String,
     pub title: String,
     pub description: String,
-    /// Env vars checked for an existing API key (first present wins).
+    pub auth_mode: AuthMode,
+    /// Env vars for ApiKey mode (first present wins). Empty for pure OAuth profiles.
     pub api_key_env: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_base_url: Option<String>,
@@ -20,6 +23,14 @@ pub struct ConnectProfile {
 impl ConnectProfile {
     pub fn default_model(&self) -> Option<&str> {
         self.default_models.first().map(|s| s.as_str())
+    }
+
+    pub fn needs_tui_api_key_prompt(&self) -> bool {
+        self.auth_mode.tui_always_prompt_key()
+    }
+
+    pub fn rejects_api_key_cli(&self) -> bool {
+        self.auth_mode.is_oauth()
     }
 }
 
@@ -37,6 +48,8 @@ pub enum KeySource {
     File,
     /// Provided just now (session) — treated as file after persist.
     Provided,
+    /// OAuth access token stored.
+    Oauth,
 }
 
 impl KeySource {
@@ -45,6 +58,7 @@ impl KeySource {
             Self::Env => "env",
             Self::File => "file",
             Self::Provided => "provided",
+            Self::Oauth => "oauth",
         }
     }
 }
@@ -54,6 +68,5 @@ pub struct ConnectStatus {
     pub profile_id: Option<String>,
     pub model: Option<String>,
     pub key_source: Option<KeySource>,
-    /// Profiles that currently have a key available (env or file) — ids only.
     pub connected_profile_ids: Vec<String>,
 }

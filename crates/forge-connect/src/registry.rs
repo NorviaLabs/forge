@@ -64,6 +64,9 @@ mod tests {
             id: "demo".into(),
             title: "Demo".into(),
             description: "d".into(),
+            auth_mode: crate::auth::AuthMode::ApiKey {
+                tui_always_prompt: false,
+            },
             api_key_env: vec!["DEMO_KEY".into()],
             default_base_url: None,
             default_models: vec!["demo/m".into()],
