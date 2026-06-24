@@ -20,6 +20,22 @@ pub enum Overlay {
         selected: usize,
         items: Vec<ModelItem>,
     },
+    /// Phase 6.1 — OpenCode Go (and other ApiKey tui_always_prompt profiles)
+    ConnectApiKey {
+        profile_id: String,
+        title: String,
+        auth_url: Option<String>,
+        /// Masked key buffer (stored plain in memory only for submit).
+        key_input: String,
+        /// Optional hint when env key exists
+        env_hint: Option<String>,
+    },
+    /// Phase 6.1 — xAI Grok OAuth progress
+    ConnectOauth {
+        profile_id: String,
+        title: String,
+        instructions: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -132,6 +148,33 @@ impl Overlay {
         Self::Hitl { payload }
     }
 
+    pub fn connect_api_key(
+        profile_id: impl Into<String>,
+        title: impl Into<String>,
+        auth_url: Option<String>,
+        env_hint: Option<String>,
+    ) -> Self {
+        Self::ConnectApiKey {
+            profile_id: profile_id.into(),
+            title: title.into(),
+            auth_url,
+            key_input: String::new(),
+            env_hint,
+        }
+    }
+
+    pub fn connect_oauth(
+        profile_id: impl Into<String>,
+        title: impl Into<String>,
+        instructions: impl Into<String>,
+    ) -> Self {
+        Self::ConnectOauth {
+            profile_id: profile_id.into(),
+            title: title.into(),
+            instructions: instructions.into(),
+        }
+    }
+
     pub fn filter_slash(&mut self, f: &str) {
         if let Self::Slash {
             filter,
@@ -193,6 +236,12 @@ pub enum OverlayAction {
     InsertInput(String),
     /// Model selection
     SelectModel { provider: String, model: String },
+    /// Submit API key from ConnectApiKey overlay
+    ConnectSubmitKey { profile_id: String, api_key: String },
+    /// Complete OAuth (fixture / continue) from ConnectOauth overlay
+    ConnectCompleteOauth { profile_id: String },
+    /// Use env key without typing (secondary action on API key modal)
+    ConnectUseEnv { profile_id: String },
 }
 
 pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
@@ -243,8 +292,50 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                     OverlayAction::None
                 }
             }
+            Overlay::ConnectApiKey {
+                profile_id,
+                key_input,
+                ..
+            } => {
+                if key_input.trim().is_empty() {
+                    OverlayAction::None
+                } else {
+                    OverlayAction::ConnectSubmitKey {
+                        profile_id: profile_id.clone(),
+                        api_key: key_input.clone(),
+                    }
+                }
+            }
+            Overlay::ConnectOauth { profile_id, .. } => OverlayAction::ConnectCompleteOauth {
+                profile_id: profile_id.clone(),
+            },
             Overlay::Hitl { .. } => OverlayAction::None,
         },
+        Key::Char('e') | Key::Char('E')
+            if matches!(overlay, Overlay::ConnectApiKey { env_hint: Some(_), .. }) =>
+        {
+            if let Overlay::ConnectApiKey { profile_id, .. } = overlay {
+                OverlayAction::ConnectUseEnv {
+                    profile_id: profile_id.clone(),
+                }
+            } else {
+                OverlayAction::None
+            }
+        }
+        Key::Char(c) if matches!(overlay, Overlay::ConnectApiKey { .. }) => {
+            if let Overlay::ConnectApiKey { key_input, .. } = overlay {
+                if !c.is_control() {
+                    key_input.push(c);
+                }
+            }
+            OverlayAction::None
+        }
+        Key::Backspace if matches!(overlay, Overlay::ConnectApiKey { .. }) => {
+            if let Overlay::ConnectApiKey { key_input, .. } = overlay {
+                key_input.pop();
+            }
+            OverlayAction::None
+        }
         Key::Char('a') | Key::Char('A') if matches!(overlay, Overlay::Hitl { .. }) => {
             OverlayAction::HitlApprove
         }
@@ -390,6 +481,53 @@ impl Widget for OverlayWidget<'_> {
                     )
                     .render(r, buf);
             }
+            Overlay::ConnectApiKey {
+                title,
+                auth_url,
+                key_input,
+                env_hint,
+                ..
+            } => {
+                let r = centered_rect(70, 45, area);
+                let masked: String = "*".repeat(key_input.chars().count());
+                let url = auth_url.as_deref().unwrap_or("(see docs)");
+                let env_line = env_hint
+                    .as_ref()
+                    .map(|h| format!("\n[e] Use existing env ({h})"))
+                    .unwrap_or_default();
+                let body = format!(
+                    "Connect: {title}\n\n1. Sign in and copy your API key:\n   {url}\n\n2. Paste API key below (masked):\n   [{masked}]\n\n[Enter] Connect    [Esc] Cancel{env_line}"
+                );
+                Paragraph::new(body)
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_style(theme::brand())
+                            .title(Span::styled(
+                                " API key required ",
+                                theme::brand().add_modifier(Modifier::BOLD),
+                            )),
+                    )
+                    .render(r, buf);
+            }
+            Overlay::ConnectOauth {
+                title,
+                instructions,
+                ..
+            } => {
+                let r = centered_rect(70, 50, area);
+                let body = format!(
+                    "Connect: {title} (OAuth)\n\nAPI keys are not used for this profile.\n\n{instructions}\n\n[Enter] Complete (fixture/env)    [Esc] Cancel"
+                );
+                Paragraph::new(body)
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_style(theme::info())
+                            .title(Span::styled(" OAuth ", theme::info())),
+                    )
+                    .render(r, buf);
+            }
         }
     }
 }
@@ -471,5 +609,46 @@ mod tests {
             parse_slash("/approve").unwrap().unwrap(),
             SlashCommand::Approve
         ));
+    }
+
+    #[test]
+    fn connect_api_key_overlay_requires_key_and_masks() {
+        let mut o = Overlay::connect_api_key(
+            "opencode_go",
+            "OpenCode Go",
+            Some("https://opencode.ai/auth".into()),
+            None,
+        );
+        // Enter with empty key does nothing
+        assert_eq!(handle_overlay_key(&mut o, Key::Enter), OverlayAction::None);
+        handle_overlay_key(&mut o, Key::Char('s'));
+        handle_overlay_key(&mut o, Key::Char('e'));
+        handle_overlay_key(&mut o, Key::Char('c'));
+        let a = handle_overlay_key(&mut o, Key::Enter);
+        match a {
+            OverlayAction::ConnectSubmitKey {
+                profile_id,
+                api_key,
+            } => {
+                assert_eq!(profile_id, "opencode_go");
+                assert_eq!(api_key, "sec");
+            }
+            other => panic!("expected submit key, got {other:?}"),
+        }
+        if let Overlay::ConnectApiKey { key_input, .. } = &o {
+            assert_eq!(key_input, "sec");
+        }
+    }
+
+    #[test]
+    fn connect_oauth_overlay_enter_completes() {
+        let mut o = Overlay::connect_oauth("xai", "xAI Grok", "Visit accounts.x.ai");
+        let a = handle_overlay_key(&mut o, Key::Enter);
+        assert_eq!(
+            a,
+            OverlayAction::ConnectCompleteOauth {
+                profile_id: "xai".into()
+            }
+        );
     }
 }

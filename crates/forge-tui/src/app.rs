@@ -10,7 +10,8 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use forge_connect::{
-    builtin_registry, handle_connect_action, ConnectAction, ConnectRegistry, CredentialStore,
+    builtin_registry, handle_connect_action, needs_tui_api_key_prompt, needs_tui_oauth,
+    ConnectAction, ConnectError, ConnectRegistry, CredentialStore,
 };
 use forge_core::{AgentSession, LoopError};
 use forge_types::HitlDecision;
@@ -83,6 +84,52 @@ impl TuiApp {
     }
 
     fn handle_connect(&mut self, action: ConnectAction) {
+        // Phase 6.1: open mode-specific overlays for interactive connect
+        if let ConnectAction::Connect {
+            ref profile_id,
+            ref api_key,
+            oauth_fixture,
+        } = action
+        {
+            if api_key.is_none() && !oauth_fixture {
+                if needs_tui_api_key_prompt(&self.connect_registry, profile_id) {
+                    let p = self.connect_registry.get(profile_id);
+                    let title = p.map(|x| x.title.clone()).unwrap_or_else(|| profile_id.clone());
+                    let auth_url = p.and_then(|x| x.auth_url.clone());
+                    let env_hint = p.and_then(|x| {
+                        x.api_key_env.iter().find_map(|e| {
+                            std::env::var(e).ok().filter(|v| !v.is_empty()).map(|_| e.clone())
+                        })
+                    });
+                    self.overlay = Some(Overlay::connect_api_key(
+                        profile_id.clone(),
+                        title,
+                        auth_url,
+                        env_hint,
+                    ));
+                    self.status_message = format!("Enter API key for {profile_id}");
+                    return;
+                }
+                if needs_tui_oauth(&self.connect_registry, profile_id) {
+                    let p = self.connect_registry.get(profile_id);
+                    let title = p.map(|x| x.title.clone()).unwrap_or_else(|| profile_id.clone());
+                    let instructions = p
+                        .and_then(|x| match &x.auth_mode {
+                            forge_connect::AuthMode::Oauth { auth_server, .. } => {
+                                Some(forge_connect::OauthPending::start(profile_id, auth_server)
+                                    .operator_instructions())
+                            }
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| "Complete OAuth in browser.".into());
+                    self.overlay =
+                        Some(Overlay::connect_oauth(profile_id.clone(), title, instructions));
+                    self.status_message = format!("OAuth for {profile_id}");
+                    return;
+                }
+            }
+        }
+
         let mut model = Some(self.runtime.model_label.clone());
         match handle_connect_action(
             action,
@@ -96,16 +143,32 @@ impl TuiApp {
                     self.runtime.model_label = m;
                     self.runtime.provider = "litellm".into();
                 }
-                self.status_message = msg.lines().next().unwrap_or("ok").to_string();
-                // Multi-line list: keep full message for status when short
-                if msg.lines().count() > 1 {
-                    self.status_message = msg.replace('\n', " · ");
-                }
+                self.status_message = if msg.lines().count() > 1 {
+                    msg.replace('\n', " · ")
+                } else {
+                    msg
+                };
+            }
+            Err(ConnectError::OauthPending(_, instructions)) => {
+                self.status_message = instructions.replace('\n', " · ");
             }
             Err(e) => {
                 self.status_message = e.to_string();
             }
         }
+    }
+
+    fn finish_connect(
+        &mut self,
+        profile_id: &str,
+        api_key: Option<String>,
+        oauth_fixture: bool,
+    ) {
+        self.handle_connect(ConnectAction::Connect {
+            profile_id: profile_id.into(),
+            api_key,
+            oauth_fixture,
+        });
     }
 
     pub fn refresh_status_model(&self) -> StatusModel {
@@ -201,6 +264,22 @@ impl TuiApp {
                         format!("model {provider}/{model} — restart session to apply");
                     self.runtime.provider = provider;
                     self.runtime.model_label = model;
+                }
+                OverlayAction::ConnectSubmitKey {
+                    profile_id,
+                    api_key,
+                } => {
+                    self.overlay = None;
+                    self.finish_connect(&profile_id, Some(api_key), false);
+                }
+                OverlayAction::ConnectCompleteOauth { profile_id } => {
+                    self.overlay = None;
+                    // Enter completes with OAuth fixture path when live exchange not available
+                    self.finish_connect(&profile_id, None, true);
+                }
+                OverlayAction::ConnectUseEnv { profile_id } => {
+                    self.overlay = None;
+                    self.finish_connect(&profile_id, None, false);
                 }
             }
             return Ok(());

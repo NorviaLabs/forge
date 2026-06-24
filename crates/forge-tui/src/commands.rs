@@ -209,7 +209,8 @@ mod tests {
             parse_slash("/connect xai").unwrap().unwrap(),
             SlashCommand::Connect(ConnectAction::Connect {
                 profile_id: "xai".into(),
-                api_key: None
+                api_key: None,
+                oauth_fixture: false,
             })
         );
         assert_eq!(
