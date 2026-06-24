@@ -178,25 +178,34 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                     } else {
                         None
                     };
+                    let oauth_fixture = std::env::var("FORGE_CONNECT_OAUTH_FIXTURE").is_ok();
                     ConnectAction::Connect {
                         profile_id: id.to_string(),
                         api_key,
+                        oauth_fixture,
                     }
                 }
             };
-            let msg = handle_connect_action(
+            match handle_connect_action(
                 action,
                 &reg,
                 &store,
                 &mut active_profile,
                 &mut active_model,
-            )
-            .map_err(|e| anyhow::anyhow!(e))?;
-            println!("{msg}");
-            if let Some(m) = active_model {
-                println!("hint: set FORGE_MODEL_ID={m} or model in forge.toml");
+            ) {
+                Ok(msg) => {
+                    println!("{msg}");
+                    if let Some(m) = active_model {
+                        println!("hint: set FORGE_MODEL_ID={m} or model in forge.toml");
+                    }
+                    Ok(ExitCode::Success)
+                }
+                Err(e) => {
+                    // OAuth pending prints instructions and non-zero
+                    eprintln!("{e}");
+                    Err(anyhow::anyhow!(e))
+                }
             }
-            Ok(ExitCode::Success)
         }
         Commands::Tui {
             resume,

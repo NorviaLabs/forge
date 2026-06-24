@@ -85,9 +85,8 @@ fn connect_list_shows_profiles() {
 }
 
 #[test]
-fn connect_xai_with_key_no_secret_leak() {
+fn connect_xai_rejects_api_key() {
     let dir = tempdir().unwrap();
-    // Isolate credentials path via HOME
     let home = dir.path().join("home");
     std::fs::create_dir_all(home.join(".config/forge")).unwrap();
     Command::cargo_bin("forge")
@@ -95,8 +94,39 @@ fn connect_xai_with_key_no_secret_leak() {
         .env("HOME", &home)
         .args(["connect", "xai", "--key", "super-secret-xai-key"])
         .assert()
+        .failure()
+        .stderr(predicate::str::contains("OAuth"))
+        .stderr(predicate::str::contains("super-secret-xai-key").not());
+}
+
+#[test]
+fn connect_xai_oauth_fixture() {
+    let dir = tempdir().unwrap();
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(home.join(".config/forge")).unwrap();
+    Command::cargo_bin("forge")
+        .unwrap()
+        .env("HOME", &home)
+        .env("FORGE_CONNECT_OAUTH_FIXTURE", "1")
+        .args(["connect", "xai"])
+        .assert()
         .success()
         .stdout(predicate::str::contains("xAI Grok"))
-        .stdout(predicate::str::contains("xai/grok"))
-        .stdout(predicate::str::contains("super-secret-xai-key").not());
+        .stdout(predicate::str::contains("oauth"))
+        .stdout(predicate::str::contains("fixture-access-token").not());
+}
+
+#[test]
+fn connect_opencode_go_with_key_no_secret_leak() {
+    let dir = tempdir().unwrap();
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(home.join(".config/forge")).unwrap();
+    Command::cargo_bin("forge")
+        .unwrap()
+        .env("HOME", &home)
+        .args(["connect", "opencode_go", "--key", "go-secret-key"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("OpenCode Go"))
+        .stdout(predicate::str::contains("go-secret-key").not());
 }
