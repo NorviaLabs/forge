@@ -606,6 +606,50 @@ mod tests {
         assert!(app.should_quit);
     }
 
+    #[tokio::test]
+    async fn connect_opencode_go_opens_api_key_overlay() {
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "m".into(),
+                provider: "litellm".into(),
+                cwd: PathBuf::from("."),
+                version: "0.6.1".into(),
+            },
+        );
+        app.dispatch_line("/connect opencode_go").await.unwrap();
+        match &app.overlay {
+            Some(Overlay::ConnectApiKey { profile_id, title, .. }) => {
+                assert_eq!(profile_id, "opencode_go");
+                assert!(title.contains("OpenCode"));
+            }
+            other => panic!("expected ConnectApiKey overlay, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn connect_xai_opens_oauth_overlay() {
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "m".into(),
+                provider: "litellm".into(),
+                cwd: PathBuf::from("."),
+                version: "0.6.1".into(),
+            },
+        );
+        app.dispatch_line("/connect xai").await.unwrap();
+        match &app.overlay {
+            Some(Overlay::ConnectOauth { profile_id, title, .. }) => {
+                assert_eq!(profile_id, "xai");
+                assert!(title.contains("Grok") || title.contains("xAI"));
+            }
+            other => panic!("expected ConnectOauth overlay, got {other:?}"),
+        }
+    }
+
     #[test]
     fn status_model_from_app_fields() {
         // layout + status integration smoke
