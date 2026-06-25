@@ -195,8 +195,10 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             ) {
                 Ok(msg) => {
                     println!("{msg}");
-                    if let Some(m) = active_model {
-                        println!("hint: set FORGE_MODEL_ID={m} or model in forge.toml");
+                    if active_profile.is_some() {
+                        if let Some(m) = active_model {
+                            println!("hint: set FORGE_MODEL_ID={m} or model in forge.toml");
+                        }
                     }
                     Ok(ExitCode::Success)
                 }
