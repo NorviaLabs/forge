@@ -1,6 +1,6 @@
 # Forge — Product Requirements Document
 
-**Version:** 0.8.1  
+**Version:** 0.9  
 **Status:** Draft  
 **Owner:** Mohit Ranka  
 **Last updated:** 23 Jul 2026  
@@ -149,7 +149,8 @@ Every harness component encodes an assumption about what the model cannot yet do
 9. Emit **standard distributed traces** across model, tool, and step boundaries (OpenTelemetry-compatible).
 10. Support **multi-provider models** via configuration only (no application rewrites).  
 11. (Phase 5) Reach the **broad provider catalog** via the **LiteLLM Python SDK (library)**, not the LiteLLM Proxy gateway.  
-12. (Phase 6) Ship a first-class **`/connect`** flow for productized providers, starting with **xAI Grok** and **OpenCode Go**, without reintroducing dual model-client stacks.
+12. (Phase 6) Ship a first-class **`/connect`** flow for productized providers, starting with **xAI Grok** and **OpenCode Go**, without reintroducing dual model-client stacks.  
+13. (Phase 7) Support **command history navigation with arrow keys** in the full-screen TUI (Up/Down).
 
 ---
 
@@ -207,6 +208,7 @@ Product capabilities group into five areas (implementation detail in architectur
 | **TUI-02** | Conversation & tool presentation | Chat shows user/assistant/system messages and tool cards (running/done/blocked); supports streaming/status while the agent runs; redacts secrets. | Tool cards and message roles distinguishable; no raw secrets in UI | P0 (Critical) |
 | **TUI-03** | Live session sidebar | Sidebar shows session id/status, context budget meter, tool ACL summary, and recent journal/events. | Values update after turns without leaving the TUI | P1 (High) |
 | **TUI-04** | Overlays & palettes | Modal overlays for HITL approve/deny, slash-command palette (`/`), and model picker; keyboard-first (no mouse required). | HITL and `/` flows completable via keys alone per [ui.md](./ui.md) screens 04, 07, 08 | P0 (Critical) |
+| **TUI-05** | Input command history | In full-screen TUI, **Up/Down** arrows recall previously submitted input lines (prompts and slash commands). | Operator can re-run/edit prior lines without retyping; history inactive under overlays | P1 |
 
 ### 9.2 Priority summary
 
@@ -241,6 +243,7 @@ Product capabilities group into five areas (implementation detail in architectur
 - **Phase 5 (MDL-01):** **Single production path** — **LiteLLM Python SDK** (library, not Proxy) for **all** providers, including those formerly served by native adapters. Dual native+LiteLLM stacks are removed so operators and code maintain one client. **Mock** remains for offline CI only.
 - **Phase 6 (CONN-01, PROV-01, PROV-02):** **`/connect`** onboarding for **xAI Grok** and **OpenCode Go**; still uses the Phase 5 LiteLLM path.  
 - **Phase 6.1:** **xAI Grok connects via OAuth** (not API-key paste). **OpenCode Go TUI must explicitly prompt for API key** when connecting.
+- **Phase 7 (TUI-05):** Full-screen TUI **command history** via **Up/Down** arrow keys on the input bar.
 
 ---
 
@@ -300,6 +303,7 @@ Product capabilities group into five areas (implementation detail in architectur
 | TUI-02 | **4** | Conversation + tool cards |
 | TUI-03 | **4** | Session sidebar |
 | TUI-04 | **4** | HITL / slash / model overlays |
+| TUI-05 | **7** | TUI input command history (arrow keys) |
 | MDL-01 | **5** | Universal providers via LiteLLM SDK (not Proxy) |
 | CONN-01 | **6** | `/connect` command — interactive provider auth & profile select |
 | PROV-01 | **6** | xAI Grok first-class connect profile |
@@ -308,6 +312,8 @@ Product capabilities group into five areas (implementation detail in architectur
 Phase 5 design set (all exclusive Phase 5): [litellm-providers.md](./designs/litellm-providers.md) (primary), [litellm-worker.md](./designs/litellm-worker.md), [litellm-wire.md](./designs/litellm-wire.md), [litellm-normalization.md](./designs/litellm-normalization.md), [litellm-config.md](./designs/litellm-config.md).
 
 Phase 6 design set (all exclusive Phase 6): [connect-command.md](./designs/connect-command.md) (CONN-01 primary), [connect-auth-modes.md](./designs/connect-auth-modes.md) (6.1 auth modes), [provider-xai-grok.md](./designs/provider-xai-grok.md) (PROV-01, OAuth), [provider-opencode-go.md](./designs/provider-opencode-go.md) (PROV-02, TUI API key prompt).
+
+Phase 7 design set (exclusive Phase 7): [tui-input-history.md](./designs/tui-input-history.md) (TUI-05).
 
 ### Design doc → phase map (exclusive)
 
@@ -477,6 +483,33 @@ See [designs/README.md](./designs/README.md). No design doc may list multiple ph
 
 ---
 
+### Phase 7 — TUI command history (arrow keys) (complete product)
+
+**Product:** Phases 1–6 harness **plus** **command history navigation** in the full-screen TUI: **Up/Down** arrows cycle previously submitted input lines (user prompts and slash commands) in the input bar.
+
+**Users served:** Operators who iterate on long prompts or re-run slash workflows without retyping.
+
+**Depends on:** Phase 4 TUI input bar and event loop ([tui-shell.md](./designs/tui-shell.md)); overlays retain Up/Down for list selection ([tui-overlays.md](./designs/tui-overlays.md)).
+
+| In scope | Out of scope |
+|----------|--------------|
+| **TUI-05** — in-session history; Up = older, Down = newer | Full readline (Ctrl-R, multi-line emacs) |
+| Store non-empty submitted lines (dedupe consecutive optional) | Using Up/Down to scroll the chat transcript while input focused |
+| History **disabled** when any overlay is open | Cloud-synced history |
+| Secret-like lines not stored | Required persistent history file (optional stretch) |
+| Unit tests for history model | REPL history (optional mirror later) |
+
+**Exit criteria (product complete):**
+
+1. In `forge tui`, operator submits ≥3 distinct lines; **Up** recalls them from newest toward oldest; **Down** returns toward the empty/live draft.  
+2. Recalled line can be edited and re-submitted; new entry appears in history.  
+3. With slash palette (or other overlay) open, **Up/Down** move the overlay selection—not input history.  
+4. Empty submits and secret-like lines are not stored.  
+5. Automated unit tests cover `InputHistory` without a TTY.  
+6. Headless/`--mock` and Phase 5–6 paths unchanged.
+
+---
+
 ## 14. Strategic takeaways
 
 The agent ecosystem is moving from rapid-prototype abstractions (loose roles, heavy graphs, unmonitored single-process runtimes) toward **production-grade harness engineering**. Long-horizon reliability depends less on prompt tweaks and more on:
@@ -489,6 +522,7 @@ The agent ecosystem is moving from rapid-prototype abstractions (loose roles, he
 - Operator-grade terminal UX (full-screen TUI) without sacrificing headless CI  
 - Broad model portability through a **single** LiteLLM SDK path (Phase 5)  
 - Guided **`/connect`** onboarding for key product providers (Phase 6: xAI Grok, OpenCode Go)  
+- Terminal ergonomics: **command history** with arrow keys in the full-screen TUI (Phase 7)  
 
 Forge is specified to occupy that intersection: low abstraction tax, enterprise durability, portable model/client integration, and a first-class terminal surface.
 

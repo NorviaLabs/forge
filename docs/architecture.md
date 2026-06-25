@@ -1,6 +1,6 @@
 # Forge — Architecture
 
-**Version:** 0.8.1  
+**Version:** 0.9  
 **Status:** Draft  
 **Owner:** Mohit Ranka  
 **Last updated:** 23 Jul 2026  
@@ -48,6 +48,7 @@ Aligned with [prd.md](./prd.md) §6 (wording here is architecture-oriented).
 9. OpenTelemetry-compatible traces across model, tool, and step boundaries  
 10. Multi-provider models via a single configuration switch (Phase 1: thin native adapters; Phase 5: **LiteLLM SDK only** for production—natives removed; not Proxy)  
 11. Phase 6: **`/connect`** product profiles for **xAI Grok** and **OpenCode Go** on top of the LiteLLM path  
+12. Phase 7: TUI **input command history** via **Up/Down** arrow keys  
 
 ### Non-goals
 
@@ -837,6 +838,7 @@ Aligned with [prd.md](./prd.md) §13. Each phase is a **complete product**. Req 
 | **4** | Full-screen terminal TUI | TUI-01, TUI-02, TUI-03, TUI-04 | tui-shell, tui-conversation, tui-sidebar, tui-overlays |
 | **5** | Universal model providers | MDL-01 | litellm-providers, litellm-worker, litellm-wire, litellm-normalization, litellm-config |
 | **6** | Connected providers + `/connect` | CONN-01, PROV-01, PROV-02 | connect-command, connect-auth-modes (6.1), provider-xai-grok (OAuth), provider-opencode-go (TUI API key) |
+| **7** | TUI command history | TUI-05 | tui-input-history |
 
 ### Phase 1 — Coding agent
 
@@ -980,6 +982,35 @@ Operator: /connect
     → LiteLlmModelClient (Phase 5) + worker env
 ```
 
+### Phase 7 — TUI command history (arrow keys)
+
+**Product:** Input-bar **command history** in `forge tui`: **Up/Down** recall submitted lines (prompts + slash commands).
+
+**Build order (strict):**
+
+1. `InputHistory` model (push, up, down, stash draft, max cap, secret filter) — [tui-input-history.md](./designs/tui-input-history.md)  
+2. Wire **Up/Down** in `TuiApp` when `overlay.is_none()`  
+3. On Enter/`take`: `history.push` before dispatch  
+4. Keep overlay Up/Down for lists (no history while overlay open)  
+5. Unit tests + manual TUI smoke  
+
+**Crate focus:** `forge-tui` (`InputHistory` + `app` key handler). No core/agent changes.
+
+**Exit:**
+
+- Up/Down navigate history in main input  
+- Overlays keep list navigation  
+- Secrets/empty not stored  
+- Tests green without TTY  
+
+**Not Phase 7:** Chat scroll with Up/Down; full readline; required disk persistence.
+
+```text
+[no overlay]  Up/Down → InputHistory → input bar text
+[overlay]     Up/Down → palette / list selection (Phase 4)
+PageUp/Down   → conversation scroll (TUI-02) if present
+```
+
 ---
 
 ## 15. Extension points
@@ -1059,6 +1090,7 @@ Forge is the **harness** between models and the real world: a typed tool bus, an
 | 11 | Model providers (Phase 1) | **Direct APIs + thin trait**; ship **OpenAI-compatible, Anthropic, and xAI** thin adapters early (**superseded for production in Phase 5**) |
 | 18 | Universal providers (Phase 5) | **LiteLLM Python SDK as the only production `ModelClient`** (stdio worker). **Remove** Phase 1 native HTTP adapters. **Not** LiteLLM Proxy. **Not** `fast-litellm` as primary. **Mock** only for offline CI. No dual production stacks |
 | 19 | Connected providers (Phase 6) | **`/connect`** UX + profiles for **xAI Grok** and **OpenCode Go**. **No** second production `ModelClient`. **6.1:** Grok = **OAuth**; OpenCode Go = **API key with mandatory TUI prompt** |
+| 20 | TUI input history (Phase 7) | **Up/Down** navigate submitted command history in main input only; inactive under overlays; session memory required, disk optional |
 | 12 | Config | **TOML file + env overrides** (e.g. `forge.toml` / `~/.config/forge/config.toml`; secrets/CI via env) |
 | 13 | Protocol phase ownership | **Phase 1 CORE-02 = MCP only.** **Phase 2 CORE-03 = ACP only.** Exclusive; no split ownership of one req ID. |
 | 14 | License | **MIT** |
@@ -1077,7 +1109,7 @@ Forge is the **harness** between models and the real world: a typed tool bus, an
 | LiteLLM (Phase 5) | **Required** for live model calls: **Python** + `litellm`; long-lived worker preferred; **no** proxy server; natives deleted |
 | Connect profiles (Phase 6) | Registry + `/connect`; still `LiteLlmModelClient` |
 | Connect auth (6.1) | `AuthMode::Oauth` (xAI) vs `AuthMode::ApiKey` + TUI prompt (OpenCode Go); tokens/keys in 0600 store |
-| Surfaces | Phase 1: line-mode `repl` + headless `forge-cli`; Phase 2: `forge-acp`; Phase 3: channels; Phase 4: full-screen ratatui `forge tui`; Phase 6: `/connect` in TUI + REPL |
+| Surfaces | Phase 1: line-mode `repl` + headless `forge-cli`; Phase 2: `forge-acp`; Phase 3: channels; Phase 4: full-screen ratatui `forge tui`; Phase 6: `/connect` in TUI + REPL; Phase 7: TUI input history (Up/Down) |
 | Config | TOML (`forge.toml` or XDG config path) merged with env overrides |
 | Workspace root | Default **cwd**; override via CLI flag and/or config when specified |
 | Observability | `tracing` + OpenTelemetry exporter crates |

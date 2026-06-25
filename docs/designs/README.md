@@ -3,7 +3,7 @@
 **Status:** Draft  
 **Last updated:** 23 Jul 2026  
 
-**Product phases in force:** 1–5 implemented; **6 specified** (`/connect`, xAI Grok, OpenCode Go).
+**Product phases in force:** 1–6 implemented; **7 specified** (TUI command history).
 
 | Layer | Document | Owns |
 |-------|----------|------|
@@ -14,9 +14,9 @@
 
 ## Rules
 
-1. **Exclusive phase ownership** — Each design doc’s header **Phase:** field is a single number (1–6). No multi-phase owners.  
+1. **Exclusive phase ownership** — Each design doc’s header **Phase:** field is a single number (1–7). No multi-phase owners.  
 2. **Exclusive req ownership** — Each PRD req ID appears in exactly one design doc as primary owner.  
-3. **Product-complete phases** — See [prd.md](../prd.md) §13: Phase 1 coding agent, Phase 2 enterprise harness, Phase 3 fleet/quality, Phase 4 full-screen TUI, Phase 5 LiteLLM, Phase 6 connect profiles.  
+3. **Product-complete phases** — See [prd.md](../prd.md) §13: through Phase 6 connect profiles; Phase 7 TUI input history.  
 4. **Cross-phase references** are allowed as *dependencies* (“builds on Phase 1 journal”) but must not re-specify the other phase’s design.
 
 ## Index by phase
@@ -100,6 +100,12 @@ Visual source of truth: [../ui.md](../ui.md). Phase 1 `surfaces` / line-mode `re
 | [provider-opencode-go.md](./provider-opencode-go.md) | **PROV-02** | OpenCode Go — **TUI must prompt for API key** |
 
 **Phase 6 reading order:** connect-command → connect-auth-modes → provider-xai-grok → provider-opencode-go
+
+### Phase 7 — TUI command history
+
+| Document | PRD reqs | Summary |
+|----------|----------|---------|
+| [tui-input-history.md](./tui-input-history.md) | **TUI-05** | Up/Down arrow command history in main input; inactive under overlays |
 
 ## Template
 

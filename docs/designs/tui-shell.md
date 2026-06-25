@@ -29,6 +29,7 @@ Phase 1 ships only a **line-mode REPL**. Operators need a full-screen terminal a
 - Conversation rendering details → [tui-conversation.md](./tui-conversation.md).  
 - Sidebar content → [tui-sidebar.md](./tui-sidebar.md).  
 - Modals/palettes → [tui-overlays.md](./tui-overlays.md).  
+- Input **command history** (Up/Down) → Phase 7 [tui-input-history.md](./tui-input-history.md).  
 - New harness protocols.
 
 ## 3. Design
