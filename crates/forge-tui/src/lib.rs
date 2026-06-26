@@ -1,8 +1,9 @@
-//! Forge terminal UI — slash commands (Phase 1–3) + full-screen ratatui app (Phase 4).
+//! Forge terminal UI — slash commands, full-screen ratatui, input history (Phase 7).
 
 mod app;
 mod commands;
 mod conversation;
+mod history;
 mod layout;
 mod overlays;
 mod sidebar;
@@ -10,6 +11,7 @@ mod theme;
 mod widgets;
 
 pub use app::{run_tui, TuiApp, TuiError, TuiRuntimeConfig};
+pub use history::InputHistory;
 pub use commands::{help_text, parse_slash, CommandError, SlashCommand, WorktreeAction};
 pub use conversation::{ChatItem, ConversationModel, ToolCardState};
 pub use layout::{is_too_small, split_areas, LayoutRegions, MIN_HEIGHT, MIN_WIDTH};
