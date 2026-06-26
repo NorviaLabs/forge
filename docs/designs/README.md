@@ -87,8 +87,10 @@ Visual source of truth: [../ui.md](../ui.md). Phase 1 `surfaces` / line-mode `re
 **Phase 5:** litellm-providers → litellm-config → litellm-worker → litellm-wire → litellm-normalization  
 (builds on Phase 1 model-providers + configuration merge rules)  
 
-**Phase 6:** connect-command → provider-xai-grok → provider-opencode-go  
+**Phase 6:** connect-command → connect-auth-modes → provider-xai-grok → provider-opencode-go  
 (builds on Phase 5 LiteLLM path + Phase 1/4 slash UX)  
+
+**Phase 7:** tui-input-history  
 
 ### Phase 6 — Connected providers (`/connect`)
 
