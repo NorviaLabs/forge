@@ -7,7 +7,7 @@
 | **License** | [MIT](./LICENSE) |
 | **Repo** | [NorviaLabs/forge](https://github.com/NorviaLabs/forge) |
 | **Language** | Rust (Tokio) |
-| **Status** | **Phases 1–6 implemented** |
+| **Status** | **Phases 1–7 implemented** |
 
 ---
 
@@ -21,6 +21,7 @@
 | **4** | Full-screen terminal TUI (shell, conversation, sidebar, overlays) | ✓ |
 | **5** | Universal providers via LiteLLM SDK (sole production path) | ✓ |
 | **6** | `/connect` + xAI Grok + OpenCode Go profiles | ✓ |
+| **7** | TUI command history (Up/Down arrows) | ✓ |
 
 ---
 
@@ -32,7 +33,7 @@ cd forge
 cargo build --release -p forge-cli
 # Live model path also needs the Python worker:
 pip install -e workers/forge-litellm-worker
-./target/release/forge status   # forge 0.6.0 phase6
+./target/release/forge status   # forge 0.7.0 phase7
 ```
 
 ---
@@ -122,6 +123,11 @@ Native OpenAI/Anthropic/xAI HTTP adapters removed; production uses LiteLLM only.
 | `forge-connect` | [connect-command.md](./docs/designs/connect-command.md) |
 | xAI Grok profile | [provider-xai-grok.md](./docs/designs/provider-xai-grok.md) |
 | OpenCode Go profile | [provider-opencode-go.md](./docs/designs/provider-opencode-go.md) |
+
+### Phase 7
+| Piece | Design |
+|-------|--------|
+| `InputHistory` + Up/Down in `forge tui` | [tui-input-history.md](./docs/designs/tui-input-history.md) |
 
 ### Phase 4
 Full-screen UI in `forge-tui` + `forge tui` CLI entry:

@@ -142,7 +142,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     match cli.command {
         Commands::Status => {
             println!(
-                "forge 0.6.0 phase6\nworkspace {}\nprovider {} model {}",
+                "forge 0.7.0 phase7\nworkspace {}\nprovider {} model {}",
                 cfg.workspace_root().display(),
                 cfg.model.provider.as_str(),
                 cfg.model.model
@@ -219,7 +219,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 model_label: cfg.model.model.clone(),
                 provider: cfg.model.provider.as_str().into(),
                 cwd: cfg.workspace_root().to_path_buf(),
-                version: "forge 0.6.0".into(),
+                version: "forge 0.7.0".into(),
             };
             let code = run_tui(session, runtime)
                 .await

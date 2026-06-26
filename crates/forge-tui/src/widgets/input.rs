@@ -70,6 +70,12 @@ impl InputModel {
         self.cursor = 0;
         t
     }
+
+    /// Replace buffer (e.g. from history recall); cursor moves to end.
+    pub fn set_text(&mut self, text: impl Into<String>) {
+        self.text = text.into();
+        self.cursor = self.text.len();
+    }
 }
 
 pub struct InputBar<'a> {

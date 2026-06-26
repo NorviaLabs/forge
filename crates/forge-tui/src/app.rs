@@ -21,6 +21,7 @@ use thiserror::Error;
 
 use crate::commands::{parse_slash, SlashCommand, WorktreeAction};
 use crate::conversation::ConversationModel;
+use crate::history::InputHistory;
 use crate::layout::{is_too_small, split_areas};
 use crate::overlays::{
     handle_overlay_key, Key as OverlayKey, Overlay, OverlayAction, OverlayWidget,
@@ -62,6 +63,8 @@ pub struct TuiApp {
     pub connect_registry: ConnectRegistry,
     pub connect_store: CredentialStore,
     pub connect_profile: Option<String>,
+    /// Phase 7 — submitted command history (Up/Down when no overlay).
+    pub history: InputHistory,
 }
 
 impl TuiApp {
@@ -80,7 +83,12 @@ impl TuiApp {
             connect_registry: builtin_registry(),
             connect_store: CredentialStore::user_default(),
             connect_profile: None,
+            history: InputHistory::default(),
         }
+    }
+
+    fn apply_history_text(&mut self, text: String) {
+        self.input.set_text(text);
     }
 
     fn handle_connect(&mut self, action: ConnectAction) {
@@ -294,7 +302,8 @@ impl TuiApp {
                 self.should_quit = true;
             }
             KeyCode::Esc => {
-                // cancel busy is best-effort; clear input
+                // cancel busy is best-effort; clear input + history browse
+                self.history.reset_browse();
                 if self.input.text.is_empty() {
                     self.status_message = "esc".into();
                 } else {
@@ -309,7 +318,22 @@ impl TuiApp {
                 if line.is_empty() {
                     return Ok(());
                 }
+                self.history.push(&line);
                 self.dispatch_line(&line).await?;
+            }
+            KeyCode::Up => {
+                if !self.busy {
+                    if let Some(text) = self.history.up(&self.input.text) {
+                        self.apply_history_text(text);
+                    }
+                }
+            }
+            KeyCode::Down => {
+                if !self.busy {
+                    if let Some(text) = self.history.down() {
+                        self.apply_history_text(text);
+                    }
+                }
             }
             KeyCode::Char('/') if self.input.text.is_empty() => {
                 self.overlay = Some(Overlay::slash_open(""));
@@ -331,7 +355,7 @@ impl TuiApp {
             KeyCode::Left => self.input.move_left(),
             KeyCode::Right => self.input.move_right(),
             KeyCode::PageUp => {
-                // scroll handled via conversation model — store on app if needed
+                // conversation scroll (TUI-02) — separate from input history
             }
             KeyCode::PageDown => {}
             _ => {}
@@ -648,6 +672,77 @@ mod tests {
             }
             other => panic!("expected ConnectOauth overlay, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn history_records_submitted_lines_and_up_recalls() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "m".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "0.7.0".into(),
+            },
+        );
+        let enter = KeyEvent {
+            code: KeyCode::Enter,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        };
+        app.input.set_text("/status");
+        app.handle_key(enter).await.unwrap();
+        app.input.set_text("/tools");
+        app.handle_key(enter).await.unwrap();
+        assert!(app.history.len() >= 2);
+        let t = app.history.up(&app.input.text).unwrap();
+        app.apply_history_text(t);
+        assert_eq!(app.input.text, "/tools");
+        let t = app.history.up(&app.input.text).unwrap();
+        app.apply_history_text(t);
+        assert_eq!(app.input.text, "/status");
+        let t = app.history.down().unwrap();
+        app.apply_history_text(t);
+        assert_eq!(app.input.text, "/tools");
+    }
+
+    #[tokio::test]
+    async fn history_up_via_key_when_no_overlay() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "m".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "0.7.0".into(),
+            },
+        );
+        app.history.push("alpha");
+        app.history.push("beta");
+        app.input.clear();
+        let up = KeyEvent {
+            code: KeyCode::Up,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        };
+        app.handle_key(up).await.unwrap();
+        assert_eq!(app.input.text, "beta");
+        app.handle_key(up).await.unwrap();
+        assert_eq!(app.input.text, "alpha");
+        let down = KeyEvent {
+            code: KeyCode::Down,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        };
+        app.handle_key(down).await.unwrap();
+        assert_eq!(app.input.text, "beta");
     }
 
     #[test]
