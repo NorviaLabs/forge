@@ -38,7 +38,7 @@ Shell `mode = Overlay(OverlayKind)`:
 | Kind | Trigger | Actions |
 |------|---------|---------|
 | `Hitl` | `pending_hitl.is_some()` auto-open or focus | `a` approve, `d` deny |
-| `SlashPalette` | user types `/` at start of input or Ctrl+K | ↑↓ Enter Esc |
+| `SlashPalette` | **Phase 8:** open via **Ctrl+K** (or equivalent)—**not** auto on typing `/` in the main textbox. Phase 4 historically opened on `/`; superseded for primary entry by [tui-slash-inline.md](./tui-slash-inline.md). | ↑↓ Enter Esc |
 | `ModelPicker` | `/model` without args or dedicated key | ↑↓ Enter Esc |
 
 Only one overlay at a time. Background chat remains visible (dimmed).

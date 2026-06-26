@@ -69,6 +69,7 @@ Phase 1 ships only a **line-mode REPL**. Operators need a full-screen terminal a
 3. On Enter: if input starts with `/` → slash handler; else submit user message to core.  
 4. On Esc: cancel turn if running; else dismiss overlay if any.  
 5. On Ctrl+C / Ctrl+D: quit (confirm optional).  
+6. **Phase 8:** typing `/` stays in the main textbox (inline slash)—see [tui-slash-inline.md](./tui-slash-inline.md); palette is opt-in (e.g. Ctrl+K).
 
 Agent work runs without blocking the UI forever: either short poll of async task or redraw on interval while status is `running`.
 

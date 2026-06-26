@@ -3,7 +3,7 @@
 **Status:** Draft  
 **Last updated:** 23 Jul 2026  
 
-**Product phases in force:** 1–6 implemented; **7 specified** (TUI command history).
+**Product phases in force:** 1–7 implemented; **8 specified** (inline slash in main textbox).
 
 | Layer | Document | Owns |
 |-------|----------|------|
@@ -14,9 +14,9 @@
 
 ## Rules
 
-1. **Exclusive phase ownership** — Each design doc’s header **Phase:** field is a single number (1–7). No multi-phase owners.  
+1. **Exclusive phase ownership** — Each design doc’s header **Phase:** field is a single number (1–8). No multi-phase owners.  
 2. **Exclusive req ownership** — Each PRD req ID appears in exactly one design doc as primary owner.  
-3. **Product-complete phases** — See [prd.md](../prd.md) §13: through Phase 6 connect profiles; Phase 7 TUI input history.  
+3. **Product-complete phases** — See [prd.md](../prd.md) §13: through Phase 7 TUI history; Phase 8 inline slash.  
 4. **Cross-phase references** are allowed as *dependencies* (“builds on Phase 1 journal”) but must not re-specify the other phase’s design.
 
 ## Index by phase
@@ -92,6 +92,8 @@ Visual source of truth: [../ui.md](../ui.md). Phase 1 `surfaces` / line-mode `re
 
 **Phase 7:** tui-input-history  
 
+**Phase 8:** tui-slash-inline  
+
 ### Phase 6 — Connected providers (`/connect`)
 
 | Document | PRD reqs | Summary |
@@ -108,6 +110,14 @@ Visual source of truth: [../ui.md](../ui.md). Phase 1 `surfaces` / line-mode `re
 | Document | PRD reqs | Summary |
 |----------|----------|---------|
 | [tui-input-history.md](./tui-input-history.md) | **TUI-05** | Up/Down arrow command history in main input; inactive under overlays |
+
+### Phase 8 — Inline slash in main textbox
+
+| Document | PRD reqs | Summary |
+|----------|----------|---------|
+| [tui-slash-inline.md](./tui-slash-inline.md) | **TUI-06** | Type `/commands` in main input + Enter; palette via Ctrl+K only |
+
+**Phase 8 reading order:** tui-slash-inline (builds on Phase 4 shell/overlays + command catalogs)
 
 ## Template
 

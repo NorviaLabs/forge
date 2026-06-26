@@ -1,6 +1,6 @@
 # Forge — Architecture
 
-**Version:** 0.9  
+**Version:** 0.10  
 **Status:** Draft  
 **Owner:** Mohit Ranka  
 **Last updated:** 23 Jul 2026  
@@ -49,6 +49,7 @@ Aligned with [prd.md](./prd.md) §6 (wording here is architecture-oriented).
 10. Multi-provider models via a single configuration switch (Phase 1: thin native adapters; Phase 5: **LiteLLM SDK only** for production—natives removed; not Proxy)  
 11. Phase 6: **`/connect`** product profiles for **xAI Grok** and **OpenCode Go** on top of the LiteLLM path  
 12. Phase 7: TUI **input command history** via **Up/Down** arrow keys  
+13. Phase 8: Top-level **slash commands** typed in the **main textbox** (Enter runs `parse_slash`)  
 
 ### Non-goals
 
@@ -839,6 +840,7 @@ Aligned with [prd.md](./prd.md) §13. Each phase is a **complete product**. Req 
 | **5** | Universal model providers | MDL-01 | litellm-providers, litellm-worker, litellm-wire, litellm-normalization, litellm-config |
 | **6** | Connected providers + `/connect` | CONN-01, PROV-01, PROV-02 | connect-command, connect-auth-modes (6.1), provider-xai-grok (OAuth), provider-opencode-go (TUI API key) |
 | **7** | TUI command history | TUI-05 | tui-input-history |
+| **8** | Inline slash in main textbox | TUI-06 | tui-slash-inline |
 
 ### Phase 1 — Coding agent
 
@@ -1011,6 +1013,36 @@ Operator: /connect
 PageUp/Down   → conversation scroll (TUI-02) if present
 ```
 
+### Phase 8 — Inline slash commands in main textbox
+
+**Product:** Type top-level `/commands` in the TUI **main input** and run with **Enter**—same semantics as REPL—without auto-opening the slash palette on `/`.
+
+**Build order (strict):**
+
+1. Remove “`/` → open palette + clear input” from `TuiApp::handle_key` — [tui-slash-inline.md](./designs/tui-slash-inline.md)  
+2. Insert `/` as a normal character into the input model  
+3. Keep Enter → `history.push` → `dispatch_line` (already parses slash)  
+4. Add explicit palette open: **Ctrl+K** (or documented equivalent)  
+5. Update input hint copy; unit tests for no auto-palette + Enter `/status`  
+6. Manual smoke: `/tools`, `/connect list`, multi-arg commands  
+
+**Crate focus:** `forge-tui` app key handler only. Reuse `parse_slash` / command handlers.
+
+**Exit:**
+
+- Full slash commands typed in textbox work  
+- `/` does not force palette  
+- Palette still openable explicitly  
+- History + overlays unchanged otherwise  
+
+**Not Phase 8:** New command catalog entries; removing palette; autocomplete.
+
+```text
+Main textbox:  "/status" + Enter  →  parse_slash → dispatch
+Main textbox:  "/"               →  show "/" in field (stay in Normal mode)
+Ctrl+K:        open Slash palette overlay (discovery)
+```
+
 ---
 
 ## 15. Extension points
@@ -1091,6 +1123,7 @@ Forge is the **harness** between models and the real world: a typed tool bus, an
 | 18 | Universal providers (Phase 5) | **LiteLLM Python SDK as the only production `ModelClient`** (stdio worker). **Remove** Phase 1 native HTTP adapters. **Not** LiteLLM Proxy. **Not** `fast-litellm` as primary. **Mock** only for offline CI. No dual production stacks |
 | 19 | Connected providers (Phase 6) | **`/connect`** UX + profiles for **xAI Grok** and **OpenCode Go**. **No** second production `ModelClient`. **6.1:** Grok = **OAuth**; OpenCode Go = **API key with mandatory TUI prompt** |
 | 20 | TUI input history (Phase 7) | **Up/Down** navigate submitted command history in main input only; inactive under overlays; session memory required, disk optional |
+| 21 | Inline slash (Phase 8) | Main textbox owns `/command` entry + Enter; **do not** auto-open palette on `/`; palette via **Ctrl+K** (or equivalent) |
 | 12 | Config | **TOML file + env overrides** (e.g. `forge.toml` / `~/.config/forge/config.toml`; secrets/CI via env) |
 | 13 | Protocol phase ownership | **Phase 1 CORE-02 = MCP only.** **Phase 2 CORE-03 = ACP only.** Exclusive; no split ownership of one req ID. |
 | 14 | License | **MIT** |
@@ -1109,7 +1142,7 @@ Forge is the **harness** between models and the real world: a typed tool bus, an
 | LiteLLM (Phase 5) | **Required** for live model calls: **Python** + `litellm`; long-lived worker preferred; **no** proxy server; natives deleted |
 | Connect profiles (Phase 6) | Registry + `/connect`; still `LiteLlmModelClient` |
 | Connect auth (6.1) | `AuthMode::Oauth` (xAI) vs `AuthMode::ApiKey` + TUI prompt (OpenCode Go); tokens/keys in 0600 store |
-| Surfaces | Phase 1: line-mode `repl` + headless `forge-cli`; Phase 2: `forge-acp`; Phase 3: channels; Phase 4: full-screen ratatui `forge tui`; Phase 6: `/connect` in TUI + REPL; Phase 7: TUI input history (Up/Down) |
+| Surfaces | Phase 1: line-mode `repl` + headless `forge-cli`; Phase 2: `forge-acp`; Phase 3: channels; Phase 4: full-screen ratatui `forge tui`; Phase 6: `/connect` in TUI + REPL; Phase 7: TUI input history (Up/Down); Phase 8: inline slash in main textbox |
 | Config | TOML (`forge.toml` or XDG config path) merged with env overrides |
 | Workspace root | Default **cwd**; override via CLI flag and/or config when specified |
 | Observability | `tracing` + OpenTelemetry exporter crates |

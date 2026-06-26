@@ -1,6 +1,6 @@
 # Forge — Product Requirements Document
 
-**Version:** 0.9  
+**Version:** 0.10  
 **Status:** Draft  
 **Owner:** Mohit Ranka  
 **Last updated:** 23 Jul 2026  
@@ -150,7 +150,8 @@ Every harness component encodes an assumption about what the model cannot yet do
 10. Support **multi-provider models** via configuration only (no application rewrites).  
 11. (Phase 5) Reach the **broad provider catalog** via the **LiteLLM Python SDK (library)**, not the LiteLLM Proxy gateway.  
 12. (Phase 6) Ship a first-class **`/connect`** flow for productized providers, starting with **xAI Grok** and **OpenCode Go**, without reintroducing dual model-client stacks.  
-13. (Phase 7) Support **command history navigation with arrow keys** in the full-screen TUI (Up/Down).
+13. (Phase 7) Support **command history navigation with arrow keys** in the full-screen TUI (Up/Down).  
+14. (Phase 8) Allow **top-level slash commands** to be typed and run from the **main TUI textbox** (not only via the command palette).
 
 ---
 
@@ -209,6 +210,7 @@ Product capabilities group into five areas (implementation detail in architectur
 | **TUI-03** | Live session sidebar | Sidebar shows session id/status, context budget meter, tool ACL summary, and recent journal/events. | Values update after turns without leaving the TUI | P1 (High) |
 | **TUI-04** | Overlays & palettes | Modal overlays for HITL approve/deny, slash-command palette (`/`), and model picker; keyboard-first (no mouse required). | HITL and `/` flows completable via keys alone per [ui.md](./ui.md) screens 04, 07, 08 | P0 (Critical) |
 | **TUI-05** | Input command history | In full-screen TUI, **Up/Down** arrows recall previously submitted input lines (prompts and slash commands). | Operator can re-run/edit prior lines without retyping; history inactive under overlays | P1 |
+| **TUI-06** | Inline slash in main textbox | Type top-level `/commands` in the main input and run with Enter; do not hijack `/` into palette-only flow. | `/status`, `/connect …`, and catalog commands work when typed fully in the textbox | P1 |
 
 ### 9.2 Priority summary
 
@@ -244,6 +246,7 @@ Product capabilities group into five areas (implementation detail in architectur
 - **Phase 6 (CONN-01, PROV-01, PROV-02):** **`/connect`** onboarding for **xAI Grok** and **OpenCode Go**; still uses the Phase 5 LiteLLM path.  
 - **Phase 6.1:** **xAI Grok connects via OAuth** (not API-key paste). **OpenCode Go TUI must explicitly prompt for API key** when connecting.
 - **Phase 7 (TUI-05):** Full-screen TUI **command history** via **Up/Down** arrow keys on the input bar.
+- **Phase 8 (TUI-06):** Top-level **slash commands** run from the **main textbox** (`/cmd …` + Enter); palette remains optional discovery.
 
 ---
 
@@ -304,6 +307,7 @@ Product capabilities group into five areas (implementation detail in architectur
 | TUI-03 | **4** | Session sidebar |
 | TUI-04 | **4** | HITL / slash / model overlays |
 | TUI-05 | **7** | TUI input command history (arrow keys) |
+| TUI-06 | **8** | Inline top-level slash commands in main textbox |
 | MDL-01 | **5** | Universal providers via LiteLLM SDK (not Proxy) |
 | CONN-01 | **6** | `/connect` command — interactive provider auth & profile select |
 | PROV-01 | **6** | xAI Grok first-class connect profile |
@@ -314,6 +318,8 @@ Phase 5 design set (all exclusive Phase 5): [litellm-providers.md](./designs/lit
 Phase 6 design set (all exclusive Phase 6): [connect-command.md](./designs/connect-command.md) (CONN-01 primary), [connect-auth-modes.md](./designs/connect-auth-modes.md) (6.1 auth modes), [provider-xai-grok.md](./designs/provider-xai-grok.md) (PROV-01, OAuth), [provider-opencode-go.md](./designs/provider-opencode-go.md) (PROV-02, TUI API key prompt).
 
 Phase 7 design set (exclusive Phase 7): [tui-input-history.md](./designs/tui-input-history.md) (TUI-05).
+
+Phase 8 design set (exclusive Phase 8): [tui-slash-inline.md](./designs/tui-slash-inline.md) (TUI-06).
 
 ### Design doc → phase map (exclusive)
 
@@ -510,6 +516,33 @@ See [designs/README.md](./designs/README.md). No design doc may list multiple ph
 
 ---
 
+### Phase 8 — Inline slash commands in main textbox (complete product)
+
+**Product:** Phases 1–7 harness **plus** the ability to type and execute **top-level slash commands** in the full-screen TUI **main input bar**, matching line-mode REPL ergonomics.
+
+**Users served:** Operators who prefer typing `/status`, `/tools`, `/connect list`, etc. directly rather than browsing the palette.
+
+**Depends on:** Phase 4 TUI event loop + existing `parse_slash` / `dispatch_line`; Phase 1+ command catalogs; Phase 7 history may record slash lines.
+
+| In scope | Out of scope |
+|----------|--------------|
+| **TUI-06** — `/` inserts into textbox; Enter dispatches slash lines | Removing the slash palette |
+| All top-level commands already in the parser work when typed fully | New slash command definitions (other phases own catalogs) |
+| Explicit palette open (e.g. Ctrl+K) for discovery | Required fuzzy autocomplete |
+| Keep overlay list keys when palette is open | Changing agent message path for non-`/` text |
+
+**Exit criteria (product complete):**
+
+1. In `forge tui`, type `/status` in the main textbox and press Enter → session status updates (palette not required).  
+2. Typing `/` alone leaves `/` visible in the textbox (does not clear input or force palette).  
+3. Multi-token commands work when typed (e.g. `/connect list`).  
+4. Documented key (e.g. Ctrl+K) still opens the command palette.  
+5. Automated tests cover “no auto-palette on `/`” and Enter dispatch of a slash command.  
+6. Phase 7 history still stores submitted slash lines.  
+7. Headless/REPL behavior unchanged.
+
+---
+
 ## 14. Strategic takeaways
 
 The agent ecosystem is moving from rapid-prototype abstractions (loose roles, heavy graphs, unmonitored single-process runtimes) toward **production-grade harness engineering**. Long-horizon reliability depends less on prompt tweaks and more on:
@@ -523,6 +556,7 @@ The agent ecosystem is moving from rapid-prototype abstractions (loose roles, he
 - Broad model portability through a **single** LiteLLM SDK path (Phase 5)  
 - Guided **`/connect`** onboarding for key product providers (Phase 6: xAI Grok, OpenCode Go)  
 - Terminal ergonomics: **command history** with arrow keys in the full-screen TUI (Phase 7)  
+- Inline **slash commands** in the main TUI textbox (Phase 8)  
 
 Forge is specified to occupy that intersection: low abstraction tax, enterprise durability, portable model/client integration, and a first-class terminal surface.
 
