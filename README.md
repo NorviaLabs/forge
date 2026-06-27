@@ -7,7 +7,7 @@
 | **License** | [MIT](./LICENSE) |
 | **Repo** | [NorviaLabs/forge](https://github.com/NorviaLabs/forge) |
 | **Language** | Rust (Tokio) |
-| **Status** | **Phases 1–7 implemented** |
+| **Status** | **Phases 1–8 implemented** |
 
 ---
 
@@ -22,6 +22,7 @@
 | **5** | Universal providers via LiteLLM SDK (sole production path) | ✓ |
 | **6** | `/connect` + xAI Grok + OpenCode Go profiles | ✓ |
 | **7** | TUI command history (Up/Down arrows) | ✓ |
+| **8** | Inline slash commands in main TUI textbox | ✓ |
 
 ---
 
@@ -33,7 +34,7 @@ cd forge
 cargo build --release -p forge-cli
 # Live model path also needs the Python worker:
 pip install -e workers/forge-litellm-worker
-./target/release/forge status   # forge 0.7.0 phase7
+./target/release/forge status   # forge 0.8.0 phase8
 ```
 
 ---
@@ -128,6 +129,11 @@ Native OpenAI/Anthropic/xAI HTTP adapters removed; production uses LiteLLM only.
 | Piece | Design |
 |-------|--------|
 | `InputHistory` + Up/Down in `forge tui` | [tui-input-history.md](./docs/designs/tui-input-history.md) |
+
+### Phase 8
+| Piece | Design |
+|-------|--------|
+| Inline `/command` in main textbox; Ctrl+K palette | [tui-slash-inline.md](./docs/designs/tui-slash-inline.md) |
 
 ### Phase 4
 Full-screen UI in `forge-tui` + `forge tui` CLI entry:
