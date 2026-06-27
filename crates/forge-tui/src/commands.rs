@@ -122,6 +122,7 @@ pub fn help_text() -> &'static str {
      /cancel         Cancel current turn\n\
      /model [p] [m]  Switch provider/model (config)\n\
      /connect …      Connect provider (xai | opencode_go | list | status) (Phase 6)\n\
+     (TUI) type /cmd in the main box + Enter; Ctrl+K opens command list (Phase 8)\n\
      /journal [n]    Tail journal events\n\
      /tools          List tools\n\
      /cost           Context usage ratio (Phase 2)\n\

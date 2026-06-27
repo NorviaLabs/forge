@@ -70,7 +70,7 @@ pub struct TuiApp {
 impl TuiApp {
     pub fn new(session: AgentSession, runtime: TuiRuntimeConfig) -> Self {
         let mut input = InputModel::default();
-        input.hint = "Describe a task or / for commands…".into();
+        input.hint = "Type a task or /command · Ctrl+K command list…".into();
         Self {
             session,
             input,
@@ -301,6 +301,12 @@ impl TuiApp {
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.should_quit = true;
             }
+            // Phase 8: explicit command palette (discovery) — not auto on `/`
+            KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if !self.busy {
+                    self.overlay = Some(Overlay::slash_open(""));
+                }
+            }
             KeyCode::Esc => {
                 // cancel busy is best-effort; clear input + history browse
                 self.history.reset_browse();
@@ -335,16 +341,10 @@ impl TuiApp {
                     }
                 }
             }
-            KeyCode::Char('/') if self.input.text.is_empty() => {
-                self.overlay = Some(Overlay::slash_open(""));
-            }
             KeyCode::Char(c) => {
+                // Phase 8 (TUI-06): `/` inserts into the main textbox; do not open palette
                 if !self.busy {
                     self.input.insert(c);
-                    if self.input.text == "/" {
-                        self.input.clear();
-                        self.overlay = Some(Overlay::slash_open(""));
-                    }
                 }
             }
             KeyCode::Backspace => {
@@ -370,8 +370,8 @@ impl TuiApp {
                     self.should_quit = true;
                 }
                 Ok(SlashCommand::Help { .. }) => {
-                    self.status_message = "see / palette for commands".into();
-                    self.overlay = Some(Overlay::slash_open(""));
+                    self.status_message =
+                        "type /command in the textbox · Ctrl+K opens command list".into();
                 }
                 Ok(SlashCommand::Status) => {
                     self.status_message = format!(
@@ -743,6 +743,121 @@ mod tests {
         };
         app.handle_key(down).await.unwrap();
         assert_eq!(app.input.text, "beta");
+    }
+
+    fn press(code: KeyCode, mods: KeyModifiers) -> event::KeyEvent {
+        event::KeyEvent {
+            code,
+            modifiers: mods,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        }
+    }
+
+    #[tokio::test]
+    async fn slash_stays_in_textbox_does_not_open_palette() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "m".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "0.8.0".into(),
+            },
+        );
+        app.handle_key(press(KeyCode::Char('/'), KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert_eq!(app.input.text, "/");
+        assert!(app.overlay.is_none(), "Phase 8: / must not open palette");
+        app.handle_key(press(KeyCode::Char('s'), KeyModifiers::NONE))
+            .await
+            .unwrap();
+        app.handle_key(press(KeyCode::Char('t'), KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert_eq!(app.input.text, "/st");
+        assert!(app.overlay.is_none());
+    }
+
+    #[tokio::test]
+    async fn enter_runs_slash_from_main_textbox() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "m".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "0.8.0".into(),
+            },
+        );
+        for c in "/status".chars() {
+            app.handle_key(press(KeyCode::Char(c), KeyModifiers::NONE))
+                .await
+                .unwrap();
+        }
+        assert_eq!(app.input.text, "/status");
+        assert!(app.overlay.is_none());
+        app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert!(
+            app.status_message.contains("session="),
+            "status={}",
+            app.status_message
+        );
+        assert!(app.history.entries().iter().any(|e| e == "/status"));
+    }
+
+    #[tokio::test]
+    async fn ctrl_k_opens_command_palette() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "m".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "0.8.0".into(),
+            },
+        );
+        app.handle_key(press(KeyCode::Char('k'), KeyModifiers::CONTROL))
+            .await
+            .unwrap();
+        assert!(matches!(app.overlay, Some(Overlay::Slash { .. })));
+    }
+
+    #[tokio::test]
+    async fn multi_token_slash_connect_list_from_textbox() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "m".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "0.8.0".into(),
+            },
+        );
+        for c in "/connect list".chars() {
+            app.handle_key(press(KeyCode::Char(c), KeyModifiers::NONE))
+                .await
+                .unwrap();
+        }
+        app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert!(
+            app.status_message.contains("xai") || app.status_message.contains("opencode"),
+            "status={}",
+            app.status_message
+        );
     }
 
     #[test]
