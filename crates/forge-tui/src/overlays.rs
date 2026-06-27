@@ -36,6 +36,19 @@ pub enum Overlay {
         title: String,
         instructions: String,
     },
+    /// Phase 6/8 — pick a connect profile after `/connect`
+    ConnectPicker {
+        selected: usize,
+        items: Vec<ConnectProfileItem>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct ConnectProfileItem {
+    pub id: String,
+    pub title: String,
+    pub auth_mode: String,
+    pub auth_url: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -175,6 +188,10 @@ impl Overlay {
         }
     }
 
+    pub fn connect_picker(items: Vec<ConnectProfileItem>) -> Self {
+        Self::ConnectPicker { selected: 0, items }
+    }
+
     pub fn filter_slash(&mut self, f: &str) {
         if let Self::Slash {
             filter,
@@ -198,6 +215,13 @@ impl Overlay {
                 *selected = ((*selected as i32 + delta).rem_euclid(n)) as usize;
             }
             Self::Model { selected, items, .. } => {
+                if items.is_empty() {
+                    return;
+                }
+                let n = items.len() as i32;
+                *selected = ((*selected as i32 + delta).rem_euclid(n)) as usize;
+            }
+            Self::ConnectPicker { selected, items, .. } => {
                 if items.is_empty() {
                     return;
                 }
@@ -242,6 +266,8 @@ pub enum OverlayAction {
     ConnectCompleteOauth { profile_id: String },
     /// Use env key without typing (secondary action on API key modal)
     ConnectUseEnv { profile_id: String },
+    /// User picked a connect profile from the picker
+    ConnectPickProfile { profile_id: String },
 }
 
 pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
@@ -309,6 +335,17 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             Overlay::ConnectOauth { profile_id, .. } => OverlayAction::ConnectCompleteOauth {
                 profile_id: profile_id.clone(),
             },
+            Overlay::ConnectPicker {
+                selected, items, ..
+            } => {
+                if let Some(it) = items.get(*selected) {
+                    OverlayAction::ConnectPickProfile {
+                        profile_id: it.id.clone(),
+                    }
+                } else {
+                    OverlayAction::None
+                }
+            }
             Overlay::Hitl { .. } => OverlayAction::None,
         },
         Key::Char('e') | Key::Char('E')
@@ -525,6 +562,43 @@ impl Widget for OverlayWidget<'_> {
                             .borders(Borders::ALL)
                             .border_style(theme::info())
                             .title(Span::styled(" OAuth ", theme::info())),
+                    )
+                    .render(r, buf);
+            }
+            Overlay::ConnectPicker { selected, items } => {
+                let r = centered_rect(60, 45, area);
+                let list_items: Vec<ListItem> = items
+                    .iter()
+                    .enumerate()
+                    .map(|(i, it)| {
+                        let style = if i == *selected {
+                            theme::brand().add_modifier(Modifier::BOLD)
+                        } else {
+                            theme::text()
+                        };
+                        let url = it
+                            .auth_url
+                            .as_deref()
+                            .map(|u| format!("  {u}"))
+                            .unwrap_or_default();
+                        ListItem::new(Line::from(vec![
+                            Span::styled(
+                                format!(" {} ({}) ", it.title, it.auth_mode),
+                                style,
+                            ),
+                            Span::styled(url, theme::muted()),
+                        ]))
+                    })
+                    .collect();
+                List::new(list_items)
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_style(theme::brand())
+                            .title(Span::styled(
+                                " /connect — select profile ↑↓ Enter ",
+                                theme::brand(),
+                            )),
                     )
                     .render(r, buf);
             }

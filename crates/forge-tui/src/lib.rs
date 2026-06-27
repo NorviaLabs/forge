@@ -8,6 +8,8 @@ mod layout;
 mod overlays;
 mod sidebar;
 mod theme;
+#[cfg(test)]
+mod visual_test;
 mod widgets;
 
 pub use app::{run_tui, TuiApp, TuiError, TuiRuntimeConfig};

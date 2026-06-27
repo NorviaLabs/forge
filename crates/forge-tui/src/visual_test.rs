@@ -1,0 +1,135 @@
+//! Visual regression harness using ratatui TestBackend (no real TTY).
+
+#[cfg(test)]
+mod tests {
+    use crate::app::{TuiApp, TuiRuntimeConfig};
+    use crate::overlays::Overlay;
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+    use forge_core::{AgentSession, LoopConfig};
+    use forge_model::MockModelClient;
+    use forge_tools::ToolRegistry;
+    use forge_types::ModelResponse;
+    use forge_workspace::IsolationMode;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    async fn app() -> (TempDir, TuiApp) {
+        let dir = TempDir::new().unwrap();
+        let model = Arc::new(MockModelClient::script(vec![ModelResponse {
+            text: "ok".into(),
+            tool_calls: vec![],
+            usage: None,
+        }]));
+        let session = AgentSession::create(
+            LoopConfig {
+                max_turns: 4,
+                workspace: dir.path().to_path_buf(),
+                journal_dir: dir.path().join("j"),
+                isolation: IsolationMode::Off,
+                enable_context_lifecycle: true,
+                enable_governance: true,
+            },
+            model,
+            ToolRegistry::new(),
+        )
+        .await
+        .unwrap();
+        let app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "mock".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("/tmp"),
+                version: "forge 0.8.0".into(),
+            },
+        );
+        (dir, app)
+    }
+
+    fn press(code: KeyCode) -> KeyEvent {
+        KeyEvent {
+            code,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        }
+    }
+
+    fn buffer_text(term: &Terminal<TestBackend>) -> String {
+        let buf = term.backend().buffer();
+        let area = buf.area();
+        let mut out = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                let cell = buf.get(x, y);
+                out.push_str(cell.symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn visual_slash_autocomplete_shows_suggestions() {
+        let (_d, mut app) = app().await;
+        for c in "/con".chars() {
+            app.handle_key(press(KeyCode::Char(c))).await.unwrap();
+        }
+        let backend = TestBackend::new(100, 30);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| app.draw(f)).unwrap();
+        let text = buffer_text(&term);
+        // Save for manual inspection
+        let _ = std::fs::write("/tmp/forge_tui_visual_slash.txt", &text);
+        assert!(
+            text.contains("connect") || text.contains("/connect") || text.contains("suggestions"),
+            "frame missing autocomplete:\n{text}"
+        );
+        assert!(text.contains("/con") || text.contains("con"), "input missing:\n{text}");
+    }
+
+    #[tokio::test]
+    async fn visual_connect_picker_frame() {
+        let (_d, mut app) = app().await;
+        for c in "/connect".chars() {
+            app.handle_key(press(KeyCode::Char(c))).await.unwrap();
+        }
+        app.handle_key(press(KeyCode::Enter)).await.unwrap();
+        assert!(matches!(app.overlay, Some(Overlay::ConnectPicker { .. })));
+        let backend = TestBackend::new(100, 30);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| app.draw(f)).unwrap();
+        let text = buffer_text(&term);
+        let _ = std::fs::write("/tmp/forge_tui_visual_connect.txt", &text);
+        assert!(
+            text.contains("Grok") || text.contains("xAI") || text.contains("connect"),
+            "picker frame:\n{text}"
+        );
+        assert!(
+            text.contains("OpenCode") || text.contains("opencode") || text.contains("Go"),
+            "picker frame missing Go:\n{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn visual_status_command_in_textbox() {
+        let (_d, mut app) = app().await;
+        for c in "/status".chars() {
+            app.handle_key(press(KeyCode::Char(c))).await.unwrap();
+        }
+        app.handle_key(press(KeyCode::Enter)).await.unwrap();
+        let backend = TestBackend::new(100, 24);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| app.draw(f)).unwrap();
+        let text = buffer_text(&term);
+        let _ = std::fs::write("/tmp/forge_tui_visual_status.txt", &text);
+        assert!(
+            text.contains("session") || app.status_message.contains("session="),
+            "status frame:\n{text}\nstatus_msg={}",
+            app.status_message
+        );
+    }
+}

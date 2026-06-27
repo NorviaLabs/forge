@@ -24,12 +24,14 @@ use crate::conversation::ConversationModel;
 use crate::history::InputHistory;
 use crate::layout::{is_too_small, split_areas};
 use crate::overlays::{
-    handle_overlay_key, Key as OverlayKey, Overlay, OverlayAction, OverlayWidget,
+    filter_palette, handle_overlay_key, ConnectProfileItem, Key as OverlayKey, Overlay,
+    OverlayAction, OverlayWidget, PaletteItem,
 };
 use crate::sidebar::SidebarModel;
 use crate::widgets::{
     FooterBar, FooterModel, InputBar, InputModel, StatusBar, StatusModel,
 };
+use crate::theme;
 use crate::ExitCode;
 use ratatui::widgets::Paragraph;
 
@@ -65,12 +67,16 @@ pub struct TuiApp {
     pub connect_profile: Option<String>,
     /// Phase 7 — submitted command history (Up/Down when no overlay).
     pub history: InputHistory,
+    /// Phase 8 autocomplete: selection within filtered `/` suggestions.
+    pub slash_suggest_idx: usize,
+    /// Multi-line notices (e.g. /connect list) shown above the input.
+    pub notices: Vec<String>,
 }
 
 impl TuiApp {
     pub fn new(session: AgentSession, runtime: TuiRuntimeConfig) -> Self {
         let mut input = InputModel::default();
-        input.hint = "Type a task or /command · Ctrl+K command list…".into();
+        input.hint = "Type a task or /command · Tab complete · Ctrl+K list…".into();
         Self {
             session,
             input,
@@ -84,14 +90,90 @@ impl TuiApp {
             connect_store: CredentialStore::user_default(),
             connect_profile: None,
             history: InputHistory::default(),
+            slash_suggest_idx: 0,
+            notices: Vec::new(),
         }
     }
 
     fn apply_history_text(&mut self, text: String) {
         self.input.set_text(text);
+        self.clamp_slash_suggest();
+    }
+
+    /// Filtered slash suggestions for the current textbox (empty if not in slash mode).
+    pub fn slash_suggestions(&self) -> Vec<PaletteItem> {
+        let t = self.input.text.trim();
+        if !t.starts_with('/') {
+            return Vec::new();
+        }
+        // Filter by text after leading `/`
+        let filter = t.trim_start_matches('/');
+        filter_palette(filter)
+    }
+
+    fn clamp_slash_suggest(&mut self) {
+        let n = self.slash_suggestions().len();
+        if n == 0 {
+            self.slash_suggest_idx = 0;
+        } else {
+            self.slash_suggest_idx = self.slash_suggest_idx.min(n - 1);
+        }
+    }
+
+    fn complete_slash_suggestion(&mut self) {
+        let items = self.slash_suggestions();
+        if items.is_empty() {
+            return;
+        }
+        let idx = self.slash_suggest_idx.min(items.len() - 1);
+        let cmd = items[idx].cmd.clone();
+        // If user already typed more than the bare cmd (has args), don't clobber args
+        let cur = self.input.text.trim();
+        if cur == cmd || cur.starts_with(&(cmd.clone() + " ")) {
+            return;
+        }
+        self.input.set_text(format!("{cmd} "));
+        self.slash_suggest_idx = 0;
+        self.clamp_slash_suggest();
+    }
+
+    fn open_connect_picker(&mut self) {
+        let items: Vec<ConnectProfileItem> = self
+            .connect_registry
+            .profiles()
+            .iter()
+            .map(|p| ConnectProfileItem {
+                id: p.id.clone(),
+                title: p.title.clone(),
+                auth_mode: p.auth_mode.label().into(),
+                auth_url: p.auth_url.clone(),
+            })
+            .collect();
+        self.overlay = Some(Overlay::connect_picker(items));
+        self.status_message = "Select a provider to connect".into();
     }
 
     fn handle_connect(&mut self, action: ConnectAction) {
+        // /connect or /connect list → interactive profile picker (usable UX)
+        match &action {
+            ConnectAction::Open | ConnectAction::List => {
+                self.open_connect_picker();
+                // Also fill notices with list for accessibility
+                let mut model = Some(self.runtime.model_label.clone());
+                if let Ok(msg) = handle_connect_action(
+                    ConnectAction::List,
+                    &self.connect_registry,
+                    &self.connect_store,
+                    &mut self.connect_profile,
+                    &mut model,
+                ) {
+                    self.notices = msg.lines().map(|s| s.to_string()).collect();
+                }
+                return;
+            }
+            _ => {}
+        }
+
         // Phase 6.1: open mode-specific overlays for interactive connect
         if let ConnectAction::Connect {
             ref profile_id,
@@ -116,6 +198,7 @@ impl TuiApp {
                         env_hint,
                     ));
                     self.status_message = format!("Enter API key for {profile_id}");
+                    self.notices.clear();
                     return;
                 }
                 if needs_tui_oauth(&self.connect_registry, profile_id) {
@@ -133,6 +216,7 @@ impl TuiApp {
                     self.overlay =
                         Some(Overlay::connect_oauth(profile_id.clone(), title, instructions));
                     self.status_message = format!("OAuth for {profile_id}");
+                    self.notices.clear();
                     return;
                 }
             }
@@ -151,17 +235,18 @@ impl TuiApp {
                     self.runtime.model_label = m;
                     self.runtime.provider = "litellm".into();
                 }
-                self.status_message = if msg.lines().count() > 1 {
-                    msg.replace('\n', " · ")
-                } else {
-                    msg
-                };
+                let lines: Vec<String> = msg.lines().map(|s| s.to_string()).collect();
+                self.status_message = lines.first().cloned().unwrap_or_default();
+                self.notices = lines;
             }
             Err(ConnectError::OauthPending(_, instructions)) => {
-                self.status_message = instructions.replace('\n', " · ");
+                let lines: Vec<String> = instructions.lines().map(|s| s.to_string()).collect();
+                self.status_message = lines.first().cloned().unwrap_or_default();
+                self.notices = lines;
             }
             Err(e) => {
                 self.status_message = e.to_string();
+                self.notices = vec![e.to_string()];
             }
         }
     }
@@ -214,6 +299,76 @@ impl TuiApp {
         if let Some(sb_area) = regions.sidebar {
             let sb = SidebarModel::from_session(&self.session);
             frame.render_widget(crate::sidebar::SidebarWidget { model: &sb }, sb_area);
+        }
+
+        // Notices (connect list, multi-line status) just above input
+        if !self.notices.is_empty() && self.overlay.is_none() {
+            let notice_h = (self.notices.len() as u16).min(6).saturating_add(1);
+            // Render into bottom of chat area
+            let chat = regions.chat;
+            if chat.height > notice_h {
+                let notice_area = ratatui::layout::Rect {
+                    x: chat.x,
+                    y: chat.y + chat.height.saturating_sub(notice_h),
+                    width: chat.width,
+                    height: notice_h,
+                };
+                let text = self.notices.iter().take(6).cloned().collect::<Vec<_>>().join("\n");
+                frame.render_widget(
+                    Paragraph::new(text).style(theme::muted()).block(
+                        ratatui::widgets::Block::default()
+                            .borders(ratatui::widgets::Borders::TOP)
+                            .title(ratatui::text::Span::styled(" notices ", theme::muted())),
+                    ),
+                    notice_area,
+                );
+            }
+        }
+
+        // Inline slash autocomplete above the input bar
+        if self.overlay.is_none() {
+            let suggestions = self.slash_suggestions();
+            if !suggestions.is_empty() && self.input.text.starts_with('/') {
+                let h = (suggestions.len() as u16).min(6).saturating_add(2);
+                let input = regions.input;
+                if input.y >= h {
+                    let sug_area = ratatui::layout::Rect {
+                        x: input.x,
+                        y: input.y.saturating_sub(h),
+                        width: input.width,
+                        height: h,
+                    };
+                    let idx = self.slash_suggest_idx.min(suggestions.len().saturating_sub(1));
+                    let lines: Vec<ratatui::text::Line> = suggestions
+                        .iter()
+                        .take(6)
+                        .enumerate()
+                        .map(|(i, it)| {
+                            let style = if i == idx {
+                                theme::brand().add_modifier(ratatui::style::Modifier::BOLD)
+                            } else {
+                                theme::text()
+                            };
+                            ratatui::text::Line::from(vec![
+                                ratatui::text::Span::styled(format!(" {:<14}", it.cmd), style),
+                                ratatui::text::Span::styled(it.desc.clone(), theme::muted()),
+                            ])
+                        })
+                        .collect();
+                    frame.render_widget(
+                        Paragraph::new(lines).block(
+                            ratatui::widgets::Block::default()
+                                .borders(ratatui::widgets::Borders::ALL)
+                                .border_style(theme::border())
+                                .title(ratatui::text::Span::styled(
+                                    " suggestions · Tab complete · ↑↓ ",
+                                    theme::muted(),
+                                )),
+                        ),
+                        sug_area,
+                    );
+                }
+            }
         }
 
         let mut input = self.input.clone();
@@ -289,6 +444,11 @@ impl TuiApp {
                     self.overlay = None;
                     self.finish_connect(&profile_id, None, false);
                 }
+                OverlayAction::ConnectPickProfile { profile_id } => {
+                    self.overlay = None;
+                    // Continue into oauth / api-key flow for the chosen profile
+                    self.finish_connect(&profile_id, None, false);
+                }
             }
             return Ok(());
         }
@@ -310,33 +470,86 @@ impl TuiApp {
             KeyCode::Esc => {
                 // cancel busy is best-effort; clear input + history browse
                 self.history.reset_browse();
+                self.notices.clear();
                 if self.input.text.is_empty() {
                     self.status_message = "esc".into();
                 } else {
                     self.input.clear();
+                    self.slash_suggest_idx = 0;
                 }
             }
             KeyCode::Enter => {
                 if self.busy {
                     return Ok(());
                 }
+                // If slash suggestions visible and line is only a partial command, Tab-like complete first
+                let suggestions = self.slash_suggestions();
+                if self.input.text.starts_with('/')
+                    && !suggestions.is_empty()
+                    && !self.input.text.contains(' ')
+                {
+                    let idx = self.slash_suggest_idx.min(suggestions.len() - 1);
+                    let cmd = &suggestions[idx].cmd;
+                    if self.input.text.trim() != cmd.as_str()
+                        && cmd.starts_with(self.input.text.trim())
+                    {
+                        // Partial match — complete then wait for second Enter if cmd needs args
+                        self.input.set_text(cmd.clone());
+                        // For no-arg commands, run immediately
+                        if matches!(
+                            cmd.as_str(),
+                            "/help"
+                                | "/status"
+                                | "/tools"
+                                | "/cost"
+                                | "/quit"
+                                | "/approve"
+                                | "/deny"
+                                | "/reset"
+                                | "/compact"
+                                | "/cancel"
+                        ) {
+                            let line = self.input.take();
+                            self.history.push(&line);
+                            self.notices.clear();
+                            self.dispatch_line(&line).await?;
+                        }
+                        return Ok(());
+                    }
+                }
                 let line = self.input.take();
                 if line.is_empty() {
                     return Ok(());
                 }
                 self.history.push(&line);
+                self.slash_suggest_idx = 0;
+                self.notices.clear();
                 self.dispatch_line(&line).await?;
+            }
+            KeyCode::Tab => {
+                if !self.busy {
+                    self.complete_slash_suggestion();
+                }
             }
             KeyCode::Up => {
                 if !self.busy {
-                    if let Some(text) = self.history.up(&self.input.text) {
+                    let suggestions = self.slash_suggestions();
+                    if self.input.text.starts_with('/') && !suggestions.is_empty() {
+                        let n = suggestions.len();
+                        self.slash_suggest_idx =
+                            (self.slash_suggest_idx + n - 1) % n;
+                    } else if let Some(text) = self.history.up(&self.input.text) {
                         self.apply_history_text(text);
                     }
                 }
             }
             KeyCode::Down => {
                 if !self.busy {
-                    if let Some(text) = self.history.down() {
+                    let suggestions = self.slash_suggestions();
+                    if self.input.text.starts_with('/') && !suggestions.is_empty() {
+                        let n = suggestions.len();
+                        self.slash_suggest_idx = (self.slash_suggest_idx + 1) % n;
+                    } else if let Some(text) = self.history.down() {
                         self.apply_history_text(text);
                     }
                 }
@@ -345,11 +558,13 @@ impl TuiApp {
                 // Phase 8 (TUI-06): `/` inserts into the main textbox; do not open palette
                 if !self.busy {
                     self.input.insert(c);
+                    self.clamp_slash_suggest();
                 }
             }
             KeyCode::Backspace => {
                 if !self.busy {
                     self.input.backspace();
+                    self.clamp_slash_suggest();
                 }
             }
             KeyCode::Left => self.input.move_left(),
@@ -833,7 +1048,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn multi_token_slash_connect_list_from_textbox() {
+    async fn multi_token_slash_connect_list_opens_picker() {
         use crossterm::event::{KeyCode, KeyModifiers};
         let (_dir, session) = test_session().await;
         let mut app = TuiApp::new(
@@ -853,11 +1068,66 @@ mod tests {
         app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
             .await
             .unwrap();
-        assert!(
-            app.status_message.contains("xai") || app.status_message.contains("opencode"),
-            "status={}",
-            app.status_message
+        match &app.overlay {
+            Some(Overlay::ConnectPicker { items, .. }) => {
+                assert!(items.iter().any(|i| i.id == "xai"));
+                assert!(items.iter().any(|i| i.id == "opencode_go"));
+            }
+            other => panic!("expected ConnectPicker, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn slash_tab_autocompletes_command() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "m".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "0.8.0".into(),
+            },
         );
+        for c in "/sta".chars() {
+            app.handle_key(press(KeyCode::Char(c), KeyModifiers::NONE))
+                .await
+                .unwrap();
+        }
+        assert!(!app.slash_suggestions().is_empty());
+        app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert!(
+            app.input.text.starts_with("/status"),
+            "got {}",
+            app.input.text
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_alone_opens_profile_picker() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "m".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "0.8.0".into(),
+            },
+        );
+        for c in "/connect".chars() {
+            app.handle_key(press(KeyCode::Char(c), KeyModifiers::NONE))
+                .await
+                .unwrap();
+        }
+        app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert!(matches!(app.overlay, Some(Overlay::ConnectPicker { .. })));
     }
 
     #[test]

@@ -89,15 +89,34 @@ impl Widget for InputBar<'_> {
         } else {
             theme::text()
         };
-        let display = if self.model.text.is_empty() && !self.model.hint.is_empty() {
-            self.model.hint.as_str()
+        let line = if self.model.text.is_empty() && !self.model.hint.is_empty() {
+            Line::from(vec![
+                Span::styled(" ❯ ", theme::brand()),
+                Span::styled(self.model.hint.as_str(), theme::dim()),
+            ])
         } else {
-            self.model.text.as_str()
+            // Show cursor as inverted char at cursor position
+            let t = &self.model.text;
+            let cur = self.model.cursor.min(t.len());
+            let before = &t[..cur];
+            let rest = &t[cur..];
+            if rest.is_empty() {
+                Line::from(vec![
+                    Span::styled(" ❯ ", theme::brand()),
+                    Span::styled(before, style),
+                    Span::styled("█", style.add_modifier(Modifier::REVERSED)),
+                ])
+            } else {
+                let ch = rest.chars().next().unwrap();
+                let n = ch.len_utf8();
+                Line::from(vec![
+                    Span::styled(" ❯ ", theme::brand()),
+                    Span::styled(before, style),
+                    Span::styled(&rest[..n], style.add_modifier(Modifier::REVERSED)),
+                    Span::styled(&rest[n..], style),
+                ])
+            }
         };
-        let line = Line::from(vec![
-            Span::styled(" ❯ ", theme::brand()),
-            Span::styled(display, style),
-        ]);
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(theme::border())
