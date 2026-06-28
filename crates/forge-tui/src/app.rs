@@ -488,41 +488,32 @@ impl TuiApp {
                 if self.busy {
                     return Ok(());
                 }
-                // If slash suggestions visible and line is only a partial command, Tab-like complete first
+                // Slash suggestions open: Enter selects the highlighted command and runs it.
+                // (Do not require the typed prefix to match cmd — filter can match on desc too.)
                 let suggestions = self.slash_suggestions();
                 if self.input.text.starts_with('/')
                     && !suggestions.is_empty()
                     && !self.input.text.contains(' ')
                 {
                     let idx = self.slash_suggest_idx.min(suggestions.len() - 1);
-                    let cmd = &suggestions[idx].cmd;
-                    if self.input.text.trim() != cmd.as_str()
-                        && cmd.starts_with(self.input.text.trim())
-                    {
-                        // Partial match — complete then wait for second Enter if cmd needs args
-                        self.input.set_text(cmd.clone());
-                        self.input.history_browse = false;
-                        // For no-arg commands, run immediately
-                        if matches!(
-                            cmd.as_str(),
-                            "/help"
-                                | "/status"
-                                | "/tools"
-                                | "/cost"
-                                | "/quit"
-                                | "/approve"
-                                | "/deny"
-                                | "/reset"
-                                | "/compact"
-                                | "/cancel"
-                        ) {
-                            let line = self.input.take();
-                            self.history.push(&line);
-                            self.notices.clear();
-                            self.dispatch_line(&line).await?;
-                        }
+                    let cmd = suggestions[idx].cmd.clone();
+                    let cur = self.input.text.trim();
+                    // Keep args only if user already typed past the bare command
+                    let line = if cur == cmd.as_str() || cur.starts_with(&(cmd.clone() + " ")) {
+                        self.input.take()
+                    } else {
+                        self.input.set_text(cmd);
+                        self.input.take()
+                    };
+                    if line.is_empty() {
                         return Ok(());
                     }
+                    self.history.push(&line);
+                    self.slash_suggest_idx = 0;
+                    self.notices.clear();
+                    self.input.history_browse = false;
+                    self.dispatch_line(&line).await?;
+                    return Ok(());
                 }
                 let line = self.input.take();
                 if line.is_empty() {
@@ -1137,6 +1128,88 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(app.overlay, Some(Overlay::ConnectPicker { .. })));
+    }
+
+    #[tokio::test]
+    async fn enter_on_highlighted_suggestion_runs_command() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "m".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "0.8.0".into(),
+            },
+        );
+        // Partial type; suggestions include /connect (and possibly /cost via "Context")
+        for c in "/con".chars() {
+            app.handle_key(press(KeyCode::Char(c), KeyModifiers::NONE))
+                .await
+                .unwrap();
+        }
+        let suggestions = app.slash_suggestions();
+        assert!(!suggestions.is_empty(), "expected slash suggestions");
+        // Move highlight onto /connect if it is not already first
+        let connect_idx = suggestions
+            .iter()
+            .position(|s| s.cmd == "/connect")
+            .expect("/connect in suggestions for /con");
+        for _ in 0..connect_idx {
+            app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            app.slash_suggestions()[app.slash_suggest_idx].cmd,
+            "/connect"
+        );
+        // One Enter should apply selection AND open the connect picker (not merely complete text)
+        app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert!(
+            matches!(app.overlay, Some(Overlay::ConnectPicker { .. })),
+            "Enter on highlighted /connect should open picker; overlay={:?} input={:?} status={}",
+            app.overlay,
+            app.input.text,
+            app.status_message
+        );
+        assert!(
+            app.input.text.is_empty(),
+            "input should be cleared after run, got {:?}",
+            app.input.text
+        );
+    }
+
+    #[tokio::test]
+    async fn enter_on_status_suggestion_runs_immediately() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "m".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "0.8.0".into(),
+            },
+        );
+        for c in "/sta".chars() {
+            app.handle_key(press(KeyCode::Char(c), KeyModifiers::NONE))
+                .await
+                .unwrap();
+        }
+        app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert!(
+            app.status_message.contains("session="),
+            "got {}",
+            app.status_message
+        );
+        assert!(app.input.text.is_empty());
     }
 
     #[test]
