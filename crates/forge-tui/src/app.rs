@@ -97,6 +97,7 @@ impl TuiApp {
 
     fn apply_history_text(&mut self, text: String) {
         self.input.set_text(text);
+        self.input.history_browse = self.history.browsing();
         self.clamp_slash_suggest();
     }
 
@@ -339,30 +340,35 @@ impl TuiApp {
                         height: h,
                     };
                     let idx = self.slash_suggest_idx.min(suggestions.len().saturating_sub(1));
+                    // Pad rows so background fill spans the panel width (visible selection).
+                    let inner_w = sug_area.width.saturating_sub(2) as usize;
                     let lines: Vec<ratatui::text::Line> = suggestions
                         .iter()
                         .take(6)
                         .enumerate()
                         .map(|(i, it)| {
+                            let marker = if i == idx { "▶ " } else { "  " };
+                            let raw = format!("{marker}{:<14} {}", it.cmd, it.desc);
+                            let mut row = raw.chars().take(inner_w.saturating_sub(1)).collect::<String>();
+                            while row.chars().count() < inner_w.saturating_sub(1) {
+                                row.push(' ');
+                            }
                             let style = if i == idx {
-                                theme::brand().add_modifier(ratatui::style::Modifier::BOLD)
+                                theme::selected_row()
                             } else {
                                 theme::text()
                             };
-                            ratatui::text::Line::from(vec![
-                                ratatui::text::Span::styled(format!(" {:<14}", it.cmd), style),
-                                ratatui::text::Span::styled(it.desc.clone(), theme::muted()),
-                            ])
+                            ratatui::text::Line::from(ratatui::text::Span::styled(row, style))
                         })
                         .collect();
                     frame.render_widget(
                         Paragraph::new(lines).block(
                             ratatui::widgets::Block::default()
                                 .borders(ratatui::widgets::Borders::ALL)
-                                .border_style(theme::border())
+                                .border_style(theme::brand())
                                 .title(ratatui::text::Span::styled(
                                     " suggestions · Tab complete · ↑↓ ",
-                                    theme::muted(),
+                                    theme::brand(),
                                 )),
                         ),
                         sug_area,
@@ -495,6 +501,7 @@ impl TuiApp {
                     {
                         // Partial match — complete then wait for second Enter if cmd needs args
                         self.input.set_text(cmd.clone());
+                        self.input.history_browse = false;
                         // For no-arg commands, run immediately
                         if matches!(
                             cmd.as_str(),
@@ -524,6 +531,7 @@ impl TuiApp {
                 self.history.push(&line);
                 self.slash_suggest_idx = 0;
                 self.notices.clear();
+                self.input.history_browse = false;
                 self.dispatch_line(&line).await?;
             }
             KeyCode::Tab => {
@@ -557,6 +565,7 @@ impl TuiApp {
             KeyCode::Char(c) => {
                 // Phase 8 (TUI-06): `/` inserts into the main textbox; do not open palette
                 if !self.busy {
+                    self.input.history_browse = false;
                     self.input.insert(c);
                     self.clamp_slash_suggest();
                 }

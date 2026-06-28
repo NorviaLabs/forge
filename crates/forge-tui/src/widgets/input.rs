@@ -1,4 +1,4 @@
-//! Input bar (TUI-01).
+//! Input bar (TUI-01) + visible caret (Phase 8.1).
 
 use crate::theme;
 use ratatui::buffer::Buffer;
@@ -13,6 +13,8 @@ pub struct InputModel {
     pub cursor: usize,
     pub dimmed: bool,
     pub hint: String,
+    /// When true, text uses history_active background (Phase 7 browse).
+    pub history_browse: bool,
 }
 
 impl InputModel {
@@ -63,11 +65,13 @@ impl InputModel {
     pub fn clear(&mut self) {
         self.text.clear();
         self.cursor = 0;
+        self.history_browse = false;
     }
 
     pub fn take(&mut self) -> String {
         let t = std::mem::take(&mut self.text);
         self.cursor = 0;
+        self.history_browse = false;
         t
     }
 
@@ -84,18 +88,22 @@ pub struct InputBar<'a> {
 
 impl Widget for InputBar<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let style = if self.model.dimmed {
+        let base = if self.model.dimmed {
             theme::dim()
+        } else if self.model.history_browse {
+            theme::history_active()
         } else {
             theme::text()
         };
+
         let line = if self.model.text.is_empty() && !self.model.hint.is_empty() {
             Line::from(vec![
                 Span::styled(" ❯ ", theme::brand()),
                 Span::styled(self.model.hint.as_str(), theme::dim()),
+                // Caret at start of empty field after hint is hidden — show block caret
+                Span::styled("█", theme::caret()),
             ])
         } else {
-            // Show cursor as inverted char at cursor position
             let t = &self.model.text;
             let cur = self.model.cursor.min(t.len());
             let before = &t[..cur];
@@ -103,24 +111,36 @@ impl Widget for InputBar<'_> {
             if rest.is_empty() {
                 Line::from(vec![
                     Span::styled(" ❯ ", theme::brand()),
-                    Span::styled(before, style),
-                    Span::styled("█", style.add_modifier(Modifier::REVERSED)),
+                    Span::styled(before, base),
+                    // Explicit bg block — visible on dark terminals
+                    Span::styled("█", theme::caret()),
                 ])
             } else {
                 let ch = rest.chars().next().unwrap();
                 let n = ch.len_utf8();
                 Line::from(vec![
                     Span::styled(" ❯ ", theme::brand()),
-                    Span::styled(before, style),
-                    Span::styled(&rest[..n], style.add_modifier(Modifier::REVERSED)),
-                    Span::styled(&rest[n..], style),
+                    Span::styled(before, base),
+                    Span::styled(&rest[..n], theme::caret()),
+                    Span::styled(&rest[n..], base),
                 ])
             }
         };
+
+        let border = if self.model.history_browse {
+            theme::brand()
+        } else {
+            theme::border()
+        };
+        let title = if self.model.history_browse {
+            " input · history "
+        } else {
+            " input "
+        };
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(theme::border())
-            .title(Span::styled(" input ", theme::muted()));
+            .border_style(border)
+            .title(Span::styled(title, theme::muted()));
         Paragraph::new(line)
             .style(Style::default().add_modifier(if self.model.dimmed {
                 Modifier::DIM
@@ -135,6 +155,8 @@ impl Widget for InputBar<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
 
     #[test]
     fn insert_and_backspace() {
@@ -169,5 +191,36 @@ mod tests {
         };
         assert_eq!(m.take(), "cmd");
         assert!(m.text.is_empty());
+    }
+
+    #[test]
+    fn caret_cell_has_background() {
+        let mut m = InputModel::default();
+        m.set_text("ab");
+        m.cursor = 2; // EOL caret
+        let backend = TestBackend::new(40, 5);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| {
+            f.render_widget(InputBar { model: &m }, f.size());
+        })
+        .unwrap();
+        let buf = term.backend().buffer();
+        // Find the block caret glyph
+        let area = buf.area();
+        let mut found = false;
+        for y in 0..area.height {
+            for x in 0..area.width {
+                let cell = buf.get(x, y);
+                if cell.symbol() == "█" {
+                    found = true;
+                    assert_eq!(
+                        cell.style().bg,
+                        Some(theme::TEXT),
+                        "caret needs solid background"
+                    );
+                }
+            }
+        }
+        assert!(found, "expected block caret glyph in buffer");
     }
 }

@@ -479,15 +479,18 @@ impl Widget for OverlayWidget<'_> {
                     .iter()
                     .enumerate()
                     .map(|(i, it)| {
+                        let marker = if i == *selected { "▶ " } else { "  " };
                         let style = if i == *selected {
-                            theme::brand().add_modifier(Modifier::BOLD)
+                            theme::selected_row()
                         } else {
                             theme::text()
                         };
-                        ListItem::new(Line::from(vec![
-                            Span::styled(format!("{:<12}", it.cmd), style),
-                            Span::styled(it.desc.clone(), theme::muted()),
-                        ]))
+                        // Pad for full-width selection background
+                        let mut row = format!("{marker}{:<12} {}", it.cmd, it.desc);
+                        while row.chars().count() < 40 {
+                            row.push(' ');
+                        }
+                        ListItem::new(Span::styled(row, style))
                     })
                     .collect();
                 List::new(list_items).render(inner, buf);
@@ -498,15 +501,17 @@ impl Widget for OverlayWidget<'_> {
                     .iter()
                     .enumerate()
                     .map(|(i, m)| {
+                        let marker = if i == *selected { "▶ " } else { "  " };
                         let style = if i == *selected {
-                            theme::brand().add_modifier(Modifier::BOLD)
+                            theme::selected_row()
                         } else {
                             theme::text()
                         };
-                        ListItem::new(Span::styled(
-                            format!("{} / {}", m.provider, m.model),
-                            style,
-                        ))
+                        let mut row = format!("{marker}{} / {}", m.provider, m.model);
+                        while row.chars().count() < 36 {
+                            row.push(' ');
+                        }
+                        ListItem::new(Span::styled(row, style))
                     })
                     .collect();
                 List::new(list_items)
@@ -571,23 +576,19 @@ impl Widget for OverlayWidget<'_> {
                     .iter()
                     .enumerate()
                     .map(|(i, it)| {
+                        let marker = if i == *selected { "▶ " } else { "  " };
                         let style = if i == *selected {
-                            theme::brand().add_modifier(Modifier::BOLD)
+                            theme::selected_row()
                         } else {
                             theme::text()
                         };
-                        let url = it
-                            .auth_url
-                            .as_deref()
-                            .map(|u| format!("  {u}"))
-                            .unwrap_or_default();
-                        ListItem::new(Line::from(vec![
-                            Span::styled(
-                                format!(" {} ({}) ", it.title, it.auth_mode),
-                                style,
-                            ),
-                            Span::styled(url, theme::muted()),
-                        ]))
+                        let url = it.auth_url.as_deref().unwrap_or("");
+                        let mut row =
+                            format!("{marker}{} ({})  {url}", it.title, it.auth_mode);
+                        while row.chars().count() < 48 {
+                            row.push(' ');
+                        }
+                        ListItem::new(Span::styled(row, style))
                     })
                     .collect();
                 List::new(list_items)

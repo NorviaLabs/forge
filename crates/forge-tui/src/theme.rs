@@ -55,6 +55,25 @@ pub fn border() -> Style {
     Style::default().fg(BORDER)
 }
 
+/// Full-row selection (suggestion list, palette, connect picker).
+/// Explicit bg — bare REVERSED is unreliable across terminals.
+pub fn selected_row() -> Style {
+    Style::default()
+        .fg(PANEL)
+        .bg(ACCENT)
+        .add_modifier(Modifier::BOLD)
+}
+
+/// Input caret: high-contrast block.
+pub fn caret() -> Style {
+    Style::default().fg(PANEL).bg(TEXT)
+}
+
+/// History-recalled input (subtle highlight of the whole field text).
+pub fn history_active() -> Style {
+    Style::default().fg(TEXT).bg(Color::Rgb(28, 40, 55))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -64,5 +83,12 @@ mod tests {
         assert_ne!(ACCENT, OK);
         assert_ne!(WARN, DANGER);
         assert_ne!(brand().fg, Some(MUTED));
+    }
+
+    #[test]
+    fn selected_and_caret_use_background() {
+        assert_eq!(selected_row().bg, Some(ACCENT));
+        assert_eq!(caret().bg, Some(TEXT));
+        assert_eq!(selected_row().fg, Some(PANEL));
     }
 }
