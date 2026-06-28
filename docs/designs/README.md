@@ -116,8 +116,9 @@ Visual source of truth: [../ui.md](../ui.md). Phase 1 `surfaces` / line-mode `re
 | Document | PRD reqs | Summary |
 |----------|----------|---------|
 | [tui-slash-inline.md](./tui-slash-inline.md) | **TUI-06** | Type `/commands` in main input + Enter; palette via Ctrl+K only |
+| [tui-slash-autocomplete.md](./tui-slash-autocomplete.md) | **TUI-07** (8.1) | **Tab** complete; **↑/↓** suggestion highlight; **caret** + history highlight |
 
-**Phase 8 reading order:** tui-slash-inline (builds on Phase 4 shell/overlays + command catalogs)
+**Phase 8 reading order:** tui-slash-inline → tui-slash-autocomplete (8.1)
 
 ## Template
 

@@ -1,10 +1,10 @@
 # Forge — TUI UI reference
 
-**Version:** 0.3  
-**Status:** Draft mockups — **implementation target for Phase 4**  
+**Version:** 0.4  
+**Status:** Draft mockups — Phase 4 base; **Phase 8 / 8.1 input & autocomplete**  
 **Owner:** Mohit Ranka  
 **Last updated:** 23 Jul 2026  
-**Related:** [prd.md](./prd.md) · [architecture.md](./architecture.md) · [designs/README.md](./designs/README.md) · Phase 4: [tui-shell](./designs/tui-shell.md) · [tui-conversation](./designs/tui-conversation.md) · [tui-sidebar](./designs/tui-sidebar.md) · [tui-overlays](./designs/tui-overlays.md)
+**Related:** [prd.md](./prd.md) · [architecture.md](./architecture.md) · [designs/README.md](./designs/README.md) · Phase 4 TUI designs · Phase 8: [tui-slash-inline](./designs/tui-slash-inline.md) · [tui-slash-autocomplete](./designs/tui-slash-autocomplete.md)
 
 ---
 
@@ -42,10 +42,11 @@ done
 | **Status bar** | Brand, session status pill, session id, model, context %, worktree flag |
 | **Main chat** | User / assistant / system / tool cards; streaming cursor |
 | **Sidebar** | Session metadata, context meter, ACL summary, live journal tail |
-| **Input** | `❯` prompt; slash commands; key hints |
-| **Modals / palette** | HITL approval; command palette; non-LLM overlays |
-| **Color cues** | Teal accent (forge), blue info, amber warn/HITL, red deny/error, green ok |
-| **Security UX** | Redact secrets; show tool names + safe args; offload large payloads as URIs |
+| **Input** | `❯` prompt; **visible caret**; type `/command` inline (Phase 8); key hints (`Tab` complete · `Ctrl+K` list · `↑↓` history/suggest) |
+| **Slash suggestions** | Panel above input while typing `/…` (Phase 8.1); **one row highlighted**; Tab applies |
+| **Modals / palette** | HITL approval; full command palette (Ctrl+K); connect OAuth/API-key overlays |
+| **Color cues** | Teal accent (forge), blue info, amber warn/HITL, red deny/error, green ok; **highlight = brand bold / reverse** |
+| **Security UX** | Redact secrets; show tool names + safe args; offload large payloads as URIs; do not autocomplete secrets |
 
 **Chrome note:** Window traffic lights are mock presentation only. The real TUI is full-terminal (ratatui), not an embedded app window—layout regions map 1:1 to terminal panels.
 
@@ -67,6 +68,8 @@ done
 | 10 | Evaluator report | Generator / Evaluator gate | [10-evaluator-report](./ui/images/10-evaluator-report.png) |
 | 11 | Session status | `/status` | [11-session-status](./ui/images/11-session-status.png) |
 | 12 | Validation error | Schema reject + retry | [12-error-validation](./ui/images/12-error-validation.png) |
+| **13** | **Slash autocomplete** | Phase **8.1** Tab + highlight | ASCII wireframe below (PNG optional) |
+| **14** | **History recall** | Phase 7 + caret | ASCII wireframe below |
 
 ---
 
@@ -165,8 +168,8 @@ done
 
 ### 7. Slash command palette
 
-**When:** User types `/` — surface-local, non-LLM.  
-**Architecture:** §5.11.  
+**When:** **Ctrl+K** (Phase 8) opens the full discovery palette. Typing `/` in the main textbox does **not** force this modal (Phase 8).  
+**Architecture:** §5.11 · Phase 8 [tui-slash-inline](./designs/tui-slash-inline.md).  
 **Phase 1 catalog:** [designs/tui-commands.md](./designs/tui-commands.md). Phase 2+ commands live in their phase design docs (HITL, context, worktree).
 
 ![Slash commands](./ui/images/07-slash-commands.png)
@@ -184,8 +187,58 @@ done
 | `/cancel` | Cancel current turn |
 | `/compact` | Request compaction path |
 | `/help` `/journal` `/tools` `/cost` `/quit` | Additional commands in design catalog |
+| `/connect` | Phase 6 provider connect |
 
 The HTML palette mockup (`07-slash-commands`) may omit newer commands until re-rendered; behavior is defined only by [tui-commands.md](./designs/tui-commands.md).
+
+---
+
+### 13. Slash autocomplete (Phase 8.1)
+
+**When:** Operator types a slash prefix in the **main input** (e.g. `/sta`).  
+**PRD:** TUI-07 · [tui-slash-autocomplete.md](./designs/tui-slash-autocomplete.md).
+
+```text
+┌ status  FORGE · idle · model · ctx% ─────────────────────────────────────┐
+├ conversation ─────────────────────────────┬ sidebar ─────────────────────┤
+│ …                                         │ …                            │
+│                                           │                              │
+┌ suggestions · Tab complete · ↑↓ ──────────┴──────────────────────────────┐
+│ ▶ /status      Session status          ← highlighted selection           │
+│   /tools       List tools                                                │
+└──────────────────────────────────────────────────────────────────────────┘
+┌ input ───────────────────────────────────────────────────────────────────┐
+│ ❯ /sta█                                 ← caret (block / reverse video)  │
+└──────────────────────────────────────────────────────────────────────────┘
+│ footer: version · cwd · Tab complete · Ctrl+K list · ↑↓ suggest/history  │
+```
+
+**UI requirements**
+
+- One **highlighted** suggestion row (teal/brand bold or reverse).  
+- **Tab** applies highlight into the textbox.  
+- **↑/↓** move highlight (not chat scroll).  
+- Input **caret** always visible when focused.  
+- Panel hidden when a modal overlay is open.
+
+---
+
+### 14. History recall with caret (Phase 7 + 8.1)
+
+**When:** Operator presses **↑** with a non-slash draft (or after leaving suggest mode).  
+**PRD:** TUI-05 · TUI-07.
+
+```text
+┌ input ───────────────────────────────────────────────────────────────────┐
+│ ❯ /connect list█                        ← recalled line + caret at end   │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+**UI requirements**
+
+- Recalled text fills the input; caret at end.  
+- Optional muted status: `history 2/10`.  
+- **↓** walks toward the live draft.
 
 ---
 

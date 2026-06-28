@@ -69,6 +69,8 @@ struct InputHistory {
 
 When any **overlay** is open: Up/Down keep existing overlay selection behavior (Phase 4); history is inactive.
 
+**Phase 8.1:** When the textbox starts with `/` and slash **suggestions** are visible, **↑/↓** move the **suggestion highlight** instead of history—see [tui-slash-autocomplete.md](./tui-slash-autocomplete.md). History Up/Down apply when not in slash-suggest mode. Recalled history text must show a **visible caret** at end of line.
+
 ### 3.3 Interaction with slash `/` and connect modals
 
 - Typing `/` opening the palette: history inactive while palette open.  

@@ -1,6 +1,6 @@
 # Forge — Product Requirements Document
 
-**Version:** 0.10  
+**Version:** 0.10.1  
 **Status:** Draft  
 **Owner:** Mohit Ranka  
 **Last updated:** 23 Jul 2026  
@@ -151,7 +151,8 @@ Every harness component encodes an assumption about what the model cannot yet do
 11. (Phase 5) Reach the **broad provider catalog** via the **LiteLLM Python SDK (library)**, not the LiteLLM Proxy gateway.  
 12. (Phase 6) Ship a first-class **`/connect`** flow for productized providers, starting with **xAI Grok** and **OpenCode Go**, without reintroducing dual model-client stacks.  
 13. (Phase 7) Support **command history navigation with arrow keys** in the full-screen TUI (Up/Down).  
-14. (Phase 8) Allow **top-level slash commands** to be typed and run from the **main TUI textbox** (not only via the command palette).
+14. (Phase 8) Allow **top-level slash commands** to be typed and run from the **main TUI textbox** (not only via the command palette).  
+15. (Phase 8.1) **Tab autocomplete** for slash commands and a **visible highlight cursor** for the selected suggestion and input/history text.
 
 ---
 
@@ -211,6 +212,7 @@ Product capabilities group into five areas (implementation detail in architectur
 | **TUI-04** | Overlays & palettes | Modal overlays for HITL approve/deny, slash-command palette (`/`), and model picker; keyboard-first (no mouse required). | HITL and `/` flows completable via keys alone per [ui.md](./ui.md) screens 04, 07, 08 | P0 (Critical) |
 | **TUI-05** | Input command history | In full-screen TUI, **Up/Down** arrows recall previously submitted input lines (prompts and slash commands). | Operator can re-run/edit prior lines without retyping; history inactive under overlays | P1 |
 | **TUI-06** | Inline slash in main textbox | Type top-level `/commands` in the main input and run with Enter; do not hijack `/` into palette-only flow. | `/status`, `/connect …`, and catalog commands work when typed fully in the textbox | P1 |
+| **TUI-07** | Tab autocomplete + highlight | Tab completes the highlighted slash suggestion; caret/highlight shows selected suggestion and input/history position. | `/sta` + Tab → `/status`; ↑↓ move highlight; caret visible | P1 |
 
 ### 9.2 Priority summary
 
@@ -247,6 +249,7 @@ Product capabilities group into five areas (implementation detail in architectur
 - **Phase 6.1:** **xAI Grok connects via OAuth** (not API-key paste). **OpenCode Go TUI must explicitly prompt for API key** when connecting.
 - **Phase 7 (TUI-05):** Full-screen TUI **command history** via **Up/Down** arrow keys on the input bar.
 - **Phase 8 (TUI-06):** Top-level **slash commands** run from the **main textbox** (`/cmd …` + Enter); palette remains optional discovery.
+- **Phase 8.1 (TUI-07):** **Tab** autocomplete for slash suggestions; **highlighted** selected command and **visible caret** (including history recall).
 
 ---
 
@@ -308,6 +311,7 @@ Product capabilities group into five areas (implementation detail in architectur
 | TUI-04 | **4** | HITL / slash / model overlays |
 | TUI-05 | **7** | TUI input command history (arrow keys) |
 | TUI-06 | **8** | Inline top-level slash commands in main textbox |
+| TUI-07 | **8** | Tab slash autocomplete + highlight cursor (8.1) |
 | MDL-01 | **5** | Universal providers via LiteLLM SDK (not Proxy) |
 | CONN-01 | **6** | `/connect` command — interactive provider auth & profile select |
 | PROV-01 | **6** | xAI Grok first-class connect profile |
@@ -319,7 +323,7 @@ Phase 6 design set (all exclusive Phase 6): [connect-command.md](./designs/conne
 
 Phase 7 design set (exclusive Phase 7): [tui-input-history.md](./designs/tui-input-history.md) (TUI-05).
 
-Phase 8 design set (exclusive Phase 8): [tui-slash-inline.md](./designs/tui-slash-inline.md) (TUI-06).
+Phase 8 design set (exclusive Phase 8): [tui-slash-inline.md](./designs/tui-slash-inline.md) (TUI-06), [tui-slash-autocomplete.md](./designs/tui-slash-autocomplete.md) (TUI-07 / 8.1).
 
 ### Design doc → phase map (exclusive)
 
@@ -528,8 +532,17 @@ See [designs/README.md](./designs/README.md). No design doc may list multiple ph
 |----------|--------------|
 | **TUI-06** — `/` inserts into textbox; Enter dispatches slash lines | Removing the slash palette |
 | All top-level commands already in the parser work when typed fully | New slash command definitions (other phases own catalogs) |
-| Explicit palette open (e.g. Ctrl+K) for discovery | Required fuzzy autocomplete |
+| Explicit palette open (e.g. Ctrl+K) for discovery | Fuzzy NLP completion beyond catalog filter |
 | Keep overlay list keys when palette is open | Changing agent message path for non-`/` text |
+
+#### Phase 8.1 amendments (normative) — TUI-07
+
+| Feature | Requirement |
+|---------|-------------|
+| **Tab autocomplete** | While textbox starts with `/` and suggestions exist, **Tab** inserts the **highlighted** catalog command into the textbox |
+| **Suggestion highlight** | Suggestions panel shows one **selected** row (brand/bold or reverse); **↑/↓** move selection when panel visible |
+| **Input caret** | Visible caret at cursor (block or reverse-video) whenever the input is focused |
+| **History highlight** | Recalled history line appears in the input with caret at end (Phase 7 + visible caret) |
 
 **Exit criteria (product complete):**
 
@@ -539,7 +552,14 @@ See [designs/README.md](./designs/README.md). No design doc may list multiple ph
 4. Documented key (e.g. Ctrl+K) still opens the command palette.  
 5. Automated tests cover “no auto-palette on `/`” and Enter dispatch of a slash command.  
 6. Phase 7 history still stores submitted slash lines.  
-7. Headless/REPL behavior unchanged.
+7. Headless/REPL behavior unchanged.  
+
+**Exit criteria (Phase 8.1 / TUI-07):**
+
+8. Type a prefix (e.g. `/sta`) → suggestions panel shows matches with one highlighted → **Tab** completes to `/status` (or `/status `).  
+9. **↑/↓** change the highlighted suggestion while the panel is visible.  
+10. Input caret is visible; history recall shows the line in the textbox with caret.  
+11. Tests cover Tab complete + visual/highlight behavior (unit and/or TestBackend).
 
 ---
 
@@ -557,6 +577,7 @@ The agent ecosystem is moving from rapid-prototype abstractions (loose roles, he
 - Guided **`/connect`** onboarding for key product providers (Phase 6: xAI Grok, OpenCode Go)  
 - Terminal ergonomics: **command history** with arrow keys in the full-screen TUI (Phase 7)  
 - Inline **slash commands** in the main TUI textbox (Phase 8)  
+- **Tab autocomplete** and **highlight cursor** for slash suggestions and history (Phase 8.1)  
 
 Forge is specified to occupy that intersection: low abstraction tax, enterprise durability, portable model/client integration, and a first-class terminal surface.
 

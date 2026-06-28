@@ -6,7 +6,7 @@
 **Phase:** **8 only** (exclusive)  
 **PRD:** TUI-06  
 **Architecture:** §14 Phase 8, decision #21  
-**Related:** [tui-shell.md](./tui-shell.md), [tui-overlays.md](./tui-overlays.md) (palette remains available), [tui-commands.md](./tui-commands.md) (catalog), [tui-input-history.md](./tui-input-history.md)
+**Related:** [tui-slash-autocomplete.md](./tui-slash-autocomplete.md) (Phase **8.1** Tab + highlight), [tui-shell.md](./tui-shell.md), [tui-overlays.md](./tui-overlays.md), [tui-commands.md](./tui-commands.md), [tui-input-history.md](./tui-input-history.md)
 
 ---
 
@@ -25,13 +25,14 @@ Phase 8 makes the **main textbox** the primary place to enter **top-level slash 
 - All registered top-level slash commands (Phases 1–6+) work when typed fully in the textbox.  
 - Optional: open palette explicitly (e.g. **Ctrl+K**, or empty input + a dedicated key)—documented and testable.  
 - History (Phase 7) continues to store submitted slash lines.  
-- Unit tests: key path does not open overlay on `/` alone; Enter runs `/status`-style commands.
+- Unit tests: key path does not open overlay on `/` alone; Enter runs `/status`-style commands.  
+- **Phase 8.1:** Tab autocomplete + highlight — see [tui-slash-autocomplete.md](./tui-slash-autocomplete.md) (TUI-07).
 
 **Non-goals**
 
 - Redefining the slash catalog (still owned by phase-specific command docs).  
 - Removing the slash palette (it remains for discovery).  
-- Fuzzy autocomplete in the textbox (optional stretch; not required for exit).  
+- Fuzzy NLP beyond catalog filter (8.1 defines filter + Tab).  
 - Nested/subcommand UIs beyond existing parse rules.
 
 ## 3. Design

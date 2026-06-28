@@ -1,6 +1,6 @@
 # Forge — Architecture
 
-**Version:** 0.10  
+**Version:** 0.10.1  
 **Status:** Draft  
 **Owner:** Mohit Ranka  
 **Last updated:** 23 Jul 2026  
@@ -50,6 +50,7 @@ Aligned with [prd.md](./prd.md) §6 (wording here is architecture-oriented).
 11. Phase 6: **`/connect`** product profiles for **xAI Grok** and **OpenCode Go** on top of the LiteLLM path  
 12. Phase 7: TUI **input command history** via **Up/Down** arrow keys  
 13. Phase 8: Top-level **slash commands** typed in the **main textbox** (Enter runs `parse_slash`)  
+14. Phase 8.1: **Tab** slash autocomplete + **highlight** selected suggestion and input caret  
 
 ### Non-goals
 
@@ -840,7 +841,7 @@ Aligned with [prd.md](./prd.md) §13. Each phase is a **complete product**. Req 
 | **5** | Universal model providers | MDL-01 | litellm-providers, litellm-worker, litellm-wire, litellm-normalization, litellm-config |
 | **6** | Connected providers + `/connect` | CONN-01, PROV-01, PROV-02 | connect-command, connect-auth-modes (6.1), provider-xai-grok (OAuth), provider-opencode-go (TUI API key) |
 | **7** | TUI command history | TUI-05 | tui-input-history |
-| **8** | Inline slash in main textbox | TUI-06 | tui-slash-inline |
+| **8** | Inline slash in main textbox | TUI-06, TUI-07 (8.1) | tui-slash-inline, tui-slash-autocomplete |
 
 ### Phase 1 — Coding agent
 
@@ -1026,21 +1027,35 @@ PageUp/Down   → conversation scroll (TUI-02) if present
 5. Update input hint copy; unit tests for no auto-palette + Enter `/status`  
 6. Manual smoke: `/tools`, `/connect list`, multi-arg commands  
 
-**Crate focus:** `forge-tui` app key handler only. Reuse `parse_slash` / command handlers.
+#### Phase 8.1 — Tab autocomplete + highlight (TUI-07)
 
-**Exit:**
+**Build order (strict):**
+
+1. Suggestions panel while `input` starts with `/` — [tui-slash-autocomplete.md](./designs/tui-slash-autocomplete.md)  
+2. **Tab** completes **highlighted** catalog command into the textbox  
+3. **↑/↓** move highlight when suggestions visible; else history (Phase 7)  
+4. **Caret** reverse-video / block at `input.cursor`; history recall uses caret at end  
+5. Unit + TestBackend visual tests (selected row + caret)  
+
+**Crate focus:** `forge-tui` (`app` suggest index, `InputBar` caret, draw suggestions).
+
+**Exit (8 + 8.1):**
 
 - Full slash commands typed in textbox work  
 - `/` does not force palette  
 - Palette still openable explicitly  
+- **Tab** completes highlighted suggestion  
+- Highlighted suggestion + visible caret  
 - History + overlays unchanged otherwise  
 
-**Not Phase 8:** New command catalog entries; removing palette; autocomplete.
+**Not Phase 8:** New command catalog entries; removing palette; fuzzy NLP beyond filter.
 
 ```text
 Main textbox:  "/status" + Enter  →  parse_slash → dispatch
 Main textbox:  "/"               →  show "/" in field (stay in Normal mode)
+"/sta" + panel:  ↑↓ highlight · Tab → "/status "
 Ctrl+K:        open Slash palette overlay (discovery)
+History:       Up/Down when no slash suggestions → recalled line + caret
 ```
 
 ---
@@ -1124,6 +1139,7 @@ Forge is the **harness** between models and the real world: a typed tool bus, an
 | 19 | Connected providers (Phase 6) | **`/connect`** UX + profiles for **xAI Grok** and **OpenCode Go**. **No** second production `ModelClient`. **6.1:** Grok = **OAuth**; OpenCode Go = **API key with mandatory TUI prompt** |
 | 20 | TUI input history (Phase 7) | **Up/Down** navigate submitted command history in main input only; inactive under overlays; session memory required, disk optional |
 | 21 | Inline slash (Phase 8) | Main textbox owns `/command` entry + Enter; **do not** auto-open palette on `/`; palette via **Ctrl+K** (or equivalent) |
+| 22 | Tab autocomplete + highlight (Phase 8.1) | **Tab** completes highlighted slash suggestion; **↑/↓** move suggestion highlight when panel open; **visible caret**; history recall shows line + caret |
 | 12 | Config | **TOML file + env overrides** (e.g. `forge.toml` / `~/.config/forge/config.toml`; secrets/CI via env) |
 | 13 | Protocol phase ownership | **Phase 1 CORE-02 = MCP only.** **Phase 2 CORE-03 = ACP only.** Exclusive; no split ownership of one req ID. |
 | 14 | License | **MIT** |
