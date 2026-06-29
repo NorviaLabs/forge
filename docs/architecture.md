@@ -1,6 +1,6 @@
 # Forge — Architecture
 
-**Version:** 0.10.1  
+**Version:** 0.11.0  
 **Status:** Draft  
 **Owner:** Mohit Ranka  
 **Last updated:** 23 Jul 2026  
@@ -51,6 +51,7 @@ Aligned with [prd.md](./prd.md) §6 (wording here is architecture-oriented).
 12. Phase 7: TUI **input command history** via **Up/Down** arrow keys  
 13. Phase 8: Top-level **slash commands** typed in the **main textbox** (Enter runs `parse_slash`)  
 14. Phase 8.1: **Tab** slash autocomplete + **highlight** selected suggestion and input caret  
+15. Phase 9: Built-in **`web_search`** tool (pluggable HTTP search backends; same CORE-01/DUR path as workspace tools)  
 
 ### Non-goals
 
@@ -270,6 +271,7 @@ A **session** is a durable unit of agent work (one interactive chat, one CI job,
 | **Contract** | Each tool: name, description, serde/schemars input type, typed output serialization (CORE-01) |
 | **Registry** | In-process built-ins + MCP-discovered tools, merged then ACL-filtered (SEC-02) |
 | **Built-ins (coding default)** | Read/write files, bash, git (branch create/delete, commit, push), grep/search; subject to sandbox and worktree policy |
+| **Built-ins (Phase 9)** | **`web_search`** — public web query via pluggable backends (`network` class); keys from env/vault only ([web-search-tool.md](./designs/web-search-tool.md)) |
 | **MCP** | Stdio/HTTP MCP servers for external integrations (CORE-02) |
 | **Validation** | Invalid args → structured error + automatic validation retry prompt to the model |
 | **Execution path** | Journal intent → ACL/sandbox → inject credentials → run → journal result → context ingest (or offload) |
@@ -842,6 +844,7 @@ Aligned with [prd.md](./prd.md) §13. Each phase is a **complete product**. Req 
 | **6** | Connected providers + `/connect` | CONN-01, PROV-01, PROV-02 | connect-command, connect-auth-modes (6.1), provider-xai-grok (OAuth), provider-opencode-go (TUI API key) |
 | **7** | TUI command history | TUI-05 | tui-input-history |
 | **8** | Inline slash in main textbox | TUI-06, TUI-07 (8.1) | tui-slash-inline, tui-slash-autocomplete |
+| **9** | Built-in web search | WEB-01 | web-search-tool |
 
 ### Phase 1 — Coding agent
 
@@ -1058,6 +1061,44 @@ Ctrl+K:        open Slash palette overlay (discovery)
 History:       Up/Down when no slash suggestions → recalled line + caret
 ```
 
+### Phase 9 — Built-in web search tool
+
+**Product:** First-class **`web_search`** built-in so agents can retrieve public web results under the same validate → journal → execute → journal path as other tools. Does **not** require MCP for the default experience.
+
+**Build order (strict):**
+
+1. Config `[tools.web_search]` + env overrides — [web-search-tool.md](./designs/web-search-tool.md)  
+2. `SearchBackend` trait + **mock** backend (deterministic fixtures)  
+3. `WebSearchTool` (schemars args, markdown/JSON-friendly output, `SideEffectClass::Network`)  
+4. Live backends (≥1 of Tavily / Brave / Serper) behind the trait; API key from env/vault only  
+5. Register into builtins when enabled + key policy satisfied; omit when disabled/missing key  
+6. Wire session bootstrap / ACL (`network` / name allow lists)  
+7. Unit tests (validation, mock, registration gating) + optional live smoke  
+8. Confirm TUI tool cards show query redacted (no secrets); journal replay does not re-hit network  
+
+**Crate focus:** `forge-tools` (tool + backends), `forge-config` (settings), existing `forge-core` registration. No new agent loop.
+
+**Exit:**
+
+- Model can call `web_search` when enabled  
+- Mock works offline; live backend works with key  
+- Keys never in journal/UI/OTEL default attributes  
+- DUR-02: completed searches not re-executed on resume  
+- MCP path unchanged  
+
+**Not Phase 9:** Browser automation; HTML SERP scraping without API; mandatory paid API for CI; new model client; required slash `/search`.
+
+```text
+Model → tool_call web_search { query, num_results? }
+         → CORE-01 validate
+         → journal tool_intent
+         → SEC-02 authorize (network)
+         → inject API key (env / vault)
+         → SearchBackend (mock | tavily | brave | serper)
+         → journal tool_result
+         → CTX-01 offload if oversized
+```
+
 ---
 
 ## 15. Extension points
@@ -1068,6 +1109,7 @@ History:       Up/Down when no slash suggestions → recalled line + caret
 | Connect profile | Register profile id, env key names, default models, optional base_url — [connect-command.md](./designs/connect-command.md) |
 | New MCP server | Declarative config; tools appear after ACL filter |
 | New built-in tool | serde/schemars types + handler; optional policy trait |
+| Web search backend | Impl `SearchBackend` + config `provider` id — [web-search-tool.md](./designs/web-search-tool.md) |
 | New surface | ACP-compatible client or thin adapter on agent events |
 | Custom Evaluator sensors | Register deterministic runners + optional LLM judge profile |
 | Policy packs | ACL + HITL classification rules without core changes |
@@ -1084,7 +1126,7 @@ Illustrative Rust workspace layout (crate names align with §3 / decisions table
 |--------------|----------------|
 | `forge-core` — loop | Plan–act–observe driver, termination, turn limits |
 | `forge-core` — tools registry | Tool registration, serde/schemars validation, dispatch |
-| `forge-core` — builtin tools | Read/write, bash, git, grep |
+| `forge-core` / `forge-tools` — builtin tools | Read/write, bash, git, grep; Phase 9: **`web_search`** + search backends |
 | `forge-mcp` | MCP discovery and call bridge |
 | `forge-acp` | ACP server/session |
 | `forge-model` — model client | `ModelClient` trait; Phase 1 natives (until Phase 5); Phase 5: LiteLLM client + mock only |
@@ -1140,6 +1182,7 @@ Forge is the **harness** between models and the real world: a typed tool bus, an
 | 20 | TUI input history (Phase 7) | **Up/Down** navigate submitted command history in main input only; inactive under overlays; session memory required, disk optional |
 | 21 | Inline slash (Phase 8) | Main textbox owns `/command` entry + Enter; **do not** auto-open palette on `/`; palette via **Ctrl+K** (or equivalent) |
 | 22 | Tab autocomplete + highlight (Phase 8.1) | **Tab** completes highlighted slash suggestion; **↑/↓** move suggestion highlight when panel open; **visible caret**; history recall shows line + caret |
+| 23 | Web search tool (Phase 9) | Built-in **`web_search`** with pluggable backends (mock + ≥1 live API); **`network`** side-effect class; keys env/vault only; omit from catalog when disabled/missing key; same journal path as other tools |
 | 12 | Config | **TOML file + env overrides** (e.g. `forge.toml` / `~/.config/forge/config.toml`; secrets/CI via env) |
 | 13 | Protocol phase ownership | **Phase 1 CORE-02 = MCP only.** **Phase 2 CORE-03 = ACP only.** Exclusive; no split ownership of one req ID. |
 | 14 | License | **MIT** |
@@ -1159,6 +1202,7 @@ Forge is the **harness** between models and the real world: a typed tool bus, an
 | Connect profiles (Phase 6) | Registry + `/connect`; still `LiteLlmModelClient` |
 | Connect auth (6.1) | `AuthMode::Oauth` (xAI) vs `AuthMode::ApiKey` + TUI prompt (OpenCode Go); tokens/keys in 0600 store |
 | Surfaces | Phase 1: line-mode `repl` + headless `forge-cli`; Phase 2: `forge-acp`; Phase 3: channels; Phase 4: full-screen ratatui `forge tui`; Phase 6: `/connect` in TUI + REPL; Phase 7: TUI input history (Up/Down); Phase 8: inline slash in main textbox |
+| Web search (Phase 9) | `WebSearchTool` in `forge-tools`; `SearchBackend` trait; config `[tools.web_search]`; mock for CI |
 | Config | TOML (`forge.toml` or XDG config path) merged with env overrides |
 | Workspace root | Default **cwd**; override via CLI flag and/or config when specified |
 | Observability | `tracing` + OpenTelemetry exporter crates |

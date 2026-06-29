@@ -1,6 +1,6 @@
 # Forge — Product Requirements Document
 
-**Version:** 0.10.1  
+**Version:** 0.11.0  
 **Status:** Draft  
 **Owner:** Mohit Ranka  
 **Last updated:** 23 Jul 2026  
@@ -152,7 +152,8 @@ Every harness component encodes an assumption about what the model cannot yet do
 12. (Phase 6) Ship a first-class **`/connect`** flow for productized providers, starting with **xAI Grok** and **OpenCode Go**, without reintroducing dual model-client stacks.  
 13. (Phase 7) Support **command history navigation with arrow keys** in the full-screen TUI (Up/Down).  
 14. (Phase 8) Allow **top-level slash commands** to be typed and run from the **main TUI textbox** (not only via the command palette).  
-15. (Phase 8.1) **Tab autocomplete** for slash commands and a **visible highlight cursor** for the selected suggestion and input/history text.
+15. (Phase 8.1) **Tab autocomplete** for slash commands and a **visible highlight cursor** for the selected suggestion and input/history text.  
+16. (Phase 9) Ship a first-class **`web_search` built-in tool** so agents can query the public web under the same schema-validated, journaled, ACL-filtered tool path as workspace built-ins.
 
 ---
 
@@ -168,7 +169,7 @@ Every harness component encodes an assumption about what the model cannot yet do
 | Opaque “agent as black box” without audit logs | Enterprise requires immutable invocation records |
 | **LiteLLM Proxy as required infrastructure** | Phase 5 uses the **LiteLLM library/SDK** inside a Forge-owned worker; an org-wide LLM gateway is optional and out of scope |
 
-Phase-scoped deferrals (see §13): multi-channel fleet, SCIM, deep kernel sandboxing, SIEM plugins may ship after core durability and protocols. Universal provider coverage via LiteLLM is **Phase 5**. Productized connect UX for xAI Grok and OpenCode Go is **Phase 6**.
+Phase-scoped deferrals (see §13): multi-channel fleet, SCIM, deep kernel sandboxing, SIEM plugins may ship after core durability and protocols. Universal provider coverage via LiteLLM is **Phase 5**. Productized connect UX for xAI Grok and OpenCode Go is **Phase 6**. Built-in web search is **Phase 9**.
 
 ---
 
@@ -213,11 +214,12 @@ Product capabilities group into five areas (implementation detail in architectur
 | **TUI-05** | Input command history | In full-screen TUI, **Up/Down** arrows recall previously submitted input lines (prompts and slash commands). | Operator can re-run/edit prior lines without retyping; history inactive under overlays | P1 |
 | **TUI-06** | Inline slash in main textbox | Type top-level `/commands` in the main input and run with Enter; do not hijack `/` into palette-only flow. | `/status`, `/connect …`, and catalog commands work when typed fully in the textbox | P1 |
 | **TUI-07** | Tab autocomplete + highlight | Tab completes the highlighted slash suggestion; caret/highlight shows selected suggestion and input/history position. | `/sta` + Tab → `/status`; ↑↓ move highlight; caret visible | P1 |
+| **WEB-01** | Built-in web search tool | First-class `web_search` tool: schema-validated query args; pluggable search backends (e.g. Tavily/Brave/Serper + mock); network side-effect class; keys via env/vault only; same journal + ACL path as other built-ins. | Model can search the public web when enabled; mock path works offline; no API keys in transcripts/traces | P1 |
 
 ### 9.2 Priority summary
 
 - **P0 (Critical):** CORE-01, CORE-02, CORE-03, DUR-01, DUR-02, CTX-01, CTX-02, SEC-01, SEC-02, TUI-01, TUI-02, TUI-04  
-- **P1 (High):** DUR-03, CTX-03, SEC-03, EVAL-01, OBS-01, TUI-03  
+- **P1 (High):** DUR-03, CTX-03, SEC-03, EVAL-01, OBS-01, TUI-03, WEB-01  
 
 ---
 
@@ -250,6 +252,7 @@ Product capabilities group into five areas (implementation detail in architectur
 - **Phase 7 (TUI-05):** Full-screen TUI **command history** via **Up/Down** arrow keys on the input bar.
 - **Phase 8 (TUI-06):** Top-level **slash commands** run from the **main textbox** (`/cmd …` + Enter); palette remains optional discovery.
 - **Phase 8.1 (TUI-07):** **Tab** autocomplete for slash suggestions; **highlighted** selected command and **visible caret** (including history recall).
+- **Phase 9 (WEB-01):** Built-in **`web_search`** tool with pluggable backends and secure key handling.
 
 ---
 
@@ -267,6 +270,7 @@ Product capabilities group into five areas (implementation detail in architectur
 | 7 | Generator/Evaluator improves first-pass quality vs single-pass baseline | Benchmark suite (target &gt; 40% relative) |
 | 8 | Full step coverage in distributed traces | Trace completeness checks |
 | 9 | Provider switch is config-only | Multi-provider smoke matrix |
+| 10 | Web search tool is schema-validated and journaled | Unit + mock integration; live smoke optional with API key |
 
 ---
 
@@ -316,6 +320,7 @@ Product capabilities group into five areas (implementation detail in architectur
 | CONN-01 | **6** | `/connect` command — interactive provider auth & profile select |
 | PROV-01 | **6** | xAI Grok first-class connect profile |
 | PROV-02 | **6** | OpenCode Go first-class connect profile |
+| WEB-01 | **9** | Built-in `web_search` tool (pluggable backends) |
 
 Phase 5 design set (all exclusive Phase 5): [litellm-providers.md](./designs/litellm-providers.md) (primary), [litellm-worker.md](./designs/litellm-worker.md), [litellm-wire.md](./designs/litellm-wire.md), [litellm-normalization.md](./designs/litellm-normalization.md), [litellm-config.md](./designs/litellm-config.md).
 
@@ -324,6 +329,8 @@ Phase 6 design set (all exclusive Phase 6): [connect-command.md](./designs/conne
 Phase 7 design set (exclusive Phase 7): [tui-input-history.md](./designs/tui-input-history.md) (TUI-05).
 
 Phase 8 design set (exclusive Phase 8): [tui-slash-inline.md](./designs/tui-slash-inline.md) (TUI-06), [tui-slash-autocomplete.md](./designs/tui-slash-autocomplete.md) (TUI-07 / 8.1).
+
+Phase 9 design set (exclusive Phase 9): [web-search-tool.md](./designs/web-search-tool.md) (WEB-01).
 
 ### Design doc → phase map (exclusive)
 
@@ -563,6 +570,37 @@ See [designs/README.md](./designs/README.md). No design doc may list multiple ph
 
 ---
 
+### Phase 9 — Built-in web search tool (complete product)
+
+**Product:** Phases 1–8 harness **plus** a first-class **`web_search`** built-in tool so the agent can query the public web for documentation, APIs, package versions, and similar external knowledge—without requiring a custom MCP search server for the default experience.
+
+**Users served:** Coding operators and CI jobs whose tasks need up-to-date public web context beyond the workspace.
+
+**Depends on:** Phase 1 tool protocol + agent loop + journal (CORE-01, DUR-01/02); Phase 2 ACL/vault/sandbox hooks when enabled (SEC-*); Phase 4 TUI tool cards for visibility (optional for headless).
+
+| In scope | Out of scope |
+|----------|--------------|
+| **WEB-01** — `web_search` tool with schema-validated args | Full browser automation / headed browsing |
+| Pluggable backends: **mock** (CI) + ≥1 live API (Tavily and/or Brave and/or Serper) | HTML scraping of search engines without licensed APIs |
+| Config `[tools.web_search]` + env API keys | Committing API keys in repo config |
+| `side_effect_class = network`; ACL can omit/deny | Changing MCP protocol or replacing MCP |
+| Journal intent/result; replay uses cached result | New production model client |
+| TUI shows tool card with query (no secrets) | Required slash command `/search` |
+| Offline unit tests via mock backend | Mandatory paid API for all installs |
+
+**Exit criteria (product complete):**
+
+1. With web search **enabled** and a mock backend, the model tool list includes `web_search`; a validated call returns structured hits without network.  
+2. Invalid args (e.g. empty query) are rejected **before** any HTTP call; model receives a structured validation error (CORE-01).  
+3. With a live backend + API key (manual or integration smoke), a real query returns ≥1 hit or a clear empty-result payload.  
+4. When `enabled = false` or `require_key` and key missing, `web_search` is **not** offered to the model.  
+5. API keys never appear in journal model-visible content, TUI, or default OTEL attributes.  
+6. Crash recovery: completed `web_search` tool results are not re-executed on `--resume` (DUR-02).  
+7. Automated tests cover schema validation + mock backend + registration gating.  
+8. Phases 1–8 product paths remain usable; LiteLLM / `/connect` / TUI slash UX unchanged.
+
+---
+
 ## 14. Strategic takeaways
 
 The agent ecosystem is moving from rapid-prototype abstractions (loose roles, heavy graphs, unmonitored single-process runtimes) toward **production-grade harness engineering**. Long-horizon reliability depends less on prompt tweaks and more on:
@@ -578,6 +616,7 @@ The agent ecosystem is moving from rapid-prototype abstractions (loose roles, he
 - Terminal ergonomics: **command history** with arrow keys in the full-screen TUI (Phase 7)  
 - Inline **slash commands** in the main TUI textbox (Phase 8)  
 - **Tab autocomplete** and **highlight cursor** for slash suggestions and history (Phase 8.1)  
+- **Web search as a first-class tool** for public knowledge beyond the repo (Phase 9)  
 
 Forge is specified to occupy that intersection: low abstraction tax, enterprise durability, portable model/client integration, and a first-class terminal surface.
 

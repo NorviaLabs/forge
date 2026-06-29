@@ -85,6 +85,8 @@ Names from MCP are namespaced to avoid collisions (e.g. `mcp:<server_id>:<tool>`
 
 Exact names can refine in implementation; classes drive policy.
 
+**Phase 9 extension (not owned here):** `web_search` (`network`) — pluggable HTTP search backends. Spec: [web-search-tool.md](./web-search-tool.md) (WEB-01).
+
 ## 4. Interfaces (sketch)
 
 ```rust
@@ -118,6 +120,7 @@ trait Tool: Send + Sync {
 | This entire document | **1** |
 | MCP discovery | [protocol-mcp.md](./protocol-mcp.md) (also Phase 1) |
 | Vault/ACL policy | [governance.md](./governance.md) (Phase 2) |
+| Web search built-in | [web-search-tool.md](./web-search-tool.md) (Phase 9) |
 
 ## 7. Open questions
 

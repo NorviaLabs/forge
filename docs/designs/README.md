@@ -3,7 +3,7 @@
 **Status:** Draft  
 **Last updated:** 23 Jul 2026  
 
-**Product phases in force:** 1–7 implemented; **8 specified** (inline slash in main textbox).
+**Product phases in force:** 1–8 implemented; **9 specified** (built-in web search tool).
 
 | Layer | Document | Owns |
 |-------|----------|------|
@@ -14,9 +14,9 @@
 
 ## Rules
 
-1. **Exclusive phase ownership** — Each design doc’s header **Phase:** field is a single number (1–8). No multi-phase owners.  
+1. **Exclusive phase ownership** — Each design doc’s header **Phase:** field is a single number (1–9). No multi-phase owners.  
 2. **Exclusive req ownership** — Each PRD req ID appears in exactly one design doc as primary owner.  
-3. **Product-complete phases** — See [prd.md](../prd.md) §13: through Phase 7 TUI history; Phase 8 inline slash.  
+3. **Product-complete phases** — See [prd.md](../prd.md) §13: through Phase 8 TUI slash UX; Phase 9 web search.  
 4. **Cross-phase references** are allowed as *dependencies* (“builds on Phase 1 journal”) but must not re-specify the other phase’s design.
 
 ## Index by phase
@@ -92,7 +92,9 @@ Visual source of truth: [../ui.md](../ui.md). Phase 1 `surfaces` / line-mode `re
 
 **Phase 7:** tui-input-history  
 
-**Phase 8:** tui-slash-inline  
+**Phase 8:** tui-slash-inline → tui-slash-autocomplete  
+
+**Phase 9:** web-search-tool  
 
 ### Phase 6 — Connected providers (`/connect`)
 
@@ -119,6 +121,15 @@ Visual source of truth: [../ui.md](../ui.md). Phase 1 `surfaces` / line-mode `re
 | [tui-slash-autocomplete.md](./tui-slash-autocomplete.md) | **TUI-07** (8.1) | **Tab** complete; **↑/↓** suggestion highlight; **caret** + history highlight |
 
 **Phase 8 reading order:** tui-slash-inline → tui-slash-autocomplete (8.1)
+
+### Phase 9 — Built-in web search
+
+| Document | PRD reqs | Summary |
+|----------|----------|---------|
+| [web-search-tool.md](./web-search-tool.md) | **WEB-01** | `web_search` built-in; pluggable backends (mock/Tavily/Brave/Serper); network class; secure keys |
+
+**Phase 9 reading order:** web-search-tool  
+(builds on Phase 1 tool-protocol + durable-execution; Phase 2 governance when ACL/vault/sandbox enabled)
 
 ## Template
 

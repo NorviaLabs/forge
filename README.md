@@ -135,6 +135,11 @@ Native OpenAI/Anthropic/xAI HTTP adapters removed; production uses LiteLLM only.
 |-------|--------|
 | Inline `/command` in main textbox; Ctrl+K palette | [tui-slash-inline.md](./docs/designs/tui-slash-inline.md) |
 
+### Phase 9
+| Piece | Design |
+|-------|--------|
+| Built-in `web_search` tool (pluggable backends) | [web-search-tool.md](./docs/designs/web-search-tool.md) |
+
 ### Phase 4
 Full-screen UI in `forge-tui` + `forge tui` CLI entry:
 
