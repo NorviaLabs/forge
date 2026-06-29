@@ -85,7 +85,10 @@ mod tests {
         // Save for manual inspection
         let _ = std::fs::write("/tmp/forge_tui_visual_slash.txt", &text);
         assert!(
-            text.contains("connect") || text.contains("/connect") || text.contains("suggestions"),
+            text.contains("connect")
+                || text.contains("/connect")
+                || text.contains("commands")
+                || text.contains("suggestions"),
             "frame missing autocomplete:\n{text}"
         );
         assert!(text.contains("/con") || text.contains("con"), "input missing:\n{text}");

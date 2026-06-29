@@ -64,18 +64,23 @@ pub struct ModelItem {
 }
 
 pub fn default_palette_items() -> Vec<PaletteItem> {
+    // Keep in sync with `commands::parse_slash` / `help_text`.
     vec![
         PaletteItem {
             cmd: "/help".into(),
-            desc: "List commands".into(),
+            desc: "List all commands".into(),
         },
         PaletteItem {
             cmd: "/status".into(),
             desc: "Session status".into(),
         },
         PaletteItem {
-            cmd: "/resume".into(),
-            desc: "Resume session by id".into(),
+            cmd: "/connect".into(),
+            desc: "Connect xAI Grok or OpenCode Go".into(),
+        },
+        PaletteItem {
+            cmd: "/model".into(),
+            desc: "Switch provider/model".into(),
         },
         PaletteItem {
             cmd: "/tools".into(),
@@ -86,28 +91,36 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
             desc: "Context usage".into(),
         },
         PaletteItem {
+            cmd: "/journal".into(),
+            desc: "Tail journal events".into(),
+        },
+        PaletteItem {
+            cmd: "/worktree".into(),
+            desc: "status | merge | discard".into(),
+        },
+        PaletteItem {
+            cmd: "/approve".into(),
+            desc: "Approve pending HITL".into(),
+        },
+        PaletteItem {
+            cmd: "/deny".into(),
+            desc: "Deny pending HITL".into(),
+        },
+        PaletteItem {
             cmd: "/reset".into(),
             desc: "Force context handoff".into(),
         },
         PaletteItem {
-            cmd: "/approve".into(),
-            desc: "Approve HITL".into(),
+            cmd: "/compact".into(),
+            desc: "Alias for /reset".into(),
         },
         PaletteItem {
-            cmd: "/deny".into(),
-            desc: "Deny HITL".into(),
+            cmd: "/resume".into(),
+            desc: "Resume session by uuid".into(),
         },
         PaletteItem {
-            cmd: "/worktree".into(),
-            desc: "status|merge|discard".into(),
-        },
-        PaletteItem {
-            cmd: "/model".into(),
-            desc: "Switch provider/model".into(),
-        },
-        PaletteItem {
-            cmd: "/connect".into(),
-            desc: "Connect xAI Grok or OpenCode Go".into(),
+            cmd: "/cancel".into(),
+            desc: "Cancel current turn".into(),
         },
         PaletteItem {
             cmd: "/quit".into(),
@@ -619,6 +632,23 @@ mod tests {
         let items = filter_palette("app");
         assert!(items.iter().any(|i| i.cmd.contains("approve")));
         assert!(!items.iter().any(|i| i.cmd == "/quit"));
+    }
+
+    #[test]
+    fn default_palette_covers_parseable_commands() {
+        let items = default_palette_items();
+        // Every bare cmd (no required args) should parse; arg-required ones still listed.
+        for it in &items {
+            let res = parse_slash(&it.cmd).expect("is slash");
+            match it.cmd.as_str() {
+                "/resume" => assert!(res.is_err(), "bare /resume needs uuid"),
+                other => assert!(
+                    res.is_ok(),
+                    "palette cmd {other} should parse: {res:?}"
+                ),
+            }
+        }
+        assert!(items.len() >= 14, "expected full command list, got {}", items.len());
     }
 
     #[test]

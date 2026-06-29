@@ -19,7 +19,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use thiserror::Error;
 
-use crate::commands::{parse_slash, SlashCommand, WorktreeAction};
+use crate::commands::{help_text, parse_slash, SlashCommand, WorktreeAction};
 use crate::conversation::ConversationModel;
 use crate::history::InputHistory;
 use crate::layout::{is_too_small, split_areas};
@@ -302,9 +302,9 @@ impl TuiApp {
             frame.render_widget(crate::sidebar::SidebarWidget { model: &sb }, sb_area);
         }
 
-        // Notices (connect list, multi-line status) just above input
+        // Notices (help, connect list, multi-line status) just above input
         if !self.notices.is_empty() && self.overlay.is_none() {
-            let notice_h = (self.notices.len() as u16).min(6).saturating_add(1);
+            let notice_h = (self.notices.len() as u16).min(18).saturating_add(1);
             // Render into bottom of chat area
             let chat = regions.chat;
             if chat.height > notice_h {
@@ -314,7 +314,13 @@ impl TuiApp {
                     width: chat.width,
                     height: notice_h,
                 };
-                let text = self.notices.iter().take(6).cloned().collect::<Vec<_>>().join("\n");
+                let text = self
+                    .notices
+                    .iter()
+                    .take(18)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 frame.render_widget(
                     Paragraph::new(text).style(theme::muted()).block(
                         ratatui::widgets::Block::default()
@@ -326,12 +332,27 @@ impl TuiApp {
             }
         }
 
-        // Inline slash autocomplete above the input bar
+        // Inline slash autocomplete above the input bar — full list with scroll window
         if self.overlay.is_none() {
             let suggestions = self.slash_suggestions();
             if !suggestions.is_empty() && self.input.text.starts_with('/') {
-                let h = (suggestions.len() as u16).min(6).saturating_add(2);
                 let input = regions.input;
+                let n = suggestions.len();
+                let idx = self.slash_suggest_idx.min(n.saturating_sub(1));
+                // Use as much space above the input as possible (cap for readability).
+                let max_list = (input.y.saturating_sub(2)).min(16).max(1) as usize;
+                let visible = n.min(max_list);
+                // Scroll so the highlighted row stays on screen.
+                let start = if n <= visible {
+                    0
+                } else if idx < visible / 2 {
+                    0
+                } else if idx + (visible - visible / 2) >= n {
+                    n - visible
+                } else {
+                    idx - visible / 2
+                };
+                let h = (visible as u16).saturating_add(2); // +2 for borders
                 if input.y >= h {
                     let sug_area = ratatui::layout::Rect {
                         x: input.x,
@@ -339,17 +360,18 @@ impl TuiApp {
                         width: input.width,
                         height: h,
                     };
-                    let idx = self.slash_suggest_idx.min(suggestions.len().saturating_sub(1));
                     // Pad rows so background fill spans the panel width (visible selection).
                     let inner_w = sug_area.width.saturating_sub(2) as usize;
                     let lines: Vec<ratatui::text::Line> = suggestions
                         .iter()
-                        .take(6)
                         .enumerate()
+                        .skip(start)
+                        .take(visible)
                         .map(|(i, it)| {
                             let marker = if i == idx { "▶ " } else { "  " };
                             let raw = format!("{marker}{:<14} {}", it.cmd, it.desc);
-                            let mut row = raw.chars().take(inner_w.saturating_sub(1)).collect::<String>();
+                            let mut row =
+                                raw.chars().take(inner_w.saturating_sub(1)).collect::<String>();
                             while row.chars().count() < inner_w.saturating_sub(1) {
                                 row.push(' ');
                             }
@@ -361,15 +383,22 @@ impl TuiApp {
                             ratatui::text::Line::from(ratatui::text::Span::styled(row, style))
                         })
                         .collect();
+                    let title = if n > visible {
+                        format!(
+                            " commands {}–{}/{} · Tab · ↑↓ ",
+                            start + 1,
+                            start + visible,
+                            n
+                        )
+                    } else {
+                        format!(" commands ({n}) · Tab complete · ↑↓ ")
+                    };
                     frame.render_widget(
                         Paragraph::new(lines).block(
                             ratatui::widgets::Block::default()
                                 .borders(ratatui::widgets::Borders::ALL)
                                 .border_style(theme::brand())
-                                .title(ratatui::text::Span::styled(
-                                    " suggestions · Tab complete · ↑↓ ",
-                                    theme::brand(),
-                                )),
+                                .title(ratatui::text::Span::styled(title, theme::brand())),
                         ),
                         sug_area,
                     );
@@ -583,88 +612,180 @@ impl TuiApp {
             match cmd_res {
                 Ok(SlashCommand::Quit) => {
                     self.should_quit = true;
+                    self.status_message = "quitting…".into();
                 }
-                Ok(SlashCommand::Help { .. }) => {
-                    self.status_message =
-                        "type /command in the textbox · Ctrl+K opens command list".into();
+                Ok(SlashCommand::Help { cmd }) => {
+                    if let Some(name) = cmd {
+                        // Point at one entry if possible
+                        let needle = name.trim_start_matches('/').to_ascii_lowercase();
+                        let hits: Vec<String> = filter_palette(&needle)
+                            .into_iter()
+                            .map(|i| format!("{}  —  {}", i.cmd, i.desc))
+                            .collect();
+                        if hits.is_empty() {
+                            self.status_message = format!("unknown help topic: {name}");
+                            self.notices = vec![
+                                format!("No command matching `{name}`."),
+                                "Type /help for the full list.".into(),
+                            ];
+                        } else {
+                            self.status_message = format!("help: {name}");
+                            self.notices = hits;
+                        }
+                    } else {
+                        self.status_message =
+                            "commands listed below · type /cmd · Ctrl+K palette".into();
+                        self.notices = help_text()
+                            .lines()
+                            .map(|s| s.to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect();
+                    }
                 }
                 Ok(SlashCommand::Status) => {
-                    self.status_message = format!(
-                        "session={} status={:?} tools={}",
+                    let msg = format!(
+                        "session={} status={:?} tools={} model={} provider={}",
                         self.session.session_id,
                         self.session.status,
-                        self.session.list_tools().len()
+                        self.session.list_tools().len(),
+                        self.runtime.model_label,
+                        self.runtime.provider,
                     );
+                    self.status_message = msg.clone();
+                    self.notices = vec![msg];
                 }
                 Ok(SlashCommand::Tools) => {
-                    self.status_message = self.session.list_tools().join(", ");
+                    let tools = self.session.list_tools();
+                    if tools.is_empty() {
+                        self.status_message = "no tools registered".into();
+                        self.notices = vec![
+                            "No tools are registered on this session.".into(),
+                            "Tools appear when the agent runtime attaches them.".into(),
+                        ];
+                    } else {
+                        self.status_message = format!("{} tools", tools.len());
+                        self.notices = tools;
+                    }
                 }
                 Ok(SlashCommand::Cost) => {
-                    self.status_message = format!(
-                        "ctx {:.1}%",
-                        self.session.context_usage_ratio() * 100.0
-                    );
+                    let pct = self.session.context_usage_ratio() * 100.0;
+                    let msg = format!("context usage {pct:.1}%");
+                    self.status_message = msg.clone();
+                    self.notices = vec![msg];
                 }
                 Ok(SlashCommand::Approve) => {
-                    self.session
-                        .resolve_hitl(HitlDecision::Approve, "tui")
-                        .await?;
+                    if self.session.pending_hitl.is_none() {
+                        self.status_message = "no pending HITL to approve".into();
+                        self.notices = vec!["No human-in-the-loop request is waiting.".into()];
+                    } else {
+                        self.session
+                            .resolve_hitl(HitlDecision::Approve, "tui")
+                            .await?;
+                        self.status_message = "approved".into();
+                        self.notices = vec!["HITL approved.".into()];
+                    }
                 }
                 Ok(SlashCommand::Deny) => {
-                    self.session
-                        .resolve_hitl(HitlDecision::Deny, "tui")
-                        .await?;
+                    if self.session.pending_hitl.is_none() {
+                        self.status_message = "no pending HITL to deny".into();
+                        self.notices = vec!["No human-in-the-loop request is waiting.".into()];
+                    } else {
+                        self.session
+                            .resolve_hitl(HitlDecision::Deny, "tui")
+                            .await?;
+                        self.status_message = "denied".into();
+                        self.notices = vec!["HITL denied.".into()];
+                    }
                 }
                 Ok(SlashCommand::Reset) | Ok(SlashCommand::Compact) => {
                     self.session.force_context_reset_async().await?;
                     self.status_message = "context reset".into();
+                    self.notices = vec!["Context handoff reset completed.".into()];
                 }
                 Ok(SlashCommand::Model { provider, model }) => {
                     if provider.is_none() && model.is_none() {
                         self.overlay = Some(Overlay::model_open());
+                        self.status_message = "pick a model".into();
                     } else {
-                        self.status_message = format!(
-                            "model {:?} {:?} — restart to apply",
-                            provider, model
+                        let msg = format!(
+                            "model provider={provider:?} model={model:?} — set via /connect or restart to apply"
                         );
+                        self.status_message = msg.clone();
+                        self.notices = vec![msg];
                     }
                 }
                 Ok(SlashCommand::Worktree { action }) => match action {
                     WorktreeAction::Status => {
-                        self.status_message = self
+                        let msg = self
                             .session
                             .worktree_status()
                             .unwrap_or_else(|| "worktree off".into());
+                        self.status_message = msg.clone();
+                        self.notices = vec![
+                            msg,
+                            "Usage: /worktree status | merge | discard --yes".into(),
+                        ];
                     }
                     WorktreeAction::Merge => {
                         self.session.worktree_merge()?;
                         self.status_message = "worktree merged".into();
+                        self.notices = vec!["Worktree merged into the main checkout.".into()];
                     }
                     WorktreeAction::Discard { confirm } => {
                         if confirm {
                             self.session.worktree_discard()?;
                             self.status_message = "worktree discarded".into();
+                            self.notices = vec!["Worktree discarded.".into()];
                         } else {
-                            self.status_message = "use /worktree discard --yes".into();
+                            self.status_message = "confirm discard with --yes".into();
+                            self.notices = vec![
+                                "Usage: /worktree discard --yes".into(),
+                                "This permanently discards the session worktree.".into(),
+                            ];
                         }
                     }
                 },
-                Ok(SlashCommand::Journal { .. }) => {
+                Ok(SlashCommand::Journal { tail }) => {
                     let n = self.session.events.len();
-                    self.status_message = format!("{n} recent events in sidebar");
+                    let take = tail.unwrap_or(12).min(n).min(20);
+                    self.status_message = format!("{n} events · showing last {take}");
+                    if n == 0 {
+                        self.notices = vec!["Journal is empty for this session.".into()];
+                    } else {
+                        self.notices = self
+                            .session
+                            .events
+                            .iter()
+                            .rev()
+                            .take(take)
+                            .map(|e| format!("{e:?}"))
+                            .collect::<Vec<_>>()
+                            .into_iter()
+                            .rev()
+                            .collect();
+                    }
                 }
                 Ok(SlashCommand::Resume { session_id }) => {
-                    self.status_message =
-                        format!("resume {session_id} — restart forge tui --resume");
+                    let msg = format!(
+                        "To resume {session_id}, restart: forge tui --resume {session_id}"
+                    );
+                    self.status_message = "resume requires CLI restart".into();
+                    self.notices = vec![msg];
                 }
                 Ok(SlashCommand::Cancel) => {
                     self.status_message = "cancel".into();
+                    self.notices = vec![
+                        "Cancel requested.".into(),
+                        "If a turn is running, it will stop at the next safe point.".into(),
+                    ];
                 }
                 Ok(SlashCommand::Connect(action)) => {
                     self.handle_connect(action);
                 }
                 Err(e) => {
-                    self.status_message = e.to_string();
+                    let msg = e.to_string();
+                    self.status_message = msg.clone();
+                    self.notices = vec![msg, "Type /help for commands.".into()];
                 }
             }
             return Ok(());
@@ -1181,6 +1302,104 @@ mod tests {
             "input should be cleared after run, got {:?}",
             app.input.text
         );
+    }
+
+    #[tokio::test]
+    async fn bare_slash_lists_all_palette_commands() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "m".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "0.8.0".into(),
+            },
+        );
+        app.handle_key(press(KeyCode::Char('/'), KeyModifiers::NONE))
+            .await
+            .unwrap();
+        let suggestions = app.slash_suggestions();
+        let expected = crate::overlays::default_palette_items();
+        assert_eq!(
+            suggestions.len(),
+            expected.len(),
+            "bare / should list every palette command; got {:?}",
+            suggestions.iter().map(|s| &s.cmd).collect::<Vec<_>>()
+        );
+        for cmd in [
+            "/help",
+            "/status",
+            "/connect",
+            "/model",
+            "/tools",
+            "/cost",
+            "/journal",
+            "/worktree",
+            "/approve",
+            "/deny",
+            "/reset",
+            "/compact",
+            "/resume",
+            "/cancel",
+            "/quit",
+        ] {
+            assert!(
+                suggestions.iter().any(|s| s.cmd == cmd),
+                "missing {cmd} in suggestions"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn help_command_fills_notices_with_full_list() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "m".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "0.8.0".into(),
+            },
+        );
+        for c in "/help".chars() {
+            app.handle_key(press(KeyCode::Char(c), KeyModifiers::NONE))
+                .await
+                .unwrap();
+        }
+        app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert!(
+            app.notices.len() > 5,
+            "help should populate multi-line notices, got {:?}",
+            app.notices
+        );
+        assert!(
+            app.notices.iter().any(|l| l.contains("/connect"))
+                && app.notices.iter().any(|l| l.contains("/status")),
+            "help notices missing expected commands: {:?}",
+            app.notices
+        );
+    }
+
+    #[tokio::test]
+    async fn approve_without_hitl_is_graceful() {
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "m".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "0.8.0".into(),
+            },
+        );
+        app.dispatch_line("/approve").await.unwrap();
+        assert!(app.status_message.contains("no pending"));
     }
 
     #[tokio::test]
