@@ -31,6 +31,8 @@ mod tests {
                 isolation: IsolationMode::Off,
                 enable_context_lifecycle: true,
                 enable_governance: true,
+
+            ..Default::default()
             },
             model,
             ToolRegistry::new(),

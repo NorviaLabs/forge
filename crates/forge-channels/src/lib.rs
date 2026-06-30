@@ -132,6 +132,8 @@ impl ChannelGateway {
                         isolation: IsolationMode::Off,
                         enable_context_lifecycle: true,
                         enable_governance: true,
+
+                    ..Default::default()
                     },
                     self.model.clone(),
                     tools,

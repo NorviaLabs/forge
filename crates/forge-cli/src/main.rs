@@ -629,6 +629,8 @@ async fn open_session(
         },
         enable_context_lifecycle: true,
         enable_governance: true,
+        web_search: cfg.tools.web_search.clone(),
+        ..Default::default()
     };
 
     let session = if let Some(id) = resume {

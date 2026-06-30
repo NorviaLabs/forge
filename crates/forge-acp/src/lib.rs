@@ -134,6 +134,8 @@ impl AcpServer {
                     isolation: IsolationMode::Off,
                     enable_context_lifecycle: true,
                     enable_governance: true,
+
+                ..Default::default()
                 },
                 self.model.clone(),
                 ToolRegistry::new(),
@@ -236,6 +238,8 @@ pub async fn open_mock_handle(workspace: PathBuf, journal_dir: PathBuf) -> Resul
             isolation: IsolationMode::Off,
             enable_context_lifecycle: true,
             enable_governance: true,
+
+        ..Default::default()
         },
         model,
         ToolRegistry::new(),
