@@ -217,6 +217,146 @@ fn default_mcp_transport() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TuiConfig {}
 
+/// Phase 9 — `[tools.web_search]` (WEB-01).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum WebSearchProvider {
+    #[default]
+    Mock,
+    Tavily,
+    Brave,
+    Serper,
+}
+
+impl WebSearchProvider {
+    pub fn parse(s: &str) -> Result<Self, ConfigError> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "mock" => Ok(Self::Mock),
+            "tavily" => Ok(Self::Tavily),
+            "brave" => Ok(Self::Brave),
+            "serper" => Ok(Self::Serper),
+            other => Err(ConfigError::Message(format!(
+                "invalid web_search provider `{other}` (expected mock|tavily|brave|serper)"
+            ))),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Mock => "mock",
+            Self::Tavily => "tavily",
+            Self::Brave => "brave",
+            Self::Serper => "serper",
+        }
+    }
+
+    /// Default env var name for the provider API key (mock has none).
+    pub fn default_api_key_env(self) -> Option<&'static str> {
+        match self {
+            Self::Mock => None,
+            Self::Tavily => Some("TAVILY_API_KEY"),
+            Self::Brave => Some("BRAVE_API_KEY"),
+            Self::Serper => Some("SERPER_API_KEY"),
+        }
+    }
+
+    pub fn needs_api_key(self) -> bool {
+        !matches!(self, Self::Mock)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebSearchConfig {
+    #[serde(default = "default_web_search_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub provider: WebSearchProvider,
+    /// Env var that holds the API key (ignored for mock).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_env: Option<String>,
+    #[serde(default = "default_web_search_max_results")]
+    pub max_results: u32,
+    #[serde(default = "default_web_search_timeout_ms")]
+    pub timeout_ms: u64,
+    /// If true and provider needs a key that is missing, do not register the tool.
+    #[serde(default = "default_web_search_require_key")]
+    pub require_key: bool,
+    #[serde(default = "default_web_search_max_query_chars")]
+    pub max_query_chars: u32,
+}
+
+fn default_web_search_enabled() -> bool {
+    true
+}
+fn default_web_search_max_results() -> u32 {
+    8
+}
+fn default_web_search_timeout_ms() -> u64 {
+    15_000
+}
+fn default_web_search_require_key() -> bool {
+    true
+}
+fn default_web_search_max_query_chars() -> u32 {
+    512
+}
+
+impl Default for WebSearchConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_web_search_enabled(),
+            provider: WebSearchProvider::Mock,
+            api_key_env: None,
+            max_results: default_web_search_max_results(),
+            timeout_ms: default_web_search_timeout_ms(),
+            require_key: default_web_search_require_key(),
+            max_query_chars: default_web_search_max_query_chars(),
+        }
+    }
+}
+
+impl WebSearchConfig {
+    /// Env name used to resolve the API key for the active provider.
+    pub fn resolved_api_key_env(&self) -> Option<String> {
+        if let Some(ref e) = self.api_key_env {
+            if !e.is_empty() {
+                return Some(e.clone());
+            }
+        }
+        self.provider.default_api_key_env().map(str::to_string)
+    }
+
+    /// Whether `web_search` should be registered in the tool catalog.
+    pub fn should_register(&self) -> bool {
+        if !self.enabled {
+            return false;
+        }
+        if !self.provider.needs_api_key() {
+            return true;
+        }
+        if !self.require_key {
+            return true;
+        }
+        self.api_key_present()
+    }
+
+    /// True if the configured API key env var is set and non-empty.
+    pub fn api_key_present(&self) -> bool {
+        let Some(env_name) = self.resolved_api_key_env() else {
+            return false;
+        };
+        env::var(env_name)
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ToolsConfig {
+    #[serde(default)]
+    pub web_search: WebSearchConfig,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// Optional; if unset/relative ".", resolved to process cwd at load time.
@@ -230,6 +370,9 @@ pub struct Config {
     pub mcp: McpSection,
     #[serde(default)]
     pub tui: TuiConfig,
+    /// Phase 9 tool settings.
+    #[serde(default)]
+    pub tools: ToolsConfig,
     /// Resolved absolute workspace path (not from TOML alone).
     #[serde(skip)]
     pub resolved_workspace: PathBuf,
@@ -256,6 +399,7 @@ impl Default for Config {
             journal: JournalConfig::default(),
             mcp: McpSection::default(),
             tui: TuiConfig::default(),
+            tools: ToolsConfig::default(),
             resolved_workspace: cwd,
         }
     }
@@ -332,6 +476,23 @@ struct ConfigFile {
     journal: Option<JournalConfig>,
     mcp: Option<McpSection>,
     tui: Option<TuiConfig>,
+    tools: Option<ToolsConfigFile>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ToolsConfigFile {
+    web_search: Option<WebSearchConfigFile>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct WebSearchConfigFile {
+    enabled: Option<bool>,
+    provider: Option<String>,
+    api_key_env: Option<String>,
+    max_results: Option<u32>,
+    timeout_ms: Option<u64>,
+    require_key: Option<bool>,
+    max_query_chars: Option<u32>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -390,6 +551,37 @@ impl ConfigFile {
         if let Some(tui) = self.tui {
             cfg.tui = tui;
         }
+        if let Some(tools) = self.tools {
+            if let Some(ws) = tools.web_search {
+                apply_web_search_file(&mut cfg.tools.web_search, ws);
+            }
+        }
+    }
+}
+
+fn apply_web_search_file(dst: &mut WebSearchConfig, src: WebSearchConfigFile) {
+    if let Some(e) = src.enabled {
+        dst.enabled = e;
+    }
+    if let Some(p) = src.provider {
+        if let Ok(prov) = WebSearchProvider::parse(&p) {
+            dst.provider = prov;
+        }
+    }
+    if src.api_key_env.is_some() {
+        dst.api_key_env = src.api_key_env;
+    }
+    if let Some(n) = src.max_results {
+        dst.max_results = n.max(1);
+    }
+    if let Some(t) = src.timeout_ms {
+        dst.timeout_ms = t;
+    }
+    if let Some(r) = src.require_key {
+        dst.require_key = r;
+    }
+    if let Some(m) = src.max_query_chars {
+        dst.max_query_chars = m.max(1);
     }
 }
 
@@ -459,6 +651,35 @@ fn apply_env(cfg: &mut Config) -> Result<(), ConfigError> {
         if let Ok(n) = t.parse() {
             cfg.model.litellm.startup_timeout_secs = n;
         }
+    }
+    // Phase 9 — web_search
+    if let Ok(v) = env::var("FORGE_WEB_SEARCH_ENABLED") {
+        cfg.tools.web_search.enabled = matches!(
+            v.to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        );
+    }
+    if let Ok(p) = env::var("FORGE_WEB_SEARCH_PROVIDER") {
+        cfg.tools.web_search.provider = WebSearchProvider::parse(&p)?;
+    }
+    if let Ok(e) = env::var("FORGE_WEB_SEARCH_API_KEY_ENV") {
+        cfg.tools.web_search.api_key_env = Some(e);
+    }
+    if let Ok(n) = env::var("FORGE_WEB_SEARCH_MAX_RESULTS") {
+        if let Ok(n) = n.parse::<u32>() {
+            cfg.tools.web_search.max_results = n.max(1);
+        }
+    }
+    if let Ok(t) = env::var("FORGE_WEB_SEARCH_TIMEOUT_MS") {
+        if let Ok(t) = t.parse::<u64>() {
+            cfg.tools.web_search.timeout_ms = t;
+        }
+    }
+    if let Ok(v) = env::var("FORGE_WEB_SEARCH_REQUIRE_KEY") {
+        cfg.tools.web_search.require_key = matches!(
+            v.to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        );
     }
     Ok(())
 }
@@ -534,6 +755,15 @@ mod tests {
         "FORGE_LITELLM_LIFECYCLE",
         "FORGE_LITELLM_REQUEST_TIMEOUT_SECS",
         "FORGE_LITELLM_STARTUP_TIMEOUT_SECS",
+        "FORGE_WEB_SEARCH_ENABLED",
+        "FORGE_WEB_SEARCH_PROVIDER",
+        "FORGE_WEB_SEARCH_API_KEY_ENV",
+        "FORGE_WEB_SEARCH_MAX_RESULTS",
+        "FORGE_WEB_SEARCH_TIMEOUT_MS",
+        "FORGE_WEB_SEARCH_REQUIRE_KEY",
+        "TAVILY_API_KEY",
+        "BRAVE_API_KEY",
+        "SERPER_API_KEY",
     ];
 
     /// Clears FORGE_* env vars for the duration of a test; restores on drop.
@@ -735,5 +965,91 @@ model = "from-file"
         })
         .unwrap();
         assert_eq!(cfg.journal_dir(), dir.path().join("j"));
+    }
+
+    #[test]
+    fn web_search_defaults_to_enabled_mock() {
+        let _g = EnvGuard::clear_forge_env();
+        let cfg = Config::load(ConfigOverrides::default()).unwrap();
+        assert!(cfg.tools.web_search.enabled);
+        assert_eq!(cfg.tools.web_search.provider, WebSearchProvider::Mock);
+        assert_eq!(cfg.tools.web_search.max_results, 8);
+        assert_eq!(cfg.tools.web_search.timeout_ms, 15_000);
+        assert!(cfg.tools.web_search.require_key);
+        assert!(cfg.tools.web_search.should_register());
+    }
+
+    #[test]
+    fn web_search_toml_section() {
+        let _g = EnvGuard::clear_forge_env();
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("forge.toml");
+        fs::write(
+            &path,
+            r#"
+[tools.web_search]
+enabled = true
+provider = "tavily"
+api_key_env = "MY_TAVILY"
+max_results = 3
+timeout_ms = 9000
+require_key = false
+max_query_chars = 200
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load(ConfigOverrides {
+            config_path: Some(path),
+            ..Default::default()
+        })
+        .unwrap();
+        let ws = &cfg.tools.web_search;
+        assert!(ws.enabled);
+        assert_eq!(ws.provider, WebSearchProvider::Tavily);
+        assert_eq!(ws.api_key_env.as_deref(), Some("MY_TAVILY"));
+        assert_eq!(ws.max_results, 3);
+        assert_eq!(ws.timeout_ms, 9000);
+        assert!(!ws.require_key);
+        assert_eq!(ws.max_query_chars, 200);
+        assert_eq!(ws.resolved_api_key_env().as_deref(), Some("MY_TAVILY"));
+    }
+
+    #[test]
+    fn web_search_env_overrides() {
+        let g = EnvGuard::clear_forge_env();
+        g.set("FORGE_WEB_SEARCH_ENABLED", "false");
+        g.set("FORGE_WEB_SEARCH_PROVIDER", "brave");
+        g.set("FORGE_WEB_SEARCH_MAX_RESULTS", "2");
+        let cfg = Config::load(ConfigOverrides::default()).unwrap();
+        assert!(!cfg.tools.web_search.enabled);
+        assert_eq!(cfg.tools.web_search.provider, WebSearchProvider::Brave);
+        assert_eq!(cfg.tools.web_search.max_results, 2);
+        assert!(!cfg.tools.web_search.should_register());
+    }
+
+    #[test]
+    fn web_search_require_key_gates_live_provider() {
+        let g = EnvGuard::clear_forge_env();
+        let mut ws = WebSearchConfig {
+            enabled: true,
+            provider: WebSearchProvider::Tavily,
+            require_key: true,
+            ..Default::default()
+        };
+        assert!(!ws.should_register());
+        g.set("TAVILY_API_KEY", "secret-test-key");
+        assert!(ws.should_register());
+        ws.require_key = false;
+        env::remove_var("TAVILY_API_KEY");
+        assert!(ws.should_register());
+    }
+
+    #[test]
+    fn web_search_provider_parse() {
+        assert_eq!(
+            WebSearchProvider::parse("TAVILY").unwrap(),
+            WebSearchProvider::Tavily
+        );
+        assert!(WebSearchProvider::parse("bing").is_err());
     }
 }
