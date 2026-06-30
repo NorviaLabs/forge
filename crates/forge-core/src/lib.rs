@@ -7,7 +7,10 @@ use forge_context::ContextEngine;
 use forge_durable::{new_session_id, Journal};
 use forge_governance::{AuditEvent, Governance};
 use forge_model::{ModelClient, ModelRequest};
-use forge_tools::{default_builtins, ToolContext, ToolError, ToolRegistry, ValidationBudget};
+use forge_config::WebSearchConfig;
+use forge_tools::{
+    default_builtins_with_web_search, ToolContext, ToolError, ToolRegistry, ValidationBudget,
+};
 use forge_types::{
     HitlDecision, HitlPayload, Message, MessageRole, ModelResponse, PolicyDecision, SessionId,
     SessionStatus, SideEffectClass, ToolCall, ToolOutput,
@@ -45,6 +48,8 @@ pub struct LoopConfig {
     pub isolation: IsolationMode,
     pub enable_context_lifecycle: bool,
     pub enable_governance: bool,
+    /// Phase 9 — controls registration of `web_search` (WEB-01).
+    pub web_search: WebSearchConfig,
 }
 
 impl Default for LoopConfig {
@@ -56,6 +61,7 @@ impl Default for LoopConfig {
             isolation: IsolationMode::Off,
             enable_context_lifecycle: true,
             enable_governance: true,
+            web_search: WebSearchConfig::default(),
         }
     }
 }
@@ -90,7 +96,7 @@ impl AgentSession {
         model: Arc<dyn ModelClient>,
         mut tools: ToolRegistry,
     ) -> Result<Self, LoopError> {
-        for t in default_builtins() {
+        for t in default_builtins_with_web_search(&loop_cfg.web_search) {
             if tools.get(t.name()).is_none() {
                 tools.register(t);
             }
@@ -145,7 +151,7 @@ impl AgentSession {
         mut tools: ToolRegistry,
         session_id: SessionId,
     ) -> Result<Self, LoopError> {
-        for t in default_builtins() {
+        for t in default_builtins_with_web_search(&loop_cfg.web_search) {
             if tools.get(t.name()).is_none() {
                 tools.register(t);
             }
@@ -658,7 +664,42 @@ mod tests {
             isolation: IsolationMode::Off,
             enable_context_lifecycle: true,
             enable_governance: true,
+            ..Default::default()
         }
+    }
+
+    #[tokio::test]
+    async fn session_registers_web_search_with_default_config() {
+        let dir = tempdir().unwrap();
+        let model = Arc::new(MockModelClient::script(vec![ModelResponse {
+            text: "ok".into(),
+            tool_calls: vec![],
+            usage: None,
+        }]));
+        let s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        let names = s.list_tools();
+        assert!(
+            names.iter().any(|n| n == "web_search"),
+            "expected web_search in {names:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_omits_web_search_when_disabled() {
+        let dir = tempdir().unwrap();
+        let model = Arc::new(MockModelClient::script(vec![ModelResponse {
+            text: "ok".into(),
+            tool_calls: vec![],
+            usage: None,
+        }]));
+        let mut cfg = base_cfg(dir.path());
+        cfg.web_search.enabled = false;
+        let s = AgentSession::create(cfg, model, ToolRegistry::new())
+            .await
+            .unwrap();
+        assert!(!s.list_tools().iter().any(|n| n == "web_search"));
     }
 
     #[tokio::test]

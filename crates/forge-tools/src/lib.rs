@@ -1,12 +1,20 @@
 //! Tool protocol (tool-protocol.md) — CORE-01.
+//! Phase 9: `web_search` (WEB-01) — see `web_search` module.
 
 mod builtins;
 mod registry;
 mod validation;
+pub mod web_search;
 
-pub use builtins::{default_builtins, BashTool, GrepTool, ReadFileTool, WriteFileTool};
+pub use builtins::{
+    default_builtins, default_builtins_with_web_search, BashTool, GrepTool, ReadFileTool,
+    WriteFileTool,
+};
 pub use registry::{ToolContext, ToolRegistry};
 pub use validation::{validate_args, ValidationBudget};
+pub use web_search::{
+    should_register_web_search, web_search_tool, WebSearchArgs, WebSearchTool,
+};
 
 use async_trait::async_trait;
 use forge_types::{SideEffectClass, ToolDescriptor, ToolOutput, ToolValidationError};

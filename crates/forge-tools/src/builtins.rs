@@ -227,6 +227,8 @@ impl Tool for GrepTool {
     }
 }
 
+/// Phase 1 workspace tools only (no web_search). Prefer
+/// [`default_builtins_with_web_search`] when config is available.
 pub fn default_builtins() -> Vec<std::sync::Arc<dyn Tool>> {
     vec![
         std::sync::Arc::new(ReadFileTool),
@@ -234,6 +236,17 @@ pub fn default_builtins() -> Vec<std::sync::Arc<dyn Tool>> {
         std::sync::Arc::new(BashTool),
         std::sync::Arc::new(GrepTool),
     ]
+}
+
+/// Phase 1 built-ins plus optional Phase 9 `web_search` when config allows.
+pub fn default_builtins_with_web_search(
+    web_search: &forge_config::WebSearchConfig,
+) -> Vec<std::sync::Arc<dyn Tool>> {
+    let mut tools = default_builtins();
+    if let Some(t) = crate::web_search::web_search_tool(web_search) {
+        tools.push(t);
+    }
+    tools
 }
 
 #[cfg(test)]
@@ -266,5 +279,24 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(out.content, "xyz");
+    }
+
+    #[test]
+    fn default_builtins_with_web_search_includes_mock() {
+        let cfg = forge_config::WebSearchConfig::default();
+        let tools = default_builtins_with_web_search(&cfg);
+        assert!(tools.iter().any(|t| t.name() == "web_search"));
+        assert!(tools.iter().any(|t| t.name() == "read_file"));
+    }
+
+    #[test]
+    fn default_builtins_omits_web_search_when_disabled() {
+        let cfg = forge_config::WebSearchConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        let tools = default_builtins_with_web_search(&cfg);
+        assert!(!tools.iter().any(|t| t.name() == "web_search"));
+        assert_eq!(tools.len(), default_builtins().len());
     }
 }
