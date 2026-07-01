@@ -1,10 +1,10 @@
 # Forge — TUI UI reference
 
-**Version:** 0.4  
-**Status:** Draft mockups — Phase 4 base; **Phase 8 / 8.1 input & autocomplete**  
+**Version:** 0.5  
+**Status:** Draft mockups — Phase 4 base; Phase 8 / 8.1 input; **Phase 10 operator visibility**  
 **Owner:** Mohit Ranka  
 **Last updated:** 23 Jul 2026  
-**Related:** [prd.md](./prd.md) · [architecture.md](./architecture.md) · [designs/README.md](./designs/README.md) · Phase 4 TUI designs · Phase 8: [tui-slash-inline](./designs/tui-slash-inline.md) · [tui-slash-autocomplete](./designs/tui-slash-autocomplete.md)
+**Related:** [prd.md](./prd.md) · [architecture.md](./architecture.md) · [designs/README.md](./designs/README.md) · Phase 4 TUI designs · Phase 8: [tui-slash-inline](./designs/tui-slash-inline.md) · [tui-slash-autocomplete](./designs/tui-slash-autocomplete.md) · Phase 10: [tui-status-feedback](./designs/tui-status-feedback.md) · [tui-session-chrome](./designs/tui-session-chrome.md) · [tui-activity-feed](./designs/tui-activity-feed.md)
 
 ---
 
@@ -39,14 +39,16 @@ done
 
 | Element | Intent |
 |---------|--------|
-| **Status bar** | Brand, session status pill, session id, model, context %, worktree flag |
-| **Main chat** | User / assistant / system / tool cards; streaming cursor |
-| **Sidebar** | Session metadata, context meter, ACL summary, live journal tail |
+| **Status bar** | Brand, status pill (incl. progressive busy), session id, **provider · model**, context % (threshold colors), worktree; optional profile/search (Phase 10) |
+| **Main chat** | User / assistant / system / tool cards; streaming cursor; **error banners** for model/system failures (Phase 10) |
+| **Sidebar** | Session metadata, context meter, ACL summary; **ACTIVITY feed** (Phase 10) |
+| **Feedback strip** | Always-visible latest status/error line between chat and input (Phase 10 / TUI-08) |
+| **Notices** | Multi-line help / connect lists above feedback when needed |
 | **Input** | `❯` prompt; **visible caret**; type `/command` inline (Phase 8); key hints (`Tab` complete · `Ctrl+K` list · `↑↓` history/suggest) |
 | **Slash suggestions** | Panel above input while typing `/…` (Phase 8.1); **one row highlighted**; Tab applies |
 | **Modals / palette** | HITL approval; full command palette (Ctrl+K); connect OAuth/API-key overlays |
-| **Color cues** | Teal accent (forge), blue info, amber warn/HITL, red deny/error, green ok; **highlight = brand bold / reverse** |
-| **Security UX** | Redact secrets; show tool names + safe args; offload large payloads as URIs; do not autocomplete secrets |
+| **Color cues** | Teal accent (forge), blue info, amber warn/HITL, red deny/error, green ok; **highlight = brand bold / reverse**; ctx gauge warn/danger thresholds |
+| **Security UX** | Redact secrets; show tool names + safe args; offload large payloads as URIs; do not autocomplete secrets; no keys in feedback/activity |
 
 **Chrome note:** Window traffic lights are mock presentation only. The real TUI is full-terminal (ratatui), not an embedded app window—layout regions map 1:1 to terminal panels.
 
@@ -70,6 +72,8 @@ done
 | 12 | Validation error | Schema reject + retry | [12-error-validation](./ui/images/12-error-validation.png) |
 | **13** | **Slash autocomplete** | Phase **8.1** Tab + highlight | ASCII wireframe below (PNG optional) |
 | **14** | **History recall** | Phase 7 + caret | ASCII wireframe below |
+| **15** | **Session chrome + feedback** | Phase **10** TUI-08/09 | ASCII wireframe below |
+| **16** | **Activity + rate-limit error** | Phase **10** TUI-08/10 | ASCII wireframe below |
 
 ---
 
@@ -242,6 +246,64 @@ The HTML palette mockup (`07-slash-commands`) may omit newer commands until re-r
 
 ---
 
+### 15. Session chrome + feedback strip (Phase 10)
+
+**When:** Idle or mid-session; operator needs ambient identity and last system line.  
+**PRD:** TUI-08 · TUI-09 · [tui-session-chrome.md](./designs/tui-session-chrome.md) · [tui-status-feedback.md](./designs/tui-status-feedback.md).
+
+```text
+┌─ FORGE │ idle │ sess a1b2c3d4 │ litellm · xai/grok-3 │ ctx 34% │ wt off ─┐
+│ chat …                                                                   │
+│                                                                          │
+│ (notices optional)                                                       │
+├─ feedback: Connected xai · model xai/grok-3 ────────────────────────────┤
+├─ ❯ █ ────────────────────────────────────────────────────────────────────┤
+│ 0.12.0  cwd ~/proj  │ /help · Esc · Ctrl+C                               │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+**UI requirements**
+
+- Status shows **provider · model** together (not only model on status and provider on footer).  
+- Context % with warn/danger color thresholds (≥70% / ≥90%).  
+- Feedback strip always shows latest non-empty `status_message` / feedback.  
+- Narrow (&lt;80 cols): sidebar may hide; **model + ctx remain** on status.  
+- Optional second status tokens: connect profile, web search backend, tool count.
+
+---
+
+### 16. Activity feed + rate-limit error (Phase 10)
+
+**When:** Model call fails (e.g. HTTP 429) or multi-step turn runs tools.  
+**PRD:** TUI-08 · TUI-10 · [tui-activity-feed.md](./designs/tui-activity-feed.md).
+
+```text
+┌─ FORGE │ idle │ … │ litellm · grok │ ctx 34% │ wt off ───────────────────┐
+│ YOU                                                                      │
+│   summarize latest serde docs                                            │
+│                                                                          │
+│ ┌ error ───────────────────────────────────────────────────────────────┐ │
+│ │ Model error: rate limited (HTTP 429). Wait and retry, or /model.     │ │
+│ └──────────────────────────────────────────────────────────────────────┘ │
+│                                              │ ACTIVITY                  │
+│                                              │ 12:04 model call started  │
+│                                              │ 12:05 model error · 429   │
+├─ ! Model error: rate limited (HTTP 429). Wait and retry, or /model. ────┤
+├─ ❯ █ ────────────────────────────────────────────────────────────────────┤
+│ footer …                                                                 │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+**UI requirements**
+
+- Chat **error banner** durable in scrollback.  
+- Feedback strip repeats short error (severity).  
+- Sidebar ACTIVITY lists chronological steps (wide layout).  
+- Progressive busy while waiting: status pill `running · model` (or `running · tool:web_search`).  
+- No API keys or secrets in any of the three surfaces.
+
+---
+
 ### 8. Model switch
 
 **When:** `/model` — provider change without rewriting tools or journal schemas.  
@@ -317,21 +379,24 @@ The HTML palette mockup (`07-slash-commands`) may omit newer commands until re-r
 
 ```text
 ┌──────────────────────────────────────────────────────────────┐
-│ status bar: brand · status · session · model · ctx · flags   │
+│ status: brand · pill · sess · provider · model · ctx · flags │
 ├────────────────────────────────────────────┬─────────────────┤
 │                                            │ sidebar         │
-│  messages / tool cards / banners           │  session        │
+│  messages / tool cards / error banners     │  session        │
 │                                            │  budget meter   │
-│                                            │  ACL / journal  │
+│                                            │  ACL            │
+│                                            │  ACTIVITY feed  │
 ├────────────────────────────────────────────┤                 │
+│  notices (optional multi-line)             │                 │
+│  feedback strip (latest status / error)    │                 │
 │  input ❯  + key hints                      │                 │
 ├────────────────────────────────────────────┴─────────────────┤
-│ footer: version · cwd · provider · req tags                  │
+│ footer: version · cwd · key hints                            │
 └──────────────────────────────────────────────────────────────┘
          overlays: HITL modal · slash palette · pickers
 ```
 
-Suggested ratatui split: top `Paragraph`/spans status; horizontal split chat | sidebar; bottom input; centered modal layer when active.
+Suggested ratatui split: top status (1–2 rows); horizontal chat | sidebar; notices + **feedback** + input; footer; centered modal layer when active.
 
 ---
 
@@ -346,8 +411,9 @@ Suggested ratatui split: top `Paragraph`/spans status; horizontal split chat | s
 
 ## Related docs
 
-- Product requirements: [prd.md](./prd.md) (Phase 4 / TUI-01…04)  
-- Architecture & flows: [architecture.md](./architecture.md) §14 Phase 4  
+- Product requirements: [prd.md](./prd.md) (Phase 4 TUI-01…04; Phase 10 TUI-08…10)  
+- Architecture & flows: [architecture.md](./architecture.md) §14 Phase 4 / Phase 10  
 - Design docs: [designs/README.md](./designs/README.md)  
 - Phase 4 designs: [tui-shell](./designs/tui-shell.md) · [tui-conversation](./designs/tui-conversation.md) · [tui-sidebar](./designs/tui-sidebar.md) · [tui-overlays](./designs/tui-overlays.md)  
+- Phase 10 designs: [tui-status-feedback](./designs/tui-status-feedback.md) · [tui-session-chrome](./designs/tui-session-chrome.md) · [tui-activity-feed](./designs/tui-activity-feed.md)  
 - Slash command parse catalog: [designs/tui-commands.md](./designs/tui-commands.md) (Phase 1; palette consumes it)

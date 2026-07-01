@@ -3,7 +3,7 @@
 **Status:** Draft  
 **Last updated:** 23 Jul 2026  
 
-**Product phases in force:** 1–8 implemented; **9 specified** (built-in web search tool).
+**Product phases in force:** 1–9 implemented; **10 specified** (operator-visible TUI).
 
 | Layer | Document | Owns |
 |-------|----------|------|
@@ -14,9 +14,9 @@
 
 ## Rules
 
-1. **Exclusive phase ownership** — Each design doc’s header **Phase:** field is a single number (1–9). No multi-phase owners.  
+1. **Exclusive phase ownership** — Each design doc’s header **Phase:** field is a single number (1–10). No multi-phase owners.  
 2. **Exclusive req ownership** — Each PRD req ID appears in exactly one design doc as primary owner.  
-3. **Product-complete phases** — See [prd.md](../prd.md) §13: through Phase 8 TUI slash UX; Phase 9 web search.  
+3. **Product-complete phases** — See [prd.md](../prd.md) §13: through Phase 9 web search; Phase 10 operator-visible TUI.  
 4. **Cross-phase references** are allowed as *dependencies* (“builds on Phase 1 journal”) but must not re-specify the other phase’s design.
 
 ## Index by phase
@@ -96,6 +96,8 @@ Visual source of truth: [../ui.md](../ui.md). Phase 1 `surfaces` / line-mode `re
 
 **Phase 9:** web-search-tool  
 
+**Phase 10:** tui-status-feedback → tui-session-chrome → tui-activity-feed  
+
 ### Phase 6 — Connected providers (`/connect`)
 
 | Document | PRD reqs | Summary |
@@ -130,6 +132,17 @@ Visual source of truth: [../ui.md](../ui.md). Phase 1 `surfaces` / line-mode `re
 
 **Phase 9 reading order:** web-search-tool  
 (builds on Phase 1 tool-protocol + durable-execution; Phase 2 governance when ACL/vault/sandbox enabled)
+
+### Phase 10 — Operator-visible TUI
+
+| Document | PRD reqs | Summary |
+|----------|----------|---------|
+| [tui-status-feedback.md](./tui-status-feedback.md) | **TUI-08** | Feedback strip; dual-write error banners; never silent failures |
+| [tui-session-chrome.md](./tui-session-chrome.md) | **TUI-09** | Status chrome: provider · model · ctx · profile; narrow-safe |
+| [tui-activity-feed.md](./tui-activity-feed.md) | **TUI-10** | Activity ring buffer; progressive busy phases |
+
+**Phase 10 reading order:** tui-status-feedback → tui-session-chrome → tui-activity-feed  
+(builds on Phase 4 shell/conversation/sidebar; Phase 6 connect labels; Phase 8 input unchanged)
 
 ## Template
 

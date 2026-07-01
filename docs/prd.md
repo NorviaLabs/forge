@@ -1,6 +1,6 @@
 # Forge — Product Requirements Document
 
-**Version:** 0.11.0  
+**Version:** 0.12.0  
 **Status:** Draft  
 **Owner:** Mohit Ranka  
 **Last updated:** 23 Jul 2026  
@@ -153,7 +153,8 @@ Every harness component encodes an assumption about what the model cannot yet do
 13. (Phase 7) Support **command history navigation with arrow keys** in the full-screen TUI (Up/Down).  
 14. (Phase 8) Allow **top-level slash commands** to be typed and run from the **main TUI textbox** (not only via the command palette).  
 15. (Phase 8.1) **Tab autocomplete** for slash commands and a **visible highlight cursor** for the selected suggestion and input/history text.  
-16. (Phase 9) Ship a first-class **`web_search` built-in tool** so agents can query the public web under the same schema-validated, journaled, ACL-filtered tool path as workspace built-ins.
+16. (Phase 9) Ship a first-class **`web_search` built-in tool** so agents can query the public web under the same schema-validated, journaled, ACL-filtered tool path as workspace built-ins.  
+17. (Phase 10) Make the full-screen TUI **operator-visible**: session identity (provider, model, context, profile) always on chrome; failures and activity (e.g. rate limits) always appear on screen—not only in unrendered internal fields.
 
 ---
 
@@ -215,11 +216,14 @@ Product capabilities group into five areas (implementation detail in architectur
 | **TUI-06** | Inline slash in main textbox | Type top-level `/commands` in the main input and run with Enter; do not hijack `/` into palette-only flow. | `/status`, `/connect …`, and catalog commands work when typed fully in the textbox | P1 |
 | **TUI-07** | Tab autocomplete + highlight | Tab completes the highlighted slash suggestion; caret/highlight shows selected suggestion and input/history position. | `/sta` + Tab → `/status`; ↑↓ move highlight; caret visible | P1 |
 | **WEB-01** | Built-in web search tool | First-class `web_search` tool: schema-validated query args; pluggable search backends (e.g. Tavily/Brave/Serper + mock); network side-effect class; keys via env/vault only; same journal + ACL path as other built-ins. | Model can search the public web when enabled; mock path works offline; no API keys in transcripts/traces | P1 |
+| **TUI-08** | Always-visible status feedback | Render latest feedback/status line every frame; dual-write model/tool/session errors into conversation error banners; severity styling; never leave operator-critical outcomes only in unrendered fields. | Failed model turn (e.g. rate limit) visible in frame buffer without reading internal state | P0 |
+| **TUI-09** | Session identity chrome | Status chrome shows provider · model · context · worktree (and profile/search when space); narrow terminals keep model/ctx without sidebar; `/status` mirrors chrome fields. | Wide and narrow TestBackend frames include model and context cues | P0 |
+| **TUI-10** | Activity feed & progressive busy | In-session activity ring buffer in sidebar (wide); progressive busy labels (`running · model` / `running · tool:name`); errors also create feed entries. | After a multi-step turn, activity list shows model/tool/error summaries | P1 |
 
 ### 9.2 Priority summary
 
-- **P0 (Critical):** CORE-01, CORE-02, CORE-03, DUR-01, DUR-02, CTX-01, CTX-02, SEC-01, SEC-02, TUI-01, TUI-02, TUI-04  
-- **P1 (High):** DUR-03, CTX-03, SEC-03, EVAL-01, OBS-01, TUI-03, WEB-01  
+- **P0 (Critical):** CORE-01, CORE-02, CORE-03, DUR-01, DUR-02, CTX-01, CTX-02, SEC-01, SEC-02, TUI-01, TUI-02, TUI-04, TUI-08, TUI-09  
+- **P1 (High):** DUR-03, CTX-03, SEC-03, EVAL-01, OBS-01, TUI-03, WEB-01, TUI-10  
 
 ---
 
@@ -253,6 +257,7 @@ Product capabilities group into five areas (implementation detail in architectur
 - **Phase 8 (TUI-06):** Top-level **slash commands** run from the **main textbox** (`/cmd …` + Enter); palette remains optional discovery.
 - **Phase 8.1 (TUI-07):** **Tab** autocomplete for slash suggestions; **highlighted** selected command and **visible caret** (including history recall).
 - **Phase 9 (WEB-01):** Built-in **`web_search`** tool with pluggable backends and secure key handling.
+- **Phase 10 (TUI-08…10):** Operator-visible TUI — feedback strip, session chrome, activity feed / progressive busy.
 
 ---
 
@@ -271,6 +276,7 @@ Product capabilities group into five areas (implementation detail in architectur
 | 8 | Full step coverage in distributed traces | Trace completeness checks |
 | 9 | Provider switch is config-only | Multi-provider smoke matrix |
 | 10 | Web search tool is schema-validated and journaled | Unit + mock integration; live smoke optional with API key |
+| 11 | Operator can see session identity and last failure in the TUI | TestBackend frames; no reliance on unrendered `status_message` alone |
 
 ---
 
@@ -321,6 +327,9 @@ Product capabilities group into five areas (implementation detail in architectur
 | PROV-01 | **6** | xAI Grok first-class connect profile |
 | PROV-02 | **6** | OpenCode Go first-class connect profile |
 | WEB-01 | **9** | Built-in `web_search` tool (pluggable backends) |
+| TUI-08 | **10** | Always-visible status feedback + error banners |
+| TUI-09 | **10** | Session identity chrome (provider · model · ctx · …) |
+| TUI-10 | **10** | Activity feed + progressive busy |
 
 Phase 5 design set (all exclusive Phase 5): [litellm-providers.md](./designs/litellm-providers.md) (primary), [litellm-worker.md](./designs/litellm-worker.md), [litellm-wire.md](./designs/litellm-wire.md), [litellm-normalization.md](./designs/litellm-normalization.md), [litellm-config.md](./designs/litellm-config.md).
 
@@ -331,6 +340,8 @@ Phase 7 design set (exclusive Phase 7): [tui-input-history.md](./designs/tui-inp
 Phase 8 design set (exclusive Phase 8): [tui-slash-inline.md](./designs/tui-slash-inline.md) (TUI-06), [tui-slash-autocomplete.md](./designs/tui-slash-autocomplete.md) (TUI-07 / 8.1).
 
 Phase 9 design set (exclusive Phase 9): [web-search-tool.md](./designs/web-search-tool.md) (WEB-01).
+
+Phase 10 design set (exclusive Phase 10): [tui-status-feedback.md](./designs/tui-status-feedback.md) (TUI-08), [tui-session-chrome.md](./designs/tui-session-chrome.md) (TUI-09), [tui-activity-feed.md](./designs/tui-activity-feed.md) (TUI-10).
 
 ### Design doc → phase map (exclusive)
 
@@ -601,6 +612,42 @@ See [designs/README.md](./designs/README.md). No design doc may list multiple ph
 
 ---
 
+### Phase 10 — Operator-visible TUI (session chrome, feedback, activity) (complete product)
+
+**Product:** Phases 1–9 harness **plus** TUI visibility so operators can **always** see session identity (provider, model, context, profile) and **always** see system/model activity outcomes (including rate limits and other failures)—without relying on unrendered internal fields or slash commands alone.
+
+**Users served:** Interactive operators of `forge tui` who need ambient session state and trustworthy failure feedback.
+
+**Depends on:** Phase 4 TUI shell/conversation/sidebar; Phase 6 connect profile state; Phase 5 runtime model/provider labels; Phase 8/8.1 input unchanged.
+
+| In scope | Out of scope |
+|----------|--------------|
+| **TUI-08** — feedback strip + dual-write error banners | Headless log UX redesign |
+| **TUI-09** — session identity chrome; narrow-safe model/ctx | Web dashboard / IDE chrome |
+| **TUI-10** — activity feed + progressive busy phases | Full journal SQL browser |
+| Render existing `status_message` / notices correctly | Changing agent loop or LiteLLM contracts |
+| Classify common errors (429, auth, timeout) for copy | Scraping provider status pages |
+| TestBackend visual/unit tests | Pixel-perfect font metrics |
+
+**Build order (product planning):**
+
+1. **TUI-08** feedback strip + error banners (unblocks “silent” failures)  
+2. **TUI-09** session chrome (provider · model · ctx · profile)  
+3. **TUI-10** activity feed + progressive busy  
+
+**Exit criteria (product complete):**
+
+1. **TUI-08:** After a simulated model failure (e.g. message containing rate limit / 429), the drawn frame contains an operator-visible error (feedback strip and/or chat banner)—not only an internal `status_message` field.  
+2. **TUI-08:** Slash one-line results (e.g. `/cost`) appear on the feedback strip without requiring the operator to guess.  
+3. **TUI-09:** Status chrome shows **provider and model** together; context % remains visible; on width 60 (no sidebar), model or ctx still appears.  
+4. **TUI-09:** `/status` notices list the same identity fields as chrome (helper single source of truth).  
+5. **TUI-10:** Activity feed records model/tool/error summaries (ring buffer capped); wide layout shows feed in sidebar.  
+6. **TUI-10:** While a turn runs, status reflects progressive busy (`running · model` or `running · tool:…`) when phase is known.  
+7. Automated tests cover dual-write error path, chrome fields, and feed cap.  
+8. Phases 1–9 behavior otherwise unchanged (no new model client, no web_search contract change).
+
+---
+
 ## 14. Strategic takeaways
 
 The agent ecosystem is moving from rapid-prototype abstractions (loose roles, heavy graphs, unmonitored single-process runtimes) toward **production-grade harness engineering**. Long-horizon reliability depends less on prompt tweaks and more on:
@@ -617,6 +664,7 @@ The agent ecosystem is moving from rapid-prototype abstractions (loose roles, he
 - Inline **slash commands** in the main TUI textbox (Phase 8)  
 - **Tab autocomplete** and **highlight cursor** for slash suggestions and history (Phase 8.1)  
 - **Web search as a first-class tool** for public knowledge beyond the repo (Phase 9)  
+- **Operator-visible TUI**: ambient session chrome, always-on feedback, activity timeline (Phase 10)  
 
 Forge is specified to occupy that intersection: low abstraction tax, enterprise durability, portable model/client integration, and a first-class terminal surface.
 

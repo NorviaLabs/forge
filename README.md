@@ -140,6 +140,13 @@ Native OpenAI/Anthropic/xAI HTTP adapters removed; production uses LiteLLM only.
 |-------|--------|
 | Built-in `web_search` tool (pluggable backends) | [web-search-tool.md](./docs/designs/web-search-tool.md) |
 
+### Phase 10
+| Piece | Design |
+|-------|--------|
+| Always-visible status feedback + error banners | [tui-status-feedback.md](./docs/designs/tui-status-feedback.md) |
+| Session identity chrome (provider · model · ctx) | [tui-session-chrome.md](./docs/designs/tui-session-chrome.md) |
+| Activity feed + progressive busy | [tui-activity-feed.md](./docs/designs/tui-activity-feed.md) |
+
 ### Phase 4
 Full-screen UI in `forge-tui` + `forge tui` CLI entry:
 

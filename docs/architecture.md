@@ -1,6 +1,6 @@
 # Forge — Architecture
 
-**Version:** 0.11.0  
+**Version:** 0.12.0  
 **Status:** Draft  
 **Owner:** Mohit Ranka  
 **Last updated:** 23 Jul 2026  
@@ -52,6 +52,7 @@ Aligned with [prd.md](./prd.md) §6 (wording here is architecture-oriented).
 13. Phase 8: Top-level **slash commands** typed in the **main textbox** (Enter runs `parse_slash`)  
 14. Phase 8.1: **Tab** slash autocomplete + **highlight** selected suggestion and input caret  
 15. Phase 9: Built-in **`web_search`** tool (pluggable HTTP search backends; same CORE-01/DUR path as workspace tools)  
+16. Phase 10: **Operator-visible TUI** — session chrome (provider · model · ctx), always-on feedback strip + error banners, activity feed / progressive busy  
 
 ### Non-goals
 
@@ -845,6 +846,7 @@ Aligned with [prd.md](./prd.md) §13. Each phase is a **complete product**. Req 
 | **7** | TUI command history | TUI-05 | tui-input-history |
 | **8** | Inline slash in main textbox | TUI-06, TUI-07 (8.1) | tui-slash-inline, tui-slash-autocomplete |
 | **9** | Built-in web search | WEB-01 | web-search-tool |
+| **10** | Operator-visible TUI | TUI-08, TUI-09, TUI-10 | tui-status-feedback, tui-session-chrome, tui-activity-feed |
 
 ### Phase 1 — Coding agent
 
@@ -1099,6 +1101,46 @@ Model → tool_call web_search { query, num_results? }
          → CTX-01 offload if oversized
 ```
 
+### Phase 10 — Operator-visible TUI (chrome, feedback, activity)
+
+**Product:** Fix silent failures and fragmented session identity in `forge tui`. Operators always see **who** they are talking to (provider · model · ctx · profile) and **what happened** (rate limits, tool/model errors, progressive busy).
+
+**Build order (strict):**
+
+1. **TUI-08** — Feedback strip + dual-write error banners — [tui-status-feedback.md](./designs/tui-status-feedback.md)  
+   - Layout region between chat and input  
+   - Render `status_message` every frame when non-empty  
+   - On model/loop errors: chat `BannerKind::Error` + strip  
+2. **TUI-09** — Session identity chrome — [tui-session-chrome.md](./designs/tui-session-chrome.md)  
+   - Status bar: `provider · model · ctx% · wt` (+ profile/search when space)  
+   - Narrow width keeps model/ctx without sidebar  
+   - `/status` shares `SessionChromeModel`  
+3. **TUI-10** — Activity feed + progressive busy — [tui-activity-feed.md](./designs/tui-activity-feed.md)  
+   - Ring buffer on `TuiApp`; sidebar ACTIVITY section  
+   - `BusyPhase`: model / tool:name / connect  
+4. TestBackend frames: error text visible; chrome fields present wide+narrow  
+5. Redaction: no secrets in strip, banners, or feed  
+
+**Crate focus:** `forge-tui` only (`layout`, `widgets/status`, `widgets/feedback`, `activity`, `app`, `sidebar`, `conversation`). No agent-loop protocol change required.
+
+**Exit:**
+
+- Rate-limit / model errors visible on drawn frame  
+- Provider + model ambient on status chrome  
+- Activity feed + progressive busy on wide layout  
+- Phases 1–9 unchanged  
+
+**Not Phase 10:** Web UI; journal SQL browser; new model providers; redesign of slash autocomplete.
+
+```text
+[ status: FORGE │ running · model │ litellm · grok │ ctx 34% │ wt off ]
+[ chat … error banner: Model error: rate limited (429) …              ]
+[ sidebar ACTIVITY: model ok · tool web_search · model error 429      ]
+[ feedback strip: Model error: rate limited (HTTP 429). …             ]
+[ input ❯                                                            ]
+[ footer: version · cwd · hints                                      ]
+```
+
 ---
 
 ## 15. Extension points
@@ -1142,7 +1184,7 @@ Illustrative Rust workspace layout (crate names align with §3 / decisions table
 | `forge-governance` — sandbox | Container/eBPF execution |
 | `forge-governance` — audit | Immutable audit records |
 | `forge-feedback` | Dual-agent orchestration + sensors |
-| `forge-tui` / `forge-cli` | Phase 1: commands + REPL/headless; Phase 4: full-screen ratatui `forge tui` |
+| `forge-tui` / `forge-cli` | Phase 1: commands + REPL/headless; Phase 4: full-screen ratatui; Phase 10: feedback strip, session chrome, activity feed |
 | `forge-channels` (later) | Slack/Telegram/webhooks |
 | `forge-obs` | `tracing` + OpenTelemetry |
 
@@ -1183,6 +1225,9 @@ Forge is the **harness** between models and the real world: a typed tool bus, an
 | 21 | Inline slash (Phase 8) | Main textbox owns `/command` entry + Enter; **do not** auto-open palette on `/`; palette via **Ctrl+K** (or equivalent) |
 | 22 | Tab autocomplete + highlight (Phase 8.1) | **Tab** completes highlighted slash suggestion; **↑/↓** move suggestion highlight when panel open; **visible caret**; history recall shows line + caret |
 | 23 | Web search tool (Phase 9) | Built-in **`web_search`** with pluggable backends (mock + ≥1 live API); **`network`** side-effect class; keys env/vault only; omit from catalog when disabled/missing key; same journal path as other tools |
+| 24 | Always-visible TUI feedback (Phase 10 / TUI-08) | Render feedback strip every frame; dual-write model/session errors to chat banners; never leave critical outcomes only in unrendered fields |
+| 25 | Session identity chrome (Phase 10 / TUI-09) | Status chrome shows **provider · model · ctx**; narrow layout keeps identity without sidebar |
+| 26 | Activity feed & progressive busy (Phase 10 / TUI-10) | In-session activity ring buffer; busy phases `running · model` / `running · tool:name` |
 | 12 | Config | **TOML file + env overrides** (e.g. `forge.toml` / `~/.config/forge/config.toml`; secrets/CI via env) |
 | 13 | Protocol phase ownership | **Phase 1 CORE-02 = MCP only.** **Phase 2 CORE-03 = ACP only.** Exclusive; no split ownership of one req ID. |
 | 14 | License | **MIT** |
@@ -1201,8 +1246,9 @@ Forge is the **harness** between models and the real world: a typed tool bus, an
 | LiteLLM (Phase 5) | **Required** for live model calls: **Python** + `litellm`; long-lived worker preferred; **no** proxy server; natives deleted |
 | Connect profiles (Phase 6) | Registry + `/connect`; still `LiteLlmModelClient` |
 | Connect auth (6.1) | `AuthMode::Oauth` (xAI) vs `AuthMode::ApiKey` + TUI prompt (OpenCode Go); tokens/keys in 0600 store |
-| Surfaces | Phase 1: line-mode `repl` + headless `forge-cli`; Phase 2: `forge-acp`; Phase 3: channels; Phase 4: full-screen ratatui `forge tui`; Phase 6: `/connect` in TUI + REPL; Phase 7: TUI input history (Up/Down); Phase 8: inline slash in main textbox |
+| Surfaces | Phase 1: line-mode `repl` + headless `forge-cli`; Phase 2: `forge-acp`; Phase 3: channels; Phase 4: full-screen ratatui `forge tui`; Phase 6: `/connect` in TUI + REPL; Phase 7: TUI input history (Up/Down); Phase 8: inline slash; Phase 10: operator-visible chrome/feedback/activity |
 | Web search (Phase 9) | `WebSearchTool` in `forge-tools`; `SearchBackend` trait; config `[tools.web_search]`; mock for CI |
+| TUI visibility (Phase 10) | `FeedbackBar`, `SessionChromeModel`, `ActivityFeed`, `BusyPhase` in `forge-tui` |
 | Config | TOML (`forge.toml` or XDG config path) merged with env overrides |
 | Workspace root | Default **cwd**; override via CLI flag and/or config when specified |
 | Observability | `tracing` + OpenTelemetry exporter crates |
