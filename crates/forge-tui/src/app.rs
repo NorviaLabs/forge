@@ -20,16 +20,17 @@ use ratatui::Terminal;
 use thiserror::Error;
 
 use crate::commands::{help_text, parse_slash, SlashCommand, WorktreeAction};
-use crate::conversation::ConversationModel;
+use crate::conversation::{BannerKind, ChatItem, ConversationModel};
 use crate::history::InputHistory;
-use crate::layout::{is_too_small, split_areas};
+use crate::layout::{is_too_small, split_areas_ex};
 use crate::overlays::{
     filter_palette, handle_overlay_key, ConnectProfileItem, Key as OverlayKey, Overlay,
     OverlayAction, OverlayWidget, PaletteItem,
 };
 use crate::sidebar::SidebarModel;
 use crate::widgets::{
-    FooterBar, FooterModel, InputBar, InputModel, StatusBar, StatusModel,
+    classify_operator_error, FeedbackBar, FeedbackModel, FeedbackSeverity, FooterBar, FooterModel,
+    InputBar, InputModel, StatusBar, StatusModel,
 };
 use crate::theme;
 use crate::ExitCode;
@@ -71,6 +72,10 @@ pub struct TuiApp {
     pub slash_suggest_idx: usize,
     /// Multi-line notices (e.g. /connect list) shown above the input.
     pub notices: Vec<String>,
+    /// Phase 10 / TUI-08 — always-visible feedback strip model.
+    pub feedback: FeedbackModel,
+    /// Phase 10 / TUI-08 — durable UI error/info banners in chat.
+    pub ui_banners: Vec<ChatItem>,
 }
 
 impl TuiApp {
@@ -92,7 +97,36 @@ impl TuiApp {
             history: InputHistory::default(),
             slash_suggest_idx: 0,
             notices: Vec::new(),
+            feedback: FeedbackModel::default(),
+            ui_banners: Vec::new(),
         }
+    }
+
+    /// Phase 10: set strip + keep `status_message` in sync for tests/compat.
+    pub fn set_feedback(&mut self, severity: FeedbackSeverity, text: impl Into<String>) {
+        let text = text.into();
+        self.status_message = text.clone();
+        self.feedback = FeedbackModel { text, severity };
+    }
+
+    /// Dual-write operator error: feedback strip + chat banner (TUI-08).
+    pub fn report_error(&mut self, raw: &str) {
+        let msg = classify_operator_error(raw);
+        self.set_feedback(FeedbackSeverity::Error, msg.clone());
+        self.ui_banners.push(ChatItem::Banner {
+            text: msg,
+            kind: BannerKind::Error,
+        });
+        // Cap banners so chat stays usable
+        const MAX: usize = 30;
+        if self.ui_banners.len() > MAX {
+            let drain = self.ui_banners.len() - MAX;
+            self.ui_banners.drain(0..drain);
+        }
+    }
+
+    pub fn report_info(&mut self, text: impl Into<String>) {
+        self.set_feedback(FeedbackSeverity::Info, text);
     }
 
     fn apply_history_text(&mut self, text: String) {
@@ -287,11 +321,13 @@ impl TuiApp {
             );
             return;
         }
-        let regions = split_areas(area);
+        let fb_h = if self.feedback.is_empty() { 0 } else { 1 };
+        let regions = split_areas_ex(area, fb_h);
         let status = self.refresh_status_model();
         frame.render_widget(StatusBar { model: &status }, regions.status);
 
-        let conv = ConversationModel::from_session(&self.session, self.busy);
+        let conv = ConversationModel::from_session(&self.session, self.busy)
+            .with_extra_banners(self.ui_banners.iter().cloned());
         frame.render_widget(
             crate::conversation::ConversationWidget { model: &conv },
             regions.chat,
@@ -406,6 +442,16 @@ impl TuiApp {
             }
         }
 
+        // Phase 10 / TUI-08 — always-visible feedback strip
+        if !self.feedback.is_empty() && regions.feedback.height > 0 {
+            frame.render_widget(
+                FeedbackBar {
+                    model: &self.feedback,
+                },
+                regions.feedback,
+            );
+        }
+
         let mut input = self.input.clone();
         input.dimmed = self.busy;
         frame.render_widget(InputBar { model: &input }, regions.input);
@@ -507,7 +553,12 @@ impl TuiApp {
                 self.history.reset_browse();
                 self.notices.clear();
                 if self.input.text.is_empty() {
-                    self.status_message = "esc".into();
+                    // Clear info-level feedback on Esc; keep error strip until next success
+                    if self.feedback.severity != FeedbackSeverity::Error {
+                        self.feedback = FeedbackModel::default();
+                        self.status_message.clear();
+                    }
+                    self.notices.clear();
                 } else {
                     self.input.clear();
                     self.slash_suggest_idx = 0;
@@ -651,7 +702,7 @@ impl TuiApp {
                         self.runtime.model_label,
                         self.runtime.provider,
                     );
-                    self.status_message = msg.clone();
+                    self.set_feedback(FeedbackSeverity::Info, msg.clone());
                     self.notices = vec![msg];
                 }
                 Ok(SlashCommand::Tools) => {
@@ -670,7 +721,7 @@ impl TuiApp {
                 Ok(SlashCommand::Cost) => {
                     let pct = self.session.context_usage_ratio() * 100.0;
                     let msg = format!("context usage {pct:.1}%");
-                    self.status_message = msg.clone();
+                    self.set_feedback(FeedbackSeverity::Info, msg.clone());
                     self.notices = vec![msg];
                 }
                 Ok(SlashCommand::Approve) => {
@@ -784,7 +835,7 @@ impl TuiApp {
                 }
                 Err(e) => {
                     let msg = e.to_string();
-                    self.status_message = msg.clone();
+                    self.set_feedback(FeedbackSeverity::Warn, msg.clone());
                     self.notices = vec![msg, "Type /help for commands.".into()];
                 }
             }
@@ -802,10 +853,13 @@ impl TuiApp {
                         self.overlay = Some(Overlay::hitl(p.clone()));
                     }
                     self.last_exit = ExitCode::AwaitingHitl;
+                    self.set_feedback(FeedbackSeverity::Warn, "awaiting human approval");
+                } else {
+                    self.set_feedback(FeedbackSeverity::Ok, "turn complete");
                 }
             }
             Err(e) => {
-                self.status_message = e.to_string();
+                self.report_error(&e.to_string());
                 self.last_exit = ExitCode::Failed;
             }
         }
@@ -1445,5 +1499,102 @@ mod tests {
             busy: false,
         };
         assert_eq!(m.status_label().0, "idle");
+    }
+
+    #[tokio::test]
+    async fn tui08_report_error_dual_writes_feedback_and_banner() {
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "m".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "0.10.0".into(),
+            },
+        );
+        app.report_error("upstream returned 429 rate limit exceeded");
+        assert!(
+            !app.feedback.is_empty(),
+            "feedback strip must be set"
+        );
+        assert!(
+            app.feedback.text.contains("rate limited") || app.feedback.text.contains("429"),
+            "got {}",
+            app.feedback.text
+        );
+        assert_eq!(app.feedback.severity, FeedbackSeverity::Error);
+        assert!(
+            app.ui_banners.iter().any(|b| matches!(
+                b,
+                ChatItem::Banner {
+                    kind: BannerKind::Error,
+                    ..
+                }
+            )),
+            "expected error banner in ui_banners"
+        );
+        assert_eq!(app.status_message, app.feedback.text);
+    }
+
+    #[tokio::test]
+    async fn tui08_feedback_strip_visible_on_frame() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "m".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "0.10.0".into(),
+            },
+        );
+        app.report_error("429 rate limit");
+        let backend = TestBackend::new(100, 30);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| app.draw(f)).unwrap();
+        let mut text = String::new();
+        let buf = term.backend().buffer();
+        for y in 0..buf.area().height {
+            for x in 0..buf.area().width {
+                text.push_str(buf.get(x, y).symbol());
+            }
+            text.push('\n');
+        }
+        assert!(
+            text.contains("rate limited") || text.contains("429") || text.contains("Model error"),
+            "frame missing feedback:\n{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn tui08_cost_sets_feedback_strip() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "m".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "0.10.0".into(),
+            },
+        );
+        for c in "/cost".chars() {
+            app.handle_key(press(KeyCode::Char(c), KeyModifiers::NONE))
+                .await
+                .unwrap();
+        }
+        app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert!(
+            app.feedback.text.contains("context") || app.status_message.contains("context"),
+            "got feedback={} status={}",
+            app.feedback.text,
+            app.status_message
+        );
     }
 }

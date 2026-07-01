@@ -15,14 +15,16 @@ mod widgets;
 pub use app::{run_tui, TuiApp, TuiError, TuiRuntimeConfig};
 pub use history::InputHistory;
 pub use commands::{help_text, parse_slash, CommandError, SlashCommand, WorktreeAction};
-pub use conversation::{ChatItem, ConversationModel, ToolCardState};
-pub use layout::{is_too_small, split_areas, LayoutRegions, MIN_HEIGHT, MIN_WIDTH};
+pub use conversation::{BannerKind, ChatItem, ConversationModel, ToolCardState};
+pub use layout::{is_too_small, split_areas, split_areas_ex, LayoutRegions, MIN_HEIGHT, MIN_WIDTH};
 pub use overlays::{
     default_models, default_palette_items, filter_palette, handle_overlay_key, Key as OverlayKey,
     Overlay, OverlayAction,
 };
 pub use sidebar::SidebarModel;
-pub use widgets::{FooterModel, InputModel, StatusModel};
+pub use widgets::{
+    classify_operator_error, FeedbackModel, FeedbackSeverity, FooterModel, InputModel, StatusModel,
+};
 
 /// Headless / process exit codes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

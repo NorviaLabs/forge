@@ -1,4 +1,4 @@
-//! Full-screen layout splits (TUI-01 / tui-shell.md).
+//! Full-screen layout splits (TUI-01 / tui-shell.md + Phase 10 feedback strip).
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
@@ -12,17 +12,25 @@ pub struct LayoutRegions {
     pub status: Rect,
     pub chat: Rect,
     pub sidebar: Option<Rect>,
+    /// Phase 10 / TUI-08 — 0-height when empty.
+    pub feedback: Rect,
     pub input: Rect,
     pub footer: Rect,
 }
 
-/// Split terminal into status / main / input / footer; main splits chat | sidebar when wide enough.
+/// Split terminal; `feedback_h` is 0 or 1 (feedback strip).
 pub fn split_areas(area: Rect) -> LayoutRegions {
+    split_areas_ex(area, 0)
+}
+
+pub fn split_areas_ex(area: Rect, feedback_h: u16) -> LayoutRegions {
+    let fb = feedback_h.min(2);
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // status
             Constraint::Min(3),    // main
+            Constraint::Length(fb), // feedback
             Constraint::Length(3), // input
             Constraint::Length(1), // footer
         ])
@@ -30,8 +38,9 @@ pub fn split_areas(area: Rect) -> LayoutRegions {
 
     let status = rows[0];
     let main = rows[1];
-    let input = rows[2];
-    let footer = rows[3];
+    let feedback = rows[2];
+    let input = rows[3];
+    let footer = rows[4];
 
     let (chat, sidebar) = if area.width >= MIN_WIDTH {
         let cols = Layout::default()
@@ -47,6 +56,7 @@ pub fn split_areas(area: Rect) -> LayoutRegions {
         status,
         chat,
         sidebar,
+        feedback,
         input,
         footer,
     }
@@ -68,11 +78,20 @@ mod tests {
         assert_eq!(r.status.height, 1);
         assert_eq!(r.footer.height, 1);
         assert_eq!(r.input.height, 3);
+        assert_eq!(r.feedback.height, 0);
         let sb = r.sidebar.unwrap();
         assert_eq!(sb.width, SIDEBAR_WIDTH);
         assert_eq!(r.chat.width + sb.width, area.width);
         assert_eq!(r.status.y, 0);
         assert_eq!(r.footer.y + r.footer.height, area.height);
+    }
+
+    #[test]
+    fn feedback_row_reserved_when_requested() {
+        let area = Rect::new(0, 0, 100, 30);
+        let r = split_areas_ex(area, 1);
+        assert_eq!(r.feedback.height, 1);
+        assert!(r.feedback.y + r.feedback.height <= r.input.y);
     }
 
     #[test]

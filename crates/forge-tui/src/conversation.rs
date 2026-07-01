@@ -126,6 +126,14 @@ impl ConversationModel {
         Self::from_messages(&session.messages, &session.events, session.status, busy)
     }
 
+    /// Phase 10: append UI-only banners (errors, info) after session-derived items.
+    pub fn with_extra_banners(mut self, banners: impl IntoIterator<Item = ChatItem>) -> Self {
+        for b in banners {
+            self.items.push(b);
+        }
+        self
+    }
+
     pub fn scroll_up(&mut self, n: u16) {
         self.follow = false;
         self.scroll = self.scroll.saturating_add(n);
