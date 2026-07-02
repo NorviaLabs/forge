@@ -1,6 +1,6 @@
 # TUI always-visible status feedback design
 
-**Status:** Draft  
+**Status:** Implemented (v1)  
 **Owner:** Mohit Ranka  
 **Last updated:** 23 Jul 2026  
 **Phase:** **10 only** (exclusive)  

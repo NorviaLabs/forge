@@ -19,6 +19,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use thiserror::Error;
 
+use crate::activity::{ActivityFeed, ActivityKind};
 use crate::commands::{help_text, parse_slash, SlashCommand, WorktreeAction};
 use crate::conversation::{BannerKind, ChatItem, ConversationModel};
 use crate::history::InputHistory;
@@ -80,6 +81,8 @@ pub struct TuiApp {
     pub busy_phase: BusyPhase,
     /// Optional web_search label for chrome (`mock` / `off` / provider id).
     pub web_search_label: Option<String>,
+    /// Phase 10 / TUI-10 — activity ring buffer.
+    pub activity: ActivityFeed,
 }
 
 impl TuiApp {
@@ -105,6 +108,7 @@ impl TuiApp {
             ui_banners: Vec::new(),
             busy_phase: BusyPhase::Idle,
             web_search_label: Some("mock".into()),
+            activity: ActivityFeed::default(),
         }
     }
 
@@ -115,14 +119,17 @@ impl TuiApp {
         self.feedback = FeedbackModel { text, severity };
     }
 
-    /// Dual-write operator error: feedback strip + chat banner (TUI-08).
+    /// Dual-write operator error: feedback strip + chat banner + activity (TUI-08/10).
     pub fn report_error(&mut self, raw: &str) {
         let msg = classify_operator_error(raw);
         self.set_feedback(FeedbackSeverity::Error, msg.clone());
         self.ui_banners.push(ChatItem::Banner {
-            text: msg,
+            text: msg.clone(),
             kind: BannerKind::Error,
         });
+        self.activity
+            .push(ActivityKind::Error, FeedbackSeverity::Error, msg);
+        self.busy_phase = BusyPhase::Idle;
         // Cap banners so chat stays usable
         const MAX: usize = 30;
         if self.ui_banners.len() > MAX {
@@ -133,6 +140,35 @@ impl TuiApp {
 
     pub fn report_info(&mut self, text: impl Into<String>) {
         self.set_feedback(FeedbackSeverity::Info, text);
+    }
+
+    pub fn push_activity(
+        &mut self,
+        kind: ActivityKind,
+        severity: FeedbackSeverity,
+        summary: impl Into<String>,
+    ) {
+        self.activity.push(kind, severity, summary);
+    }
+
+    fn activity_lines_for_sidebar(&self) -> Vec<String> {
+        self.activity
+            .recent(12)
+            .iter()
+            .map(|i| {
+                let prefix = match i.kind {
+                    ActivityKind::Model => "model",
+                    ActivityKind::Tool => "tool",
+                    ActivityKind::Connect => "connect",
+                    ActivityKind::Slash => "slash",
+                    ActivityKind::System => "sys",
+                    ActivityKind::Error => "error",
+                    ActivityKind::Hitl => "hitl",
+                    ActivityKind::Context => "ctx",
+                };
+                format!("{prefix} {}", i.summary)
+            })
+            .collect()
     }
 
     fn apply_history_text(&mut self, text: String) {
@@ -345,7 +381,8 @@ impl TuiApp {
         );
 
         if let Some(sb_area) = regions.sidebar {
-            let sb = SidebarModel::from_session(&self.session);
+            let act = self.activity_lines_for_sidebar();
+            let sb = SidebarModel::from_session_with_activity(&self.session, &act);
             frame.render_widget(crate::sidebar::SidebarWidget { model: &sb }, sb_area);
         }
 
@@ -540,8 +577,15 @@ impl TuiApp {
                 }
                 OverlayAction::ConnectPickProfile { profile_id } => {
                     self.overlay = None;
+                    self.busy_phase = BusyPhase::Connect;
+                    self.push_activity(
+                        ActivityKind::Connect,
+                        FeedbackSeverity::Info,
+                        format!("connect {profile_id}"),
+                    );
                     // Continue into oauth / api-key flow for the chosen profile
                     self.finish_connect(&profile_id, None, false);
+                    self.busy_phase = BusyPhase::Idle;
                 }
             }
             return Ok(());
@@ -673,6 +717,12 @@ impl TuiApp {
 
     pub async fn dispatch_line(&mut self, line: &str) -> Result<(), TuiError> {
         if let Some(cmd_res) = parse_slash(line) {
+            let slash_name = line.split_whitespace().next().unwrap_or("/");
+            self.push_activity(
+                ActivityKind::Slash,
+                FeedbackSeverity::Info,
+                slash_name,
+            );
             match cmd_res {
                 Ok(SlashCommand::Quit) => {
                     self.should_quit = true;
@@ -860,8 +910,15 @@ impl TuiApp {
 
         // user message
         self.busy = true;
+        self.busy_phase = BusyPhase::Model;
+        self.push_activity(
+            ActivityKind::Model,
+            FeedbackSeverity::Info,
+            "model call started",
+        );
         let result = self.session.run_user_message(line).await;
         self.busy = false;
+        self.busy_phase = BusyPhase::Idle;
         match result {
             Ok(_) => {
                 if self.session.pending_hitl.is_some() {
@@ -870,8 +927,18 @@ impl TuiApp {
                     }
                     self.last_exit = ExitCode::AwaitingHitl;
                     self.set_feedback(FeedbackSeverity::Warn, "awaiting human approval");
+                    self.push_activity(
+                        ActivityKind::Hitl,
+                        FeedbackSeverity::Warn,
+                        "hitl waiting",
+                    );
                 } else {
                     self.set_feedback(FeedbackSeverity::Ok, "turn complete");
+                    self.push_activity(
+                        ActivityKind::Model,
+                        FeedbackSeverity::Ok,
+                        "model ok",
+                    );
                 }
             }
             Err(e) => {
@@ -1697,6 +1764,101 @@ mod tests {
         assert!(
             text.contains("rate limited") || text.contains("429") || text.contains("Model error"),
             "frame missing feedback:\n{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn tui10_activity_feed_records_model_and_error() {
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "m".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "0.10.0".into(),
+            },
+        );
+        app.push_activity(
+            ActivityKind::Model,
+            FeedbackSeverity::Info,
+            "model call started",
+        );
+        app.report_error("429 rate limit");
+        assert!(app.activity.len() >= 2);
+        let recent: Vec<_> = app
+            .activity
+            .recent(10)
+            .iter()
+            .map(|i| i.summary.clone())
+            .collect();
+        assert!(
+            recent.iter().any(|s| s.contains("rate") || s.contains("429") || s.contains("Model")),
+            "recent={recent:?}"
+        );
+        assert_eq!(app.busy_phase, BusyPhase::Idle);
+    }
+
+    #[tokio::test]
+    async fn tui10_busy_phase_model_during_turn_clears_after() {
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "m".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "0.10.0".into(),
+            },
+        );
+        app.dispatch_line("hello").await.unwrap();
+        assert_eq!(app.busy_phase, BusyPhase::Idle);
+        assert!(
+            app.activity
+                .all()
+                .iter()
+                .any(|i| i.kind == ActivityKind::Model),
+            "expected model activity"
+        );
+    }
+
+    #[tokio::test]
+    async fn tui10_sidebar_shows_activity_on_frame() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "m".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "0.10.0".into(),
+            },
+        );
+        app.push_activity(
+            ActivityKind::Tool,
+            FeedbackSeverity::Ok,
+            "web_search done",
+        );
+        app.report_error("429 rate limit");
+        let backend = TestBackend::new(120, 30);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| app.draw(f)).unwrap();
+        let mut text = String::new();
+        let buf = term.backend().buffer();
+        for y in 0..buf.area().height {
+            for x in 0..buf.area().width {
+                text.push_str(buf.get(x, y).symbol());
+            }
+            text.push('\n');
+        }
+        assert!(
+            text.contains("ACTIVITY")
+                || text.contains("web_search")
+                || text.contains("error")
+                || text.contains("rate"),
+            "frame missing activity:\n{text}"
         );
     }
 
