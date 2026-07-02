@@ -1,5 +1,6 @@
 //! Forge terminal UI — slash commands, full-screen ratatui, input history (Phase 7).
 
+mod activity;
 mod app;
 mod commands;
 mod conversation;
@@ -12,6 +13,7 @@ mod theme;
 mod visual_test;
 mod widgets;
 
+pub use activity::{ActivityFeed, ActivityItem, ActivityKind};
 pub use app::{run_tui, TuiApp, TuiError, TuiRuntimeConfig};
 pub use history::InputHistory;
 pub use commands::{help_text, parse_slash, CommandError, SlashCommand, WorktreeAction};
@@ -23,7 +25,8 @@ pub use overlays::{
 };
 pub use sidebar::SidebarModel;
 pub use widgets::{
-    classify_operator_error, FeedbackModel, FeedbackSeverity, FooterModel, InputModel, StatusModel,
+    classify_operator_error, session_chrome_lines, BusyPhase, FeedbackModel, FeedbackSeverity,
+    FooterModel, InputModel, StatusModel,
 };
 
 /// Headless / process exit codes.

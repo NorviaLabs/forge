@@ -29,8 +29,8 @@ use crate::overlays::{
 };
 use crate::sidebar::SidebarModel;
 use crate::widgets::{
-    classify_operator_error, FeedbackBar, FeedbackModel, FeedbackSeverity, FooterBar, FooterModel,
-    InputBar, InputModel, StatusBar, StatusModel,
+    classify_operator_error, session_chrome_lines, BusyPhase, FeedbackBar, FeedbackModel,
+    FeedbackSeverity, FooterBar, FooterModel, InputBar, InputModel, StatusBar, StatusModel,
 };
 use crate::theme;
 use crate::ExitCode;
@@ -76,6 +76,10 @@ pub struct TuiApp {
     pub feedback: FeedbackModel,
     /// Phase 10 / TUI-08 — durable UI error/info banners in chat.
     pub ui_banners: Vec<ChatItem>,
+    /// Phase 10 / TUI-10 — progressive busy phase for chrome.
+    pub busy_phase: BusyPhase,
+    /// Optional web_search label for chrome (`mock` / `off` / provider id).
+    pub web_search_label: Option<String>,
 }
 
 impl TuiApp {
@@ -99,6 +103,8 @@ impl TuiApp {
             notices: Vec::new(),
             feedback: FeedbackModel::default(),
             ui_banners: Vec::new(),
+            busy_phase: BusyPhase::Idle,
+            web_search_label: Some("mock".into()),
         }
     }
 
@@ -306,9 +312,14 @@ impl TuiApp {
             status: self.session.status,
             session_short: short,
             model: self.runtime.model_label.clone(),
+            provider: self.runtime.provider.clone(),
             ctx_pct: self.session.context_usage_ratio(),
             worktree_on: self.session.worktree_status().is_some(),
             busy: self.busy,
+            busy_phase: self.busy_phase.clone(),
+            connect_profile: self.connect_profile.clone(),
+            web_search_label: self.web_search_label.clone(),
+            tools_visible: self.session.list_tools().len(),
         }
     }
 
@@ -504,10 +515,12 @@ impl TuiApp {
                 }
                 OverlayAction::SelectModel { provider, model } => {
                     self.overlay = None;
-                    self.status_message =
-                        format!("model {provider}/{model} — restart session to apply");
-                    self.runtime.provider = provider;
-                    self.runtime.model_label = model;
+                    self.runtime.provider = provider.clone();
+                    self.runtime.model_label = model.clone();
+                    self.set_feedback(
+                        FeedbackSeverity::Ok,
+                        format!("model {provider} · {model}"),
+                    );
                 }
                 OverlayAction::ConnectSubmitKey {
                     profile_id,
@@ -694,16 +707,19 @@ impl TuiApp {
                     }
                 }
                 Ok(SlashCommand::Status) => {
-                    let msg = format!(
-                        "session={} status={:?} tools={} model={} provider={}",
-                        self.session.session_id,
-                        self.session.status,
-                        self.session.list_tools().len(),
-                        self.runtime.model_label,
-                        self.runtime.provider,
+                    let chrome = self.refresh_status_model();
+                    let mut lines = session_chrome_lines(&chrome);
+                    lines.insert(0, format!("session_id={}", self.session.session_id));
+                    self.set_feedback(
+                        FeedbackSeverity::Info,
+                        format!(
+                            "{} · {} · ctx {:.0}%",
+                            chrome.provider,
+                            chrome.model,
+                            chrome.ctx_pct * 100.0
+                        ),
                     );
-                    self.set_feedback(FeedbackSeverity::Info, msg.clone());
-                    self.notices = vec![msg];
+                    self.notices = lines;
                 }
                 Ok(SlashCommand::Tools) => {
                     let tools = self.session.list_tools();
@@ -1003,7 +1019,13 @@ mod tests {
             },
         );
         app.dispatch_line("/status").await.unwrap();
-        assert!(app.status_message.contains("session="));
+        assert!(
+            app.status_message.contains("ctx")
+                || app.notices.iter().any(|l| l.contains("session") || l.contains("model=")),
+            "status={} notices={:?}",
+            app.status_message,
+            app.notices
+        );
     }
 
     #[tokio::test]
@@ -1198,9 +1220,11 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            app.status_message.contains("session="),
-            "status={}",
-            app.status_message
+            app.status_message.contains("ctx")
+                || app.notices.iter().any(|l| l.contains("model=") || l.contains("provider=")),
+            "status={} notices={:?}",
+            app.status_message,
+            app.notices
         );
         assert!(app.history.entries().iter().any(|e| e == "/status"));
     }
@@ -1480,9 +1504,12 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            app.status_message.contains("session="),
-            "got {}",
-            app.status_message
+            app.status_message.contains("ctx")
+                || app.feedback.text.contains("ctx")
+                || app.notices.iter().any(|l| l.contains("model=")),
+            "got status={} feedback={}",
+            app.status_message,
+            app.feedback.text
         );
         assert!(app.input.text.is_empty());
     }
@@ -1494,11 +1521,115 @@ mod tests {
             status: forge_types::SessionStatus::Running,
             session_short: "abc".into(),
             model: "m".into(),
+            provider: "mock".into(),
             ctx_pct: 0.2,
             worktree_on: false,
             busy: false,
+            busy_phase: BusyPhase::Idle,
+            connect_profile: None,
+            web_search_label: None,
+            tools_visible: 0,
         };
         assert_eq!(m.status_label().0, "idle");
+    }
+
+    #[tokio::test]
+    async fn tui09_chrome_includes_provider_and_model_on_frame() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let (_dir, session) = test_session().await;
+        let app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "openai/gpt-test".into(),
+                provider: "litellm".into(),
+                cwd: PathBuf::from("."),
+                version: "0.10.0".into(),
+            },
+        );
+        let chrome = app.refresh_status_model();
+        assert_eq!(chrome.provider, "litellm");
+        assert!(chrome.model.contains("gpt-test"));
+        let backend = TestBackend::new(120, 30);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| app.draw(f)).unwrap();
+        let mut text = String::new();
+        let buf = term.backend().buffer();
+        for y in 0..buf.area().height {
+            for x in 0..buf.area().width {
+                text.push_str(buf.get(x, y).symbol());
+            }
+            text.push('\n');
+        }
+        assert!(
+            text.contains("litellm") && (text.contains("gpt") || text.contains("openai")),
+            "chrome missing provider/model:\n{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn tui09_narrow_frame_still_shows_model_or_ctx() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let (_dir, session) = test_session().await;
+        let app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "mymodel".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "0.10.0".into(),
+            },
+        );
+        // Width 60: no sidebar per layout MIN_WIDTH 80
+        let backend = TestBackend::new(60, 24);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| app.draw(f)).unwrap();
+        let mut text = String::new();
+        let buf = term.backend().buffer();
+        for y in 0..buf.area().height {
+            for x in 0..buf.area().width {
+                text.push_str(buf.get(x, y).symbol());
+            }
+            text.push('\n');
+        }
+        assert!(
+            text.contains("mymodel") || text.contains("ctx") || text.contains("mock"),
+            "narrow frame missing identity:\n{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn tui09_status_notices_mirror_chrome() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "m".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "0.10.0".into(),
+            },
+        );
+        for c in "/status".chars() {
+            app.handle_key(press(KeyCode::Char(c), KeyModifiers::NONE))
+                .await
+                .unwrap();
+        }
+        app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert!(
+            app.notices.iter().any(|l| l.contains("provider=")),
+            "notices={:?}",
+            app.notices
+        );
+        assert!(
+            app.notices.iter().any(|l| l.contains("model=")),
+            "notices={:?}",
+            app.notices
+        );
     }
 
     #[tokio::test]

@@ -17,12 +17,21 @@ pub struct SidebarModel {
     pub ctx_pct: f64,
     pub tools_allowed: usize,
     pub tools_total_hint: String,
+    /// Phase 10 — activity feed lines (preferred over raw events when set).
+    pub activity: Vec<String>,
     pub events: Vec<String>,
     pub worktree: Option<String>,
 }
 
 impl SidebarModel {
     pub fn from_session(session: &AgentSession) -> Self {
+        Self::from_session_with_activity(session, &[])
+    }
+
+    pub fn from_session_with_activity(
+        session: &AgentSession,
+        activity_lines: &[String],
+    ) -> Self {
         let id = session.session_id.to_string();
         let short = if id.len() > 8 { &id[..8] } else { &id };
         let status = match session.status {
@@ -53,6 +62,7 @@ impl SidebarModel {
             ctx_pct: session.context_usage_ratio(),
             tools_allowed: tools.len(),
             tools_total_hint: format!("{} visible", tools.len()),
+            activity: activity_lines.to_vec(),
             events,
             worktree: session.worktree_status(),
         }
@@ -140,13 +150,24 @@ impl Widget for SidebarWidget<'_> {
         ];
         Paragraph::new(tool_lines).render(chunks[2], buf);
 
-        // Journal
-        let mut ev = vec![Line::from(Span::styled("RECENT EVENTS", theme::dim()))];
-        if self.model.events.is_empty() {
+        // Activity feed (Phase 10) or legacy events
+        let title = if self.model.activity.is_empty() {
+            "RECENT EVENTS"
+        } else {
+            "ACTIVITY"
+        };
+        let mut ev = vec![Line::from(Span::styled(title, theme::dim()))];
+        let lines: &[String] = if !self.model.activity.is_empty() {
+            &self.model.activity
+        } else {
+            &self.model.events
+        };
+        if lines.is_empty() {
             ev.push(Line::from(Span::styled("—", theme::dim())));
         } else {
-            for e in &self.model.events {
-                ev.push(Line::from(Span::styled(e.clone(), theme::muted())));
+            for e in lines {
+                let truncated: String = e.chars().take(48).collect();
+                ev.push(Line::from(Span::styled(truncated, theme::muted())));
             }
         }
         if let Some(ref wt) = self.model.worktree {

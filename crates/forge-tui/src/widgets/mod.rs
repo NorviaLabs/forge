@@ -8,4 +8,4 @@ pub use feedback::{
 };
 pub use footer::{FooterBar, FooterModel};
 pub use input::{InputBar, InputModel};
-pub use status::{StatusBar, StatusModel};
+pub use status::{session_chrome_lines, BusyPhase, StatusBar, StatusModel};
