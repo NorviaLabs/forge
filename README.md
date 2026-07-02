@@ -1,161 +1,242 @@
 # Forge
 
-**Forge** is an open-source, enterprise-ready **AI agent harness**: scaffolding around foundation models for reliable, long-horizon software engineering.
+**AI coding agent for your terminal.** Durable sessions, real tools, any model — one CLI.
 
-| | |
-|--|--|
-| **License** | [MIT](./LICENSE) |
-| **Repo** | [NorviaLabs/forge](https://github.com/NorviaLabs/forge) |
-| **Language** | Rust (Tokio) |
-| **Status** | **Phases 1–8 implemented** |
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
+[![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org/)
+[![Status](https://img.shields.io/badge/status-active-success.svg)](https://github.com/NorviaLabs/forge)
+
+Forge is a **coding agent harness**: it runs a plan–act–observe loop with schema-validated tools, crash-safe session resume, and a full-screen TUI. You bring the model (via LiteLLM); Forge handles tools, context, approvals, and recovery.
+
+**[Repository](https://github.com/NorviaLabs/forge) · [Product requirements](./docs/prd.md) · [Architecture](./docs/architecture.md) · [TUI UI](./docs/ui.md)**
 
 ---
 
-## Product phases
+## What you can do
 
-| Phase | Product | Status |
-|-------|---------|--------|
-| **1** | Coding agent (tools, MCP, journal, CLI/REPL) | ✓ |
-| **2** | Enterprise long-horizon (ACP, context, worktree, HITL, governance) | ✓ |
-| **3** | Quality, ops & fleet (Evaluator, OTEL, channels, SCIM/SIEM) | ✓ |
-| **4** | Full-screen terminal TUI (shell, conversation, sidebar, overlays) | ✓ |
-| **5** | Universal providers via LiteLLM SDK (sole production path) | ✓ |
-| **6** | `/connect` + xAI Grok + OpenCode Go profiles | ✓ |
-| **7** | TUI command history (Up/Down arrows) | ✓ |
-| **8** | Inline slash commands in main TUI textbox | ✓ |
+| Goal | How |
+|------|-----|
+| Chat and edit code in a full-screen UI | `forge tui` |
+| One-shot task from the shell | `forge run "…"` |
+| Interactive line mode | `forge repl` |
+| Connect Grok or OpenCode Go | `forge connect` or `/connect` in the TUI |
+| Safe experimental edits | `forge --worktree run "…"` |
+| Offline / CI without a model | `forge --mock …` |
+| Resume after a crash | `forge tui --resume <session-id>` |
+
+---
+
+## Why Forge?
+
+| Problem | What Forge does |
+|---------|-----------------|
+| Agent dies mid-task | Append-only journal; resume without redoing finished tool calls |
+| Invalid tool args blow up the run | Schema validation before side effects; model can retry |
+| Secrets leak into chat | Keys stay in env / credential store / vault — not in prompts |
+| Only one model vendor | **LiteLLM** as the single production path (OpenAI, Anthropic, xAI, long tail) |
+| “What just failed?” | TUI shows provider · model · context, feedback strip, activity feed, error banners |
+| Repo edits feel unsafe | Optional **git worktree** isolation; HITL for high-risk actions |
+
+**Honest limits:** Forge does not replace your model provider (rate limits, auth, and quality are upstream). Web search needs a search API key for live results (mock works offline).
 
 ---
 
 ## Install
 
+**Prerequisites:** Rust (1.80+), and for live models: Python 3 + the LiteLLM worker.
+
 ```bash
-git clone git@github.com:NorviaLabs/forge.git
+git clone https://github.com/NorviaLabs/forge.git
 cd forge
 cargo build --release -p forge-cli
-# Live model path also needs the Python worker:
+
+# Live models only — Python worker (LiteLLM library, not the Proxy product)
 pip install -e workers/forge-litellm-worker
-./target/release/forge status   # forge 0.8.0 phase8
+
+# Optional: put the binary on your PATH
+export PATH="$PWD/target/release:$PATH"
+forge status
 ```
 
 ---
 
 ## Quick start
 
+### 1. Try it offline (no API keys)
+
 ```bash
-# Offline (no Python / LiteLLM required)
-./target/release/forge --mock run "hello"
-./target/release/forge --mock repl
+forge --mock status
+forge --mock run "hello"
+forge --mock tui          # full-screen UI
+forge --mock repl         # line-mode chat
+```
 
-# Phase 4 full-screen TUI (ratatui)
-./target/release/forge --mock tui
+### 2. Run with a live model
 
-# Live model (Phase 5: LiteLLM SDK worker — not Proxy)
+```bash
 pip install -e workers/forge-litellm-worker
-export OPENAI_API_KEY=…   # or ANTHROPIC_API_KEY / XAI_API_KEY / …
+
+export OPENAI_API_KEY=…          # or ANTHROPIC_API_KEY / XAI_API_KEY / …
 export FORGE_MODEL_PROVIDER=litellm
 export FORGE_MODEL_ID=openai/gpt-4.1-mini
-./target/release/forge run "Summarize this repo"
 
-# Phase 6: connect product profiles (keys stored under ~/.config/forge/credentials.toml)
-./target/release/forge connect list
-./target/release/forge connect xai --key "$XAI_API_KEY"
-./target/release/forge connect opencode_go --key "$OPENCODE_API_KEY"
-# or in TUI/REPL: /connect list · /connect xai
+forge run "Summarize what this repository does"
+forge tui
+```
 
-# Phase 2
-./target/release/forge --worktree --mock run "edit safely"
-./target/release/forge approve --session <uuid>
+### 3. Connect product profiles (TUI or CLI)
 
-# Phase 3
-./target/release/forge feedback --sensor "echo ok"
-./target/release/forge --mock channel --kind webhook "status please"
-./target/release/forge fleet
+```bash
+forge connect list
+# OpenCode Go — API key (prompted in TUI)
+forge connect opencode_go --key "$OPENCODE_API_KEY"
+# xAI Grok — OAuth (TUI flow; CLI may use fixture/dev paths)
+
+# In the TUI:
+#   /connect          → pick a provider
+#   /model            → switch model
+#   /status           → session · provider · model · context
+```
+
+Credentials go to `~/.config/forge/credentials.toml` (mode `0600`). Never commit keys.
+
+### 4. Everyday TUI tips
+
+| Keys / input | Action |
+|--------------|--------|
+| Type a task + **Enter** | Send to the agent |
+| `/status`, `/tools`, `/cost`, `/help` | Commands in the main textbox |
+| `/` + **↑/↓** + **Tab** | Slash suggestions + complete |
+| **Ctrl+K** | Full command palette |
+| **↑/↓** (no slash panel) | Command history |
+| **Esc** | Clear input / dismiss info feedback |
+
+Chrome shows **provider · model · context %**, a **feedback** line for status/errors, and an **ACTIVITY** sidebar on wide terminals.
+
+---
+
+## Built-in tools
+
+The agent can use tools such as:
+
+| Tool | Purpose |
+|------|---------|
+| `read_file` / `write_file` | Workspace files |
+| `bash` | Shell in the workspace |
+| `grep` | Search the tree |
+| `web_search` | Public web search (see below) |
+
+Plus tools from configured **MCP** servers.
+
+### Web search
+
+Default is **mock** (no key, offline). For real results:
+
+```toml
+# forge.toml (project) or ~/.config/forge/config.toml
+[tools.web_search]
+enabled = true
+provider = "tavily"   # mock | tavily | brave | serper
+# api_key_env = "TAVILY_API_KEY"
+```
+
+```bash
+export TAVILY_API_KEY=…   # or BRAVE_API_KEY / SERPER_API_KEY
+```
+
+---
+
+## Configuration
+
+Merge order: defaults → `~/.config/forge/config.toml` → `./forge.toml` → env → CLI flags.
+
+| Env | Meaning |
+|-----|---------|
+| `FORGE_MODEL_PROVIDER` | `litellm` or `mock` |
+| `FORGE_MODEL_ID` | LiteLLM model string, e.g. `anthropic/claude-sonnet` |
+| `FORGE_API_KEY` | Optional key passthrough to the worker |
+| `FORGE_WORKSPACE` | Workspace root (default: cwd) |
+| `FORGE_WEB_SEARCH_PROVIDER` | `mock` / `tavily` / `brave` / `serper` |
+| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `XAI_API_KEY` | Provider keys for LiteLLM |
+
+Example `forge.toml`:
+
+```toml
+[model]
+provider = "litellm"
+model = "openai/gpt-4.1-mini"
+
+[model.litellm]
+python = "python3"
+module = "forge_litellm_worker"
+
+[tools.web_search]
+enabled = true
+provider = "mock"
 ```
 
 ---
 
 ## CLI reference
 
-| Command | Phase | Description |
-|---------|-------|-------------|
-| `status` | 1 | Version, workspace, model |
-| `run` / `repl` | 1 | Headless / interactive agent |
-| `tui` | 4 | Full-screen ratatui TUI (`/` palette, HITL modal) |
-| `connect` | 6 | Connect xAI Grok or OpenCode Go (`list` / profile / key) |
-| `approve` / `deny` | 2 | HITL for a session |
-| `feedback` | 3 | Run dual-sensor gate (EVAL-01) |
-| `channel` | 3 | Restricted-ACL channel ingress (CH-01) |
-| `fleet` | 3 | SCIM + SIEM plugins + obs export (FLEET-01/OBS-01) |
+```text
+forge [OPTIONS] <COMMAND>
+```
 
-**Flags:** `--config` · `--workspace` · `--provider` · `--model` · `--mock` · `--worktree`  
+| Command | Description |
+|---------|-------------|
+| `status` | Version, workspace, model |
+| `run <prompt>` | Headless one-shot agent turn(s) |
+| `repl` | Interactive line-mode agent |
+| `tui` | Full-screen terminal UI |
+| `connect [profile]` | List / connect / status for Grok & OpenCode Go |
+| `approve` / `deny` | Resolve human-in-the-loop for a session |
+| `feedback` | Run quality sensors (EVAL) |
+| `channel` | Restricted channel-style ingress |
+| `fleet` | Fleet plugins / SIEM demo hooks |
+
+**Global flags:** `--config` · `--workspace` · `--provider` · `--model` · `--mock` · `--worktree`
+
+**Useful options:**
+
+```bash
+forge run "…" --resume <uuid> --max-turns 16
+forge tui --resume <uuid>
+forge --worktree --mock run "try a risky edit"
+```
 
 **Exit codes:** `0` success · `1` failed · `2` awaiting HITL · `3` canceled · `4` config error
 
 ---
 
-## Crates by phase
+## How it works (short)
 
-### Phase 1
-`forge-types` · `forge-config` · `forge-tools` · `forge-model` · `forge-durable` · `forge-core` · `forge-mcp` · `forge-tui` · `forge-cli`
+```text
+You (TUI / CLI / headless)
+        │
+        ▼
+   Agent session  ── journal (SQLite) ──► crash-safe resume
+        │
+        ├─► tools (files, bash, grep, web_search, MCP)
+        ├─► governance (ACL, secrets, HITL, sandbox hooks)
+        └─► model
+                ├─ mock          (CI / --mock)
+                └─ LiteLLM worker (Python SDK, all live providers)
+```
 
-### Phase 2
-`forge-governance` · `forge-context` · `forge-workspace` · `forge-acp`
+You stay in one agent core across terminal TUI, REPL, and headless runs — no second implementation.
 
-### Phase 3
-| Crate | Design |
-|-------|--------|
-| `forge-feedback` | [feedback-evaluator.md](./docs/designs/feedback-evaluator.md) |
-| `forge-obs` | [observability.md](./docs/designs/observability.md) |
-| `forge-channels` | [channels.md](./docs/designs/channels.md) |
-| `forge-fleet` | [fleet-plugins.md](./docs/designs/fleet-plugins.md) |
+---
 
-### Phase 5
-| Piece | Design |
-|-------|--------|
-| `workers/forge-litellm-worker` | [litellm-worker.md](./docs/designs/litellm-worker.md) |
-| `forge-model` (`LiteLlmModelClient`) | [litellm-providers.md](./docs/designs/litellm-providers.md) |
-| Config `provider=litellm` | [litellm-config.md](./docs/designs/litellm-config.md) |
+## Documentation
 
-Native OpenAI/Anthropic/xAI HTTP adapters removed; production uses LiteLLM only. `--mock` for CI.
-
-### Phase 6
-| Piece | Design |
-|-------|--------|
-| `forge-connect` | [connect-command.md](./docs/designs/connect-command.md) |
-| xAI Grok profile | [provider-xai-grok.md](./docs/designs/provider-xai-grok.md) |
-| OpenCode Go profile | [provider-opencode-go.md](./docs/designs/provider-opencode-go.md) |
-
-### Phase 7
-| Piece | Design |
-|-------|--------|
-| `InputHistory` + Up/Down in `forge tui` | [tui-input-history.md](./docs/designs/tui-input-history.md) |
-
-### Phase 8
-| Piece | Design |
-|-------|--------|
-| Inline `/command` in main textbox; Ctrl+K palette | [tui-slash-inline.md](./docs/designs/tui-slash-inline.md) |
-
-### Phase 9
-| Piece | Design |
-|-------|--------|
-| Built-in `web_search` tool (pluggable backends) | [web-search-tool.md](./docs/designs/web-search-tool.md) |
-
-### Phase 10
-| Piece | Design |
-|-------|--------|
-| Always-visible status feedback + error banners | [tui-status-feedback.md](./docs/designs/tui-status-feedback.md) |
-| Session identity chrome (provider · model · ctx) | [tui-session-chrome.md](./docs/designs/tui-session-chrome.md) |
-| Activity feed + progressive busy | [tui-activity-feed.md](./docs/designs/tui-activity-feed.md) |
-
-### Phase 4
-Full-screen UI in `forge-tui` + `forge tui` CLI entry:
-
-| Design | Module(s) |
-|--------|-----------|
-| [tui-shell.md](./docs/designs/tui-shell.md) | `layout`, `theme`, `widgets/{status,input,footer}` |
-| [tui-conversation.md](./docs/designs/tui-conversation.md) | `conversation` |
-| [tui-sidebar.md](./docs/designs/tui-sidebar.md) | `sidebar` |
-| [tui-overlays.md](./docs/designs/tui-overlays.md) | `overlays`, `app` |
+| For you | Link |
+|---------|------|
+| Product goals & roadmap | [docs/prd.md](./docs/prd.md) |
+| System design | [docs/architecture.md](./docs/architecture.md) |
+| TUI screens & layout | [docs/ui.md](./docs/ui.md) |
+| Design specs (by phase) | [docs/designs/README.md](./docs/designs/README.md) |
+| LiteLLM worker | [workers/forge-litellm-worker/README.md](./workers/forge-litellm-worker/README.md) |
 
 ---
 
@@ -164,18 +245,10 @@ Full-screen UI in `forge-tui` + `forge tui` CLI entry:
 ```bash
 cargo test
 cargo build --release -p forge-cli
+cargo test -p forge-tui
 ```
 
----
-
-## Documentation
-
-| Doc | Description |
-|-----|-------------|
-| [docs/prd.md](./docs/prd.md) | Product requirements & phase map |
-| [docs/architecture.md](./docs/architecture.md) | Architecture |
-| [docs/designs/README.md](./docs/designs/README.md) | Design docs |
-| [docs/ui.md](./docs/ui.md) | TUI mockups |
+Contributions and issues welcome on [GitHub](https://github.com/NorviaLabs/forge).
 
 ---
 
