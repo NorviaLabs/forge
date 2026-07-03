@@ -137,7 +137,7 @@ impl LiteLlmModelClient {
 |------|-------|
 | MDL-01 + native removal | **5** |
 | Historical native adapter design | **1** ([model-providers.md](./model-providers.md)) — superseded |
-| Exit | PRD §13 Phase 5 (single path) |
+| Exit | Architecture §14 Phase 5 (single path) |
 
 ## 7. Acceptance
 
