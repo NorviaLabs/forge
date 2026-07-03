@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Forge architecture</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    width: 1200px;
+    min-height: 920px;
+    font-family: "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+    background: #0b1220;
+    color: #e8eef7;
+    padding: 36px 40px 28px;
+  }
+  h1 {
+    font-size: 22px;
+    font-weight: 650;
+    letter-spacing: -0.02em;
+    margin-bottom: 6px;
+  }
+  .sub {
+    font-size: 13px;
+    color: #8b9bb4;
+    margin-bottom: 28px;
+  }
+  .stack {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .row {
+    display: grid;
+    gap: 12px;
+  }
+  .row.surfaces { grid-template-columns: 1fr 1fr 1fr; }
+  .row.core { grid-template-columns: 1.4fr 1fr 1fr; }
+  .row.model { grid-template-columns: 1fr 1.6fr; }
+  .row.extern { grid-template-columns: 1fr 1fr 1fr 1fr; }
+  .card {
+    border-radius: 12px;
+    border: 1px solid #243047;
+    background: linear-gradient(180deg, #121a2b 0%, #0e1624 100%);
+    padding: 14px 16px;
+    min-height: 88px;
+  }
+  .card.accent {
+    border-color: #1f9e8a;
+    box-shadow: 0 0 0 1px rgba(31, 158, 138, 0.15);
+  }
+  .card.brand {
+    border-color: #2dd4bf;
+    background: linear-gradient(180deg, #0f2a28 0%, #0e1624 100%);
+  }
+  .label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #5eead4;
+    margin-bottom: 8px;
+    font-weight: 600;
+  }
+  .label.muted { color: #7c8da6; }
+  .title {
+    font-size: 15px;
+    font-weight: 600;
+    margin-bottom: 6px;
+  }
+  .desc {
+    font-size: 12.5px;
+    line-height: 1.45;
+    color: #a8b6cc;
+  }
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+  }
+  .chip {
+    font-size: 11px;
+    padding: 3px 8px;
+    border-radius: 999px;
+    background: #1a2438;
+    border: 1px solid #2c3b55;
+    color: #c5d0e0;
+  }
+  .chip.teal {
+    background: rgba(45, 212, 191, 0.12);
+    border-color: rgba(45, 212, 191, 0.35);
+    color: #99f6e4;
+  }
+  .arrow-row {
+    display: flex;
+    justify-content: center;
+    color: #3d4f6a;
+    font-size: 18px;
+    height: 10px;
+    align-items: center;
+    letter-spacing: 24px;
+  }
+  .footer {
+    margin-top: 18px;
+    font-size: 12px;
+    color: #6b7c95;
+    display: flex;
+    justify-content: space-between;
+  }
+  .band {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: #5a6d88;
+    margin: 2px 0 4px;
+  }
+</style>
+</head>
+<body>
+  <h1>Forge architecture</h1>
+  <p class="sub">One agent core · many surfaces · LiteLLM for live models · journal-backed resume</p>
+
+  <div class="stack">
+    <div class="band">You</div>
+    <div class="row surfaces">
+      <div class="card">
+        <div class="label muted">Surface</div>
+        <div class="title">Full-screen TUI</div>
+        <div class="desc">Chat, tools, slash commands, HITL overlays, session chrome</div>
+        <div class="chips"><span class="chip">forge tui</span></div>
+      </div>
+      <div class="card">
+        <div class="label muted">Surface</div>
+        <div class="title">CLI &amp; REPL</div>
+        <div class="desc">One-shot runs, line-mode chat, connect, approve/deny</div>
+        <div class="chips"><span class="chip">forge run</span><span class="chip">forge repl</span></div>
+      </div>
+      <div class="card">
+        <div class="label muted">Surface</div>
+        <div class="title">Headless / CI</div>
+        <div class="desc">Scripted jobs, exit codes, mock provider for offline tests</div>
+        <div class="chips"><span class="chip">--mock</span><span class="chip">exit codes</span></div>
+      </div>
+    </div>
+
+    <div class="arrow-row">▼ ▼ ▼</div>
+    <div class="band">Harness core</div>
+
+    <div class="row core">
+      <div class="card brand">
+        <div class="label">Agent session</div>
+        <div class="title">Plan → act → observe</div>
+        <div class="desc">Shared loop for every surface. Tools, context budget, handoff, worktree isolation.</div>
+        <div class="chips">
+          <span class="chip teal">forge-core</span>
+          <span class="chip teal">tools</span>
+          <span class="chip teal">context</span>
+        </div>
+      </div>
+      <div class="card accent">
+        <div class="label">Durability</div>
+        <div class="title">Event journal</div>
+        <div class="desc">SQLite append-only log. Resume after crash without redoing finished steps.</div>
+        <div class="chips"><span class="chip teal">DUR-01/02</span></div>
+      </div>
+      <div class="card accent">
+        <div class="label">Governance</div>
+        <div class="title">ACL · secrets · HITL</div>
+        <div class="desc">Filter tools, inject keys at call time, pause for human approval.</div>
+        <div class="chips"><span class="chip teal">SEC</span><span class="chip teal">HITL</span></div>
+      </div>
+    </div>
+
+    <div class="arrow-row">▼</div>
+    <div class="band">Models</div>
+
+    <div class="row model">
+      <div class="card">
+        <div class="label muted">Offline / CI</div>
+        <div class="title">Mock client</div>
+        <div class="desc">No network, no Python worker. Scripted responses for tests and demos.</div>
+        <div class="chips"><span class="chip">--mock</span></div>
+      </div>
+      <div class="card brand">
+        <div class="label">Production</div>
+        <div class="title">LiteLLM worker (Python SDK)</div>
+        <div class="desc">Single live path for OpenAI, Anthropic, xAI, and the long tail. Not the LiteLLM Proxy gateway.</div>
+        <div class="chips">
+          <span class="chip teal">stdio JSON-RPC</span>
+          <span class="chip teal">any LiteLLM model id</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="arrow-row">▼</div>
+    <div class="band">Outside the harness</div>
+
+    <div class="row extern">
+      <div class="card">
+        <div class="label muted">Workspace</div>
+        <div class="title">Your repo</div>
+        <div class="desc">Files, bash, grep, optional worktree</div>
+      </div>
+      <div class="card">
+        <div class="label muted">Tools</div>
+        <div class="title">Built-ins + MCP</div>
+        <div class="desc">web_search, servers you configure</div>
+      </div>
+      <div class="card">
+        <div class="label muted">Providers</div>
+        <div class="title">Cloud / local LLMs</div>
+        <div class="desc">Via LiteLLM model strings</div>
+      </div>
+      <div class="card">
+        <div class="label muted">Secrets</div>
+        <div class="title">Env · credentials · vault</div>
+        <div class="desc">Never in chat transcripts</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">
+    <span>Forge · AI coding agent harness</span>
+    <span>docs/architecture.md</span>
+  </div>
+</body>
+</html>

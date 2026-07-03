@@ -12,6 +12,23 @@ Forge is a **coding agent harness**: it runs a plan–act–observe loop with sc
 
 ---
 
+## Terminal UI
+
+Full-screen session view: status chrome (provider · model · context), chat, tools, and sidebar.
+
+<p align="center">
+  <img src="docs/ui/images/01-home.png" alt="Forge TUI home / idle session" width="900" />
+</p>
+
+| Chat & tools | Approvals & safety |
+|:---:|:---:|
+| <img src="docs/ui/images/02-chat-streaming.png" alt="Streaming chat response" width="440" /> | <img src="docs/ui/images/04-hitl-approval.png" alt="Human-in-the-loop approval modal" width="440" /> |
+| <img src="docs/ui/images/03-tool-execution.png" alt="Tool execution cards" width="440" /> | <img src="docs/ui/images/07-slash-commands.png" alt="Slash command palette" width="440" /> |
+
+More screens (context handoff, resume, worktree, errors): **[docs/ui.md](./docs/ui.md)** · [all mockups](./docs/ui/images/).
+
+---
+
 ## What you can do
 
 | Goal | How |
@@ -209,22 +226,28 @@ forge --worktree --mock run "try a risky edit"
 
 ---
 
-## How it works (short)
+## How it works
 
-```text
-You (TUI / CLI / headless)
-        │
-        ▼
-   Agent session  ── journal (SQLite) ──► crash-safe resume
-        │
-        ├─► tools (files, bash, grep, web_search, MCP)
-        ├─► governance (ACL, secrets, HITL, sandbox hooks)
-        └─► model
-                ├─ mock          (CI / --mock)
-                └─ LiteLLM worker (Python SDK, all live providers)
+One agent core for every surface. Live models go through a Forge-managed **LiteLLM Python SDK** worker (not the LiteLLM Proxy). Sessions are journaled for crash-safe resume.
+
+<p align="center">
+  <img src="docs/images/architecture.png" alt="Forge architecture: surfaces, agent session, journal, governance, mock vs LiteLLM, workspace and tools" width="900" />
+</p>
+
+<details>
+<summary>Regenerate the architecture diagram</summary>
+
+```bash
+CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+"$CHROME" --headless=new --disable-gpu --hide-scrollbars \
+  --window-size=1200,960 \
+  --screenshot=docs/images/architecture.png \
+  "file://$(pwd)/docs/images/architecture.html"
 ```
 
-You stay in one agent core across terminal TUI, REPL, and headless runs — no second implementation.
+Source: [docs/images/architecture.html](./docs/images/architecture.html). Full write-up: [docs/architecture.md](./docs/architecture.md).
+
+</details>
 
 ---
 
@@ -235,7 +258,7 @@ You stay in one agent core across terminal TUI, REPL, and headless runs — no s
 | Product goals & roadmap | [docs/prd.md](./docs/prd.md) |
 | System design | [docs/architecture.md](./docs/architecture.md) |
 | TUI screens & layout | [docs/ui.md](./docs/ui.md) |
-| Design specs (by phase) | [docs/designs/README.md](./docs/designs/README.md) |
+| Design specs (by phase) | [docs/designs/README.md](./designs/README.md) |
 | LiteLLM worker | [workers/forge-litellm-worker/README.md](./workers/forge-litellm-worker/README.md) |
 
 ---
