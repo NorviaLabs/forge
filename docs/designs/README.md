@@ -16,7 +16,7 @@
 
 1. **Exclusive phase ownership** — Each design doc’s header **Phase:** field is a single number (1–10). No multi-phase owners.  
 2. **Exclusive req ownership** — Each PRD req ID appears in exactly one design doc as primary owner.  
-3. **Product-complete phases** — See [prd.md](../prd.md) §13: through Phase 9 web search; Phase 10 operator-visible TUI.  
+3. **Product-complete phases** — Delivery phases and design ownership live in [architecture.md](../architecture.md) §14; PRD owns outcomes and req IDs.
 4. **Cross-phase references** are allowed as *dependencies* (“builds on Phase 1 journal”) but must not re-specify the other phase’s design.
 
 ## Index by phase
