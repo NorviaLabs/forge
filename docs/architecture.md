@@ -65,7 +65,7 @@ Aligned with [prd.md](./prd.md) §6 (wording here is architecture-oriented).
 | Proprietary single-client lock-in | Prefer open MCP + ACP |
 | Opaque execution without audit logs | Enterprise requires immutable invocation records |
 
-Phase-scoped features (multi-channel fleet, SCIM, full eBPF, SIEM plugins) land after core durability and protocols—see §14 and [prd.md](./prd.md) §13. Design details: [designs/README.md](./designs/README.md).
+Phase-scoped features (multi-channel fleet, SCIM, full eBPF, SIEM plugins) land after core durability and protocols—see §14. Design details: [designs/README.md](./designs/README.md).
 
 ---
 
@@ -831,7 +831,7 @@ Immutable audit log: tool invocations, arg payloads (redacted), model response m
 
 ## 14. Implementation order (deterministic, product-complete)
 
-Aligned with [prd.md](./prd.md) §13. Each phase is a **complete product**. Req IDs and design docs do not cross phases.
+Each phase is a **complete product**. Req IDs and design docs do not cross phases (exclusive ownership).
 
 ### Phase ownership (exclusive)
 
@@ -1264,7 +1264,7 @@ Same strict order as §14 Phase 1. ACP is **CORE-03 / Phase 2 only**.
 
 ## Open questions
 
-Resolved: `progress.json` path; sequential tools Phase 1; **CORE-02=MCP / CORE-03=ACP**; exclusive phase + design-doc ownership (PRD §13).
+Resolved: `progress.json` path; sequential tools Phase 1; **CORE-02=MCP / CORE-03=ACP**; exclusive phase + design-doc ownership.
 
 | # | Question | Options / notes | Decision |
 |---|----------|-----------------|----------|
