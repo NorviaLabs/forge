@@ -237,14 +237,6 @@ One agent core for every surface. Live models go through a Forge-managed **LiteL
 <details>
 <summary>Regenerate the architecture diagram</summary>
 
-```bash
-CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-"$CHROME" --headless=new --disable-gpu --hide-scrollbars \
-  --window-size=1200,960 \
-  --screenshot=docs/images/architecture.png \
-  "file://$(pwd)/docs/images/architecture.html"
-```
-
 Source: [docs/images/architecture.html](./docs/images/architecture.html). Full write-up: [docs/architecture.md](./docs/architecture.md).
 
 </details>
