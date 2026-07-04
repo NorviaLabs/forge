@@ -90,7 +90,7 @@ pub fn handle_overlay_key(app: &mut TuiApp, key: KeyEvent) -> bool; // consumed?
 | Item | Phase |
 |------|-------|
 | This entire document | **4** |
-| Exit | HITL + `/` palette usable by keyboard alone in `forge tui` |
+| Exit | HITL + `/` palette usable by keyboard alone in `forge` |
 
 ## 7. Open questions
 

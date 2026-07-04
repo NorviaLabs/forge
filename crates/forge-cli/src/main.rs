@@ -23,7 +23,13 @@ use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
 #[derive(Parser, Debug)]
-#[command(name = "forge", version, about = "Forge AI agent harness (Phase 1–4)")]
+#[command(
+    name = "forge",
+    version,
+    about = "Forge AI coding agent — default opens the full-screen TUI",
+    long_about = "Run `forge` with no subcommand to open the full-screen terminal UI.\n\
+Use subcommands for headless run, REPL, connect, status, and ops tools."
+)]
 struct Cli {
     #[arg(long, global = true)]
     config: Option<PathBuf>,
@@ -38,8 +44,14 @@ struct Cli {
     /// Enable git worktree isolation (Phase 2 CTX-03)
     #[arg(long, global = true)]
     worktree: bool,
+    /// Resume session (TUI default mode, or with `run` / `repl`)
+    #[arg(long, global = true)]
+    resume: Option<Uuid>,
+    /// Max agent turns for default TUI (subcommand flags override when present)
+    #[arg(long, default_value_t = 32)]
+    max_turns: u32,
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -55,13 +67,6 @@ enum Commands {
         #[arg(long)]
         resume: Option<Uuid>,
         #[arg(long, default_value_t = 16)]
-        max_turns: u32,
-    },
-    /// Phase 4: full-screen terminal TUI (ratatui)
-    Tui {
-        #[arg(long)]
-        resume: Option<Uuid>,
-        #[arg(long, default_value_t = 32)]
         max_turns: u32,
     },
     Status,
@@ -140,20 +145,42 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     let cfg = Config::load(overrides).map_err(|e| anyhow::anyhow!(e))?;
 
     match cli.command {
-        Commands::Status => {
+        // Default: full-screen TUI (`forge` / `forge --mock` / `forge --resume …`)
+        None => {
+            let session = open_session(
+                &cfg,
+                cli.mock,
+                cli.max_turns,
+                cli.resume,
+                cli.worktree,
+            )
+            .await?;
+            let runtime = TuiRuntimeConfig {
+                model_label: cfg.model.model.clone(),
+                provider: cfg.model.provider.as_str().into(),
+                cwd: cfg.workspace_root().to_path_buf(),
+                version: env!("CARGO_PKG_VERSION").into(),
+            };
+            let code = run_tui(session, runtime)
+                .await
+                .map_err(|e| anyhow::anyhow!(e))?;
+            Ok(code)
+        }
+        Some(Commands::Status) => {
             println!(
-                "forge 0.8.0 phase8\nworkspace {}\nprovider {} model {}",
+                "forge {}\nworkspace {}\nprovider {} model {}",
+                env!("CARGO_PKG_VERSION"),
                 cfg.workspace_root().display(),
                 cfg.model.provider.as_str(),
                 cfg.model.model
             );
             Ok(ExitCode::Success)
         }
-        Commands::Connect {
+        Some(Commands::Connect {
             profile,
             key,
             key_file,
-        } => {
+        }) => {
             let reg = builtin_registry();
             let store = CredentialStore::user_default();
             let mut active_profile = None;
@@ -209,28 +236,12 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 }
             }
         }
-        Commands::Tui {
-            resume,
-            max_turns,
-        } => {
-            let session =
-                open_session(&cfg, cli.mock, max_turns, resume, cli.worktree).await?;
-            let runtime = TuiRuntimeConfig {
-                model_label: cfg.model.model.clone(),
-                provider: cfg.model.provider.as_str().into(),
-                cwd: cfg.workspace_root().to_path_buf(),
-                version: "forge 0.8.0".into(),
-            };
-            let code = run_tui(session, runtime)
-                .await
-                .map_err(|e| anyhow::anyhow!(e))?;
-            Ok(code)
-        }
-        Commands::Run {
+        Some(Commands::Run {
             prompt,
             resume,
             max_turns,
-        } => {
+        }) => {
+            let resume = resume.or(cli.resume);
             let mut session =
                 open_session(&cfg, cli.mock, max_turns, resume, cli.worktree).await?;
             let _resp = session.run_user_message(&prompt).await?;
@@ -238,10 +249,11 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             println!("session_id={}", session.session_id);
             Ok(exit_for_status(session.status))
         }
-        Commands::Repl {
+        Some(Commands::Repl {
             resume,
             max_turns,
-        } => {
+        }) => {
+            let resume = resume.or(cli.resume);
             let mut session =
                 open_session(&cfg, cli.mock, max_turns, resume, cli.worktree).await?;
             println!("Forge REPL — session {}", session.session_id);
@@ -378,19 +390,19 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             }
             Ok(ExitCode::Success)
         }
-        Commands::Approve { session } => {
+        Some(Commands::Approve { session }) => {
             let mut s = open_session(&cfg, cli.mock, 8, Some(session), cli.worktree).await?;
             s.resolve_hitl(HitlDecision::Approve, "cli").await?;
             println!("approved");
             Ok(ExitCode::Success)
         }
-        Commands::Deny { session } => {
+        Some(Commands::Deny { session }) => {
             let mut s = open_session(&cfg, cli.mock, 8, Some(session), cli.worktree).await?;
             s.resolve_hitl(HitlDecision::Deny, "cli").await?;
             println!("denied");
             Ok(ExitCode::Success)
         }
-        Commands::Feedback { sensors, criteria } => {
+        Some(Commands::Feedback { sensors, criteria }) => {
             use forge_feedback::{
                 CommandSensor, FeedbackConfig, FeedbackGate, SensorContext,
             };
@@ -431,7 +443,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 ExitCode::Failed
             })
         }
-        Commands::Channel { kind, text } => {
+        Some(Commands::Channel { kind, text }) => {
             use forge_channels::{ChannelGateway, ChannelKind, ChannelMessage};
             use forge_model::MockModelClient;
             let kind = match kind.to_ascii_lowercase().as_str() {
@@ -479,7 +491,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             );
             Ok(ExitCode::Success)
         }
-        Commands::Fleet { scim, siem } => {
+        Some(Commands::Fleet { scim, siem }) => {
             use forge_fleet::{FleetConfig, FleetPluginRegistry, ScimUser, SiemEncoding};
             use forge_governance::{AuditEvent, AuditLog};
             use forge_types::PolicyDecision;

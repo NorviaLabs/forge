@@ -107,7 +107,7 @@ Do not use Up/Down for chat scroll while input is focused.
 
 ### 3.7 Line-mode REPL (optional mirror)
 
-Phase 7 **primary** surface is `forge tui`. REPL may reuse `InputHistory` later; not required for exit.
+Phase 7 **primary** surface is `forge`. REPL may reuse `InputHistory` later; not required for exit.
 
 ## 4. Interfaces
 
@@ -150,7 +150,7 @@ On Up/Down: set `input.text` and `input.cursor = text.len()`.
 2. Up/Down inside slash palette still move palette selection (no history).  
 3. Empty and secret-like lines not stored.  
 4. Unit tests for `InputHistory` without TTY.  
-5. Manual: `forge tui` arrow history works for prompts and `/status`-style commands.
+5. Manual: `forge` arrow history works for prompts and `/status`-style commands.
 
 ## Related docs
 
