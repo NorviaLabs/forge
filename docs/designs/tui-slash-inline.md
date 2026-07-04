@@ -5,7 +5,7 @@
 **Last updated:** 23 Jul 2026  
 **Phase:** **8 only** (exclusive)  
 **PRD:** TUI-06  
-**Architecture:** §14 Phase 8, decision #21  
+**Architecture:** Phase 8, decision #21  
 **Related:** [tui-slash-autocomplete.md](./tui-slash-autocomplete.md) (Phase **8.1** Tab + highlight), [tui-shell.md](./tui-shell.md), [tui-overlays.md](./tui-overlays.md), [tui-commands.md](./tui-commands.md), [tui-input-history.md](./tui-input-history.md)
 
 ---

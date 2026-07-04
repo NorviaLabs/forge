@@ -10,7 +10,7 @@
 
 ## Purpose
 
-Visual reference for the **full-screen terminal TUI** surface (`forge tui` / ratatui). Mockups are **Phase 4 design targets** (see [architecture.md](./architecture.md) §14 Phase 4), not screenshots of a shipped binary. Phases 1–3 may use line-mode `repl` / headless; Phase 4 owns the ratatui app.
+Visual reference for the **full-screen terminal TUI** surface (`forge tui` / ratatui). Mockups are **Phase 4 design targets** (see [architecture.md](./architecture.md) Phase 4), not screenshots of a shipped binary. Phases 1–3 may use line-mode `repl` / headless; Phase 4 owns the ratatui app.
 
 | Asset | Path |
 |-------|------|
@@ -412,7 +412,7 @@ Suggested ratatui split: top status (1–2 rows); horizontal chat | sidebar; not
 ## Related docs
 
 - Product requirements: [prd.md](./prd.md) (Phase 4 TUI-01…04; Phase 10 TUI-08…10)  
-- Architecture & flows: [architecture.md](./architecture.md) §14 Phase 4 / Phase 10  
+- Architecture & flows: [architecture.md](./architecture.md) Phase 4 / Phase 10  
 - Design docs: [designs/README.md](./designs/README.md)  
 - Phase 4 designs: [tui-shell](./designs/tui-shell.md) · [tui-conversation](./designs/tui-conversation.md) · [tui-sidebar](./designs/tui-sidebar.md) · [tui-overlays](./designs/tui-overlays.md)  
 - Phase 10 designs: [tui-status-feedback](./designs/tui-status-feedback.md) · [tui-session-chrome](./designs/tui-session-chrome.md) · [tui-activity-feed](./designs/tui-activity-feed.md)  

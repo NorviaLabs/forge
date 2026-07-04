@@ -5,7 +5,7 @@
 **Last updated:** 23 Jul 2026  
 **Phase:** **4 only** (exclusive)  
 **PRD:** TUI-02  
-**Architecture:** §14 Phase 4  
+**Architecture:** Phase 4  
 **UI reference:** [../ui.md](../ui.md) screens 02, 03, 05, 10, 12  
 
 ---

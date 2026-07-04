@@ -5,7 +5,7 @@
 **Last updated:** 22 Jul 2026  
 **Phase:** **2 only** (exclusive)  
 **PRD:** SEC-01, SEC-02, SEC-03  
-**Architecture:** §2.2, §10, §14 Phase 2  
+**Architecture:** §2.2, §10, Phase 2  
 **Related:** [tool-protocol.md](./tool-protocol.md), [durable-hitl.md](./durable-hitl.md)
 
 ---

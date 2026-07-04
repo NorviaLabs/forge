@@ -5,7 +5,7 @@
 **Last updated:** 22 Jul 2026  
 **Phase:** **2 only** (exclusive)  
 **PRD:** CORE-03  
-**Architecture:** §8, §14 Phase 2  
+**Architecture:** §8, Phase 2  
 **Related:** [surfaces.md](./surfaces.md) (Phase 1 surfaces), [durable-hitl.md](./durable-hitl.md)
 
 ---

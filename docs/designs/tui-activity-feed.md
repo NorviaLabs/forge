@@ -5,7 +5,7 @@
 **Last updated:** 23 Jul 2026  
 **Phase:** **10 only** (exclusive)  
 **PRD:** **TUI-10** (primary)  
-**Architecture:** §14 Phase 10, decision #26  
+**Architecture:** Phase 10, decision #26  
 **Related:** [tui-status-feedback.md](./tui-status-feedback.md), [tui-session-chrome.md](./tui-session-chrome.md), [tui-sidebar.md](./tui-sidebar.md), [tui-conversation.md](./tui-conversation.md), [../ui.md](../ui.md)
 
 ---

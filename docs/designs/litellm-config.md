@@ -5,7 +5,7 @@
 **Last updated:** 23 Jul 2026  
 **Phase:** **5 only** (exclusive)  
 **PRD:** MDL-01 (supporting — config surface + migration)  
-**Architecture:** §9, §14 Phase 5, decision #12 / #18  
+**Architecture:** §9, Phase 5, decision #12 / #18  
 **Related:** [litellm-providers.md](./litellm-providers.md), [litellm-worker.md](./litellm-worker.md), [configuration.md](./configuration.md) (Phase 1 merge rules only)
 
 ---
