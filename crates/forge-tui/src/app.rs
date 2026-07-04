@@ -884,7 +884,7 @@ impl TuiApp {
                 }
                 Ok(SlashCommand::Resume { session_id }) => {
                     let msg = format!(
-                        "To resume {session_id}, restart: forge tui --resume {session_id}"
+                        "To resume {session_id}, restart: forge --resume {session_id}"
                     );
                     self.status_message = "resume requires CLI restart".into();
                     self.notices = vec![msg];

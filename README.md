@@ -33,13 +33,13 @@ More screens (context handoff, resume, worktree, errors): **[docs/ui.md](./docs/
 
 | Goal | How |
 |------|-----|
-| Chat and edit code in a full-screen UI | `forge tui` |
+| Chat and edit code in a full-screen UI | `forge` |
 | One-shot task from the shell | `forge run "…"` |
 | Interactive line mode | `forge repl` |
 | Connect Grok or OpenCode Go | `forge connect` or `/connect` in the TUI |
 | Safe experimental edits | `forge --worktree run "…"` |
 | Offline / CI without a model | `forge --mock …` |
-| Resume after a crash | `forge tui --resume <session-id>` |
+| Resume after a crash | `forge --resume <session-id>` |
 
 ---
 
@@ -84,7 +84,7 @@ forge status
 ```bash
 forge --mock status
 forge --mock run "hello"
-forge --mock tui          # full-screen UI
+forge --mock          # full-screen UI
 forge --mock repl         # line-mode chat
 ```
 
@@ -98,7 +98,7 @@ export FORGE_MODEL_PROVIDER=litellm
 export FORGE_MODEL_ID=openai/gpt-4.1-mini
 
 forge run "Summarize what this repository does"
-forge tui
+forge
 ```
 
 ### 3. Connect product profiles (TUI or CLI)
@@ -197,28 +197,30 @@ provider = "mock"
 ## CLI reference
 
 ```text
-forge [OPTIONS] <COMMAND>
+forge [OPTIONS] [COMMAND]
 ```
 
 | Command | Description |
 |---------|-------------|
+| *(none)* | **Default:** open full-screen TUI |
 | `status` | Version, workspace, model |
 | `run <prompt>` | Headless one-shot agent turn(s) |
 | `repl` | Interactive line-mode agent |
-| `tui` | Full-screen terminal UI |
 | `connect [profile]` | List / connect / status for Grok & OpenCode Go |
 | `approve` / `deny` | Resolve human-in-the-loop for a session |
 | `feedback` | Run quality sensors (EVAL) |
 | `channel` | Restricted channel-style ingress |
 | `fleet` | Fleet plugins / SIEM demo hooks |
 
-**Global flags:** `--config` · `--workspace` · `--provider` · `--model` · `--mock` · `--worktree`
+**Global flags:** `--config` · `--workspace` · `--provider` · `--model` · `--mock` · `--worktree` · `--resume` · `--max-turns`
 
 **Useful options:**
 
 ```bash
-forge run "…" --resume <uuid> --max-turns 16
-forge tui --resume <uuid>
+forge                              # TUI
+forge --mock                       # TUI offline
+forge --resume <uuid>              # resume session in TUI
+forge run "…" --max-turns 16
 forge --worktree --mock run "try a risky edit"
 ```
 
