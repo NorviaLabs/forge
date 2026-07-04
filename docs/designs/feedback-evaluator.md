@@ -5,7 +5,7 @@
 **Last updated:** 22 Jul 2026  
 **Phase:** **3 only** (exclusive)  
 **PRD:** EVAL-01  
-**Architecture:** §4.7, §5.9, §14 Phase 3  
+**Architecture:** §4.7, §5.9, Phase 3  
 **Related:** [agent-loop.md](./agent-loop.md) (Phase 1 hooks)
 
 ---

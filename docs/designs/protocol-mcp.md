@@ -5,7 +5,7 @@
 **Last updated:** 22 Jul 2026  
 **Phase:** **1 only** (exclusive)  
 **PRD:** CORE-02  
-**Architecture:** §2, §14 Phase 1  
+**Architecture:** §2, Phase 1  
 **Related:** [tool-protocol.md](./tool-protocol.md), [surfaces.md](./surfaces.md)
 
 ---

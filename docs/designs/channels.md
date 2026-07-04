@@ -5,7 +5,7 @@
 **Last updated:** 22 Jul 2026  
 **Phase:** **3 only** (exclusive)  
 **PRD:** CH-01  
-**Architecture:** §5.10, §14 Phase 3  
+**Architecture:** §5.10, Phase 3  
 **Related:** [governance.md](./governance.md) (Phase 2 ACL), [fleet-plugins.md](./fleet-plugins.md)
 
 ---

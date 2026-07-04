@@ -5,7 +5,7 @@
 **Last updated:** 22 Jul 2026  
 **Phase:** **3 only** (exclusive)  
 **PRD:** FLEET-01  
-**Architecture:** §14 Phase 3  
+**Architecture:** Phase 3  
 **Related:** [observability.md](./observability.md), [governance.md](./governance.md)
 
 ---

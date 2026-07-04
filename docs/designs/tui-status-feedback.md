@@ -5,7 +5,7 @@
 **Last updated:** 23 Jul 2026  
 **Phase:** **10 only** (exclusive)  
 **PRD:** **TUI-08** (primary)  
-**Architecture:** §14 Phase 10, decision #24  
+**Architecture:** Phase 10, decision #24  
 **Related:** [tui-session-chrome.md](./tui-session-chrome.md), [tui-activity-feed.md](./tui-activity-feed.md), [tui-conversation.md](./tui-conversation.md) (Phase 4), [tui-shell.md](./tui-shell.md) (Phase 4), [../ui.md](../ui.md)
 
 ---

@@ -5,7 +5,7 @@
 **Last updated:** 23 Jul 2026  
 **Phase:** **5 only** (exclusive)  
 **PRD:** MDL-01 (supporting — process boundary)  
-**Architecture:** §14 Phase 5, decision #18  
+**Architecture:** Phase 5, decision #18  
 **Related:** [litellm-providers.md](./litellm-providers.md), [litellm-wire.md](./litellm-wire.md), [litellm-config.md](./litellm-config.md)
 
 ---

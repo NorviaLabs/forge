@@ -5,7 +5,7 @@
 **Last updated:** 22 Jul 2026  
 **Phase:** **2 only** (exclusive)  
 **PRD:** CTX-01, CTX-02  
-**Architecture:** §4.6, §5.8, §14 Phase 2  
+**Architecture:** §4.6, §5.8, Phase 2  
 **Related:** [workspace-isolation.md](./workspace-isolation.md), [durable-execution.md](./durable-execution.md) (Phase 1 journal)
 
 ---

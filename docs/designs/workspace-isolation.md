@@ -5,7 +5,7 @@
 **Last updated:** 22 Jul 2026  
 **Phase:** **2 only** (exclusive)  
 **PRD:** CTX-03  
-**Architecture:** §14 Phase 2  
+**Architecture:** Phase 2  
 **Related:** [context-lifecycle.md](./context-lifecycle.md), [tool-protocol.md](./tool-protocol.md)
 
 ---
