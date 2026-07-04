@@ -134,7 +134,7 @@ KeyCode::Enter => {
 
 ## 7. Acceptance
 
-1. In `forge tui`, type `/status` in the main textbox and press Enter → status updates (no forced palette).  
+1. In `forge`, type `/status` in the main textbox and press Enter → status updates (no forced palette).  
 2. Typing a lone `/` leaves `/` visible in the textbox.  
 3. Ctrl+K (or documented key) still opens the command palette.  
 4. `/connect list` and other multi-token commands work when typed fully.  

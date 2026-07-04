@@ -932,7 +932,7 @@ Forge is the **harness** between models and the real world: a typed tool bus, an
 | LiteLLM (Phase 5) | **Required** for live model calls: **Python** + `litellm`; long-lived worker preferred; **no** proxy server; natives deleted |
 | Connect profiles (Phase 6) | Registry + `/connect`; still `LiteLlmModelClient` |
 | Connect auth (6.1) | `AuthMode::Oauth` (xAI) vs `AuthMode::ApiKey` + TUI prompt (OpenCode Go); tokens/keys in 0600 store |
-| Surfaces | Phase 1: line-mode `repl` + headless `forge-cli`; Phase 2: `forge-acp`; Phase 3: channels; Phase 4: full-screen ratatui `forge tui`; Phase 6: `/connect` in TUI + REPL; Phase 7: TUI input history (Up/Down); Phase 8: inline slash; Phase 10: operator-visible chrome/feedback/activity |
+| Surfaces | Phase 1: line-mode `repl` + headless `forge-cli`; Phase 2: `forge-acp`; Phase 3: channels; Phase 4: full-screen ratatui `forge`; Phase 6: `/connect` in TUI + REPL; Phase 7: TUI input history (Up/Down); Phase 8: inline slash; Phase 10: operator-visible chrome/feedback/activity |
 | Web search (Phase 9) | `WebSearchTool` in `forge-tools`; `SearchBackend` trait; config `[tools.web_search]`; mock for CI |
 | TUI visibility (Phase 10) | `FeedbackBar`, `SessionChromeModel`, `ActivityFeed`, `BusyPhase` in `forge-tui` |
 | Config | TOML (`forge.toml` or XDG config path) merged with env overrides |

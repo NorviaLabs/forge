@@ -10,7 +10,7 @@
 
 ## Purpose
 
-Visual reference for the **full-screen terminal TUI** surface (`forge tui` / ratatui). Mockups are **Phase 4 design targets** (see [architecture.md](./architecture.md) Phase 4), not screenshots of a shipped binary. Phases 1–3 may use line-mode `repl` / headless; Phase 4 owns the ratatui app.
+Visual reference for the **full-screen terminal TUI** surface (`forge` / ratatui). Mockups are **Phase 4 design targets** (see [architecture.md](./architecture.md) Phase 4), not screenshots of a shipped binary. Phases 1–3 may use line-mode `repl` / headless; Phase 4 owns the ratatui app.
 
 | Asset | Path |
 |-------|------|
