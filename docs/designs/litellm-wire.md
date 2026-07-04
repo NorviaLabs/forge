@@ -5,7 +5,7 @@
 **Last updated:** 23 Jul 2026  
 **Phase:** **5 only** (exclusive)  
 **PRD:** MDL-01 (supporting — IPC contract)  
-**Architecture:** §14 Phase 5  
+**Architecture:** Phase 5  
 **Related:** [litellm-worker.md](./litellm-worker.md), [litellm-normalization.md](./litellm-normalization.md), [litellm-providers.md](./litellm-providers.md)
 
 ---

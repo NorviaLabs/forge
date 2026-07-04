@@ -5,7 +5,7 @@
 **Last updated:** 23 Jul 2026  
 **Phase:** **10 only** (exclusive)  
 **PRD:** **TUI-09** (primary)  
-**Architecture:** §14 Phase 10, decision #25  
+**Architecture:** Phase 10, decision #25  
 **Related:** [tui-status-feedback.md](./tui-status-feedback.md), [tui-activity-feed.md](./tui-activity-feed.md), [tui-shell.md](./tui-shell.md), [tui-sidebar.md](./tui-sidebar.md), [connect-command.md](./connect-command.md), [../ui.md](../ui.md)
 
 ---

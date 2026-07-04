@@ -5,7 +5,7 @@
 **Last updated:** 23 Jul 2026  
 **Phase:** **7 only** (exclusive)  
 **PRD:** TUI-05  
-**Architecture:** §14 Phase 7, decision #20  
+**Architecture:** Phase 7, decision #20  
 **Related:** [tui-shell.md](./tui-shell.md) (input bar region), [tui-overlays.md](./tui-overlays.md) (history inactive under overlays)
 
 ---

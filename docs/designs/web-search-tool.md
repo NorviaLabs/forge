@@ -5,7 +5,7 @@
 **Last updated:** 23 Jul 2026  
 **Phase:** **9 only** (exclusive)  
 **PRD:** **WEB-01** (primary)  
-**Architecture:** §14 Phase 9, decision #23  
+**Architecture:** Phase 9, decision #23  
 **Related:** [tool-protocol.md](./tool-protocol.md) (Phase 1 CORE-01), [governance.md](./governance.md) (Phase 2 SEC-*), [configuration.md](./configuration.md) (Phase 1 base config merge), [agent-loop.md](./agent-loop.md), [context-lifecycle.md](./context-lifecycle.md)
 
 ---
@@ -258,5 +258,5 @@ No new workspace crate is required for v1; split only if HTTP client surface gro
 - [tool-protocol.md](./tool-protocol.md)  
 - [governance.md](./governance.md)  
 - [context-lifecycle.md](./context-lifecycle.md)  
-- [../architecture.md](../architecture.md) §14 Phase 9  
+- [../architecture.md](../architecture.md) Phase 9  
 - [../prd.md](../prd.md) WEB-01  
