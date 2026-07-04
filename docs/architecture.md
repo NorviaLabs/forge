@@ -22,7 +22,7 @@ High-level diagrams in this document use **Mermaid** (`flowchart`, `sequenceDiag
 |------------|---------|
 | Phase tags | e.g. “Phase 3” on channel gateway; path may not ship in Phase 1 |
 | Req IDs | e.g. `DUR-01`, `SEC-02` — map to [prd.md](./prd.md) |
-| No crate names in flow diagrams | Crate layout lives in §16 / architecture decisions |
+| No crate names in flow diagrams | Crate layout lives in §15 / architecture decisions |
 
 The product sits in the agentic stack as follows:
 
@@ -65,7 +65,7 @@ Aligned with [prd.md](./prd.md) §6 (wording here is architecture-oriented).
 | Proprietary single-client lock-in | Prefer open MCP + ACP |
 | Opaque execution without audit logs | Enterprise requires immutable invocation records |
 
-Phase-scoped features (multi-channel fleet, SCIM, full eBPF, SIEM plugins) land after core durability and protocols—see §14. Design details: [designs/README.md](./designs/README.md).
+Phase-scoped features (multi-channel fleet, SCIM, full eBPF, SIEM plugins) land after core durability and protocols—Design details: [designs/README.md](./designs/README.md).
 
 ---
 
@@ -829,321 +829,7 @@ Immutable audit log: tool invocations, arg payloads (redacted), model response m
 
 ---
 
-## 14. Implementation order (deterministic, product-complete)
-
-Each phase is a **complete product**. Req IDs and design docs do not cross phases (exclusive ownership).
-
-### Phase ownership (exclusive)
-
-| Phase | Product name | Owns (req IDs only) | Design docs (only) |
-|-------|--------------|---------------------|--------------------|
-| **1** | Coding agent | CORE-01, CORE-02, DUR-01, DUR-02 | tool-protocol, agent-loop, model-providers, durable-execution, protocol-mcp, configuration, tui-commands, surfaces |
-| **2** | Enterprise long-horizon harness | CORE-03, CTX-01/02/03, DUR-03, SEC-01/02/03 | protocol-acp, durable-hitl, context-lifecycle, workspace-isolation, governance |
-| **3** | Quality, ops & fleet | EVAL-01, OBS-01, CH-01, FLEET-01 | feedback-evaluator, observability, channels, fleet-plugins |
-| **4** | Full-screen terminal TUI | TUI-01, TUI-02, TUI-03, TUI-04 | tui-shell, tui-conversation, tui-sidebar, tui-overlays |
-| **5** | Universal model providers | MDL-01 | litellm-providers, litellm-worker, litellm-wire, litellm-normalization, litellm-config |
-| **6** | Connected providers + `/connect` | CONN-01, PROV-01, PROV-02 | connect-command, connect-auth-modes (6.1), provider-xai-grok (OAuth), provider-opencode-go (TUI API key) |
-| **7** | TUI command history | TUI-05 | tui-input-history |
-| **8** | Inline slash in main textbox | TUI-06, TUI-07 (8.1) | tui-slash-inline, tui-slash-autocomplete |
-| **9** | Built-in web search | WEB-01 | web-search-tool |
-| **10** | Operator-visible TUI | TUI-08, TUI-09, TUI-10 | tui-status-feedback, tui-session-chrome, tui-activity-feed |
-
-### Phase 1 — Coding agent
-
-**Build order (strict):**
-
-1. Workspace skeleton + `forge-types` / config  
-2. Tool registry + schemas (CORE-01)  
-3. Model client + three adapters  
-4. Agent loop + built-ins (sequential tools)  
-5. Journal + resume (DUR-01, DUR-02)  
-6. MCP bridge (CORE-02) — `forge-mcp`  
-7. Line-mode REPL + headless — `forge-tui` (commands/exit codes), `forge-cli`  
-
-**Exit:** Usable coding agent in REPL/CI with MCP + crash resume; Phase 2–4 features not required.
-
-### Phase 2 — Enterprise long-horizon harness
-
-**Build order (strict):**
-
-1. ACP (CORE-03) — `forge-acp`  
-2. Offload + budget (CTX-01)  
-3. Handoff reset (CTX-02)  
-4. Worktree isolation (CTX-03)  
-5. Durable HITL (DUR-03)  
-6. Vault + ACL (SEC-01, SEC-02)  
-7. Container/eBPF sandbox (SEC-03)  
-
-**Exit:** Long-horizon + secured + IDE path complete; Phase 1 still works; Phase 3 not required.
-
-### Phase 3 — Quality, ops & fleet
-
-**Build order (strict):**
-
-1. Dual-sensor feedback (EVAL-01)  
-2. OTEL export (OBS-01)  
-3. Channel gateway (CH-01)  
-4. SCIM + SIEM plugins (FLEET-01)  
-
-**Exit:** Fleet/quality/ops product complete; Phase 1–2 products unchanged.
-
-### Phase 4 — Full-screen terminal TUI
-
-**Product:** Operator-facing **ratatui** application implementing [ui.md](./ui.md) layout and screens 01–12 (information architecture, not pixel-perfect OS chrome).
-
-**Build order (strict):**
-
-1. **TUI-01** shell — app event loop, status bar, footer, input bar, pane layout (`tui-shell`)  
-2. **TUI-02** conversation — message list, tool cards, run/stream banners (`tui-conversation`)  
-3. **TUI-03** sidebar — session, context meter, ACL/tool counts, journal tail (`tui-sidebar`)  
-4. **TUI-04** overlays — HITL modal, slash palette, model picker (`tui-overlays`)  
-5. Wire `forge tui` entrypoint to `AgentSession` (same core as `repl` / headless); keep `repl` as fallback  
-
-**Crate focus:** expand `forge-tui` into a real app module tree; `forge-cli` gains `tui` subcommand. No second agent loop.
-
-**Exit:**
-
-- Full-screen session without line-mode REPL  
-- Sidebar live updates; HITL + `/` palette keyboard-complete  
-- Secrets redacted in all panes  
-- Headless + `repl` unchanged  
-
-**Not Phase 4:** Web UI, IDE chrome, new harness protocols.
-
-### Phase 5 — Universal model providers (LiteLLM SDK only)
-
-**Product:** **One** production model path — LiteLLM Python **library** in a Forge-managed worker. **Remove** Phase 1 native HTTP adapters so OpenAI, Anthropic, xAI, and the long tail share the same code. **Does not** require LiteLLM Proxy. **Mock** remains for offline CI.
-
-**Rationale:** Dual stacks (native Rust + LiteLLM) double maintenance for streaming, tools, retries, and auth with no operator benefit once LiteLLM covers the same vendors.
-
-**Build order (strict):**
-
-1. Config + migration from old provider enums — [litellm-config.md](./designs/litellm-config.md)  
-2. Wire protocol fixtures + mock worker — [litellm-wire.md](./designs/litellm-wire.md)  
-3. Python package `forge-litellm-worker` — [litellm-worker.md](./designs/litellm-worker.md); SDK only  
-4. Normalization complete + stream — [litellm-normalization.md](./designs/litellm-normalization.md)  
-5. Rust `LiteLlmModelClient` + factory; **delete** native adapter modules — [litellm-providers.md](./designs/litellm-providers.md)  
-6. Smoke matrix: ≥3 LiteLLM model ids (include former native vendors); secrets redaction; mock path without Python  
-
-**Crate / package focus:** `forge-model` (LiteLLM client + mock only), `workers/forge-litellm-worker`, `forge-config`. No second agent loop.
-
-**Exit:**
-
-- Production calls use LiteLLM worker only  
-- Same stream/tool envelope as Phase 1  
-- Native OpenAI/Anthropic/xAI clients **gone** from product path  
-- `--mock` works without Python; live path requires worker + litellm  
-- Docs never mandate LiteLLM Proxy  
-
-**Not Phase 5:** Org LLM gateway/proxy product; new tool protocols; keeping dual native+LiteLLM production clients; treating **`fast-litellm`** as a pure-Rust LiteLLM replacement (see [litellm-providers.md](./designs/litellm-providers.md)).
-
-```text
-AgentSession → dyn ModelClient
-                 ├─ MockModelClient          (CI / --mock only)
-                 └─ LiteLlmModelClient       (sole production path)
-                        │ stdio JSON-RPC
-                        ▼
-                   forge-litellm-worker
-                        │ import litellm  # library, not proxy server
-                        ▼
-                   all upstream providers (incl. OpenAI, Anthropic, xAI, …)
-```
-
-### Phase 6 — Connected providers (`/connect`, xAI Grok, OpenCode Go)
-
-**Product:** Operator-facing **connect profiles** so xAI Grok and OpenCode Go work with guided auth, without forking the Phase 5 model client.
-
-**Phase 6.1 auth (normative):**
-
-| Profile | Auth | TUI |
-|---------|------|-----|
-| xAI Grok | **OAuth** (browser / device code vs `accounts.x.ai`) | OAuth overlay only — **no** API-key field |
-| OpenCode Go | **API key** | **Must** prompt for API key (masked modal) |
-
-**Build order (strict):**
-
-1. Connect profile registry + secure credential store — [connect-command.md](./designs/connect-command.md)  
-2. Auth modes (OAuth vs API key) — [connect-auth-modes.md](./designs/connect-auth-modes.md)  
-3. `/connect` slash command + TUI/REPL dispatch by `auth_mode`  
-4. **PROV-01** xAI Grok OAuth — [provider-xai-grok.md](./designs/provider-xai-grok.md)  
-5. **PROV-02** OpenCode Go API key + TUI prompt — [provider-opencode-go.md](./designs/provider-opencode-go.md)  
-6. Wire active profile → LiteLLM model string + worker env (tokens or keys)  
-7. Smoke: Grok (OAuth fixture) + OpenCode Go (key); secrets redacted  
-
-**Crate focus:** `forge-connect` (profiles, store, OAuth client), `forge-tui` (mode-specific overlays), `forge-model` unchanged as sole production path.
-
-**Exit:**
-
-- `/connect` activates Grok via **OAuth** and OpenCode Go via **prompted API key**  
-- Tokens/keys never in journal/UI/OTEL  
-- Live calls still only via LiteLLM worker  
-- Mock path unchanged  
-
-**Not Phase 6:** OpenCode product fork; billing; every OpenCode provider; reintroducing native multi-adapters; API-key primary UX for Grok.
-
-```text
-Operator: /connect
-    → pick profile
-         ├─ xAI Grok      → OAuth → store tokens
-         └─ OpenCode Go   → TUI API key modal → store key
-    → set model id (xai/… or go recommended)
-    → LiteLlmModelClient (Phase 5) + worker env
-```
-
-### Phase 7 — TUI command history (arrow keys)
-
-**Product:** Input-bar **command history** in `forge tui`: **Up/Down** recall submitted lines (prompts + slash commands).
-
-**Build order (strict):**
-
-1. `InputHistory` model (push, up, down, stash draft, max cap, secret filter) — [tui-input-history.md](./designs/tui-input-history.md)  
-2. Wire **Up/Down** in `TuiApp` when `overlay.is_none()`  
-3. On Enter/`take`: `history.push` before dispatch  
-4. Keep overlay Up/Down for lists (no history while overlay open)  
-5. Unit tests + manual TUI smoke  
-
-**Crate focus:** `forge-tui` (`InputHistory` + `app` key handler). No core/agent changes.
-
-**Exit:**
-
-- Up/Down navigate history in main input  
-- Overlays keep list navigation  
-- Secrets/empty not stored  
-- Tests green without TTY  
-
-**Not Phase 7:** Chat scroll with Up/Down; full readline; required disk persistence.
-
-```text
-[no overlay]  Up/Down → InputHistory → input bar text
-[overlay]     Up/Down → palette / list selection (Phase 4)
-PageUp/Down   → conversation scroll (TUI-02) if present
-```
-
-### Phase 8 — Inline slash commands in main textbox
-
-**Product:** Type top-level `/commands` in the TUI **main input** and run with **Enter**—same semantics as REPL—without auto-opening the slash palette on `/`.
-
-**Build order (strict):**
-
-1. Remove “`/` → open palette + clear input” from `TuiApp::handle_key` — [tui-slash-inline.md](./designs/tui-slash-inline.md)  
-2. Insert `/` as a normal character into the input model  
-3. Keep Enter → `history.push` → `dispatch_line` (already parses slash)  
-4. Add explicit palette open: **Ctrl+K** (or documented equivalent)  
-5. Update input hint copy; unit tests for no auto-palette + Enter `/status`  
-6. Manual smoke: `/tools`, `/connect list`, multi-arg commands  
-
-#### Phase 8.1 — Tab autocomplete + highlight (TUI-07)
-
-**Build order (strict):**
-
-1. Suggestions panel while `input` starts with `/` — [tui-slash-autocomplete.md](./designs/tui-slash-autocomplete.md)  
-2. **Tab** completes **highlighted** catalog command into the textbox  
-3. **↑/↓** move highlight when suggestions visible; else history (Phase 7)  
-4. **Caret** reverse-video / block at `input.cursor`; history recall uses caret at end  
-5. Unit + TestBackend visual tests (selected row + caret)  
-
-**Crate focus:** `forge-tui` (`app` suggest index, `InputBar` caret, draw suggestions).
-
-**Exit (8 + 8.1):**
-
-- Full slash commands typed in textbox work  
-- `/` does not force palette  
-- Palette still openable explicitly  
-- **Tab** completes highlighted suggestion  
-- Highlighted suggestion + visible caret  
-- History + overlays unchanged otherwise  
-
-**Not Phase 8:** New command catalog entries; removing palette; fuzzy NLP beyond filter.
-
-```text
-Main textbox:  "/status" + Enter  →  parse_slash → dispatch
-Main textbox:  "/"               →  show "/" in field (stay in Normal mode)
-"/sta" + panel:  ↑↓ highlight · Tab → "/status "
-Ctrl+K:        open Slash palette overlay (discovery)
-History:       Up/Down when no slash suggestions → recalled line + caret
-```
-
-### Phase 9 — Built-in web search tool
-
-**Product:** First-class **`web_search`** built-in so agents can retrieve public web results under the same validate → journal → execute → journal path as other tools. Does **not** require MCP for the default experience.
-
-**Build order (strict):**
-
-1. Config `[tools.web_search]` + env overrides — [web-search-tool.md](./designs/web-search-tool.md)  
-2. `SearchBackend` trait + **mock** backend (deterministic fixtures)  
-3. `WebSearchTool` (schemars args, markdown/JSON-friendly output, `SideEffectClass::Network`)  
-4. Live backends (≥1 of Tavily / Brave / Serper) behind the trait; API key from env/vault only  
-5. Register into builtins when enabled + key policy satisfied; omit when disabled/missing key  
-6. Wire session bootstrap / ACL (`network` / name allow lists)  
-7. Unit tests (validation, mock, registration gating) + optional live smoke  
-8. Confirm TUI tool cards show query redacted (no secrets); journal replay does not re-hit network  
-
-**Crate focus:** `forge-tools` (tool + backends), `forge-config` (settings), existing `forge-core` registration. No new agent loop.
-
-**Exit:**
-
-- Model can call `web_search` when enabled  
-- Mock works offline; live backend works with key  
-- Keys never in journal/UI/OTEL default attributes  
-- DUR-02: completed searches not re-executed on resume  
-- MCP path unchanged  
-
-**Not Phase 9:** Browser automation; HTML SERP scraping without API; mandatory paid API for CI; new model client; required slash `/search`.
-
-```text
-Model → tool_call web_search { query, num_results? }
-         → CORE-01 validate
-         → journal tool_intent
-         → SEC-02 authorize (network)
-         → inject API key (env / vault)
-         → SearchBackend (mock | tavily | brave | serper)
-         → journal tool_result
-         → CTX-01 offload if oversized
-```
-
-### Phase 10 — Operator-visible TUI (chrome, feedback, activity)
-
-**Product:** Fix silent failures and fragmented session identity in `forge tui`. Operators always see **who** they are talking to (provider · model · ctx · profile) and **what happened** (rate limits, tool/model errors, progressive busy).
-
-**Build order (strict):**
-
-1. **TUI-08** — Feedback strip + dual-write error banners — [tui-status-feedback.md](./designs/tui-status-feedback.md)  
-   - Layout region between chat and input  
-   - Render `status_message` every frame when non-empty  
-   - On model/loop errors: chat `BannerKind::Error` + strip  
-2. **TUI-09** — Session identity chrome — [tui-session-chrome.md](./designs/tui-session-chrome.md)  
-   - Status bar: `provider · model · ctx% · wt` (+ profile/search when space)  
-   - Narrow width keeps model/ctx without sidebar  
-   - `/status` shares `SessionChromeModel`  
-3. **TUI-10** — Activity feed + progressive busy — [tui-activity-feed.md](./designs/tui-activity-feed.md)  
-   - Ring buffer on `TuiApp`; sidebar ACTIVITY section  
-   - `BusyPhase`: model / tool:name / connect  
-4. TestBackend frames: error text visible; chrome fields present wide+narrow  
-5. Redaction: no secrets in strip, banners, or feed  
-
-**Crate focus:** `forge-tui` only (`layout`, `widgets/status`, `widgets/feedback`, `activity`, `app`, `sidebar`, `conversation`). No agent-loop protocol change required.
-
-**Exit:**
-
-- Rate-limit / model errors visible on drawn frame  
-- Provider + model ambient on status chrome  
-- Activity feed + progressive busy on wide layout  
-- Phases 1–9 unchanged  
-
-**Not Phase 10:** Web UI; journal SQL browser; new model providers; redesign of slash autocomplete.
-
-```text
-[ status: FORGE │ running · model │ litellm · grok │ ctx 34% │ wt off ]
-[ chat … error banner: Model error: rate limited (429) …              ]
-[ sidebar ACTIVITY: model ok · tool web_search · model error 429      ]
-[ feedback strip: Model error: rate limited (HTTP 429). …             ]
-[ input ❯                                                            ]
-[ footer: version · cwd · hints                                      ]
-```
-
----
-
-## 15. Extension points
+## 14. Extension points
 
 | Extension | Hook |
 |-----------|------|
@@ -1160,7 +846,7 @@ Model → tool_call web_search { query, num_results? }
 
 ---
 
-## 16. File ↔ responsibility map (target layout)
+## 15. File ↔ responsibility map (target layout)
 
 Illustrative Rust workspace layout (crate names align with §3 / decisions table).
 
@@ -1190,7 +876,7 @@ Illustrative Rust workspace layout (crate names align with §3 / decisions table
 
 ---
 
-## 17. Mental model
+## 16. Mental model
 
 Forge is the **harness** between models and the real world: a typed tool bus, an event-sourced memory of what already happened, a context window that is deliberately managed (offload and reset, not endless append), and a governance shell that decides what the model is allowed to see and run. Surfaces (TUI, IDE, CI, chat) are interchangeable clients. Reliability comes from journaling before side effects, recovering without double execution, and separating “do the work” (Generator) from “prove the work” (Evaluator)—while keeping the API flat enough that both humans and coding models can extend it without a graph DSL.
 
@@ -1256,9 +942,6 @@ Forge is the **harness** between models and the real world: a typed tool bus, an
 
 Suggested workspace crates (initial): `forge-types`, `forge-core`, `forge-durable`, `forge-context`, `forge-governance`, `forge-feedback`, `forge-mcp`, `forge-acp`, `forge-obs`, `forge-tui`, `forge-cli` (binary).
 
-### Phase 1 vertical slice
-
-Same strict order as §14 Phase 1. ACP is **CORE-03 / Phase 2 only**.
 
 ---
 

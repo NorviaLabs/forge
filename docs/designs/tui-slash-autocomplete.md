@@ -6,7 +6,7 @@
 **Phase:** **8 only** (exclusive)  
 **Revision:** **8.1**  
 **PRD:** TUI-07  
-**Architecture:** §14 Phase 8.1, decision #22  
+**Architecture:** Phase 8.1, decision #22  
 **Related:** [tui-slash-inline.md](./tui-slash-inline.md) (Phase 8 base), [tui-input-history.md](./tui-input-history.md) (Phase 7), [tui-overlays.md](./tui-overlays.md), [../ui.md](../ui.md)
 
 ---

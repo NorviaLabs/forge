@@ -5,7 +5,7 @@
 **Last updated:** 23 Jul 2026  
 **Phase:** **5 only** (exclusive)  
 **PRD:** MDL-01 (primary owner)  
-**Architecture:** §4.3, §14 Phase 5, decision #18  
+**Architecture:** §4.3, Phase 5, decision #18  
 **Related (Phase 5):** [litellm-worker.md](./litellm-worker.md), [litellm-wire.md](./litellm-wire.md), [litellm-normalization.md](./litellm-normalization.md), [litellm-config.md](./litellm-config.md)  
 **Related (Phase 1):** [model-providers.md](./model-providers.md) (historical; **superseded for production**)
 
@@ -137,7 +137,7 @@ impl LiteLlmModelClient {
 |------|-------|
 | MDL-01 + native removal | **5** |
 | Historical native adapter design | **1** ([model-providers.md](./model-providers.md)) — superseded |
-| Exit | Architecture §14 Phase 5 (single path) |
+| Exit | Architecture Phase 5 (single path) |
 
 ## 7. Acceptance
 

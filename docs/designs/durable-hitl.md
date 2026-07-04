@@ -5,7 +5,7 @@
 **Last updated:** 22 Jul 2026  
 **Phase:** **2 only** (exclusive)  
 **PRD:** DUR-03  
-**Architecture:** §5.5, §14 Phase 2  
+**Architecture:** §5.5, Phase 2  
 **Related:** [durable-execution.md](./durable-execution.md) (Phase 1 journal), [governance.md](./governance.md)
 
 ---

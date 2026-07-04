@@ -6,7 +6,7 @@
 **Phase:** **6 only** (exclusive)  
 **Revision:** **6.1** — OAuth vs API-key auth modes  
 **PRD:** CONN-01 (primary)  
-**Architecture:** §14 Phase 6 / 6.1, decision #19  
+**Architecture:** Phase 6 / 6.1, decision #19  
 **Related:** [connect-auth-modes.md](./connect-auth-modes.md), [provider-xai-grok.md](./provider-xai-grok.md), [provider-opencode-go.md](./provider-opencode-go.md), [litellm-providers.md](./litellm-providers.md) (Phase 5), [tui-commands.md](./tui-commands.md), [tui-overlays.md](./tui-overlays.md)
 
 ---

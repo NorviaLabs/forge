@@ -6,7 +6,7 @@
 **Phase:** **6 only** (exclusive)  
 **Revision:** **6.1** — OAuth-only connect (not API key paste)  
 **PRD:** PROV-01  
-**Architecture:** §14 Phase 6 / 6.1, decision #19  
+**Architecture:** Phase 6 / 6.1, decision #19  
 **Related:** [connect-command.md](./connect-command.md), [connect-auth-modes.md](./connect-auth-modes.md), [litellm-providers.md](./litellm-providers.md)
 
 ---
