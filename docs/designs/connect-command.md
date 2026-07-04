@@ -130,7 +130,7 @@ Unknown profile id → error listing known ids.
 
 | Surface | Support |
 |---------|---------|
-| `forge tui` | Full interactive overlay |
+| `forge` | Full interactive overlay |
 | `forge repl` | Line prompts |
 | ACP | Optional later: same command string |
 | Headless CI | Use env keys; `/connect` not required |

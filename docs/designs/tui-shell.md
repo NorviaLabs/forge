@@ -21,7 +21,7 @@ Phase 1 ships only a **line-mode REPL**. Operators need a full-screen terminal a
 - Full-terminal **ratatui + crossterm** application.  
 - Fixed layout regions: **status bar · chat · sidebar · input · footer**.  
 - Single event loop: keyboard → commands / agent actions → redraw.  
-- Entry point: `forge tui` (same `AgentSession` as `repl` / headless).
+- Entry point: `forge` (same `AgentSession` as `repl` / headless).
 
 **Non-goals**
 
@@ -106,7 +106,7 @@ pub struct TuiApp { /* ... */ }
 pub async fn run_tui(session: AgentSession, cfg: TuiRuntimeConfig) -> Result<ExitCode, TuiError>;
 ```
 
-CLI: `forge tui [--resume UUID] [--mock] [--worktree]`.
+CLI: `forge [--resume UUID] [--mock] [--worktree]`.
 
 ## 5. Failure modes
 
