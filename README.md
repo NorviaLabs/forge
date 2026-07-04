@@ -8,7 +8,7 @@
 
 Forge is a **coding agent harness**: it runs a plan–act–observe loop with schema-validated tools, crash-safe session resume, and a full-screen TUI. You bring the model (via LiteLLM); Forge handles tools, context, approvals, and recovery.
 
-**[Repository](https://github.com/NorviaLabs/forge) · [Product requirements](./docs/prd.md) · [Architecture](./docs/architecture.md) · [TUI UI](./docs/ui.md)**
+**[Repository](https://github.com/NorviaLabs/forge) · [Architecture](./docs/architecture.md)**
 
 ---
 
@@ -127,8 +127,6 @@ Credentials go to `~/.config/forge/credentials.toml` (mode `0600`). Never commit
 | **Ctrl+K** | Full command palette |
 | **↑/↓** (no slash panel) | Command history |
 | **Esc** | Clear input / dismiss info feedback |
-
-Chrome shows **provider · model · context %**, a **feedback** line for status/errors, and an **ACTIVITY** sidebar on wide terminals.
 
 ---
 
