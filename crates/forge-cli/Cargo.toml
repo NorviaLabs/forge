@@ -3,7 +3,7 @@ name = "forge-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Forge CLI — headless + simple TUI entrypoints"
+description = "Forge CLI — TUI by default, headless run, connect"
 default-run = "forge"
 
 [[bin]]
@@ -18,13 +18,7 @@ forge-tools = { workspace = true }
 forge-mcp = { workspace = true }
 forge-tui = { workspace = true }
 forge-types = { workspace = true }
-forge-durable = { workspace = true }
 forge-workspace = { workspace = true }
-forge-governance = { workspace = true }
-forge-feedback = { workspace = true }
-forge-obs = { workspace = true }
-forge-channels = { workspace = true }
-forge-fleet = { workspace = true }
 forge-connect = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true }
