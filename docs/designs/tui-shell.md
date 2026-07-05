@@ -106,7 +106,7 @@ pub struct TuiApp { /* ... */ }
 pub async fn run_tui(session: AgentSession, cfg: TuiRuntimeConfig) -> Result<ExitCode, TuiError>;
 ```
 
-CLI: `forge [--resume UUID] [--mock] [--worktree]`.
+CLI: `forge [--resume UUID] [--worktree]`.
 
 ## 5. Failure modes
 

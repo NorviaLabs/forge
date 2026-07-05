@@ -8,7 +8,7 @@ use clap::{Parser, Subcommand};
 use forge_config::{Config, ConfigOverrides};
 use forge_core::{AgentSession, LoopConfig};
 use forge_mcp::{register_static_mcp, McpManager, StaticMcpTool};
-use forge_model::{client_from_config, MockModelClient, ModelClient};
+use forge_model::{client_from_config, ModelClient};
 use forge_tools::ToolRegistry;
 use forge_connect::{
     builtin_registry, handle_connect_action, ConnectAction, CredentialStore,
@@ -39,8 +39,6 @@ struct Cli {
     provider: Option<String>,
     #[arg(long, global = true)]
     model: Option<String>,
-    #[arg(long, global = true)]
-    mock: bool,
     /// Enable git worktree isolation (Phase 2 CTX-03)
     #[arg(long, global = true)]
     worktree: bool,
@@ -145,16 +143,10 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     let cfg = Config::load(overrides).map_err(|e| anyhow::anyhow!(e))?;
 
     match cli.command {
-        // Default: full-screen TUI (`forge` / `forge --mock` / `forge --resume …`)
+        // Default: full-screen TUI (`forge` / `forge --resume …`)
         None => {
-            let session = open_session(
-                &cfg,
-                cli.mock,
-                cli.max_turns,
-                cli.resume,
-                cli.worktree,
-            )
-            .await?;
+            let session =
+                open_session(&cfg, cli.max_turns, cli.resume, cli.worktree).await?;
             let runtime = TuiRuntimeConfig {
                 model_label: cfg.model.model.clone(),
                 provider: cfg.model.provider.as_str().into(),
@@ -243,7 +235,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         }) => {
             let resume = resume.or(cli.resume);
             let mut session =
-                open_session(&cfg, cli.mock, max_turns, resume, cli.worktree).await?;
+                open_session(&cfg, max_turns, resume, cli.worktree).await?;
             let _resp = session.run_user_message(&prompt).await?;
             print_session_tail(&session);
             println!("session_id={}", session.session_id);
@@ -255,7 +247,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         }) => {
             let resume = resume.or(cli.resume);
             let mut session =
-                open_session(&cfg, cli.mock, max_turns, resume, cli.worktree).await?;
+                open_session(&cfg, max_turns, resume, cli.worktree).await?;
             println!("Forge REPL — session {}", session.session_id);
             println!("{}", help_text());
             let connect_reg = builtin_registry();
@@ -292,7 +284,6 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                         Ok(SlashCommand::Resume { session_id }) => {
                             session = open_session(
                                 &cfg,
-                                cli.mock,
                                 max_turns,
                                 Some(session_id),
                                 cli.worktree,
@@ -391,13 +382,13 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             Ok(ExitCode::Success)
         }
         Some(Commands::Approve { session }) => {
-            let mut s = open_session(&cfg, cli.mock, 8, Some(session), cli.worktree).await?;
+            let mut s = open_session(&cfg, 8, Some(session), cli.worktree).await?;
             s.resolve_hitl(HitlDecision::Approve, "cli").await?;
             println!("approved");
             Ok(ExitCode::Success)
         }
         Some(Commands::Deny { session }) => {
-            let mut s = open_session(&cfg, cli.mock, 8, Some(session), cli.worktree).await?;
+            let mut s = open_session(&cfg, 8, Some(session), cli.worktree).await?;
             s.resolve_hitl(HitlDecision::Deny, "cli").await?;
             println!("denied");
             Ok(ExitCode::Success)
@@ -445,28 +436,14 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         }
         Some(Commands::Channel { kind, text }) => {
             use forge_channels::{ChannelGateway, ChannelKind, ChannelMessage};
-            use forge_model::MockModelClient;
             let kind = match kind.to_ascii_lowercase().as_str() {
                 "slack" => ChannelKind::Slack,
                 "telegram" => ChannelKind::Telegram,
                 _ => ChannelKind::Webhook,
             };
-            let model: Arc<dyn ModelClient> = if cli.mock {
-                Arc::new(MockModelClient::script(vec![ModelResponse {
-                    text: "channel reply".into(),
-                    tool_calls: vec![],
-                    usage: None,
-                }]))
-            } else {
-                match client_from_config(&cfg) {
-                    Ok(c) => Arc::from(c),
-                    Err(_) => Arc::new(MockModelClient::script(vec![ModelResponse {
-                        text: "channel reply (mock)".into(),
-                        tool_calls: vec![],
-                        usage: None,
-                    }])),
-                }
-            };
+            let model: Arc<dyn ModelClient> = Arc::from(
+                client_from_config(&cfg).map_err(|e| anyhow::anyhow!(e))?,
+            );
             let gw = ChannelGateway::new(
                 cfg.workspace_root().to_path_buf(),
                 cfg.journal_dir(),
@@ -572,30 +549,12 @@ fn print_session_tail(session: &AgentSession) {
 
 async fn open_session(
     cfg: &Config,
-    mock: bool,
     max_turns: u32,
     resume: Option<Uuid>,
     worktree: bool,
 ) -> anyhow::Result<AgentSession> {
-    let model: Arc<dyn ModelClient> = if mock {
-        Arc::new(MockModelClient::script(vec![ModelResponse {
-            text: "Mock model ready.".into(),
-            tool_calls: vec![],
-            usage: None,
-        }]))
-    } else {
-        match client_from_config(cfg) {
-            Ok(c) => Arc::from(c),
-            Err(e) => {
-                eprintln!("warning: model client: {e}; using mock");
-                Arc::new(MockModelClient::script(vec![ModelResponse {
-                    text: format!("(offline mock) {e}"),
-                    tool_calls: vec![],
-                    usage: None,
-                }]))
-            }
-        }
-    };
+    let model: Arc<dyn ModelClient> =
+        Arc::from(client_from_config(cfg).map_err(|e| anyhow::anyhow!(e))?);
 
     let mut tools = ToolRegistry::new();
     register_static_mcp(
