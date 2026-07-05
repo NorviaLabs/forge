@@ -38,7 +38,6 @@ More screens (context handoff, resume, worktree, errors): **[docs/ui.md](./docs/
 | Interactive line mode | `forge repl` |
 | Connect Grok or OpenCode Go | `forge connect` or `/connect` in the TUI |
 | Safe experimental edits | `forge --worktree run "…"` |
-| Offline / CI without a model | `forge --mock …` |
 | Resume after a crash | `forge --resume <session-id>` |
 
 ---
@@ -54,7 +53,7 @@ More screens (context handoff, resume, worktree, errors): **[docs/ui.md](./docs/
 | “What just failed?” | TUI shows provider · model · context, feedback strip, activity feed, error banners |
 | Repo edits feel unsafe | Optional **git worktree** isolation; HITL for high-risk actions |
 
-**Honest limits:** Forge does not replace your model provider (rate limits, auth, and quality are upstream). Web search needs a search API key for live results (mock works offline).
+**Honest limits:** Forge does not replace your model provider (rate limits, auth, and quality are upstream). Live models need the LiteLLM worker and provider API keys. Web search needs a search API key for live results (default backend is offline mock data only).
 
 ---
 
@@ -79,13 +78,10 @@ forge status
 
 ## Quick start
 
-### 1. Try it offline (no API keys)
+### 1. Check install
 
 ```bash
-forge --mock status
-forge --mock run "hello"
-forge --mock          # full-screen UI
-forge --mock repl         # line-mode chat
+forge status
 ```
 
 ### 2. Run with a live model
@@ -167,7 +163,7 @@ Merge order: defaults → `~/.config/forge/config.toml` → `./forge.toml` → e
 
 | Env | Meaning |
 |-----|---------|
-| `FORGE_MODEL_PROVIDER` | `litellm` or `mock` |
+| `FORGE_MODEL_PROVIDER` | `litellm` (default production) |
 | `FORGE_MODEL_ID` | LiteLLM model string, e.g. `anthropic/claude-sonnet` |
 | `FORGE_API_KEY` | Optional key passthrough to the worker |
 | `FORGE_WORKSPACE` | Workspace root (default: cwd) |
@@ -187,7 +183,7 @@ module = "forge_litellm_worker"
 
 [tools.web_search]
 enabled = true
-provider = "mock"
+provider = "tavily"  # or mock for offline fixture data only
 ```
 
 ---
@@ -210,16 +206,15 @@ forge [OPTIONS] [COMMAND]
 | `channel` | Restricted channel-style ingress |
 | `fleet` | Fleet plugins / SIEM demo hooks |
 
-**Global flags:** `--config` · `--workspace` · `--provider` · `--model` · `--mock` · `--worktree` · `--resume` · `--max-turns`
+**Global flags:** `--config` · `--workspace` · `--provider` · `--model` · `--worktree` · `--resume` · `--max-turns`
 
 **Useful options:**
 
 ```bash
 forge                              # TUI
-forge --mock                       # TUI offline
 forge --resume <uuid>              # resume session in TUI
 forge run "…" --max-turns 16
-forge --worktree --mock run "try a risky edit"
+forge --worktree run "try a risky edit"
 ```
 
 **Exit codes:** `0` success · `1` failed · `2` awaiting HITL · `3` canceled · `4` config error
