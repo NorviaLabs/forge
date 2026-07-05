@@ -8,11 +8,12 @@
 Forge runs a coding agent with schema-validated tools, crash-safe resume, and a full-screen TUI. You provide the model (via LiteLLM); Forge handles tools, context, approvals, and recovery.
 
 ```bash
-forge          # open the TUI
-forge status   # version, workspace, model
+forge              # full-screen TUI
+forge status       # version, workspace, model
+forge run "…"      # headless
 ```
 
-**[Architecture](./docs/architecture.md) · [TUI reference](./docs/ui.md) · [PRD](./docs/prd.md)**
+**[Architecture](./docs/architecture.md) · [TUI](./docs/ui.md) · [PRD](./docs/prd.md)**
 
 ---
 
@@ -38,16 +39,14 @@ forge status   # version, workspace, model
 
 ## Install
 
-**Need:** Rust 1.80+, Python 3 (for live models).
+**Need:** Rust 1.80+, Python 3 (live models).
 
 ```bash
 git clone https://github.com/NorviaLabs/forge.git
 cd forge
 cargo build --release -p forge-cli
 export PATH="$PWD/target/release:$PATH"
-
-# Live models (LiteLLM Python SDK worker — not the LiteLLM Proxy)
-pip install -e workers/forge-litellm-worker
+pip install -e workers/forge-litellm-worker   # live models only
 ```
 
 ---
@@ -55,14 +54,13 @@ pip install -e workers/forge-litellm-worker
 ## Quick start
 
 ```bash
-# Model credentials (example: OpenAI via LiteLLM)
-export OPENAI_API_KEY=…
-export FORGE_MODEL_ID=openai/gpt-4.1-mini   # any LiteLLM model string
+export OPENAI_API_KEY=…                    # or ANTHROPIC_API_KEY / XAI_API_KEY / …
+export FORGE_MODEL_ID=openai/gpt-4.1-mini  # any LiteLLM model string
 
-forge                              # full-screen TUI
+forge                              # TUI
 forge run "Summarize this repo"    # headless
-forge repl                         # line-mode chat
-forge --resume <session-id>        # resume after a crash
+forge --resume <session-id>        # resume in TUI
+forge --worktree run "…"           # isolate edits in a git worktree
 ```
 
 ### Connect Grok or OpenCode Go
@@ -70,41 +68,34 @@ forge --resume <session-id>        # resume after a crash
 ```bash
 forge connect list
 forge connect opencode_go --key "$OPENCODE_API_KEY"
-# xAI Grok uses OAuth in the TUI: /connect
+# xAI Grok: OAuth via /connect in the TUI
 ```
 
-Keys go to `~/.config/forge/credentials.toml` (mode `0600`).
+Credentials: `~/.config/forge/credentials.toml` (mode `0600`).
 
-### TUI cheatsheet
+### TUI keys
 
-| Input | Action |
-|-------|--------|
+| | |
+|--|--|
 | Task + **Enter** | Run the agent |
-| `/status` `/tools` `/cost` `/help` `/connect` | Slash commands in the textbox |
-| `/` · **↑/↓** · **Tab** | Suggest and complete |
+| `/status` `/tools` `/cost` `/help` `/connect` | Slash commands |
+| `/` · **↑/↓** · **Tab** | Suggest + complete |
 | **Ctrl+K** | Command palette |
-| **↑/↓** | History (when not in suggestions) |
+| **↑/↓** | Input history |
 
-Status bar shows **provider · model · context**. Failures show in a feedback line and chat banners; wide layouts show an **ACTIVITY** feed.
+Chrome shows **provider · model · context**. Errors surface in the feedback strip and chat; wide terminals show **ACTIVITY**.
 
 ---
 
 ## Tools
 
-| Tool | Role |
-|------|------|
-| `read_file` / `write_file` | Edit the workspace |
-| `bash` | Shell in the project |
-| `grep` | Search code |
-| `web_search` | Public web (optional API) |
+`read_file` · `write_file` · `bash` · `grep` · `web_search` · MCP servers you configure.
 
-Plus tools from configured **MCP** servers. Optional **git worktree** isolation: `forge --worktree run "…"`.
-
-**Web search** defaults to offline fixture results. For live search:
+Live **web search** (optional):
 
 ```bash
 export TAVILY_API_KEY=…   # or BRAVE_API_KEY / SERPER_API_KEY
-# forge.toml: [tools.web_search] provider = "tavily"
+# [tools.web_search] provider = "tavily"  in forge.toml
 ```
 
 ---
@@ -113,11 +104,11 @@ export TAVILY_API_KEY=…   # or BRAVE_API_KEY / SERPER_API_KEY
 
 Defaults ← `~/.config/forge/config.toml` ← `./forge.toml` ← env ← flags.
 
-| Env | Purpose |
-|-----|---------|
-| `FORGE_MODEL_ID` | LiteLLM model id (`openai/…`, `anthropic/…`, `xai/…`, …) |
-| `FORGE_MODEL_PROVIDER` | `litellm` (production) |
-| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `XAI_API_KEY` | Provider keys for the worker |
+| Env | |
+|-----|--|
+| `FORGE_MODEL_ID` | LiteLLM model (`openai/…`, `anthropic/…`, `xai/…`) |
+| `FORGE_MODEL_PROVIDER` | `litellm` |
+| `OPENAI_API_KEY` / … | Provider keys for the worker |
 | `FORGE_WORKSPACE` | Project root (default: cwd) |
 
 ```toml
@@ -125,10 +116,6 @@ Defaults ← `~/.config/forge/config.toml` ← `./forge.toml` ← env ← flags.
 [model]
 provider = "litellm"
 model = "openai/gpt-4.1-mini"
-
-[model.litellm]
-python = "python3"
-module = "forge_litellm_worker"
 ```
 
 ---
@@ -139,17 +126,14 @@ module = "forge_litellm_worker"
 forge [OPTIONS] [COMMAND]
 ```
 
-| | |
-|--|--|
-| *(no command)* | Open the TUI |
+| Command | |
+|---------|--|
+| *(none)* | Open the TUI |
 | `run <prompt>` | Headless agent |
-| `repl` | Line-mode chat |
 | `status` | Version / workspace / model |
-| `connect` | Provider profiles (Grok, OpenCode Go) |
-| `approve` / `deny` | HITL for a session |
-| `feedback` / `channel` / `fleet` | Ops / quality hooks |
+| `connect [profile]` | Provider profiles |
 
-**Flags:** `--config` · `--workspace` · `--provider` · `--model` · `--worktree` · `--resume` · `--max-turns`
+**Flags:** `--config` · `--workspace` · `--model` · `--worktree` · `--resume` · `--max-turns`
 
 **Exit codes:** `0` ok · `1` failed · `2` awaiting HITL · `3` canceled · `4` config
 
@@ -157,25 +141,19 @@ forge [OPTIONS] [COMMAND]
 
 ## Architecture
 
-One agent core for TUI, REPL, and headless. Live inference uses a Forge-managed **LiteLLM SDK worker**. Sessions use an append-only journal for crash-safe resume.
+One agent core for TUI and headless. Live models use a Forge-managed **LiteLLM SDK worker**. Sessions journal for crash-safe resume.
 
 <p align="center">
-  <img src="docs/images/architecture.png" alt="Forge architecture diagram" width="880" />
+  <img src="docs/images/architecture.png" alt="Forge architecture" width="880" />
 </p>
 
-Details: [docs/architecture.md](./docs/architecture.md) · diagram source: [docs/images/architecture.html](./docs/images/architecture.html)
+[docs/architecture.md](./docs/architecture.md)
 
 ---
 
 ## Docs & development
 
-| | |
-|--|--|
-| [docs/prd.md](./docs/prd.md) | Product requirements |
-| [docs/architecture.md](./docs/architecture.md) | System design |
-| [docs/ui.md](./docs/ui.md) | TUI layouts & mockups |
-| [docs/designs/](./docs/designs/README.md) | Design specs |
-| [workers/forge-litellm-worker](./workers/forge-litellm-worker/README.md) | Model worker |
+[PRD](./docs/prd.md) · [Architecture](./docs/architecture.md) · [UI](./docs/ui.md) · [Designs](./docs/designs/README.md) · [Worker](./workers/forge-litellm-worker/README.md)
 
 ```bash
 cargo test
