@@ -61,7 +61,7 @@ lifecycle = "long_lived"   # long_lived | per_call
 | Value | Client | Notes |
 |-------|--------|-------|
 | **`litellm`** | `LiteLlmModelClient` | **Sole production** path |
-| **`mock`** | `MockModelClient` | CI / `--mock` only |
+| **`mock`** | `MockModelClient` | CI only |
 | `openai_compatible` | — | **Removed**; migrate |
 | `anthropic` | — | **Removed**; migrate |
 | `xai` | — | **Removed**; migrate |
@@ -104,7 +104,7 @@ Credentials: LiteLLM’s env vars (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `XAI_A
 | Flag | Behavior |
 |------|----------|
 | `--provider litellm` | Live path |
-| `--provider mock` / `--mock` | Mock client |
+| `--provider mock` | Mock client |
 | `--model <string>` | LiteLLM model id |
 | `--provider anthropic` (etc.) | Reject or migrate per §3.3 |
 
@@ -112,7 +112,7 @@ Credentials: LiteLLM’s env vars (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `XAI_A
 
 | Key | Default |
 |-----|---------|
-| Live provider | `litellm` (when not `--mock`) |
+| Live provider | `litellm` |
 | `python` | `python3` |
 | `module` | `forge_litellm_worker` |
 | `lifecycle` | `long_lived` |

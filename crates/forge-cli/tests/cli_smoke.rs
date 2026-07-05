@@ -12,15 +12,17 @@ fn status_exits_zero() {
         .stdout(predicate::str::contains("forge "));
 }
 
+/// Headless run without LiteLLM: use provider=mock for scripted offline CI only.
 #[test]
-fn run_mock_completes() {
+fn run_with_provider_mock_completes() {
     let dir = tempdir().unwrap();
     Command::cargo_bin("forge")
         .unwrap()
         .args([
             "--workspace",
             dir.path().to_str().unwrap(),
-            "--mock",
+            "--provider",
+            "mock",
             "run",
             "hello",
         ])
@@ -47,7 +49,8 @@ fn channel_restricts_tools() {
         .args([
             "--workspace",
             dir.path().to_str().unwrap(),
-            "--mock",
+            "--provider",
+            "mock",
             "channel",
             "--kind",
             "webhook",
@@ -63,11 +66,7 @@ fn fleet_plugins_load() {
     let dir = tempdir().unwrap();
     Command::cargo_bin("forge")
         .unwrap()
-        .args([
-            "--workspace",
-            dir.path().to_str().unwrap(),
-            "fleet",
-        ])
+        .args(["--workspace", dir.path().to_str().unwrap(), "fleet"])
         .assert()
         .success()
         .stdout(predicate::str::contains("plugins="));
@@ -129,4 +128,14 @@ fn connect_opencode_go_with_key_no_secret_leak() {
         .success()
         .stdout(predicate::str::contains("OpenCode Go"))
         .stdout(predicate::str::contains("go-secret-key").not());
+}
+
+#[test]
+fn help_has_no_mock_flag() {
+    Command::cargo_bin("forge")
+        .unwrap()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--mock").not());
 }

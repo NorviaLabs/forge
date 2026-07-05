@@ -81,7 +81,7 @@ AgentSession → dyn ModelClient
 |-------|------|
 | `ModelClient` trait | Unchanged (Phase 1) |
 | `LiteLlmModelClient` | **Only** production implementation |
-| `MockModelClient` | Offline tests / `--mock` |
+| `MockModelClient` | Offline tests |
 | Factory | `mock` → Mock; else → LiteLLM (see [litellm-config.md](./litellm-config.md)) |
 | Native OpenAI/Anthropic/xAI modules | **Deleted** in Phase 5 implementation |
 

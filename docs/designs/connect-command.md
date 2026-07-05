@@ -164,7 +164,7 @@ async fn run_connect_flow(
 |------|----------|
 | Empty key | Reject; stay disconnected |
 | Verify ping fails (auth) | Surface error; do not mark connected |
-| Worker missing (no Python) | Error: install Phase 5 worker or use `--mock` |
+| Worker missing (no Python) | Error: install Phase 5 worker |
 | Disconnect with only env key | Report “using env; clear shell env to remove” |
 | Secret file permissions too open | Refuse write; warn |
 
