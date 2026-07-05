@@ -12,64 +12,41 @@ fn status_exits_zero() {
         .stdout(predicate::str::contains("forge "));
 }
 
-/// Headless run without LiteLLM: use provider=mock for scripted offline CI only.
 #[test]
-fn run_with_provider_mock_completes() {
+fn help_lists_only_core_commands() {
+    let assert = Command::cargo_bin("forge")
+        .unwrap()
+        .arg("--help")
+        .assert()
+        .success();
+    let out = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(out.contains("run"));
+    assert!(out.contains("status"));
+    assert!(out.contains("connect"));
+    assert!(!out.contains("repl"));
+    assert!(!out.contains("feedback"));
+    assert!(!out.contains("channel"));
+    assert!(!out.contains("fleet"));
+    assert!(!out.contains("approve"));
+    assert!(!out.contains("--provider"));
+    assert!(!out.contains("--mock"));
+}
+
+#[test]
+fn run_with_provider_mock_via_env() {
     let dir = tempdir().unwrap();
     Command::cargo_bin("forge")
         .unwrap()
+        .env("FORGE_MODEL_PROVIDER", "mock")
         .args([
             "--workspace",
             dir.path().to_str().unwrap(),
-            "--provider",
-            "mock",
             "run",
             "hello",
         ])
         .assert()
         .success()
         .stdout(predicate::str::contains("session_id="));
-}
-
-#[test]
-fn feedback_sensor_ok() {
-    Command::cargo_bin("forge")
-        .unwrap()
-        .args(["feedback", "--sensor", "echo ok"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("passed=true"));
-}
-
-#[test]
-fn channel_restricts_tools() {
-    let dir = tempdir().unwrap();
-    Command::cargo_bin("forge")
-        .unwrap()
-        .args([
-            "--workspace",
-            dir.path().to_str().unwrap(),
-            "--provider",
-            "mock",
-            "channel",
-            "--kind",
-            "webhook",
-            "hello",
-        ])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("tools_visible="));
-}
-
-#[test]
-fn fleet_plugins_load() {
-    let dir = tempdir().unwrap();
-    Command::cargo_bin("forge")
-        .unwrap()
-        .args(["--workspace", dir.path().to_str().unwrap(), "fleet"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("plugins="));
 }
 
 #[test]
@@ -128,14 +105,4 @@ fn connect_opencode_go_with_key_no_secret_leak() {
         .success()
         .stdout(predicate::str::contains("OpenCode Go"))
         .stdout(predicate::str::contains("go-secret-key").not());
-}
-
-#[test]
-fn help_has_no_mock_flag() {
-    Command::cargo_bin("forge")
-        .unwrap()
-        .arg("--help")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("--mock").not());
 }
