@@ -1,6 +1,6 @@
 # Fleet plugins design (SCIM + SIEM)
 
-**Status:** Draft  
+**Status:** Shipped (library only — not CLI)  
 **Owner:** Mohit Ranka  
 **Last updated:** 22 Jul 2026  
 **Phase:** **3 only** (exclusive)  
