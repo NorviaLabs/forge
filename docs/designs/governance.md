@@ -1,6 +1,6 @@
 # Governance & sandbox design
 
-**Status:** Draft  
+**Status:** Shipped (product)  
 **Owner:** Mohit Ranka  
 **Last updated:** 22 Jul 2026  
 **Phase:** **2 only** (exclusive)  

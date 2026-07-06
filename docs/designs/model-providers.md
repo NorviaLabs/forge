@@ -1,13 +1,14 @@
 # Model providers design
 
-**Status:** Draft  
+**Status:** Superseded (production)  
 **Owner:** Mohit Ranka  
-**Last updated:** 22 Jul 2026  
-**Phase:** **1 only** (exclusive)  
-**PRD:** Multi-provider portability (Goals §6, NFR §10.3)  
-**Architecture:** §4.3, decision #11  
-**Related:** [agent-loop.md](./agent-loop.md), [configuration.md](./configuration.md)  
-**Superseded for production (Phase 5):** Native HTTP adapters are **removed** in Phase 5. Sole production path is LiteLLM SDK — [litellm-providers.md](./litellm-providers.md) (MDL-01). This doc remains the Phase 1 historical design and the source of the `ModelClient` / stream envelope contract.
+**Last updated:** 23 Jul 2026  
+**Phase:** **1** (historical)  
+**PRD:** Multi-provider portability (historical)  
+**Architecture:** §4.3, decision #11 / #18  
+**Related:** [litellm-providers.md](./litellm-providers.md) (current), [agent-loop.md](./agent-loop.md)  
+
+**Do not implement native OpenAI/Anthropic/xAI HTTP adapters.** Production uses LiteLLM only ([litellm-providers.md](./litellm-providers.md)). This file is retained only for the historical `ModelClient` / stream-envelope contract that LiteLLM still satisfies.
 
 ---
 

@@ -1,6 +1,6 @@
 # xAI Grok connect profile design
 
-**Status:** Draft  
+**Status:** Shipped (product)  
 **Owner:** Mohit Ranka  
 **Last updated:** 23 Jul 2026  
 **Phase:** **6 only** (exclusive)  

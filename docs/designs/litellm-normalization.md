@@ -1,6 +1,6 @@
 # LiteLLM → Forge envelope normalization design
 
-**Status:** Draft  
+**Status:** Shipped (product)  
 **Owner:** Mohit Ranka  
 **Last updated:** 23 Jul 2026  
 **Phase:** **5 only** (exclusive)  
