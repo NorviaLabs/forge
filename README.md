@@ -13,26 +13,20 @@ forge status       # version, workspace, model
 forge run "…"      # headless
 ```
 
-**[Architecture](./docs/architecture.md) · [TUI](./docs/ui.md) · [PRD](./docs/prd.md)**
+**[Architecture](./docs/architecture.md)**
 
 ---
 
 ## Screenshots
 
 <p align="center">
-  <img src="docs/ui/images/01-home.png" alt="Forge TUI home" width="880" />
+  <img src="docs/ui/images/01-home.png" alt="Forge TUI" width="880" />
 </p>
 
 <p align="center">
-  <img src="docs/ui/images/02-chat-streaming.png" alt="Streaming chat" width="430" />
+  <img src="docs/ui/images/02-chat-streaming.png" alt="Chat" width="430" />
   &nbsp;
-  <img src="docs/ui/images/03-tool-execution.png" alt="Tool cards" width="430" />
-</p>
-
-<p align="center">
-  <img src="docs/ui/images/04-hitl-approval.png" alt="HITL approval" width="430" />
-  &nbsp;
-  <img src="docs/ui/images/07-slash-commands.png" alt="Slash commands" width="430" />
+  <img src="docs/ui/images/03-tool-execution.png" alt="Tools" width="430" />
 </p>
 
 ---
@@ -73,36 +67,11 @@ forge connect opencode_go --key "$OPENCODE_API_KEY"
 
 Credentials: `~/.config/forge/credentials.toml` (mode `0600`).
 
-### TUI keys
-
-| | |
-|--|--|
-| Task + **Enter** | Run the agent |
-| `/status` `/tools` `/cost` `/help` `/connect` | Slash commands |
-| `/` · **↑/↓** · **Tab** | Suggest + complete |
-| **Ctrl+K** | Command palette |
-| **↑/↓** | Input history |
-
-Chrome shows **provider · model · context**. Errors surface in the feedback strip and chat; wide terminals show **ACTIVITY**.
-
----
-
-## Tools
-
-`read_file` · `write_file` · `bash` · `grep` · `web_search` · MCP servers you configure.
-
-Live **web search** (optional):
-
-```bash
-export TAVILY_API_KEY=…   # or BRAVE_API_KEY / SERPER_API_KEY
-# [tools.web_search] provider = "tavily"  in forge.toml
-```
-
 ---
 
 ## Configuration
 
-Defaults ← `~/.config/forge/config.toml` ← `./forge.toml` ← env ← flags.
+Optional. Defaults work; env and flags override. Files (if present): `~/.config/forge/config.toml`, `./forge.toml`.
 
 | Env | |
 |-----|--|
@@ -110,13 +79,6 @@ Defaults ← `~/.config/forge/config.toml` ← `./forge.toml` ← env ← flags.
 | `FORGE_MODEL_PROVIDER` | `litellm` |
 | `OPENAI_API_KEY` / … | Provider keys for the worker |
 | `FORGE_WORKSPACE` | Project root (default: cwd) |
-
-```toml
-# forge.toml
-[model]
-provider = "litellm"
-model = "openai/gpt-4.1-mini"
-```
 
 ---
 
@@ -146,19 +108,6 @@ One agent core for TUI and headless. Live models use a Forge-managed **LiteLLM S
 <p align="center">
   <img src="docs/images/architecture.png" alt="Forge architecture" width="880" />
 </p>
-
-[docs/architecture.md](./docs/architecture.md)
-
----
-
-## Docs & development
-
-[PRD](./docs/prd.md) · [Architecture](./docs/architecture.md) · [UI](./docs/ui.md) · [Designs](./docs/designs/README.md) · [Worker](./workers/forge-litellm-worker/README.md)
-
-```bash
-cargo test
-cargo build --release -p forge-cli
-```
 
 ---
 
