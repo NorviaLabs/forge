@@ -1,6 +1,6 @@
 # TUI shell design
 
-**Status:** Draft  
+**Status:** Shipped (product)  
 **Owner:** Mohit Ranka  
 **Last updated:** 23 Jul 2026  
 **Phase:** **4 only** (exclusive)  
@@ -106,7 +106,7 @@ pub struct TuiApp { /* ... */ }
 pub async fn run_tui(session: AgentSession, cfg: TuiRuntimeConfig) -> Result<ExitCode, TuiError>;
 ```
 
-CLI: `forge [--resume UUID] [--worktree]`.
+CLI entry: **`forge`** (default). Flags: `--resume`, `--worktree`, `--model`, `--workspace`, `--max-turns`, `--config`.
 
 ## 5. Failure modes
 

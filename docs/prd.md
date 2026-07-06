@@ -1,7 +1,7 @@
 # Forge — Product Requirements Document
 
-**Version:** 0.12.0  
-**Status:** Draft  
+**Version:** 0.13.0  
+**Status:** Aligned with shipped product  
 **Owner:** Mohit Ranka  
 **Last updated:** 23 Jul 2026  
 **Related architecture:** [architecture.md](./architecture.md)  
@@ -12,18 +12,29 @@
 
 ## 1. Executive summary
 
-Forge is an open-source, enterprise-ready **AI agent harness**: scaffolding around foundation models that makes long-horizon work reliable. It combines a low-abstraction, schema-validated tool experience with durable execution, automated context lifecycle management, open client/tool protocols (MCP + ACP), and zero-trust governance.
+Forge is an open-source **AI coding agent harness**: scaffolding around foundation models for reliable repo work. It ships a **full-screen TUI** (default `forge`), **headless** `forge run`, durable sessions, schema-validated tools (including `web_search`), LiteLLM-backed models, and `/connect` for Grok / OpenCode Go.
 
-Product behavior and acceptance criteria live in this document. Stack, crates, and design decisions live in [architecture.md](./architecture.md).
+Product requirements live here. Stack and design contracts: [architecture.md](./architecture.md), [designs/README.md](./designs/README.md).
+
+### Shipped product surface (normative)
+
+```text
+forge                 # full-screen TUI (default)
+forge run "<prompt>"  # headless
+forge status
+forge connect …
+```
+
+**Not product CLI (library crates only):** ACP IDE server, multi-channel gateway, fleet SCIM/SIEM, feedback gate CLI, line-mode `repl`, `--mock` flag.
 
 ### Core value propositions
 
 | Proposition | Description |
 |-------------|-------------|
-| **Zero abstraction tax & multi-surface API** | Flat, schema-validated tool contracts instead of heavy graph/role DSLs. One harness core exposed through terminal TUI, headless CI, IDE clients, and multi-channel gateway transports. |
-| **Native durable execution** | Step-level event journals so crashed sessions, long terminal tasks, or background jobs resume without repeating completed tool calls or model steps. |
-| **Automated context lifecycle & workspace isolation** | Token budgeting, large-payload offloading, structured handoff artifacts (`progress.json` / `AGENTS.md`), and optional git worktree isolation for experimental file edits. |
-| **Universal protocol gateway (MCP + ACP)** | MCP for tool discovery/invocation; ACP for IDE/TUI/CLI clients—plus dynamic credentials, tool-level ACLs, and progressive sandbox/audit depth. |
+| **Zero abstraction tax** | Flat, schema-validated tool contracts instead of heavy graph/role DSLs. One harness core for TUI and headless. |
+| **Native durable execution** | Step-level event journals so crashed sessions resume without repeating completed tool/model steps. |
+| **Context lifecycle & worktree isolation** | Token budgeting, payload offload, handoff artifacts, optional git worktree isolation. |
+| **MCP tools + LiteLLM models** | MCP for tool servers; **LiteLLM Python SDK** as the sole production model path; optional connect profiles. |
 
 ---
 
@@ -170,7 +181,7 @@ Every harness component encodes an assumption about what the model cannot yet do
 | Opaque “agent as black box” without audit logs | Enterprise requires immutable invocation records |
 | **LiteLLM Proxy as required infrastructure** | Phase 5 uses the **LiteLLM library/SDK** inside a Forge-owned worker; an org-wide LLM gateway is optional and out of scope |
 
-Phase-scoped deferrals: multi-channel fleet, SCIM, deep kernel sandboxing, SIEM plugins may ship after core durability and protocols. Universal provider coverage via LiteLLM is **Phase 5**. Productized connect UX for xAI Grok and OpenCode Go is **Phase 6**. Built-in web search is **Phase 9**.
+Library-only (not product CLI): multi-channel gateway, SCIM/SIEM fleet plugins, feedback gate, ACP server, OTEL export helpers. Product model path is LiteLLM; connect ships Grok + OpenCode Go; web search is built in.
 
 ---
 
@@ -180,11 +191,11 @@ Product capabilities group into five areas (implementation detail in architectur
 
 | Module | Responsibility |
 |--------|----------------|
-| **Core & protocols** | Schema-validated tools; MCP (tool servers) and ACP (IDE/TUI/CLI clients) |
+| **Core & protocols** | Schema-validated tools; MCP tool servers (product); ACP as library-only |
 | **Durable execution** | Append-only step journal; record-before-side-effect; resume without re-execution |
 | **Context & workspace** | Token budgets; payload offload; handoff artifacts; worktree isolation |
-| **Governance & sandbox** | Identity-aware tool ACLs, secret injection, audit trail, progressive isolation |
-| **Feedback & surfaces** | Deterministic checks + Evaluator; telemetry; TUI / headless / multi-channel status |
+| **Governance & sandbox** | Tool ACLs, secret injection, audit trail, light sandbox |
+| **Surfaces** | Product: full-screen TUI + headless `run`. Library-only: ACP, channels, fleet, feedback, OTEL |
 
 ---
 
@@ -196,7 +207,7 @@ Product capabilities group into five areas (implementation detail in architectur
 |-----------|------------------|---------------|----------------------------|----------|
 | **CORE-01** | Schema-validated tool protocol | Every tool has a declared input/output contract. Invalid arguments are rejected **before** side effects; the model is prompted to correct them. Tool listings exposed to models match those contracts. | No unhandled invalid-arg paths to side effects; 100% listed tools have enforceable schemas | P0 (Critical) |
 | **CORE-02** | MCP tool protocol | Harness natively discovers and invokes tools via MCP; MCP tools share the same validation and dispatch path as built-ins. | Interoperates with standard MCP servers without custom per-server bridges | P0 (Critical) |
-| **CORE-03** | ACP client protocol | Harness serves ACP for IDE (and similar) clients; same agent loop and journal as TUI/headless—no second agent implementation. | ACP-compliant IDE client runs a full session without a custom bridge | P0 (Critical) |
+| **CORE-03** | ACP client protocol | **Library crate** (`forge-acp`): same agent loop/journal for IDE-shaped clients. **Not** a `forge` CLI subcommand. | Unit tests on ACP handle over AgentSession | P1 (library) |
 | **DUR-01** | Embedded event journaling | Every model invocation, tool execution, and state transition is recorded in an append-only event log **before** side effects run. | Zero missing state records on abrupt shutdown; journal write latency target &lt; 5 ms per step | P0 (Critical) |
 | **DUR-02** | Process crash recovery | On restart, reconstruct session state from the journal; reuse completed tool/model results without re-executing them. | 100% state recovery success; zero duplicate external side effects on replay | P0 (Critical) |
 | **DUR-03** | Durable human-in-the-loop | High-risk operations pause without holding active compute; resume when an approval is received, including across process restarts. | No active compute while waiting; seamless resume after restart | P1 (High) |
@@ -206,8 +217,8 @@ Product capabilities group into five areas (implementation detail in architectur
 | **SEC-01** | Zero-trust credential broker | Credentials live in a vault (or equivalent); injected at call time by the gateway. Secrets never enter model prompts or ordinary traces. | Zero credentials in conversation histories or default trace attributes | P0 (Critical) |
 | **SEC-02** | Dynamic tool ACLs | Tools visible/callable depend on identity, role, and scopes; unauthorized tools are omitted from model tool listings. | Deny lists always enforced; restricted tools never offered to the model | P0 (Critical) |
 | **SEC-03** | Behavioral sandboxing | Local tool execution runs under isolation policy that can block unauthorized network egress, syscalls, or file access (depth increases by phase). | Policy breaches blocked; enforcement latency target &lt; 1 ms for kernel-backed profiles when enabled | P1 (High) |
-| **EVAL-01** | Dual-sensor feedback loop | Run deterministic checks (linters, tests) alongside an independent Evaluator agent; route failures back to the Generator for repair. | &gt; 40% relative improvement in first-pass quality vs single-pass baseline | P1 (High) |
-| **OBS-01** | Distributed tracing | Emit standard traces for model calls, tool latencies, token usage, and step transitions (OpenTelemetry-compatible). | Full step coverage; exportable to common observability backends | P1 (High) |
+| **EVAL-01** | Dual-sensor feedback loop | **Library crate** (`forge-feedback`). Not exposed as `forge feedback`. | Unit tests on sensors / gate | P2 (library) |
+| **OBS-01** | Distributed tracing | **Library crate** (`forge-obs`). Not a CLI product surface. | Unit tests on spans / export helpers | P2 (library) |
 | **TUI-01** | Full-screen TUI shell | Interactive full-terminal UI (not line-mode REPL only) with status bar, main pane, sidebar, input, and footer matching [ui.md](./ui.md) layout regions. | Operator can complete a session entirely in the TUI without using `repl` line mode | P0 (Critical) |
 | **TUI-02** | Conversation & tool presentation | Chat shows user/assistant/system messages and tool cards (running/done/blocked); supports streaming/status while the agent runs; redacts secrets. | Tool cards and message roles distinguishable; no raw secrets in UI | P0 (Critical) |
 | **TUI-03** | Live session sidebar | Sidebar shows session id/status, context budget meter, tool ACL summary, and recent journal/events. | Values update after turns without leaving the TUI | P1 (High) |
@@ -220,10 +231,18 @@ Product capabilities group into five areas (implementation detail in architectur
 | **TUI-09** | Session identity chrome | Status chrome shows provider · model · context · worktree (and profile/search when space); narrow terminals keep model/ctx without sidebar; `/status` mirrors chrome fields. | Wide and narrow TestBackend frames include model and context cues | P0 |
 | **TUI-10** | Activity feed & progressive busy | In-session activity ring buffer in sidebar (wide); progressive busy labels (`running · model` / `running · tool:name`); errors also create feed entries. | After a multi-step turn, activity list shows model/tool/error summaries | P1 |
 
-### 9.2 Priority summary
+### 9.2 Channel / fleet (library only)
 
-- **P0 (Critical):** CORE-01, CORE-02, CORE-03, DUR-01, DUR-02, CTX-01, CTX-02, SEC-01, SEC-02, TUI-01, TUI-02, TUI-04, TUI-08, TUI-09  
-- **P1 (High):** DUR-03, CTX-03, SEC-03, EVAL-01, OBS-01, TUI-03, WEB-01, TUI-10  
+| Module ID | Name | Product status |
+|-----------|------|----------------|
+| **CH-01** | Multi-channel ingress | `forge-channels` library; **no** `forge channel` CLI |
+| **FLEET-01** | SCIM / SIEM plugins | `forge-fleet` library; **no** `forge fleet` CLI |
+
+### 9.3 Priority summary (product)
+
+- **P0 (product):** CORE-01, CORE-02, DUR-01, DUR-02, CTX-01, CTX-02, SEC-01, SEC-02, TUI-01, TUI-02, TUI-04, TUI-08, TUI-09, MDL-01 path  
+- **P1 (product):** DUR-03, CTX-03, SEC-03, TUI-03, TUI-05–07, WEB-01, TUI-10, CONN/PROV  
+- **Library-only:** CORE-03, EVAL-01, OBS-01, CH-01, FLEET-01  
 
 ---
 
@@ -249,15 +268,11 @@ Product capabilities group into five areas (implementation detail in architectur
 
 - Unified interface for major providers (cloud APIs and local inference servers).
 - Switching providers requires **configuration only**—no changes to tool definitions, agent logic, or durable state schemas.
-- **Phase 1 (historical):** Thin native adapters (OpenAI-compatible, Anthropic, xAI) behind `ModelClient`.
-- **Phase 5 (MDL-01):** **Single production path** — **LiteLLM Python SDK** (library, not Proxy) for **all** providers, including those formerly served by native adapters. Dual native+LiteLLM stacks are removed so operators and code maintain one client. **Mock** remains for offline CI only.
-- **Phase 6 (CONN-01, PROV-01, PROV-02):** **`/connect`** onboarding for **xAI Grok** and **OpenCode Go**; still uses the Phase 5 LiteLLM path.  
-- **Phase 6.1:** **xAI Grok connects via OAuth** (not API-key paste). **OpenCode Go TUI must explicitly prompt for API key** when connecting.
-- **Phase 7 (TUI-05):** Full-screen TUI **command history** via **Up/Down** arrow keys on the input bar.
-- **Phase 8 (TUI-06):** Top-level **slash commands** run from the **main textbox** (`/cmd …` + Enter); palette remains optional discovery.
-- **Phase 8.1 (TUI-07):** **Tab** autocomplete for slash suggestions; **highlighted** selected command and **visible caret** (including history recall).
-- **Phase 9 (WEB-01):** Built-in **`web_search`** tool with pluggable backends and secure key handling.
-- **Phase 10 (TUI-08…10):** Operator-visible TUI — feedback strip, session chrome, activity feed / progressive busy.
+- **Production models (MDL-01):** **LiteLLM Python SDK worker only** (not Proxy). No native multi-client HTTP stack.  
+- **`MockModelClient`:** unit tests / `FORGE_MODEL_PROVIDER=mock` for automated CI only — **not** a product `--mock` flag.  
+- **Connect (CONN/PROV):** `/connect` and `forge connect` for **xAI Grok (OAuth)** and **OpenCode Go (API key, TUI prompt)**.  
+- **TUI product:** default `forge`; history ↑/↓; inline slash + Tab autocomplete; feedback strip, session chrome, activity feed.  
+- **Tools:** built-ins + MCP + **`web_search`** (WEB-01).
 
 ---
 
@@ -267,16 +282,14 @@ Product capabilities group into five areas (implementation detail in architectur
 |---|-----------|--------------|
 | 1 | Invalid tool args are rejected and recover via validation prompts | Schema/compliance tests |
 | 2a | MCP servers interoperate without custom bridges | Integration tests with ≥1 real MCP server |
-| 2b | ACP IDE client runs full sessions on the same core | Integration test with one ACP-compliant client |
-| 3 | Process kill mid-task resumes with no duplicate side effects | Chaos/crash recovery tests against event journal |
-| 4 | Large tool payloads do not blow context; handoff resets preserve alignment at 100+ turns | Token accounting + long-horizon harness |
-| 5 | No secrets in transcripts or default trace attributes | Redaction/security tests |
-| 6 | Unauthorized tools never appear in model tool lists | ACL unit + integration tests |
-| 7 | Generator/Evaluator improves first-pass quality vs single-pass baseline | Benchmark suite (target &gt; 40% relative) |
-| 8 | Full step coverage in distributed traces | Trace completeness checks |
-| 9 | Provider switch is config-only | Multi-provider smoke matrix |
-| 10 | Web search tool is schema-validated and journaled | Unit + mock integration; live smoke optional with API key |
-| 11 | Operator can see session identity and last failure in the TUI | TestBackend frames; no reliance on unrendered `status_message` alone |
+| 2b | ACP library exercises same AgentSession | Unit tests in `forge-acp` (not CLI) |
+| 3 | Process kill mid-task resumes with no duplicate side effects | Journal replay tests |
+| 4 | Large tool payloads offload; handoff reset | Unit tests in forge-context |
+| 5 | No secrets in transcripts / default UI | Redaction tests; TUI never paints keys |
+| 6 | Unauthorized tools omitted from model lists | ACL unit tests |
+| 7 | Web search schema + registration gating | Unit tests; live API optional |
+| 8 | Operator sees model identity and failures in TUI | TestBackend frames (chrome + feedback) |
+| 9 | CLI is TUI / run / status / connect only | `forge --help` smoke |
 
 ---
 
@@ -293,23 +306,7 @@ Product capabilities group into five areas (implementation detail in architectur
 
 ## 13. Strategic takeaways
 
-The agent ecosystem is moving from rapid-prototype abstractions (loose roles, heavy graphs, unmonitored single-process runtimes) toward **production-grade harness engineering**. Long-horizon reliability depends less on prompt tweaks and more on:
-
-- Flat, schema-validated APIs  
-- Durable execution with LLM-aware recovery  
-- Active context lifecycle and workspace isolation  
-- Open dual-protocol support (MCP + ACP)  
-- Governance, auditability, and observability  
-- Operator-grade terminal UX (full-screen TUI) without sacrificing headless CI  
-- Broad model portability through a **single** LiteLLM SDK path (Phase 5)  
-- Guided **`/connect`** onboarding for key product providers (Phase 6: xAI Grok, OpenCode Go)  
-- Terminal ergonomics: **command history** with arrow keys in the full-screen TUI (Phase 7)  
-- Inline **slash commands** in the main TUI textbox (Phase 8)  
-- **Tab autocomplete** and **highlight cursor** for slash suggestions and history (Phase 8.1)  
-- **Web search as a first-class tool** for public knowledge beyond the repo (Phase 9)  
-- **Operator-visible TUI**: ambient session chrome, always-on feedback, activity timeline (Phase 10)  
-
-Forge is specified to occupy that intersection: low abstraction tax, enterprise durability, portable model/client integration, and a first-class terminal surface.
+Forge ships a **terminal-first coding agent harness**: flat tools, durable journal, LiteLLM for models, full-screen TUI by default, and headless `run` for automation — without requiring a config file or a second agent stack for IDE/channels (those remain optional libraries).
 
 ---
 
