@@ -1,6 +1,6 @@
 # TUI input command history design
 
-**Status:** Draft  
+**Status:** Shipped (product)  
 **Owner:** Mohit Ranka  
 **Last updated:** 23 Jul 2026  
 **Phase:** **7 only** (exclusive)  

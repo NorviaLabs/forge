@@ -1,166 +1,94 @@
 # Forge — Design documents
 
-**Status:** Draft  
+**Status:** Aligned with shipped code (as of 2026-07-23)  
 **Last updated:** 23 Jul 2026  
-
-**Product phases in force:** 1–9 implemented; **10 specified** (operator-visible TUI).
 
 | Layer | Document | Owns |
 |-------|----------|------|
-| Product | [../prd.md](../prd.md) | Outcomes, req IDs, **exclusive phase map** |
+| Product | [../prd.md](../prd.md) | Outcomes, req IDs |
 | Architecture | [../architecture.md](../architecture.md) | System context, flows, stack |
-| **Design** | **this folder** | One concern **and one phase** per file |
-| UI mockups | [../ui.md](../ui.md) | Visuals only |
+| **Design** | **this folder** | One concern per file |
+| UI mockups | [../ui.md](../ui.md) | Visuals |
+
+## Implementation status
+
+| Status | Meaning |
+|--------|---------|
+| **Shipped (product)** | Wired into `forge` CLI / default TUI and covered by tests |
+| **Shipped (library)** | Crate + unit tests exist; **not** exposed as a first-class CLI command |
+| **Superseded** | Historical design; production path is elsewhere |
+
+### Shipped (product)
+
+| Document | Req | Notes |
+|----------|-----|-------|
+| [tool-protocol.md](./tool-protocol.md) | CORE-01 | `forge-tools` registry + validation |
+| [agent-loop.md](./agent-loop.md) | loop | `forge-core` AgentSession |
+| [durable-execution.md](./durable-execution.md) | DUR-01, DUR-02 | SQLite journal |
+| [protocol-mcp.md](./protocol-mcp.md) | CORE-02 | `forge-mcp` (static + config servers) |
+| [configuration.md](./configuration.md) | config | TOML/env/CLI; **file optional** |
+| [tui-commands.md](./tui-commands.md) | slash catalog | Parsed in TUI / was REPL |
+| [surfaces.md](./surfaces.md) | surfaces | **TUI default + headless `run`** (no `repl` CLI) |
+| [context-lifecycle.md](./context-lifecycle.md) | CTX-01, CTX-02 | Offload + handoff |
+| [workspace-isolation.md](./workspace-isolation.md) | CTX-03 | `--worktree` |
+| [durable-hitl.md](./durable-hitl.md) | DUR-03 | TUI HITL overlay (no CLI approve/deny) |
+| [governance.md](./governance.md) | SEC-01–03 | ACL, secrets, light sandbox |
+| [tui-shell.md](./tui-shell.md) | TUI-01 | Full-screen shell; entry **`forge`** |
+| [tui-conversation.md](./tui-conversation.md) | TUI-02 | Chat + tool cards |
+| [tui-sidebar.md](./tui-sidebar.md) | TUI-03 | Session / budget / activity |
+| [tui-overlays.md](./tui-overlays.md) | TUI-04 | HITL, palette, model, connect |
+| [litellm-providers.md](./litellm-providers.md) | MDL-01 | Sole production model path |
+| [litellm-worker.md](./litellm-worker.md) | MDL-01 | Python SDK worker |
+| [litellm-wire.md](./litellm-wire.md) | MDL-01 | stdio JSON-RPC |
+| [litellm-normalization.md](./litellm-normalization.md) | MDL-01 | Envelope mapping |
+| [litellm-config.md](./litellm-config.md) | MDL-01 | `provider=litellm` |
+| [connect-command.md](./connect-command.md) | CONN-01 | `/connect` + `forge connect` |
+| [connect-auth-modes.md](./connect-auth-modes.md) | CONN-01 | OAuth vs API key |
+| [provider-xai-grok.md](./provider-xai-grok.md) | PROV-01 | OAuth Grok |
+| [provider-opencode-go.md](./provider-opencode-go.md) | PROV-02 | API-key Go |
+| [tui-input-history.md](./tui-input-history.md) | TUI-05 | ↑/↓ history |
+| [tui-slash-inline.md](./tui-slash-inline.md) | TUI-06 | Inline `/cmd` |
+| [tui-slash-autocomplete.md](./tui-slash-autocomplete.md) | TUI-07 | Tab + highlight |
+| [web-search-tool.md](./web-search-tool.md) | WEB-01 | `web_search` tool |
+| [tui-status-feedback.md](./tui-status-feedback.md) | TUI-08 | Feedback strip + banners |
+| [tui-session-chrome.md](./tui-session-chrome.md) | TUI-09 | Provider · model · ctx chrome |
+| [tui-activity-feed.md](./tui-activity-feed.md) | TUI-10 | Activity feed + busy phase |
+
+### Shipped (library only — not in CLI)
+
+These crates compile and have unit tests. They are **not** product entry points (`forge` does not expose them as subcommands).
+
+| Document | Req | Crate |
+|----------|-----|-------|
+| [protocol-acp.md](./protocol-acp.md) | CORE-03 | `forge-acp` |
+| [feedback-evaluator.md](./feedback-evaluator.md) | EVAL-01 | `forge-feedback` |
+| [observability.md](./observability.md) | OBS-01 | `forge-obs` |
+| [channels.md](./channels.md) | CH-01 | `forge-channels` |
+| [fleet-plugins.md](./fleet-plugins.md) | FLEET-01 | `forge-fleet` |
+
+### Superseded
+
+| Document | Note |
+|----------|------|
+| [model-providers.md](./model-providers.md) | Phase 1 **native** HTTP adapters **removed**. Production = LiteLLM only. `ModelClient` envelope still applies. |
+
+## Product CLI surface (normative)
+
+```text
+forge                    # full-screen TUI (default)
+forge run "<prompt>"     # headless
+forge status
+forge connect …
+```
+
+**Flags:** `--config` · `--workspace` · `--model` · `--worktree` · `--resume` · `--max-turns`  
+
+**Removed from CLI (do not document as product):** `repl`, `tui` subcommand, `--mock`, `approve`/`deny`, `feedback`, `channel`, `fleet`, `--provider`.
 
 ## Rules
 
-1. **Exclusive phase ownership** — Each design doc’s header **Phase:** field is a single number (1–10). No multi-phase owners.  
-2. **Exclusive req ownership** — Each PRD req ID appears in exactly one design doc as primary owner.  
-3. **Product-complete phases** — Design ownership by phase lives in this index; PRD owns outcomes and req IDs; architecture owns system design.
-4. **Cross-phase references** are allowed as *dependencies* (“builds on Phase 1 journal”) but must not re-specify the other phase’s design.
+1. **Exclusive phase ownership** on design headers is historical taxonomy only.  
+2. **Exclusive req ownership** — one primary design doc per PRD req ID.  
+3. Prefer **Status: Shipped** / **Library only** / **Superseded** in design headers over open-ended Draft when code exists.
 
-## Index by phase
-
-### Phase 1 — Coding agent
-
-| Document | PRD reqs | Summary |
-|----------|----------|---------|
-| [tool-protocol.md](./tool-protocol.md) | CORE-01 | Schemas, registry, validation retry |
-| [agent-loop.md](./agent-loop.md) | loop (CORE-01 path) | Plan–act–observe (no HITL/eval/handoff) |
-| [model-providers.md](./model-providers.md) | multi-provider (Phase 1) | Unified client, 3 native adapters |
-| [durable-execution.md](./durable-execution.md) | DUR-01, DUR-02 | Journal + crash recovery |
-| [protocol-mcp.md](./protocol-mcp.md) | CORE-02 | MCP discovery/call |
-| [configuration.md](./configuration.md) | config NFR | Phase 1 TOML/env keys only |
-| [tui-commands.md](./tui-commands.md) | TUI control | Phase 1 slash catalog only |
-| [surfaces.md](./surfaces.md) | TUI + headless | Phase 1 surfaces only |
-
-### Phase 2 — Enterprise long-horizon harness
-
-| Document | PRD reqs | Summary |
-|----------|----------|---------|
-| [protocol-acp.md](./protocol-acp.md) | CORE-03 | ACP IDE surface |
-| [context-lifecycle.md](./context-lifecycle.md) | CTX-01, CTX-02 | Offload + handoff reset |
-| [workspace-isolation.md](./workspace-isolation.md) | CTX-03 | Git worktree |
-| [durable-hitl.md](./durable-hitl.md) | DUR-03 | HITL wait/resume |
-| [governance.md](./governance.md) | SEC-01, SEC-02, SEC-03 | Vault, ACL, sandbox |
-
-### Phase 3 — Quality, ops & fleet
-
-| Document | PRD reqs | Summary |
-|----------|----------|---------|
-| [feedback-evaluator.md](./feedback-evaluator.md) | EVAL-01 | Generator / Evaluator |
-| [observability.md](./observability.md) | OBS-01 | OTEL export |
-| [channels.md](./channels.md) | CH-01 | Multi-channel ingress |
-| [fleet-plugins.md](./fleet-plugins.md) | FLEET-01 | SCIM + SIEM plugins |
-
-### Phase 4 — Full-screen terminal TUI
-
-| Document | PRD reqs | Summary |
-|----------|----------|---------|
-| [tui-shell.md](./tui-shell.md) | TUI-01 | ratatui app loop, status/input/footer layout |
-| [tui-conversation.md](./tui-conversation.md) | TUI-02 | Messages, tool cards, banners |
-| [tui-sidebar.md](./tui-sidebar.md) | TUI-03 | Session / budget / ACL / journal panels |
-| [tui-overlays.md](./tui-overlays.md) | TUI-04 | HITL modal, slash palette, model picker |
-
-Visual source of truth: [../ui.md](../ui.md). Phase 1 `surfaces` / line-mode `repl` remain; Phase 4 is the operator-grade full-screen surface.
-
-### Phase 5 — Universal model providers (LiteLLM SDK)
-
-| Document | PRD reqs | Summary |
-|----------|----------|---------|
-| [litellm-providers.md](./litellm-providers.md) | **MDL-01** (primary) | Sole production client (LiteLLM); **remove** Phase 1 natives; mock for CI |
-| [litellm-worker.md](./litellm-worker.md) | MDL-01 (supporting) | Python process, packaging, lifecycle, secrets env |
-| [litellm-wire.md](./litellm-wire.md) | MDL-01 (supporting) | stdio NDJSON / JSON-RPC methods & events |
-| [litellm-normalization.md](./litellm-normalization.md) | MDL-01 (supporting) | LiteLLM complete/stream → Forge envelope |
-| [litellm-config.md](./litellm-config.md) | MDL-01 (supporting) | Live=litellm / mock only; migrate old provider enums |
-
-## Reading order
-
-**Phase 1:** tool-protocol → agent-loop → model-providers → durable-execution → protocol-mcp → configuration → surfaces → tui-commands  
-
-**Phase 2:** protocol-acp → context-lifecycle → workspace-isolation → durable-hitl → governance  
-
-**Phase 3:** feedback-evaluator → observability → channels → fleet-plugins  
-
-**Phase 4:** tui-shell → tui-conversation → tui-sidebar → tui-overlays  
-
-**Phase 5:** litellm-providers → litellm-config → litellm-worker → litellm-wire → litellm-normalization  
-(builds on Phase 1 model-providers + configuration merge rules)  
-
-**Phase 6:** connect-command → connect-auth-modes → provider-xai-grok → provider-opencode-go  
-(builds on Phase 5 LiteLLM path + Phase 1/4 slash UX)  
-
-**Phase 7:** tui-input-history  
-
-**Phase 8:** tui-slash-inline → tui-slash-autocomplete  
-
-**Phase 9:** web-search-tool  
-
-**Phase 10:** tui-status-feedback → tui-session-chrome → tui-activity-feed  
-
-### Phase 6 — Connected providers (`/connect`)
-
-| Document | PRD reqs | Summary |
-|----------|----------|---------|
-| [connect-command.md](./connect-command.md) | **CONN-01** | `/connect` flow, profile registry, credential store |
-| [connect-auth-modes.md](./connect-auth-modes.md) | CONN-01 (6.1) | OAuth vs API-key modes; TUI branching |
-| [provider-xai-grok.md](./provider-xai-grok.md) | **PROV-01** | xAI Grok — **OAuth** (not API key), `xai/…` models |
-| [provider-opencode-go.md](./provider-opencode-go.md) | **PROV-02** | OpenCode Go — **TUI must prompt for API key** |
-
-**Phase 6 reading order:** connect-command → connect-auth-modes → provider-xai-grok → provider-opencode-go
-
-### Phase 7 — TUI command history
-
-| Document | PRD reqs | Summary |
-|----------|----------|---------|
-| [tui-input-history.md](./tui-input-history.md) | **TUI-05** | Up/Down arrow command history in main input; inactive under overlays |
-
-### Phase 8 — Inline slash in main textbox
-
-| Document | PRD reqs | Summary |
-|----------|----------|---------|
-| [tui-slash-inline.md](./tui-slash-inline.md) | **TUI-06** | Type `/commands` in main input + Enter; palette via Ctrl+K only |
-| [tui-slash-autocomplete.md](./tui-slash-autocomplete.md) | **TUI-07** (8.1) | **Tab** complete; **↑/↓** suggestion highlight; **caret** + history highlight |
-
-**Phase 8 reading order:** tui-slash-inline → tui-slash-autocomplete (8.1)
-
-### Phase 9 — Built-in web search
-
-| Document | PRD reqs | Summary |
-|----------|----------|---------|
-| [web-search-tool.md](./web-search-tool.md) | **WEB-01** | `web_search` built-in; pluggable backends (mock/Tavily/Brave/Serper); network class; secure keys |
-
-**Phase 9 reading order:** web-search-tool  
-(builds on Phase 1 tool-protocol + durable-execution; Phase 2 governance when ACL/vault/sandbox enabled)
-
-### Phase 10 — Operator-visible TUI
-
-| Document | PRD reqs | Summary |
-|----------|----------|---------|
-| [tui-status-feedback.md](./tui-status-feedback.md) | **TUI-08** | Feedback strip; dual-write error banners; never silent failures |
-| [tui-session-chrome.md](./tui-session-chrome.md) | **TUI-09** | Status chrome: provider · model · ctx · profile; narrow-safe |
-| [tui-activity-feed.md](./tui-activity-feed.md) | **TUI-10** | Activity ring buffer; progressive busy phases |
-
-**Phase 10 reading order:** tui-status-feedback → tui-session-chrome → tui-activity-feed  
-(builds on Phase 4 shell/conversation/sidebar; Phase 6 connect labels; Phase 8 input unchanged)
-
-## Template
-
-```markdown
-**Phase:** **N only** (exclusive)
-**PRD:** <req IDs owned by this doc only>
-…
-## 6. Phase ownership
-| This entire document | **N** |
-```
-
-## Maintainer checklist
-
-| Check | Rule |
-|-------|------|
-| Phase header | Exactly one of 1 / 2 / 3 |
-| Req IDs | No shared primary ownership across design docs |
-| No multi-phase catalogs | Slash commands Phase 1 vs Phase 2 commands live in phase designs |
-| Removed | `protocols-mcp-acp.md` (split into protocol-mcp + protocol-acp) |
-
-**Last restructure:** 22 Jul 2026  
+**Last alignment:** 23 Jul 2026 — match CLI slim + product vs library crates.  

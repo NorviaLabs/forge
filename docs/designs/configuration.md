@@ -1,6 +1,6 @@
 # Configuration design
 
-**Status:** Draft  
+**Status:** Shipped (product) — **config file optional**  
 **Owner:** Mohit Ranka  
 **Last updated:** 22 Jul 2026  
 **Phase:** **1 only** (exclusive) — Phase 1 config keys only  

@@ -1,6 +1,6 @@
 # TUI Tab autocomplete & highlight cursor design
 
-**Status:** Draft  
+**Status:** Shipped (product)  
 **Owner:** Mohit Ranka  
 **Last updated:** 23 Jul 2026  
 **Phase:** **8 only** (exclusive)  

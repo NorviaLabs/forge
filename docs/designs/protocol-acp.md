@@ -1,6 +1,6 @@
 # ACP protocol design
 
-**Status:** Draft  
+**Status:** Shipped (library only — not CLI)  
 **Owner:** Mohit Ranka  
 **Last updated:** 22 Jul 2026  
 **Phase:** **2 only** (exclusive)  

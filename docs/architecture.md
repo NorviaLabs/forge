@@ -1,7 +1,7 @@
 # Forge — Architecture
 
-**Version:** 0.12.0  
-**Status:** Draft  
+**Version:** 0.13.0  
+**Status:** Aligned with shipped product  
 **Owner:** Mohit Ranka  
 **Last updated:** 23 Jul 2026  
 **Related PRD:** [prd.md](./prd.md)  
@@ -12,7 +12,7 @@
 
 ## 1. Purpose
 
-Forge is an open-source, enterprise-ready **AI agent harness**: application-layer scaffolding around foundation models that provides loop control, context lifecycle, durable state, tool/protocol routing, governance, and observability. It enables reliable, long-horizon autonomous work (especially repository-native software engineering) across terminal TUI, headless CI, IDE (ACP), and multi-channel gateway surfaces.
+Forge is an open-source **AI coding agent harness**: loop control, context lifecycle, durable journal, tools (built-ins + MCP + `web_search`), governance hooks, and LiteLLM-backed models. **Product surfaces:** full-screen TUI (`forge`) and headless `forge run`. Library crates may expose ACP/channels/fleet/feedback/obs; those are **not** CLI products.
 
 ### How to read the diagrams
 
@@ -33,39 +33,32 @@ The product sits in the agentic stack as follows:
 | **Runtime** | Execution constraints: containers/microVMs, eBPF policy, git worktrees, host/CI process |
 | **Agent** | Complete system = model + Forge harness + runtime for end-to-end tasks |
 
-### Goals
+### Goals (shipped)
 
-Aligned with [prd.md](./prd.md) §6 (wording here is architecture-oriented).
-
-1. Schema-validated, low-abstraction core (Rust types + serde/schemars); high AI-codability  
-2. Native **MCP** tools (CORE-02, Phase 1) and **ACP** clients (CORE-03, Phase 2) — exclusive phase ownership
-3. Event-sourced durable execution with crash recovery and no duplicate side effects  
-4. Automated context lifecycle: token budgets, payload offload, `progress.json` / `AGENTS.md` handoffs  
-5. Git worktree isolation for experimental or unapproved file mutations  
-6. Zero-trust governance: vault credential injection, dynamic tool ACLs, progressive sandbox depth  
-7. Dual-sensor feedback: deterministic checks + independent Evaluator agent (opt-in)  
-8. Multi-surface interfaces: full-screen terminal TUI, headless CI, ACP IDE, multi-channel gateway  
-9. OpenTelemetry-compatible traces across model, tool, and step boundaries  
-10. Multi-provider models via a single configuration switch (Phase 1: thin native adapters; Phase 5: **LiteLLM SDK only** for production—natives removed; not Proxy)  
-11. Phase 6: **`/connect`** product profiles for **xAI Grok** and **OpenCode Go** on top of the LiteLLM path  
-12. Phase 7: TUI **input command history** via **Up/Down** arrow keys  
-13. Phase 8: Top-level **slash commands** typed in the **main textbox** (Enter runs `parse_slash`)  
-14. Phase 8.1: **Tab** slash autocomplete + **highlight** selected suggestion and input caret  
-15. Phase 9: Built-in **`web_search`** tool (pluggable HTTP search backends; same CORE-01/DUR path as workspace tools)  
-16. Phase 10: **Operator-visible TUI** — session chrome (provider · model · ctx), always-on feedback strip + error banners, activity feed / progressive busy  
+1. Schema-validated tools (serde/schemars); high AI-codability  
+2. **MCP** tools in product path; **ACP** as library crate only  
+3. Event-sourced durable execution (SQLite journal) + crash resume  
+4. Context lifecycle: budgets, offload, handoff artifacts  
+5. Optional git **worktree** isolation (`--worktree`)  
+6. Governance hooks: ACL filter, secret injection, audit, light sandbox  
+7. Surfaces: **TUI default** + **headless `run`**  
+8. Models: **LiteLLM SDK worker only** for live calls (not Proxy; not multi-native HTTP clients)  
+9. **`/connect` / `forge connect`** for xAI Grok (OAuth) and OpenCode Go (API key)  
+10. TUI: history, inline slash + Tab, feedback strip, session chrome, activity feed  
+11. Built-in **`web_search`** (mock fixture default; live backends with API keys)  
 
 ### Non-goals
 
 | Non-goal | Rationale |
 |----------|-----------|
 | Training or replacing foundation models | Harness is scaffolding only |
-| Heavy DAG / role DSLs as the primary API | Prefer flat, typed function contracts (decaying scaffolding) |
-| Substituting Temporal-class engines for the harness | Durable engines lack LLM-native context management |
-| Always-on gateway as the sole code-execution path | Multi-channel ingress must not over-grant repo/tool rights |
-| Proprietary single-client lock-in | Prefer open MCP + ACP |
-| Opaque execution without audit logs | Enterprise requires immutable invocation records |
+| Heavy DAG / role DSLs as the primary API | Prefer flat, typed function contracts |
+| Always-on multi-channel gateway as product CLI | Channel crate is library-only |
+| `forge repl` / `forge tui` / `--mock` product flags | TUI is default; mock is test-only via config env |
+| Dual native+LiteLLM production clients | LiteLLM only |
+| Opaque execution without audit hooks | Governance audit records |
 
-Phase-scoped features (multi-channel fleet, SCIM, full eBPF, SIEM plugins) land after core durability and protocols—Design details: [designs/README.md](./designs/README.md).
+Design index & status: [designs/README.md](./designs/README.md).
 
 ---
 
@@ -656,54 +649,57 @@ Discovery order and override rules should be deterministic and documented in con
 
 ```mermaid
 flowchart TB
-  subgraph surfaces["Surfaces — adapters only"]
-    TUI[TUI]
-    HD[Headless CI]
-    ACP[ACP IDE]
-    CH[Channel gateway Phase 3]
+  subgraph product["Product surfaces"]
+    TUI["TUI — forge"]
+    HD["Headless — forge run"]
+  end
+
+  subgraph library["Library-only surfaces"]
+    ACP[ACP crate]
+    CH[Channels crate]
   end
 
   subgraph harness["Harness core — single implementation"]
     LOOP[Agent loop]
-    PROTO[MCP + ACP protocols]
+    MCP[MCP tools]
     CTX[Context lifecycle]
     DUR[Durable journal]
     GOV[Governance]
   end
 
   subgraph shared["Shared backends"]
-    M[Model providers]
-    TOOLS[Built-ins + MCP tools]
-    J[Journal store]
+    M[LiteLLM worker / mock tests]
+    TOOLS[Built-ins + web_search + MCP]
+    J[Journal SQLite]
     WS[Workspace / worktree]
   end
 
   TUI --> LOOP
   HD --> LOOP
-  ACP --> PROTO
-  PROTO --> LOOP
-  CH --> LOOP
+  ACP -.-> LOOP
+  CH -.-> LOOP
 
   LOOP --> CTX
   LOOP --> DUR
   LOOP --> GOV
   LOOP --> M
+  LOOP --> MCP
   GOV --> TOOLS
   DUR --> J
   CTX --> WS
   TOOLS --> WS
 ```
 
-| Surface | Role | Notes |
-|---------|------|-------|
-| **TUI** | Interactive coding operator | Streams agent events; HITL prompts; no secret entry into long-term store (vault/env for credentials) |
-| **Headless** | CI / automation | Session resume IDs; exit codes; JSON/log sinks |
-| **ACP** | IDE clients | Same agent process can serve IDE without re-implementing loop |
-| **Channel gateway** | Slack, Telegram, webhooks (Phase 3) | Async ingress; maps to sessions; **restricted** tool ACL by default |
+| Surface | Role | Status |
+|---------|------|--------|
+| **TUI** | Default interactive product (`forge`) | Shipped |
+| **Headless** | `forge run`, exit codes, session id | Shipped |
+| **Connect** | `forge connect` + `/connect` | Shipped |
+| **ACP / channels / fleet / feedback / obs** | Crates for embedders | Library only |
 
-**Principle:** One harness core process (or service) can attach multiple surfaces; surfaces are renderers/transports, not second agent implementations (aligned with ACP decoupling).
+**Principle:** One harness core; product surfaces are TUI + headless. Other adapters may call the same core without re-implementing the loop.
 
-Streaming display rules: show tool names and redacted args; never render raw vault secrets; large payloads show URI + summary.
+Streaming display rules: tool names + redacted args; never paint secrets; large payloads show URI + summary.
 
 ---
 
@@ -854,25 +850,21 @@ Illustrative Rust workspace layout (crate names align with §3 / decisions table
 |--------------|----------------|
 | `forge-core` — loop | Plan–act–observe driver, termination, turn limits |
 | `forge-core` — tools registry | Tool registration, serde/schemars validation, dispatch |
-| `forge-core` / `forge-tools` — builtin tools | Read/write, bash, git, grep; Phase 9: **`web_search`** + search backends |
-| `forge-mcp` | MCP discovery and call bridge |
-| `forge-acp` | ACP server/session |
-| `forge-model` — model client | `ModelClient` trait; Phase 1 natives (until Phase 5); Phase 5: LiteLLM client + mock only |
-| `workers/forge-litellm-worker` | Phase 5 only: Python process using LiteLLM **SDK** (not Proxy) |
-| `forge-durable` — journal | Append-only log, replay, resume (sqlx/SQLite) |
-| `forge-durable` — hitl | Wait/resume tokens |
-| `forge-context` — budget | Token accounting |
-| `forge-context` — offload | Large payload files + URIs |
-| `forge-context` — handoff | `progress.json` / reset |
-| `forge-context` — worktree | Git worktree isolation |
-| `forge-governance` — acl | Tool allow/deny by principal |
-| `forge-governance` — vault | Secret injection |
-| `forge-governance` — sandbox | Container/eBPF execution |
-| `forge-governance` — audit | Immutable audit records |
-| `forge-feedback` | Dual-agent orchestration + sensors |
-| `forge-tui` / `forge-cli` | Phase 1: commands + REPL/headless; Phase 4: full-screen ratatui; Phase 10: feedback strip, session chrome, activity feed |
-| `forge-channels` (later) | Slack/Telegram/webhooks |
-| `forge-obs` | `tracing` + OpenTelemetry |
+| `forge-tools` | Built-ins + **`web_search`** + registry |
+| `forge-mcp` | MCP discovery/call (product path via config/static demo) |
+| `forge-model` | `ModelClient`; **LiteLLM** + test **mock** only |
+| `workers/forge-litellm-worker` | LiteLLM **SDK** process (not Proxy) |
+| `forge-durable` | Journal + HITL wait records |
+| `forge-context` | Budget, offload, handoff, worktree |
+| `forge-governance` | ACL, secrets, audit, light sandbox |
+| `forge-connect` | Connect profiles + credential store |
+| `forge-tui` | Full-screen TUI |
+| `forge-cli` | **`forge`** binary: TUI / `run` / `status` / `connect` |
+| `forge-acp` | ACP library only |
+| `forge-channels` | Channel gateway library only |
+| `forge-feedback` | Feedback/evaluator library only |
+| `forge-obs` | OTEL helpers library only |
+| `forge-fleet` | SCIM/SIEM library only |
 
 ---
 
@@ -895,7 +887,7 @@ Forge is the **harness** between models and the real world: a typed tool bus, an
 | # | Topic | Decision |
 |---|-------|----------|
 | 1 | Implementation language | **Rust** |
-| 2 | Product shape (Phase 1) | **CLI library + binary** (TUI + headless); not an always-on service |
+| 2 | Product shape | **CLI binary** default TUI + headless `run`; not an always-on service |
 | 3 | Async runtime | **Tokio** + standard ecosystem (`tracing`, HTTP clients, etc.) |
 | 4 | Tool schemas / validation | **serde + schemars** JSON Schema (schema-validated tool I/O) |
 | 5 | TUI | **ratatui + crossterm** |
@@ -904,8 +896,8 @@ Forge is the **harness** between models and the real world: a typed tool bus, an
 | 8 | Generator / Evaluator | **Opt-in per task** (single Generator default) |
 | 9 | Project memory file | **`AGENTS.md` primary**; optional aliases later |
 | 10 | Crate layout | **Workspace monorepo, many crates** aligned to modules in §3 |
-| 11 | Model providers (Phase 1) | **Direct APIs + thin trait**; ship **OpenAI-compatible, Anthropic, and xAI** thin adapters early (**superseded for production in Phase 5**) |
-| 18 | Universal providers (Phase 5) | **LiteLLM Python SDK as the only production `ModelClient`** (stdio worker). **Remove** Phase 1 native HTTP adapters. **Not** LiteLLM Proxy. **Not** `fast-litellm` as primary. **Mock** only for offline CI. No dual production stacks |
+| 11 | Model providers (historical) | Native adapters **removed** |
+| 18 | Universal providers | **LiteLLM Python SDK only** for production (`stdio` worker). **Not** Proxy. **Mock** for unit/CI env only — **no** product `--mock` flag |
 | 19 | Connected providers (Phase 6) | **`/connect`** UX + profiles for **xAI Grok** and **OpenCode Go**. **No** second production `ModelClient`. **6.1:** Grok = **OAuth**; OpenCode Go = **API key with mandatory TUI prompt** |
 | 20 | TUI input history (Phase 7) | **Up/Down** navigate submitted command history in main input only; inactive under overlays; session memory required, disk optional |
 | 21 | Inline slash (Phase 8) | Main textbox owns `/command` entry + Enter; **do not** auto-open palette on `/`; palette via **Ctrl+K** (or equivalent) |
@@ -932,16 +924,13 @@ Forge is the **harness** between models and the real world: a typed tool bus, an
 | LiteLLM (Phase 5) | **Required** for live model calls: **Python** + `litellm`; long-lived worker preferred; **no** proxy server; natives deleted |
 | Connect profiles (Phase 6) | Registry + `/connect`; still `LiteLlmModelClient` |
 | Connect auth (6.1) | `AuthMode::Oauth` (xAI) vs `AuthMode::ApiKey` + TUI prompt (OpenCode Go); tokens/keys in 0600 store |
-| Surfaces | Phase 1: line-mode `repl` + headless `forge-cli`; Phase 2: `forge-acp`; Phase 3: channels; Phase 4: full-screen ratatui `forge`; Phase 6: `/connect` in TUI + REPL; Phase 7: TUI input history (Up/Down); Phase 8: inline slash; Phase 10: operator-visible chrome/feedback/activity |
-| Web search (Phase 9) | `WebSearchTool` in `forge-tools`; `SearchBackend` trait; config `[tools.web_search]`; mock for CI |
-| TUI visibility (Phase 10) | `FeedbackBar`, `SessionChromeModel`, `ActivityFeed`, `BusyPhase` in `forge-tui` |
-| Config | TOML (`forge.toml` or XDG config path) merged with env overrides |
+| Surfaces | **Product:** `forge` TUI, `forge run`, `status`, `connect`. **Library:** ACP, channels, fleet, feedback, obs |
+| Web search | `WebSearchTool` + backends; default offline mock backend |
+| TUI visibility | Feedback strip, session chrome, activity feed in `forge-tui` |
+| Config | **Optional** TOML + env + flags (no file required) |
 | Workspace root | Default **cwd**; override via CLI flag and/or config when specified |
 | Observability | `tracing` + OpenTelemetry exporter crates |
 | License | MIT |
-
-Suggested workspace crates (initial): `forge-types`, `forge-core`, `forge-durable`, `forge-context`, `forge-governance`, `forge-feedback`, `forge-mcp`, `forge-acp`, `forge-obs`, `forge-tui`, `forge-cli` (binary).
-
 
 ---
 
