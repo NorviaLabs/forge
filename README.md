@@ -12,20 +12,89 @@ Forge is a **harness** around foundation models for real repo work. You pick the
 
 ---
 
-## Use cases
+## Install
 
-### 1. Interactive coding (TUI)
-
-**When:** You’re at the keyboard — explore a bug, steer the agent, approve risky steps.
+**Need:** Rust 1.80+, Python 3 (for live models).
 
 ```bash
-export OPENAI_API_KEY=…   # or ANTHROPIC_API_KEY / XAI_API_KEY / …
-export FORGE_MODEL_ID=openai/gpt-4.1-mini
-
-forge                 # opens the full-screen TUI
+git clone https://github.com/NorviaLabs/forge.git
+cd forge
+cargo build --release -p forge-cli
+export PATH="$PWD/target/release:$PATH"
+pip install -e workers/forge-litellm-worker
 ```
 
-Use the chat for tasks; slash commands (`/status`, `/tools`, `/connect`, `/worktree …`) and HITL overlays stay in the same session.
+---
+
+## Auth setup
+
+Do this once before the tutorials. Live models go through the LiteLLM worker (not the LiteLLM Proxy).
+
+### Option A — API key + model env (most providers)
+
+```bash
+# Pick one provider key (examples)
+export OPENAI_API_KEY=…          # openai/…
+# export ANTHROPIC_API_KEY=…     # anthropic/…
+# export XAI_API_KEY=…           # if using key-based xAI routes
+
+export FORGE_MODEL_PROVIDER=litellm
+export FORGE_MODEL_ID=openai/gpt-4.1-mini   # any LiteLLM model string
+```
+
+Optional project file (not required):
+
+```toml
+# forge.toml
+[model]
+provider = "litellm"
+model = "openai/gpt-4.1-mini"
+```
+
+### Option B — Product profiles (`connect`)
+
+```bash
+forge connect list
+
+# OpenCode Go — API key
+forge connect opencode_go --key "$OPENCODE_API_KEY"
+
+# xAI Grok — OAuth in the TUI
+forge
+# then: /connect  →  pick xAI Grok  →  complete OAuth
+```
+
+Keys and tokens are stored under `~/.config/forge/credentials.toml` (mode `0600`). Never commit them.
+
+Check what Forge sees:
+
+```bash
+forge status
+```
+
+---
+
+## Tutorials
+
+### Tutorial 1 — Interactive coding in the TUI
+
+**Goal:** Chat with the agent, run tools, and steer a session at the keyboard.
+
+1. Complete [Auth setup](#auth-setup).
+2. From a git project (or any workspace):
+
+```bash
+cd /path/to/your/repo
+forge
+```
+
+3. Type a task and press **Enter**, e.g. `Explain the layout of this crate`.
+4. Try slash commands in the main textbox:
+   - `/status` — session, model, context  
+   - `/tools` — tools the model can see  
+   - `/help` — command list  
+5. **Ctrl+K** opens the command palette; **/** + **Tab** completes slash suggestions; **↑/↓** recall prior lines when not in the suggest list.
+6. Quit with `/quit` or **Ctrl+C**.
 
 <p align="center">
   <img src="docs/ui/images/01-home.png" alt="Forge TUI" width="880" />
@@ -33,86 +102,133 @@ Use the chat for tasks; slash commands (`/status`, `/tools`, `/connect`, `/workt
 
 ---
 
-### 2. Headless / CI automation
+### Tutorial 2 — Headless agent in CI (or a script)
 
-**When:** No human at the terminal — PR bots, scheduled jobs, monorepo pipelines.
+**Goal:** Run the same harness as a subprocess with exit codes—no TUI.
 
-```bash
-forge run "Fix failing tests in crates/foo"
-echo $?   # 0 ok · 1 failed · 2 awaiting HITL · 3 canceled · 4 config
-```
-
-Same agent loop as the TUI, as a **subprocess**: set env, run, parse `session_id` / logs, fail the job on non-zero exit. Prefer this over the TUI for batch and CI.
+1. Complete [Auth setup](#auth-setup) (in CI secrets / env).
+2. Run a one-shot task:
 
 ```bash
-# Example shape in CI
-export FORGE_MODEL_ID=…
-export OPENAI_API_KEY=…
-forge run "Address review comments on the last commit"
+forge run "Summarize what this repository does and list the main crates"
+echo "exit=$?"
+# 0 = ok · 1 = failed · 2 = awaiting HITL · 3 = canceled · 4 = config
 ```
+
+3. Capture the session for later resume (printed as `session_id=…`):
+
+```bash
+forge run "Fix the failing unit tests" | tee /tmp/forge-out.txt
+# note session_id= from the output
+```
+
+4. Example CI-shaped snippet:
+
+```bash
+export FORGE_MODEL_ID="${FORGE_MODEL_ID}"
+export OPENAI_API_KEY="${OPENAI_API_KEY}"
+forge run "Address the review comments on the latest commit" || exit 1
+```
+
+Use **Tutorial 2** for bots and pipelines; use **Tutorial 1** when a human needs to steer.
 
 ---
 
-### 3. Safe experiments (git worktree)
+### Tutorial 3 — Safe experiment in a git worktree
 
-**When:** You want autonomy without polluting the branch you’re on.
+**Goal:** Let the agent edit freely without dirtying your current branch.
+
+1. Complete [Auth setup](#auth-setup).
+2. Start from a **git** repository.
+3. Run with isolation:
 
 ```bash
-forge --worktree run "Refactor auth aggressively"
-# or interactive, still isolated:
+cd /path/to/your/repo
+forge --worktree run "Refactor the error handling in the main module"
+```
+
+Or interactively:
+
+```bash
 forge --worktree
+# then give the agent a risky task in the TUI
 ```
 
-| Step | What happens |
-|------|----------------|
-| Start | Worktree at `.forge/worktrees/<session_id>/`, branch `forge/<id>` |
-| During the run | File tools write **only** in that worktree — **primary tree stays clean** |
-| Finish | `/worktree status` · `/worktree merge` · `/worktree discard --yes` |
-
-**Autonomy with an explicit merge/discard boundary** — not “hope it stayed on a feature branch.”
-
----
-
-### 4. Resume after a crash or kill
-
-**When:** Laptop sleep, CI timeout, or process death mid-task.
-
-Forge journals model/tool steps **before** side effects. Completed work is not blindly replayed.
+4. Confirm the primary tree stayed clean:
 
 ```bash
-# after a failed or interrupted run, note session_id from logs/output
-forge --resume <session-id>              # back in the TUI
-forge run "continue" --resume <session-id>   # if you pass resume via global flag
+git status
+# agent files live under .forge/worktrees/<session_id>/ on branch forge/<id>
 ```
 
-Global flag: `forge --resume <uuid> …` works with the default TUI and with `run`.
+5. In the TUI (or a resumed session), finish deliberately:
+   - `/worktree status` — path and branch  
+   - `/worktree merge` — bring changes into the base  
+   - `/worktree discard --yes` — throw the experiment away  
 
-**Resume the agent, not just the chat.**
+**Primary checkout stays clean until you merge.**
 
 ---
 
-### 5. Connect a provider (Grok / OpenCode Go)
+### Tutorial 4 — Resume after a crash or kill
 
-**When:** You want productized auth for specific backends on the same LiteLLM path.
+**Goal:** Continue a session without redoing completed tool work.
+
+1. Start a run and note the id:
+
+```bash
+forge run "Large multi-step refactor of module X"
+# → session_id=<uuid>
+```
+
+2. Simulate interruption (**Ctrl+C**) or wait for a CI timeout.
+3. Resume:
+
+```bash
+# Interactive
+forge --resume <uuid>
+
+# Or headless continue
+forge --resume <uuid> run "Continue from where you left off"
+```
+
+Forge journals model/tool steps **before** side effects. On resume, completed tools are not blindly re-executed. **Resume the agent, not just the chat.**
+
+---
+
+### Tutorial 5 — Connect OpenCode Go or xAI Grok
+
+**Goal:** Use a productized provider profile on the same LiteLLM path.
+
+**OpenCode Go (API key):**
 
 ```bash
 forge connect list
 forge connect opencode_go --key "$OPENCODE_API_KEY"
-# xAI Grok: OAuth via /connect in the TUI
+forge status
+forge   # TUI with the connected profile’s models available
 ```
 
-Credentials: `~/.config/forge/credentials.toml` (mode `0600`).
+**xAI Grok (OAuth):**
+
+```bash
+forge
+# /connect → select xAI Grok → complete OAuth in the UI
+# (API-key paste is not the Grok path)
+```
+
+Credentials stay in `~/.config/forge/credentials.toml` (`0600`).
 
 ---
 
-## Why these hold up
+## Why these paths matter
 
 | Problem | Forge |
 |---------|--------|
-| Process dies mid-task | Event journal + `--resume` without redoing completed tools |
+| Process dies mid-task | Journal + `--resume` without redoing completed tools |
 | Bad tool args hit disk/shell | Schema validation **before** side effects |
 | Agent trashes your checkout | Session **git worktree** until merge/discard |
-| Need automation, not a UI | **`forge run`** + exit codes for CI |
+| Need automation, not a UI | **`forge run`** + exit codes |
 
 <p align="center">
   <img src="docs/ui/images/02-chat-streaming.png" alt="Chat" width="430" />
@@ -122,49 +238,20 @@ Credentials: `~/.config/forge/credentials.toml` (mode `0600`).
 
 ---
 
-## Install
-
-**Need:** Rust 1.80+, Python 3 (live models).
-
-```bash
-git clone https://github.com/NorviaLabs/forge.git
-cd forge
-cargo build --release -p forge-cli
-export PATH="$PWD/target/release:$PATH"
-pip install -e workers/forge-litellm-worker   # live models only
-```
-
----
-
 ## Configuration
 
-Optional. Defaults work; env and flags override. Files (if present): `~/.config/forge/config.toml`, `./forge.toml`.
+Optional. Defaults + env + flags are enough (see [Auth setup](#auth-setup)).
 
 | Env | |
 |-----|--|
-| `FORGE_MODEL_ID` | LiteLLM model (`openai/…`, `anthropic/…`, `xai/…`) |
+| `FORGE_MODEL_ID` | LiteLLM model string |
 | `FORGE_MODEL_PROVIDER` | `litellm` |
 | `OPENAI_API_KEY` / … | Provider keys for the worker |
 | `FORGE_WORKSPACE` | Project root (default: cwd) |
 
----
-
-## CLI
-
-```text
-forge [OPTIONS] [COMMAND]
-```
-
-| Command | |
-|---------|--|
-| *(none)* | Interactive TUI |
-| `run <prompt>` | Headless / CI |
-| `status` | Version / workspace / model |
-| `connect [profile]` | Provider profiles |
-
 **Flags:** `--config` · `--workspace` · `--model` · `--worktree` · `--resume` · `--max-turns`
 
-**Exit codes:** `0` ok · `1` failed · `2` awaiting HITL · `3` canceled · `4` config
+**CLI:** `forge` (TUI) · `run` · `status` · `connect`
 
 ---
 
