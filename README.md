@@ -1,19 +1,68 @@
 # Forge
 
-**AI coding agent for your terminal.** Durable sessions, real tools, any model — one command.
+**Let the agent work hard — without wrecking your branch.**  
+Open coding-agent harness: crash-safe sessions, fail-closed tools, git worktree isolation.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org/)
 
-Forge runs a coding agent with schema-validated tools, crash-safe resume, and a full-screen TUI. You provide the model (via LiteLLM); Forge handles tools, context, approvals, and recovery.
+Forge is a **harness** around foundation models for real repo work. You pick the model (via LiteLLM); Forge owns tools, session durability, isolation, and a full-screen TUI.
 
 ```bash
 forge              # full-screen TUI
-forge status       # version, workspace, model
 forge run "…"      # headless
+forge status
 ```
 
 **[Architecture](./docs/architecture.md)**
+
+---
+
+## Why Forge
+
+Most coding agents edit **your current checkout** and treat chat history as “memory.” That’s fine until a crash, a bad tool call, or a runaway refactor hits the tree you’re on.
+
+| Problem | What Forge does |
+|---------|-----------------|
+| Process dies mid-task | **Event journal** records model/tool steps *before* side effects; **resume without redoing completed work** |
+| Bad tool args hit disk/shell | **Schema validation first** — invalid calls never execute |
+| Agent pollutes your branch | Optional **git worktree isolation** — edits land in a session worktree until you merge or discard |
+| Vendor lock-in | Open MIT harness; live models through **LiteLLM** (config/env switch) |
+
+### Crash-safe sessions
+
+Forge journals intent before tools and model steps complete. After a kill or crash:
+
+```bash
+forge --resume <session-id>
+```
+
+Completed tool results are reused; the agent doesn’t blindly replay the whole run. **Resume the agent, not just the chat.**
+
+### Fail-closed tools
+
+Every tool has a declared input schema. Invalid arguments are rejected **before** side effects. The model can correct and retry — your tree doesn’t get half-written garbage from a bad call.
+
+### Git worktree isolation
+
+Give the agent a **disposable workspace** bound to the session:
+
+```bash
+forge --worktree run "Refactor auth aggressively"
+# or open the TUI with isolation
+forge --worktree
+```
+
+What happens:
+
+1. Git worktree under `.forge/worktrees/<session_id>/` on branch `forge/<id>`  
+2. File tools resolve paths against that root — **primary working tree stays clean**  
+3. You decide:  
+   - `/worktree status` — path and branch  
+   - `/worktree merge` — bring work into the base  
+   - `/worktree discard --yes` — throw it away  
+
+Autonomy without “hope it stayed on a feature branch.” Experiment, review, then **merge or discard**.
 
 ---
 
@@ -33,7 +82,7 @@ forge run "…"      # headless
 
 ## Install
 
-**Need:** Rust 1.80+, Python 3 (live models).
+**Need:** Rust 1.80+, Python 3 (for live models).
 
 ```bash
 git clone https://github.com/NorviaLabs/forge.git
@@ -53,8 +102,8 @@ export FORGE_MODEL_ID=openai/gpt-4.1-mini  # any LiteLLM model string
 
 forge                              # TUI
 forge run "Summarize this repo"    # headless
-forge --resume <session-id>        # resume in TUI
-forge --worktree run "…"           # isolate edits in a git worktree
+forge --resume <session-id>        # resume after a crash
+forge --worktree run "…"           # isolate edits in a worktree
 ```
 
 ### Connect Grok or OpenCode Go
@@ -103,7 +152,7 @@ forge [OPTIONS] [COMMAND]
 
 ## Architecture
 
-One agent core for TUI and headless. Live models use a Forge-managed **LiteLLM SDK worker**. Sessions journal for crash-safe resume.
+One agent core for TUI and headless. Live models use a Forge-managed **LiteLLM SDK worker**. Sessions use an append-only journal; tools can run under a session git worktree.
 
 <p align="center">
   <img src="docs/images/architecture.png" alt="Forge architecture" width="880" />
