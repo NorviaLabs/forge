@@ -7,7 +7,7 @@ mod validation;
 pub mod web_search;
 
 pub use builtins::{
-    default_builtins, default_builtins_with_web_search, BashTool, GrepTool, ReadFileTool,
+    default_builtins, default_builtins_with_web_search, BashTool, GitTool, GrepTool, ReadFileTool,
     WriteFileTool,
 };
 pub use registry::{ToolContext, ToolRegistry};
