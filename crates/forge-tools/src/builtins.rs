@@ -158,6 +158,119 @@ impl Tool for BashTool {
     }
 }
 
+/// Allowlisted git subcommands (not a free-form shell).
+const GIT_ALLOWED_SUBCOMMANDS: &[&str] = &[
+    "status",
+    "diff",
+    "log",
+    "show",
+    "branch",
+    "add",
+    "commit",
+    "checkout",
+    "switch",
+    "restore",
+    "stash",
+    "rev-parse",
+    "ls-files",
+    "remote",
+    "fetch",
+    "pull",
+    "push",
+    "merge",
+    "rebase",
+    "cherry-pick",
+    "tag",
+    "blame",
+    "init",
+    "clone",
+];
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct GitArgs {
+    /// Git subcommand (e.g. status, diff, log, add, commit, push).
+    pub subcommand: String,
+    /// Additional arguments after the subcommand (e.g. ["--stat"], ["-m", "msg"]).
+    #[serde(default)]
+    pub args: Vec<String>,
+}
+
+pub struct GitTool;
+
+#[async_trait]
+impl Tool for GitTool {
+    fn name(&self) -> &str {
+        "git"
+    }
+    fn description(&self) -> &str {
+        "Run an allowlisted git subcommand in the workspace (status, diff, log, add, commit, branch, push, …). Not a free-form shell."
+    }
+    fn input_schema(&self) -> Value {
+        schema_for::<GitArgs>()
+    }
+    fn side_effect_class(&self) -> SideEffectClass {
+        // Reads are common; writes/push also go through this tool — classify as Write for ACL.
+        SideEffectClass::Write
+    }
+
+    async fn call(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
+        let a: GitArgs =
+            serde_json::from_value(args).map_err(|e| ToolError::Execution(e.to_string()))?;
+        let sub = a.subcommand.trim().to_ascii_lowercase();
+        if sub.is_empty() {
+            return Err(ToolError::Execution(
+                "git: subcommand is required (e.g. status, diff, commit)".into(),
+            ));
+        }
+        if !GIT_ALLOWED_SUBCOMMANDS.contains(&sub.as_str()) {
+            return Err(ToolError::Execution(format!(
+                "git: subcommand `{sub}` is not allowlisted; allowed: {}",
+                GIT_ALLOWED_SUBCOMMANDS.join(", ")
+            )));
+        }
+        // Reject args that look like option injectors for a second git command
+        for arg in &a.args {
+            if arg.starts_with("--git-dir")
+                || arg.starts_with("--work-tree")
+                || arg == "-C"
+                || arg.starts_with("-c")
+            {
+                return Err(ToolError::Execution(format!(
+                    "git: argument `{arg}` is not allowed"
+                )));
+            }
+        }
+
+        let mut cmd = Command::new("git");
+        cmd.arg(&sub)
+            .args(&a.args)
+            .current_dir(&ctx.workspace_root)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let out = cmd
+            .output()
+            .await
+            .map_err(|e| ToolError::Execution(format!("failed to run git: {e}")))?;
+
+        let mut content = String::from_utf8_lossy(&out.stdout).into_owned();
+        let err = String::from_utf8_lossy(&out.stderr);
+        if !err.is_empty() {
+            if !content.is_empty() {
+                content.push('\n');
+            }
+            content.push_str(&err);
+        }
+        if content.trim().is_empty() && out.status.success() {
+            content = format!("git {sub}: ok");
+        }
+        Ok(ToolOutput {
+            content,
+            is_error: !out.status.success(),
+        })
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct GrepArgs {
     pub pattern: String,
@@ -235,6 +348,7 @@ pub fn default_builtins() -> Vec<std::sync::Arc<dyn Tool>> {
         std::sync::Arc::new(WriteFileTool),
         std::sync::Arc::new(BashTool),
         std::sync::Arc::new(GrepTool),
+        std::sync::Arc::new(GitTool),
     ]
 }
 
@@ -287,6 +401,7 @@ mod tests {
         let tools = default_builtins_with_web_search(&cfg);
         assert!(tools.iter().any(|t| t.name() == "web_search"));
         assert!(tools.iter().any(|t| t.name() == "read_file"));
+        assert!(tools.iter().any(|t| t.name() == "git"));
     }
 
     #[test]
@@ -298,5 +413,103 @@ mod tests {
         let tools = default_builtins_with_web_search(&cfg);
         assert!(!tools.iter().any(|t| t.name() == "web_search"));
         assert_eq!(tools.len(), default_builtins().len());
+    }
+
+    #[test]
+    fn default_builtins_includes_git() {
+        assert!(default_builtins().iter().any(|t| t.name() == "git"));
+    }
+
+    #[tokio::test]
+    async fn git_status_in_repo() {
+        let dir = tempdir().unwrap();
+        // init repo
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.email", "forge@test"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Forge Test"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        std::fs::write(dir.path().join("a.txt"), "hi").unwrap();
+
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let out = GitTool
+            .call(
+                &ctx,
+                json!({"subcommand": "status", "args": ["--porcelain"]}),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("a.txt") || out.content.contains("??"),
+            "got {}",
+            out.content
+        );
+    }
+
+    #[tokio::test]
+    async fn git_rejects_unknown_subcommand() {
+        let dir = tempdir().unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let err = GitTool
+            .call(&ctx, json!({"subcommand": "daemon"}))
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("allowlisted") || err.to_string().contains("daemon"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn git_add_and_commit() {
+        let dir = tempdir().unwrap();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.email", "forge@test"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Forge Test"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        std::fs::write(dir.path().join("b.txt"), "content").unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        GitTool
+            .call(&ctx, json!({"subcommand": "add", "args": ["b.txt"]}))
+            .await
+            .unwrap();
+        let out = GitTool
+            .call(
+                &ctx,
+                json!({"subcommand": "commit", "args": ["-m", "add b"]}),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let log = GitTool
+            .call(
+                &ctx,
+                json!({"subcommand": "log", "args": ["-1", "--oneline"]}),
+            )
+            .await
+            .unwrap();
+        assert!(log.content.contains("add b"), "{}", log.content);
     }
 }
