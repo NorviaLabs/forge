@@ -1,14 +1,66 @@
 # Forge
 
-**Let the agent work hard — without wrecking your branch.**  
-Open coding-agent harness: crash-safe sessions, fail-closed tools, git worktree isolation.
+**Let the agent work hard — without wrecking your branch.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org/)
 
-Forge is a **harness** around foundation models for real repo work. You pick the model (via LiteLLM); Forge owns tools, session durability, isolation, and a full-screen TUI.
+---
 
-**[Architecture](./docs/architecture.md)**
+## What is Forge
+
+Forge is an open-source **AI coding-agent harness**: application scaffolding around foundation models for real repository work. You provide the model (via LiteLLM); Forge owns the agent loop, tools, durable session state, optional git worktree isolation, and a full-screen terminal UI.
+
+**Product surface**
+
+| Command | Role |
+|---------|------|
+| `forge` | Full-screen TUI (default) |
+| `forge run "…"` | Headless agent (CI / scripts) |
+| `forge status` | Version, workspace, model |
+| `forge connect …` | Provider profiles (e.g. Grok, OpenCode Go) |
+
+**How it fits together**
+
+One agent core serves both interactive and headless use. Live inference goes through a Forge-managed **LiteLLM Python SDK worker** (not the LiteLLM Proxy). Sessions use an append-only **journal** so work can resume after a crash. Tools can run against a **session git worktree** so the primary checkout stays clean until you merge or discard.
+
+<p align="center">
+  <img src="docs/images/architecture.png" alt="Forge architecture: surfaces, agent session, journal, governance, LiteLLM worker, workspace and tools" width="880" />
+</p>
+
+| Layer | Role |
+|-------|------|
+| **You** | TUI or headless CLI |
+| **Harness** | Plan–act–observe loop, tools, governance hooks, context lifecycle |
+| **Durability** | SQLite event journal — resume without redoing completed steps |
+| **Models** | LiteLLM worker for production; same tools and journal regardless of vendor |
+| **Workspace** | Your repo, optional `.forge/worktrees/<session>/` isolation |
+
+Built-in tools include `read_file`, `write_file`, `bash`, `grep`, and `web_search`, plus MCP servers you configure. Full design notes: [docs/architecture.md](./docs/architecture.md).
+
+---
+
+## Why Forge
+
+Most coding agents edit **your current checkout** and treat chat history as “memory.” That fails when the process dies, a tool call is invalid, or a runaway refactor hits the branch you care about.
+
+| Problem | What Forge does |
+|---------|-----------------|
+| Process dies mid-task | **Event journal** records model/tool steps *before* side effects; **`--resume`** continues without blindly replaying completed work |
+| Bad tool args hit disk/shell | **Schema validation first** — invalid calls never execute |
+| Agent pollutes your branch | Optional **git worktree isolation** — edits stay in a session worktree until `/worktree merge` or discard |
+| Automation needs a subprocess | **`forge run`** with exit codes (`0` ok · `1` failed · `2` HITL · `3` canceled · `4` config) |
+| Vendor lock-in | Open **MIT** harness; models via **LiteLLM** (config/env switch) |
+
+**Crash-safe sessions** — Resume the agent, not just the chat:
+
+```bash
+forge --resume <session-id>
+```
+
+**Fail-closed tools** — Declared input schemas; failures go back to the model, not half-written files.
+
+**Disposable workspaces** — `forge --worktree` binds file tools to `.forge/worktrees/<session_id>/` on `forge/<id>`; your primary tree stays clean until you choose merge or discard.
 
 ---
 
@@ -28,12 +80,11 @@ pip install -e workers/forge-litellm-worker
 
 ## Auth setup
 
-Do this once before the tutorials. Live models go through the LiteLLM worker (not the LiteLLM Proxy).
+Do this once before the tutorials. Live models use the LiteLLM worker (not the LiteLLM Proxy).
 
 ### Option A — API key + model env (most providers)
 
 ```bash
-# Pick one provider key (examples)
 export OPENAI_API_KEY=…          # openai/…
 # export ANTHROPIC_API_KEY=…     # anthropic/…
 # export XAI_API_KEY=…           # if using key-based xAI routes
@@ -64,9 +115,7 @@ forge
 # then: /connect  →  pick xAI Grok  →  complete OAuth
 ```
 
-Keys and tokens are stored under `~/.config/forge/credentials.toml` (mode `0600`). Never commit them.
-
-Check what Forge sees:
+Keys and tokens: `~/.config/forge/credentials.toml` (mode `0600`). Never commit them.
 
 ```bash
 forge status
@@ -192,8 +241,6 @@ forge --resume <uuid>
 forge --resume <uuid> run "Continue from where you left off"
 ```
 
-Forge journals model/tool steps **before** side effects. On resume, completed tools are not blindly re-executed. **Resume the agent, not just the chat.**
-
 ---
 
 ### Tutorial 5 — Connect OpenCode Go or xAI Grok
@@ -206,7 +253,7 @@ Forge journals model/tool steps **before** side effects. On resume, completed to
 forge connect list
 forge connect opencode_go --key "$OPENCODE_API_KEY"
 forge status
-forge   # TUI with the connected profile’s models available
+forge
 ```
 
 **xAI Grok (OAuth):**
@@ -216,25 +263,6 @@ forge
 # /connect → select xAI Grok → complete OAuth in the UI
 # (API-key paste is not the Grok path)
 ```
-
-Credentials stay in `~/.config/forge/credentials.toml` (`0600`).
-
----
-
-## Why these paths matter
-
-| Problem | Forge |
-|---------|--------|
-| Process dies mid-task | Journal + `--resume` without redoing completed tools |
-| Bad tool args hit disk/shell | Schema validation **before** side effects |
-| Agent trashes your checkout | Session **git worktree** until merge/discard |
-| Need automation, not a UI | **`forge run`** + exit codes |
-
-<p align="center">
-  <img src="docs/ui/images/02-chat-streaming.png" alt="Chat" width="430" />
-  &nbsp;
-  <img src="docs/ui/images/03-tool-execution.png" alt="Tools" width="430" />
-</p>
 
 ---
 
@@ -252,16 +280,6 @@ Optional. Defaults + env + flags are enough (see [Auth setup](#auth-setup)).
 **Flags:** `--config` · `--workspace` · `--model` · `--worktree` · `--resume` · `--max-turns`
 
 **CLI:** `forge` (TUI) · `run` · `status` · `connect`
-
----
-
-## Architecture
-
-One agent core for TUI and headless. Live models use a Forge-managed **LiteLLM SDK worker**. Sessions journal for crash-safe resume; tools can run under a session git worktree.
-
-<p align="center">
-  <img src="docs/images/architecture.png" alt="Forge architecture" width="880" />
-</p>
 
 ---
 
