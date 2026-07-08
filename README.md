@@ -36,7 +36,7 @@ One agent core serves both interactive and headless use. Live inference goes thr
 | **Models** | LiteLLM worker for production; same tools and journal regardless of vendor |
 | **Workspace** | Your repo, optional `.forge/worktrees/<session>/` isolation |
 
-Built-in tools include `read_file`, `write_file`, `bash`, `grep`, and `web_search`, plus MCP servers you configure. Full design notes: [docs/architecture.md](./docs/architecture.md).
+Built-in tools include `read_file`, `write_file`, `bash`, `grep`, `git`, and `web_search`, plus MCP servers you configure. Full design notes: [docs/architecture.md](./docs/architecture.md).
 
 ---
 

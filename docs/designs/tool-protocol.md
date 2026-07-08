@@ -78,10 +78,10 @@ Names from MCP are namespaced to avoid collisions (e.g. `mcp:<server_id>:<tool>`
 | Tool | Class | Notes |
 |------|-------|-------|
 | `read_file` | read | path, optional offset/limit |
-| `write_file` / `edit_file` | write | worktree-aware paths |
+| `write_file` | write | worktree-aware paths |
 | `bash` | exec | sandbox + HITL policies apply |
-| `grep` / `search` | read | |
-| `git_*` (status, diff, commit, …) | write/network | push-class → often HITL |
+| `grep` | read | regex search (rg / grep) |
+| `git` | write | allowlisted subcommands (`status`, `diff`, `log`, `add`, `commit`, `push`, …) |
 
 Exact names can refine in implementation; classes drive policy.
 
