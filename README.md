@@ -35,8 +35,9 @@ One agent core serves both interactive and headless use. Live inference goes thr
 | **Durability** | SQLite event journal — resume without redoing completed steps |
 | **Models** | LiteLLM worker for production; same tools and journal regardless of vendor |
 | **Workspace** | Your repo, optional `.forge/worktrees/<session>/` isolation |
+| **Tools** | `read_file` · `write_file` · `bash` · `grep` · **`git`** (allowlisted subcommands) · `web_search` · MCP |
 
-Built-in tools include `read_file`, `write_file`, `bash`, `grep`, `git`, and `web_search`, plus MCP servers you configure. Full design notes: [docs/architecture.md](./docs/architecture.md).
+Full design notes: [docs/architecture.md](./docs/architecture.md).
 
 ---
 
