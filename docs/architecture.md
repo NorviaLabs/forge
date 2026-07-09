@@ -12,7 +12,7 @@
 
 ## 1. Purpose
 
-Forge is an open-source **AI coding agent harness**: loop control, context lifecycle, durable journal, tools (built-ins + MCP + `web_search`), governance hooks, and LiteLLM-backed models. **Product surfaces:** full-screen TUI (`forge`) and headless `forge run`. Library crates may expose ACP/channels/fleet/feedback/obs; those are **not** CLI products.
+Forge is an open-source **AI coding agent harness**: loop control, context lifecycle, durable journal, tools (built-ins including **`git`** + MCP + `web_search`), governance hooks, and LiteLLM-backed models. **Product surfaces:** full-screen TUI (`forge`) and headless `forge run`. Library crates may expose ACP/channels/fleet/feedback/obs; those are **not** CLI products.
 
 ### How to read the diagrams
 
@@ -45,7 +45,8 @@ The product sits in the agentic stack as follows:
 8. Models: **LiteLLM SDK worker only** for live calls (not Proxy; not multi-native HTTP clients)  
 9. **`/connect` / `forge connect`** for xAI Grok (OAuth) and OpenCode Go (API key)  
 10. TUI: history, inline slash + Tab, feedback strip, session chrome, activity feed  
-11. Built-in **`web_search`** (mock fixture default; live backends with API keys)  
+11. Built-in tools: `read_file`, `write_file`, `bash`, `grep`, **`git`** (allowlisted subcommands), **`web_search`** (mock fixture default; live backends with API keys)  
+ 
 
 ### Non-goals
 
@@ -264,8 +265,8 @@ A **session** is a durable unit of agent work (one interactive chat, one CI job,
 |--------|--------|
 | **Contract** | Each tool: name, description, serde/schemars input type, typed output serialization (CORE-01) |
 | **Registry** | In-process built-ins + MCP-discovered tools, merged then ACL-filtered (SEC-02) |
-| **Built-ins (coding default)** | Read/write files, bash, git (branch create/delete, commit, push), grep/search; subject to sandbox and worktree policy |
-| **Built-ins (Phase 9)** | **`web_search`** — public web query via pluggable backends (`network` class); keys from env/vault only ([web-search-tool.md](./designs/web-search-tool.md)) |
+| **Built-ins (coding default)** | `read_file`, `write_file`, `bash`, `grep`, **`git`** (allowlisted subcommands: status, diff, log, add, commit, push, …); subject to sandbox and worktree policy |
+| **Built-ins (web)** | **`web_search`** — public web query via pluggable backends (`network` class); keys from env/vault only ([web-search-tool.md](./designs/web-search-tool.md)) |
 | **MCP** | Stdio/HTTP MCP servers for external integrations (CORE-02) |
 | **Validation** | Invalid args → structured error + automatic validation retry prompt to the model |
 | **Execution path** | Journal intent → ACL/sandbox → inject credentials → run → journal result → context ingest (or offload) |
@@ -669,7 +670,7 @@ flowchart TB
 
   subgraph shared["Shared backends"]
     M[LiteLLM worker / mock tests]
-    TOOLS[Built-ins + web_search + MCP]
+    TOOLS[Built-ins + git + web_search + MCP]
     J[Journal SQLite]
     WS[Workspace / worktree]
   end
@@ -850,7 +851,7 @@ Illustrative Rust workspace layout (crate names align with §3 / decisions table
 |--------------|----------------|
 | `forge-core` — loop | Plan–act–observe driver, termination, turn limits |
 | `forge-core` — tools registry | Tool registration, serde/schemars validation, dispatch |
-| `forge-tools` | Built-ins + **`web_search`** + registry |
+| `forge-tools` | Built-ins (`read_file`, `write_file`, `bash`, `grep`, **`git`**, **`web_search`**) + registry |
 | `forge-mcp` | MCP discovery/call (product path via config/static demo) |
 | `forge-model` | `ModelClient`; **LiteLLM** + test **mock** only |
 | `workers/forge-litellm-worker` | LiteLLM **SDK** process (not Proxy) |
