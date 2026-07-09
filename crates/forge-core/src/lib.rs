@@ -18,7 +18,7 @@ use forge_types::{
 use forge_workspace::{IsolationMode, WorktreeManager};
 use serde_json::json;
 use thiserror::Error;
-use tracing::{info, warn};
+use tracing::warn;
 
 #[derive(Debug, Error)]
 pub enum LoopError {
@@ -370,7 +370,7 @@ impl AgentSession {
             });
         }
 
-        info!(turn, "model step");
+        tracing::debug!(turn, "model step");
         self.journal
             .append_model_request(
                 self.session_id,
