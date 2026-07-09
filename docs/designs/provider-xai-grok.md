@@ -43,7 +43,7 @@ This matches product intent for SuperGrok / X Premium+ style account login (see 
 | `id` | `xai` |
 | `title` | xAI Grok |
 | `auth_mode` | **`oauth`** |
-| `oauth_auth_server` | `https://accounts.x.ai` (or current xAI OAuth host) |
+| `oauth_auth_server` | **`https://auth.x.ai`** (Grok Build SpaceXAI OIDC issuer; device verify UI is `https://accounts.x.ai/oauth2/device`) |
 | `api_endpoint` | `https://api.x.ai/v1` (OpenAI-compatible chat) |
 | `api_key_env` | **empty for primary path** — optional fallback only if product later re-enables key mode (default **off**) |
 | `auth_url` | Start-login / docs link shown before OAuth |
@@ -63,9 +63,10 @@ This matches product intent for SuperGrok / X Premium+ style account login (see 
 ```text
 1. /connect → select "xAI Grok"
 2. Show short copy: "Sign in with your xAI / SuperGrok account (OAuth). API keys are not used."
-3. Start OAuth:
-   a. Prefer system browser open to authorize URL, or
-   b. Device-code flow: display user_code + verification_uri; poll token endpoint
+3. Start OAuth (match Grok Build / `grok login`):
+   a. OIDC discovery at `https://auth.x.ai/.well-known/openid-configuration`
+   b. Device-code: `POST …/oauth2/device/code` → user_code + verification_uri; open browser; poll `…/oauth2/token`
+   c. (Optional later) Browser PKCE loopback `http://127.0.0.1:{port}/callback` like Grok default `grok login`
 4. On success: store tokens in credentials store under profile `xai`
    - access_token (secret)
    - refresh_token (secret, if issued)

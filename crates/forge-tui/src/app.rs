@@ -11,10 +11,10 @@ use crossterm::terminal::{
 };
 use forge_connect::{
     builtin_registry, handle_connect_action, needs_tui_api_key_prompt, needs_tui_oauth,
-    ConnectAction, ConnectError, ConnectRegistry, CredentialStore,
+    ConnectAction, ConnectError, ConnectRegistry, ConnectService, CredentialStore, OauthPending,
 };
-use forge_core::{AgentSession, LoopError};
-use forge_types::HitlDecision;
+use forge_core::{AgentSession, ApplyOutcome, LoopError};
+use forge_types::{HitlDecision, ModelStreamEvent};
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use thiserror::Error;
@@ -67,6 +67,10 @@ pub struct TuiApp {
     pub connect_registry: ConnectRegistry,
     pub connect_store: CredentialStore,
     pub connect_profile: Option<String>,
+    /// In-flight xAI device-code OAuth (polled on the event loop tick).
+    pub oauth_pending: Option<OauthPending>,
+    /// Last time we polled the token endpoint (respect server `interval`).
+    oauth_last_poll: Option<std::time::Instant>,
     /// Phase 7 — submitted command history (Up/Down when no overlay).
     pub history: InputHistory,
     /// Phase 8 autocomplete: selection within filtered `/` suggestions.
@@ -79,6 +83,10 @@ pub struct TuiApp {
     pub ui_banners: Vec<ChatItem>,
     /// Phase 10 / TUI-10 — progressive busy phase for chrome.
     pub busy_phase: BusyPhase,
+    /// User prompt queued on Enter; drained by the event loop so the YOU bubble paints first.
+    pending_prompt: Option<String>,
+    /// Live assistant text while tokens stream in.
+    stream_preview: String,
     /// Optional web_search label for chrome (`mock` / `off` / provider id).
     pub web_search_label: Option<String>,
     /// Phase 10 / TUI-10 — activity ring buffer.
@@ -101,6 +109,8 @@ impl TuiApp {
             connect_registry: builtin_registry(),
             connect_store: CredentialStore::user_default(),
             connect_profile: None,
+            oauth_pending: None,
+            oauth_last_poll: None,
             history: InputHistory::default(),
             slash_suggest_idx: 0,
             notices: Vec::new(),
@@ -109,20 +119,81 @@ impl TuiApp {
             busy_phase: BusyPhase::Idle,
             web_search_label: Some("mock".into()),
             activity: ActivityFeed::default(),
+            pending_prompt: None,
+            stream_preview: String::new(),
         }
+        .restore_saved_auth()
+    }
+
+    /// Reload credentials from disk: silent OAuth refresh, inject worker env, activate profile.
+    /// So a successful `/connect` continues to work in later Forge sessions.
+    fn restore_saved_auth(mut self) -> Self {
+        let svc = ConnectService {
+            registry: &self.connect_registry,
+            store: &self.connect_store,
+            active_profile_id: None,
+            active_model: None,
+        };
+        let connected = svc.connected_profiles().unwrap_or_default();
+        // Prefer xAI when present; otherwise first connected profile.
+        let chosen = connected
+            .iter()
+            .find(|p| p.id == "xai")
+            .or_else(|| connected.first())
+            .cloned();
+        if let Some(profile) = chosen {
+            // Refresh + export env (worker inherits XAI_API_KEY etc.)
+            let _ = svc.ensure_oauth_fresh(&profile.id);
+            if let Ok(pairs) = svc.worker_env_for_profile(&profile.id) {
+                for (k, v) in &pairs {
+                    std::env::set_var(k, v);
+                }
+                self.session.apply_provider_env(&pairs);
+            }
+            self.connect_profile = Some(profile.id.clone());
+            // Only switch the active model when it still looks like the forge default
+            // (don't clobber an explicit --model / test runtime label).
+            let cur = self.runtime.model_label.as_str();
+            let looks_default = cur.is_empty()
+                || cur == "openai/gpt-4.1-mini"
+                || cur == "m"
+                || cur == "mock";
+            if looks_default {
+                if let Some(model) = profile.default_model() {
+                    self.runtime.model_label = model.to_string();
+                    self.runtime.provider = "litellm".into();
+                    self.session.set_active_model(model);
+                }
+            } else if self.session.active_model.is_empty() {
+                self.session.set_active_model(self.runtime.model_label.clone());
+            }
+            self.status_message = format!("restored {} credentials", profile.id);
+        }
+        self
     }
 
     /// Phase 10: set strip + keep `status_message` in sync for tests/compat.
     pub fn set_feedback(&mut self, severity: FeedbackSeverity, text: impl Into<String>) {
+        // Errors are not sticky status chrome — use activity/chat only.
+        if severity == FeedbackSeverity::Error {
+            self.status_message.clear();
+            self.feedback = FeedbackModel::default();
+            return;
+        }
         let text = text.into();
         self.status_message = text.clone();
         self.feedback = FeedbackModel { text, severity };
     }
 
-    /// Dual-write operator error: feedback strip + chat banner + activity (TUI-08/10).
+    /// Operator errors go to activity (and a single chat banner), not a sticky red strip.
     pub fn report_error(&mut self, raw: &str) {
         let msg = classify_operator_error(raw);
-        self.set_feedback(FeedbackSeverity::Error, msg.clone());
+        // Clear any prior sticky strip (including leftover errors from older builds).
+        self.feedback = FeedbackModel::default();
+        self.status_message.clear();
+        // Replace prior error banners — don't accumulate red clutter in the chat.
+        self.ui_banners
+            .retain(|b| !matches!(b, ChatItem::Banner { kind: BannerKind::Error, .. }));
         self.ui_banners.push(ChatItem::Banner {
             text: msg.clone(),
             kind: BannerKind::Error,
@@ -130,11 +201,15 @@ impl TuiApp {
         self.activity
             .push(ActivityKind::Error, FeedbackSeverity::Error, msg);
         self.busy_phase = BusyPhase::Idle;
-        // Cap banners so chat stays usable
-        const MAX: usize = 30;
-        if self.ui_banners.len() > MAX {
-            let drain = self.ui_banners.len() - MAX;
-            self.ui_banners.drain(0..drain);
+    }
+
+    /// Drop ephemeral error UI (call on new user turn / Esc).
+    fn clear_error_chrome(&mut self) {
+        self.ui_banners
+            .retain(|b| !matches!(b, ChatItem::Banner { kind: BannerKind::Error, .. }));
+        if self.feedback.severity == FeedbackSeverity::Error {
+            self.feedback = FeedbackModel::default();
+            self.status_message.clear();
         }
     }
 
@@ -279,21 +354,7 @@ impl TuiApp {
                     return;
                 }
                 if needs_tui_oauth(&self.connect_registry, profile_id) {
-                    let p = self.connect_registry.get(profile_id);
-                    let title = p.map(|x| x.title.clone()).unwrap_or_else(|| profile_id.clone());
-                    let instructions = p
-                        .and_then(|x| match &x.auth_mode {
-                            forge_connect::AuthMode::Oauth { auth_server, .. } => {
-                                Some(forge_connect::OauthPending::start(profile_id, auth_server)
-                                    .operator_instructions())
-                            }
-                            _ => None,
-                        })
-                        .unwrap_or_else(|| "Complete OAuth in browser.".into());
-                    self.overlay =
-                        Some(Overlay::connect_oauth(profile_id.clone(), title, instructions));
-                    self.status_message = format!("OAuth for {profile_id}");
-                    self.notices.clear();
+                    self.begin_oauth_flow(profile_id);
                     return;
                 }
             }
@@ -309,21 +370,144 @@ impl TuiApp {
         ) {
             Ok(msg) => {
                 if let Some(m) = model {
-                    self.runtime.model_label = m;
+                    self.runtime.model_label = m.clone();
                     self.runtime.provider = "litellm".into();
+                    self.session.set_active_model(m);
+                }
+                if let Some(pid) = self.connect_profile.clone() {
+                    self.apply_connect_credentials(&pid);
                 }
                 let lines: Vec<String> = msg.lines().map(|s| s.to_string()).collect();
                 self.status_message = lines.first().cloned().unwrap_or_default();
                 self.notices = lines;
             }
-            Err(ConnectError::OauthPending(_, instructions)) => {
-                let lines: Vec<String> = instructions.lines().map(|s| s.to_string()).collect();
-                self.status_message = lines.first().cloned().unwrap_or_default();
-                self.notices = lines;
+            Err(ConnectError::OauthDevicePending(pending)) => {
+                self.show_oauth_pending(pending);
             }
             Err(e) => {
                 self.status_message = e.to_string();
                 self.notices = vec![e.to_string()];
+            }
+        }
+    }
+
+    fn begin_oauth_flow(&mut self, profile_id: &str) {
+        let mut svc = ConnectService {
+            registry: &self.connect_registry,
+            store: &self.connect_store,
+            active_profile_id: self.connect_profile.clone(),
+            active_model: Some(self.runtime.model_label.clone()),
+        };
+        match svc.connect_start_oauth(profile_id) {
+            Ok(Ok(out)) => {
+                self.on_connect_success(&out);
+            }
+            Ok(Err(pending)) => self.show_oauth_pending(pending),
+            Err(e) => {
+                self.status_message = e.to_string();
+                self.notices = vec![e.to_string()];
+                self.report_error(&e.to_string());
+            }
+        }
+    }
+
+    /// After a successful connect: update model, inject worker credentials, clear OAuth UI.
+    fn on_connect_success(&mut self, out: &forge_connect::ConnectOutcome) -> String {
+        self.connect_profile = Some(out.profile_id.clone());
+        self.runtime.model_label = out.model.clone();
+        self.runtime.provider = "litellm".into();
+        self.session.set_active_model(out.model.clone());
+        self.apply_connect_credentials(&out.profile_id);
+        let title = self
+            .connect_registry
+            .get(&out.profile_id)
+            .map(|p| p.title.as_str())
+            .unwrap_or(out.profile_id.as_str());
+        let msg = forge_connect::format_connected(out, title);
+        self.status_message = msg.clone();
+        self.notices = vec![msg.clone()];
+        self.oauth_pending = None;
+        self.oauth_last_poll = None;
+        self.overlay = None;
+        msg
+    }
+
+    /// Export stored OAuth / API key material into the model worker env (and process env).
+    fn apply_connect_credentials(&mut self, profile_id: &str) {
+        let svc = ConnectService {
+            registry: &self.connect_registry,
+            store: &self.connect_store,
+            active_profile_id: self.connect_profile.clone(),
+            active_model: Some(self.runtime.model_label.clone()),
+        };
+        match svc.worker_env_for_profile(profile_id) {
+            Ok(pairs) if !pairs.is_empty() => {
+                for (k, v) in &pairs {
+                    // Child workers inherit process env; also push into LiteLLM client.
+                    std::env::set_var(k, v);
+                }
+                self.session.apply_provider_env(&pairs);
+            }
+            Ok(_) => {}
+            Err(_e) => {
+                // Non-fatal: operator can still set XAI_API_KEY in the shell.
+            }
+        }
+    }
+
+    fn show_oauth_pending(&mut self, pending: OauthPending) {
+        let title = self
+            .connect_registry
+            .get(&pending.profile_id)
+            .map(|p| p.title.clone())
+            .unwrap_or_else(|| pending.profile_id.clone());
+        let instructions = pending.operator_instructions();
+        let lines: Vec<String> = instructions.lines().map(|s| s.to_string()).collect();
+        self.status_message = lines
+            .first()
+            .cloned()
+            .unwrap_or_else(|| format!("OAuth for {}", pending.profile_id));
+        self.notices = lines;
+        self.overlay = Some(Overlay::connect_oauth(
+            pending.profile_id.clone(),
+            title,
+            instructions,
+        ));
+        self.oauth_pending = Some(pending);
+        self.oauth_last_poll = None;
+    }
+
+    /// Poll device-code OAuth once (called from the TUI tick loop).
+    pub fn poll_oauth_tick(&mut self) {
+        let Some(pending) = self.oauth_pending.clone() else {
+            return;
+        };
+        let interval = Duration::from_secs(pending.interval_secs.max(1));
+        if let Some(last) = self.oauth_last_poll {
+            if last.elapsed() < interval {
+                return;
+            }
+        }
+        self.oauth_last_poll = Some(std::time::Instant::now());
+        let mut svc = ConnectService {
+            registry: &self.connect_registry,
+            store: &self.connect_store,
+            active_profile_id: self.connect_profile.clone(),
+            active_model: Some(self.runtime.model_label.clone()),
+        };
+        match svc.poll_oauth_once(&pending) {
+            Ok(Some(out)) => {
+                let msg = self.on_connect_success(&out);
+                self.set_feedback(FeedbackSeverity::Ok, msg);
+            }
+            Ok(None) => {
+                // still waiting
+            }
+            Err(e) => {
+                self.oauth_pending = None;
+                self.oauth_last_poll = None;
+                self.overlay = None;
+                self.report_error(&e.to_string());
             }
         }
     }
@@ -373,8 +557,16 @@ impl TuiApp {
         let status = self.refresh_status_model();
         frame.render_widget(StatusBar { model: &status }, regions.status);
 
-        let conv = ConversationModel::from_session(&self.session, self.busy)
+        let mut conv = ConversationModel::from_session(&self.session, self.busy)
             .with_extra_banners(self.ui_banners.iter().cloned());
+        if self.busy && (!self.stream_preview.is_empty() || self.pending_prompt.is_none()) {
+            // Show streaming tokens (or a placeholder assistant while waiting for first token)
+            conv = conv.with_streaming_assistant(if self.stream_preview.is_empty() {
+                "…".into()
+            } else {
+                self.stream_preview.clone()
+            });
+        }
         frame.render_widget(
             crate::conversation::ConversationWidget { model: &conv },
             regions.chat,
@@ -567,9 +759,20 @@ impl TuiApp {
                     self.finish_connect(&profile_id, Some(api_key), false);
                 }
                 OverlayAction::ConnectCompleteOauth { profile_id } => {
-                    self.overlay = None;
-                    // Enter completes with OAuth fixture path when live exchange not available
-                    self.finish_connect(&profile_id, None, true);
+                    // Enter: try one poll now; keep overlay if still pending
+                    if self.oauth_pending.is_some() {
+                        self.poll_oauth_tick();
+                        if self.oauth_pending.is_some() {
+                            self.status_message =
+                                format!("Still waiting for login… (code for {profile_id})");
+                        }
+                    } else if std::env::var("FORGE_CONNECT_OAUTH_FIXTURE").is_ok() {
+                        self.overlay = None;
+                        self.finish_connect(&profile_id, None, true);
+                    } else {
+                        // Restart flow
+                        self.begin_oauth_flow(&profile_id);
+                    }
                 }
                 OverlayAction::ConnectUseEnv { profile_id } => {
                     self.overlay = None;
@@ -609,12 +812,10 @@ impl TuiApp {
                 // cancel busy is best-effort; clear input + history browse
                 self.history.reset_browse();
                 self.notices.clear();
+                self.clear_error_chrome();
                 if self.input.text.is_empty() {
-                    // Clear info-level feedback on Esc; keep error strip until next success
-                    if self.feedback.severity != FeedbackSeverity::Error {
-                        self.feedback = FeedbackModel::default();
-                        self.status_message.clear();
-                    }
+                    self.feedback = FeedbackModel::default();
+                    self.status_message.clear();
                     self.notices.clear();
                 } else {
                     self.input.clear();
@@ -908,43 +1109,201 @@ impl TuiApp {
             return Ok(());
         }
 
-        // user message
+        // Queue user message — the event loop drains this so the YOU bubble paints
+        // before the model call, and so stream deltas can redraw each frame.
+        self.clear_error_chrome();
+        // Re-apply credentials (with silent refresh) before each turn so sessions stay signed in.
+        if let Some(pid) = self.connect_profile.clone() {
+            self.apply_connect_credentials(&pid);
+        } else {
+            // Try restore mid-session if credentials appeared (e.g. forge connect in another terminal)
+            let restored = {
+                let svc = ConnectService {
+                    registry: &self.connect_registry,
+                    store: &self.connect_store,
+                    active_profile_id: None,
+                    active_model: None,
+                };
+                svc.connected_profiles().ok().and_then(|v| {
+                    v.iter()
+                        .find(|p| p.id == "xai")
+                        .cloned()
+                        .or_else(|| v.into_iter().next())
+                })
+            };
+            if let Some(p) = restored {
+                self.connect_profile = Some(p.id.clone());
+                self.apply_connect_credentials(&p.id);
+                if let Some(m) = p.default_model() {
+                    self.runtime.model_label = m.to_string();
+                    self.session.set_active_model(m);
+                }
+            }
+        }
+        self.pending_prompt = Some(line.to_string());
         self.busy = true;
         self.busy_phase = BusyPhase::Model;
+        self.stream_preview.clear();
         self.push_activity(
             ActivityKind::Model,
             FeedbackSeverity::Info,
             "model call started",
         );
-        let result = self.session.run_user_message(line).await;
-        self.busy = false;
-        self.busy_phase = BusyPhase::Idle;
-        match result {
-            Ok(_) => {
-                if self.session.pending_hitl.is_some() {
-                    if let Some(ref p) = self.session.pending_hitl {
-                        self.overlay = Some(Overlay::hitl(p.clone()));
+        Ok(())
+    }
+
+    /// Run a queued user prompt with streaming + intermediate redraws.
+    /// When `terminal` is `None` (unit tests), runs without intermediate draws.
+    pub async fn drain_pending_prompt(
+        &mut self,
+        mut terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
+    ) -> Result<(), TuiError> {
+        let Some(line) = self.pending_prompt.take() else {
+            return Ok(());
+        };
+
+        self.busy = true;
+        self.busy_phase = BusyPhase::Model;
+        self.stream_preview.clear();
+
+        if let Err(e) = self.session.append_user_message(&line).await {
+            self.busy = false;
+            self.busy_phase = BusyPhase::Idle;
+            self.report_error(&e.to_string());
+            self.last_exit = ExitCode::Failed;
+            return Ok(());
+        }
+
+        // Paint YOU message immediately
+        if let Some(term) = terminal.as_deref_mut() {
+            term.draw(|f| self.draw(f))?;
+        }
+
+        let max_turns = self.session.max_turns();
+        let mut outcome_err: Option<String> = None;
+
+        'turns: for turn in 0..max_turns {
+            let req = match self.session.prepare_model_step(turn).await {
+                Ok(r) => r,
+                Err(e) => {
+                    outcome_err = Some(e.to_string());
+                    break;
+                }
+            };
+
+            let model = self.session.model_client();
+            let (tx, rx) = std::sync::mpsc::channel::<ModelStreamEvent>();
+            let handle = tokio::spawn(async move { model.complete_with_stream(req, Some(tx)).await });
+
+            // Pump stream events + redraw until the model call finishes
+            loop {
+                let mut got = false;
+                while let Ok(ev) = rx.try_recv() {
+                    got = true;
+                    if let ModelStreamEvent::TextDelta { text } = ev {
+                        self.stream_preview.push_str(&text);
                     }
-                    self.last_exit = ExitCode::AwaitingHitl;
-                    self.set_feedback(FeedbackSeverity::Warn, "awaiting human approval");
-                    self.push_activity(
-                        ActivityKind::Hitl,
-                        FeedbackSeverity::Warn,
-                        "hitl waiting",
-                    );
-                } else {
-                    self.set_feedback(FeedbackSeverity::Ok, "turn complete");
-                    self.push_activity(
-                        ActivityKind::Model,
-                        FeedbackSeverity::Ok,
-                        "model ok",
-                    );
+                }
+                if got {
+                    if let Some(term) = terminal.as_deref_mut() {
+                        term.draw(|f| self.draw(f))?;
+                    }
+                }
+
+                if handle.is_finished() {
+                    // Drain remaining events
+                    while let Ok(ev) = rx.try_recv() {
+                        if let ModelStreamEvent::TextDelta { text } = ev {
+                            self.stream_preview.push_str(&text);
+                        }
+                    }
+                    if let Some(term) = terminal.as_deref_mut() {
+                        term.draw(|f| self.draw(f))?;
+                    }
+                    break;
+                }
+
+                // Allow Ctrl+C while streaming
+                if event::poll(Duration::from_millis(0)).unwrap_or(false) {
+                    if let Ok(Event::Key(key)) = event::read() {
+                        if key.code == KeyCode::Char('c')
+                            && key.modifiers.contains(KeyModifiers::CONTROL)
+                        {
+                            handle.abort();
+                            self.busy = false;
+                            self.busy_phase = BusyPhase::Idle;
+                            self.stream_preview.clear();
+                            self.should_quit = true;
+                            self.last_exit = ExitCode::Canceled;
+                            return Ok(());
+                        }
+                    }
+                }
+
+                tokio::time::sleep(Duration::from_millis(16)).await;
+            }
+
+            let last = match handle.await {
+                Ok(Ok(r)) => r,
+                Ok(Err(e)) => {
+                    outcome_err = Some(e.to_string());
+                    break;
+                }
+                Err(e) => {
+                    outcome_err = Some(format!("model task join: {e}"));
+                    break;
+                }
+            };
+
+            self.stream_preview.clear();
+            match self.session.apply_model_response(last).await {
+                Ok(ApplyOutcome::Done(_)) => {
+                    outcome_err = None;
+                    break 'turns;
+                }
+                Ok(ApplyOutcome::Hitl(_)) => {
+                    outcome_err = None;
+                    break 'turns;
+                }
+                Ok(ApplyOutcome::Continue) => {
+                    if let Some(term) = terminal.as_deref_mut() {
+                        term.draw(|f| self.draw(f))?;
+                    }
+                    continue;
+                }
+                Err(e) => {
+                    outcome_err = Some(e.to_string());
+                    break;
                 }
             }
-            Err(e) => {
-                self.report_error(&e.to_string());
-                self.last_exit = ExitCode::Failed;
+        }
+
+        if outcome_err.is_none()
+            && self.session.status != forge_types::SessionStatus::Completed
+            && self.session.status != forge_types::SessionStatus::AwaitingHitl
+        {
+            let _ = self.session.fail_max_turns().await;
+            outcome_err = Some("max_turns exceeded".into());
+        }
+
+        self.busy = false;
+        self.busy_phase = BusyPhase::Idle;
+        self.stream_preview.clear();
+
+        if let Some(e) = outcome_err {
+            self.report_error(&e);
+            self.last_exit = ExitCode::Failed;
+        } else if self.session.pending_hitl.is_some() {
+            if let Some(ref p) = self.session.pending_hitl {
+                self.overlay = Some(Overlay::hitl(p.clone()));
             }
+            self.last_exit = ExitCode::AwaitingHitl;
+            self.set_feedback(FeedbackSeverity::Warn, "awaiting human approval");
+            self.push_activity(ActivityKind::Hitl, FeedbackSeverity::Warn, "hitl waiting");
+        } else {
+            self.clear_error_chrome();
+            self.set_feedback(FeedbackSeverity::Ok, "turn complete");
+            self.push_activity(ActivityKind::Model, FeedbackSeverity::Ok, "model ok");
         }
         Ok(())
     }
@@ -997,7 +1356,15 @@ async fn run_loop(
 ) -> Result<(), TuiError> {
     while !app.should_quit {
         app.maybe_open_hitl();
+        // Grok-style device-code: poll token endpoint while overlay is open
+        app.poll_oauth_tick();
         terminal.draw(|f| app.draw(f))?;
+
+        // Drain queued user prompt with streaming redraws (YOU paints before first token)
+        if app.pending_prompt.is_some() {
+            app.drain_pending_prompt(Some(terminal)).await?;
+            continue;
+        }
 
         if event::poll(Duration::from_millis(200))? {
             if let Event::Key(key) = event::read()? {
@@ -1059,6 +1426,7 @@ mod tests {
             },
         );
         app.dispatch_line("hi").await.unwrap();
+        app.drain_pending_prompt(None).await.unwrap();
         assert!(
             app.session
                 .messages
@@ -1136,6 +1504,11 @@ mod tests {
     #[tokio::test]
     async fn connect_xai_opens_oauth_overlay() {
         let (_dir, session) = test_session().await;
+        let cred_dir = tempfile::tempdir().unwrap();
+        // Isolate credentials + use stub device start (no network).
+        std::env::set_var("FORGE_CONNECT_OAUTH_STUB", "1");
+        std::env::remove_var("FORGE_CONNECT_OAUTH_FIXTURE");
+        std::env::remove_var("FORGE_XAI_OAUTH_ACCESS_TOKEN");
         let mut app = TuiApp::new(
             session,
             TuiRuntimeConfig {
@@ -1145,7 +1518,9 @@ mod tests {
                 version: "0.6.1".into(),
             },
         );
+        app.connect_store = CredentialStore::new(cred_dir.path().join("c.toml"));
         app.dispatch_line("/connect xai").await.unwrap();
+        std::env::remove_var("FORGE_CONNECT_OAUTH_STUB");
         match &app.overlay {
             Some(Overlay::ConnectOauth { profile_id, title, .. }) => {
                 assert_eq!(profile_id, "xai");
@@ -1153,6 +1528,7 @@ mod tests {
             }
             other => panic!("expected ConnectOauth overlay, got {other:?}"),
         }
+        assert!(app.oauth_pending.is_some());
     }
 
     #[tokio::test]
@@ -1700,7 +2076,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tui08_report_error_dual_writes_feedback_and_banner() {
+    async fn tui08_report_error_writes_banner_and_activity_not_sticky_strip() {
         let (_dir, session) = test_session().await;
         let mut app = TuiApp::new(
             session,
@@ -1712,16 +2088,9 @@ mod tests {
             },
         );
         app.report_error("upstream returned 429 rate limit exceeded");
-        assert!(
-            !app.feedback.is_empty(),
-            "feedback strip must be set"
-        );
-        assert!(
-            app.feedback.text.contains("rate limited") || app.feedback.text.contains("429"),
-            "got {}",
-            app.feedback.text
-        );
-        assert_eq!(app.feedback.severity, FeedbackSeverity::Error);
+        // Sticky red status strip intentionally not used for errors.
+        assert!(app.feedback.is_empty(), "errors must not stick in feedback strip");
+        assert!(app.status_message.is_empty());
         assert!(
             app.ui_banners.iter().any(|b| matches!(
                 b,
@@ -1732,7 +2101,13 @@ mod tests {
             )),
             "expected error banner in ui_banners"
         );
-        assert_eq!(app.status_message, app.feedback.text);
+        assert!(
+            app.activity
+                .all()
+                .iter()
+                .any(|i| i.kind == ActivityKind::Error),
+            "expected error activity"
+        );
     }
 
     #[tokio::test]
@@ -1812,6 +2187,9 @@ mod tests {
             },
         );
         app.dispatch_line("hello").await.unwrap();
+        assert_eq!(app.busy_phase, BusyPhase::Model);
+        assert!(app.pending_prompt.is_some());
+        app.drain_pending_prompt(None).await.unwrap();
         assert_eq!(app.busy_phase, BusyPhase::Idle);
         assert!(
             app.activity

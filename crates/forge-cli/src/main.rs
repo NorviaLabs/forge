@@ -6,7 +6,7 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 use forge_config::{Config, ConfigOverrides};
 use forge_connect::{
-    builtin_registry, handle_connect_action, ConnectAction, CredentialStore,
+    builtin_registry, handle_connect_action, ConnectAction, ConnectService, CredentialStore,
 };
 use forge_core::{AgentSession, LoopConfig};
 use forge_mcp::{register_static_mcp, McpManager, StaticMcpTool};
@@ -165,9 +165,62 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                     }
                     Ok(ExitCode::Success)
                 }
+                Err(forge_connect::ConnectError::OauthDevicePending(pending)) => {
+                    // Grok Build style: print code/URL and poll token endpoint until done.
+                    println!("{}", pending.operator_instructions());
+                    eprintln!("Waiting for browser/device login (Ctrl+C to cancel)…");
+                    let mut svc = forge_connect::ConnectService {
+                        registry: &reg,
+                        store: &store,
+                        active_profile_id: active_profile.clone(),
+                        active_model: active_model.clone(),
+                    };
+                    let max = std::time::Duration::from_secs(
+                        pending.expires_in_secs.unwrap_or(1800).max(60),
+                    );
+                    match svc.complete_oauth_device_flow(&pending, max) {
+                        Ok(out) => {
+                            let title = reg
+                                .get(&out.profile_id)
+                                .map(|p| p.title.as_str())
+                                .unwrap_or(out.profile_id.as_str());
+                            let msg = forge_connect::format_connected(&out, title);
+                            println!("{msg}");
+                            if let Some(m) = svc.active_model {
+                                println!("hint: set FORGE_MODEL_ID={m} or model in forge.toml");
+                            }
+                            Ok(ExitCode::Success)
+                        }
+                        Err(e) => {
+                            eprintln!("{e}");
+                            Err(anyhow::anyhow!(e))
+                        }
+                    }
+                }
                 Err(e) => {
                     eprintln!("{e}");
                     Err(anyhow::anyhow!(e))
+                }
+            }
+        }
+    }
+}
+
+/// Load OAuth / API keys from the connect store into the process env (for LiteLLM worker).
+fn inject_connect_credentials_into_env() {
+    let reg = builtin_registry();
+    let store = CredentialStore::user_default();
+    let svc = ConnectService {
+        registry: &reg,
+        store: &store,
+        active_profile_id: None,
+        active_model: None,
+    };
+    for p in reg.profiles() {
+        if let Ok(pairs) = svc.worker_env_for_profile(&p.id) {
+            for (k, v) in pairs {
+                if std::env::var(&k).ok().filter(|s| !s.is_empty()).is_none() {
+                    std::env::set_var(k, v);
                 }
             }
         }
@@ -206,6 +259,9 @@ async fn open_session(
     resume: Option<Uuid>,
     worktree: bool,
 ) -> anyhow::Result<AgentSession> {
+    // Inject any stored connect credentials so the LiteLLM worker inherits them.
+    inject_connect_credentials_into_env();
+
     let model: Arc<dyn ModelClient> =
         Arc::from(client_from_config(cfg).map_err(|e| anyhow::anyhow!(e))?);
 
@@ -257,13 +313,17 @@ async fn open_session(
         ..Default::default()
     };
 
-    if let Some(id) = resume {
+    let mut session = if let Some(id) = resume {
         AgentSession::resume(loop_cfg, model, tools, id)
             .await
-            .map_err(|e| anyhow::anyhow!(e))
+            .map_err(|e| anyhow::anyhow!(e))?
     } else {
         AgentSession::create(loop_cfg, model, tools)
             .await
-            .map_err(|e| anyhow::anyhow!(e))
+            .map_err(|e| anyhow::anyhow!(e))?
+    };
+    if !cfg.model.model.is_empty() {
+        session.set_active_model(cfg.model.model.clone());
     }
+    Ok(session)
 }

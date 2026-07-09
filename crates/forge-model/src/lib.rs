@@ -12,8 +12,11 @@ pub use wire::{error_codes, CompleteParams, WireEnvelope, WireErrorBody, WireTyp
 
 use async_trait::async_trait;
 use forge_config::{Config, ModelProviderKind};
-use forge_types::{Message, ModelResponse, ToolDescriptor};
+use forge_types::{Message, ModelResponse, ModelStreamEvent, ToolDescriptor};
 use thiserror::Error;
+
+/// Best-effort stream events from `complete_with_stream` (cross-thread, non-async).
+pub type StreamEventTx = std::sync::mpsc::Sender<ModelStreamEvent>;
 
 #[derive(Debug, Error)]
 pub enum ModelError {
@@ -43,6 +46,29 @@ pub struct ModelRequest {
 #[async_trait]
 pub trait ModelClient: Send + Sync {
     async fn complete(&self, req: ModelRequest) -> Result<ModelResponse, ModelError>;
+
+    /// Like `complete`, optionally emitting `ModelStreamEvent`s on `tx` as tokens arrive.
+    /// Default: non-streaming `complete`, then a single `TextDelta` of the full text.
+    async fn complete_with_stream(
+        &self,
+        req: ModelRequest,
+        tx: Option<StreamEventTx>,
+    ) -> Result<ModelResponse, ModelError> {
+        let resp = self.complete(req).await?;
+        if let Some(tx) = tx {
+            if !resp.text.is_empty() {
+                let _ = tx.send(ModelStreamEvent::TextDelta {
+                    text: resp.text.clone(),
+                });
+            }
+            let _ = tx.send(ModelStreamEvent::MessageEnd);
+        }
+        Ok(resp)
+    }
+
+    /// Inject provider credentials into the transport (e.g. OAuth → `XAI_API_KEY` for LiteLLM).
+    /// Default: no-op (mock).
+    fn apply_provider_env(&self, _pairs: &[(String, String)]) {}
 }
 
 /// Phase 5: mock or LiteLLM worker only (native HTTP adapters removed).
