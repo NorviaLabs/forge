@@ -1,6 +1,7 @@
 //! Phase 6 / 6.1 connect profiles: OAuth (xAI) + API key (OpenCode Go).
 
 mod auth;
+mod oauth_xai;
 mod opencode_go;
 mod profile;
 mod registry;
@@ -9,6 +10,7 @@ mod store;
 mod xai;
 
 pub use auth::{AuthMode, OauthPending, OauthTokens};
+pub use oauth_xai::{try_open_browser, XaiOauthClient, XaiOauthError, DEFAULT_CLIENT_ID, DEFAULT_ISSUER, DEFAULT_SCOPES};
 pub use opencode_go::{opencode_go_profile, PROFILE_ID as OPENCODE_GO_PROFILE_ID};
 pub use profile::{ConnectOutcome, ConnectProfile, ConnectStatus, KeySource};
 pub use registry::{builtin_registry, ConnectRegistry};

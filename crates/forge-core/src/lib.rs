@@ -6,7 +6,7 @@ use std::sync::Arc;
 use forge_context::ContextEngine;
 use forge_durable::{new_session_id, Journal};
 use forge_governance::{AuditEvent, Governance};
-use forge_model::{ModelClient, ModelRequest};
+use forge_model::{ModelClient, ModelRequest, StreamEventTx};
 use forge_config::WebSearchConfig;
 use forge_tools::{
     default_builtins_with_web_search, ToolContext, ToolError, ToolRegistry, ValidationBudget,
@@ -72,12 +72,25 @@ pub struct TurnEvent {
     pub detail: String,
 }
 
+/// Result of applying one model response inside the agent loop.
+#[derive(Debug)]
+pub enum ApplyOutcome {
+    /// No tool calls — turn finished.
+    Done(ModelResponse),
+    /// Tools ran; call the model again.
+    Continue,
+    /// Paused for human-in-the-loop.
+    Hitl(ModelResponse),
+}
+
 pub struct AgentSession {
     pub session_id: SessionId,
     pub status: SessionStatus,
     pub messages: Vec<Message>,
     pub events: Vec<TurnEvent>,
     pub pending_hitl: Option<HitlPayload>,
+    /// LiteLLM model id for the next complete (empty → client default).
+    pub active_model: String,
     journal: Journal,
     tools: ToolRegistry,
     model: Arc<dyn ModelClient>,
@@ -132,6 +145,7 @@ impl AgentSession {
             }],
             events: vec![],
             pending_hitl: None,
+            active_model: String::new(),
             journal,
             tools,
             model,
@@ -205,6 +219,7 @@ impl AgentSession {
                 detail: format!("seq={}", state.last_seq),
             }],
             pending_hitl,
+            active_model: String::new(),
             journal,
             tools,
             model,
@@ -239,8 +254,9 @@ impl AgentSession {
         self.context.usage_ratio(&self.messages)
     }
 
-    /// Run until no tool calls, max turns, or HITL pause.
-    pub async fn run_user_message(&mut self, text: &str) -> Result<ModelResponse, LoopError> {
+    /// Append a user message to the session (journal + transcript) without calling the model.
+    /// Used by the TUI so the YOU bubble can paint before the model run starts.
+    pub async fn append_user_message(&mut self, text: &str) -> Result<(), LoopError> {
         if self.status == SessionStatus::AwaitingHitl {
             return Err(LoopError::AwaitingHitl);
         }
@@ -256,91 +272,152 @@ impl AgentSession {
         if self.context.goal.is_empty() {
             self.context.goal = text.chars().take(200).collect();
         }
+        self.status = SessionStatus::Running;
+        Ok(())
+    }
 
-        for turn in 0..self.max_turns {
-            if self.enable_context && self.context.should_reset(&self.messages) {
-                let ws_ref = self
-                    .worktree
-                    .as_ref()
-                    .map(|w| w.branch.clone())
-                    .unwrap_or_default();
-                let (doc, msgs) = self.context.handoff_reset(&self.messages, &ws_ref)?;
-                self.journal
-                    .append_context_reset(
-                        self.session_id,
-                        json!({ "progress": doc }),
-                    )
-                    .await?;
-                self.messages = msgs;
-                self.events.push(TurnEvent {
-                    kind: "context_reset".into(),
-                    detail: "threshold".into(),
-                });
-            }
+    /// Shared model client handle (for streaming from the TUI without holding `&mut self`).
+    pub fn model_client(&self) -> Arc<dyn ModelClient> {
+        self.model.clone()
+    }
 
-            info!(turn, "model step");
-            self.journal
-                .append_model_request(
-                    self.session_id,
-                    json!({ "turn": turn, "messages": self.messages.len() }),
-                )
-                .await?;
+    /// Build the next model request from current transcript + tools.
+    pub fn build_model_request(&self) -> ModelRequest {
+        let mut tools = self.tools.list_descriptors();
+        if self.enable_gov {
+            tools = self.governance.filter_tools(tools);
+        }
+        ModelRequest {
+            messages: self.messages.clone(),
+            tools,
+            model: self.active_model.clone(),
+        }
+    }
 
-            let mut tools = self.tools.list_descriptors();
-            if self.enable_gov {
-                tools = self.governance.filter_tools(tools);
-            }
-            let req = ModelRequest {
-                messages: self.messages.clone(),
-                tools,
-                model: String::new(),
-            };
-            let last = self.model.complete(req).await?;
+    /// Apply a model response: journal, assistant message, then run tools.
+    /// Returns `Ok(None)` when the turn is finished (no more tool calls).
+    /// Returns `Ok(Some(resp))` when paused for HITL.
+    /// Returns `Ok(Some(resp))` with empty tool path... actually:
+    /// - finished cleanly → Ok(ApplyOutcome::Done(resp))
+    /// - need another model step after tools → Ok(ApplyOutcome::Continue)
+    /// - HITL → Ok(ApplyOutcome::Hitl(resp))
+    pub async fn apply_model_response(
+        &mut self,
+        last: ModelResponse,
+    ) -> Result<ApplyOutcome, LoopError> {
+        self.journal
+            .append_model_response(
+                self.session_id,
+                json!({
+                    "text_len": last.text.len(),
+                    "tool_calls": last.tool_calls.len(),
+                }),
+            )
+            .await?;
 
-            self.journal
-                .append_model_response(
-                    self.session_id,
-                    json!({
-                        "turn": turn,
-                        "text_len": last.text.len(),
-                        "tool_calls": last.tool_calls.len(),
-                    }),
-                )
-                .await?;
-
-            if !last.text.is_empty() {
-                self.messages.push(Message {
-                    role: MessageRole::Assistant,
-                    content: last.text.clone(),
-                    tool_call_id: None,
-                    name: None,
-                });
-                self.events.push(TurnEvent {
-                    kind: "assistant".into(),
-                    detail: last.text.clone(),
-                });
-            }
-
-            if last.tool_calls.is_empty() {
-                self.status = SessionStatus::Completed;
-                self.journal
-                    .append_status(self.session_id, SessionStatus::Completed)
-                    .await?;
-                return Ok(last);
-            }
-
-            let mut budget = ValidationBudget::with_default_max();
-            for call in &last.tool_calls {
-                if let Some(pause) = self.run_one_tool(call, &mut budget).await? {
-                    return Ok(pause);
-                }
-            }
+        if !last.text.is_empty() {
+            self.messages.push(Message {
+                role: MessageRole::Assistant,
+                content: last.text.clone(),
+                tool_call_id: None,
+                name: None,
+            });
+            self.events.push(TurnEvent {
+                kind: "assistant".into(),
+                detail: last.text.clone(),
+            });
         }
 
+        if last.tool_calls.is_empty() {
+            self.status = SessionStatus::Completed;
+            self.journal
+                .append_status(self.session_id, SessionStatus::Completed)
+                .await?;
+            return Ok(ApplyOutcome::Done(last));
+        }
+
+        let mut budget = ValidationBudget::with_default_max();
+        for call in &last.tool_calls {
+            if let Some(pause) = self.run_one_tool(call, &mut budget).await? {
+                return Ok(ApplyOutcome::Hitl(pause));
+            }
+        }
+        Ok(ApplyOutcome::Continue)
+    }
+
+    /// Run until no tool calls, max turns, or HITL pause.
+    pub async fn run_user_message(&mut self, text: &str) -> Result<ModelResponse, LoopError> {
+        self.append_user_message(text).await?;
+        self.run_agent_turns(None).await
+    }
+
+    /// Context-reset (if needed) + journal a model request; returns the request to send.
+    pub async fn prepare_model_step(&mut self, turn: u32) -> Result<ModelRequest, LoopError> {
+        if self.enable_context && self.context.should_reset(&self.messages) {
+            let ws_ref = self
+                .worktree
+                .as_ref()
+                .map(|w| w.branch.clone())
+                .unwrap_or_default();
+            let (doc, msgs) = self.context.handoff_reset(&self.messages, &ws_ref)?;
+            self.journal
+                .append_context_reset(self.session_id, json!({ "progress": doc }))
+                .await?;
+            self.messages = msgs;
+            self.events.push(TurnEvent {
+                kind: "context_reset".into(),
+                detail: "threshold".into(),
+            });
+        }
+
+        info!(turn, "model step");
+        self.journal
+            .append_model_request(
+                self.session_id,
+                json!({ "turn": turn, "messages": self.messages.len() }),
+            )
+            .await?;
+        Ok(self.build_model_request())
+    }
+
+    pub fn max_turns(&self) -> u32 {
+        self.max_turns
+    }
+
+    /// Mark the session failed after exhausting turns.
+    pub async fn fail_max_turns(&mut self) -> Result<(), LoopError> {
         self.status = SessionStatus::Failed;
         self.journal
             .append_status(self.session_id, SessionStatus::Failed)
             .await?;
+        Ok(())
+    }
+
+    /// Drive the agent loop after the user message is already appended.
+    /// Optional `stream_tx` receives token deltas during each model complete.
+    pub async fn run_agent_turns(
+        &mut self,
+        stream_tx: Option<StreamEventTx>,
+    ) -> Result<ModelResponse, LoopError> {
+        if self.status == SessionStatus::AwaitingHitl {
+            return Err(LoopError::AwaitingHitl);
+        }
+
+        for turn in 0..self.max_turns {
+            let req = self.prepare_model_step(turn).await?;
+            let last = self
+                .model
+                .complete_with_stream(req, stream_tx.clone())
+                .await?;
+
+            match self.apply_model_response(last).await? {
+                ApplyOutcome::Done(resp) => return Ok(resp),
+                ApplyOutcome::Hitl(resp) => return Ok(resp),
+                ApplyOutcome::Continue => continue,
+            }
+        }
+
+        self.fail_max_turns().await?;
         Err(LoopError::Other("max_turns exceeded".into()))
     }
 
@@ -622,6 +699,16 @@ impl AgentSession {
             self.tool_ctx = ToolContext::new(self.context.workspace.clone());
         }
         Ok(())
+    }
+
+    /// Use this LiteLLM model id on subsequent completes (e.g. after `/connect`).
+    pub fn set_active_model(&mut self, model: impl Into<String>) {
+        self.active_model = model.into();
+    }
+
+    /// Push provider credentials into the model client (OAuth tokens → worker env).
+    pub fn apply_provider_env(&self, pairs: &[(String, String)]) {
+        self.model.apply_provider_env(pairs);
     }
 }
 
