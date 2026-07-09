@@ -126,6 +126,15 @@ impl ConversationModel {
         Self::from_messages(&session.messages, &session.events, session.status, busy)
     }
 
+    /// Append an in-progress assistant bubble (token stream preview).
+    pub fn with_streaming_assistant(mut self, text: impl Into<String>) -> Self {
+        let text = text.into();
+        if !text.is_empty() || self.busy {
+            self.items.push(ChatItem::Assistant { text });
+        }
+        self
+    }
+
     /// Phase 10: append UI-only banners (errors, info) after session-derived items.
     pub fn with_extra_banners(mut self, banners: impl IntoIterator<Item = ChatItem>) -> Self {
         for b in banners {

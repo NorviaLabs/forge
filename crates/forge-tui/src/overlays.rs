@@ -275,7 +275,7 @@ pub enum OverlayAction {
     SelectModel { provider: String, model: String },
     /// Submit API key from ConnectApiKey overlay
     ConnectSubmitKey { profile_id: String, api_key: String },
-    /// Complete OAuth (fixture / continue) from ConnectOauth overlay
+    /// Poll / continue OAuth from ConnectOauth overlay (Enter)
     ConnectCompleteOauth { profile_id: String },
     /// Use env key without typing (secondary action on API key modal)
     ConnectUseEnv { profile_id: String },

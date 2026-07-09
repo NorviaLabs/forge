@@ -77,6 +77,17 @@ impl WireEnvelope {
         Ok(Self::request(id, "complete", serde_json::to_value(params)?))
     }
 
+    pub fn complete_stream(
+        id: impl Into<String>,
+        params: &CompleteParams,
+    ) -> Result<Self, serde_json::Error> {
+        Ok(Self::request(
+            id,
+            "complete_stream",
+            serde_json::to_value(params)?,
+        ))
+    }
+
     pub fn encode_line(&self) -> Result<String, serde_json::Error> {
         let mut s = serde_json::to_string(self)?;
         s.push('\n');

@@ -3,11 +3,12 @@
 use thiserror::Error;
 
 use crate::auth::{AuthMode, OauthPending, OauthTokens};
+use crate::oauth_xai::{try_open_browser, XaiOauthClient, XaiOauthError};
 use crate::profile::{ConnectOutcome, ConnectProfile, ConnectStatus, KeySource};
 use crate::registry::ConnectRegistry;
 use crate::store::{resolve_connected, resolve_key, CredentialStore, StoreError};
 
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, Error)]
 pub enum ConnectError {
     #[error("unknown profile `{0}` (known: {1})")]
     UnknownProfile(String, String),
@@ -17,13 +18,29 @@ pub enum ConnectError {
         "profile `{0}` uses OAuth — do not pass an API key; run `/connect {0}` and complete browser/device login"
     )]
     OauthRejectsApiKey(String),
-    #[error("OAuth required for `{0}`: {1}")]
-    OauthPending(String, String),
+    /// Device-code session started; operator must finish login.
+    /// Display shows operator instructions (never tokens).
+    #[error("{}", .0.operator_instructions())]
+    OauthDevicePending(OauthPending),
+    #[error("OAuth: {0}")]
+    Oauth(String),
     #[error("store: {0}")]
     Store(#[from] StoreError),
     #[error("{0}")]
     Message(String),
 }
+
+impl PartialEq for ConnectError {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::OauthDevicePending(a), Self::OauthDevicePending(b)) => {
+                a.profile_id == b.profile_id && a.user_code == b.user_code
+            }
+            _ => self.to_string() == other.to_string(),
+        }
+    }
+}
+impl Eq for ConnectError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConnectAction {
@@ -181,16 +198,90 @@ impl<'a> ConnectService<'a> {
         self.activate(&profile, KeySource::Oauth)
     }
 
-    /// Start OAuth pending session (device-code UX).
+    /// Start OAuth pending session (real xAI device-code, matching Grok Build).
     pub fn start_oauth(&self, profile_id: &str) -> Result<OauthPending, ConnectError> {
         let profile = self.profile_or_err(profile_id)?;
-        let AuthMode::Oauth { auth_server, .. } = &profile.auth_mode else {
+        let AuthMode::Oauth {
+            auth_server,
+            system_browser,
+            ..
+        } = &profile.auth_mode
+        else {
             return Err(ConnectError::Message(format!(
                 "profile `{}` is not OAuth",
                 profile.id
             )));
         };
-        Ok(OauthPending::start(&profile.id, auth_server))
+
+        // Offline / unit-test stub
+        if std::env::var("FORGE_CONNECT_OAUTH_STUB").is_ok()
+            || std::env::var("FORGE_CONNECT_OAUTH_FIXTURE").is_ok()
+        {
+            return Ok(OauthPending::start_stub(&profile.id, auth_server));
+        }
+
+        let client = if profile.id == "xai" {
+            XaiOauthClient::from_env()
+        } else {
+            XaiOauthClient {
+                issuer: auth_server.clone(),
+                ..XaiOauthClient::from_env()
+            }
+        };
+
+        let pending = client
+            .start_device_code(&profile.id)
+            .map_err(|e| ConnectError::Oauth(e.to_string()))?;
+
+        if *system_browser {
+            try_open_browser(pending.open_url());
+        }
+        Ok(pending)
+    }
+
+    /// Single non-blocking poll of a device-code session (for TUI ticks).
+    pub fn poll_oauth_once(
+        &mut self,
+        pending: &OauthPending,
+    ) -> Result<Option<ConnectOutcome>, ConnectError> {
+        if pending.profile_id != "xai" && pending.client_id == "stub" {
+            return Ok(None);
+        }
+        let client = XaiOauthClient {
+            issuer: pending.auth_server.clone(),
+            client_id: pending.client_id.clone(),
+            ..XaiOauthClient::from_env()
+        };
+        match client.poll_token_once(pending) {
+            Ok(tokens) => {
+                let out = self.connect_oauth(&pending.profile_id, tokens)?;
+                Ok(Some(out))
+            }
+            Err(XaiOauthError::AuthorizationPending) | Err(XaiOauthError::SlowDown) => Ok(None),
+            Err(e) => Err(ConnectError::Oauth(e.to_string())),
+        }
+    }
+
+    /// Block until device login completes (CLI / `forge connect xai`).
+    pub fn complete_oauth_device_flow(
+        &mut self,
+        pending: &OauthPending,
+        max_wait: std::time::Duration,
+    ) -> Result<ConnectOutcome, ConnectError> {
+        if pending.client_id == "stub" {
+            return Err(ConnectError::Oauth(
+                "stub OAuth cannot complete; unset FORGE_CONNECT_OAUTH_STUB/FIXTURE or use fixture connect".into(),
+            ));
+        }
+        let client = XaiOauthClient {
+            issuer: pending.auth_server.clone(),
+            client_id: pending.client_id.clone(),
+            ..XaiOauthClient::from_env()
+        };
+        let tokens = client
+            .poll_until_tokens(pending, max_wait)
+            .map_err(|e| ConnectError::Oauth(e.to_string()))?;
+        self.connect_oauth(&pending.profile_id, tokens)
     }
 
     /// Connect dispatch used by CLI/TUI after collecting secrets.
@@ -236,13 +327,63 @@ impl<'a> ConnectService<'a> {
                     }
                 }
                 let pending = self.start_oauth(&profile.id)?;
-                Err(ConnectError::OauthPending(
-                    profile.id,
-                    pending.operator_instructions(),
-                ))
+                Err(ConnectError::OauthDevicePending(pending))
             }
             AuthMode::ApiKey { .. } => self.connect_api_key(&profile.id, api_key),
         }
+    }
+
+    /// Like `connect` for OAuth, but returns the pending struct for the caller to poll.
+    pub fn connect_start_oauth(
+        &mut self,
+        profile_id: &str,
+    ) -> Result<Result<ConnectOutcome, OauthPending>, ConnectError> {
+        let profile = self.profile_or_err(profile_id)?;
+        if !profile.auth_mode.is_oauth() {
+            return Err(ConnectError::Message(format!(
+                "profile `{}` is not OAuth",
+                profile.id
+            )));
+        }
+        // Reuse stored tokens across sessions (refresh if near expiry).
+        match self.ensure_oauth_fresh(&profile.id) {
+            Ok(Some(_)) => return Ok(Ok(self.activate(&profile, KeySource::Oauth)?)),
+            Ok(None) => {}
+            Err(_) => {
+                // Refresh failed — try existing non-fixture token once, else re-login.
+                if let Some(tokens) = self.store.get_oauth(&profile.id)? {
+                    let at = tokens.access_token.trim();
+                    if !at.is_empty()
+                        && !at.starts_with("fixture-")
+                        && at != "fixture-access-token"
+                        && !tokens.needs_refresh(std::time::Duration::from_secs(0))
+                    {
+                        return Ok(Ok(self.activate(&profile, KeySource::Oauth)?));
+                    }
+                }
+            }
+        }
+        if std::env::var("FORGE_CONNECT_OAUTH_FIXTURE").is_ok() {
+            let tokens = OauthTokens {
+                access_token: "fixture-access-token".into(),
+                refresh_token: Some("fixture-refresh".into()),
+                expires_at: None,
+            };
+            return Ok(Ok(self.connect_oauth(&profile.id, tokens)?));
+        }
+        if let Ok(at) = std::env::var("FORGE_XAI_OAUTH_ACCESS_TOKEN") {
+            if !at.trim().is_empty() && profile.id == "xai" {
+                return Ok(Ok(self.connect_oauth(
+                    &profile.id,
+                    OauthTokens {
+                        access_token: at,
+                        refresh_token: std::env::var("FORGE_XAI_OAUTH_REFRESH_TOKEN").ok(),
+                        expires_at: None,
+                    },
+                )?));
+            }
+        }
+        Ok(Err(self.start_oauth(&profile.id)?))
     }
 
     pub fn disconnect(&self, profile_id: Option<&str>) -> Result<String, ConnectError> {
@@ -270,6 +411,55 @@ impl<'a> ConnectService<'a> {
         self.registry.get(id)
     }
 
+    /// Refresh OAuth tokens if expired / near expiry; persist and return fresh tokens.
+    pub fn ensure_oauth_fresh(
+        &self,
+        profile_id: &str,
+    ) -> Result<Option<OauthTokens>, ConnectError> {
+        let Some(tok) = self.store.get_oauth(profile_id)? else {
+            return Ok(None);
+        };
+        let at = tok.access_token.trim();
+        if at.is_empty() || at.starts_with("fixture-") || at == "fixture-access-token" {
+            return Ok(None);
+        }
+        // Refresh ~5 minutes before expiry (or when already expired).
+        let skew = std::time::Duration::from_secs(5 * 60);
+        if !tok.needs_refresh(skew) {
+            return Ok(Some(tok));
+        }
+        let Some(refresh) = tok
+            .refresh_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|r| !r.is_empty())
+            .map(|s| s.to_string())
+        else {
+            // No refresh token — return existing access token and let upstream fail if expired.
+            return Ok(Some(tok));
+        };
+        let profile = self.profile_or_err(profile_id)?;
+        let AuthMode::Oauth { auth_server, .. } = &profile.auth_mode else {
+            return Ok(Some(tok));
+        };
+        let client = XaiOauthClient {
+            issuer: auth_server.clone(),
+            client_id: std::env::var("FORGE_XAI_OAUTH_CLIENT_ID")
+                .or_else(|_| std::env::var("GROK_OAUTH2_CLIENT_ID"))
+                .unwrap_or_else(|_| crate::oauth_xai::DEFAULT_CLIENT_ID.into()),
+            ..XaiOauthClient::from_env()
+        };
+        match client.refresh_access_token(&refresh) {
+            Ok(fresh) => {
+                self.store.set_oauth(profile_id, fresh.clone())?;
+                Ok(Some(fresh))
+            }
+            Err(e) => Err(ConnectError::Oauth(format!(
+                "token refresh failed ({e}); run `/connect {profile_id}` again"
+            ))),
+        }
+    }
+
     pub fn worker_env_for_profile(
         &self,
         profile_id: &str,
@@ -278,10 +468,23 @@ impl<'a> ConnectService<'a> {
         let mut out = Vec::new();
         match &profile.auth_mode {
             AuthMode::Oauth { .. } => {
-                if let Some(tok) = self.store.get_oauth(&profile.id)? {
-                    // LiteLLM / custom adapters may accept bearer via env; document as XAI_API_KEY
-                    // for compatibility when OAuth access token is used as bearer.
-                    out.push(("XAI_API_KEY".into(), tok.access_token));
+                // Prefer a fresh token (silent refresh across sessions).
+                let tok = match self.ensure_oauth_fresh(&profile.id) {
+                    Ok(t) => t,
+                    Err(_) => self.store.get_oauth(&profile.id)?,
+                };
+                if let Some(tok) = tok {
+                    let at = tok.access_token.trim();
+                    // Never export fixture tokens to the live worker — they only exist for unit tests.
+                    if at.is_empty()
+                        || at.starts_with("fixture-")
+                        || at == "fixture-access-token"
+                    {
+                        // skip — operator must complete real OAuth
+                    } else {
+                        // LiteLLM xAI provider reads XAI_API_KEY as Bearer.
+                        out.push(("XAI_API_KEY".into(), at.to_string()));
+                    }
                 }
             }
             AuthMode::ApiKey { .. } => {
@@ -292,6 +495,31 @@ impl<'a> ConnectService<'a> {
                         out.push((primary.clone(), key));
                     }
                 }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Profiles that already have stored credentials (for session restore).
+    pub fn connected_profiles(&self) -> Result<Vec<ConnectProfile>, ConnectError> {
+        let mut out = Vec::new();
+        for p in self.registry.profiles() {
+            if resolve_connected(&p.api_key_env, &p.id, self.store)?.is_some() {
+                // Only count OAuth when tokens are non-fixture.
+                if p.auth_mode.is_oauth() {
+                    if let Some(tok) = self.store.get_oauth(&p.id)? {
+                        let at = tok.access_token.trim();
+                        if at.is_empty()
+                            || at.starts_with("fixture-")
+                            || at == "fixture-access-token"
+                        {
+                            continue;
+                        }
+                    } else {
+                        continue;
+                    }
+                }
+                out.push(p.clone());
             }
         }
         Ok(out)
@@ -440,7 +668,7 @@ mod tests {
             api_key_env: vec![],
             default_base_url: None,
             default_models: vec!["xai/grok-3".into()],
-            auth_url: Some("https://accounts.x.ai".into()),
+            auth_url: Some("https://auth.x.ai".into()),
             litellm_provider_prefix: "xai".into(),
         });
         r
@@ -535,9 +763,10 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
         let reg = oauth_registry();
-        // Ensure fixture env off
+        // Ensure fixture connect off; use stub device start (no network requirement).
         std::env::remove_var("FORGE_CONNECT_OAUTH_FIXTURE");
         std::env::remove_var("FORGE_XAI_OAUTH_ACCESS_TOKEN");
+        std::env::set_var("FORGE_CONNECT_OAUTH_STUB", "1");
         let mut svc = ConnectService {
             registry: &reg,
             store: &store,
@@ -545,7 +774,8 @@ mod tests {
             active_model: None,
         };
         let err = svc.connect("xai", None, false).unwrap_err();
-        assert!(matches!(err, ConnectError::OauthPending(_, _)));
+        std::env::remove_var("FORGE_CONNECT_OAUTH_STUB");
+        assert!(matches!(err, ConnectError::OauthDevicePending(_)));
     }
 
     #[test]

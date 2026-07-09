@@ -100,14 +100,33 @@ pub fn classify_operator_error(raw: &str) -> String {
         || lower.contains("unauthorized")
         || lower.contains("authentication")
         || lower.contains("api key")
+        || lower.contains("unauthenticated")
+        || lower.contains("no credentials")
+        || lower.contains("fixture token")
+        || lower.contains("fixture-")
     {
-        return "Model error: authentication failed. Check /connect or API key.".into();
+        return "Model error: authentication failed. Run /connect xai and finish real OAuth \
+(not fixture), or set XAI_API_KEY.".into();
+    }
+    if lower.contains("eof while parsing") || lower.contains("stdout polluted") {
+        return "Model error: worker protocol noise (update forge-litellm-worker). Restart forge."
+            .into();
     }
     if lower.contains("timeout") || lower.contains("timed out") {
         return "Model error: request timed out. Retry or check network/worker.".into();
     }
-    if lower.contains("worker") && (lower.contains("unavailable") || lower.contains("failed")) {
-        return "Model error: LiteLLM worker unavailable. Check worker process.".into();
+    if lower.contains("worker")
+        && (lower.contains("unavailable")
+            || lower.contains("failed")
+            || lower.contains("closed stdout")
+            || lower.contains("no module named"))
+    {
+        return "Model error: LiteLLM worker unavailable. Install with: \
+cd workers/forge-litellm-worker && pip install -e .  (then restart forge)".into();
+    }
+    if lower.contains("closed stdout") {
+        return "Model error: LiteLLM worker crashed. Install with: \
+cd workers/forge-litellm-worker && pip install -e .  (then restart forge)".into();
     }
     let trimmed: String = raw.chars().take(200).collect();
     if trimmed.is_empty() {
