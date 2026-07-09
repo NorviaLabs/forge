@@ -42,13 +42,33 @@ def complete_result_from_litellm(resp: Any) -> dict:
         # litellm ModelResponse
         data = resp.model_dump() if hasattr(resp, "model_dump") else dict(resp)
 
+    def _thinking_from_message(message: dict) -> str | None:
+        for key in ("reasoning_content", "reasoning", "thinking", "reasoning_text"):
+            v = message.get(key)
+            if isinstance(v, str) and v.strip():
+                return v
+        blocks = message.get("thinking_blocks")
+        if isinstance(blocks, list):
+            parts: list[str] = []
+            for b in blocks:
+                if isinstance(b, dict):
+                    parts.append(str(b.get("thinking") or b.get("text") or b.get("content") or ""))
+            joined = "".join(parts)
+            if joined.strip():
+                return joined
+        return None
+
     # Already forge-shaped
     if "text" in data and "choices" not in data:
+        thinking = data.get("thinking")
+        if not thinking:
+            thinking = None
         return {
             "text": data.get("text") or "",
             "tool_calls": data.get("tool_calls") or [],
             "usage": data.get("usage"),
             "finish_reason": data.get("finish_reason"),
+            "thinking": thinking,
         }
 
     choices = data.get("choices") or []
@@ -83,9 +103,11 @@ def complete_result_from_litellm(resp: Any) -> dict:
                 "total_tokens": getattr(usage, "total_tokens", 0) or 0,
             }
     finish = choices[0].get("finish_reason")
+    thinking = _thinking_from_message(message if isinstance(message, dict) else {})
     return {
         "text": text,
         "tool_calls": tool_calls,
         "usage": usage_out,
         "finish_reason": finish,
+        "thinking": thinking,
     }

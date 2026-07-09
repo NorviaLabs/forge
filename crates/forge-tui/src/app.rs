@@ -87,6 +87,8 @@ pub struct TuiApp {
     pending_prompt: Option<String>,
     /// Live assistant text while tokens stream in.
     stream_preview: String,
+    /// Live thinking/reasoning text while tokens stream in.
+    stream_thinking: String,
     /// Optional web_search label for chrome (`mock` / `off` / provider id).
     pub web_search_label: Option<String>,
     /// Phase 10 / TUI-10 — activity ring buffer.
@@ -121,6 +123,7 @@ impl TuiApp {
             activity: ActivityFeed::default(),
             pending_prompt: None,
             stream_preview: String::new(),
+            stream_thinking: String::new(),
         }
         .restore_saved_auth()
     }
@@ -559,13 +562,16 @@ impl TuiApp {
 
         let mut conv = ConversationModel::from_session(&self.session, self.busy)
             .with_extra_banners(self.ui_banners.iter().cloned());
-        if self.busy && (!self.stream_preview.is_empty() || self.pending_prompt.is_none()) {
-            // Show streaming tokens (or a placeholder assistant while waiting for first token)
-            conv = conv.with_streaming_assistant(if self.stream_preview.is_empty() {
-                "…".into()
-            } else {
-                self.stream_preview.clone()
-            });
+        if self.busy && self.pending_prompt.is_none() {
+            // Show thinking + answer as they stream (placeholder assistant until first token)
+            conv = conv.with_streaming_preview(
+                self.stream_thinking.clone(),
+                if self.stream_preview.is_empty() && self.stream_thinking.is_empty() {
+                    "…".into()
+                } else {
+                    self.stream_preview.clone()
+                },
+            );
         }
         frame.render_widget(
             crate::conversation::ConversationWidget { model: &conv },
@@ -1144,6 +1150,7 @@ impl TuiApp {
         self.busy = true;
         self.busy_phase = BusyPhase::Model;
         self.stream_preview.clear();
+        self.stream_thinking.clear();
         self.push_activity(
             ActivityKind::Model,
             FeedbackSeverity::Info,
@@ -1165,6 +1172,7 @@ impl TuiApp {
         self.busy = true;
         self.busy_phase = BusyPhase::Model;
         self.stream_preview.clear();
+        self.stream_thinking.clear();
 
         if let Err(e) = self.session.append_user_message(&line).await {
             self.busy = false;
@@ -1200,8 +1208,14 @@ impl TuiApp {
                 let mut got = false;
                 while let Ok(ev) = rx.try_recv() {
                     got = true;
-                    if let ModelStreamEvent::TextDelta { text } = ev {
-                        self.stream_preview.push_str(&text);
+                    match ev {
+                        ModelStreamEvent::TextDelta { text } => {
+                            self.stream_preview.push_str(&text);
+                        }
+                        ModelStreamEvent::ThinkingDelta { text } => {
+                            self.stream_thinking.push_str(&text);
+                        }
+                        _ => {}
                     }
                 }
                 if got {
@@ -1213,8 +1227,14 @@ impl TuiApp {
                 if handle.is_finished() {
                     // Drain remaining events
                     while let Ok(ev) = rx.try_recv() {
-                        if let ModelStreamEvent::TextDelta { text } = ev {
-                            self.stream_preview.push_str(&text);
+                        match ev {
+                            ModelStreamEvent::TextDelta { text } => {
+                                self.stream_preview.push_str(&text);
+                            }
+                            ModelStreamEvent::ThinkingDelta { text } => {
+                                self.stream_thinking.push_str(&text);
+                            }
+                            _ => {}
                         }
                     }
                     if let Some(term) = terminal.as_deref_mut() {
@@ -1233,6 +1253,7 @@ impl TuiApp {
                             self.busy = false;
                             self.busy_phase = BusyPhase::Idle;
                             self.stream_preview.clear();
+                            self.stream_thinking.clear();
                             self.should_quit = true;
                             self.last_exit = ExitCode::Canceled;
                             return Ok(());
@@ -1256,6 +1277,7 @@ impl TuiApp {
             };
 
             self.stream_preview.clear();
+            self.stream_thinking.clear();
             match self.session.apply_model_response(last).await {
                 Ok(ApplyOutcome::Done(_)) => {
                     outcome_err = None;
@@ -1289,6 +1311,7 @@ impl TuiApp {
         self.busy = false;
         self.busy_phase = BusyPhase::Idle;
         self.stream_preview.clear();
+        self.stream_thinking.clear();
 
         if let Some(e) = outcome_err {
             self.report_error(&e);
@@ -1393,7 +1416,8 @@ mod tests {
             text: "hello tui".into(),
             tool_calls: vec![],
             usage: None,
-        }]));
+            thinking: None,
+    }]));
         let session = AgentSession::create(
             LoopConfig {
                 max_turns: 4,

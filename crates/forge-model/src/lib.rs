@@ -56,6 +56,13 @@ pub trait ModelClient: Send + Sync {
     ) -> Result<ModelResponse, ModelError> {
         let resp = self.complete(req).await?;
         if let Some(tx) = tx {
+            if let Some(ref thinking) = resp.thinking {
+                if !thinking.is_empty() {
+                    let _ = tx.send(ModelStreamEvent::ThinkingDelta {
+                        text: thinking.clone(),
+                    });
+                }
+            }
             if !resp.text.is_empty() {
                 let _ = tx.send(ModelStreamEvent::TextDelta {
                     text: resp.text.clone(),
@@ -78,7 +85,8 @@ pub fn client_from_config(cfg: &Config) -> Result<Box<dyn ModelClient>, ModelErr
             text: "mock idle — configure a response script in tests".into(),
             tool_calls: vec![],
             usage: None,
-        }]))),
+            thinking: None,
+    }]))),
         ModelProviderKind::Litellm => {
             let client = LiteLlmModelClient::from_config(cfg)?;
             Ok(Box::new(client))
@@ -97,7 +105,8 @@ mod tests {
             text: "hello".into(),
             tool_calls: vec![],
             usage: None,
-        }]);
+            thinking: None,
+    }]);
         let resp = client
             .complete(ModelRequest {
                 messages: vec![Message {
@@ -105,7 +114,8 @@ mod tests {
                     content: "hi".into(),
                     tool_call_id: None,
                     name: None,
-                }],
+                    thinking: None,
+            }],
                 tools: vec![],
                 model: "mock".into(),
             })
@@ -124,7 +134,8 @@ mod tests {
                 arguments: serde_json::json!({"path": "a.txt"}),
             }],
             usage: None,
-        }]);
+            thinking: None,
+    }]);
         let resp = client
             .complete(ModelRequest {
                 messages: vec![],
