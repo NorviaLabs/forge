@@ -229,6 +229,7 @@ pub async fn open_mock_handle(workspace: PathBuf, journal_dir: PathBuf) -> Resul
         text: "acp ok".into(),
         tool_calls: vec![],
         usage: None,
+        thinking: None,
     }]));
     let session = AgentSession::create(
         LoopConfig {
@@ -260,7 +261,8 @@ mod tests {
             text: "hello from acp".into(),
             tool_calls: vec![],
             usage: None,
-        }]));
+            thinking: None,
+    }]));
         let mut server = AcpServer::new(
             dir.path().to_path_buf(),
             dir.path().join("j"),

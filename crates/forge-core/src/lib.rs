@@ -142,6 +142,7 @@ impl AgentSession {
                 content: system,
                 tool_call_id: None,
                 name: None,
+                thinking: None,
             }],
             events: vec![],
             pending_hitl: None,
@@ -177,13 +178,15 @@ impl AgentSession {
             content: "You are Forge, a coding agent. Session resumed from journal.".into(),
             tool_call_id: None,
             name: None,
-        }];
+            thinking: None,
+            }];
         for u in &state.user_messages {
             messages.push(Message {
                 role: MessageRole::User,
                 content: u.clone(),
                 tool_call_id: None,
                 name: None,
+                thinking: None,
             });
         }
         for (id, tr) in &state.tool_results {
@@ -192,6 +195,7 @@ impl AgentSession {
                 content: tr.output.content.clone(),
                 tool_call_id: Some(id.clone()),
                 name: Some(tr.name.clone()),
+                thinking: None,
             });
         }
         for incomplete in &state.incomplete_intents {
@@ -268,7 +272,8 @@ impl AgentSession {
             content: text.into(),
             tool_call_id: None,
             name: None,
-        });
+            thinking: None,
+            });
         if self.context.goal.is_empty() {
             self.context.goal = text.chars().take(200).collect();
         }
@@ -315,17 +320,33 @@ impl AgentSession {
             )
             .await?;
 
-        if !last.text.is_empty() {
+        let has_thinking = last
+            .thinking
+            .as_ref()
+            .map(|t| !t.trim().is_empty())
+            .unwrap_or(false);
+        if !last.text.is_empty() || has_thinking {
             self.messages.push(Message {
                 role: MessageRole::Assistant,
                 content: last.text.clone(),
                 tool_call_id: None,
                 name: None,
+                thinking: last.thinking.clone().filter(|t| !t.trim().is_empty()),
             });
-            self.events.push(TurnEvent {
-                kind: "assistant".into(),
-                detail: last.text.clone(),
-            });
+            if has_thinking {
+                if let Some(ref th) = last.thinking {
+                    self.events.push(TurnEvent {
+                        kind: "thinking".into(),
+                        detail: th.clone(),
+                    });
+                }
+            }
+            if !last.text.is_empty() {
+                self.events.push(TurnEvent {
+                    kind: "assistant".into(),
+                    detail: last.text.clone(),
+                });
+            }
         }
 
         if last.tool_calls.is_empty() {
@@ -464,7 +485,8 @@ impl AgentSession {
                         content: output.content,
                         tool_call_id: Some(call.id.clone()),
                         name: Some(call.name.clone()),
-                    });
+                        thinking: None,
+            });
                     return Ok(None);
                 }
                 PolicyDecision::Hitl => {
@@ -490,7 +512,8 @@ impl AgentSession {
                         text: format!("Awaiting HITL approval for tool {}", call.name),
                         tool_calls: vec![call.clone()],
                         usage: None,
-                    }));
+                        thinking: None,
+}));
                 }
                 PolicyDecision::Allow => {}
             }
@@ -519,7 +542,8 @@ impl AgentSession {
                     content: output.content.clone(),
                     tool_call_id: Some(call.id.clone()),
                     name: Some(call.name.clone()),
-                });
+                    thinking: None,
+            });
                 self.events.push(TurnEvent {
                     kind: "tool".into(),
                     detail: format!("{} -> {} chars", call.name, output.content.len()),
@@ -535,7 +559,8 @@ impl AgentSession {
                     content: msg.clone(),
                     tool_call_id: Some(call.id.clone()),
                     name: Some(call.name.clone()),
-                });
+                    thinking: None,
+            });
                 self.events.push(TurnEvent {
                     kind: "validation".into(),
                     detail: msg,
@@ -554,7 +579,8 @@ impl AgentSession {
                     content: output.content,
                     tool_call_id: Some(call.id.clone()),
                     name: Some(call.name.clone()),
-                });
+                    thinking: None,
+            });
             }
         }
         Ok(None)
@@ -599,6 +625,7 @@ impl AgentSession {
                 content: output.content,
                 tool_call_id: Some(payload.call_id),
                 name: Some(payload.tool),
+                thinking: None,
             });
             self.pending_hitl = None;
             self.status = SessionStatus::Running;
@@ -666,7 +693,8 @@ impl AgentSession {
                     content: output.content,
                     tool_call_id: Some(call.id.clone()),
                     name: Some(call.name.clone()),
-                });
+                    thinking: None,
+            });
             }
             Err(e) => {
                 let output = ToolOutput {
@@ -762,7 +790,8 @@ mod tests {
             text: "ok".into(),
             tool_calls: vec![],
             usage: None,
-        }]));
+            thinking: None,
+    }]));
         let s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
             .await
             .unwrap();
@@ -780,7 +809,8 @@ mod tests {
             text: "ok".into(),
             tool_calls: vec![],
             usage: None,
-        }]));
+            thinking: None,
+    }]));
         let mut cfg = base_cfg(dir.path());
         cfg.web_search.enabled = false;
         let s = AgentSession::create(cfg, model, ToolRegistry::new())
@@ -796,7 +826,8 @@ mod tests {
             text: "all done".into(),
             tool_calls: vec![],
             usage: None,
-        }]));
+            thinking: None,
+    }]));
         let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
             .await
             .unwrap();
@@ -818,12 +849,14 @@ mod tests {
                     arguments: json!({"path": "f.txt"}),
                 }],
                 usage: None,
-            },
+                thinking: None,
+},
             ModelResponse {
                 text: "read ok".into(),
                 tool_calls: vec![],
                 usage: None,
-            },
+                thinking: None,
+},
         ]));
         let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
             .await
@@ -843,7 +876,8 @@ mod tests {
                 arguments: json!({"command": "git push origin main"}),
             }],
             usage: None,
-        }]));
+            thinking: None,
+    }]));
         let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
             .await
             .unwrap();
@@ -863,7 +897,8 @@ mod tests {
             text: "ok".into(),
             tool_calls: vec![],
             usage: None,
-        }]));
+            thinking: None,
+    }]));
         let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
             .await
             .unwrap();
@@ -889,12 +924,14 @@ mod tests {
                     arguments: json!({"path": "big.txt"}),
                 }],
                 usage: None,
-            },
+                thinking: None,
+},
             ModelResponse {
                 text: "done".into(),
                 tool_calls: vec![],
                 usage: None,
-            },
+                thinking: None,
+},
         ]));
         let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
             .await

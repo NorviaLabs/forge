@@ -21,6 +21,8 @@ pub enum ToolCardState {
 pub enum ChatItem {
     System { text: String },
     User { text: String },
+    /// Model chain-of-thought / reasoning (shown muted above the answer).
+    Thinking { text: String },
     Assistant { text: String },
     ToolCard {
         name: String,
@@ -71,9 +73,20 @@ impl ConversationModel {
                         });
                     }
                 }
-                MessageRole::Assistant => items.push(ChatItem::Assistant {
-                    text: m.content.clone(),
-                }),
+                MessageRole::Assistant => {
+                    if let Some(ref th) = m.thinking {
+                        if !th.trim().is_empty() {
+                            items.push(ChatItem::Thinking {
+                                text: th.clone(),
+                            });
+                        }
+                    }
+                    if !m.content.is_empty() {
+                        items.push(ChatItem::Assistant {
+                            text: m.content.clone(),
+                        });
+                    }
+                }
                 MessageRole::Tool => {
                     let name = m.name.clone().unwrap_or_else(|| "tool".into());
                     let (state, summary) = classify_tool_content(&m.content);
@@ -126,13 +139,28 @@ impl ConversationModel {
         Self::from_messages(&session.messages, &session.events, session.status, busy)
     }
 
-    /// Append an in-progress assistant bubble (token stream preview).
-    pub fn with_streaming_assistant(mut self, text: impl Into<String>) -> Self {
+    /// Append in-progress thinking + assistant bubbles (token stream preview).
+    pub fn with_streaming_preview(
+        mut self,
+        thinking: impl Into<String>,
+        text: impl Into<String>,
+    ) -> Self {
+        let thinking = thinking.into();
         let text = text.into();
+        if !thinking.is_empty() {
+            self.items.push(ChatItem::Thinking { text: thinking });
+        }
         if !text.is_empty() || self.busy {
-            self.items.push(ChatItem::Assistant { text });
+            self.items.push(ChatItem::Assistant {
+                text: if text.is_empty() { "…".into() } else { text },
+            });
         }
         self
+    }
+
+    /// Append an in-progress assistant bubble (token stream preview).
+    pub fn with_streaming_assistant(mut self, text: impl Into<String>) -> Self {
+        self.with_streaming_preview("", text)
     }
 
     /// Phase 10: append UI-only banners (errors, info) after session-derived items.
@@ -170,6 +198,18 @@ impl ConversationModel {
                     lines.push(Line::from(Span::styled("YOU", theme::info())));
                     for l in wrap(text, 100) {
                         lines.push(Line::from(Span::styled(l, theme::text())));
+                    }
+                    lines.push(Line::from(""));
+                }
+                ChatItem::Thinking { text } => {
+                    let label = if self.busy {
+                        "THINKING · streaming"
+                    } else {
+                        "THINKING"
+                    };
+                    lines.push(Line::from(Span::styled(label, theme::dim())));
+                    for l in wrap(text, 100) {
+                        lines.push(Line::from(Span::styled(l, theme::muted())));
                     }
                     lines.push(Line::from(""));
                 }
@@ -317,32 +357,37 @@ mod tests {
                 content: "sys".into(),
                 tool_call_id: None,
                 name: None,
-            },
+                thinking: None,
+},
             Message {
                 role: MessageRole::User,
                 content: "hi".into(),
                 tool_call_id: None,
                 name: None,
-            },
+                thinking: None,
+},
             Message {
                 role: MessageRole::Assistant,
                 content: "yo".into(),
                 tool_call_id: None,
                 name: None,
+                thinking: Some("ponder".into()),
             },
             Message {
                 role: MessageRole::Tool,
                 content: "ok body".into(),
                 tool_call_id: Some("1".into()),
                 name: Some("read_file".into()),
+                thinking: None,
             },
         ];
         let m = ConversationModel::from_messages(&msgs, &[], SessionStatus::Running, false);
         assert!(matches!(m.items[0], ChatItem::System { .. }));
         assert!(matches!(m.items[1], ChatItem::User { .. }));
-        assert!(matches!(m.items[2], ChatItem::Assistant { .. }));
+        assert!(matches!(m.items[2], ChatItem::Thinking { .. }));
+        assert!(matches!(m.items[3], ChatItem::Assistant { .. }));
         assert!(matches!(
-            m.items[3],
+            m.items[4],
             ChatItem::ToolCard {
                 state: ToolCardState::Done,
                 ..
@@ -357,7 +402,8 @@ mod tests {
             content: "Tool validation error: bad".into(),
             tool_call_id: Some("1".into()),
             name: Some("read_file".into()),
-        }];
+            thinking: None,
+            }];
         let m = ConversationModel::from_messages(&msgs, &[], SessionStatus::Running, false);
         match &m.items[0] {
             ChatItem::ToolCard { state, .. } => assert_eq!(*state, ToolCardState::Error),
