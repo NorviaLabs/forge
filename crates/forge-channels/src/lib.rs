@@ -246,7 +246,8 @@ mod tests {
             text: "channel ok".into(),
             tool_calls: vec![],
             usage: None,
-        }]));
+            thinking: None,
+    }]));
         let gw = ChannelGateway::new(
             dir.path().to_path_buf(),
             dir.path().join("j"),

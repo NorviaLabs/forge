@@ -16,10 +16,16 @@ pub fn complete_result_from_value(result: &Value) -> Result<ModelResponse, Model
             .to_string();
         let tool_calls = parse_tool_calls(result.get("tool_calls").unwrap_or(&Value::Null))?;
         let usage = parse_usage(result.get("usage"));
+        let thinking = result
+            .get("thinking")
+            .and_then(|t| t.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
         return Ok(ModelResponse {
             text,
             tool_calls,
             usage,
+            thinking,
         });
     }
 
@@ -33,11 +39,38 @@ pub fn complete_result_from_value(result: &Value) -> Result<ModelResponse, Model
     let text = content_to_text(message.get("content"));
     let tool_calls = parse_tool_calls(message.get("tool_calls").unwrap_or(&Value::Null))?;
     let usage = parse_usage(result.get("usage"));
+    let thinking = extract_thinking_from_message(message);
     Ok(ModelResponse {
         text,
         tool_calls,
         usage,
+        thinking,
     })
+}
+
+fn extract_thinking_from_message(message: &Value) -> Option<String> {
+    for key in ["reasoning_content", "reasoning", "thinking"] {
+        if let Some(s) = message.get(key).and_then(|v| v.as_str()) {
+            if !s.is_empty() {
+                return Some(s.to_string());
+            }
+        }
+    }
+    // thinking_blocks: [{type, thinking/text}, ...]
+    if let Some(arr) = message.get("thinking_blocks").and_then(|v| v.as_array()) {
+        let mut out = String::new();
+        for b in arr {
+            if let Some(s) = b.get("thinking").and_then(|v| v.as_str()) {
+                out.push_str(s);
+            } else if let Some(s) = b.get("text").and_then(|v| v.as_str()) {
+                out.push_str(s);
+            }
+        }
+        if !out.is_empty() {
+            return Some(out);
+        }
+    }
+    None
 }
 
 fn content_to_text(content: Option<&Value>) -> String {
@@ -259,7 +292,8 @@ mod tests {
             content: "hi".into(),
             tool_call_id: None,
             name: None,
-        }]);
+            thinking: None,
+    }]);
         assert_eq!(msgs[0]["role"], "user");
         let tools = tools_to_openai_functions(&[ToolDescriptor {
             name: "read_file".into(),

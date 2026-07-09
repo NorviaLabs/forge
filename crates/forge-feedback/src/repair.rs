@@ -48,6 +48,7 @@ impl RepairTask {
             ),
             tool_call_id: None,
             name: None,
+            thinking: None,
         }
     }
 }

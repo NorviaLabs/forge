@@ -43,6 +43,21 @@ pub struct Message {
     pub tool_call_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Model "thinking" / reasoning text (UI + journal only; not re-sent as content).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
+}
+
+impl Message {
+    pub fn new(role: MessageRole, content: impl Into<String>) -> Self {
+        Self {
+            role,
+            content: content.into(),
+            tool_call_id: None,
+            name: None,
+            thinking: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,6 +106,8 @@ pub struct Usage {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ModelStreamEvent {
     TextDelta { text: String },
+    /// Reasoning / chain-of-thought token chunk (Grok, o-series, DeepSeek-R1, etc.).
+    ThinkingDelta { text: String },
     ToolCallStart { id: String, name: String },
     ToolCallDelta { id: String, arguments_delta: String },
     ToolCallEnd { call: ToolCall },
@@ -106,6 +123,9 @@ pub struct ModelResponse {
     pub tool_calls: Vec<ToolCall>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
+    /// Aggregated thinking / reasoning text for the turn (optional).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

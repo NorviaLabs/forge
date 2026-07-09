@@ -164,7 +164,7 @@ def _map_upstream_error(e: Exception) -> tuple[str, str]:
     return code, msg
 
 
-def _emit_text_delta(mid: str, text: str) -> None:
+def _emit_delta(mid: str, kind: str, text: str) -> None:
     if not text:
         return
     emit(
@@ -172,35 +172,147 @@ def _emit_text_delta(mid: str, text: str) -> None:
             "v": WIRE_V,
             "id": mid,
             "type": "event",
-            "params": {"kind": "text_delta", "text": text},
+            "params": {"kind": kind, "text": text},
         }
     )
 
 
-def _chunk_text(chunk: Any) -> str:
-    """Extract assistant text delta from an OpenAI-style stream chunk."""
+def _emit_text_delta(mid: str, text: str) -> None:
+    _emit_delta(mid, "text_delta", text)
+
+
+def _emit_thinking_delta(mid: str, text: str) -> None:
+    _emit_delta(mid, "thinking_delta", text)
+
+
+def _delta_obj(chunk: Any) -> Any:
     try:
         if isinstance(chunk, dict):
             choices = chunk.get("choices") or []
         else:
             choices = getattr(chunk, "choices", None) or []
         if not choices:
-            return ""
+            return None
         c0 = choices[0]
         if isinstance(c0, dict):
-            delta = c0.get("delta") or {}
-            if isinstance(delta, dict):
-                content = delta.get("content")
-            else:
-                content = getattr(delta, "content", None)
+            return c0.get("delta") or {}
+        return getattr(c0, "delta", None)
+    except Exception:
+        return None
+
+
+def _chunk_text(chunk: Any) -> str:
+    """Extract assistant text delta from an OpenAI-style stream chunk."""
+    try:
+        delta = _delta_obj(chunk)
+        if delta is None:
+            return ""
+        if isinstance(delta, dict):
+            content = delta.get("content")
         else:
-            delta = getattr(c0, "delta", None)
-            content = getattr(delta, "content", None) if delta is not None else None
+            content = getattr(delta, "content", None)
         if content is None:
             return ""
         return content if isinstance(content, str) else str(content)
     except Exception:
         return ""
+
+
+def _as_text(val: Any) -> str:
+    if val is None:
+        return ""
+    if isinstance(val, str):
+        return val
+    return str(val)
+
+
+def _chunk_thinking(chunk: Any) -> str:
+    """Extract reasoning/thinking delta (Grok, DeepSeek-R1, o-series, Claude thinking)."""
+    try:
+        delta = _delta_obj(chunk)
+        if delta is None:
+            return ""
+        # Common LiteLLM / provider fields on delta
+        if isinstance(delta, dict):
+            for key in (
+                "reasoning_content",
+                "reasoning",
+                "thinking",
+                "reasoning_text",
+            ):
+                t = _as_text(delta.get(key))
+                if t:
+                    return t
+            # thinking_blocks: list of {type, thinking|text}
+            blocks = delta.get("thinking_blocks")
+            if isinstance(blocks, list):
+                parts: list[str] = []
+                for b in blocks:
+                    if isinstance(b, dict):
+                        parts.append(
+                            _as_text(b.get("thinking") or b.get("text") or b.get("content"))
+                        )
+                    else:
+                        parts.append(_as_text(getattr(b, "thinking", None) or getattr(b, "text", None)))
+                return "".join(parts)
+            # reasoning_details (some OpenAI-compatible shapes)
+            details = delta.get("reasoning_details")
+            if isinstance(details, list):
+                parts = []
+                for d in details:
+                    if isinstance(d, dict):
+                        parts.append(_as_text(d.get("text") or d.get("content")))
+                return "".join(parts)
+        else:
+            for attr in ("reasoning_content", "reasoning", "thinking", "reasoning_text"):
+                t = _as_text(getattr(delta, attr, None))
+                if t:
+                    return t
+            blocks = getattr(delta, "thinking_blocks", None)
+            if blocks:
+                parts = []
+                for b in blocks:
+                    if isinstance(b, dict):
+                        parts.append(_as_text(b.get("thinking") or b.get("text")))
+                    else:
+                        parts.append(
+                            _as_text(getattr(b, "thinking", None) or getattr(b, "text", None))
+                        )
+                return "".join(parts)
+        return ""
+    except Exception:
+        return ""
+
+
+def _message_thinking(message: Any) -> str:
+    """Extract full thinking/reasoning from a completed message object."""
+    if message is None:
+        return ""
+    if isinstance(message, dict):
+        for key in ("reasoning_content", "reasoning", "thinking", "reasoning_text"):
+            t = _as_text(message.get(key))
+            if t:
+                return t
+        blocks = message.get("thinking_blocks")
+        if isinstance(blocks, list):
+            parts = []
+            for b in blocks:
+                if isinstance(b, dict):
+                    parts.append(_as_text(b.get("thinking") or b.get("text") or b.get("content")))
+            return "".join(parts)
+        return ""
+    for attr in ("reasoning_content", "reasoning", "thinking", "reasoning_text"):
+        t = _as_text(getattr(message, attr, None))
+        if t:
+            return t
+    blocks = getattr(message, "thinking_blocks", None) or []
+    parts = []
+    for b in blocks:
+        if isinstance(b, dict):
+            parts.append(_as_text(b.get("thinking") or b.get("text")))
+        else:
+            parts.append(_as_text(getattr(b, "thinking", None) or getattr(b, "text", None)))
+    return "".join(parts)
 
 
 def handle_complete(mid: str, params: dict[str, Any]) -> None:
@@ -263,6 +375,7 @@ def handle_complete_stream(mid: str, params: dict[str, Any]) -> None:
     kwargs.setdefault("stream_options", {"include_usage": True})
 
     text_parts: list[str] = []
+    thinking_parts: list[str] = []
     finish_reason: str | None = None
     usage_out: dict[str, Any] | None = None
 
@@ -272,6 +385,11 @@ def handle_complete_stream(mid: str, params: dict[str, Any]) -> None:
         try:
             stream = litellm.completion(**kwargs)
             for chunk in stream:
+                think = _chunk_thinking(chunk)
+                if think:
+                    thinking_parts.append(think)
+                    _emit_thinking_delta(mid, think)
+
                 piece = _chunk_text(chunk)
                 if piece:
                     text_parts.append(piece)
@@ -319,11 +437,13 @@ def handle_complete_stream(mid: str, params: dict[str, Any]) -> None:
             sys.stdout = prev
 
         full_text = "".join(text_parts)
+        full_thinking = "".join(thinking_parts) or None
         result: dict[str, Any] = {
             "text": full_text,
             "tool_calls": [],
             "usage": usage_out,
             "finish_reason": finish_reason or "stop",
+            "thinking": full_thinking,
             "ok": True,
         }
         respond(mid, "complete_stream", result)

@@ -1,0 +1,8 @@
+Metadata-Version: 2.4
+Name: forge-litellm-worker
+Version: 0.1.0
+Summary: Forge Phase 5 LiteLLM SDK worker (library, not proxy)
+Requires-Python: >=3.10
+Requires-Dist: litellm>=1.40.0
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0; extra == "dev"

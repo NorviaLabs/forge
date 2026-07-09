@@ -1,0 +1,4 @@
+litellm>=1.40.0
+
+[dev]
+pytest>=7.0
