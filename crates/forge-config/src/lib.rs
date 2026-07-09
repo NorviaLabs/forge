@@ -126,6 +126,18 @@ pub struct LitellmConfig {
 }
 
 fn default_litellm_python() -> String {
+    // Prefer project-local venv when present (pip install -e workers/forge-litellm-worker).
+    if let Ok(cwd) = std::env::current_dir() {
+        for candidate in [
+            cwd.join(".venv/bin/python"),
+            cwd.join(".venv/bin/python3"),
+            cwd.join("venv/bin/python"),
+        ] {
+            if candidate.is_file() {
+                return candidate.display().to_string();
+            }
+        }
+    }
     "python3".into()
 }
 fn default_litellm_module() -> String {

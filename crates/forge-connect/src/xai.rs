@@ -18,7 +18,8 @@ pub fn xai_grok_profile() -> ConnectProfile {
             "xai/grok-3-mini".into(),
             "xai/grok-2".into(),
         ],
-        auth_url: Some("https://accounts.x.ai".into()),
+        // Grok Build signs in via auth.x.ai OIDC; device verify page is accounts.x.ai/oauth2/device
+        auth_url: Some("https://auth.x.ai".into()),
         litellm_provider_prefix: "xai".into(),
     }
 }
@@ -100,6 +101,7 @@ mod tests {
         let store = CredentialStore::new(dir.path().join("c.toml"));
         let mut reg = ConnectRegistry::new();
         reg.register(xai_grok_profile());
+        // Fixture tokens must NOT be exported to the live worker.
         let mut svc = crate::service::ConnectService {
             registry: &reg,
             store: &store,
@@ -108,7 +110,23 @@ mod tests {
         };
         svc.connect("xai", None, true).unwrap();
         let env = svc.worker_env_for_profile("xai").unwrap();
+        assert!(
+            env.is_empty(),
+            "fixture OAuth must not become XAI_API_KEY: {env:?}"
+        );
+        // Real-looking token is exported.
+        store
+            .set_oauth(
+                "xai",
+                crate::auth::OauthTokens {
+                    access_token: "xai-real-token-for-test".into(),
+                    refresh_token: None,
+                    expires_at: None,
+                },
+            )
+            .unwrap();
+        let env = svc.worker_env_for_profile("xai").unwrap();
         assert_eq!(env[0].0, "XAI_API_KEY");
-        assert_eq!(env[0].1, "fixture-access-token");
+        assert_eq!(env[0].1, "xai-real-token-for-test");
     }
 }
