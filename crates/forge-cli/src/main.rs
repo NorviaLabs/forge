@@ -71,12 +71,24 @@ enum Commands {
 
 #[tokio::main]
 async fn main() {
+    let cli = Cli::parse();
+    // Quiet by default so INFO lines (e.g. "model step") never paint over the TUI.
+    // Override with RUST_LOG=info,forge_core=debug, etc.
+    let default_level = if cli.command.is_none() {
+        // Full-screen TUI: only errors unless RUST_LOG is set.
+        "error"
+    } else {
+        "warn"
+    };
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(default_level));
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse().unwrap()))
+        .with_env_filter(filter)
         .with_writer(std::io::stderr)
+        .with_target(true)
+        .with_ansi(false)
         .init();
 
-    let cli = Cli::parse();
     let code = match run(cli).await {
         Ok(c) => c,
         Err(e) => {
