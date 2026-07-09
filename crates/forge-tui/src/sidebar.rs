@@ -207,7 +207,8 @@ mod tests {
             text: "ok".into(),
             tool_calls: vec![],
             usage: None,
-        }]));
+            thinking: None,
+    }]));
         let mut s = AgentSession::create(
             LoopConfig {
                 max_turns: 3,

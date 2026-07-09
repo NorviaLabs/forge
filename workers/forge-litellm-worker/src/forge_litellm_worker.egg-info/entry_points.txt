@@ -1,0 +1,2 @@
+[console_scripts]
+forge-litellm-worker = forge_litellm_worker.__main__:main

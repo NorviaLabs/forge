@@ -26,6 +26,7 @@ impl ModelClient for MockModelClient {
                 text: "done".into(),
                 tool_calls: vec![],
                 usage: None,
+                thinking: None,
             });
         }
         Ok(g.remove(0))

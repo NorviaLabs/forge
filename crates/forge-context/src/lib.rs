@@ -228,7 +228,8 @@ impl ContextEngine {
             ),
             tool_call_id: None,
             name: None,
-        }];
+            thinking: None,
+            }];
         new_msgs.push(Message {
             role: MessageRole::User,
             content: format!(
@@ -237,7 +238,8 @@ impl ContextEngine {
             ),
             tool_call_id: None,
             name: None,
-        });
+            thinking: None,
+            });
         Ok((doc, new_msgs))
     }
 }
@@ -309,13 +311,15 @@ mod tests {
                 content: "do work".into(),
                 tool_call_id: None,
                 name: None,
-            },
+                thinking: None,
+},
             Message {
                 role: MessageRole::Assistant,
                 content: "x".repeat(1000),
                 tool_call_id: None,
                 name: None,
-            },
+                thinking: None,
+},
         ];
         let (doc, new_msgs) = eng.handoff_reset(&messages, "abc123").unwrap();
         assert_eq!(doc.version, 1);
@@ -330,7 +334,8 @@ mod tests {
                 content: "y".repeat(4000),
                 tool_call_id: None,
                 name: None,
-            })
+                thinking: None,
+})
             .take(200)
             .collect::<Vec<_>>()
         ));
@@ -344,7 +349,8 @@ mod tests {
             content: "hi".into(),
             tool_call_id: None,
             name: None,
-        }];
+            thinking: None,
+            }];
         assert!(eng.usage_ratio(&small) < 0.01);
     }
 }

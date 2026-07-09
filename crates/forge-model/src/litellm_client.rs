@@ -429,6 +429,13 @@ impl LiteLlmInner {
         if !req.tools.is_empty() {
             let resp = self.complete_blocking(req)?;
             if let Some(ref tx) = tx {
+                if let Some(ref thinking) = resp.thinking {
+                    if !thinking.is_empty() {
+                        let _ = tx.send(ModelStreamEvent::ThinkingDelta {
+                            text: thinking.clone(),
+                        });
+                    }
+                }
                 if !resp.text.is_empty() {
                     let _ = tx.send(ModelStreamEvent::TextDelta {
                         text: resp.text.clone(),
@@ -521,6 +528,9 @@ fn parse_stream_event(params: Option<&serde_json::Value>) -> Option<ModelStreamE
     let kind = p.get("kind")?.as_str()?;
     match kind {
         "text_delta" => Some(ModelStreamEvent::TextDelta {
+            text: p.get("text")?.as_str()?.to_string(),
+        }),
+        "thinking_delta" => Some(ModelStreamEvent::ThinkingDelta {
             text: p.get("text")?.as_str()?.to_string(),
         }),
         "usage" => {
@@ -653,7 +663,8 @@ for line in sys.stdin:
                     content: "hi".into(),
                     tool_call_id: None,
                     name: None,
-                }],
+                    thinking: None,
+            }],
                 tools: vec![],
                 model: "openai/gpt-test".into(),
             })
@@ -680,7 +691,8 @@ for line in sys.stdin:
                     content: "hi".into(),
                     tool_call_id: None,
                     name: None,
-                }],
+                    thinking: None,
+            }],
                 tools: vec![],
                 model: "xai/grok-3".into(),
             })
