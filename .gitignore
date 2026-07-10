@@ -1,31 +1,28 @@
-# Rust / Cargo
-/target/
-**/*.rs.bk
+
+!.env.example
 # Commit Cargo.lock for reproducible CLI builds
-
 # Forge runtime
-.forge/
-
+# IDE / OS
+# Logs & coverage
+# Python (local tooling only, if any)
+# Rust / Cargo
 # Secrets & env
+**/*.rs.bk
+**/forge_litellm_worker.egg-info/
+*.log
+*.pem
+*.swo
+*.swp
+.DS_Store
 .env
 .env.*
-!.env.example
-*.pem
-
-# IDE / OS
+.forge/
 .idea/
+.venv/
 .vscode/
-*.swp
-*.swo
-.DS_Store
+/target/
 Thumbs.db
-
-# Logs & coverage
-*.log
+__pycache__/
 coverage/
 lcov.info
-
-# Python (local tooling only, if any)
-__pycache__/
-.venv/
 venv/
