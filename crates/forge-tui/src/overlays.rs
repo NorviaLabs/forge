@@ -120,7 +120,23 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
         },
         PaletteItem {
             cmd: "/cancel".into(),
-            desc: "Cancel current turn".into(),
+            desc: "Soft-cancel current turn".into(),
+        },
+        PaletteItem {
+            cmd: "/diff".into(),
+            desc: "Tools & file changes".into(),
+        },
+        PaletteItem {
+            cmd: "/copy".into(),
+            desc: "Copy last answer".into(),
+        },
+        PaletteItem {
+            cmd: "/clear".into(),
+            desc: "Clear banners / notices".into(),
+        },
+        PaletteItem {
+            cmd: "/density".into(),
+            desc: "Toggle compact layout".into(),
         },
         PaletteItem {
             cmd: "/quit".into(),
@@ -266,6 +282,8 @@ pub enum OverlayAction {
     Close,
     /// Close HITL and approve/deny
     HitlApprove,
+    /// Approve and allow this tool for the rest of the session
+    HitlApproveSession,
     HitlDeny,
     /// Execute slash command string e.g. "/status"
     RunCommand(String),
@@ -309,7 +327,19 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                     // no-arg commands execute; others insert
                     if matches!(
                         cmd.as_str(),
-                        "/help" | "/status" | "/tools" | "/cost" | "/quit" | "/approve" | "/deny" | "/reset" | "/compact"
+                        "/help"
+                            | "/status"
+                            | "/tools"
+                            | "/cost"
+                            | "/quit"
+                            | "/approve"
+                            | "/deny"
+                            | "/reset"
+                            | "/compact"
+                            | "/diff"
+                            | "/copy"
+                            | "/clear"
+                            | "/density"
                     ) {
                         OverlayAction::RunCommand(cmd)
                     } else {
@@ -389,6 +419,9 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
         Key::Char('a') | Key::Char('A') if matches!(overlay, Overlay::Hitl { .. }) => {
             OverlayAction::HitlApprove
         }
+        Key::Char('s') | Key::Char('S') if matches!(overlay, Overlay::Hitl { .. }) => {
+            OverlayAction::HitlApproveSession
+        }
         Key::Char('d') | Key::Char('D') if matches!(overlay, Overlay::Hitl { .. }) => {
             OverlayAction::HitlDeny
         }
@@ -458,7 +491,8 @@ impl Widget for OverlayWidget<'_> {
                     .unwrap_or_else(|_| "{}".into());
                 let args: String = args.chars().take(400).collect();
                 let body = format!(
-                    "Tool:  {}\nCall:  {}\nWhy:   {}\n\nArgs (redacted):\n{args}\n\n[a] Approve    [d] Deny    [Esc] dismiss",
+                    "Tool:  {}\nCall:  {}\nWhy:   {}\n\nArgs (redacted):\n{args}\n\n\
+[a] Approve once    [s] Allow for session    [d] Deny    [Esc] dismiss",
                     payload.tool, payload.call_id, payload.reason
                 );
                 Paragraph::new(body)
