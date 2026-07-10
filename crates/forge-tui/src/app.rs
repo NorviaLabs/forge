@@ -1,8 +1,9 @@
 //! Full-screen TUI application (TUI-01 shell + TUI-02/03/04 wired).
 
+use std::collections::HashSet;
 use std::io::{self, stdout};
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::execute;
@@ -21,7 +22,8 @@ use thiserror::Error;
 
 use crate::activity::{ActivityFeed, ActivityKind};
 use crate::commands::{help_text, parse_slash, SlashCommand, WorktreeAction};
-use crate::conversation::{BannerKind, ChatItem, ConversationModel};
+use crate::conversation::{BannerKind, ChatItem, ConversationModel, ConversationViewOpts};
+use crate::layout::split_areas_full;
 use crate::history::InputHistory;
 use crate::layout::{is_too_small, split_areas_ex};
 use crate::overlays::{
@@ -93,12 +95,30 @@ pub struct TuiApp {
     pub web_search_label: Option<String>,
     /// Phase 10 / TUI-10 — activity ring buffer.
     pub activity: ActivityFeed,
+    /// Expand completed thinking blocks (Ctrl+T). Streaming always expands.
+    thinking_expanded: bool,
+    /// Expand last tool detail (Ctrl+O).
+    tool_expanded: bool,
+    /// Show activity sidebar (Ctrl+B).
+    sidebar_visible: bool,
+    /// Compact density (/density).
+    compact: bool,
+    /// Soft-cancel in-flight turn (Esc while busy).
+    cancel_requested: bool,
+    /// Tools allowed for the rest of this session (HITL "s").
+    hitl_session_allow: HashSet<String>,
+    /// Transient toast (auto-clears).
+    toast: Option<(Instant, String)>,
+    /// Conversation scroll offset (when not following).
+    chat_scroll: u16,
+    chat_follow: bool,
 }
 
 impl TuiApp {
     pub fn new(session: AgentSession, runtime: TuiRuntimeConfig) -> Self {
         let mut input = InputModel::default();
-        input.hint = "Type a task or /command · Tab complete · Ctrl+K list…".into();
+        input.hint = "Type a task · /command · ⇧Enter newline · Ctrl+K…".into();
+        let compact = std::env::var("FORGE_TUI_COMPACT").is_ok();
         Self {
             session,
             input,
@@ -124,8 +144,37 @@ impl TuiApp {
             pending_prompt: None,
             stream_preview: String::new(),
             stream_thinking: String::new(),
+            thinking_expanded: false,
+            tool_expanded: false,
+            sidebar_visible: true,
+            compact,
+            cancel_requested: false,
+            hitl_session_allow: HashSet::new(),
+            toast: None,
+            chat_scroll: 0,
+            chat_follow: true,
         }
         .restore_saved_auth()
+    }
+
+    fn push_toast(&mut self, text: impl Into<String>) {
+        self.toast = Some((Instant::now(), text.into()));
+        // Also mirror briefly into feedback (auto-cleared in draw/tick)
+        if let Some((_, ref t)) = self.toast {
+            self.set_feedback(FeedbackSeverity::Ok, t.clone());
+        }
+    }
+
+    fn tick_toast(&mut self) {
+        if let Some((at, _)) = &self.toast {
+            if at.elapsed() > Duration::from_secs(2) {
+                self.toast = None;
+                if self.feedback.severity == FeedbackSeverity::Ok {
+                    self.feedback = FeedbackModel::default();
+                    self.status_message.clear();
+                }
+            }
+        }
     }
 
     /// Reload credentials from disk: silent OAuth refresh, inject worker env, activate profile.
@@ -556,12 +605,21 @@ impl TuiApp {
             return;
         }
         let fb_h = if self.feedback.is_empty() { 0 } else { 1 };
-        let regions = split_areas_ex(area, fb_h);
+        let input_h = (self.input.visual_lines() + 2).clamp(3, 8);
+        let regions = split_areas_full(area, fb_h, input_h, self.sidebar_visible);
         let status = self.refresh_status_model();
         frame.render_widget(StatusBar { model: &status }, regions.status);
 
-        let mut conv = ConversationModel::from_session(&self.session, self.busy)
+        let opts = ConversationViewOpts {
+            busy: self.busy,
+            thinking_expanded: self.thinking_expanded || self.busy,
+            tool_expanded: self.tool_expanded,
+            compact: self.compact,
+        };
+        let mut conv = ConversationModel::from_session(&self.session, opts)
             .with_extra_banners(self.ui_banners.iter().cloned());
+        conv.follow = self.chat_follow;
+        conv.scroll = self.chat_scroll;
         if self.busy && self.pending_prompt.is_none() {
             // Show thinking + answer as they stream (placeholder assistant until first token)
             conv = conv.with_streaming_preview(
@@ -702,10 +760,18 @@ impl TuiApp {
         input.dimmed = self.busy;
         frame.render_widget(InputBar { model: &input }, regions.input);
 
+        let hints = if self.busy {
+            "Esc interrupt · Ctrl+C quit".into()
+        } else if self.session.pending_hitl.is_some() {
+            "a approve · s session · d deny".into()
+        } else {
+            "Enter send · ⇧Enter ↵ · Ctrl+T think · Ctrl+O tool · Ctrl+B sidebar · Ctrl+K".into()
+        };
         let footer = FooterModel {
             version: self.runtime.version.clone(),
             cwd: self.runtime.cwd.display().to_string(),
             provider: self.runtime.provider.clone(),
+            hints,
         };
         frame.render_widget(FooterBar { model: &footer }, regions.footer);
 
@@ -730,14 +796,24 @@ impl TuiApp {
                         .resolve_hitl(HitlDecision::Approve, "tui")
                         .await?;
                     self.overlay = None;
-                    self.status_message = "approved".into();
+                    self.push_toast("approved");
+                }
+                OverlayAction::HitlApproveSession => {
+                    if let Some(ref p) = self.session.pending_hitl {
+                        self.hitl_session_allow.insert(p.tool.clone());
+                    }
+                    self.session
+                        .resolve_hitl(HitlDecision::Approve, "tui")
+                        .await?;
+                    self.overlay = None;
+                    self.push_toast("allowed for session");
                 }
                 OverlayAction::HitlDeny => {
                     self.session
                         .resolve_hitl(HitlDecision::Deny, "tui")
                         .await?;
                     self.overlay = None;
-                    self.status_message = "denied".into();
+                    self.push_toast("denied");
                 }
                 OverlayAction::RunCommand(cmd) => {
                     self.overlay = None;
@@ -802,30 +878,62 @@ impl TuiApp {
 
         match key.code {
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.should_quit = true;
-                self.last_exit = ExitCode::Canceled;
+                if self.busy {
+                    // First Ctrl+C while busy: soft cancel; second: quit
+                    if self.cancel_requested {
+                        self.should_quit = true;
+                        self.last_exit = ExitCode::Canceled;
+                    } else {
+                        self.cancel_requested = true;
+                        self.push_toast("interrupt requested · Ctrl+C again to quit");
+                    }
+                } else {
+                    self.should_quit = true;
+                    self.last_exit = ExitCode::Canceled;
+                }
             }
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.should_quit = true;
             }
-            // Phase 8: explicit command palette (discovery) — not auto on `/`
             KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if !self.busy {
                     self.overlay = Some(Overlay::slash_open(""));
                 }
             }
+            KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.thinking_expanded = !self.thinking_expanded;
+            }
+            KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.tool_expanded = !self.tool_expanded;
+            }
+            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.sidebar_visible = !self.sidebar_visible;
+            }
             KeyCode::Esc => {
-                // cancel busy is best-effort; clear input + history browse
                 self.history.reset_browse();
                 self.notices.clear();
                 self.clear_error_chrome();
-                if self.input.text.is_empty() {
+                if self.busy {
+                    // Soft interrupt — stop after current model chunk / turn
+                    self.cancel_requested = true;
+                    self.push_toast("interrupt · finishing current step…");
+                } else if !self.input.text.is_empty() {
+                    self.input.clear();
+                    self.slash_suggest_idx = 0;
+                } else {
                     self.feedback = FeedbackModel::default();
                     self.status_message.clear();
                     self.notices.clear();
-                } else {
-                    self.input.clear();
-                    self.slash_suggest_idx = 0;
+                    self.tool_expanded = false;
+                }
+            }
+            // Shift+Enter or Alt+Enter → newline (multi-line input)
+            KeyCode::Enter
+                if key.modifiers.contains(KeyModifiers::SHIFT)
+                    || key.modifiers.contains(KeyModifiers::ALT) =>
+            {
+                if !self.busy {
+                    self.input.insert_newline();
                 }
             }
             KeyCode::Enter => {
@@ -914,9 +1022,21 @@ impl TuiApp {
             KeyCode::Left => self.input.move_left(),
             KeyCode::Right => self.input.move_right(),
             KeyCode::PageUp => {
-                // conversation scroll (TUI-02) — separate from input history
+                self.chat_follow = false;
+                self.chat_scroll = self.chat_scroll.saturating_add(5);
             }
-            KeyCode::PageDown => {}
+            KeyCode::PageDown => {
+                self.chat_scroll = self.chat_scroll.saturating_sub(5);
+                if self.chat_scroll == 0 {
+                    self.chat_follow = true;
+                }
+            }
+            KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Ctrl+J also inserts newline (terminals that don't send Shift+Enter)
+                if !self.busy {
+                    self.input.insert_newline();
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -1023,8 +1143,7 @@ impl TuiApp {
                 }
                 Ok(SlashCommand::Reset) | Ok(SlashCommand::Compact) => {
                     self.session.force_context_reset_async().await?;
-                    self.status_message = "context reset".into();
-                    self.notices = vec!["Context handoff reset completed.".into()];
+                    self.push_toast("context reset");
                 }
                 Ok(SlashCommand::Model { provider, model }) => {
                     if provider.is_none() && model.is_none() {
@@ -1097,11 +1216,98 @@ impl TuiApp {
                     self.notices = vec![msg];
                 }
                 Ok(SlashCommand::Cancel) => {
-                    self.status_message = "cancel".into();
-                    self.notices = vec![
-                        "Cancel requested.".into(),
-                        "If a turn is running, it will stop at the next safe point.".into(),
-                    ];
+                    self.cancel_requested = true;
+                    self.push_toast("interrupt requested");
+                }
+                Ok(SlashCommand::Diff) => {
+                    let mut lines = vec!["Session tools & changes:".into()];
+                    let mut n_tools = 0usize;
+                    let mut n_write = 0usize;
+                    for m in &self.session.messages {
+                        if m.role == forge_types::MessageRole::Tool {
+                            n_tools += 1;
+                            let name = m.name.as_deref().unwrap_or("tool");
+                            if name.contains("write")
+                                || name.contains("search_replace")
+                                || name == "edit"
+                                || name == "git"
+                            {
+                                n_write += 1;
+                            }
+                            let preview: String = m.content.chars().take(80).collect();
+                            lines.push(format!("· {name}  {preview}"));
+                        }
+                    }
+                    if n_tools == 0 {
+                        lines.push("(no tool results yet)".into());
+                    } else {
+                        lines.insert(
+                            1,
+                            format!("{n_tools} tool results · {n_write} write-like"),
+                        );
+                    }
+                    if let Some(wt) = self.session.worktree_status() {
+                        lines.push(format!("worktree: {wt}"));
+                        lines.push("  /worktree merge | /worktree discard --yes".into());
+                    }
+                    self.notices = lines;
+                    self.status_message = "diff".into();
+                }
+                Ok(SlashCommand::Copy) => {
+                    let last = self
+                        .session
+                        .messages
+                        .iter()
+                        .rev()
+                        .find(|m| {
+                            m.role == forge_types::MessageRole::Assistant && !m.content.is_empty()
+                        })
+                        .map(|m| m.content.clone());
+                    if let Some(text) = last {
+                        let ok = std::process::Command::new("pbcopy")
+                            .stdin(std::process::Stdio::piped())
+                            .spawn()
+                            .and_then(|mut c| {
+                                use std::io::Write;
+                                if let Some(mut sin) = c.stdin.take() {
+                                    sin.write_all(text.as_bytes())?;
+                                }
+                                c.wait()?;
+                                Ok(())
+                            })
+                            .is_ok()
+                            || std::process::Command::new("wl-copy")
+                                .arg(&text)
+                                .status()
+                                .map(|s| s.success())
+                                .unwrap_or(false);
+                        if ok {
+                            self.push_toast("copied last answer");
+                        } else {
+                            self.notices = vec![
+                                "Clipboard unavailable (pbcopy/wl-copy).".into(),
+                                text.chars().take(400).collect(),
+                            ];
+                        }
+                    } else {
+                        self.push_toast("nothing to copy");
+                    }
+                }
+                Ok(SlashCommand::Clear) => {
+                    self.ui_banners.clear();
+                    self.notices.clear();
+                    self.clear_error_chrome();
+                    self.feedback = FeedbackModel::default();
+                    self.status_message.clear();
+                    self.push_toast("cleared");
+                }
+                Ok(SlashCommand::Density) => {
+                    self.compact = !self.compact;
+                    self.push_toast(if self.compact {
+                        "compact density"
+                    } else {
+                        "comfortable density"
+                    });
                 }
                 Ok(SlashCommand::Connect(action)) => {
                     self.handle_connect(action);
@@ -1205,6 +1411,12 @@ impl TuiApp {
 
             // Pump stream events + redraw until the model call finishes
             loop {
+                if self.cancel_requested {
+                    handle.abort();
+                    self.cancel_requested = false;
+                    outcome_err = Some("interrupted".into());
+                    break 'turns;
+                }
                 let mut got = false;
                 while let Ok(ev) = rx.try_recv() {
                     got = true;
@@ -1325,7 +1537,9 @@ impl TuiApp {
             self.push_activity(ActivityKind::Hitl, FeedbackSeverity::Warn, "hitl waiting");
         } else {
             self.clear_error_chrome();
-            self.set_feedback(FeedbackSeverity::Ok, "turn complete");
+            self.thinking_expanded = false; // collapse thinking after turn
+            self.tool_expanded = false;
+            self.push_toast("done");
             self.push_activity(ActivityKind::Model, FeedbackSeverity::Ok, "model ok");
         }
         Ok(())
@@ -1334,9 +1548,26 @@ impl TuiApp {
     pub fn maybe_open_hitl(&mut self) {
         if self.overlay.is_none() {
             if let Some(ref p) = self.session.pending_hitl {
+                if self.hitl_session_allow.contains(&p.tool) {
+                    // Will be drained by `drain_auto_hitl` in the event loop.
+                    return;
+                }
                 self.overlay = Some(Overlay::hitl(p.clone()));
             }
         }
+    }
+
+    /// Auto-approve HITL for tools allowed this session (`s` key).
+    pub async fn drain_auto_hitl(&mut self) -> Result<(), TuiError> {
+        if let Some(ref p) = self.session.pending_hitl.clone() {
+            if self.hitl_session_allow.contains(&p.tool) {
+                self.session
+                    .resolve_hitl(HitlDecision::Approve, "tui-session")
+                    .await?;
+                self.push_toast(format!("auto-approved {}", p.tool));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1378,6 +1609,8 @@ async fn run_loop(
     app: &mut TuiApp,
 ) -> Result<(), TuiError> {
     while !app.should_quit {
+        app.tick_toast();
+        app.drain_auto_hitl().await?;
         app.maybe_open_hitl();
         // Grok-style device-code: poll token endpoint while overlay is open
         app.poll_oauth_tick();

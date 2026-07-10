@@ -1,4 +1,4 @@
-//! Conversation view model (TUI-02 / tui-conversation.md).
+//! Conversation view model (TUI-02) — polished chat, thinking, tools, diffs.
 
 use crate::theme;
 use forge_core::{AgentSession, TurnEvent};
@@ -21,13 +21,22 @@ pub enum ToolCardState {
 pub enum ChatItem {
     System { text: String },
     User { text: String },
-    /// Model chain-of-thought / reasoning (shown muted above the answer).
+    /// Model chain-of-thought / reasoning (muted; collapsible when done).
     Thinking { text: String },
     Assistant { text: String },
     ToolCard {
         name: String,
         summary: String,
+        /// Full tool body for expand-on-demand.
+        detail: String,
         state: ToolCardState,
+        /// Optional duration label e.g. "142ms" (when known).
+        duration: Option<String>,
+    },
+    /// Unified-ish diff snippet for write tools.
+    DiffCard {
+        path: String,
+        lines: Vec<String>,
     },
     Banner { text: String, kind: BannerKind },
 }
@@ -40,12 +49,35 @@ pub enum BannerKind {
     Ok,
 }
 
+/// Render options for progressive disclosure / density.
+#[derive(Debug, Clone)]
+pub struct ConversationViewOpts {
+    pub busy: bool,
+    /// Expand completed thinking blocks (streaming thinking always expands).
+    pub thinking_expanded: bool,
+    /// Expand the last tool card's full output.
+    pub tool_expanded: bool,
+    /// Compact density (fewer blank lines, tighter wrap).
+    pub compact: bool,
+}
+
+impl Default for ConversationViewOpts {
+    fn default() -> Self {
+        Self {
+            busy: false,
+            thinking_expanded: false,
+            tool_expanded: false,
+            compact: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ConversationModel {
     pub items: Vec<ChatItem>,
     pub scroll: u16,
     pub follow: bool,
-    pub busy: bool,
+    pub opts: ConversationViewOpts,
 }
 
 impl ConversationModel {
@@ -53,14 +85,22 @@ impl ConversationModel {
         messages: &[Message],
         events: &[TurnEvent],
         status: SessionStatus,
-        busy: bool,
+        opts: ConversationViewOpts,
     ) -> Self {
         let mut items = Vec::new();
         for m in messages {
             match m.role {
-                MessageRole::System => items.push(ChatItem::System {
-                    text: m.content.clone(),
-                }),
+                MessageRole::System => {
+                    // Soften system: first system is chrome, not a wall of text
+                    let text = if m.content.len() > 280 {
+                        let mut s: String = m.content.chars().take(260).collect();
+                        s.push_str("…");
+                        s
+                    } else {
+                        m.content.clone()
+                    };
+                    items.push(ChatItem::System { text });
+                }
                 MessageRole::User => {
                     if m.content.starts_with("[REPAIR TASK") {
                         items.push(ChatItem::Banner {
@@ -89,11 +129,19 @@ impl ConversationModel {
                 }
                 MessageRole::Tool => {
                     let name = m.name.clone().unwrap_or_else(|| "tool".into());
-                    let (state, summary) = classify_tool_content(&m.content);
+                    let (state, summary, detail) = classify_tool_content(&name, &m.content);
+                    // Diff card for write-like tools when content looks like a patch
+                    if looks_like_diff(&m.content) {
+                        let path = extract_path_hint(&name, &m.content);
+                        let lines = diff_preview_lines(&m.content, 24);
+                        items.push(ChatItem::DiffCard { path, lines });
+                    }
                     items.push(ChatItem::ToolCard {
                         name,
                         summary,
+                        detail,
                         state,
+                        duration: None,
                     });
                 }
             }
@@ -101,12 +149,12 @@ impl ConversationModel {
         for e in events {
             if e.kind == "context_reset" {
                 items.push(ChatItem::Banner {
-                    text: format!("context lifecycle: {}", e.detail),
+                    text: format!("Context handoff · {}", e.detail),
                     kind: BannerKind::Warn,
                 });
             } else if e.kind == "hitl_wait" {
                 items.push(ChatItem::Banner {
-                    text: format!("HITL required: {}", e.detail),
+                    text: format!("Approval needed · {}", e.detail),
                     kind: BannerKind::Warn,
                 });
             } else if e.kind == "validation" {
@@ -118,28 +166,29 @@ impl ConversationModel {
         }
         if status == SessionStatus::AwaitingHitl {
             items.push(ChatItem::Banner {
-                text: "Awaiting human approval — press a/d in modal or /approve /deny".into(),
+                text: "Awaiting approval · a approve · s allow session · d deny · Esc dismiss"
+                    .into(),
                 kind: BannerKind::Warn,
             });
         }
         if items.is_empty() {
             items.push(ChatItem::System {
-                text: "Forge ready. Type a task, or / for commands.".into(),
+                text: "Ready. Type a task · /connect if needed · Ctrl+K commands".into(),
             });
         }
         Self {
             items,
             scroll: 0,
             follow: true,
-            busy,
+            opts,
         }
     }
 
-    pub fn from_session(session: &AgentSession, busy: bool) -> Self {
-        Self::from_messages(&session.messages, &session.events, session.status, busy)
+    pub fn from_session(session: &AgentSession, opts: ConversationViewOpts) -> Self {
+        Self::from_messages(&session.messages, &session.events, session.status, opts)
     }
 
-    /// Append in-progress thinking + assistant bubbles (token stream preview).
+    /// Streaming thinking + assistant (thinking always expanded while busy).
     pub fn with_streaming_preview(
         mut self,
         thinking: impl Into<String>,
@@ -150,20 +199,24 @@ impl ConversationModel {
         if !thinking.is_empty() {
             self.items.push(ChatItem::Thinking { text: thinking });
         }
-        if !text.is_empty() || self.busy {
-            self.items.push(ChatItem::Assistant {
-                text: if text.is_empty() { "…".into() } else { text },
-            });
+        if !text.is_empty() || self.opts.busy {
+            let mut body = if text.is_empty() {
+                "…".into()
+            } else {
+                text
+            };
+            if self.opts.busy && !body.ends_with('▌') {
+                body.push('▌');
+            }
+            self.items.push(ChatItem::Assistant { text: body });
         }
         self
     }
 
-    /// Append an in-progress assistant bubble (token stream preview).
-    pub fn with_streaming_assistant(mut self, text: impl Into<String>) -> Self {
+    pub fn with_streaming_assistant(self, text: impl Into<String>) -> Self {
         self.with_streaming_preview("", text)
     }
 
-    /// Phase 10: append UI-only banners (errors, info) after session-derived items.
     pub fn with_extra_banners(mut self, banners: impl IntoIterator<Item = ChatItem>) -> Self {
         for b in banners {
             self.items.push(b);
@@ -183,69 +236,179 @@ impl ConversationModel {
         }
     }
 
+    /// Index of the last tool card (for expand).
+    pub fn last_tool_index(&self) -> Option<usize> {
+        self.items.iter().rposition(|i| matches!(i, ChatItem::ToolCard { .. } | ChatItem::DiffCard { .. }))
+    }
+
     pub fn lines(&self) -> Vec<Line<'static>> {
+        let width = if self.opts.compact { 88 } else { 100 };
+        let gap = !self.opts.compact;
         let mut lines = Vec::new();
-        for item in &self.items {
+        let tool_count = self
+            .items
+            .iter()
+            .filter(|i| matches!(i, ChatItem::ToolCard { .. }))
+            .count();
+        let mut tool_i = 0usize;
+        let last_tool = self.last_tool_index();
+
+        for (idx, item) in self.items.iter().enumerate() {
             match item {
                 ChatItem::System { text } => {
-                    lines.push(Line::from(Span::styled("SYSTEM", theme::warn())));
-                    for l in wrap(text, 100) {
+                    lines.push(Line::from(Span::styled("System", theme::dim())));
+                    for l in wrap(text, width) {
                         lines.push(Line::from(Span::styled(l, theme::muted())));
                     }
-                    lines.push(Line::from(""));
+                    if gap {
+                        lines.push(Line::from(""));
+                    }
                 }
                 ChatItem::User { text } => {
-                    lines.push(Line::from(Span::styled("YOU", theme::info())));
-                    for l in wrap(text, 100) {
+                    lines.push(Line::from(Span::styled(
+                        "You",
+                        theme::info().add_modifier(Modifier::BOLD),
+                    )));
+                    for l in wrap(text, width) {
                         lines.push(Line::from(Span::styled(l, theme::text())));
                     }
-                    lines.push(Line::from(""));
+                    if gap {
+                        lines.push(Line::from(""));
+                    }
                 }
                 ChatItem::Thinking { text } => {
-                    let label = if self.busy {
-                        "THINKING · streaming"
+                    let streaming = self.opts.busy;
+                    let expanded = streaming || self.opts.thinking_expanded;
+                    if expanded {
+                        let label = if streaming {
+                            "Thinking · streaming"
+                        } else {
+                            "Thinking  (Ctrl+T collapse)"
+                        };
+                        lines.push(Line::from(Span::styled(label, theme::dim())));
+                        for l in wrap(text, width) {
+                            lines.push(Line::from(Span::styled(l, theme::muted())));
+                        }
                     } else {
-                        "THINKING"
-                    };
-                    lines.push(Line::from(Span::styled(label, theme::dim())));
-                    for l in wrap(text, 100) {
-                        lines.push(Line::from(Span::styled(l, theme::muted())));
+                        let preview: String = text.chars().take(72).collect();
+                        let more = if text.chars().count() > 72 { "…" } else { "" };
+                        lines.push(Line::from(vec![
+                            Span::styled("Thinking ", theme::dim()),
+                            Span::styled(
+                                format!("· {preview}{more}  (Ctrl+T expand)"),
+                                theme::muted(),
+                            ),
+                        ]));
                     }
-                    lines.push(Line::from(""));
+                    if gap {
+                        lines.push(Line::from(""));
+                    }
                 }
                 ChatItem::Assistant { text } => {
-                    let label = if self.busy {
-                        "ASSISTANT · working"
+                    let label = if self.opts.busy {
+                        "Forge · working"
                     } else {
-                        "ASSISTANT"
+                        "Forge"
                     };
-                    lines.push(Line::from(Span::styled(label, theme::brand())));
-                    for l in wrap(text, 100) {
+                    lines.push(Line::from(Span::styled(
+                        label,
+                        theme::brand().add_modifier(Modifier::BOLD),
+                    )));
+                    for l in wrap(text, width) {
                         lines.push(Line::from(Span::styled(l, theme::text())));
                     }
-                    lines.push(Line::from(""));
+                    if gap {
+                        lines.push(Line::from(""));
+                    }
                 }
                 ChatItem::ToolCard {
                     name,
                     summary,
+                    detail,
                     state,
+                    duration,
                 } => {
+                    tool_i += 1;
                     let (tag, st) = match state {
-                        ToolCardState::Running => ("● running", theme::info()),
-                        ToolCardState::Done => ("✓ done", theme::ok()),
-                        ToolCardState::Blocked => ("⏸ blocked", theme::warn()),
-                        ToolCardState::Error => ("✗ error", theme::danger()),
+                        ToolCardState::Running => ("●", theme::info()),
+                        ToolCardState::Done => ("✓", theme::ok()),
+                        ToolCardState::Blocked => ("⏸", theme::warn()),
+                        ToolCardState::Error => ("✗", theme::danger()),
+                    };
+                    let dur = duration
+                        .as_ref()
+                        .map(|d| format!(" · {d}"))
+                        .unwrap_or_default();
+                    let count = if tool_count > 1 {
+                        format!(" {tool_i}/{tool_count}")
+                    } else {
+                        String::new()
                     };
                     lines.push(Line::from(vec![
-                        Span::styled("TOOL ", theme::tool()),
-                        Span::styled(name.clone(), theme::tool().add_modifier(Modifier::BOLD)),
-                        Span::raw("  "),
-                        Span::styled(tag, st),
+                        Span::styled(format!("{tag} "), st),
+                        Span::styled(
+                            format!("{name}{count}"),
+                            theme::tool().add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(dur, theme::dim()),
                     ]));
-                    for l in wrap(summary, 96) {
-                        lines.push(Line::from(Span::styled(format!("  {l}"), theme::muted())));
+                    let is_last = Some(idx) == last_tool;
+                    let expand = self.opts.tool_expanded && is_last;
+                    if expand {
+                        for l in detail.lines().take(40) {
+                            lines.push(Line::from(Span::styled(
+                                format!("  {l}"),
+                                theme::muted(),
+                            )));
+                        }
+                        if detail.lines().count() > 40 {
+                            lines.push(Line::from(Span::styled(
+                                "  … truncated · Ctrl+O collapse",
+                                theme::dim(),
+                            )));
+                        } else {
+                            lines.push(Line::from(Span::styled(
+                                "  (Ctrl+O collapse)",
+                                theme::dim(),
+                            )));
+                        }
+                    } else {
+                        for l in wrap(summary, width.saturating_sub(4)).into_iter().take(3) {
+                            lines.push(Line::from(Span::styled(
+                                format!("  {l}"),
+                                theme::muted(),
+                            )));
+                        }
+                        if is_last && detail.chars().count() > summary.chars().count() {
+                            lines.push(Line::from(Span::styled(
+                                "  Ctrl+O expand",
+                                theme::dim(),
+                            )));
+                        }
                     }
-                    lines.push(Line::from(""));
+                    if gap {
+                        lines.push(Line::from(""));
+                    }
+                }
+                ChatItem::DiffCard { path, lines: dl } => {
+                    lines.push(Line::from(vec![
+                        Span::styled("Δ ", theme::brand()),
+                        Span::styled(path.clone(), theme::text().add_modifier(Modifier::BOLD)),
+                        Span::styled("  diff", theme::dim()),
+                    ]));
+                    for l in dl {
+                        let style = if l.starts_with('+') && !l.starts_with("+++") {
+                            theme::ok()
+                        } else if l.starts_with('-') && !l.starts_with("---") {
+                            theme::danger()
+                        } else {
+                            theme::muted()
+                        };
+                        lines.push(Line::from(Span::styled(format!("  {l}"), style)));
+                    }
+                    if gap {
+                        lines.push(Line::from(""));
+                    }
                 }
                 ChatItem::Banner { text, kind } => {
                     let st = match kind {
@@ -254,16 +417,18 @@ impl ConversationModel {
                         BannerKind::Error => theme::danger(),
                         BannerKind::Ok => theme::ok(),
                     };
-                    for l in wrap(text, 100) {
+                    for l in wrap(text, width) {
                         lines.push(Line::from(Span::styled(format!("▸ {l}"), st)));
                     }
-                    lines.push(Line::from(""));
+                    if gap {
+                        lines.push(Line::from(""));
+                    }
                 }
             }
         }
-        if self.busy {
+        if self.opts.busy {
             lines.push(Line::from(Span::styled(
-                "… working …",
+                "  ⠋ working…  Esc interrupt",
                 theme::info().add_modifier(Modifier::ITALIC),
             )));
         }
@@ -271,19 +436,69 @@ impl ConversationModel {
     }
 }
 
-fn classify_tool_content(content: &str) -> (ToolCardState, String) {
+fn looks_like_diff(content: &str) -> bool {
+    content.contains("\n+")
+        && content.contains("\n-")
+        || content.lines().any(|l| l.starts_with("@@ "))
+        || content.starts_with("diff --git")
+}
+
+fn extract_path_hint(name: &str, content: &str) -> String {
+    for line in content.lines().take(8) {
+        if let Some(rest) = line.strip_prefix("+++ b/") {
+            return rest.trim().to_string();
+        }
+        if let Some(rest) = line.strip_prefix("--- a/") {
+            return rest.trim().to_string();
+        }
+        if line.contains("path") && line.contains(':') {
+            if let Some(p) = line.split('"').nth(1) {
+                if p.contains('/') || p.contains('.') {
+                    return p.to_string();
+                }
+            }
+        }
+    }
+    name.to_string()
+}
+
+fn diff_preview_lines(content: &str, max: usize) -> Vec<String> {
+    content
+        .lines()
+        .filter(|l| {
+            l.starts_with('+')
+                || l.starts_with('-')
+                || l.starts_with("@@")
+                || l.starts_with("diff ")
+        })
+        .take(max)
+        .map(|s| s.chars().take(100).collect())
+        .collect()
+}
+
+fn classify_tool_content(name: &str, content: &str) -> (ToolCardState, String, String) {
     let lower = content.to_ascii_lowercase();
     let state = if lower.contains("validation") || lower.contains("denied by acl") {
         ToolCardState::Error
     } else if lower.contains("hitl") || lower.contains("awaiting") {
         ToolCardState::Blocked
-    } else if content.contains("offloaded tool output") {
-        ToolCardState::Done
     } else {
         ToolCardState::Done
     };
-    let summary: String = content.chars().take(240).collect();
-    (state, summary)
+    let detail = content.to_string();
+    // One-line operator summary
+    let first = content.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+    let summary = if name == "read_file" || name.contains("read") {
+        let n = content.lines().count();
+        format!("{first} · {n} lines")
+    } else if name.contains("write") || name.contains("search_replace") || name == "edit" {
+        format!("wrote · {}", first.chars().take(80).collect::<String>())
+    } else if name == "git" {
+        format!("{}", first.chars().take(100).collect::<String>())
+    } else {
+        content.chars().take(160).collect()
+    };
+    (state, summary, detail)
 }
 
 fn wrap(s: &str, width: usize) -> Vec<String> {
@@ -358,14 +573,14 @@ mod tests {
                 tool_call_id: None,
                 name: None,
                 thinking: None,
-},
+            },
             Message {
                 role: MessageRole::User,
                 content: "hi".into(),
                 tool_call_id: None,
                 name: None,
                 thinking: None,
-},
+            },
             Message {
                 role: MessageRole::Assistant,
                 content: "yo".into(),
@@ -381,7 +596,12 @@ mod tests {
                 thinking: None,
             },
         ];
-        let m = ConversationModel::from_messages(&msgs, &[], SessionStatus::Running, false);
+        let m = ConversationModel::from_messages(
+            &msgs,
+            &[],
+            SessionStatus::Running,
+            ConversationViewOpts::default(),
+        );
         assert!(matches!(m.items[0], ChatItem::System { .. }));
         assert!(matches!(m.items[1], ChatItem::User { .. }));
         assert!(matches!(m.items[2], ChatItem::Thinking { .. }));
@@ -396,6 +616,39 @@ mod tests {
     }
 
     #[test]
+    fn thinking_collapses_in_lines() {
+        let msgs = vec![Message {
+            role: MessageRole::Assistant,
+            content: "ans".into(),
+            tool_call_id: None,
+            name: None,
+            thinking: Some("long thinking text here that should collapse".into()),
+        }];
+        let m = ConversationModel::from_messages(
+            &msgs,
+            &[],
+            SessionStatus::Running,
+            ConversationViewOpts {
+                thinking_expanded: false,
+                ..Default::default()
+            },
+        );
+        let text: String = m
+            .lines()
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<Vec<_>>()
+                    .join("")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Ctrl+T expand"), "{text}");
+    }
+
+    #[test]
     fn validation_is_error_card() {
         let msgs = vec![Message {
             role: MessageRole::Tool,
@@ -403,8 +656,13 @@ mod tests {
             tool_call_id: Some("1".into()),
             name: Some("read_file".into()),
             thinking: None,
-            }];
-        let m = ConversationModel::from_messages(&msgs, &[], SessionStatus::Running, false);
+        }];
+        let m = ConversationModel::from_messages(
+            &msgs,
+            &[],
+            SessionStatus::Running,
+            ConversationViewOpts::default(),
+        );
         match &m.items[0] {
             ChatItem::ToolCard { state, .. } => assert_eq!(*state, ToolCardState::Error),
             _ => panic!("expected tool card"),
@@ -413,13 +671,23 @@ mod tests {
 
     #[test]
     fn empty_shows_ready() {
-        let m = ConversationModel::from_messages(&[], &[], SessionStatus::Running, false);
+        let m = ConversationModel::from_messages(
+            &[],
+            &[],
+            SessionStatus::Running,
+            ConversationViewOpts::default(),
+        );
         assert!(!m.items.is_empty());
     }
 
     #[test]
     fn scroll_unpins_follow() {
-        let mut m = ConversationModel::from_messages(&[], &[], SessionStatus::Running, false);
+        let mut m = ConversationModel::from_messages(
+            &[],
+            &[],
+            SessionStatus::Running,
+            ConversationViewOpts::default(),
+        );
         assert!(m.follow);
         m.scroll_up(3);
         assert!(!m.follow);
