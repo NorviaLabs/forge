@@ -107,45 +107,52 @@ impl Widget for InputBar<'_> {
             theme::text()
         };
 
+        // Block cursor: solid cell at caret (█ at EOL, inverted char mid-text).
         let lines: Vec<Line> = if self.model.text.is_empty() && !self.model.hint.is_empty() {
             vec![Line::from(vec![
                 Span::styled(" ❯ ", theme::brand()),
                 Span::styled(self.model.hint.as_str(), theme::dim()),
-                Span::styled("█", theme::caret()),
+                Span::styled(" ", theme::caret()), // block cell
+            ])]
+        } else if self.model.text.is_empty() {
+            vec![Line::from(vec![
+                Span::styled(" ❯ ", theme::brand()),
+                Span::styled(" ", theme::caret()),
             ])]
         } else {
-            // Multi-line: show with caret on the active line
             let t = &self.model.text;
             let cur = self.model.cursor.min(t.len());
             let before = &t[..cur];
-            let after = &t[cur..];
             let line_idx = before.matches('\n').count();
             let mut out = Vec::new();
             for (i, raw) in t.split('\n').enumerate() {
                 let prefix = if i == 0 { " ❯ " } else { "   " };
                 if i == line_idx {
-                    // caret on this line
                     let line_start = if i == 0 {
                         0
                     } else {
                         before.rfind('\n').map(|p| p + 1).unwrap_or(0)
                     };
-                    let col = cur.saturating_sub(line_start);
-                    let col = col.min(raw.len());
+                    let col = cur.saturating_sub(line_start).min(raw.len());
                     let (left, right) = raw.split_at(col);
                     if right.is_empty() {
+                        // EOL: solid block cell
                         out.push(Line::from(vec![
                             Span::styled(prefix, theme::brand()),
                             Span::styled(left, base),
-                            Span::styled("█", theme::caret()),
+                            Span::styled(" ", theme::caret()),
                         ]));
                     } else {
+                        // Mid-line: invert the character under the cursor (block cursor)
                         let ch = right.chars().next().unwrap();
                         let n = ch.len_utf8();
+                        let under = &right[..n];
+                        // Non-space under cursor stays readable; space becomes full block cell
+                        let under_disp = if under == " " { " " } else { under };
                         out.push(Line::from(vec![
                             Span::styled(prefix, theme::brand()),
                             Span::styled(left, base),
-                            Span::styled(&right[..n], theme::caret()),
+                            Span::styled(under_disp, theme::caret()),
                             Span::styled(&right[n..], base),
                         ]));
                     }
@@ -156,14 +163,12 @@ impl Widget for InputBar<'_> {
                     ]));
                 }
             }
-            // trailing newline → empty line with caret
             if t.ends_with('\n') && cur == t.len() {
                 out.push(Line::from(vec![
                     Span::styled("   ", theme::brand()),
-                    Span::styled("█", theme::caret()),
+                    Span::styled(" ", theme::caret()),
                 ]));
             }
-            let _ = after;
             out
         };
 
@@ -249,7 +254,7 @@ mod tests {
     fn caret_cell_has_background() {
         let mut m = InputModel::default();
         m.set_text("ab");
-        m.cursor = 2;
+        m.cursor = 2; // EOL — block cell after text
         let backend = TestBackend::new(40, 5);
         let mut term = Terminal::new(backend).unwrap();
         term.draw(|f| {
@@ -262,16 +267,36 @@ mod tests {
         for y in 0..area.height {
             for x in 0..area.width {
                 let cell = buf.get(x, y);
-                if cell.symbol() == "█" {
+                if cell.style().bg == Some(theme::TEXT) {
                     found = true;
-                    assert_eq!(
-                        cell.style().bg,
-                        Some(theme::TEXT),
-                        "caret needs solid background"
-                    );
                 }
             }
         }
-        assert!(found, "expected block caret glyph in buffer");
+        assert!(found, "expected block cursor cell with solid background");
+    }
+
+    #[test]
+    fn mid_line_block_cursor_inverts_char() {
+        let mut m = InputModel::default();
+        m.set_text("ab");
+        m.cursor = 0; // over 'a'
+        let backend = TestBackend::new(40, 5);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| {
+            f.render_widget(InputBar { model: &m }, f.size());
+        })
+        .unwrap();
+        let buf = term.backend().buffer();
+        let area = buf.area();
+        let mut found_a = false;
+        for y in 0..area.height {
+            for x in 0..area.width {
+                let cell = buf.get(x, y);
+                if cell.symbol() == "a" && cell.style().bg == Some(theme::TEXT) {
+                    found_a = true;
+                }
+            }
+        }
+        assert!(found_a, "expected inverted block cursor on character under caret");
     }
 }
