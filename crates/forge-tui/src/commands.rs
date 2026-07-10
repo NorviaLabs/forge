@@ -135,7 +135,7 @@ pub fn help_text() -> &'static str {
      /model [p] [m]  Switch provider/model (config)\n\
      /connect …      Connect provider (xai | opencode_go | list | status)\n\
      /diff           Tools & file changes this session\n\
-     /copy           Copy last Forge answer (clipboard)\n\
+     /copy           Copy last assistant answer (clipboard)\n\
      /clear          Clear banners / notices\n\
      /density        Toggle compact layout\n\
      /journal [n]    Tail journal events\n\
