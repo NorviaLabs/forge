@@ -34,6 +34,14 @@ pub enum SlashCommand {
     Worktree { action: WorktreeAction },
     /// Phase 6 — provider connect flow
     Connect(ConnectAction),
+    /// Session file/tool change summary
+    Diff,
+    /// Copy last assistant message to clipboard (best-effort)
+    Copy,
+    /// Clear chat banners / notices / soft reset of UI chrome
+    Clear,
+    /// Toggle compact density
+    Density,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,6 +118,10 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
                 .map(SlashCommand::Connect)
                 .map_err(|e| CommandError::Usage(e.to_string()))
         }
+        "diff" => Ok(SlashCommand::Diff),
+        "copy" => Ok(SlashCommand::Copy),
+        "clear" => Ok(SlashCommand::Clear),
+        "density" => Ok(SlashCommand::Density),
         other => Err(CommandError::Unknown(other.to_string())),
     }
 }
@@ -119,19 +131,25 @@ pub fn help_text() -> &'static str {
      /help [cmd]     List or detail commands\n\
      /status         Session status\n\
      /resume <id>    Resume session from journal\n\
-     /cancel         Cancel current turn\n\
+     /cancel         Soft-cancel current turn (Esc)\n\
      /model [p] [m]  Switch provider/model (config)\n\
-     /connect …      Connect provider (xai | opencode_go | list | status) (Phase 6)\n\
-     (TUI) type /cmd in the main box + Enter; Ctrl+K opens command list (Phase 8)\n\
+     /connect …      Connect provider (xai | opencode_go | list | status)\n\
+     /diff           Tools & file changes this session\n\
+     /copy           Copy last Forge answer (clipboard)\n\
+     /clear          Clear banners / notices\n\
+     /density        Toggle compact layout\n\
      /journal [n]    Tail journal events\n\
      /tools          List tools\n\
-     /cost           Context usage ratio (Phase 2)\n\
-     /reset          Force context handoff reset (Phase 2)\n\
-     /compact        Alias guidance → /reset (Phase 2)\n\
-     /approve        Approve pending HITL (Phase 2)\n\
-     /deny           Deny pending HITL (Phase 2)\n\
-     /worktree …     status|merge|discard [--yes] (Phase 2)\n\
-     /quit           Exit\n"
+     /cost           Context usage ratio\n\
+     /reset          Force context handoff reset\n\
+     /compact        Alias → /reset\n\
+     /approve        Approve pending HITL (a)\n\
+     /deny           Deny pending HITL (d)\n\
+     /worktree …     status|merge|discard [--yes]\n\
+     /quit           Exit\n\
+     \n\
+     Keys: Enter send · ⇧Enter newline · Ctrl+T thinking · Ctrl+O tool ·\n\
+           Ctrl+B sidebar · Ctrl+K commands · Esc interrupt/clear · Ctrl+C quit\n"
 }
 
 #[cfg(test)]

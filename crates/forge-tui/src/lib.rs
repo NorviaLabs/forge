@@ -17,8 +17,13 @@ pub use activity::{ActivityFeed, ActivityItem, ActivityKind};
 pub use app::{run_tui, TuiApp, TuiError, TuiRuntimeConfig};
 pub use history::InputHistory;
 pub use commands::{help_text, parse_slash, CommandError, SlashCommand, WorktreeAction};
-pub use conversation::{BannerKind, ChatItem, ConversationModel, ToolCardState};
-pub use layout::{is_too_small, split_areas, split_areas_ex, LayoutRegions, MIN_HEIGHT, MIN_WIDTH};
+pub use conversation::{
+    BannerKind, ChatItem, ConversationModel, ConversationViewOpts, ToolCardState,
+};
+pub use layout::{
+    is_too_small, split_areas, split_areas_ex, split_areas_full, LayoutRegions, MIN_HEIGHT,
+    MIN_WIDTH,
+};
 pub use overlays::{
     default_models, default_palette_items, filter_palette, handle_overlay_key, Key as OverlayKey,
     Overlay, OverlayAction,
