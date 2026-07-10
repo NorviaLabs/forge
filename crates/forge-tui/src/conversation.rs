@@ -242,7 +242,7 @@ impl ConversationModel {
     }
 
     pub fn lines(&self) -> Vec<Line<'static>> {
-        let width = if self.opts.compact { 88 } else { 100 };
+        let width: usize = if self.opts.compact { 88 } else { 100 };
         let gap = !self.opts.compact;
         let mut lines = Vec::new();
         let tool_count = self
@@ -255,67 +255,84 @@ impl ConversationModel {
 
         for (idx, item) in self.items.iter().enumerate() {
             match item {
+                // System: muted, no label — soft left rule
                 ChatItem::System { text } => {
-                    lines.push(Line::from(Span::styled("System", theme::dim())));
-                    for l in wrap(text, width) {
-                        lines.push(Line::from(Span::styled(l, theme::muted())));
-                    }
-                    if gap {
-                        lines.push(Line::from(""));
-                    }
-                }
-                ChatItem::User { text } => {
-                    lines.push(Line::from(Span::styled(
-                        "You",
-                        theme::info().add_modifier(Modifier::BOLD),
-                    )));
-                    for l in wrap(text, width) {
-                        lines.push(Line::from(Span::styled(l, theme::text())));
-                    }
-                    if gap {
-                        lines.push(Line::from(""));
-                    }
-                }
-                ChatItem::Thinking { text } => {
-                    let streaming = self.opts.busy;
-                    let expanded = streaming || self.opts.thinking_expanded;
-                    if expanded {
-                        let label = if streaming {
-                            "Thinking · streaming"
-                        } else {
-                            "Thinking  (Ctrl+T collapse)"
-                        };
-                        lines.push(Line::from(Span::styled(label, theme::dim())));
-                        for l in wrap(text, width) {
-                            lines.push(Line::from(Span::styled(l, theme::muted())));
-                        }
-                    } else {
-                        let preview: String = text.chars().take(72).collect();
-                        let more = if text.chars().count() > 72 { "…" } else { "" };
+                    for l in wrap(text, width.saturating_sub(3)) {
                         lines.push(Line::from(vec![
-                            Span::styled("Thinking ", theme::dim()),
-                            Span::styled(
-                                format!("· {preview}{more}  (Ctrl+T expand)"),
-                                theme::muted(),
-                            ),
+                            Span::styled("│ ", theme::dim()),
+                            Span::styled(l, theme::muted()),
                         ]));
                     }
                     if gap {
                         lines.push(Line::from(""));
                     }
                 }
-                ChatItem::Assistant { text } => {
-                    let label = if self.opts.busy {
-                        "Forge · working"
+                // User: right-of-gutter › in info blue — no "You"
+                ChatItem::User { text } => {
+                    let parts = wrap(text, width.saturating_sub(3));
+                    for (i, l) in parts.iter().enumerate() {
+                        let gutter = if i == 0 { "› " } else { "  " };
+                        lines.push(Line::from(vec![
+                            Span::styled(
+                                gutter,
+                                theme::info().add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(l.clone(), theme::text()),
+                        ]));
+                    }
+                    if gap {
+                        lines.push(Line::from(""));
+                    }
+                }
+                // Thinking: dim italic · gutter — no "Thinking" word
+                ChatItem::Thinking { text } => {
+                    let streaming = self.opts.busy;
+                    let expanded = streaming || self.opts.thinking_expanded;
+                    if expanded {
+                        for l in wrap(text, width.saturating_sub(3)) {
+                            lines.push(Line::from(vec![
+                                Span::styled("· ", theme::dim()),
+                                Span::styled(
+                                    l,
+                                    theme::muted().add_modifier(Modifier::ITALIC),
+                                ),
+                            ]));
+                        }
+                        if !streaming {
+                            lines.push(Line::from(Span::styled(
+                                "  ⌄  Ctrl+T",
+                                theme::dim(),
+                            )));
+                        }
                     } else {
-                        "Forge"
-                    };
-                    lines.push(Line::from(Span::styled(
-                        label,
-                        theme::brand().add_modifier(Modifier::BOLD),
-                    )));
-                    for l in wrap(text, width) {
-                        lines.push(Line::from(Span::styled(l, theme::text())));
+                        let n = text.chars().count();
+                        let preview: String = text.chars().take(56).collect();
+                        let more = if n > 56 { "…" } else { "" };
+                        lines.push(Line::from(vec![
+                            Span::styled("· ", theme::dim()),
+                            Span::styled(
+                                format!("{preview}{more}"),
+                                theme::muted().add_modifier(Modifier::ITALIC),
+                            ),
+                            Span::styled("  ⌃ Ctrl+T", theme::dim()),
+                        ]));
+                    }
+                    if gap {
+                        lines.push(Line::from(""));
+                    }
+                }
+                // Response: teal left bar — no "Forge"
+                ChatItem::Assistant { text } => {
+                    let parts = wrap(text, width.saturating_sub(3));
+                    for (i, l) in parts.iter().enumerate() {
+                        let gutter = if i == 0 { "▍ " } else { "  " };
+                        lines.push(Line::from(vec![
+                            Span::styled(
+                                gutter,
+                                theme::brand().add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(l.clone(), theme::text()),
+                        ]));
                     }
                     if gap {
                         lines.push(Line::from(""));
@@ -428,7 +445,7 @@ impl ConversationModel {
         }
         if self.opts.busy {
             lines.push(Line::from(Span::styled(
-                "  ⠋ working…  Esc interrupt",
+                "  ⠋  Esc",
                 theme::info().add_modifier(Modifier::ITALIC),
             )));
         }
@@ -645,7 +662,10 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(text.contains("Ctrl+T expand"), "{text}");
+        assert!(
+            text.contains("Ctrl+T") || text.contains('⌃'),
+            "expected collapse affordance, got:\n{text}"
+        );
     }
 
     #[test]
