@@ -64,9 +64,12 @@ pub fn selected_row() -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
-/// Input caret: high-contrast block.
+/// Input block cursor: solid inverted cell (bg fills the whole character cell).
 pub fn caret() -> Style {
-    Style::default().fg(PANEL).bg(TEXT)
+    Style::default()
+        .fg(PANEL)
+        .bg(TEXT)
+        .add_modifier(Modifier::BOLD)
 }
 
 /// History-recalled input (subtle highlight of the whole field text).
