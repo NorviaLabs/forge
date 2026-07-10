@@ -1,4 +1,4 @@
-//! Status bar widget (TUI-01 + Phase 10 / TUI-09 session chrome).
+//! Status bar — calm single chrome line (polish).
 
 use crate::theme;
 use forge_types::SessionStatus;
@@ -7,6 +7,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Widget;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Progressive busy phase (Phase 10 / TUI-10; also used in chrome label).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -23,12 +24,22 @@ impl BusyPhase {
     pub fn label(&self) -> String {
         match self {
             Self::Idle => String::new(),
-            Self::Model => "running · model".into(),
-            Self::Tool { name } => format!("running · tool:{name}"),
-            Self::Connect => "running · connect".into(),
-            Self::Other(s) => format!("running · {s}"),
+            Self::Model => "model".into(),
+            Self::Tool { name } => format!("tool:{name}"),
+            Self::Connect => "connect".into(),
+            Self::Other(s) => s.clone(),
         }
     }
+}
+
+const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+fn spinner_frame() -> &'static str {
+    let ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    SPINNER[((ms / 80) as usize) % SPINNER.len()]
 }
 
 #[derive(Debug, Clone)]
@@ -36,16 +47,12 @@ pub struct StatusModel {
     pub status: SessionStatus,
     pub session_short: String,
     pub model: String,
-    /// Phase 10 — provider next to model.
     pub provider: String,
     pub ctx_pct: f64,
     pub worktree_on: bool,
     pub busy: bool,
-    /// Phase 10 progressive busy (optional detail).
     pub busy_phase: BusyPhase,
-    /// Active connect profile id, if any.
     pub connect_profile: Option<String>,
-    /// web_search backend label or "off".
     pub web_search_label: Option<String>,
     pub tools_visible: usize,
 }
@@ -54,19 +61,20 @@ impl StatusModel {
     pub fn status_label(&self) -> (String, ratatui::style::Style) {
         if self.busy {
             let phase = self.busy_phase.label();
+            let spin = spinner_frame();
             let text = if phase.is_empty() {
-                "running".into()
+                format!("{spin} running")
             } else {
-                phase
+                format!("{spin} {phase}")
             };
             return (text, theme::info().add_modifier(Modifier::BOLD));
         }
         match self.status {
             SessionStatus::Running => ("idle".into(), theme::ok()),
-            SessionStatus::Completed => ("completed".into(), theme::ok()),
+            SessionStatus::Completed => ("done".into(), theme::ok()),
             SessionStatus::Failed => ("failed".into(), theme::danger()),
             SessionStatus::AwaitingHitl => (
-                "awaiting_hitl".into(),
+                "awaiting".into(),
                 theme::warn().add_modifier(Modifier::BOLD),
             ),
         }
@@ -115,54 +123,41 @@ impl Widget for StatusBar<'_> {
             return;
         }
         let (label, style) = self.model.status_label();
-        let wt = if self.model.worktree_on {
-            "wt on"
-        } else {
-            "wt off"
-        };
+        let model_disp = StatusModel::truncate_model(&self.model.model, 32);
         let provider = if self.model.provider.is_empty() {
             "—"
         } else {
             self.model.provider.as_str()
         };
-        let model_disp = StatusModel::truncate_model(&self.model.model, 28);
-        let ctx = format!("ctx {:.0}%", self.model.ctx_pct * 100.0);
+        let ctx = format!("{:.0}%", self.model.ctx_pct * 100.0);
 
-        // Priority packing: brand · pill · provider · model · ctx always first.
+        // Calm single line: brand · state · model · ctx · profile · wt
         let mut spans = vec![
-            Span::styled(" FORGE ", theme::brand()),
-            Span::styled("│ ", theme::dim()),
-            Span::styled(format!(" {label} "), style),
-            Span::styled(" │ ", theme::dim()),
+            Span::styled(" forge ", theme::brand()),
+            Span::styled("· ", theme::dim()),
+            Span::styled(format!("{label} "), style),
+            Span::styled("· ", theme::dim()),
             Span::styled(
-                format!("sess {}", self.model.session_short),
-                theme::info(),
+                format!("{provider}/{model_disp} "),
+                theme::text(),
             ),
-            Span::styled(" │ ", theme::dim()),
-            Span::styled(format!("{provider} · {model_disp}"), theme::text()),
-            Span::styled(" │ ", theme::dim()),
-            Span::styled(ctx, self.model.ctx_style()),
-            Span::styled(format!(" │ {wt} "), theme::muted()),
+            Span::styled("· ", theme::dim()),
+            Span::styled(format!("ctx {ctx} "), self.model.ctx_style()),
         ];
 
-        // Extra tokens when width allows (approx by char budget).
-        let w = area.width as usize;
-        if w >= 100 {
-            if let Some(ref p) = self.model.connect_profile {
-                spans.push(Span::styled(
-                    format!("│ profile {p} "),
-                    theme::muted(),
-                ));
-            }
-            if let Some(ref s) = self.model.web_search_label {
-                spans.push(Span::styled(format!("│ search {s} "), theme::muted()));
-            }
-            if self.model.tools_visible > 0 {
-                spans.push(Span::styled(
-                    format!("│ tools {} ", self.model.tools_visible),
-                    theme::muted(),
-                ));
-            }
+        if let Some(ref p) = self.model.connect_profile {
+            spans.push(Span::styled("· ", theme::dim()));
+            spans.push(Span::styled(format!("{p} "), theme::ok()));
+        }
+        if self.model.worktree_on {
+            spans.push(Span::styled("· ", theme::dim()));
+            spans.push(Span::styled("worktree ", theme::warn()));
+        }
+        if area.width as usize >= 100 {
+            spans.push(Span::styled(
+                format!("· sess {} ", self.model.session_short),
+                theme::dim(),
+            ));
         }
 
         let line = Line::from(spans);
@@ -214,7 +209,7 @@ mod tests {
             web_search_label: None,
             tools_visible: 0,
         };
-        assert_eq!(m.status_label().0, "awaiting_hitl");
+        assert_eq!(m.status_label().0, "awaiting");
     }
 
     #[test]

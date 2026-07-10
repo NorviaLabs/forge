@@ -24,14 +24,25 @@ pub fn split_areas(area: Rect) -> LayoutRegions {
 }
 
 pub fn split_areas_ex(area: Rect, feedback_h: u16) -> LayoutRegions {
+    split_areas_full(area, feedback_h, 3, true)
+}
+
+/// Full layout control: input height (content + borders) and optional sidebar.
+pub fn split_areas_full(
+    area: Rect,
+    feedback_h: u16,
+    input_h: u16,
+    show_sidebar: bool,
+) -> LayoutRegions {
     let fb = feedback_h.min(2);
+    let input_h = input_h.clamp(3, 8);
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // status
             Constraint::Min(3),    // main
             Constraint::Length(fb), // feedback
-            Constraint::Length(3), // input
+            Constraint::Length(input_h), // input (multi-line)
             Constraint::Length(1), // footer
         ])
         .split(area);
@@ -42,7 +53,7 @@ pub fn split_areas_ex(area: Rect, feedback_h: u16) -> LayoutRegions {
     let input = rows[3];
     let footer = rows[4];
 
-    let (chat, sidebar) = if area.width >= MIN_WIDTH {
+    let (chat, sidebar) = if show_sidebar && area.width >= MIN_WIDTH {
         let cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Min(40), Constraint::Length(SIDEBAR_WIDTH)])

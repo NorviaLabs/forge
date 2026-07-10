@@ -1,4 +1,4 @@
-//! Input bar (TUI-01) + visible caret (Phase 8.1).
+//! Input bar — multi-line paste / Shift+Enter newline, visible caret.
 
 use crate::theme;
 use ratatui::buffer::Buffer;
@@ -22,6 +22,11 @@ impl InputModel {
         let i = self.cursor.min(self.text.len());
         self.text.insert(i, c);
         self.cursor = i + c.len_utf8();
+    }
+
+    /// Insert a newline at the cursor (Shift+Enter / paste).
+    pub fn insert_newline(&mut self) {
+        self.insert('\n');
     }
 
     pub fn backspace(&mut self) {
@@ -80,6 +85,12 @@ impl InputModel {
         self.text = text.into();
         self.cursor = self.text.len();
     }
+
+    /// Number of visual lines for layout (capped).
+    pub fn visual_lines(&self) -> u16 {
+        let n = self.text.lines().count().max(1) as u16;
+        n.min(6)
+    }
 }
 
 pub struct InputBar<'a> {
@@ -96,35 +107,64 @@ impl Widget for InputBar<'_> {
             theme::text()
         };
 
-        let line = if self.model.text.is_empty() && !self.model.hint.is_empty() {
-            Line::from(vec![
+        let lines: Vec<Line> = if self.model.text.is_empty() && !self.model.hint.is_empty() {
+            vec![Line::from(vec![
                 Span::styled(" ❯ ", theme::brand()),
                 Span::styled(self.model.hint.as_str(), theme::dim()),
-                // Caret at start of empty field after hint is hidden — show block caret
                 Span::styled("█", theme::caret()),
-            ])
+            ])]
         } else {
+            // Multi-line: show with caret on the active line
             let t = &self.model.text;
             let cur = self.model.cursor.min(t.len());
             let before = &t[..cur];
-            let rest = &t[cur..];
-            if rest.is_empty() {
-                Line::from(vec![
-                    Span::styled(" ❯ ", theme::brand()),
-                    Span::styled(before, base),
-                    // Explicit bg block — visible on dark terminals
-                    Span::styled("█", theme::caret()),
-                ])
-            } else {
-                let ch = rest.chars().next().unwrap();
-                let n = ch.len_utf8();
-                Line::from(vec![
-                    Span::styled(" ❯ ", theme::brand()),
-                    Span::styled(before, base),
-                    Span::styled(&rest[..n], theme::caret()),
-                    Span::styled(&rest[n..], base),
-                ])
+            let after = &t[cur..];
+            let line_idx = before.matches('\n').count();
+            let mut out = Vec::new();
+            for (i, raw) in t.split('\n').enumerate() {
+                let prefix = if i == 0 { " ❯ " } else { "   " };
+                if i == line_idx {
+                    // caret on this line
+                    let line_start = if i == 0 {
+                        0
+                    } else {
+                        before.rfind('\n').map(|p| p + 1).unwrap_or(0)
+                    };
+                    let col = cur.saturating_sub(line_start);
+                    let col = col.min(raw.len());
+                    let (left, right) = raw.split_at(col);
+                    if right.is_empty() {
+                        out.push(Line::from(vec![
+                            Span::styled(prefix, theme::brand()),
+                            Span::styled(left, base),
+                            Span::styled("█", theme::caret()),
+                        ]));
+                    } else {
+                        let ch = right.chars().next().unwrap();
+                        let n = ch.len_utf8();
+                        out.push(Line::from(vec![
+                            Span::styled(prefix, theme::brand()),
+                            Span::styled(left, base),
+                            Span::styled(&right[..n], theme::caret()),
+                            Span::styled(&right[n..], base),
+                        ]));
+                    }
+                } else {
+                    out.push(Line::from(vec![
+                        Span::styled(prefix, theme::brand()),
+                        Span::styled(raw, base),
+                    ]));
+                }
             }
+            // trailing newline → empty line with caret
+            if t.ends_with('\n') && cur == t.len() {
+                out.push(Line::from(vec![
+                    Span::styled("   ", theme::brand()),
+                    Span::styled("█", theme::caret()),
+                ]));
+            }
+            let _ = after;
+            out
         };
 
         let border = if self.model.history_browse {
@@ -134,6 +174,8 @@ impl Widget for InputBar<'_> {
         };
         let title = if self.model.history_browse {
             " input · history "
+        } else if self.model.text.contains('\n') {
+            " input · multi-line · Enter send · Shift+Enter newline "
         } else {
             " input "
         };
@@ -141,7 +183,7 @@ impl Widget for InputBar<'_> {
             .borders(Borders::ALL)
             .border_style(border)
             .title(Span::styled(title, theme::muted()));
-        Paragraph::new(line)
+        Paragraph::new(lines)
             .style(Style::default().add_modifier(if self.model.dimmed {
                 Modifier::DIM
             } else {
@@ -167,6 +209,16 @@ mod tests {
         m.backspace();
         assert_eq!(m.text, "a");
         assert_eq!(m.cursor, 1);
+    }
+
+    #[test]
+    fn newline_insert() {
+        let mut m = InputModel::default();
+        m.insert('a');
+        m.insert_newline();
+        m.insert('b');
+        assert_eq!(m.text, "a\nb");
+        assert_eq!(m.visual_lines(), 2);
     }
 
     #[test]
@@ -197,7 +249,7 @@ mod tests {
     fn caret_cell_has_background() {
         let mut m = InputModel::default();
         m.set_text("ab");
-        m.cursor = 2; // EOL caret
+        m.cursor = 2;
         let backend = TestBackend::new(40, 5);
         let mut term = Terminal::new(backend).unwrap();
         term.draw(|f| {
@@ -205,7 +257,6 @@ mod tests {
         })
         .unwrap();
         let buf = term.backend().buffer();
-        // Find the block caret glyph
         let area = buf.area();
         let mut found = false;
         for y in 0..area.height {
