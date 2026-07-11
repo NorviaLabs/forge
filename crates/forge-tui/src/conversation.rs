@@ -87,20 +87,12 @@ impl ConversationModel {
         status: SessionStatus,
         opts: ConversationViewOpts,
     ) -> Self {
-        let mut items = Vec::new();
+        // Brand banner instead of dumping model system prompts into the chat.
+        let mut items = vec![ChatItem::Brand];
         for m in messages {
             match m.role {
-                MessageRole::System => {
-                    // Soften system: first system is chrome, not a wall of text
-                    let text = if m.content.len() > 280 {
-                        let mut s: String = m.content.chars().take(260).collect();
-                        s.push_str("…");
-                        s
-                    } else {
-                        m.content.clone()
-                    };
-                    items.push(ChatItem::System { text });
-                }
+                // System prompts are for the model, not the operator UI.
+                MessageRole::System => {}
                 MessageRole::User => {
                     if m.content.starts_with("[REPAIR TASK") {
                         items.push(ChatItem::Banner {
@@ -171,9 +163,11 @@ impl ConversationModel {
                 kind: BannerKind::Warn,
             });
         }
-        if items.is_empty() {
-            items.push(ChatItem::System {
-                text: "Ready. Type a task · /connect if needed · Ctrl+K commands".into(),
+        // Only brand + no turns yet → short empty-state hint under the banner
+        if items.len() == 1 {
+            items.push(ChatItem::Banner {
+                text: "Type a task · /connect · Ctrl+K".into(),
+                kind: BannerKind::Info,
             });
         }
         Self {
@@ -255,14 +249,28 @@ impl ConversationModel {
 
         for (idx, item) in self.items.iter().enumerate() {
             match item {
-                // System: muted, no label — soft left rule
-                ChatItem::System { text } => {
-                    for l in wrap(text, width.saturating_sub(3)) {
-                        lines.push(Line::from(vec![
-                            Span::styled("│ ", theme::dim()),
-                            Span::styled(l, theme::muted()),
-                        ]));
+                ChatItem::Brand => {
+                    // Compact brand splash (not the model system prompt)
+                    lines.push(Line::from(vec![
+                        Span::styled("  ⬡  ", theme::brand()),
+                        Span::styled(
+                            "FORGE",
+                            theme::brand().add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled("  ·  coding agent", theme::dim()),
+                    ]));
+                    if gap {
+                        lines.push(Line::from(""));
                     }
+                }
+                // Legacy system items (rare): muted only, never dump full prompt
+                ChatItem::System { text } => {
+                    let short: String = text.chars().take(120).collect();
+                    let more = if text.chars().count() > 120 { "…" } else { "" };
+                    lines.push(Line::from(vec![
+                        Span::styled("│ ", theme::dim()),
+                        Span::styled(format!("{short}{more}"), theme::muted()),
+                    ]));
                     if gap {
                         lines.push(Line::from(""));
                     }
@@ -586,7 +594,7 @@ mod tests {
         let msgs = vec![
             Message {
                 role: MessageRole::System,
-                content: "sys".into(),
+                content: "You are Forge, a coding agent. Use tools when needed.".into(),
                 tool_call_id: None,
                 name: None,
                 thinking: None,
@@ -619,7 +627,8 @@ mod tests {
             SessionStatus::Running,
             ConversationViewOpts::default(),
         );
-        assert!(matches!(m.items[0], ChatItem::System { .. }));
+        // System prompt is hidden; brand banner first
+        assert!(matches!(m.items[0], ChatItem::Brand));
         assert!(matches!(m.items[1], ChatItem::User { .. }));
         assert!(matches!(m.items[2], ChatItem::Thinking { .. }));
         assert!(matches!(m.items[3], ChatItem::Assistant { .. }));
@@ -630,6 +639,24 @@ mod tests {
                 ..
             }
         ));
+        // Full system prompt must not appear in rendered lines
+        let rendered: String = m
+            .lines()
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<Vec<_>>()
+                    .join("")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !rendered.contains("You are Forge, a coding agent"),
+            "system prompt leaked into UI:\n{rendered}"
+        );
+        assert!(rendered.contains("FORGE"), "expected brand banner");
     }
 
     #[test]
@@ -690,14 +717,14 @@ mod tests {
     }
 
     #[test]
-    fn empty_shows_ready() {
+    fn empty_shows_brand() {
         let m = ConversationModel::from_messages(
             &[],
             &[],
             SessionStatus::Running,
             ConversationViewOpts::default(),
         );
-        assert!(!m.items.is_empty());
+        assert!(matches!(m.items[0], ChatItem::Brand));
     }
 
     #[test]
