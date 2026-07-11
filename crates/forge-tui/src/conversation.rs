@@ -19,6 +19,8 @@ pub enum ToolCardState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChatItem {
+    /// Brand splash (replaces dumping system prompts into the chat).
+    Brand,
     System { text: String },
     User { text: String },
     /// Model chain-of-thought / reasoning (muted; collapsible when done).
