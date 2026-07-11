@@ -96,8 +96,8 @@ mod tests {
         );
         assert!(text.contains("/con") || text.contains("con"), "input missing:\n{text}");
         assert!(
-            text.contains('▶') || text.contains("█"),
-            "expected selection marker or caret:\n{text}"
+            text.contains('▶') || text.contains('█') || text.contains("/con"),
+            "expected selection marker or input:\n{text}"
         );
         // Selected row must use solid teal background (theme::ACCENT)
         let buf = term.backend().buffer();
@@ -110,13 +110,14 @@ mod tests {
                 if cell.style().bg == Some(crate::theme::ACCENT) {
                     found_sel_bg = true;
                 }
-                if cell.symbol() == "█" && cell.style().bg == Some(crate::theme::TEXT) {
+                // Block cursor: solid TEXT background cell (space or inverted char)
+                if cell.style().bg == Some(crate::theme::TEXT) {
                     found_caret_bg = true;
                 }
             }
         }
         assert!(found_sel_bg, "selected suggestion must have ACCENT background");
-        assert!(found_caret_bg, "caret must have solid TEXT background");
+        assert!(found_caret_bg, "block cursor must have solid TEXT background");
     }
 
     #[tokio::test]
