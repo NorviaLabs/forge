@@ -46,6 +46,9 @@ pub struct Message {
     /// Model "thinking" / reasoning text (UI + journal only; not re-sent as content).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<String>,
+    /// How long the model spent thinking (seconds), for "Thought for Xs" UI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_duration_secs: Option<f64>,
 }
 
 impl Message {
@@ -56,6 +59,7 @@ impl Message {
             tool_call_id: None,
             name: None,
             thinking: None,
+            thinking_duration_secs: None,
         }
     }
 }

@@ -95,6 +95,10 @@ pub struct TuiApp {
     stream_thinking: String,
     /// When the current model turn started (for wait/think elapsed timer).
     turn_started: Option<Instant>,
+    /// When the first thinking token arrived.
+    thinking_started: Option<Instant>,
+    /// Duration of the thinking phase once it ends (for "Thought for Xs").
+    thought_secs: Option<f64>,
     /// Optional web_search label for chrome (`mock` / `off` / provider id).
     pub web_search_label: Option<String>,
     /// Phase 10 / TUI-10 — activity ring buffer.
@@ -149,6 +153,8 @@ impl TuiApp {
             stream_preview: String::new(),
             stream_thinking: String::new(),
             turn_started: None,
+            thinking_started: None,
+            thought_secs: None,
             thinking_expanded: false,
             tool_expanded: false,
             sidebar_visible: true,
@@ -616,10 +622,17 @@ impl TuiApp {
         frame.render_widget(StatusBar { model: &status }, regions.status);
 
         let stream_wait = if self.busy && self.pending_prompt.is_none() {
-            let elapsed = self
-                .turn_started
-                .map(|t| t.elapsed().as_secs_f64())
-                .unwrap_or(0.0);
+            let elapsed = if !self.stream_thinking.is_empty() {
+                // Thinking timer runs from first thinking token
+                self.thinking_started
+                    .or(self.turn_started)
+                    .map(|t| t.elapsed().as_secs_f64())
+                    .unwrap_or(0.0)
+            } else {
+                self.turn_started
+                    .map(|t| t.elapsed().as_secs_f64())
+                    .unwrap_or(0.0)
+            };
             // After answer tokens start, drop the wait/think status line.
             if !self.stream_preview.is_empty() {
                 None
@@ -633,10 +646,13 @@ impl TuiApp {
         };
         let opts = ConversationViewOpts {
             busy: self.busy,
-            thinking_expanded: self.thinking_expanded || self.busy,
+            // Don't force-expand finished thinking just because busy (answer may be streaming)
+            thinking_expanded: self.thinking_expanded
+                || (self.busy && self.thought_secs.is_none() && !self.stream_thinking.is_empty()),
             tool_expanded: self.tool_expanded,
             compact: self.compact,
             stream_wait,
+            stream_thought_secs: self.thought_secs,
         };
         let mut conv = ConversationModel::from_session(&self.session, opts)
             .with_extra_banners(self.ui_banners.iter().cloned());
@@ -1023,6 +1039,12 @@ impl TuiApp {
                     }
                 }
             }
+            KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Ctrl+J also inserts newline (terminals that don't send Shift+Enter)
+                if !self.busy {
+                    self.input.insert_newline();
+                }
+            }
             KeyCode::Char(c) => {
                 // Phase 8 (TUI-06): `/` inserts into the main textbox; do not open palette
                 if !self.busy {
@@ -1047,12 +1069,6 @@ impl TuiApp {
                 self.chat_scroll = self.chat_scroll.saturating_sub(5);
                 if self.chat_scroll == 0 {
                     self.chat_follow = true;
-                }
-            }
-            KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                // Ctrl+J also inserts newline (terminals that don't send Shift+Enter)
-                if !self.busy {
-                    self.input.insert_newline();
                 }
             }
             _ => {}
@@ -1398,6 +1414,8 @@ impl TuiApp {
         self.stream_preview.clear();
         self.stream_thinking.clear();
         self.turn_started = Some(Instant::now());
+        self.thinking_started = None;
+        self.thought_secs = None;
 
         if let Err(e) = self.session.append_user_message(&line).await {
             self.busy = false;
@@ -1440,9 +1458,21 @@ impl TuiApp {
                 while let Ok(ev) = rx.try_recv() {
                     match ev {
                         ModelStreamEvent::TextDelta { text } => {
+                            // Thinking ends when answer tokens begin
+                            if self.thought_secs.is_none() && !self.stream_thinking.is_empty() {
+                                let secs = self
+                                    .thinking_started
+                                    .or(self.turn_started)
+                                    .map(|t| t.elapsed().as_secs_f64())
+                                    .unwrap_or(0.0);
+                                self.thought_secs = Some(secs);
+                            }
                             self.stream_preview.push_str(&text);
                         }
                         ModelStreamEvent::ThinkingDelta { text } => {
+                            if self.thinking_started.is_none() {
+                                self.thinking_started = Some(Instant::now());
+                            }
                             self.stream_thinking.push_str(&text);
                         }
                         _ => {}
@@ -1458,13 +1488,33 @@ impl TuiApp {
                     while let Ok(ev) = rx.try_recv() {
                         match ev {
                             ModelStreamEvent::TextDelta { text } => {
+                                if self.thought_secs.is_none() && !self.stream_thinking.is_empty() {
+                                    let secs = self
+                                        .thinking_started
+                                        .or(self.turn_started)
+                                        .map(|t| t.elapsed().as_secs_f64())
+                                        .unwrap_or(0.0);
+                                    self.thought_secs = Some(secs);
+                                }
                                 self.stream_preview.push_str(&text);
                             }
                             ModelStreamEvent::ThinkingDelta { text } => {
+                                if self.thinking_started.is_none() {
+                                    self.thinking_started = Some(Instant::now());
+                                }
                                 self.stream_thinking.push_str(&text);
                             }
                             _ => {}
                         }
+                    }
+                    // Thinking-only turn (no answer tokens): close the clock now
+                    if self.thought_secs.is_none() && !self.stream_thinking.is_empty() {
+                        let secs = self
+                            .thinking_started
+                            .or(self.turn_started)
+                            .map(|t| t.elapsed().as_secs_f64())
+                            .unwrap_or(0.0);
+                        self.thought_secs = Some(secs);
                     }
                     if let Some(term) = terminal.as_deref_mut() {
                         term.draw(|f| self.draw(f))?;
@@ -1484,6 +1534,8 @@ impl TuiApp {
                             self.stream_preview.clear();
                             self.stream_thinking.clear();
                             self.turn_started = None;
+                            self.thinking_started = None;
+                            self.thought_secs = None;
                             self.should_quit = true;
                             self.last_exit = ExitCode::Canceled;
                             return Ok(());
@@ -1507,23 +1559,45 @@ impl TuiApp {
                 }
             };
 
+            let thought = self.thought_secs;
             self.stream_preview.clear();
             self.stream_thinking.clear();
             // Keep turn_started until full agent turn ends (multi-tool steps).
             match self.session.apply_model_response(last).await {
-                Ok(ApplyOutcome::Done(_)) => {
-                    outcome_err = None;
-                    break 'turns;
-                }
-                Ok(ApplyOutcome::Hitl(_)) => {
-                    outcome_err = None;
-                    break 'turns;
-                }
-                Ok(ApplyOutcome::Continue) => {
-                    if let Some(term) = terminal.as_deref_mut() {
-                        term.draw(|f| self.draw(f))?;
+                Ok(out) => {
+                    // Persist "Thought for Xs" on the assistant message
+                    if let Some(secs) = thought {
+                        if let Some(m) = self
+                            .session
+                            .messages
+                            .iter_mut()
+                            .rev()
+                            .find(|m| m.role == forge_types::MessageRole::Assistant)
+                        {
+                            if m.thinking.is_some() {
+                                m.thinking_duration_secs = Some(secs);
+                            }
+                        }
                     }
-                    continue;
+                    // Reset per-model-step thinking timers for multi-tool loops
+                    self.thinking_started = None;
+                    self.thought_secs = None;
+                    match out {
+                        ApplyOutcome::Done(_) => {
+                            outcome_err = None;
+                            break 'turns;
+                        }
+                        ApplyOutcome::Hitl(_) => {
+                            outcome_err = None;
+                            break 'turns;
+                        }
+                        ApplyOutcome::Continue => {
+                            if let Some(term) = terminal.as_deref_mut() {
+                                term.draw(|f| self.draw(f))?;
+                            }
+                            continue;
+                        }
+                    }
                 }
                 Err(e) => {
                     outcome_err = Some(e.to_string());
@@ -1545,6 +1619,9 @@ impl TuiApp {
         self.stream_preview.clear();
         self.stream_thinking.clear();
         self.turn_started = None;
+        self.thinking_started = None;
+        // Keep thought_secs on the message; clear live field
+        self.thought_secs = None;
 
         if let Some(e) = outcome_err {
             self.report_error(&e);

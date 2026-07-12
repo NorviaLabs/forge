@@ -143,7 +143,8 @@ impl AgentSession {
                 tool_call_id: None,
                 name: None,
                 thinking: None,
-            }],
+                thinking_duration_secs: None,
+}],
             events: vec![],
             pending_hitl: None,
             active_model: String::new(),
@@ -179,7 +180,8 @@ impl AgentSession {
             tool_call_id: None,
             name: None,
             thinking: None,
-            }];
+            thinking_duration_secs: None,
+}];
         for u in &state.user_messages {
             messages.push(Message {
                 role: MessageRole::User,
@@ -187,7 +189,8 @@ impl AgentSession {
                 tool_call_id: None,
                 name: None,
                 thinking: None,
-            });
+                thinking_duration_secs: None,
+});
         }
         for (id, tr) in &state.tool_results {
             messages.push(Message {
@@ -196,7 +199,8 @@ impl AgentSession {
                 tool_call_id: Some(id.clone()),
                 name: Some(tr.name.clone()),
                 thinking: None,
-            });
+                thinking_duration_secs: None,
+});
         }
         for incomplete in &state.incomplete_intents {
             warn!(call_id = %incomplete, "incomplete tool intent on resume (fail-safe)");
@@ -273,7 +277,8 @@ impl AgentSession {
             tool_call_id: None,
             name: None,
             thinking: None,
-            });
+            thinking_duration_secs: None,
+});
         if self.context.goal.is_empty() {
             self.context.goal = text.chars().take(200).collect();
         }
@@ -332,7 +337,8 @@ impl AgentSession {
                 tool_call_id: None,
                 name: None,
                 thinking: last.thinking.clone().filter(|t| !t.trim().is_empty()),
-            });
+                thinking_duration_secs: None,
+});
             if has_thinking {
                 if let Some(ref th) = last.thinking {
                     self.events.push(TurnEvent {
@@ -486,7 +492,8 @@ impl AgentSession {
                         tool_call_id: Some(call.id.clone()),
                         name: Some(call.name.clone()),
                         thinking: None,
-            });
+                        thinking_duration_secs: None,
+});
                     return Ok(None);
                 }
                 PolicyDecision::Hitl => {
@@ -543,7 +550,8 @@ impl AgentSession {
                     tool_call_id: Some(call.id.clone()),
                     name: Some(call.name.clone()),
                     thinking: None,
-            });
+                    thinking_duration_secs: None,
+});
                 self.events.push(TurnEvent {
                     kind: "tool".into(),
                     detail: format!("{} -> {} chars", call.name, output.content.len()),
@@ -560,7 +568,8 @@ impl AgentSession {
                     tool_call_id: Some(call.id.clone()),
                     name: Some(call.name.clone()),
                     thinking: None,
-            });
+                    thinking_duration_secs: None,
+});
                 self.events.push(TurnEvent {
                     kind: "validation".into(),
                     detail: msg,
@@ -580,7 +589,8 @@ impl AgentSession {
                     tool_call_id: Some(call.id.clone()),
                     name: Some(call.name.clone()),
                     thinking: None,
-            });
+                    thinking_duration_secs: None,
+});
             }
         }
         Ok(None)
@@ -626,7 +636,8 @@ impl AgentSession {
                 tool_call_id: Some(payload.call_id),
                 name: Some(payload.tool),
                 thinking: None,
-            });
+                thinking_duration_secs: None,
+});
             self.pending_hitl = None;
             self.status = SessionStatus::Running;
             self.journal
@@ -694,7 +705,8 @@ impl AgentSession {
                     tool_call_id: Some(call.id.clone()),
                     name: Some(call.name.clone()),
                     thinking: None,
-            });
+                    thinking_duration_secs: None,
+});
             }
             Err(e) => {
                 let output = ToolOutput {
