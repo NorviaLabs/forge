@@ -712,9 +712,14 @@ mod tests {
             SessionStatus::Running,
             ConversationViewOpts::default(),
         );
-        match &m.items[0] {
+        let tool = m
+            .items
+            .iter()
+            .find(|i| matches!(i, ChatItem::ToolCard { .. }))
+            .expect("expected tool card");
+        match tool {
             ChatItem::ToolCard { state, .. } => assert_eq!(*state, ToolCardState::Error),
-            _ => panic!("expected tool card"),
+            _ => unreachable!(),
         }
     }
 
