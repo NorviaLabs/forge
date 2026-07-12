@@ -51,6 +51,15 @@ pub enum BannerKind {
     Ok,
 }
 
+/// Live status while the model turn is in flight (before answer tokens).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamWaitPhase {
+    /// No tokens yet — waiting on the model.
+    Waiting,
+    /// Receiving thinking / reasoning tokens.
+    Thinking,
+}
+
 /// Render options for progressive disclosure / density.
 #[derive(Debug, Clone)]
 pub struct ConversationViewOpts {
@@ -61,6 +70,8 @@ pub struct ConversationViewOpts {
     pub tool_expanded: bool,
     /// Compact density (fewer blank lines, tighter wrap).
     pub compact: bool,
+    /// Spinner + elapsed status while waiting or thinking (answer not started).
+    pub stream_wait: Option<(StreamWaitPhase, f64)>,
 }
 
 impl Default for ConversationViewOpts {
@@ -70,8 +81,26 @@ impl Default for ConversationViewOpts {
             thinking_expanded: false,
             tool_expanded: false,
             compact: false,
+            stream_wait: None,
         }
     }
+}
+
+const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+fn spinner_frame() -> &'static str {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    SPINNER[((ms / 80) as usize) % SPINNER.len()]
+}
+
+/// Format elapsed seconds in 0.1s increments: `0.0s`, `1.2s`, …
+pub fn format_elapsed_tenths(secs: f64) -> String {
+    let tenths = (secs.max(0.0) * 10.0).floor() / 10.0;
+    format!("{tenths:.1}s")
 }
 
 #[derive(Debug, Clone)]
@@ -195,12 +224,9 @@ impl ConversationModel {
         if !thinking.is_empty() {
             self.items.push(ChatItem::Thinking { text: thinking });
         }
-        if !text.is_empty() || self.opts.busy {
-            let mut body = if text.is_empty() {
-                "…".into()
-            } else {
-                text
-            };
+        // Only show the answer bubble once content tokens start (status line covers wait/think).
+        if !text.is_empty() {
+            let mut body = text;
             if self.opts.busy && !body.ends_with('▌') {
                 body.push('▌');
             }
@@ -453,9 +479,21 @@ impl ConversationModel {
                 }
             }
         }
-        if self.opts.busy {
+        // Live wait / think status: spinner + label + elapsed (0.1s steps)
+        if let Some((phase, elapsed)) = self.opts.stream_wait {
+            let spin = spinner_frame();
+            let t = format_elapsed_tenths(elapsed);
+            let label = match phase {
+                StreamWaitPhase::Waiting => "Waiting for response ...",
+                StreamWaitPhase::Thinking => "Thinking...",
+            };
             lines.push(Line::from(Span::styled(
-                "  ⠋  Esc",
+                format!("  {spin} {label} {t}"),
+                theme::info().add_modifier(Modifier::ITALIC),
+            )));
+        } else if self.opts.busy {
+            lines.push(Line::from(Span::styled(
+                format!("  {}  Esc", spinner_frame()),
                 theme::info().add_modifier(Modifier::ITALIC),
             )));
         }
@@ -732,6 +770,58 @@ mod tests {
             ConversationViewOpts::default(),
         );
         assert!(matches!(m.items[0], ChatItem::Brand));
+    }
+
+    #[test]
+    fn elapsed_tenths_format() {
+        assert_eq!(format_elapsed_tenths(0.0), "0.0s");
+        assert_eq!(format_elapsed_tenths(0.14), "0.1s");
+        assert_eq!(format_elapsed_tenths(1.29), "1.2s");
+        assert_eq!(format_elapsed_tenths(12.99), "12.9s");
+    }
+
+    #[test]
+    fn stream_wait_status_line() {
+        let mut m = ConversationModel::from_messages(
+            &[],
+            &[],
+            SessionStatus::Running,
+            ConversationViewOpts {
+                busy: true,
+                stream_wait: Some((StreamWaitPhase::Thinking, 1.2)),
+                ..Default::default()
+            },
+        );
+        let text: String = m
+            .lines()
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<Vec<_>>()
+                    .join("")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Thinking..."), "{text}");
+        assert!(text.contains("1.2s"), "{text}");
+
+        m.opts.stream_wait = Some((StreamWaitPhase::Waiting, 0.3));
+        let text: String = m
+            .lines()
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<Vec<_>>()
+                    .join("")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Waiting for response"), "{text}");
+        assert!(text.contains("0.3s"), "{text}");
     }
 
     #[test]

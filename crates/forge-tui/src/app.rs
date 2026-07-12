@@ -22,7 +22,9 @@ use thiserror::Error;
 
 use crate::activity::{ActivityFeed, ActivityKind};
 use crate::commands::{help_text, parse_slash, SlashCommand, WorktreeAction};
-use crate::conversation::{BannerKind, ChatItem, ConversationModel, ConversationViewOpts};
+use crate::conversation::{
+    BannerKind, ChatItem, ConversationModel, ConversationViewOpts, StreamWaitPhase,
+};
 use crate::layout::split_areas_full;
 use crate::history::InputHistory;
 use crate::layout::{is_too_small, split_areas_ex};
@@ -91,6 +93,8 @@ pub struct TuiApp {
     stream_preview: String,
     /// Live thinking/reasoning text while tokens stream in.
     stream_thinking: String,
+    /// When the current model turn started (for wait/think elapsed timer).
+    turn_started: Option<Instant>,
     /// Optional web_search label for chrome (`mock` / `off` / provider id).
     pub web_search_label: Option<String>,
     /// Phase 10 / TUI-10 — activity ring buffer.
@@ -144,6 +148,7 @@ impl TuiApp {
             pending_prompt: None,
             stream_preview: String::new(),
             stream_thinking: String::new(),
+            turn_started: None,
             thinking_expanded: false,
             tool_expanded: false,
             sidebar_visible: true,
@@ -610,25 +615,38 @@ impl TuiApp {
         let status = self.refresh_status_model();
         frame.render_widget(StatusBar { model: &status }, regions.status);
 
+        let stream_wait = if self.busy && self.pending_prompt.is_none() {
+            let elapsed = self
+                .turn_started
+                .map(|t| t.elapsed().as_secs_f64())
+                .unwrap_or(0.0);
+            // After answer tokens start, drop the wait/think status line.
+            if !self.stream_preview.is_empty() {
+                None
+            } else if !self.stream_thinking.is_empty() {
+                Some((StreamWaitPhase::Thinking, elapsed))
+            } else {
+                Some((StreamWaitPhase::Waiting, elapsed))
+            }
+        } else {
+            None
+        };
         let opts = ConversationViewOpts {
             busy: self.busy,
             thinking_expanded: self.thinking_expanded || self.busy,
             tool_expanded: self.tool_expanded,
             compact: self.compact,
+            stream_wait,
         };
         let mut conv = ConversationModel::from_session(&self.session, opts)
             .with_extra_banners(self.ui_banners.iter().cloned());
         conv.follow = self.chat_follow;
         conv.scroll = self.chat_scroll;
         if self.busy && self.pending_prompt.is_none() {
-            // Show thinking + answer as they stream (placeholder assistant until first token)
+            // Stream thinking body + answer (status line covers wait/think timers)
             conv = conv.with_streaming_preview(
                 self.stream_thinking.clone(),
-                if self.stream_preview.is_empty() && self.stream_thinking.is_empty() {
-                    "…".into()
-                } else {
-                    self.stream_preview.clone()
-                },
+                self.stream_preview.clone(),
             );
         }
         frame.render_widget(
@@ -1379,6 +1397,7 @@ impl TuiApp {
         self.busy_phase = BusyPhase::Model;
         self.stream_preview.clear();
         self.stream_thinking.clear();
+        self.turn_started = Some(Instant::now());
 
         if let Err(e) = self.session.append_user_message(&line).await {
             self.busy = false;
@@ -1414,12 +1433,11 @@ impl TuiApp {
                 if self.cancel_requested {
                     handle.abort();
                     self.cancel_requested = false;
+                    self.turn_started = None;
                     outcome_err = Some("interrupted".into());
                     break 'turns;
                 }
-                let mut got = false;
                 while let Ok(ev) = rx.try_recv() {
-                    got = true;
                     match ev {
                         ModelStreamEvent::TextDelta { text } => {
                             self.stream_preview.push_str(&text);
@@ -1430,10 +1448,9 @@ impl TuiApp {
                         _ => {}
                     }
                 }
-                if got {
-                    if let Some(term) = terminal.as_deref_mut() {
-                        term.draw(|f| self.draw(f))?;
-                    }
+                // Redraw every tick so spinner + 0.1s elapsed keep updating (even with no tokens).
+                if let Some(term) = terminal.as_deref_mut() {
+                    term.draw(|f| self.draw(f))?;
                 }
 
                 if handle.is_finished() {
@@ -1466,6 +1483,7 @@ impl TuiApp {
                             self.busy_phase = BusyPhase::Idle;
                             self.stream_preview.clear();
                             self.stream_thinking.clear();
+                            self.turn_started = None;
                             self.should_quit = true;
                             self.last_exit = ExitCode::Canceled;
                             return Ok(());
@@ -1473,7 +1491,8 @@ impl TuiApp {
                     }
                 }
 
-                tokio::time::sleep(Duration::from_millis(16)).await;
+                // ~10 Hz keeps 0.1s timer + spinner smooth without burning CPU
+                tokio::time::sleep(Duration::from_millis(100)).await;
             }
 
             let last = match handle.await {
@@ -1490,6 +1509,7 @@ impl TuiApp {
 
             self.stream_preview.clear();
             self.stream_thinking.clear();
+            // Keep turn_started until full agent turn ends (multi-tool steps).
             match self.session.apply_model_response(last).await {
                 Ok(ApplyOutcome::Done(_)) => {
                     outcome_err = None;
@@ -1524,6 +1544,7 @@ impl TuiApp {
         self.busy_phase = BusyPhase::Idle;
         self.stream_preview.clear();
         self.stream_thinking.clear();
+        self.turn_started = None;
 
         if let Some(e) = outcome_err {
             self.report_error(&e);

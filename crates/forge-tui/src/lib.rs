@@ -18,7 +18,7 @@ pub use app::{run_tui, TuiApp, TuiError, TuiRuntimeConfig};
 pub use history::InputHistory;
 pub use commands::{help_text, parse_slash, CommandError, SlashCommand, WorktreeAction};
 pub use conversation::{
-    BannerKind, ChatItem, ConversationModel, ConversationViewOpts, ToolCardState,
+    BannerKind, ChatItem, ConversationModel, ConversationViewOpts, StreamWaitPhase, ToolCardState,
 };
 pub use layout::{
     is_too_small, split_areas, split_areas_ex, split_areas_full, LayoutRegions, MIN_HEIGHT,
