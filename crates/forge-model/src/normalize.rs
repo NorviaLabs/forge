@@ -293,7 +293,8 @@ mod tests {
             tool_call_id: None,
             name: None,
             thinking: None,
-    }]);
+            thinking_duration_secs: None,
+}]);
         assert_eq!(msgs[0]["role"], "user");
         let tools = tools_to_openai_functions(&[ToolDescriptor {
             name: "read_file".into(),

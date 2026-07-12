@@ -17,14 +17,18 @@ pub enum ToolCardState {
     Error,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ChatItem {
     /// Brand splash (replaces dumping system prompts into the chat).
     Brand,
     System { text: String },
     User { text: String },
-    /// Model chain-of-thought / reasoning (muted; collapsible when done).
-    Thinking { text: String },
+    /// Model chain-of-thought / reasoning (muted; collapses to "Thought for Xs").
+    Thinking {
+        text: String,
+        /// When set, thinking is finished — default UI is "Thought for Xs".
+        duration_secs: Option<f64>,
+    },
     Assistant { text: String },
     ToolCard {
         name: String,
@@ -72,6 +76,8 @@ pub struct ConversationViewOpts {
     pub compact: bool,
     /// Spinner + elapsed status while waiting or thinking (answer not started).
     pub stream_wait: Option<(StreamWaitPhase, f64)>,
+    /// When thinking just finished (answer streaming), collapse to "Thought for Xs".
+    pub stream_thought_secs: Option<f64>,
 }
 
 impl Default for ConversationViewOpts {
@@ -82,6 +88,7 @@ impl Default for ConversationViewOpts {
             tool_expanded: false,
             compact: false,
             stream_wait: None,
+            stream_thought_secs: None,
         }
     }
 }
@@ -141,6 +148,7 @@ impl ConversationModel {
                         if !th.trim().is_empty() {
                             items.push(ChatItem::Thinking {
                                 text: th.clone(),
+                                duration_secs: m.thinking_duration_secs,
                             });
                         }
                     }
@@ -222,7 +230,11 @@ impl ConversationModel {
         let thinking = thinking.into();
         let text = text.into();
         if !thinking.is_empty() {
-            self.items.push(ChatItem::Thinking { text: thinking });
+            // Live stream: duration filled in by app when thinking ends
+            self.items.push(ChatItem::Thinking {
+                text: thinking,
+                duration_secs: self.opts.stream_thought_secs,
+            });
         }
         // Only show the answer bubble once content tokens start (status line covers wait/think).
         if !text.is_empty() {
@@ -320,11 +332,33 @@ impl ConversationModel {
                         lines.push(Line::from(""));
                     }
                 }
-                // Thinking: dim italic · gutter — no "Thinking" word
-                ChatItem::Thinking { text } => {
-                    let streaming = self.opts.busy;
-                    let expanded = streaming || self.opts.thinking_expanded;
-                    if expanded {
+                // Thinking: while live → body streams; when done → "Thought for Xs"
+                ChatItem::Thinking {
+                    text,
+                    duration_secs,
+                } => {
+                    let still_streaming = self.opts.busy
+                        && duration_secs.is_none()
+                        && self.opts.stream_wait
+                            .map(|(p, _)| p == StreamWaitPhase::Thinking)
+                            .unwrap_or(false);
+                    let finished = duration_secs.is_some();
+                    let expanded = still_streaming
+                        || (finished && self.opts.thinking_expanded)
+                        || (!finished && self.opts.thinking_expanded);
+
+                    if finished && !self.opts.thinking_expanded {
+                        // Default completed state: replace body with duration summary
+                        let secs = duration_secs.unwrap_or(0.0);
+                        lines.push(Line::from(vec![
+                            Span::styled("· ", theme::dim()),
+                            Span::styled(
+                                format!("Thought for {}", format_elapsed_tenths(secs)),
+                                theme::muted().add_modifier(Modifier::ITALIC),
+                            ),
+                            Span::styled("  ⌃ Ctrl+T", theme::dim()),
+                        ]));
+                    } else if expanded {
                         for l in wrap(text, width.saturating_sub(3)) {
                             lines.push(Line::from(vec![
                                 Span::styled("· ", theme::dim()),
@@ -334,16 +368,20 @@ impl ConversationModel {
                                 ),
                             ]));
                         }
-                        if !streaming {
+                        if finished {
+                            let secs = duration_secs.unwrap_or(0.0);
                             lines.push(Line::from(Span::styled(
-                                "  ⌄  Ctrl+T",
+                                format!(
+                                    "  Thought for {} · ⌄ Ctrl+T",
+                                    format_elapsed_tenths(secs)
+                                ),
                                 theme::dim(),
                             )));
                         }
                     } else {
-                        let n = text.chars().count();
+                        // Unfinished but collapsed (rare): short preview
                         let preview: String = text.chars().take(56).collect();
-                        let more = if n > 56 { "…" } else { "" };
+                        let more = if text.chars().count() > 56 { "…" } else { "" };
                         lines.push(Line::from(vec![
                             Span::styled("· ", theme::dim()),
                             Span::styled(
@@ -638,20 +676,23 @@ mod tests {
                 tool_call_id: None,
                 name: None,
                 thinking: None,
-            },
+                thinking_duration_secs: None,
+},
             Message {
                 role: MessageRole::User,
                 content: "hi".into(),
                 tool_call_id: None,
                 name: None,
                 thinking: None,
-            },
+                thinking_duration_secs: None,
+},
             Message {
                 role: MessageRole::Assistant,
                 content: "yo".into(),
                 tool_call_id: None,
                 name: None,
                 thinking: Some("ponder".into()),
+                thinking_duration_secs: Some(2.4),
             },
             Message {
                 role: MessageRole::Tool,
@@ -659,6 +700,7 @@ mod tests {
                 tool_call_id: Some("1".into()),
                 name: Some("read_file".into()),
                 thinking: None,
+                thinking_duration_secs: None,
             },
         ];
         let m = ConversationModel::from_messages(
@@ -697,6 +739,14 @@ mod tests {
             "system prompt leaked into UI:\n{rendered}"
         );
         assert!(rendered.contains("FORGE"), "expected brand banner");
+        assert!(
+            rendered.contains("Thought for 2.4s"),
+            "expected thought duration summary:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("ponder"),
+            "finished thinking body should be hidden by default:\n{rendered}"
+        );
     }
 
     #[test]
@@ -707,6 +757,7 @@ mod tests {
             tool_call_id: None,
             name: None,
             thinking: Some("long thinking text here that should collapse".into()),
+            thinking_duration_secs: Some(3.1),
         }];
         let m = ConversationModel::from_messages(
             &msgs,
@@ -730,8 +781,12 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(
-            text.contains("Ctrl+T") || text.contains('⌃'),
-            "expected collapse affordance, got:\n{text}"
+            text.contains("Thought for 3.1s"),
+            "expected Thought for summary, got:\n{text}"
+        );
+        assert!(
+            !text.contains("long thinking"),
+            "body should be replaced:\n{text}"
         );
     }
 
@@ -743,7 +798,8 @@ mod tests {
             tool_call_id: Some("1".into()),
             name: Some("read_file".into()),
             thinking: None,
-        }];
+            thinking_duration_secs: None,
+}];
         let m = ConversationModel::from_messages(
             &msgs,
             &[],
