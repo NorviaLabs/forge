@@ -664,7 +664,8 @@ for line in sys.stdin:
                     tool_call_id: None,
                     name: None,
                     thinking: None,
-            }],
+                    thinking_duration_secs: None,
+}],
                 tools: vec![],
                 model: "openai/gpt-test".into(),
             })
@@ -692,7 +693,8 @@ for line in sys.stdin:
                     tool_call_id: None,
                     name: None,
                     thinking: None,
-            }],
+                    thinking_duration_secs: None,
+}],
                 tools: vec![],
                 model: "xai/grok-3".into(),
             })
