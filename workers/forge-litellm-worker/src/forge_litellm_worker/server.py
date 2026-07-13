@@ -350,8 +350,74 @@ def handle_complete(mid: str, params: dict[str, Any]) -> None:
         fail(mid, code, msg)
 
 
+def _merge_tool_call_delta(
+    acc: dict[int, dict[str, Any]], raw_tcs: Any
+) -> None:
+    """Accumulate streamed tool_call deltas by index into forge-shaped calls."""
+    if not raw_tcs:
+        return
+    try:
+        for tc in raw_tcs:
+            if isinstance(tc, dict):
+                idx = int(tc.get("index") if tc.get("index") is not None else 0)
+                entry = acc.setdefault(
+                    idx,
+                    {"id": "", "name": "", "arguments": ""},
+                )
+                if tc.get("id"):
+                    entry["id"] = str(tc["id"])
+                fn = tc.get("function") or {}
+                if isinstance(fn, dict):
+                    if fn.get("name"):
+                        entry["name"] = str(fn["name"])
+                    if fn.get("arguments"):
+                        entry["arguments"] = str(entry.get("arguments") or "") + str(
+                            fn["arguments"]
+                        )
+            else:
+                idx = int(getattr(tc, "index", 0) or 0)
+                entry = acc.setdefault(
+                    idx,
+                    {"id": "", "name": "", "arguments": ""},
+                )
+                tid = getattr(tc, "id", None)
+                if tid:
+                    entry["id"] = str(tid)
+                fn = getattr(tc, "function", None)
+                if fn is not None:
+                    name = getattr(fn, "name", None)
+                    if name:
+                        entry["name"] = str(name)
+                    args = getattr(fn, "arguments", None)
+                    if args:
+                        entry["arguments"] = str(entry.get("arguments") or "") + str(args)
+    except Exception:
+        pass
+
+
+def _finalize_tool_calls(acc: dict[int, dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for i in sorted(acc.keys()):
+        e = acc[i]
+        args_raw = e.get("arguments") or "{}"
+        try:
+            arguments = json.loads(args_raw) if isinstance(args_raw, str) else (args_raw or {})
+            if not isinstance(arguments, dict):
+                arguments = {"_raw": arguments}
+        except Exception:
+            arguments = {"_raw": args_raw}
+        out.append(
+            {
+                "id": e.get("id") or f"call_{i}",
+                "name": e.get("name") or "",
+                "arguments": arguments,
+            }
+        )
+    return out
+
+
 def handle_complete_stream(mid: str, params: dict[str, Any]) -> None:
-    """Stream text_delta events, then a final complete_stream response."""
+    """Stream thinking_delta + text_delta events, then a final complete_stream response."""
     try:
         import litellm
     except ImportError:
@@ -376,6 +442,7 @@ def handle_complete_stream(mid: str, params: dict[str, Any]) -> None:
 
     text_parts: list[str] = []
     thinking_parts: list[str] = []
+    tool_acc: dict[int, dict[str, Any]] = {}
     finish_reason: str | None = None
     usage_out: dict[str, Any] | None = None
 
@@ -397,21 +464,34 @@ def handle_complete_stream(mid: str, params: dict[str, Any]) -> None:
                     # sys.stdout is redirected for LiteLLM noise.
                     _emit_text_delta(mid, piece)
 
-                # finish_reason / usage from last chunks
+                # finish_reason / usage / tool_calls from stream chunks
                 try:
                     if isinstance(chunk, dict):
                         choices = chunk.get("choices") or []
                         if choices:
-                            fr = choices[0].get("finish_reason")
+                            c0 = choices[0]
+                            fr = c0.get("finish_reason")
                             if fr:
                                 finish_reason = fr
+                            delta = c0.get("delta") or {}
+                            if isinstance(delta, dict):
+                                _merge_tool_call_delta(tool_acc, delta.get("tool_calls"))
                         u = chunk.get("usage")
                     else:
                         choices = getattr(chunk, "choices", None) or []
                         if choices:
-                            fr = getattr(choices[0], "finish_reason", None)
+                            c0 = choices[0]
+                            fr = getattr(c0, "finish_reason", None)
                             if fr:
                                 finish_reason = str(fr)
+                            delta = getattr(c0, "delta", None)
+                            if delta is not None:
+                                tcs = (
+                                    delta.get("tool_calls")
+                                    if isinstance(delta, dict)
+                                    else getattr(delta, "tool_calls", None)
+                                )
+                                _merge_tool_call_delta(tool_acc, tcs)
                         u = getattr(chunk, "usage", None)
                     if u:
                         if isinstance(u, dict):
@@ -438,9 +518,10 @@ def handle_complete_stream(mid: str, params: dict[str, Any]) -> None:
 
         full_text = "".join(text_parts)
         full_thinking = "".join(thinking_parts) or None
+        # Prefer streamed thinking; if provider only attached it at the end, keep it
         result: dict[str, Any] = {
             "text": full_text,
-            "tool_calls": [],
+            "tool_calls": _finalize_tool_calls(tool_acc),
             "usage": usage_out,
             "finish_reason": finish_reason or "stop",
             "thinking": full_thinking,

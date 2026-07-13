@@ -419,33 +419,13 @@ impl LiteLlmInner {
         self.roundtrip_complete(&id, request, None)
     }
 
-    /// Streaming complete when no tools; with tools fall back to non-stream
-    /// (tool-call streaming is not reliable across all providers).
+    /// Always stream so thinking tokens paint live (even when tools are attached).
+    /// Worker accumulates tool_call deltas into the final complete_stream result.
     fn complete_stream_blocking(
         &self,
         req: ModelRequest,
         tx: Option<StreamEventTx>,
     ) -> Result<ModelResponse, ModelError> {
-        if !req.tools.is_empty() {
-            let resp = self.complete_blocking(req)?;
-            if let Some(ref tx) = tx {
-                if let Some(ref thinking) = resp.thinking {
-                    if !thinking.is_empty() {
-                        let _ = tx.send(ModelStreamEvent::ThinkingDelta {
-                            text: thinking.clone(),
-                        });
-                    }
-                }
-                if !resp.text.is_empty() {
-                    let _ = tx.send(ModelStreamEvent::TextDelta {
-                        text: resp.text.clone(),
-                    });
-                }
-                let _ = tx.send(ModelStreamEvent::MessageEnd);
-            }
-            return Ok(resp);
-        }
-
         let params = self.build_params(&req);
         let id = next_id();
         let request = WireEnvelope::complete_stream(&id, &params)
