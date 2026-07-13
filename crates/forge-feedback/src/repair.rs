@@ -49,9 +49,9 @@ impl RepairTask {
             tool_call_id: None,
             name: None,
             thinking: None,
-        },
-        thinking_duration_secs: None,
-}
+            thinking_duration_secs: None,
+        }
+    }
 }
 
 pub fn inject_repair_messages(messages: &mut Vec<Message>, repairs: &[RepairTask]) {
