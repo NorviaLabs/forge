@@ -337,15 +337,13 @@ impl ConversationModel {
                     text,
                     duration_secs,
                 } => {
-                    let still_streaming = self.opts.busy
+                    // Live thinking: show body whenever we have text and aren't forcing collapse
+                    let live = self.opts.busy
                         && duration_secs.is_none()
-                        && self.opts.stream_wait
-                            .map(|(p, _)| p == StreamWaitPhase::Thinking)
-                            .unwrap_or(false);
+                        && !text.is_empty();
                     let finished = duration_secs.is_some();
-                    let expanded = still_streaming
-                        || (finished && self.opts.thinking_expanded)
-                        || (!finished && self.opts.thinking_expanded);
+                    let expanded =
+                        live || self.opts.thinking_expanded || (self.opts.busy && !finished);
 
                     if finished && !self.opts.thinking_expanded {
                         // Default completed state: replace body with duration summary
@@ -378,8 +376,17 @@ impl ConversationModel {
                                 theme::dim(),
                             )));
                         }
+                    } else if finished {
+                        let secs = duration_secs.unwrap_or(0.0);
+                        lines.push(Line::from(vec![
+                            Span::styled("· ", theme::dim()),
+                            Span::styled(
+                                format!("Thought for {}", format_elapsed_tenths(secs)),
+                                theme::muted().add_modifier(Modifier::ITALIC),
+                            ),
+                            Span::styled("  ⌃ Ctrl+T", theme::dim()),
+                        ]));
                     } else {
-                        // Unfinished but collapsed (rare): short preview
                         let preview: String = text.chars().take(56).collect();
                         let more = if text.chars().count() > 56 { "…" } else { "" };
                         lines.push(Line::from(vec![
