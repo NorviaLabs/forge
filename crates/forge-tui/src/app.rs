@@ -27,7 +27,7 @@ use crate::conversation::{
 };
 use crate::layout::split_areas_full;
 use crate::history::InputHistory;
-use crate::layout::{is_too_small, split_areas_ex};
+use crate::layout::is_too_small;
 use crate::overlays::{
     filter_palette, handle_overlay_key, ConnectProfileItem, Key as OverlayKey, Overlay,
     OverlayAction, OverlayWidget, PaletteItem,
