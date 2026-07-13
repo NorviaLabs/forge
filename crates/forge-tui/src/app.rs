@@ -188,6 +188,34 @@ impl TuiApp {
         }
     }
 
+    /// Close the thinking clock. Prefer wall time from first thinking token;
+    /// if that is ~0 (same-batch non-stream dump), fall back to full turn elapsed.
+    fn close_thinking_timer(&mut self) {
+        if self.thought_secs.is_some() {
+            return;
+        }
+        if self.stream_thinking.is_empty() {
+            return;
+        }
+        let from_think = self
+            .thinking_started
+            .map(|t| t.elapsed().as_secs_f64())
+            .unwrap_or(0.0);
+        let from_turn = self
+            .turn_started
+            .map(|t| t.elapsed().as_secs_f64())
+            .unwrap_or(0.0);
+        // Same-batch dump of all thinking+answer → thinking_started ≈ now; use turn time.
+        let secs = if from_think < 0.15 && from_turn > from_think {
+            from_turn
+        } else if from_think > 0.0 {
+            from_think
+        } else {
+            from_turn
+        };
+        self.thought_secs = Some(secs);
+    }
+
     /// Reload credentials from disk: silent OAuth refresh, inject worker env, activate profile.
     /// So a successful `/connect` continues to work in later Forge sessions.
     fn restore_saved_auth(mut self) -> Self {
@@ -1459,19 +1487,15 @@ impl TuiApp {
                     match ev {
                         ModelStreamEvent::TextDelta { text } => {
                             // Thinking ends when answer tokens begin
-                            if self.thought_secs.is_none() && !self.stream_thinking.is_empty() {
-                                let secs = self
-                                    .thinking_started
-                                    .or(self.turn_started)
-                                    .map(|t| t.elapsed().as_secs_f64())
-                                    .unwrap_or(0.0);
-                                self.thought_secs = Some(secs);
-                            }
+                            self.close_thinking_timer();
                             self.stream_preview.push_str(&text);
                         }
                         ModelStreamEvent::ThinkingDelta { text } => {
                             if self.thinking_started.is_none() {
-                                self.thinking_started = Some(Instant::now());
+                                // Prefer turn start so duration covers full thinking wait if
+                                // the provider dumps reasoning in one late chunk.
+                                self.thinking_started =
+                                    self.turn_started.or_else(|| Some(Instant::now()));
                             }
                             self.stream_thinking.push_str(&text);
                         }
@@ -1488,34 +1512,21 @@ impl TuiApp {
                     while let Ok(ev) = rx.try_recv() {
                         match ev {
                             ModelStreamEvent::TextDelta { text } => {
-                                if self.thought_secs.is_none() && !self.stream_thinking.is_empty() {
-                                    let secs = self
-                                        .thinking_started
-                                        .or(self.turn_started)
-                                        .map(|t| t.elapsed().as_secs_f64())
-                                        .unwrap_or(0.0);
-                                    self.thought_secs = Some(secs);
-                                }
+                                self.close_thinking_timer();
                                 self.stream_preview.push_str(&text);
                             }
                             ModelStreamEvent::ThinkingDelta { text } => {
                                 if self.thinking_started.is_none() {
-                                    self.thinking_started = Some(Instant::now());
+                                    self.thinking_started =
+                                        self.turn_started.or_else(|| Some(Instant::now()));
                                 }
                                 self.stream_thinking.push_str(&text);
                             }
                             _ => {}
                         }
                     }
-                    // Thinking-only turn (no answer tokens): close the clock now
-                    if self.thought_secs.is_none() && !self.stream_thinking.is_empty() {
-                        let secs = self
-                            .thinking_started
-                            .or(self.turn_started)
-                            .map(|t| t.elapsed().as_secs_f64())
-                            .unwrap_or(0.0);
-                        self.thought_secs = Some(secs);
-                    }
+                    // Thinking-only or late thinking dump: close the clock now
+                    self.close_thinking_timer();
                     if let Some(term) = terminal.as_deref_mut() {
                         term.draw(|f| self.draw(f))?;
                     }
@@ -1547,7 +1558,7 @@ impl TuiApp {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
 
-            let last = match handle.await {
+            let mut last = match handle.await {
                 Ok(Ok(r)) => r,
                 Ok(Err(e)) => {
                     outcome_err = Some(e.to_string());
@@ -1558,6 +1569,27 @@ impl TuiApp {
                     break;
                 }
             };
+
+            // Provider may attach reasoning only on the final object (no stream deltas).
+            if self.stream_thinking.is_empty() {
+                if let Some(ref th) = last.thinking {
+                    if !th.is_empty() {
+                        if self.thinking_started.is_none() {
+                            self.thinking_started = self.turn_started;
+                        }
+                        self.stream_thinking = th.clone();
+                        self.close_thinking_timer();
+                        // One paint so the user can see thinking before collapse
+                        if let Some(term) = terminal.as_deref_mut() {
+                            let _ = term.draw(|f| self.draw(f));
+                        }
+                    }
+                }
+            } else if last.thinking.as_ref().map(|t| t.is_empty()).unwrap_or(true) {
+                // Prefer streamed thinking body on the final message
+                last.thinking = Some(self.stream_thinking.clone());
+            }
+            self.close_thinking_timer();
 
             let thought = self.thought_secs;
             self.stream_preview.clear();
