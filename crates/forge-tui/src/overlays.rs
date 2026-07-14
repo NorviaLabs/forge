@@ -129,12 +129,8 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
             desc: "Tools & file changes".into(),
         },
         PaletteItem {
-            cmd: "/commit".into(),
-            desc: "Stage + commit (git tool, no LLM)".into(),
-        },
-        PaletteItem {
-            cmd: "/push".into(),
-            desc: "Push branch (git tool, no LLM)".into(),
+            cmd: "/sync".into(),
+            desc: "Commit + push (message from changeset)".into(),
         },
         PaletteItem {
             cmd: "/stt".into(),
@@ -374,7 +370,7 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                             | "/reset"
                             | "/compact"
                             | "/diff"
-                            | "/push"
+                            | "/sync"
                             | "/stt"
                             | "/copy"
                             | "/clear"
@@ -382,7 +378,6 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                     ) {
                         OverlayAction::RunCommand(cmd)
                     } else {
-                        // /commit needs a message — insert prefix for the operator to finish.
                         OverlayAction::InsertInput(format!("{cmd} "))
                     }
                 } else {

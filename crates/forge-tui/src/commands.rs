@@ -47,10 +47,8 @@ pub enum SlashCommand {
     Clear,
     /// Toggle compact density
     Density,
-    /// Stage workspace changes and create a git commit via the `git` tool (no LLM).
-    Commit { message: Option<String> },
-    /// Push the current branch via the `git` tool (no LLM). Optional remote/ref args.
-    Push { args: Vec<String> },
+    /// Stage all changes, generate a commit message from the changeset, commit, and push.
+    Sync,
     /// Configure STT: `/stt` status or `/stt speed fast|normal|slow`.
     Stt {
         action: SttAction,
@@ -156,43 +154,7 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
         "copy" => Ok(SlashCommand::Copy),
         "clear" => Ok(SlashCommand::Clear),
         "density" => Ok(SlashCommand::Density),
-        "commit" => {
-            // /commit <message>  or  /commit -m <message>
-            // Direct git tool path — never routed to the model.
-            let mut rest: Vec<&str> = parts.collect();
-            if rest
-                .first()
-                .is_some_and(|p| *p == "-m" || *p == "--message")
-            {
-                rest.remove(0);
-            }
-            let message = rest.join(" ");
-            let message = message.trim().trim_matches(|c| c == '"' || c == '\'');
-            Ok(SlashCommand::Commit {
-                message: if message.is_empty() {
-                    None
-                } else {
-                    Some(message.to_string())
-                },
-            })
-        }
-        "push" => {
-            let args: Vec<String> = parts.map(|s| s.to_string()).collect();
-            // Safety: no force-push from the slash shortcut.
-            if args.iter().any(|a| {
-                a == "-f"
-                    || a == "--force"
-                    || a.starts_with("--force=")
-                    || a == "--force-with-lease"
-                    || a.starts_with("--force-with-lease")
-            }) {
-                return Err(CommandError::Usage(
-                    "/push does not allow force flags; use git manually if you must force-push"
-                        .into(),
-                ));
-            }
-            Ok(SlashCommand::Push { args })
-        }
+        "sync" => Ok(SlashCommand::Sync),
         "stt" => {
             let sub = parts.next().unwrap_or("status").to_ascii_lowercase();
             match sub.as_str() {
@@ -228,8 +190,7 @@ pub fn help_text() -> &'static str {
      /model [id]     Switch model (LiteLLM id) · /model refresh for catalogs\n\
      /connect …      Connect (xai | opencode_go | opencode_zen | openai | anthropic | ollama)\n\
      /diff           Tools & file changes this session\n\
-     /commit <msg>   Stage + commit via git tool (no LLM)\n\
-     /push [args]    Push branch via git tool (no LLM; no --force)\n\
+     /sync           Stage, commit (message from changeset), push\n\
      /stt [speed …]  STT status/speed · hold Ctrl+Space to dictate\n\
      /copy           Copy last assistant answer (clipboard)\n\
      /clear          Clear banners / notices\n\
@@ -344,37 +305,10 @@ mod tests {
     }
 
     #[test]
-    fn parses_commit_and_push() {
-        assert_eq!(
-            parse_slash("/commit fix the widget").unwrap().unwrap(),
-            SlashCommand::Commit {
-                message: Some("fix the widget".into())
-            }
-        );
-        assert_eq!(
-            parse_slash("/commit -m \"ship it\"").unwrap().unwrap(),
-            SlashCommand::Commit {
-                message: Some("ship it".into())
-            }
-        );
-        assert_eq!(
-            parse_slash("/commit").unwrap().unwrap(),
-            SlashCommand::Commit { message: None }
-        );
-        assert_eq!(
-            parse_slash("/push").unwrap().unwrap(),
-            SlashCommand::Push { args: vec![] }
-        );
-        assert_eq!(
-            parse_slash("/push origin HEAD").unwrap().unwrap(),
-            SlashCommand::Push {
-                args: vec!["origin".into(), "HEAD".into()]
-            }
-        );
-        assert!(matches!(
-            parse_slash("/push --force").unwrap().unwrap_err(),
-            CommandError::Usage(_)
-        ));
+    fn parses_sync() {
+        assert_eq!(parse_slash("/sync").unwrap().unwrap(), SlashCommand::Sync);
+        assert!(parse_slash("/commit").unwrap().is_err());
+        assert!(parse_slash("/push").unwrap().is_err());
     }
 
     #[test]

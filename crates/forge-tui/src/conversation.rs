@@ -125,8 +125,8 @@ impl ConversationModel {
         status: SessionStatus,
         opts: ConversationViewOpts,
     ) -> Self {
-        // Brand banner instead of dumping model system prompts into the chat.
-        let mut items = vec![ChatItem::Brand];
+        // System prompts and tool call cards stay out of the operator chat.
+        let mut items: Vec<ChatItem> = Vec::new();
         for m in messages {
             match m.role {
                 // System prompts are for the model, not the operator UI.
@@ -158,23 +158,8 @@ impl ConversationModel {
                         });
                     }
                 }
-                MessageRole::Tool => {
-                    let name = m.name.clone().unwrap_or_else(|| "tool".into());
-                    let (state, summary, detail) = classify_tool_content(&name, &m.content);
-                    // Diff card for write-like tools when content looks like a patch
-                    if looks_like_diff(&m.content) {
-                        let path = extract_path_hint(&name, &m.content);
-                        let lines = diff_preview_lines(&m.content, 24);
-                        items.push(ChatItem::DiffCard { path, lines });
-                    }
-                    items.push(ChatItem::ToolCard {
-                        name,
-                        summary,
-                        detail,
-                        state,
-                        duration: None,
-                    });
-                }
+                // Tool results are not shown as chat messages (keeps the transcript clean).
+                MessageRole::Tool => {}
             }
         }
         for e in events {
@@ -202,8 +187,8 @@ impl ConversationModel {
                 kind: BannerKind::Warn,
             });
         }
-        // Only brand + no turns yet → short empty-state hint under the banner
-        if items.len() == 1 {
+        // Empty transcript → short hint
+        if items.is_empty() {
             items.push(ChatItem::Banner {
                 text: "Type a task · /connect · Ctrl+K".into(),
                 kind: BannerKind::Info,
@@ -546,6 +531,7 @@ impl ConversationModel {
     }
 }
 
+#[allow(dead_code)] // kept for optional tool/diff UI later
 fn looks_like_diff(content: &str) -> bool {
     content.contains("\n+")
         && content.contains("\n-")
@@ -553,6 +539,7 @@ fn looks_like_diff(content: &str) -> bool {
         || content.starts_with("diff --git")
 }
 
+#[allow(dead_code)]
 fn extract_path_hint(name: &str, content: &str) -> String {
     for line in content.lines().take(8) {
         if let Some(rest) = line.strip_prefix("+++ b/") {
@@ -572,6 +559,7 @@ fn extract_path_hint(name: &str, content: &str) -> String {
     name.to_string()
 }
 
+#[allow(dead_code)]
 fn diff_preview_lines(content: &str, max: usize) -> Vec<String> {
     content
         .lines()
@@ -586,6 +574,7 @@ fn diff_preview_lines(content: &str, max: usize) -> Vec<String> {
         .collect()
 }
 
+#[allow(dead_code)]
 fn classify_tool_content(name: &str, content: &str) -> (ToolCardState, String, String) {
     let lower = content.to_ascii_lowercase();
     let state = if lower.contains("validation") || lower.contains("denied by acl") {
@@ -716,18 +705,16 @@ mod tests {
             SessionStatus::Running,
             ConversationViewOpts::default(),
         );
-        // System prompt is hidden; brand banner first
-        assert!(matches!(m.items[0], ChatItem::Brand));
-        assert!(matches!(m.items[1], ChatItem::User { .. }));
-        assert!(matches!(m.items[2], ChatItem::Thinking { .. }));
-        assert!(matches!(m.items[3], ChatItem::Assistant { .. }));
-        assert!(matches!(
-            m.items[4],
-            ChatItem::ToolCard {
-                state: ToolCardState::Done,
-                ..
-            }
-        ));
+        // System + tool messages hidden; user/assistant/thinking only
+        assert!(matches!(m.items[0], ChatItem::User { .. }));
+        assert!(matches!(m.items[1], ChatItem::Thinking { .. }));
+        assert!(matches!(m.items[2], ChatItem::Assistant { .. }));
+        assert!(
+            !m.items
+                .iter()
+                .any(|i| matches!(i, ChatItem::ToolCard { .. })),
+            "tool cards should not appear in chat"
+        );
         // Full system prompt must not appear in rendered lines
         let rendered: String = m
             .lines()
@@ -745,7 +732,14 @@ mod tests {
             !rendered.contains("You are Forge, a coding agent"),
             "system prompt leaked into UI:\n{rendered}"
         );
-        assert!(rendered.contains("FORGE"), "expected brand banner");
+        assert!(
+            !rendered.contains("FORGE"),
+            "brand splash removed from chat:\n{rendered}"
+        );
+        assert!(
+            !rendered.to_ascii_lowercase().contains("read_file"),
+            "tool call should not render:\n{rendered}"
+        );
         assert!(
             rendered.contains("Thought for 2.4s"),
             "expected thought duration summary:\n{rendered}"
@@ -798,7 +792,7 @@ mod tests {
     }
 
     #[test]
-    fn validation_is_error_card() {
+    fn tool_messages_are_hidden() {
         let msgs = vec![Message {
             role: MessageRole::Tool,
             content: "Tool validation error: bad".into(),
@@ -806,33 +800,32 @@ mod tests {
             name: Some("read_file".into()),
             thinking: None,
             thinking_duration_secs: None,
-}];
+        }];
         let m = ConversationModel::from_messages(
             &msgs,
             &[],
             SessionStatus::Running,
             ConversationViewOpts::default(),
         );
-        let tool = m
-            .items
-            .iter()
-            .find(|i| matches!(i, ChatItem::ToolCard { .. }))
-            .expect("expected tool card");
-        match tool {
-            ChatItem::ToolCard { state, .. } => assert_eq!(*state, ToolCardState::Error),
-            _ => unreachable!(),
-        }
+        assert!(
+            !m.items
+                .iter()
+                .any(|i| matches!(i, ChatItem::ToolCard { .. })),
+            "tool messages must not become chat cards"
+        );
+        // Empty chat → welcome banner only
+        assert!(matches!(m.items[0], ChatItem::Banner { .. }));
     }
 
     #[test]
-    fn empty_shows_brand() {
+    fn empty_shows_hint_banner() {
         let m = ConversationModel::from_messages(
             &[],
             &[],
             SessionStatus::Running,
             ConversationViewOpts::default(),
         );
-        assert!(matches!(m.items[0], ChatItem::Brand));
+        assert!(matches!(m.items[0], ChatItem::Banner { .. }));
     }
 
     #[test]
