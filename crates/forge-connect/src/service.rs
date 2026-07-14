@@ -164,16 +164,32 @@ impl<'a> ConnectService<'a> {
             return Err(ConnectError::OauthRejectsApiKey(profile.id));
         }
 
-        let key_source = if let Some(k) = api_key.map(str::trim).filter(|s| !s.is_empty()) {
-            self.store.set_api_key(&profile.id, k)?;
-            KeySource::Provided
-        } else if let Some((_, src)) =
+        let (key, key_source) = if let Some(k) = api_key.map(str::trim).filter(|s| !s.is_empty()) {
+            (k.to_string(), KeySource::Provided)
+        } else if let Some((k, src)) =
             resolve_key(&profile.api_key_env, &profile.id, self.store)?
         {
-            src
+            (k, src)
         } else {
             return Err(ConnectError::MissingKey(profile.id.clone()));
         };
+
+        // Live-verify OpenCode Go keys so a bad paste fails at connect, not mid-chat.
+        if profile.id == crate::opencode_go::PROFILE_ID {
+            let base = profile
+                .default_base_url
+                .as_deref()
+                .unwrap_or(crate::opencode_go::DEFAULT_BASE_URL);
+            // Skip network when offline tests request it.
+            if std::env::var("FORGE_CONNECT_SKIP_VERIFY").is_err() {
+                crate::opencode_go::verify_api_key(&key, base)
+                    .map_err(ConnectError::Message)?;
+            }
+        }
+
+        if key_source == KeySource::Provided {
+            self.store.set_api_key(&profile.id, &key)?;
+        }
 
         self.activate(&profile, key_source)
     }
@@ -492,7 +508,21 @@ impl<'a> ConnectService<'a> {
                     resolve_key(&profile.api_key_env, &profile.id, self.store)?
                 {
                     if let Some(primary) = profile.api_key_env.first() {
-                        out.push((primary.clone(), key));
+                        out.push((primary.clone(), key.clone()));
+                    }
+                    // Also export secondary env names so either documented var works.
+                    for name in profile.api_key_env.iter().skip(1) {
+                        out.push((name.clone(), key.clone()));
+                    }
+                    // OpenCode Go: LiteLLM needs the OpenAI-compatible base URL.
+                    if profile.id == crate::opencode_go::PROFILE_ID {
+                        let base = profile
+                            .default_base_url
+                            .clone()
+                            .unwrap_or_else(|| crate::opencode_go::DEFAULT_BASE_URL.into());
+                        out.push((crate::opencode_go::API_BASE_ENV.into(), base));
+                    } else if let Some(base) = profile.default_base_url.clone() {
+                        out.push((format!("{}_API_BASE", profile.id.to_ascii_uppercase()), base));
                     }
                 }
             }
