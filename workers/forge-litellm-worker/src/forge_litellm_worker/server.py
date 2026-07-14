@@ -105,6 +105,26 @@ def handle_ping(mid: str) -> None:
     )
 
 
+def _opencode_go_credentials() -> tuple[str | None, str | None]:
+    """Return (api_key, api_base) for OpenCode Go when configured."""
+    key = (
+        os.environ.get("OPENCODE_API_KEY")
+        or os.environ.get("OPENCODE_GO_API_KEY")
+        or ""
+    ).strip() or None
+    base = (
+        os.environ.get("OPENCODE_API_BASE")
+        or os.environ.get("OPENCODE_GO_API_BASE")
+        or ""
+    ).strip() or None
+    return key, base
+
+
+def _is_opencode_go_model(model: str) -> bool:
+    m = (model or "").lower()
+    return m.startswith("opencode-go/") or m.startswith("opencode/")
+
+
 def _credential_hint(model: str) -> str | None:
     """Detect missing / fixture credentials before calling upstream."""
     m = (model or "").lower()
@@ -121,6 +141,24 @@ def _credential_hint(model: str) -> str | None:
                 "Run `forge connect xai` (or /connect xai), complete OAuth, then retry. "
                 "Unset FORGE_CONNECT_OAUTH_FIXTURE if set."
             )
+    if _is_opencode_go_model(m):
+        key, base = _opencode_go_credentials()
+        if not key:
+            return (
+                "No OPENCODE_API_KEY in worker env. Run `forge connect opencode_go --key …` "
+                "(or /connect opencode_go), paste a key from https://opencode.ai/auth."
+            )
+        if not base:
+            return (
+                "OPENCODE_API_BASE is not set. Re-run `forge connect opencode_go` so Forge "
+                "exports https://opencode.ai/zen/go/v1 for the LiteLLM worker."
+            )
+        if len(key) < 16:
+            return (
+                "OPENCODE_API_KEY looks too short. Get a real key from "
+                "https://opencode.ai/auth and reconnect."
+            )
+        return None
     if m.startswith("openai/"):
         if not (os.environ.get("OPENAI_API_KEY") or "").strip():
             return "OPENAI_API_KEY is not set for this worker."
@@ -150,6 +188,16 @@ def _completion_kwargs(params: dict[str, Any], *, stream: bool) -> dict[str, Any
         # Don't let caller force stream off when we need it
         extra = {k: v for k, v in extra.items() if k != "stream"}
         kwargs.update(extra)
+
+    # OpenCode Go: OpenAI-compatible endpoint. Rewrite opencode-go/<id> → openai/<id>
+    # and inject api_base + api_key so LiteLLM does not need a separate provider plugin.
+    oc_key, oc_base = _opencode_go_credentials()
+    if oc_key and oc_base and _is_opencode_go_model(model):
+        mid = model.split("/", 1)[1] if "/" in model else model
+        kwargs["model"] = f"openai/{mid}"
+        kwargs["api_base"] = oc_base.rstrip("/")
+        kwargs["api_key"] = oc_key
+
     return kwargs
 
 

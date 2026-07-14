@@ -391,8 +391,17 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             }
             Overlay::Hitl { .. } => OverlayAction::None,
         },
+        // Use-env must NOT steal literal e/E from pasted API keys (keys almost always
+        // contain those letters). Only when the field is still empty + env is available.
         Key::Char('e') | Key::Char('E')
-            if matches!(overlay, Overlay::ConnectApiKey { env_hint: Some(_), .. }) =>
+            if matches!(
+                overlay,
+                Overlay::ConnectApiKey {
+                    env_hint: Some(_),
+                    key_input,
+                    ..
+                } if key_input.is_empty()
+            ) =>
         {
             if let Overlay::ConnectApiKey { profile_id, .. } = overlay {
                 OverlayAction::ConnectUseEnv {
@@ -404,8 +413,19 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
         }
         Key::Char(c) if matches!(overlay, Overlay::ConnectApiKey { .. }) => {
             if let Overlay::ConnectApiKey { key_input, .. } = overlay {
-                if !c.is_control() {
+                // Ignore whitespace/newlines from sloppy paste; keep other printable chars.
+                if !c.is_control() && !c.is_whitespace() {
                     key_input.push(c);
+                }
+            }
+            OverlayAction::None
+        }
+        Key::Paste(ref data) if matches!(overlay, Overlay::ConnectApiKey { .. }) => {
+            if let Overlay::ConnectApiKey { key_input, .. } = overlay {
+                for c in data.chars() {
+                    if !c.is_control() && !c.is_whitespace() {
+                        key_input.push(c);
+                    }
                 }
             }
             OverlayAction::None
@@ -446,7 +466,7 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
 }
 
 /// Minimal key enum for testable overlay handling (mapped from crossterm in app).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Key {
     Esc,
     Enter,
@@ -454,6 +474,8 @@ pub enum Key {
     Down,
     Backspace,
     Char(char),
+    /// Bracketed-paste payload (full string at once).
+    Paste(String),
     Other,
 }
 
@@ -580,12 +602,17 @@ impl Widget for OverlayWidget<'_> {
                 let r = centered_rect(70, 45, area);
                 let masked: String = "*".repeat(key_input.chars().count());
                 let url = auth_url.as_deref().unwrap_or("(see docs)");
+                let n = key_input.chars().count();
                 let env_line = env_hint
                     .as_ref()
-                    .map(|h| format!("\n[e] Use existing env ({h})"))
+                    .map(|h| {
+                        format!(
+                            "\n[e] Use existing env ({h}) — only while field is empty"
+                        )
+                    })
                     .unwrap_or_default();
                 let body = format!(
-                    "Connect: {title}\n\n1. Sign in and copy your API key:\n   {url}\n\n2. Paste API key below (masked):\n   [{masked}]\n\n[Enter] Connect    [Esc] Cancel{env_line}"
+                    "Connect: {title}\n\n1. Sign in and copy your API key:\n   {url}\n\n2. Paste API key below (masked):\n   [{masked}]\n   ({n} chars)\n\n[Enter] Connect    [Esc] Cancel{env_line}"
                 );
                 Paragraph::new(body)
                     .block(
@@ -776,6 +803,63 @@ mod tests {
         }
         if let Overlay::ConnectApiKey { key_input, .. } = &o {
             assert_eq!(key_input, "sec");
+        }
+    }
+
+    #[test]
+    fn connect_api_key_e_types_into_field_even_when_env_hint() {
+        // Regression: plain 'e' used to fire ConnectUseEnv and abort paste mid-key.
+        let mut o = Overlay::connect_api_key(
+            "opencode_go",
+            "OpenCode Go",
+            Some("https://opencode.ai/auth".into()),
+            Some("OPENCODE_API_KEY".into()),
+        );
+        for c in "sk-test-key-with-e-chars".chars() {
+            let a = handle_overlay_key(&mut o, Key::Char(c));
+            assert_eq!(a, OverlayAction::None, "char {c:?} must not steal env");
+        }
+        if let Overlay::ConnectApiKey { key_input, .. } = &o {
+            assert_eq!(key_input, "sk-test-key-with-e-chars");
+        } else {
+            panic!("expected ConnectApiKey");
+        }
+        let a = handle_overlay_key(&mut o, Key::Enter);
+        match a {
+            OverlayAction::ConnectSubmitKey { api_key, .. } => {
+                assert_eq!(api_key, "sk-test-key-with-e-chars");
+            }
+            other => panic!("expected submit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn connect_api_key_e_uses_env_only_when_field_empty() {
+        let mut o = Overlay::connect_api_key(
+            "opencode_go",
+            "OpenCode Go",
+            None,
+            Some("OPENCODE_API_KEY".into()),
+        );
+        let a = handle_overlay_key(&mut o, Key::Char('e'));
+        assert_eq!(
+            a,
+            OverlayAction::ConnectUseEnv {
+                profile_id: "opencode_go".into()
+            }
+        );
+    }
+
+    #[test]
+    fn connect_api_key_paste_inserts_full_string() {
+        let mut o = Overlay::connect_api_key("opencode_go", "OpenCode Go", None, None);
+        let pasted = "abc123XYZ-long-api-key-value\n";
+        handle_overlay_key(&mut o, Key::Paste(pasted.into()));
+        if let Overlay::ConnectApiKey { key_input, .. } = &o {
+            assert_eq!(key_input, "abc123XYZ-long-api-key-value");
+            assert_eq!(key_input.chars().count(), 28);
+        } else {
+            panic!("expected ConnectApiKey");
         }
     }
 
