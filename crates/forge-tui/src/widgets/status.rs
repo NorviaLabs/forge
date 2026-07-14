@@ -133,7 +133,7 @@ impl Widget for StatusBar<'_> {
         };
         let ctx = format!("{:.0}%", self.model.ctx_pct * 100.0);
 
-        // Calm single line: brand · connect · state · model · ctx · wt
+        // Calm single line: connect · state · model · ctx · wt (no product title)
         let (conn_label, conn_style) = if self.model.provider_connected {
             let who = self
                 .model
@@ -144,14 +144,15 @@ impl Widget for StatusBar<'_> {
                 } else {
                     "ready"
                 });
-            (format!("● connected:{who} "), theme::ok())
+            (format!(" ● connected:{who} "), theme::ok())
         } else {
-            ("○ not connected ".into(), theme::warn().add_modifier(Modifier::BOLD))
+            (
+                " ○ not connected ".into(),
+                theme::warn().add_modifier(Modifier::BOLD),
+            )
         };
 
         let mut spans = vec![
-            Span::styled(" forge ", theme::brand()),
-            Span::styled("· ", theme::dim()),
             Span::styled(conn_label, conn_style),
             Span::styled("· ", theme::dim()),
             Span::styled(format!("{label} "), style),

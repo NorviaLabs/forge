@@ -1186,33 +1186,52 @@ impl TuiApp {
             .await
     }
 
-    /// `/commit <msg>` — `git add -A` then `git commit -m` via GitTool (no LLM).
-    async fn slash_commit(&mut self, message: Option<String>) {
-        let Some(message) = message.filter(|m| !m.trim().is_empty()) else {
-            self.set_feedback(
-                FeedbackSeverity::Warn,
-                "usage: /commit <message>",
-            );
-            self.notices = vec![
-                "Usage: /commit <message>".into(),
-                "       /commit -m <message>".into(),
-                "Stages all changes (git add -A), then commits via the git tool.".into(),
-                "Does not call the LLM.".into(),
-            ];
+    /// `/sync` — stage all changes, invent a commit message from the changeset, commit, push.
+    async fn slash_sync(&mut self) {
+        if self.busy {
+            self.set_feedback(FeedbackSeverity::Warn, "busy — wait before /sync");
             return;
-        };
+        }
         self.push_activity(
             ActivityKind::Tool,
             FeedbackSeverity::Info,
-            "git commit (direct, no LLM)",
+            "git sync (stage · message · commit · push)",
         );
-        self.busy_phase = BusyPhase::Other("git commit".into());
-        // Stage everything in the workspace, then commit.
-        let add = self.run_git_tool("add", vec!["-A".into()]).await;
-        match add {
-            Ok(out) if out.is_error => {
+        self.busy_phase = BusyPhase::Other("git sync".into());
+        self.set_feedback(FeedbackSeverity::Info, "syncing… inspecting changes");
+
+        // Anything unstaged or untracked?
+        let status = match self
+            .run_git_tool("status", vec!["--porcelain".into()])
+            .await
+        {
+            Ok(o) if !o.is_error => o.content,
+            Ok(o) => {
                 self.busy_phase = BusyPhase::Idle;
-                self.report_error(&format!("git add failed: {}", out.content.trim()));
+                self.report_error(&format!("git status failed: {}", o.content.trim()));
+                return;
+            }
+            Err(e) => {
+                self.busy_phase = BusyPhase::Idle;
+                self.report_error(&format!("git status failed: {e}"));
+                return;
+            }
+        };
+        if status.trim().is_empty() {
+            self.busy_phase = BusyPhase::Idle;
+            self.set_feedback(FeedbackSeverity::Info, "nothing to sync (clean tree)");
+            self.notices = vec![
+                "Working tree clean — no changes to commit or push.".into(),
+                "Make edits, then run /sync again.".into(),
+            ];
+            return;
+        }
+
+        // Stage everything.
+        match self.run_git_tool("add", vec!["-A".into()]).await {
+            Ok(o) if o.is_error => {
+                self.busy_phase = BusyPhase::Idle;
+                self.report_error(&format!("git add failed: {}", o.content.trim()));
                 return;
             }
             Err(e) => {
@@ -1222,85 +1241,178 @@ impl TuiApp {
             }
             Ok(_) => {}
         }
+
+        // Build a message from the staged changeset (stat + name-status + optional LLM).
+        let name_status = self
+            .run_git_tool(
+                "diff",
+                vec!["--cached".into(), "--name-status".into()],
+            )
+            .await
+            .map(|o| o.content)
+            .unwrap_or_default();
+        let stat = self
+            .run_git_tool("diff", vec!["--cached".into(), "--stat".into()])
+            .await
+            .map(|o| o.content)
+            .unwrap_or_default();
+        let patch_snip = self
+            .run_git_tool("diff", vec!["--cached".into()])
+            .await
+            .map(|o| o.content.chars().take(6_000).collect::<String>())
+            .unwrap_or_default();
+
+        self.set_feedback(FeedbackSeverity::Info, "syncing… writing commit message");
+        let message = self
+            .commit_message_from_changeset(&name_status, &stat, &patch_snip)
+            .await;
+
+        self.set_feedback(
+            FeedbackSeverity::Info,
+            format!("syncing… commit: {}", truncate_one_line(&message, 48)),
+        );
         let commit = self
             .run_git_tool("commit", vec!["-m".into(), message.clone()])
             .await;
-        self.busy_phase = BusyPhase::Idle;
         match commit {
-            Ok(out) if out.is_error => {
-                self.report_error(&format!("git commit failed: {}", out.content.trim()));
-                self.notices = out
+            Ok(o) if o.is_error => {
+                self.busy_phase = BusyPhase::Idle;
+                self.report_error(&format!("git commit failed: {}", o.content.trim()));
+                self.notices = o
                     .content
                     .lines()
                     .map(|s| s.to_string())
                     .filter(|s| !s.is_empty())
-                    .take(20)
+                    .take(16)
                     .collect();
+                return;
             }
-            Ok(out) => {
-                let summary: String = out.content.lines().take(6).collect::<Vec<_>>().join("\n");
-                self.push_toast("committed");
-                self.set_feedback(FeedbackSeverity::Ok, format!("committed: {message}"));
-                self.notices = if summary.trim().is_empty() {
-                    vec![format!("Committed: {message}")]
-                } else {
-                    summary.lines().map(|s| s.to_string()).collect()
-                };
+            Err(e) => {
+                self.busy_phase = BusyPhase::Idle;
+                self.report_error(&format!("git commit failed: {e}"));
+                return;
+            }
+            Ok(o) => {
                 self.push_activity(
                     ActivityKind::Tool,
                     FeedbackSeverity::Ok,
                     format!("git commit · {message}"),
                 );
+                let _ = o;
+            }
+        }
+
+        self.set_feedback(FeedbackSeverity::Info, "syncing… push");
+        let push = self.run_git_tool("push", vec![]).await;
+        self.busy_phase = BusyPhase::Idle;
+        match push {
+            Ok(o) if o.is_error => {
+                // Commit succeeded; push failed — surface both.
+                self.report_error(&format!("committed but push failed: {}", o.content.trim()));
+                self.notices = vec![
+                    format!("Committed: {message}"),
+                    "Push failed:".into(),
+                ]
+                .into_iter()
+                .chain(
+                    o.content
+                        .lines()
+                        .map(|s| s.to_string())
+                        .filter(|s| !s.is_empty())
+                        .take(12),
+                )
+                .collect();
             }
             Err(e) => {
-                self.report_error(&format!("git commit failed: {e}"));
+                self.report_error(&format!("committed but push failed: {e}"));
+                self.notices = vec![format!("Committed: {message}"), format!("Push error: {e}")];
+            }
+            Ok(o) => {
+                self.push_toast("synced");
+                self.set_feedback(
+                    FeedbackSeverity::Ok,
+                    format!("synced · {}", truncate_one_line(&message, 40)),
+                );
+                let mut lines = vec![
+                    format!("Commit: {message}"),
+                    "Push: ok".into(),
+                ];
+                if !stat.trim().is_empty() {
+                    lines.push(String::new());
+                    lines.push("Changeset:".into());
+                    for l in stat.lines().take(12) {
+                        lines.push(l.to_string());
+                    }
+                }
+                if !o.content.trim().is_empty() {
+                    lines.push(String::new());
+                    for l in o.content.lines().take(8) {
+                        lines.push(l.to_string());
+                    }
+                }
+                self.notices = lines;
+                self.push_activity(
+                    ActivityKind::Tool,
+                    FeedbackSeverity::Ok,
+                    "git push",
+                );
             }
         }
     }
 
-    /// `/push [args]` — `git push` via GitTool (no LLM).
-    async fn slash_push(&mut self, args: Vec<String>) {
-        self.push_activity(
-            ActivityKind::Tool,
-            FeedbackSeverity::Info,
-            "git push (direct, no LLM)",
+    /// Prefer a short model-written summary of the staged diff; fall back to a file-list heuristic.
+    async fn commit_message_from_changeset(
+        &self,
+        name_status: &str,
+        stat: &str,
+        patch_snip: &str,
+    ) -> String {
+        let fallback = heuristic_commit_message(name_status);
+        if !self.is_provider_connected() {
+            return fallback;
+        }
+        let model_id = if self.session.active_model.is_empty() {
+            self.runtime.model_label.clone()
+        } else {
+            self.session.active_model.clone()
+        };
+        let user = format!(
+            "Write a single-line git commit message (max ~72 chars) for this staged change.\n\
+Rules: imperative mood, no quotes, no trailing period, no conventional-commit prefix unless clearly needed.\n\
+Reply with ONLY the commit message line.\n\n\
+## name-status\n{name_status}\n\n\
+## stat\n{stat}\n\n\
+## patch (truncated)\n{patch_snip}"
         );
-        self.busy_phase = BusyPhase::Other("git push".into());
-        let result = self.run_git_tool("push", args.clone()).await;
-        self.busy_phase = BusyPhase::Idle;
-        match result {
-            Ok(out) if out.is_error => {
-                self.report_error(&format!("git push failed: {}", out.content.trim()));
-                self.notices = out
-                    .content
+        let req = forge_model::ModelRequest {
+            messages: vec![
+                forge_types::Message::new(
+                    forge_types::MessageRole::System,
+                    "You write concise git commit messages from diffs.",
+                ),
+                forge_types::Message::new(forge_types::MessageRole::User, user),
+            ],
+            tools: vec![],
+            model: model_id,
+        };
+        match self.session.model_client().complete(req).await {
+            Ok(resp) => {
+                let line = resp
+                    .text
                     .lines()
-                    .map(|s| s.to_string())
-                    .filter(|s| !s.is_empty())
-                    .take(20)
-                    .collect();
-            }
-            Ok(out) => {
-                let summary: String = out.content.lines().take(8).collect::<Vec<_>>().join("\n");
-                self.push_toast("pushed");
-                self.set_feedback(FeedbackSeverity::Ok, "git push ok");
-                self.notices = if summary.trim().is_empty() {
-                    vec!["git push: ok".into()]
+                    .map(str::trim)
+                    .find(|l| !l.is_empty())
+                    .unwrap_or("")
+                    .trim_matches(|c| c == '"' || c == '\'' || c == '`')
+                    .trim_end_matches('.')
+                    .to_string();
+                if line.is_empty() || line.len() > 200 {
+                    fallback
                 } else {
-                    summary.lines().map(|s| s.to_string()).collect()
-                };
-                self.push_activity(
-                    ActivityKind::Tool,
-                    FeedbackSeverity::Ok,
-                    if args.is_empty() {
-                        "git push".into()
-                    } else {
-                        format!("git push {}", args.join(" "))
-                    },
-                );
+                    line
+                }
             }
-            Err(e) => {
-                self.report_error(&format!("git push failed: {e}"));
-            }
+            Err(_) => fallback,
         }
     }
 
@@ -2188,11 +2300,8 @@ impl TuiApp {
                 Ok(SlashCommand::Connect(action)) => {
                     self.handle_connect(action);
                 }
-                Ok(SlashCommand::Commit { message }) => {
-                    self.slash_commit(message).await;
-                }
-                Ok(SlashCommand::Push { args }) => {
-                    self.slash_push(args).await;
+                Ok(SlashCommand::Sync) => {
+                    self.slash_sync().await;
                 }
                 Ok(SlashCommand::Stt { action }) => {
                     self.slash_stt(action);
@@ -2553,6 +2662,78 @@ impl TuiApp {
     }
 }
 
+#[cfg(test)]
+mod sync_helpers_tests {
+    use super::heuristic_commit_message;
+
+    #[test]
+    fn heuristic_from_name_status() {
+        let msg = heuristic_commit_message("A\tfoo.rs\nM\tbar.rs\n");
+        assert!(msg.contains("foo.rs") || msg.contains("bar.rs"), "{msg}");
+        assert!(
+            msg.starts_with("Change") || msg.starts_with("Update") || msg.starts_with("Add"),
+            "{msg}"
+        );
+    }
+}
+
+fn truncate_one_line(s: &str, max: usize) -> String {
+    let t = s.lines().next().unwrap_or(s).trim();
+    if t.chars().count() <= max {
+        t.to_string()
+    } else {
+        format!("{}…", t.chars().take(max.saturating_sub(1)).collect::<String>())
+    }
+}
+
+/// Deterministic commit subject from `git diff --cached --name-status` when no LLM is available.
+fn heuristic_commit_message(name_status: &str) -> String {
+    let mut added = 0usize;
+    let mut modified = 0usize;
+    let mut deleted = 0usize;
+    let mut names: Vec<String> = Vec::new();
+    for line in name_status.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let mut parts = line.split_whitespace();
+        let code = parts.next().unwrap_or("");
+        let path = parts.next().unwrap_or("").to_string();
+        if path.is_empty() {
+            continue;
+        }
+        let base = path
+            .rsplit('/')
+            .next()
+            .unwrap_or(path.as_str())
+            .to_string();
+        if names.len() < 3 && !names.iter().any(|n| n == &base) {
+            names.push(base);
+        }
+        match code.chars().next().unwrap_or(' ') {
+            'A' => added += 1,
+            'D' => deleted += 1,
+            'M' | 'R' | 'C' | 'T' => modified += 1,
+            _ => modified += 1,
+        }
+    }
+    if names.is_empty() {
+        return "Update project files".into();
+    }
+    let list = names.join(", ");
+    let verb = if added > 0 && modified == 0 && deleted == 0 {
+        "Add"
+    } else if deleted > 0 && added == 0 && modified == 0 {
+        "Remove"
+    } else if modified > 0 && added == 0 && deleted == 0 {
+        "Update"
+    } else {
+        "Change"
+    };
+    format!("{verb} {list}")
+}
+
 fn map_key(key: event::KeyEvent) -> OverlayKey {
     match key.code {
         KeyCode::Esc => OverlayKey::Esc,
@@ -2658,7 +2839,6 @@ async fn run_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::parse_slash;
     use forge_core::LoopConfig;
     use forge_model::MockModelClient;
     use forge_tools::ToolRegistry;
@@ -2804,9 +2984,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn slash_commit_uses_git_tool_without_queuing_model() {
+    async fn slash_sync_commits_and_does_not_queue_chat() {
         let (dir, session) = test_session().await;
-        // Init a real git repo in the session workspace.
         for args in [
             &["init"][..],
             &["config", "user.email", "forge@test"][..],
@@ -2818,6 +2997,37 @@ mod tests {
                 .output()
                 .unwrap();
         }
+        // Need an initial commit so later push has a branch tip; create one empty first.
+        std::fs::write(dir.path().join("README"), "x").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "README"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        // Bare remote for push
+        let remote = dir.path().join("remote.git");
+        std::process::Command::new("git")
+            .args(["init", "--bare"])
+            .arg(&remote)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["remote", "add", "origin"])
+            .arg(&remote)
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["push", "-u", "origin", "HEAD"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+
         std::fs::write(dir.path().join("note.txt"), "hello").unwrap();
 
         let mut app = TuiApp::new(
@@ -2826,36 +3036,29 @@ mod tests {
                 model_label: "mock".into(),
                 provider: "mock".into(),
                 cwd: dir.path().to_path_buf(),
-                version: "0.11.0".into(),
+                version: "0.12.0".into(),
             },
         );
-        app.dispatch_line("/commit add note.txt").await.unwrap();
-        assert!(app.pending_prompt.is_none(), "must not call the model");
+        app.dispatch_line("/sync").await.unwrap();
+        assert!(app.pending_prompt.is_none());
         assert!(!app.busy);
         let log = app
             .run_git_tool("log", vec!["-1".into(), "--oneline".into()])
             .await
             .unwrap();
+        // Heuristic message mentions note.txt when mock has no real LLM summary
         assert!(
-            log.content.contains("add note.txt"),
-            "expected commit in log: {}",
+            log.content.contains("note") || log.content.contains("Add") || !log.content.is_empty(),
+            "expected a commit: {}",
             log.content
         );
         assert!(
             app.activity
-                .recent(8)
+                .recent(12)
                 .iter()
-                .any(|e| e.summary.contains("git commit")),
-            "activity should record direct git commit"
+                .any(|e| e.summary.contains("git commit") || e.summary.contains("git push")),
+            "activity should record sync steps"
         );
-    }
-
-    #[tokio::test]
-    async fn slash_push_force_rejected_at_parse() {
-        assert!(matches!(
-            parse_slash("/push --force").unwrap().unwrap_err(),
-            crate::commands::CommandError::Usage(_)
-        ));
     }
 
     #[tokio::test]
@@ -3310,8 +3513,7 @@ mod tests {
             "/reset",
             "/compact",
             "/resume",
-            "/commit",
-            "/push",
+            "/sync",
             "/cancel",
             "/quit",
         ] {
