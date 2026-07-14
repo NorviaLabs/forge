@@ -57,7 +57,82 @@ fn connect_list_shows_profiles() {
         .assert()
         .success()
         .stdout(predicate::str::contains("xai"))
-        .stdout(predicate::str::contains("opencode_go"));
+        .stdout(predicate::str::contains("opencode_go"))
+        .stdout(predicate::str::contains("opencode_zen"))
+        .stdout(predicate::str::contains("openai"))
+        .stdout(predicate::str::contains("anthropic"))
+        .stdout(predicate::str::contains("ollama"));
+}
+
+#[test]
+fn connect_opencode_zen_with_key_no_secret_leak() {
+    let dir = tempdir().unwrap();
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(home.join("Library/Application Support/forge")).unwrap();
+    let secret = "sk-opencode-zen-test-key-xxxx";
+    Command::cargo_bin("forge")
+        .unwrap()
+        .env("HOME", &home)
+        .env("FORGE_CONNECT_SKIP_VERIFY", "1")
+        .args(["connect", "opencode_zen", "--key", secret])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("OpenCode Zen"))
+        .stdout(predicate::str::contains(secret).not())
+        .stdout(predicate::str::contains("opencode-zen/"));
+}
+
+#[test]
+fn connect_openai_with_key_no_secret_leak() {
+    let dir = tempdir().unwrap();
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(home.join(".config/forge")).unwrap();
+    std::fs::create_dir_all(home.join("Library/Application Support/forge")).unwrap();
+    let secret = "sk-openai-test-key-not-real-xxxx";
+    Command::cargo_bin("forge")
+        .unwrap()
+        .env("HOME", &home)
+        .env("FORGE_CONNECT_SKIP_VERIFY", "1")
+        .args(["connect", "openai", "--key", secret])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("OpenAI"))
+        .stdout(predicate::str::contains(secret).not())
+        .stdout(predicate::str::contains("openai/"));
+}
+
+#[test]
+fn connect_anthropic_with_key_no_secret_leak() {
+    let dir = tempdir().unwrap();
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(home.join("Library/Application Support/forge")).unwrap();
+    let secret = "sk-ant-test-key-not-real-yyyy";
+    Command::cargo_bin("forge")
+        .unwrap()
+        .env("HOME", &home)
+        .env("FORGE_CONNECT_SKIP_VERIFY", "1")
+        .args(["connect", "anthropic", "--key", secret])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Anthropic"))
+        .stdout(predicate::str::contains(secret).not())
+        .stdout(predicate::str::contains("anthropic/"));
+}
+
+#[test]
+fn connect_ollama_without_key_when_verify_skipped() {
+    let dir = tempdir().unwrap();
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(home.join("Library/Application Support/forge")).unwrap();
+    Command::cargo_bin("forge")
+        .unwrap()
+        .env("HOME", &home)
+        .env("FORGE_CONNECT_SKIP_VERIFY", "1")
+        .args(["connect", "ollama"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Ollama"))
+        .stdout(predicate::str::contains("ollama/"));
 }
 
 #[test]
