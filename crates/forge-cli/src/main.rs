@@ -59,7 +59,7 @@ enum Commands {
     },
     /// Print version, workspace, and model
     Status,
-    /// Connect a provider profile (xai | opencode_go | list | status)
+    /// Connect a provider (xai | opencode_go | opencode_zen | openai | anthropic | ollama | list | status)
     Connect {
         /// Profile id, or list|status|disconnect
         profile: Option<String>,

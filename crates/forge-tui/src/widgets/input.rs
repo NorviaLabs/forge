@@ -15,6 +15,8 @@ pub struct InputModel {
     pub hint: String,
     /// When true, text uses history_active background (Phase 7 browse).
     pub history_browse: bool,
+    /// No live LLM provider — chrome warns; chat send is gated in the app.
+    pub not_connected: bool,
 }
 
 impl InputModel {
@@ -172,12 +174,16 @@ impl Widget for InputBar<'_> {
             out
         };
 
-        let border = if self.model.history_browse {
+        let border = if self.model.not_connected {
+            theme::warn()
+        } else if self.model.history_browse {
             theme::brand()
         } else {
             theme::border()
         };
-        let title = if self.model.history_browse {
+        let title = if self.model.not_connected {
+            " input · not connected · /connect required "
+        } else if self.model.history_browse {
             " input · history "
         } else if self.model.text.contains('\n') {
             " input · multi-line · Enter send · Shift+Enter newline "

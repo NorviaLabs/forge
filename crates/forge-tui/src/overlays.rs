@@ -61,6 +61,8 @@ pub struct PaletteItem {
 pub struct ModelItem {
     pub provider: String,
     pub model: String,
+    /// Optional connect profile that sourced this row (catalog).
+    pub profile_id: Option<String>,
 }
 
 pub fn default_palette_items() -> Vec<PaletteItem> {
@@ -76,11 +78,11 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
         },
         PaletteItem {
             cmd: "/connect".into(),
-            desc: "Connect xAI Grok or OpenCode Go".into(),
+            desc: "Connect provider (xAI, OpenCode Go/Zen, OpenAI, Anthropic, Ollama)".into(),
         },
         PaletteItem {
             cmd: "/model".into(),
-            desc: "Switch provider/model".into(),
+            desc: "Switch model (catalog) · /model refresh".into(),
         },
         PaletteItem {
             cmd: "/tools".into(),
@@ -88,7 +90,7 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
         },
         PaletteItem {
             cmd: "/cost".into(),
-            desc: "Context usage".into(),
+            desc: "Token usage this session".into(),
         },
         PaletteItem {
             cmd: "/journal".into(),
@@ -127,6 +129,18 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
             desc: "Tools & file changes".into(),
         },
         PaletteItem {
+            cmd: "/commit".into(),
+            desc: "Stage + commit (git tool, no LLM)".into(),
+        },
+        PaletteItem {
+            cmd: "/push".into(),
+            desc: "Push branch (git tool, no LLM)".into(),
+        },
+        PaletteItem {
+            cmd: "/stt".into(),
+            desc: "STT status / speed (Ctrl+Space PTT)".into(),
+        },
+        PaletteItem {
             cmd: "/copy".into(),
             desc: "Copy last answer".into(),
         },
@@ -145,25 +159,44 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
     ]
 }
 
+/// Fallback model list from built-in profile defaults (no network).
 pub fn default_models() -> Vec<ModelItem> {
-    // Phase 5/6: LiteLLM model strings (provider field = litellm routing label)
-    let mut items = vec![
-        ModelItem {
-            provider: "litellm".into(),
-            model: "openai/gpt-4.1-mini".into(),
-        },
-        ModelItem {
-            provider: "litellm".into(),
-            model: "anthropic/claude-sonnet".into(),
-        },
-    ];
+    let mut items = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
     for p in forge_connect::builtin_registry().profiles() {
         for m in &p.default_models {
-            items.push(ModelItem {
-                provider: "litellm".into(),
-                model: m.clone(),
-            });
+            if seen.insert(m.clone()) {
+                items.push(ModelItem {
+                    provider: "litellm".into(),
+                    model: m.clone(),
+                    profile_id: Some(p.id.clone()),
+                });
+            }
         }
+    }
+    // Offline baseline if registry empty
+    if items.is_empty() {
+        items.push(ModelItem {
+            provider: "litellm".into(),
+            model: "openai/gpt-4.1-mini".into(),
+            profile_id: None,
+        });
+    }
+    items
+}
+
+/// Build picker rows from catalog entries (live/cached) + optional fallbacks.
+pub fn models_from_catalog(entries: &[forge_connect::CatalogEntry]) -> Vec<ModelItem> {
+    let mut items: Vec<ModelItem> = entries
+        .iter()
+        .map(|e| ModelItem {
+            provider: "litellm".into(),
+            model: e.id.clone(),
+            profile_id: Some(e.profile_id.clone()),
+        })
+        .collect();
+    if items.is_empty() {
+        items = default_models();
     }
     items
 }
@@ -180,9 +213,13 @@ impl Overlay {
     }
 
     pub fn model_open() -> Self {
+        Self::model_open_with(default_models())
+    }
+
+    pub fn model_open_with(items: Vec<ModelItem>) -> Self {
         Self::Model {
             selected: 0,
-            items: default_models(),
+            items,
         }
     }
 
@@ -337,12 +374,15 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                             | "/reset"
                             | "/compact"
                             | "/diff"
+                            | "/push"
+                            | "/stt"
                             | "/copy"
                             | "/clear"
                             | "/density"
                     ) {
                         OverlayAction::RunCommand(cmd)
                     } else {
+                        // /commit needs a message — insert prefix for the operator to finish.
                         OverlayAction::InsertInput(format!("{cmd} "))
                     }
                 } else {
@@ -565,7 +605,7 @@ impl Widget for OverlayWidget<'_> {
                 List::new(list_items).render(inner, buf);
             }
             Overlay::Model { selected, items } => {
-                let r = centered_rect(50, 40, area);
+                let r = centered_rect(70, 55, area);
                 let list_items: Vec<ListItem> = items
                     .iter()
                     .enumerate()
@@ -576,8 +616,13 @@ impl Widget for OverlayWidget<'_> {
                         } else {
                             theme::text()
                         };
-                        let mut row = format!("{marker}{} / {}", m.provider, m.model);
-                        while row.chars().count() < 36 {
+                        let tag = m
+                            .profile_id
+                            .as_deref()
+                            .map(|p| format!("  [{p}]"))
+                            .unwrap_or_default();
+                        let mut row = format!("{marker}{}{tag}", m.model);
+                        while row.chars().count() < 40 {
                             row.push(' ');
                         }
                         ListItem::new(Span::styled(row, style))
@@ -588,7 +633,10 @@ impl Widget for OverlayWidget<'_> {
                         Block::default()
                             .borders(Borders::ALL)
                             .border_style(theme::border())
-                            .title(Span::styled(" model picker ", theme::muted())),
+                            .title(Span::styled(
+                                " model picker · catalog + defaults · /model <id> ",
+                                theme::muted(),
+                            )),
                     )
                     .render(r, buf);
             }

@@ -1,6 +1,7 @@
 pub mod feedback;
 pub mod footer;
 pub mod input;
+pub mod queue;
 pub mod status;
 
 pub use feedback::{
@@ -8,4 +9,5 @@ pub use feedback::{
 };
 pub use footer::{FooterBar, FooterModel};
 pub use input::{InputBar, InputModel};
+pub use queue::{hit_test_queue_row, QueueBar, QueueModel};
 pub use status::{session_chrome_lines, BusyPhase, StatusBar, StatusModel};

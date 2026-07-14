@@ -18,9 +18,14 @@ pub enum SlashCommand {
     Status,
     Resume { session_id: Uuid },
     Cancel,
+    /// Switch model. `id` is a LiteLLM string (`openai/gpt-4.1`) or prefix+name.
+    /// `refresh` re-fetches remote catalogs for connected providers.
     Model {
+        /// Full model id or provider prefix (when `model` is set).
         provider: Option<String>,
         model: Option<String>,
+        /// `/model refresh` — re-pull live catalogs.
+        refresh: bool,
     },
     Journal { tail: Option<usize> },
     Tools,
@@ -42,6 +47,22 @@ pub enum SlashCommand {
     Clear,
     /// Toggle compact density
     Density,
+    /// Stage workspace changes and create a git commit via the `git` tool (no LLM).
+    Commit { message: Option<String> },
+    /// Push the current branch via the `git` tool (no LLM). Optional remote/ref args.
+    Push { args: Vec<String> },
+    /// Configure STT: `/stt` status or `/stt speed fast|normal|slow`.
+    Stt {
+        action: SttAction,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SttAction {
+    /// Show current STT settings.
+    Status,
+    /// Set speed preset (affects local whisper model size for transcription).
+    Speed(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,10 +98,23 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
             Ok(SlashCommand::Resume { session_id })
         }
         "cancel" => Ok(SlashCommand::Cancel),
-        "model" => Ok(SlashCommand::Model {
-            provider: parts.next().map(|s| s.to_string()),
-            model: parts.next().map(|s| s.to_string()),
-        }),
+        "model" => {
+            let a = parts.next().map(|s| s.to_string());
+            let b = parts.next().map(|s| s.to_string());
+            if a.as_deref().is_some_and(|s| s.eq_ignore_ascii_case("refresh")) {
+                Ok(SlashCommand::Model {
+                    provider: None,
+                    model: None,
+                    refresh: true,
+                })
+            } else {
+                Ok(SlashCommand::Model {
+                    provider: a,
+                    model: b,
+                    refresh: false,
+                })
+            }
+        }
         "journal" => Ok(SlashCommand::Journal {
             tail: parts.next().and_then(|s| s.parse().ok()),
         }),
@@ -122,6 +156,65 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
         "copy" => Ok(SlashCommand::Copy),
         "clear" => Ok(SlashCommand::Clear),
         "density" => Ok(SlashCommand::Density),
+        "commit" => {
+            // /commit <message>  or  /commit -m <message>
+            // Direct git tool path — never routed to the model.
+            let mut rest: Vec<&str> = parts.collect();
+            if rest
+                .first()
+                .is_some_and(|p| *p == "-m" || *p == "--message")
+            {
+                rest.remove(0);
+            }
+            let message = rest.join(" ");
+            let message = message.trim().trim_matches(|c| c == '"' || c == '\'');
+            Ok(SlashCommand::Commit {
+                message: if message.is_empty() {
+                    None
+                } else {
+                    Some(message.to_string())
+                },
+            })
+        }
+        "push" => {
+            let args: Vec<String> = parts.map(|s| s.to_string()).collect();
+            // Safety: no force-push from the slash shortcut.
+            if args.iter().any(|a| {
+                a == "-f"
+                    || a == "--force"
+                    || a.starts_with("--force=")
+                    || a == "--force-with-lease"
+                    || a.starts_with("--force-with-lease")
+            }) {
+                return Err(CommandError::Usage(
+                    "/push does not allow force flags; use git manually if you must force-push"
+                        .into(),
+                ));
+            }
+            Ok(SlashCommand::Push { args })
+        }
+        "stt" => {
+            let sub = parts.next().unwrap_or("status").to_ascii_lowercase();
+            match sub.as_str() {
+                "status" | "show" => Ok(SlashCommand::Stt {
+                    action: SttAction::Status,
+                }),
+                "speed" => {
+                    let v = parts
+                        .next()
+                        .ok_or_else(|| {
+                            CommandError::Usage("/stt speed fast|normal|slow".into())
+                        })?
+                        .to_string();
+                    Ok(SlashCommand::Stt {
+                        action: SttAction::Speed(v),
+                    })
+                }
+                other => Err(CommandError::Usage(format!(
+                    "/stt status|speed, got {other}"
+                ))),
+            }
+        }
         other => Err(CommandError::Unknown(other.to_string())),
     }
 }
@@ -132,15 +225,18 @@ pub fn help_text() -> &'static str {
      /status         Session status\n\
      /resume <id>    Resume session from journal\n\
      /cancel         Soft-cancel current turn (Esc)\n\
-     /model [p] [m]  Switch provider/model (config)\n\
-     /connect …      Connect provider (xai | opencode_go | list | status)\n\
+     /model [id]     Switch model (LiteLLM id) · /model refresh for catalogs\n\
+     /connect …      Connect (xai | opencode_go | opencode_zen | openai | anthropic | ollama)\n\
      /diff           Tools & file changes this session\n\
+     /commit <msg>   Stage + commit via git tool (no LLM)\n\
+     /push [args]    Push branch via git tool (no LLM; no --force)\n\
+     /stt [speed …]  STT status/speed · hold Ctrl+Space to dictate\n\
      /copy           Copy last assistant answer (clipboard)\n\
      /clear          Clear banners / notices\n\
      /density        Toggle compact layout\n\
      /journal [n]    Tail journal events\n\
      /tools          List tools\n\
-     /cost           Context usage ratio\n\
+     /cost           Session token usage (prompt/completion/context)\n\
      /reset          Force context handoff reset\n\
      /compact        Alias → /reset\n\
      /approve        Approve pending HITL (a)\n\
@@ -163,6 +259,34 @@ mod tests {
             SlashCommand::Status
         );
         assert_eq!(parse_slash("/tools").unwrap().unwrap(), SlashCommand::Tools);
+    }
+
+    #[test]
+    fn parses_model_refresh_and_id() {
+        assert_eq!(
+            parse_slash("/model refresh").unwrap().unwrap(),
+            SlashCommand::Model {
+                provider: None,
+                model: None,
+                refresh: true,
+            }
+        );
+        assert_eq!(
+            parse_slash("/model openai/gpt-4.1-mini").unwrap().unwrap(),
+            SlashCommand::Model {
+                provider: Some("openai/gpt-4.1-mini".into()),
+                model: None,
+                refresh: false,
+            }
+        );
+        assert_eq!(
+            parse_slash("/model openai gpt-4.1").unwrap().unwrap(),
+            SlashCommand::Model {
+                provider: Some("openai".into()),
+                model: Some("gpt-4.1".into()),
+                refresh: false,
+            }
+        );
     }
 
     #[test]
@@ -192,6 +316,63 @@ mod tests {
     fn resume_requires_uuid() {
         assert!(matches!(
             parse_slash("/resume").unwrap().unwrap_err(),
+            CommandError::Usage(_)
+        ));
+    }
+
+    #[test]
+    fn no_queue_slash_commands() {
+        assert!(parse_slash("/queue").unwrap().is_err());
+        assert!(parse_slash("/dequeue").unwrap().is_err());
+    }
+
+    #[test]
+    fn parses_stt() {
+        assert_eq!(
+            parse_slash("/stt").unwrap().unwrap(),
+            SlashCommand::Stt {
+                action: SttAction::Status
+            }
+        );
+        assert_eq!(
+            parse_slash("/stt speed fast").unwrap().unwrap(),
+            SlashCommand::Stt {
+                action: SttAction::Speed("fast".into())
+            }
+        );
+        assert!(parse_slash("/listen").unwrap().is_err());
+    }
+
+    #[test]
+    fn parses_commit_and_push() {
+        assert_eq!(
+            parse_slash("/commit fix the widget").unwrap().unwrap(),
+            SlashCommand::Commit {
+                message: Some("fix the widget".into())
+            }
+        );
+        assert_eq!(
+            parse_slash("/commit -m \"ship it\"").unwrap().unwrap(),
+            SlashCommand::Commit {
+                message: Some("ship it".into())
+            }
+        );
+        assert_eq!(
+            parse_slash("/commit").unwrap().unwrap(),
+            SlashCommand::Commit { message: None }
+        );
+        assert_eq!(
+            parse_slash("/push").unwrap().unwrap(),
+            SlashCommand::Push { args: vec![] }
+        );
+        assert_eq!(
+            parse_slash("/push origin HEAD").unwrap().unwrap(),
+            SlashCommand::Push {
+                args: vec!["origin".into(), "HEAD".into()]
+            }
+        );
+        assert!(matches!(
+            parse_slash("/push --force").unwrap().unwrap_err(),
             CommandError::Usage(_)
         ));
     }
