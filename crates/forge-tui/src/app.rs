@@ -5,7 +5,9 @@ use std::io::{self, stdout};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -616,6 +618,68 @@ impl TuiApp {
         });
     }
 
+    /// Submit API key (or env) from the connect modal. On failure, keep the modal open
+    /// with an error so the operator can re-paste (does not clear a long key on length checks
+    /// when the failure came from Use-env short key).
+    fn try_connect_api_key(&mut self, profile_id: &str, api_key: Option<String>) {
+        let saved_overlay = self.overlay.take();
+        let mut model = Some(self.runtime.model_label.clone());
+        let action = ConnectAction::Connect {
+            profile_id: profile_id.into(),
+            api_key: api_key.clone(),
+            oauth_fixture: false,
+        };
+        match handle_connect_action(
+            action,
+            &self.connect_registry,
+            &self.connect_store,
+            &mut self.connect_profile,
+            &mut model,
+        ) {
+            Ok(msg) => {
+                if let Some(m) = model {
+                    self.runtime.model_label = m.clone();
+                    self.runtime.provider = "litellm".into();
+                    self.session.set_active_model(m);
+                }
+                if let Some(pid) = self.connect_profile.clone() {
+                    self.apply_connect_credentials(&pid);
+                }
+                let lines: Vec<String> = msg.lines().map(|s| s.to_string()).collect();
+                self.status_message = lines.first().cloned().unwrap_or_default();
+                self.notices = lines;
+                self.overlay = None;
+            }
+            Err(e) => {
+                let err = e.to_string();
+                self.report_error(&err);
+                // Restore modal (preserve typed/pasted key) so user can fix and retry.
+                self.overlay = saved_overlay;
+                self.status_message = err;
+            }
+        }
+    }
+
+    /// Insert bracketed-paste text into the active target (API-key modal or main input).
+    fn handle_paste(&mut self, data: &str) {
+        if let Some(ref mut ov) = self.overlay {
+            let _ = handle_overlay_key(ov, OverlayKey::Paste(data.to_string()));
+            return;
+        }
+        if self.busy {
+            return;
+        }
+        self.input.history_browse = false;
+        for c in data.chars() {
+            if c == '\n' || c == '\r' {
+                self.input.insert_newline();
+            } else if !c.is_control() {
+                self.input.insert(c);
+            }
+        }
+        self.clamp_slash_suggest();
+    }
+
     pub fn refresh_status_model(&self) -> StatusModel {
         let id = self.session.session_id.to_string();
         let short = if id.len() > 8 { id[..8].to_string() } else { id };
@@ -899,8 +963,9 @@ impl TuiApp {
                     profile_id,
                     api_key,
                 } => {
-                    self.overlay = None;
-                    self.finish_connect(&profile_id, Some(api_key), false);
+                    // Keep overlay until connect succeeds so a bad key does not wipe paste.
+                    let key = api_key.trim().to_string();
+                    self.try_connect_api_key(&profile_id, Some(key));
                 }
                 OverlayAction::ConnectCompleteOauth { profile_id } => {
                     // Enter: try one poll now; keep overlay if still pending
@@ -919,8 +984,7 @@ impl TuiApp {
                     }
                 }
                 OverlayAction::ConnectUseEnv { profile_id } => {
-                    self.overlay = None;
-                    self.finish_connect(&profile_id, None, false);
+                    self.try_connect_api_key(&profile_id, None);
                 }
                 OverlayAction::ConnectPickProfile { profile_id } => {
                     self.overlay = None;
@@ -1713,6 +1777,21 @@ fn map_key(key: event::KeyEvent) -> OverlayKey {
     }
 }
 
+/// Drain every pending terminal event (paste floods many keys; do not drop them).
+async fn drain_events(app: &mut TuiApp) -> Result<(), TuiError> {
+    loop {
+        if !event::poll(Duration::from_millis(0))? {
+            break;
+        }
+        match event::read()? {
+            Event::Key(key) => app.handle_key(key).await?,
+            Event::Paste(data) => app.handle_paste(&data),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// Run the full-screen TUI until quit.
 pub async fn run_tui(
     session: AgentSession,
@@ -1720,7 +1799,7 @@ pub async fn run_tui(
 ) -> Result<ExitCode, TuiError> {
     enable_raw_mode()?;
     let mut stdout = stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -1728,7 +1807,11 @@ pub async fn run_tui(
     let result = run_loop(&mut terminal, &mut app).await;
 
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(
+        terminal.backend_mut(),
+        DisableBracketedPaste,
+        LeaveAlternateScreen
+    )?;
     terminal.show_cursor()?;
 
     result.map(|_| app.last_exit)
@@ -1753,9 +1836,14 @@ async fn run_loop(
         }
 
         if event::poll(Duration::from_millis(200))? {
-            if let Event::Key(key) = event::read()? {
-                app.handle_key(key).await?;
+            // Read the ready event, then drain the rest of the queue so a paste
+            // of a long API key is not truncated to a handful of characters.
+            match event::read()? {
+                Event::Key(key) => app.handle_key(key).await?,
+                Event::Paste(data) => app.handle_paste(&data),
+                _ => {}
             }
+            drain_events(app).await?;
         }
     }
     Ok(())

@@ -97,12 +97,17 @@ fn connect_opencode_go_with_key_no_secret_leak() {
     let dir = tempdir().unwrap();
     let home = dir.path().join("home");
     std::fs::create_dir_all(home.join(".config/forge")).unwrap();
+    std::fs::create_dir_all(home.join("Library/Application Support/forge")).unwrap();
+    let secret = "go-secret-key-for-cli-smoke-tests";
     Command::cargo_bin("forge")
         .unwrap()
         .env("HOME", &home)
-        .args(["connect", "opencode_go", "--key", "go-secret-key"])
+        // Offline CI: do not hit opencode.ai for key verification.
+        .env("FORGE_CONNECT_SKIP_VERIFY", "1")
+        .args(["connect", "opencode_go", "--key", secret])
         .assert()
         .success()
         .stdout(predicate::str::contains("OpenCode Go"))
-        .stdout(predicate::str::contains("go-secret-key").not());
+        .stdout(predicate::str::contains(secret).not())
+        .stdout(predicate::str::contains("opencode-go/"));
 }

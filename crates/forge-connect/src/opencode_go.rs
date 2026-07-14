@@ -1,9 +1,19 @@
 //! OpenCode Go connect profile — API key + TUI always prompt (PROV-02 / Phase 6.1).
+//!
+//! OpenCode Go is OpenAI-compatible at `https://opencode.ai/zen/go/v1`.
+//! LiteLLM is driven with model strings `opencode-go/<id>` which the worker
+//! rewrites to `openai/<id>` + `api_base` + `OPENCODE_API_KEY`.
 
 use crate::auth::AuthMode;
 use crate::profile::ConnectProfile;
 
 pub const PROFILE_ID: &str = "opencode_go";
+
+/// OpenAI-compatible chat/completions base for the Go subscription.
+pub const DEFAULT_BASE_URL: &str = "https://opencode.ai/zen/go/v1";
+
+/// Env var the worker reads for the Go API base (set by connect).
+pub const API_BASE_ENV: &str = "OPENCODE_API_BASE";
 
 pub fn opencode_go_profile() -> ConnectProfile {
     ConnectProfile {
@@ -12,13 +22,67 @@ pub fn opencode_go_profile() -> ConnectProfile {
         description: "OpenCode Go coding models — API key required (TUI prompts)".into(),
         auth_mode: AuthMode::opencode_go_api_key(),
         api_key_env: vec!["OPENCODE_API_KEY".into(), "OPENCODE_GO_API_KEY".into()],
-        default_base_url: Some("https://opencode.ai/zen/v1".into()),
+        default_base_url: Some(DEFAULT_BASE_URL.into()),
+        // Distinctive prefix so the LiteLLM worker can inject api_base/key without
+        // hijacking real OpenAI (`openai/gpt-*`) routes. See opencode.ai/docs/go.
         default_models: vec![
-            "openrouter/opencode/glm-4.6".into(),
-            "openrouter/opencode/minimax-m2.1".into(),
+            "opencode-go/kimi-k3".into(),
+            "opencode-go/glm-5.1".into(),
+            "opencode-go/minimax-m2.7".into(),
+            "opencode-go/deepseek-v4-flash".into(),
         ],
         auth_url: Some("https://opencode.ai/auth".into()),
-        litellm_provider_prefix: "opencode".into(),
+        litellm_provider_prefix: "opencode-go".into(),
+    }
+}
+
+/// Live-check an OpenCode Go API key against `GET {base}/models`.
+/// Returns Ok(()) on 200; never includes the key in error messages.
+pub fn verify_api_key(api_key: &str, base_url: &str) -> Result<(), String> {
+    let key = api_key.trim();
+    if key.is_empty() {
+        return Err("API key is empty".into());
+    }
+    // Real Zen/Go keys are long; reject obvious placeholders without a network call.
+    if key.len() < 16 {
+        return Err(format!(
+            "API key looks too short ({n} chars). Get a key from https://opencode.ai/auth \
+(OpenCode Zen → subscribe to Go → copy API key).",
+            n = key.len()
+        ));
+    }
+    let base = base_url.trim().trim_end_matches('/');
+    let url = format!("{base}/models");
+    let resp = ureq::get(&url)
+        .set("Authorization", &format!("Bearer {key}"))
+        .set(
+            "User-Agent",
+            &format!("forge-connect/{}", env!("CARGO_PKG_VERSION")),
+        )
+        .call()
+        .map_err(|e| match e {
+            ureq::Error::Status(code, _) => format!(
+                "OpenCode Go rejected the API key (HTTP {code}). \
+Sign in at https://opencode.ai/auth, copy a fresh key, and reconnect."
+            ),
+            other => format!(
+                "Could not reach OpenCode Go to verify key ({other}). \
+Check network access to {base}."
+            ),
+        })?;
+    let status = resp.status();
+    if (200..300).contains(&status) {
+        Ok(())
+    } else if status == 401 || status == 403 {
+        Err(
+            "OpenCode Go rejected the API key (unauthorized). \
+Get a key from https://opencode.ai/auth and run `forge connect opencode_go --key …`."
+                .into(),
+        )
+    } else {
+        Err(format!(
+            "OpenCode Go key verification failed (HTTP {status}). Try again or check account status."
+        ))
     }
 }
 
@@ -80,10 +144,13 @@ mod tests {
         reg.register(opencode_go_profile());
         let mut ap = None;
         let mut am = None;
+        // Offline unit test: skip live key verification.
+        std::env::set_var("FORGE_CONNECT_SKIP_VERIFY", "1");
         let msg = handle_connect_action(
             ConnectAction::Connect {
                 profile_id: "opencode_go".into(),
-                api_key: Some("go-secret-key".into()),
+                // Long enough to pass the length gate when verify is skipped.
+                api_key: Some("go-secret-key-for-tests".into()),
                 oauth_fixture: false,
             },
             &reg,
@@ -92,8 +159,23 @@ mod tests {
             &mut am,
         )
         .unwrap();
+        std::env::remove_var("FORGE_CONNECT_SKIP_VERIFY");
         assert!(msg.contains("OpenCode Go"));
         assert!(!msg.contains("go-secret-key"));
         assert_eq!(ap.as_deref(), Some("opencode_go"));
+        assert!(am.as_deref().unwrap().starts_with("opencode-go/"));
+    }
+
+    #[test]
+    fn short_key_rejected_without_network() {
+        let err = verify_api_key("short", DEFAULT_BASE_URL).unwrap_err();
+        assert!(err.contains("too short"), "{err}");
+    }
+
+    #[test]
+    fn profile_uses_go_endpoint() {
+        let p = opencode_go_profile();
+        assert!(p.default_base_url.as_deref().unwrap().contains("/zen/go/v1"));
+        assert!(!p.default_models.iter().any(|m| m.starts_with("openrouter/")));
     }
 }
