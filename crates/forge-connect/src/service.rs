@@ -170,25 +170,78 @@ impl<'a> ConnectService<'a> {
             resolve_key(&profile.api_key_env, &profile.id, self.store)?
         {
             (k, src)
+        } else if profile.id == crate::ollama::PROFILE_ID {
+            // Local Ollama does not require a cloud API key.
+            (
+                crate::ollama::LOCAL_PLACEHOLDER_KEY.to_string(),
+                KeySource::Provided,
+            )
         } else {
             return Err(ConnectError::MissingKey(profile.id.clone()));
         };
 
-        // Live-verify OpenCode Go keys so a bad paste fails at connect, not mid-chat.
-        if profile.id == crate::opencode_go::PROFILE_ID {
-            let base = profile
-                .default_base_url
-                .as_deref()
-                .unwrap_or(crate::opencode_go::DEFAULT_BASE_URL);
-            // Skip network when offline tests request it.
-            if std::env::var("FORGE_CONNECT_SKIP_VERIFY").is_err() {
-                crate::opencode_go::verify_api_key(&key, base)
-                    .map_err(ConnectError::Message)?;
+        // Live-verify when possible so a bad paste fails at connect, not mid-chat.
+        // Skip network when offline tests request it.
+        if std::env::var("FORGE_CONNECT_SKIP_VERIFY").is_err() {
+            match profile.id.as_str() {
+                id if id == crate::opencode_go::PROFILE_ID => {
+                    let base = profile
+                        .default_base_url
+                        .as_deref()
+                        .unwrap_or(crate::opencode_go::DEFAULT_BASE_URL);
+                    crate::opencode_go::verify_api_key(&key, base)
+                        .map_err(ConnectError::Message)?;
+                }
+                id if id == crate::opencode_zen::PROFILE_ID => {
+                    let base = profile
+                        .default_base_url
+                        .as_deref()
+                        .unwrap_or(crate::opencode_zen::DEFAULT_BASE_URL);
+                    crate::opencode_zen::verify_api_key(&key, base)
+                        .map_err(ConnectError::Message)?;
+                }
+                id if id == crate::openai::PROFILE_ID => {
+                    let base = profile
+                        .default_base_url
+                        .as_deref()
+                        .unwrap_or(crate::openai::DEFAULT_BASE_URL);
+                    crate::openai::verify_api_key(&key, base).map_err(ConnectError::Message)?;
+                }
+                id if id == crate::anthropic::PROFILE_ID => {
+                    let base = profile
+                        .default_base_url
+                        .as_deref()
+                        .unwrap_or(crate::anthropic::DEFAULT_BASE_URL);
+                    crate::anthropic::verify_api_key(&key, base)
+                        .map_err(ConnectError::Message)?;
+                }
+                id if id == crate::ollama::PROFILE_ID => {
+                    let base = profile
+                        .default_base_url
+                        .as_deref()
+                        .unwrap_or(crate::ollama::DEFAULT_BASE_URL);
+                    crate::ollama::verify_reachable(base).map_err(ConnectError::Message)?;
+                }
+                _ => {}
             }
         }
 
+        // Always persist for Provided (including Ollama placeholder) so restore works.
         if key_source == KeySource::Provided {
             self.store.set_api_key(&profile.id, &key)?;
+        }
+
+        // Best-effort live model catalog for /model picker (never fails connect).
+        if std::env::var("FORGE_CONNECT_SKIP_VERIFY").is_err() {
+            let _ = crate::catalog::refresh_profile_catalog(
+                &profile,
+                self.store,
+                &crate::catalog::ModelCatalogCache::user_default(),
+            );
+        } else {
+            // Offline tests: seed cache from defaults so /model still has rows.
+            let cache = crate::catalog::ModelCatalogCache::user_default();
+            let _ = cache.put(&profile.id, profile.default_models.clone());
         }
 
         self.activate(&profile, key_source)
@@ -211,6 +264,16 @@ impl<'a> ConnectService<'a> {
             return Err(ConnectError::Message("OAuth access_token empty".into()));
         }
         self.store.set_oauth(&profile.id, tokens)?;
+        if std::env::var("FORGE_CONNECT_SKIP_VERIFY").is_err() {
+            let _ = crate::catalog::refresh_profile_catalog(
+                &profile,
+                self.store,
+                &crate::catalog::ModelCatalogCache::user_default(),
+            );
+        } else {
+            let cache = crate::catalog::ModelCatalogCache::user_default();
+            let _ = cache.put(&profile.id, profile.default_models.clone());
+        }
         self.activate(&profile, KeySource::Oauth)
     }
 
@@ -514,15 +577,38 @@ impl<'a> ConnectService<'a> {
                     for name in profile.api_key_env.iter().skip(1) {
                         out.push((name.clone(), key.clone()));
                     }
-                    // OpenCode Go: LiteLLM needs the OpenAI-compatible base URL.
-                    if profile.id == crate::opencode_go::PROFILE_ID {
-                        let base = profile
-                            .default_base_url
-                            .clone()
-                            .unwrap_or_else(|| crate::opencode_go::DEFAULT_BASE_URL.into());
-                        out.push((crate::opencode_go::API_BASE_ENV.into(), base));
-                    } else if let Some(base) = profile.default_base_url.clone() {
-                        out.push((format!("{}_API_BASE", profile.id.to_ascii_uppercase()), base));
+                    // Provider-specific base URLs for LiteLLM / OpenAI-compatible routes.
+                    if let Some(base) = profile.default_base_url.clone().or_else(|| {
+                        match profile.id.as_str() {
+                            id if id == crate::opencode_go::PROFILE_ID => {
+                                Some(crate::opencode_go::DEFAULT_BASE_URL.into())
+                            }
+                            id if id == crate::opencode_zen::PROFILE_ID => {
+                                Some(crate::opencode_zen::DEFAULT_BASE_URL.into())
+                            }
+                            id if id == crate::ollama::PROFILE_ID => {
+                                Some(crate::ollama::DEFAULT_BASE_URL.into())
+                            }
+                            _ => None,
+                        }
+                    }) {
+                        let env_name = match profile.id.as_str() {
+                            id if id == crate::opencode_go::PROFILE_ID => {
+                                crate::opencode_go::API_BASE_ENV.to_string()
+                            }
+                            id if id == crate::opencode_zen::PROFILE_ID => {
+                                crate::opencode_zen::API_BASE_ENV.to_string()
+                            }
+                            id if id == crate::ollama::PROFILE_ID => {
+                                crate::ollama::API_BASE_ENV.to_string()
+                            }
+                            id if id == crate::openai::PROFILE_ID => "OPENAI_API_BASE".into(),
+                            id if id == crate::anthropic::PROFILE_ID => {
+                                "ANTHROPIC_API_BASE".into()
+                            }
+                            other => format!("{}_API_BASE", other.to_ascii_uppercase()),
+                        };
+                        out.push((env_name, base));
                     }
                 }
             }

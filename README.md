@@ -108,8 +108,14 @@ model = "openai/gpt-4.1-mini"
 ```bash
 forge connect list
 
-# OpenCode Go — API key
+# API-key providers
+forge connect openai --key "$OPENAI_API_KEY"
+forge connect anthropic --key "$ANTHROPIC_API_KEY"
 forge connect opencode_go --key "$OPENCODE_API_KEY"
+forge connect opencode_zen --key "$OPENCODE_API_KEY"   # same key family; Zen base URL
+
+# Local Ollama (no key; requires `ollama serve`)
+forge connect ollama
 
 # xAI Grok — OAuth in the TUI
 forge
@@ -244,17 +250,38 @@ forge --resume <uuid> run "Continue from where you left off"
 
 ---
 
-### Tutorial 5 — Connect OpenCode Go or xAI Grok
+### Tutorial 5 — Connect a provider profile
 
-**Goal:** Use a productized provider profile on the same LiteLLM path.
+**Goal:** Attach credentials for a productized provider on the same LiteLLM path.
 
-**OpenCode Go (API key):**
+| Profile | Auth | Example |
+|---------|------|---------|
+| `openai` | API key | `forge connect openai --key "$OPENAI_API_KEY"` |
+| `anthropic` | API key | `forge connect anthropic --key "$ANTHROPIC_API_KEY"` |
+| `opencode_go` | API key | `forge connect opencode_go --key "$OPENCODE_API_KEY"` |
+| `opencode_zen` | API key | `forge connect opencode_zen --key "$OPENCODE_API_KEY"` (pay-per-use Zen catalog) |
+| `ollama` | Local (no key) | `forge connect ollama` then pull a model in Ollama |
+| `xai` | OAuth | TUI `/connect` → xAI Grok |
 
 ```bash
 forge connect list
-forge connect opencode_go --key "$OPENCODE_API_KEY"
+forge connect openai --key "$OPENAI_API_KEY"
 forge status
 forge
+# Live catalog after connect:
+#   /model              → picker (remote models + defaults)
+#   /model refresh      → re-fetch catalogs
+#   /model openai/gpt-4.1-mini
+#   /model ollama llama3.2
+
+# Speech-to-text (mic → input bar; needs ffmpeg + OPENAI_API_KEY or local whisper):
+#   hold Ctrl+Space     → push-to-talk (release to stop & transcribe)
+#   /stt                → status · /stt speed fast|normal|slow
+
+# Message queue (TUI only — no slash commands):
+#   while processing → type + Enter enqueues (shows above input)
+#   click a queued row → cancel that message
+#   when idle → empty Enter sends the next queued message
 ```
 
 **xAI Grok (OAuth):**

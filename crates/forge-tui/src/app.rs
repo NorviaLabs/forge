@@ -6,24 +6,33 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{
-    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers,
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event, KeyCode, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEvent,
+    MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use forge_connect::{
-    builtin_registry, handle_connect_action, needs_tui_api_key_prompt, needs_tui_oauth,
-    ConnectAction, ConnectError, ConnectRegistry, ConnectService, CredentialStore, OauthPending,
+    builtin_registry, handle_connect_action, models_for_picker, needs_tui_api_key_prompt,
+    needs_tui_oauth, normalize_model_id, refresh_profile_catalog, ConnectAction, ConnectError,
+    ConnectRegistry, ConnectService, CredentialStore, ModelCatalogCache, OauthPending,
 };
 use forge_core::{AgentSession, ApplyOutcome, LoopError};
+use forge_tools::{GitTool, Tool, ToolContext};
 use forge_types::{HitlDecision, ModelStreamEvent};
+use serde_json::json;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use thiserror::Error;
 
 use crate::activity::{ActivityFeed, ActivityKind};
-use crate::commands::{help_text, parse_slash, SlashCommand, WorktreeAction};
+use crate::commands::{help_text, parse_slash, SlashCommand, SttAction, WorktreeAction};
+use crate::msg_queue::MessageQueue;
+use crate::stt::{
+    is_ptt_key, resolve_stt_api_key, transcribe_wav_file, LiveRecorder, SttSettings, SttSpeed,
+};
 use crate::conversation::{
     BannerKind, ChatItem, ConversationModel, ConversationViewOpts, StreamWaitPhase,
 };
@@ -31,13 +40,14 @@ use crate::layout::split_areas_full;
 use crate::history::InputHistory;
 use crate::layout::is_too_small;
 use crate::overlays::{
-    filter_palette, handle_overlay_key, ConnectProfileItem, Key as OverlayKey, Overlay,
-    OverlayAction, OverlayWidget, PaletteItem,
+    filter_palette, handle_overlay_key, models_from_catalog, ConnectProfileItem, Key as OverlayKey,
+    Overlay, OverlayAction, OverlayWidget, PaletteItem,
 };
 use crate::sidebar::SidebarModel;
 use crate::widgets::{
-    classify_operator_error, session_chrome_lines, BusyPhase, FeedbackBar, FeedbackModel,
-    FeedbackSeverity, FooterBar, FooterModel, InputBar, InputModel, StatusBar, StatusModel,
+    classify_operator_error, hit_test_queue_row, session_chrome_lines, BusyPhase, FeedbackBar,
+    FeedbackModel, FeedbackSeverity, FooterBar, FooterModel, InputBar, InputModel, QueueBar,
+    QueueModel, StatusBar, StatusModel,
 };
 use crate::theme;
 use crate::ExitCode;
@@ -91,6 +101,12 @@ pub struct TuiApp {
     pub busy_phase: BusyPhase,
     /// User prompt queued on Enter; drained by the event loop so the YOU bubble paints first.
     pending_prompt: Option<String>,
+    /// Additional user messages waiting to run after the current turn (FIFO).
+    message_queue: MessageQueue,
+    /// Last drawn queue strip rect (for mouse hit-testing).
+    queue_area: Option<ratatui::layout::Rect>,
+    /// Hovered queue row (0-based).
+    queue_hover: Option<usize>,
     /// Live assistant text while tokens stream in.
     stream_preview: String,
     /// Live thinking/reasoning text while tokens stream in.
@@ -122,6 +138,12 @@ pub struct TuiApp {
     /// Conversation scroll offset (when not following).
     chat_scroll: u16,
     chat_follow: bool,
+    /// Speech-to-text capture settings (speed / duration).
+    stt: SttSettings,
+    /// Active push-to-talk recording (hold Ctrl+Space).
+    ptt_recording: Option<LiveRecorder>,
+    /// True after we observe a key Release (hold-to-talk works on this terminal).
+    ptt_release_seen: bool,
 }
 
 impl TuiApp {
@@ -152,6 +174,9 @@ impl TuiApp {
             web_search_label: Some("mock".into()),
             activity: ActivityFeed::default(),
             pending_prompt: None,
+            message_queue: MessageQueue::new(),
+            queue_area: None,
+            queue_hover: None,
             stream_preview: String::new(),
             stream_thinking: String::new(),
             turn_started: None,
@@ -166,8 +191,99 @@ impl TuiApp {
             toast: None,
             chat_scroll: 0,
             chat_follow: true,
+            stt: SttSettings::default(),
+            ptt_recording: None,
+            ptt_release_seen: false,
         }
         .restore_saved_auth()
+        .apply_connection_chrome()
+    }
+
+    /// Mock provider is always "connected" (offline tests / CI).
+    fn is_mock_provider(&self) -> bool {
+        self.runtime.provider.eq_ignore_ascii_case("mock")
+            || self.runtime.model_label.eq_ignore_ascii_case("mock")
+    }
+
+    /// Live credentials still exist for a connect profile id.
+    fn credentials_live_for(&self, profile_id: &str) -> bool {
+        let svc = ConnectService {
+            registry: &self.connect_registry,
+            store: &self.connect_store,
+            active_profile_id: self.connect_profile.clone(),
+            active_model: Some(self.runtime.model_label.clone()),
+        };
+        svc.connected_profiles()
+            .ok()
+            .map(|ps| ps.iter().any(|p| p.id == profile_id))
+            .unwrap_or(false)
+    }
+
+    /// True when chat may call an LLM (mock, or a live `/connect` profile).
+    pub fn is_provider_connected(&self) -> bool {
+        if self.is_mock_provider() {
+            return true;
+        }
+        match self.connect_profile.as_deref() {
+            Some(id) => self.credentials_live_for(id),
+            None => false,
+        }
+    }
+
+    /// Drop stale `connect_profile` if credentials were cleared out-of-band.
+    fn sync_provider_connection(&mut self) {
+        if self.is_mock_provider() {
+            return;
+        }
+        if let Some(id) = self.connect_profile.clone() {
+            if !self.credentials_live_for(&id) {
+                self.connect_profile = None;
+            }
+        }
+    }
+
+    /// Status/input/banner chrome reflecting connect state.
+    fn apply_connection_chrome(mut self) -> Self {
+        self.refresh_connection_ui();
+        self
+    }
+
+    fn refresh_connection_ui(&mut self) {
+        self.sync_provider_connection();
+        let connected = self.is_provider_connected();
+        self.input.not_connected = !connected;
+        if connected {
+            if self.input.hint.contains("Not connected") || self.input.hint.contains("/connect") {
+                self.input.hint = "Type a task · /command · ⇧Enter newline · Ctrl+K…".into();
+            }
+            // Drop the sticky not-connected banner once signed in.
+            self.ui_banners.retain(|b| {
+                !matches!(
+                    b,
+                    ChatItem::Banner {
+                        kind: BannerKind::Warn,
+                        text
+                    } if text.contains("Not connected")
+                )
+            });
+        } else {
+            self.input.hint = "Not connected · run /connect before chatting".into();
+            let has_banner = self.ui_banners.iter().any(|b| {
+                matches!(
+                    b,
+                    ChatItem::Banner {
+                        kind: BannerKind::Warn,
+                        text
+                    } if text.contains("Not connected")
+                )
+            });
+            if !has_banner {
+                self.ui_banners.push(ChatItem::Banner {
+                    text: "Not connected to an LLM provider. Run /connect (xAI Grok or OpenCode Go) before sending a message.".into(),
+                    kind: BannerKind::Warn,
+                });
+            }
+        }
     }
 
     fn push_toast(&mut self, text: impl Into<String>) {
@@ -473,6 +589,7 @@ impl TuiApp {
                 let lines: Vec<String> = msg.lines().map(|s| s.to_string()).collect();
                 self.status_message = lines.first().cloned().unwrap_or_default();
                 self.notices = lines;
+                self.refresh_connection_ui();
             }
             Err(ConnectError::OauthDevicePending(pending)) => {
                 self.show_oauth_pending(pending);
@@ -522,6 +639,7 @@ impl TuiApp {
         self.oauth_pending = None;
         self.oauth_last_poll = None;
         self.overlay = None;
+        self.refresh_connection_ui();
         msg
     }
 
@@ -649,6 +767,7 @@ impl TuiApp {
                 self.status_message = lines.first().cloned().unwrap_or_default();
                 self.notices = lines;
                 self.overlay = None;
+                self.refresh_connection_ui();
             }
             Err(e) => {
                 let err = e.to_string();
@@ -656,6 +775,531 @@ impl TuiApp {
                 // Restore modal (preserve typed/pasted key) so user can fix and retry.
                 self.overlay = saved_overlay;
                 self.status_message = err;
+            }
+        }
+    }
+
+    /// Apply a LiteLLM model id to this session (no restart required).
+    fn apply_model_selection(&mut self, provider: &str, model: &str) {
+        let model = model.trim();
+        if model.is_empty() {
+            return;
+        }
+        self.runtime.provider = if provider.trim().is_empty() {
+            "litellm".into()
+        } else {
+            provider.to_string()
+        };
+        self.runtime.model_label = model.to_string();
+        self.session.set_active_model(model);
+        // Re-inject credentials so the worker sees the right keys for this model family.
+        if let Some(pid) = self.connect_profile.clone() {
+            self.apply_connect_credentials(&pid);
+        } else {
+            // Try match model prefix → connected profile
+            let prefix = model.split('/').next().unwrap_or("");
+            let svc = ConnectService {
+                registry: &self.connect_registry,
+                store: &self.connect_store,
+                active_profile_id: None,
+                active_model: None,
+            };
+            if let Ok(connected) = svc.connected_profiles() {
+                if let Some(p) = connected.iter().find(|p| {
+                    p.litellm_provider_prefix == prefix
+                        || p.id == prefix
+                        || (prefix == "opencode-go" && p.id == "opencode_go")
+                        || (prefix == "opencode-zen" && p.id == "opencode_zen")
+                }) {
+                    self.connect_profile = Some(p.id.clone());
+                    self.apply_connect_credentials(&p.id);
+                }
+            }
+        }
+        self.set_feedback(
+            FeedbackSeverity::Ok,
+            format!("model {}", self.runtime.model_label),
+        );
+        self.status_message = format!("model {}", self.runtime.model_label);
+        self.notices = vec![
+            format!("Active model: {}", self.runtime.model_label),
+            "Applied to this session (LiteLLM). Use /model to pick from the catalog.".into(),
+        ];
+        self.push_activity(
+            ActivityKind::System,
+            FeedbackSeverity::Ok,
+            format!("model {}", self.runtime.model_label),
+        );
+    }
+
+    /// Build `/model` picker rows from connected-profile catalogs (cache + optional refresh).
+    fn model_picker_items(&self, refresh_stale: bool) -> Vec<crate::overlays::ModelItem> {
+        let svc = ConnectService {
+            registry: &self.connect_registry,
+            store: &self.connect_store,
+            active_profile_id: self.connect_profile.clone(),
+            active_model: Some(self.runtime.model_label.clone()),
+        };
+        let connected = svc.connected_profiles().unwrap_or_default();
+        let cache = ModelCatalogCache::user_default();
+        let profiles: Vec<_> = if connected.is_empty() {
+            // Show all built-in defaults when nothing connected
+            self.connect_registry.profiles().to_vec()
+        } else {
+            connected
+        };
+        let entries = models_for_picker(&profiles, &self.connect_store, &cache, refresh_stale);
+        models_from_catalog(&entries)
+    }
+
+    /// Force-refresh remote catalogs for every connected profile.
+    fn refresh_model_catalogs(&mut self) {
+        let svc = ConnectService {
+            registry: &self.connect_registry,
+            store: &self.connect_store,
+            active_profile_id: self.connect_profile.clone(),
+            active_model: Some(self.runtime.model_label.clone()),
+        };
+        let connected = svc.connected_profiles().unwrap_or_default();
+        if connected.is_empty() {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                "no connected providers — /connect first",
+            );
+            self.notices = vec![
+                "Connect a provider, then run /model refresh.".into(),
+                "Fallbacks: /model openai/gpt-4.1-mini (free-form LiteLLM id).".into(),
+            ];
+            return;
+        }
+        let cache = ModelCatalogCache::user_default();
+        let mut lines = Vec::new();
+        let mut ok_n = 0usize;
+        for p in &connected {
+            match refresh_profile_catalog(p, &self.connect_store, &cache) {
+                Ok(models) => {
+                    ok_n += 1;
+                    lines.push(format!(
+                        "{}: {} models (e.g. {})",
+                        p.id,
+                        models.len(),
+                        models.first().map(|s| s.as_str()).unwrap_or("—")
+                    ));
+                }
+                Err(e) => {
+                    lines.push(format!("{}: refresh failed — {e}", p.id));
+                }
+            }
+        }
+        self.status_message = format!("catalog refresh · {ok_n}/{} ok", connected.len());
+        self.set_feedback(
+            FeedbackSeverity::Info,
+            format!("catalogs refreshed ({ok_n}/{})", connected.len()),
+        );
+        self.notices = lines;
+        // Open picker with fresh data
+        let items = self.model_picker_items(false);
+        self.overlay = Some(Overlay::model_open_with(items));
+    }
+
+    fn ptt_start_recording(&mut self) {
+        if self.overlay.is_some() {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                "close the overlay before dictating (Ctrl+Space)",
+            );
+            return;
+        }
+        match LiveRecorder::start() {
+            Ok(rec) => {
+                self.ptt_recording = Some(rec);
+                self.busy_phase = BusyPhase::Other("recording".into());
+                self.set_feedback(
+                    FeedbackSeverity::Info,
+                    "● recording — release Ctrl+Space to stop (Esc cancel)",
+                );
+                self.push_activity(
+                    ActivityKind::System,
+                    FeedbackSeverity::Info,
+                    "ptt recording start",
+                );
+            }
+            Err(e) => {
+                self.report_error(&e);
+            }
+        }
+    }
+
+    fn ptt_cancel(&mut self) {
+        self.ptt_recording = None; // Drop stops ffmpeg + deletes wav
+        self.busy_phase = BusyPhase::Idle;
+        self.set_feedback(FeedbackSeverity::Warn, "recording cancelled");
+        self.push_activity(
+            ActivityKind::System,
+            FeedbackSeverity::Warn,
+            "ptt cancelled",
+        );
+    }
+
+    async fn ptt_stop_and_transcribe(&mut self) {
+        let Some(rec) = self.ptt_recording.take() else {
+            return;
+        };
+        self.busy_phase = BusyPhase::Other("transcribing".into());
+        self.set_feedback(FeedbackSeverity::Info, "transcribing…");
+
+        let stop = rec.stop();
+        let settings = self.stt.clone();
+        let key = resolve_stt_api_key(&self.connect_store);
+
+        let result = match stop {
+            Ok((wav, secs)) => {
+                tokio::task::spawn_blocking(move || {
+                    transcribe_wav_file(wav, &settings, key.as_deref(), secs)
+                })
+                .await
+            }
+            Err(e) => {
+                self.busy_phase = BusyPhase::Idle;
+                self.report_error(&e);
+                return;
+            }
+        };
+
+        self.busy_phase = BusyPhase::Idle;
+        match result {
+            Ok(Ok(tr)) => {
+                let cur = self.input.text.trim_end();
+                let joined = if cur.is_empty() {
+                    tr.text.clone()
+                } else {
+                    format!("{cur} {}", tr.text)
+                };
+                self.input.set_text(joined);
+                self.push_toast("transcribed");
+                self.set_feedback(
+                    FeedbackSeverity::Ok,
+                    format!("STT · {}s · {}", tr.secs, tr.backend),
+                );
+                self.notices = vec![
+                    format!("Transcript ({}s via {}):", tr.secs, tr.backend),
+                    tr.text,
+                    "Inserted into the input bar — edit and Enter to send.".into(),
+                ];
+                self.push_activity(
+                    ActivityKind::System,
+                    FeedbackSeverity::Ok,
+                    "ptt transcript ready",
+                );
+            }
+            Ok(Err(e)) => {
+                self.report_error(&e);
+                self.notices = e.lines().map(|s| s.to_string()).collect();
+            }
+            Err(e) => {
+                self.report_error(&format!("STT task failed: {e}"));
+            }
+        }
+    }
+
+    /// Enqueue while a message is processing (TUI Enter path only).
+    fn enqueue_user_message(&mut self, line: String) {
+        let n = self.message_queue.enqueue(line);
+        self.push_toast(format!("queued #{n}"));
+        self.set_feedback(
+            FeedbackSeverity::Info,
+            format!(
+                "queued #{n} · {} waiting · click a row to cancel",
+                self.message_queue.len()
+            ),
+        );
+        self.push_activity(
+            ActivityKind::System,
+            FeedbackSeverity::Info,
+            format!("queue enqueue #{n}"),
+        );
+    }
+
+    /// User-driven dequeue: take next message and start a model turn (not automatic).
+    fn user_dequeue_and_send(&mut self) {
+        if self.busy || self.pending_prompt.is_some() {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                "still processing — wait before sending the next queued message",
+            );
+            return;
+        }
+        if self.session.pending_hitl.is_some() {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                "resolve HITL before dequeuing",
+            );
+            return;
+        }
+        let Some(next) = self.message_queue.dequeue() else {
+            self.set_feedback(FeedbackSeverity::Warn, "queue empty");
+            return;
+        };
+        if !self.is_provider_connected() {
+            self.message_queue.push_front(next);
+            self.report_error(
+                "Not connected — cannot send queued message. Run /connect, then empty Enter.",
+            );
+            return;
+        }
+        self.push_activity(
+            ActivityKind::System,
+            FeedbackSeverity::Info,
+            format!("queue dequeue · {} left", self.message_queue.len()),
+        );
+        self.set_feedback(
+            FeedbackSeverity::Info,
+            format!(
+                "sending dequeued · {} remaining",
+                self.message_queue.len()
+            ),
+        );
+        // Start the turn the same way as a normal Enter send (no dispatch recursion).
+        self.clear_error_chrome();
+        if let Some(pid) = self.connect_profile.clone() {
+            self.apply_connect_credentials(&pid);
+        }
+        self.pending_prompt = Some(next);
+        self.busy = true;
+        self.busy_phase = BusyPhase::Model;
+        self.stream_preview.clear();
+        self.stream_thinking.clear();
+        self.push_activity(
+            ActivityKind::Model,
+            FeedbackSeverity::Info,
+            "model call started",
+        );
+    }
+
+    /// Cancel a queued message by 0-based index (mouse click).
+    fn cancel_queued_at(&mut self, index: usize) {
+        let one_based = index + 1;
+        match self.message_queue.drop_at(one_based) {
+            Some(t) => {
+                let preview: String = t.chars().take(48).collect();
+                self.push_toast(format!("cancelled #{one_based}"));
+                self.set_feedback(
+                    FeedbackSeverity::Ok,
+                    format!("cancelled queued #{one_based} · {} left", self.message_queue.len()),
+                );
+                self.push_activity(
+                    ActivityKind::System,
+                    FeedbackSeverity::Ok,
+                    format!("queue cancel #{one_based}: {preview}"),
+                );
+                if self.queue_hover == Some(index) {
+                    self.queue_hover = None;
+                }
+            }
+            None => {
+                self.set_feedback(FeedbackSeverity::Warn, "queue item gone");
+            }
+        }
+    }
+
+    pub fn handle_mouse(&mut self, ev: MouseEvent) {
+        let col = ev.column;
+        let row = ev.row;
+        match ev.kind {
+            MouseEventKind::Moved | MouseEventKind::Drag(_) => {
+                if let Some(area) = self.queue_area {
+                    self.queue_hover =
+                        hit_test_queue_row(area, col, row, self.message_queue.len());
+                } else {
+                    self.queue_hover = None;
+                }
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                if let Some(area) = self.queue_area {
+                    if let Some(idx) =
+                        hit_test_queue_row(area, col, row, self.message_queue.len())
+                    {
+                        self.cancel_queued_at(idx);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn slash_stt(&mut self, action: SttAction) {
+        match action {
+            SttAction::Status => {
+                let msg = format!(
+                    "STT speed={} · local model={} · PTT=Ctrl+Space",
+                    self.stt.speed.as_str(),
+                    self.stt.speed.whisper_cli_model()
+                );
+                self.set_feedback(FeedbackSeverity::Info, msg.clone());
+                self.notices = vec![
+                    msg,
+                    "Dictate:".into(),
+                    "  hold Ctrl+Space  — push-to-talk (release to stop)".into(),
+                    "  Esc              — cancel recording".into(),
+                    "  /stt speed fast|normal|slow  — local Whisper model size".into(),
+                    "Needs OPENAI_API_KEY (Whisper) or local whisper CLI + ffmpeg.".into(),
+                    "PTT needs key-release (Kitty/WezTerm/iTerm2); else press twice to toggle."
+                        .into(),
+                ];
+            }
+            SttAction::Speed(v) => match SttSpeed::parse(&v) {
+                Some(sp) => {
+                    self.stt.set_speed(sp);
+                    let msg = format!(
+                        "STT speed={} (local whisper={})",
+                        sp.as_str(),
+                        sp.whisper_cli_model()
+                    );
+                    self.push_toast(msg.clone());
+                    self.set_feedback(FeedbackSeverity::Ok, msg);
+                }
+                None => {
+                    self.set_feedback(
+                        FeedbackSeverity::Warn,
+                        "usage: /stt speed fast|normal|slow",
+                    );
+                }
+            },
+        }
+    }
+
+    /// Run the built-in `git` tool in the session workspace. Never touches the model.
+    async fn run_git_tool(
+        &self,
+        subcommand: &str,
+        args: Vec<String>,
+    ) -> Result<forge_types::ToolOutput, forge_tools::ToolError> {
+        let ctx = ToolContext::new(self.session.workspace_root().to_path_buf());
+        GitTool
+            .call(
+                &ctx,
+                json!({
+                    "subcommand": subcommand,
+                    "args": args,
+                }),
+            )
+            .await
+    }
+
+    /// `/commit <msg>` — `git add -A` then `git commit -m` via GitTool (no LLM).
+    async fn slash_commit(&mut self, message: Option<String>) {
+        let Some(message) = message.filter(|m| !m.trim().is_empty()) else {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                "usage: /commit <message>",
+            );
+            self.notices = vec![
+                "Usage: /commit <message>".into(),
+                "       /commit -m <message>".into(),
+                "Stages all changes (git add -A), then commits via the git tool.".into(),
+                "Does not call the LLM.".into(),
+            ];
+            return;
+        };
+        self.push_activity(
+            ActivityKind::Tool,
+            FeedbackSeverity::Info,
+            "git commit (direct, no LLM)",
+        );
+        self.busy_phase = BusyPhase::Other("git commit".into());
+        // Stage everything in the workspace, then commit.
+        let add = self.run_git_tool("add", vec!["-A".into()]).await;
+        match add {
+            Ok(out) if out.is_error => {
+                self.busy_phase = BusyPhase::Idle;
+                self.report_error(&format!("git add failed: {}", out.content.trim()));
+                return;
+            }
+            Err(e) => {
+                self.busy_phase = BusyPhase::Idle;
+                self.report_error(&format!("git add failed: {e}"));
+                return;
+            }
+            Ok(_) => {}
+        }
+        let commit = self
+            .run_git_tool("commit", vec!["-m".into(), message.clone()])
+            .await;
+        self.busy_phase = BusyPhase::Idle;
+        match commit {
+            Ok(out) if out.is_error => {
+                self.report_error(&format!("git commit failed: {}", out.content.trim()));
+                self.notices = out
+                    .content
+                    .lines()
+                    .map(|s| s.to_string())
+                    .filter(|s| !s.is_empty())
+                    .take(20)
+                    .collect();
+            }
+            Ok(out) => {
+                let summary: String = out.content.lines().take(6).collect::<Vec<_>>().join("\n");
+                self.push_toast("committed");
+                self.set_feedback(FeedbackSeverity::Ok, format!("committed: {message}"));
+                self.notices = if summary.trim().is_empty() {
+                    vec![format!("Committed: {message}")]
+                } else {
+                    summary.lines().map(|s| s.to_string()).collect()
+                };
+                self.push_activity(
+                    ActivityKind::Tool,
+                    FeedbackSeverity::Ok,
+                    format!("git commit · {message}"),
+                );
+            }
+            Err(e) => {
+                self.report_error(&format!("git commit failed: {e}"));
+            }
+        }
+    }
+
+    /// `/push [args]` — `git push` via GitTool (no LLM).
+    async fn slash_push(&mut self, args: Vec<String>) {
+        self.push_activity(
+            ActivityKind::Tool,
+            FeedbackSeverity::Info,
+            "git push (direct, no LLM)",
+        );
+        self.busy_phase = BusyPhase::Other("git push".into());
+        let result = self.run_git_tool("push", args.clone()).await;
+        self.busy_phase = BusyPhase::Idle;
+        match result {
+            Ok(out) if out.is_error => {
+                self.report_error(&format!("git push failed: {}", out.content.trim()));
+                self.notices = out
+                    .content
+                    .lines()
+                    .map(|s| s.to_string())
+                    .filter(|s| !s.is_empty())
+                    .take(20)
+                    .collect();
+            }
+            Ok(out) => {
+                let summary: String = out.content.lines().take(8).collect::<Vec<_>>().join("\n");
+                self.push_toast("pushed");
+                self.set_feedback(FeedbackSeverity::Ok, "git push ok");
+                self.notices = if summary.trim().is_empty() {
+                    vec!["git push: ok".into()]
+                } else {
+                    summary.lines().map(|s| s.to_string()).collect()
+                };
+                self.push_activity(
+                    ActivityKind::Tool,
+                    FeedbackSeverity::Ok,
+                    if args.is_empty() {
+                        "git push".into()
+                    } else {
+                        format!("git push {}", args.join(" "))
+                    },
+                );
+            }
+            Err(e) => {
+                self.report_error(&format!("git push failed: {e}"));
             }
         }
     }
@@ -693,14 +1337,16 @@ impl TuiApp {
             busy: self.busy,
             busy_phase: self.busy_phase.clone(),
             connect_profile: self.connect_profile.clone(),
+            provider_connected: self.is_provider_connected(),
             web_search_label: self.web_search_label.clone(),
             tools_visible: self.session.list_tools().len(),
         }
     }
 
-    pub fn draw(&self, frame: &mut ratatui::Frame) {
+    pub fn draw(&mut self, frame: &mut ratatui::Frame) {
         let area = frame.size();
         if is_too_small(area) {
+            self.queue_area = None;
             frame.render_widget(
                 Paragraph::new("Terminal too small — resize to at least 40x18"),
                 area,
@@ -709,7 +1355,20 @@ impl TuiApp {
         }
         let fb_h = if self.feedback.is_empty() { 0 } else { 1 };
         let input_h = (self.input.visual_lines() + 2).clamp(3, 8);
-        let regions = split_areas_full(area, fb_h, input_h, self.sidebar_visible);
+        // Queue strip: title border + one row per item (cap 6).
+        let q_items = self.message_queue.len();
+        let queue_h = if q_items == 0 {
+            0
+        } else {
+            ((q_items as u16).min(6) + 2).min(8) // +2 borders
+        };
+        let regions =
+            split_areas_full(area, fb_h, input_h, self.sidebar_visible, queue_h);
+        self.queue_area = if queue_h > 0 {
+            Some(regions.queue)
+        } else {
+            None
+        };
         let status = self.refresh_status_model();
         frame.render_widget(StatusBar { model: &status }, regions.status);
 
@@ -882,16 +1541,45 @@ impl TuiApp {
             );
         }
 
+        // Queued messages: click a row to cancel (no slash commands).
+        if regions.queue.height > 0 {
+            let items: Vec<String> = self.message_queue.iter().cloned().collect();
+            let qm = QueueModel {
+                items,
+                hover: self.queue_hover,
+            };
+            frame.render_widget(QueueBar { model: &qm }, regions.queue);
+        }
+
         let mut input = self.input.clone();
-        input.dimmed = self.busy;
+        // Allow composing the next message while a turn runs; only dim slightly when busy.
+        input.dimmed = self.busy && self.input.text.is_empty();
+        input.not_connected = !self.is_provider_connected();
         frame.render_widget(InputBar { model: &input }, regions.input);
 
-        let hints = if self.busy {
-            "Esc interrupt · Ctrl+C quit".into()
+        let qn = self.message_queue.len();
+        let hints = if self.ptt_recording.is_some() {
+            format!(
+                "● REC {}s · release Ctrl+Space to stop",
+                self.ptt_recording
+                    .as_ref()
+                    .map(|r| r.elapsed_secs())
+                    .unwrap_or(0)
+            )
+        } else if self.busy {
+            if qn > 0 {
+                format!("processing · queue {qn} · Enter queues · click row to cancel")
+            } else {
+                "processing · type + Enter to queue · Esc interrupt".into()
+            }
         } else if self.session.pending_hitl.is_some() {
             "a approve · s session · d deny".into()
+        } else if !self.is_provider_connected() {
+            "/connect to enable chat · hold Ctrl+Space to dictate".into()
+        } else if qn > 0 {
+            format!("queue {qn} · click to cancel · empty Enter sends next")
         } else {
-            "Enter send · ⇧Enter ↵ · Ctrl+T think · Ctrl+O tool · Ctrl+B sidebar · Ctrl+K".into()
+            "Enter send · hold Ctrl+Space dictate · ⇧Enter ↵ · Ctrl+K".into()
         };
         let footer = FooterModel {
             version: self.runtime.version.clone(),
@@ -907,7 +1595,43 @@ impl TuiApp {
     }
 
     pub async fn handle_key(&mut self, key: event::KeyEvent) -> Result<(), TuiError> {
+        // Push-to-talk: hold Ctrl+Space to record, release to stop + transcribe.
+        // Needs keyboard enhancement (Release events). Without them, second press toggles stop.
+        if is_ptt_key(key.code, key.modifiers) {
+            match key.kind {
+                KeyEventKind::Press if self.ptt_recording.is_none() && !self.busy => {
+                    self.ptt_start_recording();
+                    return Ok(());
+                }
+                KeyEventKind::Release if self.ptt_recording.is_some() => {
+                    self.ptt_release_seen = true;
+                    self.ptt_stop_and_transcribe().await;
+                    return Ok(());
+                }
+                // Toggle fallback when the terminal never emits Release.
+                KeyEventKind::Press
+                    if self.ptt_recording.is_some() && !self.ptt_release_seen =>
+                {
+                    self.ptt_stop_and_transcribe().await;
+                    return Ok(());
+                }
+                KeyEventKind::Repeat => {
+                    // Ignore autorepeat while holding PTT.
+                    return Ok(());
+                }
+                _ => return Ok(()),
+            }
+        }
+
         if key.kind != KeyEventKind::Press {
+            return Ok(());
+        }
+
+        // While recording, don't type into the input (except Esc cancels).
+        if self.ptt_recording.is_some() {
+            if matches!(key.code, KeyCode::Esc) {
+                self.ptt_cancel();
+            }
             return Ok(());
         }
 
@@ -952,12 +1676,7 @@ impl TuiApp {
                 }
                 OverlayAction::SelectModel { provider, model } => {
                     self.overlay = None;
-                    self.runtime.provider = provider.clone();
-                    self.runtime.model_label = model.clone();
-                    self.set_feedback(
-                        FeedbackSeverity::Ok,
-                        format!("model {provider} · {model}"),
-                    );
+                    self.apply_model_selection(&provider, &model);
                 }
                 OverlayAction::ConnectSubmitKey {
                     profile_id,
@@ -1058,14 +1777,9 @@ impl TuiApp {
                 if key.modifiers.contains(KeyModifiers::SHIFT)
                     || key.modifiers.contains(KeyModifiers::ALT) =>
             {
-                if !self.busy {
-                    self.input.insert_newline();
-                }
+                self.input.insert_newline();
             }
             KeyCode::Enter => {
-                if self.busy {
-                    return Ok(());
-                }
                 // Slash suggestions open: Enter selects the highlighted command and runs it.
                 // (Do not require the typed prefix to match cmd — filter can match on desc too.)
                 let suggestions = self.slash_suggestions();
@@ -1094,62 +1808,60 @@ impl TuiApp {
                     return Ok(());
                 }
                 let line = self.input.take();
-                if line.is_empty() {
+                // Empty Enter while idle + queue non-empty → user dequeues next (explicit action).
+                if line.trim().is_empty() {
+                    if !self.busy && !self.message_queue.is_empty() {
+                        self.user_dequeue_and_send();
+                    }
                     return Ok(());
                 }
                 self.history.push(&line);
                 self.slash_suggest_idx = 0;
                 self.notices.clear();
                 self.input.history_browse = false;
+                // While current message is processing, non-slash text is enqueued (TUI state).
+                if self.busy && !line.trim_start().starts_with('/') {
+                    self.enqueue_user_message(line);
+                    return Ok(());
+                }
                 self.dispatch_line(&line).await?;
             }
             KeyCode::Tab => {
-                if !self.busy {
-                    self.complete_slash_suggestion();
-                }
+                self.complete_slash_suggestion();
             }
             KeyCode::Up => {
-                if !self.busy {
-                    let suggestions = self.slash_suggestions();
-                    if self.input.text.starts_with('/') && !suggestions.is_empty() {
-                        let n = suggestions.len();
-                        self.slash_suggest_idx =
-                            (self.slash_suggest_idx + n - 1) % n;
-                    } else if let Some(text) = self.history.up(&self.input.text) {
-                        self.apply_history_text(text);
-                    }
+                let suggestions = self.slash_suggestions();
+                if self.input.text.starts_with('/') && !suggestions.is_empty() {
+                    let n = suggestions.len();
+                    self.slash_suggest_idx =
+                        (self.slash_suggest_idx + n - 1) % n;
+                } else if let Some(text) = self.history.up(&self.input.text) {
+                    self.apply_history_text(text);
                 }
             }
             KeyCode::Down => {
-                if !self.busy {
-                    let suggestions = self.slash_suggestions();
-                    if self.input.text.starts_with('/') && !suggestions.is_empty() {
-                        let n = suggestions.len();
-                        self.slash_suggest_idx = (self.slash_suggest_idx + 1) % n;
-                    } else if let Some(text) = self.history.down() {
-                        self.apply_history_text(text);
-                    }
+                let suggestions = self.slash_suggestions();
+                if self.input.text.starts_with('/') && !suggestions.is_empty() {
+                    let n = suggestions.len();
+                    self.slash_suggest_idx = (self.slash_suggest_idx + 1) % n;
+                } else if let Some(text) = self.history.down() {
+                    self.apply_history_text(text);
                 }
             }
             KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 // Ctrl+J also inserts newline (terminals that don't send Shift+Enter)
-                if !self.busy {
-                    self.input.insert_newline();
-                }
+                self.input.insert_newline();
             }
             KeyCode::Char(c) => {
-                // Phase 8 (TUI-06): `/` inserts into the main textbox; do not open palette
-                if !self.busy {
-                    self.input.history_browse = false;
-                    self.input.insert(c);
-                    self.clamp_slash_suggest();
-                }
+                // Phase 8 (TUI-06): `/` inserts into the main textbox; do not open palette.
+                // Typing while busy composes the next message (Enter enqueues).
+                self.input.history_browse = false;
+                self.input.insert(c);
+                self.clamp_slash_suggest();
             }
             KeyCode::Backspace => {
-                if !self.busy {
-                    self.input.backspace();
-                    self.clamp_slash_suggest();
-                }
+                self.input.backspace();
+                self.clamp_slash_suggest();
             }
             KeyCode::Left => self.input.move_left(),
             KeyCode::Right => self.input.move_right(),
@@ -1238,10 +1950,25 @@ impl TuiApp {
                     }
                 }
                 Ok(SlashCommand::Cost) => {
-                    let pct = self.session.context_usage_ratio() * 100.0;
-                    let msg = format!("context usage {pct:.1}%");
-                    self.set_feedback(FeedbackSeverity::Info, msg.clone());
-                    self.notices = vec![msg];
+                    let report = self.session.token_usage_report();
+                    let api = &report.api;
+                    let strip = if api.model_calls_with_usage > 0 {
+                        format!(
+                            "tokens in {} · out {} · total {} · ctx {:.0}%",
+                            api.prompt_tokens,
+                            api.completion_tokens,
+                            api.total_api_tokens(),
+                            report.context_pct
+                        )
+                    } else {
+                        format!(
+                            "ctx {} tok · {:.0}% capacity · API usage n/a",
+                            report.context_tokens_est, report.context_pct
+                        )
+                    };
+                    self.set_feedback(FeedbackSeverity::Info, strip);
+                    self.status_message = "token usage".into();
+                    self.notices = self.session.token_usage_lines();
                 }
                 Ok(SlashCommand::Approve) => {
                     if self.session.pending_hitl.is_none() {
@@ -1271,16 +1998,39 @@ impl TuiApp {
                     self.session.force_context_reset_async().await?;
                     self.push_toast("context reset");
                 }
-                Ok(SlashCommand::Model { provider, model }) => {
-                    if provider.is_none() && model.is_none() {
-                        self.overlay = Some(Overlay::model_open());
-                        self.status_message = "pick a model".into();
+                Ok(SlashCommand::Model {
+                    provider,
+                    model,
+                    refresh,
+                }) => {
+                    if refresh {
+                        self.refresh_model_catalogs();
+                    } else if provider.is_none() && model.is_none() {
+                        let items = self.model_picker_items(false);
+                        self.overlay = Some(Overlay::model_open_with(items));
+                        self.status_message = "pick a model (live catalog when connected)".into();
                     } else {
-                        let msg = format!(
-                            "model provider={provider:?} model={model:?} — set via /connect or restart to apply"
+                        let prefix = self
+                            .connect_profile
+                            .as_deref()
+                            .and_then(|id| {
+                                self.connect_registry
+                                    .get(id)
+                                    .map(|p| p.litellm_provider_prefix.as_str())
+                            });
+                        let id = normalize_model_id(
+                            provider.as_deref().unwrap_or(""),
+                            model.as_deref(),
+                            prefix,
                         );
-                        self.status_message = msg.clone();
-                        self.notices = vec![msg];
+                        if id.trim().is_empty() {
+                            self.set_feedback(
+                                FeedbackSeverity::Warn,
+                                "usage: /model <litellm-id> | /model refresh",
+                            );
+                        } else {
+                            self.apply_model_selection("litellm", &id);
+                        }
                     }
                 }
                 Ok(SlashCommand::Worktree { action }) => match action {
@@ -1438,6 +2188,15 @@ impl TuiApp {
                 Ok(SlashCommand::Connect(action)) => {
                     self.handle_connect(action);
                 }
+                Ok(SlashCommand::Commit { message }) => {
+                    self.slash_commit(message).await;
+                }
+                Ok(SlashCommand::Push { args }) => {
+                    self.slash_push(args).await;
+                }
+                Ok(SlashCommand::Stt { action }) => {
+                    self.slash_stt(action);
+                }
                 Err(e) => {
                     let msg = e.to_string();
                     self.set_feedback(FeedbackSeverity::Warn, msg.clone());
@@ -1476,8 +2235,20 @@ impl TuiApp {
                     self.runtime.model_label = m.to_string();
                     self.session.set_active_model(m);
                 }
+                self.refresh_connection_ui();
             }
         }
+
+        // Gate: no LLM chat without a live provider (slash commands already returned above).
+        if !self.is_provider_connected() {
+            self.input.set_text(line);
+            self.report_error(
+                "Not connected to an LLM provider. Run /connect (xAI Grok or OpenCode Go), then send again.",
+            );
+            self.refresh_connection_ui();
+            return Ok(());
+        }
+
         self.pending_prompt = Some(line.to_string());
         self.busy = true;
         self.busy_phase = BusyPhase::Model;
@@ -1722,6 +2493,7 @@ impl TuiApp {
         if let Some(e) = outcome_err {
             self.report_error(&e);
             self.last_exit = ExitCode::Failed;
+            // Leave queue intact so the operator can fix and continue, or click to cancel.
         } else if self.session.pending_hitl.is_some() {
             if let Some(ref p) = self.session.pending_hitl {
                 self.overlay = Some(Overlay::hitl(p.clone()));
@@ -1729,12 +2501,28 @@ impl TuiApp {
             self.last_exit = ExitCode::AwaitingHitl;
             self.set_feedback(FeedbackSeverity::Warn, "awaiting human approval");
             self.push_activity(ActivityKind::Hitl, FeedbackSeverity::Warn, "hitl waiting");
+            // Do not auto-dequeue until HITL is resolved.
         } else {
             self.clear_error_chrome();
             self.thinking_expanded = false; // collapse thinking after turn
             self.tool_expanded = false;
-            self.push_toast("done");
+            if self.message_queue.is_empty() {
+                self.push_toast("done");
+            } else {
+                self.push_toast(format!(
+                    "done · {} queued · empty Enter sends next · click to cancel",
+                    self.message_queue.len()
+                ));
+                self.set_feedback(
+                    FeedbackSeverity::Info,
+                    format!(
+                        "done · {} in queue — empty Enter sends next · click a row to cancel",
+                        self.message_queue.len()
+                    ),
+                );
+            }
             self.push_activity(ActivityKind::Model, FeedbackSeverity::Ok, "model ok");
+            // Do not auto-dequeue: user must empty-Enter to send next.
         }
         Ok(())
     }
@@ -1786,6 +2574,7 @@ async fn drain_events(app: &mut TuiApp) -> Result<(), TuiError> {
         match event::read()? {
             Event::Key(key) => app.handle_key(key).await?,
             Event::Paste(data) => app.handle_paste(&data),
+            Event::Mouse(m) => app.handle_mouse(m),
             _ => {}
         }
     }
@@ -1799,16 +2588,32 @@ pub async fn run_tui(
 ) -> Result<ExitCode, TuiError> {
     enable_raw_mode()?;
     let mut stdout = stdout();
-    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
+    // Bracketed paste + keyboard enhancement so Ctrl+Space push-to-talk gets Release events
+    // (Kitty keyboard protocol; ignored on terminals that do not support it).
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableBracketedPaste,
+        EnableMouseCapture,
+        PushKeyboardEnhancementFlags(
+            KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                | KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+        )
+    )?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = TuiApp::new(session, runtime);
     let result = run_loop(&mut terminal, &mut app).await;
 
+    // Ensure mic capture is stopped if the user quits mid-record.
+    app.ptt_recording = None;
+
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
+        PopKeyboardEnhancementFlags,
+        DisableMouseCapture,
         DisableBracketedPaste,
         LeaveAlternateScreen
     )?;
@@ -1841,6 +2646,7 @@ async fn run_loop(
             match event::read()? {
                 Event::Key(key) => app.handle_key(key).await?,
                 Event::Paste(data) => app.handle_paste(&data),
+                Event::Mouse(m) => app.handle_mouse(m),
                 _ => {}
             }
             drain_events(app).await?;
@@ -1852,6 +2658,7 @@ async fn run_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::parse_slash;
     use forge_core::LoopConfig;
     use forge_model::MockModelClient;
     use forge_tools::ToolRegistry;
@@ -1886,6 +2693,169 @@ mod tests {
         .await
         .unwrap();
         (dir, session)
+    }
+
+    #[tokio::test]
+    async fn enter_while_busy_enqueues_user_message() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "mock".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "0.12.0".into(),
+            },
+        );
+        app.busy = true;
+        for c in "queued later".chars() {
+            app.handle_key(press(KeyCode::Char(c), KeyModifiers::NONE))
+                .await
+                .unwrap();
+        }
+        app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert_eq!(app.message_queue.len(), 1);
+        assert!(app.pending_prompt.is_none());
+        assert_eq!(
+            app.message_queue.iter().next().map(|s| s.as_str()),
+            Some("queued later")
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_enter_when_idle_dequeues_and_sends() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "mock".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "0.12.0".into(),
+            },
+        );
+        // Simulate messages enqueued while processing.
+        app.message_queue.enqueue("from queue");
+        app.busy = false;
+        assert!(app.pending_prompt.is_none());
+        // Empty Enter = user action to dequeue + send
+        app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert!(app.message_queue.is_empty());
+        assert_eq!(app.pending_prompt.as_deref(), Some("from queue"));
+        assert!(app.busy);
+    }
+
+    #[tokio::test]
+    async fn click_queue_row_cancels_message() {
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "mock".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "0.12.0".into(),
+            },
+        );
+        app.message_queue.enqueue("a");
+        app.message_queue.enqueue("b");
+        // Simulate layout: queue strip at y=10, height 4 (border + 2 rows)
+        app.queue_area = Some(ratatui::layout::Rect::new(0, 10, 40, 4));
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 5,
+            row: 11, // first content row
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.message_queue.len(), 1);
+        assert_eq!(
+            app.message_queue.iter().next().map(|s| s.as_str()),
+            Some("b")
+        );
+    }
+
+    #[tokio::test]
+    async fn model_command_applies_litellm_id_to_session() {
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "mock".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "0.12.0".into(),
+            },
+        );
+        app.dispatch_line("/model openai/gpt-4.1-mini").await.unwrap();
+        assert_eq!(app.runtime.model_label, "openai/gpt-4.1-mini");
+        assert_eq!(app.session.active_model, "openai/gpt-4.1-mini");
+        assert!(app.pending_prompt.is_none());
+        app.dispatch_line("/model anthropic claude-sonnet-4-5")
+            .await
+            .unwrap();
+        assert_eq!(app.runtime.model_label, "anthropic/claude-sonnet-4-5");
+    }
+
+    #[tokio::test]
+    async fn slash_commit_uses_git_tool_without_queuing_model() {
+        let (dir, session) = test_session().await;
+        // Init a real git repo in the session workspace.
+        for args in [
+            &["init"][..],
+            &["config", "user.email", "forge@test"][..],
+            &["config", "user.name", "Forge Test"][..],
+        ] {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .output()
+                .unwrap();
+        }
+        std::fs::write(dir.path().join("note.txt"), "hello").unwrap();
+
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "mock".into(),
+                provider: "mock".into(),
+                cwd: dir.path().to_path_buf(),
+                version: "0.11.0".into(),
+            },
+        );
+        app.dispatch_line("/commit add note.txt").await.unwrap();
+        assert!(app.pending_prompt.is_none(), "must not call the model");
+        assert!(!app.busy);
+        let log = app
+            .run_git_tool("log", vec!["-1".into(), "--oneline".into()])
+            .await
+            .unwrap();
+        assert!(
+            log.content.contains("add note.txt"),
+            "expected commit in log: {}",
+            log.content
+        );
+        assert!(
+            app.activity
+                .recent(8)
+                .iter()
+                .any(|e| e.summary.contains("git commit")),
+            "activity should record direct git commit"
+        );
+    }
+
+    #[tokio::test]
+    async fn slash_push_force_rejected_at_parse() {
+        assert!(matches!(
+            parse_slash("/push --force").unwrap().unwrap_err(),
+            crate::commands::CommandError::Usage(_)
+        ));
     }
 
     #[tokio::test]
@@ -2340,6 +3310,8 @@ mod tests {
             "/reset",
             "/compact",
             "/resume",
+            "/commit",
+            "/push",
             "/cancel",
             "/quit",
         ] {
@@ -2445,6 +3417,7 @@ mod tests {
             busy: false,
             busy_phase: BusyPhase::Idle,
             connect_profile: None,
+            provider_connected: true,
             web_search_label: None,
             tools_visible: 0,
         };
@@ -2452,11 +3425,110 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn blocks_chat_when_not_connected() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "openai/gpt-4.1-mini".into(),
+                provider: "litellm".into(),
+                cwd: PathBuf::from("."),
+                version: "0.11.0".into(),
+            },
+        );
+        // Ensure no restored connect profile from developer machine credentials.
+        app.connect_profile = None;
+        app.connect_store = CredentialStore::new(
+            tempfile::TempDir::new().unwrap().path().join("empty-creds.toml"),
+        );
+        app.refresh_connection_ui();
+        assert!(!app.is_provider_connected());
+
+        for c in "hello world".chars() {
+            app.handle_key(press(KeyCode::Char(c), KeyModifiers::NONE))
+                .await
+                .unwrap();
+        }
+        app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .unwrap();
+
+        assert!(app.pending_prompt.is_none(), "must not queue a model turn");
+        assert!(!app.busy);
+        assert_eq!(app.input.text, "hello world");
+        assert!(
+            app.ui_banners.iter().any(|b| matches!(
+                b,
+                ChatItem::Banner { text, .. } if text.to_ascii_lowercase().contains("not connected")
+            )) || app
+                .activity
+                .recent(8)
+                .iter()
+                .any(|e| e.summary.to_ascii_lowercase().contains("not connected")),
+            "expected not-connected feedback"
+        );
+    }
+
+    #[tokio::test]
+    async fn mock_provider_allows_chat_without_connect() {
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "mock".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "0.11.0".into(),
+            },
+        );
+        assert!(app.is_provider_connected());
+        app.dispatch_line("hi").await.unwrap();
+        assert_eq!(app.pending_prompt.as_deref(), Some("hi"));
+    }
+
+    #[tokio::test]
+    async fn status_chrome_shows_not_connected_badge() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "openai/gpt-test".into(),
+                provider: "litellm".into(),
+                cwd: PathBuf::from("."),
+                version: "0.11.0".into(),
+            },
+        );
+        app.connect_profile = None;
+        app.connect_store = CredentialStore::new(
+            tempfile::TempDir::new().unwrap().path().join("empty-creds.toml"),
+        );
+        app.refresh_connection_ui();
+        let backend = TestBackend::new(100, 24);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| app.draw(f)).unwrap();
+        let mut text = String::new();
+        let buf = term.backend().buffer();
+        for y in 0..buf.area().height {
+            for x in 0..buf.area().width {
+                text.push_str(buf.get(x, y).symbol());
+            }
+            text.push('\n');
+        }
+        assert!(
+            text.contains("not connected") || text.contains("○"),
+            "missing not-connected chrome:\n{text}"
+        );
+    }
+
+    #[tokio::test]
     async fn tui09_chrome_includes_provider_and_model_on_frame() {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
         let (_dir, session) = test_session().await;
-        let app = TuiApp::new(
+        let mut app = TuiApp::new(
             session,
             TuiRuntimeConfig {
                 model_label: "openai/gpt-test".into(),
@@ -2490,7 +3562,7 @@ mod tests {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
         let (_dir, session) = test_session().await;
-        let app = TuiApp::new(
+        let mut app = TuiApp::new(
             session,
             TuiRuntimeConfig {
                 model_label: "mymodel".into(),
@@ -2737,10 +3809,20 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            app.feedback.text.contains("context") || app.status_message.contains("context"),
+            app.feedback.text.to_ascii_lowercase().contains("token")
+                || app.feedback.text.to_ascii_lowercase().contains("ctx")
+                || app.status_message.contains("token"),
             "got feedback={} status={}",
             app.feedback.text,
             app.status_message
+        );
+        assert!(
+            app.notices
+                .iter()
+                .any(|l| l.to_ascii_lowercase().contains("prompt")
+                    || l.to_ascii_lowercase().contains("token")),
+            "notices should list token kinds: {:?}",
+            app.notices
         );
     }
 }
