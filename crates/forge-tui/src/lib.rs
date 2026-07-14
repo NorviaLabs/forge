@@ -6,8 +6,10 @@ mod commands;
 mod conversation;
 mod history;
 mod layout;
+mod msg_queue;
 mod overlays;
 mod sidebar;
+mod stt;
 mod theme;
 #[cfg(test)]
 mod visual_test;
@@ -16,7 +18,10 @@ mod widgets;
 pub use activity::{ActivityFeed, ActivityItem, ActivityKind};
 pub use app::{run_tui, TuiApp, TuiError, TuiRuntimeConfig};
 pub use history::InputHistory;
-pub use commands::{help_text, parse_slash, CommandError, SlashCommand, WorktreeAction};
+pub use commands::{
+    help_text, parse_slash, CommandError, SlashCommand, SttAction, WorktreeAction,
+};
+pub use msg_queue::MessageQueue;
 pub use conversation::{
     BannerKind, ChatItem, ConversationModel, ConversationViewOpts, StreamWaitPhase, ToolCardState,
 };
@@ -25,7 +30,8 @@ pub use layout::{
     MIN_WIDTH,
 };
 pub use overlays::{
-    default_models, default_palette_items, filter_palette, handle_overlay_key, Key as OverlayKey,
+    default_models, filter_palette, handle_overlay_key, models_from_catalog,
+    default_palette_items, Key as OverlayKey,
     Overlay, OverlayAction,
 };
 pub use sidebar::SidebarModel;

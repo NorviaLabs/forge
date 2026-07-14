@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use forge_context::ContextEngine;
+use forge_context::{estimate_messages_tokens, estimate_tokens, ContextEngine};
 use forge_durable::{new_session_id, Journal};
 use forge_governance::{AuditEvent, Governance};
 use forge_model::{ModelClient, ModelRequest, StreamEventTx};
@@ -13,7 +13,7 @@ use forge_tools::{
 };
 use forge_types::{
     HitlDecision, HitlPayload, Message, MessageRole, ModelResponse, PolicyDecision, SessionId,
-    SessionStatus, SideEffectClass, ToolCall, ToolOutput,
+    SessionStatus, SideEffectClass, ToolCall, ToolOutput, Usage,
 };
 use forge_workspace::{IsolationMode, WorktreeManager};
 use serde_json::json;
@@ -72,6 +72,61 @@ pub struct TurnEvent {
     pub detail: String,
 }
 
+/// Cumulative API-reported token usage for a session (not $ cost).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SessionTokenUsage {
+    /// Sum of provider-reported prompt/input tokens across model calls.
+    pub prompt_tokens: u64,
+    /// Sum of provider-reported completion/output tokens across model calls.
+    pub completion_tokens: u64,
+    /// Number of model complete/stream calls that reported usage.
+    pub model_calls_with_usage: u32,
+    /// Model steps applied (with or without usage metadata).
+    pub model_steps: u32,
+    /// Estimated thinking/reasoning tokens (from thinking text, ~4 chars/token).
+    pub thinking_tokens_est: u64,
+}
+
+impl SessionTokenUsage {
+    pub fn total_api_tokens(&self) -> u64 {
+        self.prompt_tokens.saturating_add(self.completion_tokens)
+    }
+
+    pub fn record_response(&mut self, usage: Option<&Usage>, thinking: Option<&str>) {
+        self.model_steps = self.model_steps.saturating_add(1);
+        if let Some(u) = usage {
+            self.prompt_tokens = self
+                .prompt_tokens
+                .saturating_add(u.prompt_tokens as u64);
+            self.completion_tokens = self
+                .completion_tokens
+                .saturating_add(u.completion_tokens as u64);
+            self.model_calls_with_usage = self.model_calls_with_usage.saturating_add(1);
+        }
+        if let Some(th) = thinking.filter(|t| !t.trim().is_empty()) {
+            self.thinking_tokens_est = self
+                .thinking_tokens_est
+                .saturating_add(estimate_tokens(th) as u64);
+        }
+    }
+}
+
+/// Snapshot of session token metrics for `/cost` and status UIs.
+#[derive(Debug, Clone)]
+pub struct TokenUsageReport {
+    pub api: SessionTokenUsage,
+    pub context_tokens_est: usize,
+    pub context_capacity: usize,
+    pub context_pct: f64,
+    pub system_tokens_est: usize,
+    pub user_tokens_est: usize,
+    pub assistant_tokens_est: usize,
+    pub tool_tokens_est: usize,
+    pub thinking_in_context_est: usize,
+    pub message_count: usize,
+    pub tool_message_count: usize,
+}
+
 /// Result of applying one model response inside the agent loop.
 #[derive(Debug)]
 pub enum ApplyOutcome {
@@ -101,6 +156,8 @@ pub struct AgentSession {
     worktree: Option<WorktreeManager>,
     enable_context: bool,
     enable_gov: bool,
+    /// Cumulative provider token usage for this session.
+    pub token_usage: SessionTokenUsage,
 }
 
 impl AgentSession {
@@ -158,6 +215,7 @@ impl AgentSession {
             worktree,
             enable_context: loop_cfg.enable_context_lifecycle,
             enable_gov: loop_cfg.enable_governance,
+            token_usage: SessionTokenUsage::default(),
         })
     }
 
@@ -238,6 +296,8 @@ impl AgentSession {
             worktree,
             enable_context: loop_cfg.enable_context_lifecycle,
             enable_gov: loop_cfg.enable_governance,
+            // Resume does not rehydrate historical usage from the journal yet.
+            token_usage: SessionTokenUsage::default(),
         })
     }
 
@@ -260,6 +320,92 @@ impl AgentSession {
 
     pub fn context_usage_ratio(&self) -> f64 {
         self.context.usage_ratio(&self.messages)
+    }
+
+    /// Full token-usage report for `/cost` (API totals + in-context estimates). No $.
+    pub fn token_usage_report(&self) -> TokenUsageReport {
+        let mut system_tokens_est = 0usize;
+        let mut user_tokens_est = 0usize;
+        let mut assistant_tokens_est = 0usize;
+        let mut tool_tokens_est = 0usize;
+        let mut thinking_in_context_est = 0usize;
+        let mut tool_message_count = 0usize;
+        for m in &self.messages {
+            let n = estimate_tokens(&m.content);
+            match m.role {
+                MessageRole::System => system_tokens_est = system_tokens_est.saturating_add(n),
+                MessageRole::User => user_tokens_est = user_tokens_est.saturating_add(n),
+                MessageRole::Assistant => {
+                    assistant_tokens_est = assistant_tokens_est.saturating_add(n);
+                    if let Some(ref th) = m.thinking {
+                        thinking_in_context_est =
+                            thinking_in_context_est.saturating_add(estimate_tokens(th));
+                    }
+                }
+                MessageRole::Tool => {
+                    tool_tokens_est = tool_tokens_est.saturating_add(n);
+                    tool_message_count = tool_message_count.saturating_add(1);
+                }
+            }
+        }
+        let context_tokens_est = estimate_messages_tokens(&self.messages)
+            .saturating_add(thinking_in_context_est);
+        let context_capacity = self.context.config.capacity_tokens.max(1);
+        let context_pct = (context_tokens_est as f64 / context_capacity as f64) * 100.0;
+        TokenUsageReport {
+            api: self.token_usage.clone(),
+            context_tokens_est,
+            context_capacity,
+            context_pct,
+            system_tokens_est,
+            user_tokens_est,
+            assistant_tokens_est,
+            tool_tokens_est,
+            thinking_in_context_est,
+            message_count: self.messages.len(),
+            tool_message_count,
+        }
+    }
+
+    /// Human-readable multi-line report for the TUI notices panel.
+    pub fn token_usage_lines(&self) -> Vec<String> {
+        let r = self.token_usage_report();
+        let api = &r.api;
+        let mut lines = vec![
+            "Session token usage (not $)".into(),
+            String::new(),
+            "API-reported (cumulative)".into(),
+            format!("  prompt/input tokens:      {}", api.prompt_tokens),
+            format!("  completion/output tokens: {}", api.completion_tokens),
+            format!("  total API tokens:         {}", api.total_api_tokens()),
+            format!(
+                "  model steps:              {} ({} with usage metadata)",
+                api.model_steps, api.model_calls_with_usage
+            ),
+            format!(
+                "  thinking tokens (est.):   {}",
+                api.thinking_tokens_est
+            ),
+            String::new(),
+            "In-context estimate (~4 chars/token)".into(),
+            format!(
+                "  total: {} / {}  ({:.1}% of capacity)",
+                r.context_tokens_est, r.context_capacity, r.context_pct
+            ),
+            format!("  system:    {}", r.system_tokens_est),
+            format!("  user:      {}", r.user_tokens_est),
+            format!("  assistant: {}", r.assistant_tokens_est),
+            format!("  tool:      {} ({} tool msgs)", r.tool_tokens_est, r.tool_message_count),
+            format!("  thinking:  {}", r.thinking_in_context_est),
+            format!("  messages:  {}", r.message_count),
+        ];
+        if api.model_steps > 0 && api.model_calls_with_usage == 0 {
+            lines.push(String::new());
+            lines.push(
+                "Note: provider did not return usage; API totals may stay 0.".into(),
+            );
+        }
+        lines
     }
 
     /// Append a user message to the session (journal + transcript) without calling the model.
@@ -321,9 +467,16 @@ impl AgentSession {
                 json!({
                     "text_len": last.text.len(),
                     "tool_calls": last.tool_calls.len(),
+                    "usage": last.usage.as_ref().map(|u| json!({
+                        "prompt_tokens": u.prompt_tokens,
+                        "completion_tokens": u.completion_tokens,
+                    })),
                 }),
             )
             .await?;
+
+        self.token_usage
+            .record_response(last.usage.as_ref(), last.thinking.as_deref());
 
         let has_thinking = last
             .thinking
@@ -721,6 +874,11 @@ impl AgentSession {
         Ok(())
     }
 
+    /// Active workspace root (primary checkout or session worktree).
+    pub fn workspace_root(&self) -> &std::path::Path {
+        &self.tool_ctx.workspace_root
+    }
+
     pub fn worktree_status(&self) -> Option<String> {
         self.worktree.as_ref().map(|w| w.status())
     }
@@ -955,5 +1113,42 @@ mod tests {
             .find(|m| m.role == MessageRole::Tool)
             .unwrap();
         assert!(tool_msg.content.contains("offloaded tool output"));
+    }
+
+    #[tokio::test]
+    async fn accumulates_api_token_usage_for_cost() {
+        let dir = tempdir().unwrap();
+        let model = Arc::new(MockModelClient::script(vec![
+            ModelResponse {
+                text: "one".into(),
+                tool_calls: vec![],
+                usage: Some(Usage {
+                    prompt_tokens: 10,
+                    completion_tokens: 3,
+                }),
+                thinking: Some("hmm".into()),
+            },
+        ]));
+        // Need two responses if we call twice — first call only.
+        let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        s.run_user_message("hi").await.unwrap();
+        assert_eq!(s.token_usage.prompt_tokens, 10);
+        assert_eq!(s.token_usage.completion_tokens, 3);
+        assert_eq!(s.token_usage.model_steps, 1);
+        assert_eq!(s.token_usage.model_calls_with_usage, 1);
+        assert!(s.token_usage.thinking_tokens_est >= 1);
+        let lines = s.token_usage_lines();
+        assert!(lines.iter().any(|l| l.contains("prompt/input")));
+        assert!(lines.iter().any(|l| l.contains("completion/output")));
+        assert!(lines.iter().any(|l| l.contains("In-context estimate")));
+        assert!(
+            !lines.iter().any(|l| l.contains("$0") || l.contains("USD") || l.contains("price")),
+            "should not report dollar cost: {lines:?}"
+        );
+        let report = s.token_usage_report();
+        assert!(report.user_tokens_est >= 1);
+        assert!(report.system_tokens_est >= 1);
     }
 }

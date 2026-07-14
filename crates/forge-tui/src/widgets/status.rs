@@ -53,6 +53,8 @@ pub struct StatusModel {
     pub busy: bool,
     pub busy_phase: BusyPhase,
     pub connect_profile: Option<String>,
+    /// Whether an LLM provider is usable for chat (connect profile live, or mock).
+    pub provider_connected: bool,
     pub web_search_label: Option<String>,
     pub tools_visible: usize,
 }
@@ -131,9 +133,26 @@ impl Widget for StatusBar<'_> {
         };
         let ctx = format!("{:.0}%", self.model.ctx_pct * 100.0);
 
-        // Calm single line: brand · state · model · ctx · profile · wt
+        // Calm single line: brand · connect · state · model · ctx · wt
+        let (conn_label, conn_style) = if self.model.provider_connected {
+            let who = self
+                .model
+                .connect_profile
+                .as_deref()
+                .unwrap_or(if self.model.provider.eq_ignore_ascii_case("mock") {
+                    "mock"
+                } else {
+                    "ready"
+                });
+            (format!("● connected:{who} "), theme::ok())
+        } else {
+            ("○ not connected ".into(), theme::warn().add_modifier(Modifier::BOLD))
+        };
+
         let mut spans = vec![
             Span::styled(" forge ", theme::brand()),
+            Span::styled("· ", theme::dim()),
+            Span::styled(conn_label, conn_style),
             Span::styled("· ", theme::dim()),
             Span::styled(format!("{label} "), style),
             Span::styled("· ", theme::dim()),
@@ -145,10 +164,6 @@ impl Widget for StatusBar<'_> {
             Span::styled(format!("ctx {ctx} "), self.model.ctx_style()),
         ];
 
-        if let Some(ref p) = self.model.connect_profile {
-            spans.push(Span::styled("· ", theme::dim()));
-            spans.push(Span::styled(format!("{p} "), theme::ok()));
-        }
         if self.model.worktree_on {
             spans.push(Span::styled("· ", theme::dim()));
             spans.push(Span::styled("worktree ", theme::warn()));
@@ -183,6 +198,10 @@ pub fn session_chrome_lines(m: &StatusModel) -> Vec<String> {
             m.connect_profile.as_deref().unwrap_or("—")
         ),
         format!(
+            "connected={}",
+            if m.provider_connected { "yes" } else { "no" }
+        ),
+        format!(
             "web_search={}",
             m.web_search_label.as_deref().unwrap_or("off")
         ),
@@ -206,6 +225,7 @@ mod tests {
             busy: false,
             busy_phase: BusyPhase::Idle,
             connect_profile: None,
+            provider_connected: true,
             web_search_label: None,
             tools_visible: 0,
         };
@@ -224,6 +244,7 @@ mod tests {
             busy: true,
             busy_phase: BusyPhase::Model,
             connect_profile: None,
+            provider_connected: false,
             web_search_label: Some("mock".into()),
             tools_visible: 5,
         };
@@ -242,6 +263,7 @@ mod tests {
             busy: false,
             busy_phase: BusyPhase::Idle,
             connect_profile: Some("xai".into()),
+            provider_connected: true,
             web_search_label: Some("mock".into()),
             tools_visible: 4,
         };
@@ -249,6 +271,7 @@ mod tests {
         assert!(lines.iter().any(|l| l.contains("provider=litellm")));
         assert!(lines.iter().any(|l| l.contains("model=openai/gpt")));
         assert!(lines.iter().any(|l| l.contains("profile=xai")));
+        assert!(lines.iter().any(|l| l.contains("connected=yes")));
     }
 
     #[test]

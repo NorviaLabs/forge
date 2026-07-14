@@ -105,24 +105,40 @@ def handle_ping(mid: str) -> None:
     )
 
 
-def _opencode_go_credentials() -> tuple[str | None, str | None]:
-    """Return (api_key, api_base) for OpenCode Go when configured."""
+def _opencode_key() -> str | None:
     key = (
-        os.environ.get("OPENCODE_API_KEY")
+        os.environ.get("OPENCODE_ZEN_API_KEY")
+        or os.environ.get("OPENCODE_API_KEY")
         or os.environ.get("OPENCODE_GO_API_KEY")
         or ""
-    ).strip() or None
+    ).strip()
+    return key or None
+
+
+def _opencode_go_base() -> str | None:
     base = (
         os.environ.get("OPENCODE_API_BASE")
         or os.environ.get("OPENCODE_GO_API_BASE")
         or ""
-    ).strip() or None
-    return key, base
+    ).strip()
+    return base or None
+
+
+def _opencode_zen_base() -> str | None:
+    base = (os.environ.get("OPENCODE_ZEN_API_BASE") or "").strip()
+    return base or None
 
 
 def _is_opencode_go_model(model: str) -> bool:
     m = (model or "").lower()
-    return m.startswith("opencode-go/") or m.startswith("opencode/")
+    # Legacy bare `opencode/` prefix routes to Go.
+    return m.startswith("opencode-go/") or (
+        m.startswith("opencode/") and not m.startswith("opencode-zen/")
+    )
+
+
+def _is_opencode_zen_model(model: str) -> bool:
+    return (model or "").lower().startswith("opencode-zen/")
 
 
 def _credential_hint(model: str) -> str | None:
@@ -141,8 +157,28 @@ def _credential_hint(model: str) -> str | None:
                 "Run `forge connect xai` (or /connect xai), complete OAuth, then retry. "
                 "Unset FORGE_CONNECT_OAUTH_FIXTURE if set."
             )
+    if _is_opencode_zen_model(m):
+        key = _opencode_key()
+        base = _opencode_zen_base()
+        if not key:
+            return (
+                "No OPENCODE_API_KEY in worker env. Run `forge connect opencode_zen --key …` "
+                "(or /connect opencode_zen), paste a key from https://opencode.ai/auth."
+            )
+        if not base:
+            return (
+                "OPENCODE_ZEN_API_BASE is not set. Re-run `forge connect opencode_zen` so Forge "
+                "exports https://opencode.ai/zen/v1 for the LiteLLM worker."
+            )
+        if len(key) < 16:
+            return (
+                "OPENCODE_API_KEY looks too short. Get a real key from "
+                "https://opencode.ai/auth and reconnect."
+            )
+        return None
     if _is_opencode_go_model(m):
-        key, base = _opencode_go_credentials()
+        key = _opencode_key()
+        base = _opencode_go_base()
         if not key:
             return (
                 "No OPENCODE_API_KEY in worker env. Run `forge connect opencode_go --key …` "
@@ -159,12 +195,21 @@ def _credential_hint(model: str) -> str | None:
                 "https://opencode.ai/auth and reconnect."
             )
         return None
-    if m.startswith("openai/"):
+    if m.startswith("openai/") and not _is_opencode_go_model(m) and not _is_opencode_zen_model(m):
         if not (os.environ.get("OPENAI_API_KEY") or "").strip():
-            return "OPENAI_API_KEY is not set for this worker."
+            return (
+                "OPENAI_API_KEY is not set for this worker. "
+                "Run `forge connect openai --key …` (or /connect openai)."
+            )
     if m.startswith("anthropic/"):
         if not (os.environ.get("ANTHROPIC_API_KEY") or "").strip():
-            return "ANTHROPIC_API_KEY is not set for this worker."
+            return (
+                "ANTHROPIC_API_KEY is not set for this worker. "
+                "Run `forge connect anthropic --key …` (or /connect anthropic)."
+            )
+    if m.startswith("ollama/") or m.startswith("ollama_chat/"):
+        # Local server — key optional; base defaults to localhost.
+        return None
     return None
 
 
@@ -189,14 +234,28 @@ def _completion_kwargs(params: dict[str, Any], *, stream: bool) -> dict[str, Any
         extra = {k: v for k, v in extra.items() if k != "stream"}
         kwargs.update(extra)
 
-    # OpenCode Go: OpenAI-compatible endpoint. Rewrite opencode-go/<id> → openai/<id>
-    # and inject api_base + api_key so LiteLLM does not need a separate provider plugin.
-    oc_key, oc_base = _opencode_go_credentials()
-    if oc_key and oc_base and _is_opencode_go_model(model):
+    # OpenCode Zen / Go: OpenAI-compatible endpoints. Rewrite prefix → openai/<id>
+    # and inject the matching api_base + key.
+    oc_key = _opencode_key()
+    if oc_key and _is_opencode_zen_model(model):
         mid = model.split("/", 1)[1] if "/" in model else model
+        zen_base = _opencode_zen_base() or "https://opencode.ai/zen/v1"
         kwargs["model"] = f"openai/{mid}"
-        kwargs["api_base"] = oc_base.rstrip("/")
+        kwargs["api_base"] = zen_base.rstrip("/")
         kwargs["api_key"] = oc_key
+    elif oc_key and _is_opencode_go_model(model):
+        mid = model.split("/", 1)[1] if "/" in model else model
+        go_base = _opencode_go_base() or "https://opencode.ai/zen/go/v1"
+        kwargs["model"] = f"openai/{mid}"
+        kwargs["api_base"] = go_base.rstrip("/")
+        kwargs["api_key"] = oc_key
+
+    # Ollama: ensure api_base points at local daemon when OLLAMA_API_BASE is set.
+    mlow = (model or "").lower()
+    if mlow.startswith("ollama/") or mlow.startswith("ollama_chat/"):
+        ollama_base = (os.environ.get("OLLAMA_API_BASE") or "").strip()
+        if ollama_base and "api_base" not in kwargs:
+            kwargs["api_base"] = ollama_base.rstrip("/")
 
     return kwargs
 
