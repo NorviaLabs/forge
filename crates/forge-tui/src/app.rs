@@ -199,6 +199,47 @@ impl TuiApp {
         .apply_connection_chrome()
     }
 
+    fn push_chat_item(&mut self, item: ChatItem) {
+        // Keep UI-only transcript bounded (prevents unbounded growth in long sessions).
+        self.ui_banners.push(item);
+        const MAX_UI_ITEMS: usize = 240;
+        if self.ui_banners.len() > MAX_UI_ITEMS {
+            let drop_n = self.ui_banners.len().saturating_sub(MAX_UI_ITEMS);
+            self.ui_banners.drain(0..drop_n);
+        }
+    }
+
+    fn push_command_echo(&mut self, line: &str) {
+        self.push_chat_item(ChatItem::User {
+            text: line.trim_end().to_string(),
+        });
+    }
+
+    fn push_command_result_echo(&mut self) {
+        // If a command produced immediate output (status + notices), surface it in chat.
+        if self.overlay.is_some() {
+            return;
+        }
+        let mut lines: Vec<String> = Vec::new();
+        if !self.status_message.trim().is_empty() {
+            lines.push(self.status_message.trim().to_string());
+        }
+        for n in self.notices.iter().take(14) {
+            if !n.trim().is_empty() {
+                lines.push(n.trim().to_string());
+            }
+        }
+        if lines.is_empty() {
+            return;
+        }
+        let mut text = lines.join("\n");
+        if text.chars().count() > 900 {
+            text = text.chars().take(900).collect();
+            text.push_str("…");
+        }
+        self.push_chat_item(ChatItem::System { text });
+    }
+
     /// Mock provider is always "connected" (offline tests / CI).
     fn is_mock_provider(&self) -> bool {
         self.runtime.provider.eq_ignore_ascii_case("mock")
@@ -1006,6 +1047,13 @@ impl TuiApp {
 
     /// Enqueue while a message is processing (TUI Enter path only).
     fn enqueue_user_message(&mut self, line: String) {
+        // Show immediately in the conversation window (without duplicating the eventual
+        // real User message once it is dequeued and appended into the session).
+        let preview: String = line.chars().take(800).collect();
+        self.push_chat_item(ChatItem::Banner {
+            text: format!("Queued message:\n{preview}"),
+            kind: BannerKind::Info,
+        });
         let n = self.message_queue.enqueue(line);
         self.push_toast(format!("queued #{n}"));
         self.set_feedback(
@@ -2007,6 +2055,7 @@ Reply with ONLY the commit message line.\n\n\
 
     pub async fn dispatch_line(&mut self, line: &str) -> Result<(), TuiError> {
         if let Some(cmd_res) = parse_slash(line) {
+            self.push_command_echo(line);
             let slash_name = line.split_whitespace().next().unwrap_or("/");
             self.push_activity(
                 ActivityKind::Slash,
@@ -2327,6 +2376,7 @@ Reply with ONLY the commit message line.\n\n\
                     self.notices = vec![msg, "Type /help for commands.".into()];
                 }
             }
+            self.push_command_result_echo();
             return Ok(());
         }
 
