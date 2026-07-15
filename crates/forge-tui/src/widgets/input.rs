@@ -113,8 +113,8 @@ impl Widget for InputBar<'_> {
         let lines: Vec<Line> = if self.model.text.is_empty() && !self.model.hint.is_empty() {
             vec![Line::from(vec![
                 Span::styled(" ❯ ", theme::brand()),
-                Span::styled(self.model.hint.as_str(), theme::dim()),
                 Span::styled(" ", theme::caret()), // block cell
+                Span::styled(self.model.hint.as_str(), theme::dim()),
             ])]
         } else if self.model.text.is_empty() {
             vec![Line::from(vec![
@@ -182,13 +182,13 @@ impl Widget for InputBar<'_> {
             theme::border()
         };
         let title = if self.model.not_connected {
-            " input · not connected · /connect required "
+            " not connected · /connect required "
         } else if self.model.history_browse {
-            " input · history "
+            " history "
         } else if self.model.text.contains('\n') {
-            " input · multi-line · Enter send · Shift+Enter newline "
+            " multi-line · Shift+Enter newline "
         } else {
-            " input "
+            ""
         };
         let block = Block::default()
             .borders(Borders::ALL)
@@ -279,6 +279,22 @@ mod tests {
             }
         }
         assert!(found, "expected block cursor cell with solid background");
+    }
+
+    #[test]
+    fn empty_input_starts_with_caret_cell() {
+        let m = InputModel::default();
+        let backend = TestBackend::new(40, 5);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| {
+            f.render_widget(InputBar { model: &m }, f.size());
+        })
+        .unwrap();
+        let buf = term.backend().buffer();
+        // Empty input renders prompt first, then the caret cell.
+        let cell = buf.get(4, 1);
+        assert_eq!(cell.symbol(), " ");
+        assert_eq!(cell.style().bg, Some(theme::TEXT));
     }
 
     #[test]

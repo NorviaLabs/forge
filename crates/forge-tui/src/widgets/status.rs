@@ -82,17 +82,6 @@ impl StatusModel {
         }
     }
 
-    fn ctx_style(&self) -> ratatui::style::Style {
-        let r = self.ctx_pct.clamp(0.0, 1.0);
-        if r >= 0.90 {
-            theme::danger()
-        } else if r >= 0.70 {
-            theme::warn()
-        } else {
-            theme::muted()
-        }
-    }
-
     fn truncate_model(model: &str, max: usize) -> String {
         let n = model.chars().count();
         if n <= max {
@@ -131,7 +120,6 @@ impl Widget for StatusBar<'_> {
         } else {
             self.model.provider.as_str()
         };
-        let ctx = format!("{:.0}%", self.model.ctx_pct * 100.0);
 
         // Calm single line: connect · state · model · ctx · wt (no product title)
         let (conn_label, conn_style) = if self.model.provider_connected {
@@ -161,19 +149,11 @@ impl Widget for StatusBar<'_> {
                 format!("{provider}/{model_disp} "),
                 theme::text(),
             ),
-            Span::styled("· ", theme::dim()),
-            Span::styled(format!("ctx {ctx} "), self.model.ctx_style()),
         ];
 
         if self.model.worktree_on {
             spans.push(Span::styled("· ", theme::dim()));
             spans.push(Span::styled("worktree ", theme::warn()));
-        }
-        if area.width as usize >= 100 {
-            spans.push(Span::styled(
-                format!("· sess {} ", self.model.session_short),
-                theme::dim(),
-            ));
         }
 
         let line = Line::from(spans);
