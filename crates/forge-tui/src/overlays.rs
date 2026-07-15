@@ -17,7 +17,10 @@ pub enum Overlay {
         items: Vec<PaletteItem>,
     },
     Model {
-        selected: usize,
+        provider_selected: usize,
+        model_selected: usize,
+        /// Provider ids (connect profile ids) derived from `items`.
+        providers: Vec<String>,
         items: Vec<ModelItem>,
     },
     /// Phase 6.1 — OpenCode Go (and other ApiKey tui_always_prompt profiles)
@@ -213,9 +216,81 @@ impl Overlay {
     }
 
     pub fn model_open_with(items: Vec<ModelItem>) -> Self {
+        let mut providers: Vec<String> = items
+            .iter()
+            .filter_map(|m| {
+                if let Some(ref pid) = m.profile_id {
+                    Some(pid.clone())
+                } else {
+                    let pfx = m.model.split('/').next().unwrap_or("").trim();
+                    if pfx.is_empty() {
+                        None
+                    } else {
+                        Some(pfx.to_string())
+                    }
+                }
+            })
+            .collect();
+        providers.sort();
+        providers.dedup();
+        if providers.is_empty() {
+            providers.push("all".into());
+        }
         Self::Model {
-            selected: 0,
+            provider_selected: 0,
+            model_selected: 0,
+            providers,
             items,
+        }
+    }
+
+    /// Focus the model picker on the given model id (best-effort).
+    pub fn focus_model(&mut self, model_id: &str) {
+        let needle = model_id.trim();
+        if needle.is_empty() {
+            return;
+        }
+        let Self::Model {
+            provider_selected,
+            model_selected,
+            providers,
+            items,
+        } = self
+        else {
+            return;
+        };
+
+        // Find exact model first.
+        if let Some(found) = items.iter().find(|m| m.model == needle) {
+            let pid = found
+                .profile_id
+                .clone()
+                .unwrap_or_else(|| needle.split('/').next().unwrap_or("").to_string());
+            if let Some(pi) = providers.iter().position(|p| p == &pid) {
+                *provider_selected = pi;
+            }
+            let active_pid = providers
+                .get(*provider_selected)
+                .map(|s| s.as_str())
+                .unwrap_or("all");
+            if let Some(mi) = items
+                .iter()
+                .filter(|m| model_matches_provider(active_pid, m))
+                .position(|m| m.model == needle)
+            {
+                *model_selected = mi;
+            }
+            return;
+        }
+
+        // Fallback: focus provider by prefix.
+        let prefix = needle.split('/').next().unwrap_or("").trim();
+        if prefix.is_empty() {
+            return;
+        }
+        if let Some(pi) = providers.iter().position(|p| p == prefix) {
+            *provider_selected = pi;
+            *model_selected = 0;
         }
     }
 
@@ -276,12 +351,21 @@ impl Overlay {
                 let n = items.len() as i32;
                 *selected = ((*selected as i32 + delta).rem_euclid(n)) as usize;
             }
-            Self::Model { selected, items, .. } => {
+            Self::Model {
+                provider_selected,
+                model_selected,
+                providers,
+                items,
+            } => {
                 if items.is_empty() {
                     return;
                 }
-                let n = items.len() as i32;
-                *selected = ((*selected as i32 + delta).rem_euclid(n)) as usize;
+                let pid = providers
+                    .get(*provider_selected)
+                    .map(|s| s.as_str())
+                    .unwrap_or("all");
+                let n = filtered_models_len(pid, items).max(1) as i32;
+                *model_selected = ((*model_selected as i32 + delta).rem_euclid(n)) as usize;
             }
             Self::ConnectPicker { selected, items, .. } => {
                 if items.is_empty() {
@@ -293,6 +377,26 @@ impl Overlay {
             _ => {}
         }
     }
+}
+
+fn model_matches_provider(provider_id: &str, m: &ModelItem) -> bool {
+    if provider_id == "all" {
+        return true;
+    }
+    if let Some(ref pid) = m.profile_id {
+        if pid == provider_id {
+            return true;
+        }
+    }
+    let pfx = m.model.split('/').next().unwrap_or("").trim();
+    pfx == provider_id
+}
+
+fn filtered_models_len(provider_id: &str, items: &[ModelItem]) -> usize {
+    items
+        .iter()
+        .filter(|m| model_matches_provider(provider_id, m))
+        .count()
 }
 
 pub fn filter_palette(filter: &str) -> Vec<PaletteItem> {
@@ -351,6 +455,40 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             overlay.move_sel(1);
             OverlayAction::None
         }
+        Key::Left => {
+            if let Overlay::Model {
+                provider_selected,
+                model_selected,
+                providers,
+                ..
+            } = overlay
+            {
+                if !providers.is_empty() {
+                    let n = providers.len() as i32;
+                    *provider_selected =
+                        ((*provider_selected as i32 - 1).rem_euclid(n)) as usize;
+                    *model_selected = 0;
+                }
+            }
+            OverlayAction::None
+        }
+        Key::Right => {
+            if let Overlay::Model {
+                provider_selected,
+                model_selected,
+                providers,
+                ..
+            } = overlay
+            {
+                if !providers.is_empty() {
+                    let n = providers.len() as i32;
+                    *provider_selected =
+                        ((*provider_selected as i32 + 1).rem_euclid(n)) as usize;
+                    *model_selected = 0;
+                }
+            }
+            OverlayAction::None
+        }
         Key::Enter => match overlay {
             Overlay::Slash {
                 selected, items, ..
@@ -385,9 +523,20 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                 }
             }
             Overlay::Model {
-                selected, items, ..
+                provider_selected,
+                model_selected,
+                providers,
+                items,
             } => {
-                if let Some(m) = items.get(*selected) {
+                let pid = providers
+                    .get(*provider_selected)
+                    .map(|s| s.as_str())
+                    .unwrap_or("all");
+                let chosen = items
+                    .iter()
+                    .filter(|m| model_matches_provider(pid, m))
+                    .nth(*model_selected);
+                if let Some(m) = chosen {
                     OverlayAction::SelectModel {
                         provider: m.provider.clone(),
                         model: m.model.clone(),
@@ -507,6 +656,8 @@ pub enum Key {
     Enter,
     Up,
     Down,
+    Left,
+    Right,
     Backspace,
     Char(char),
     /// Bracketed-paste payload (full string at once).
@@ -599,14 +750,39 @@ impl Widget for OverlayWidget<'_> {
                     .collect();
                 List::new(list_items).render(inner, buf);
             }
-            Overlay::Model { selected, items } => {
+            Overlay::Model {
+                provider_selected,
+                model_selected,
+                providers,
+                items,
+            } => {
                 let r = centered_rect(70, 55, area);
-                let list_items: Vec<ListItem> = items
+                let pid = providers
+                    .get(*provider_selected)
+                    .map(|s| s.as_str())
+                    .unwrap_or("all");
+                let filtered: Vec<&ModelItem> = items
+                    .iter()
+                    .filter(|m| model_matches_provider(pid, m))
+                    .collect();
+                let total = filtered.len();
+                let visible = r.height.saturating_sub(2).max(1) as usize;
+                let start = if *model_selected < visible {
+                    0
+                } else if *model_selected + 1 > visible {
+                    (*model_selected).saturating_add(1).saturating_sub(visible)
+                } else {
+                    0
+                };
+                let end = (start + visible).min(filtered.len());
+                let window = &filtered[start..end];
+                let list_items: Vec<ListItem> = window
                     .iter()
                     .enumerate()
                     .map(|(i, m)| {
-                        let marker = if i == *selected { "▶ " } else { "  " };
-                        let style = if i == *selected {
+                        let idx = start + i;
+                        let marker = if idx == *model_selected { "▶ " } else { "  " };
+                        let style = if idx == *model_selected {
                             theme::selected_row()
                         } else {
                             theme::text()
@@ -623,15 +799,25 @@ impl Widget for OverlayWidget<'_> {
                         ListItem::new(Span::styled(row, style))
                     })
                     .collect();
+                let prov_hint = if providers.len() > 1 {
+                    " (←/→ provider)"
+                } else {
+                    ""
+                };
+                let page = if total == 0 {
+                    "0/0".into()
+                } else {
+                    format!("{}/{}", (*model_selected + 1).min(total), total)
+                };
+                let title = format!(
+                    " model picker · provider {pid} · {page}{prov_hint} "
+                );
                 List::new(list_items)
                     .block(
                         Block::default()
                             .borders(Borders::ALL)
                             .border_style(theme::border())
-                            .title(Span::styled(
-                                " model picker · catalog + defaults · /model <id> ",
-                                theme::muted(),
-                            )),
+                            .title(Span::styled(title, theme::muted())),
                     )
                     .render(r, buf);
             }
