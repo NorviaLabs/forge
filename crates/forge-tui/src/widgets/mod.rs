@@ -9,5 +9,4 @@ pub use feedback::{
 };
 pub use footer::{FooterBar, FooterModel};
 pub use input::{InputBar, InputModel};
-pub use queue::{hit_test_queue_row, QueueBar, QueueModel};
 pub use status::{session_chrome_lines, BusyPhase, StatusBar, StatusModel};

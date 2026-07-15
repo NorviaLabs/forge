@@ -1,4 +1,4 @@
-//! Outbound message queue strip — click a row to cancel that item.
+//! Outbound message queue pane — read-only list with keyboard selection.
 
 use crate::theme;
 use ratatui::buffer::Buffer;
@@ -10,8 +10,8 @@ use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 #[derive(Debug, Clone)]
 pub struct QueueModel {
     pub items: Vec<String>,
-    /// 0-based row under mouse (optional highlight).
-    pub hover: Option<usize>,
+    /// 0-based selected row.
+    pub selected: Option<usize>,
 }
 
 pub struct QueueBar<'a> {
@@ -27,7 +27,7 @@ impl Widget for QueueBar<'_> {
             .borders(Borders::ALL)
             .border_style(theme::warn())
             .title(Span::styled(
-                " queue · click a message to cancel ",
+                " queue · read-only · ctrl+up/down select · ctrl+backspace cancel ",
                 theme::warn().add_modifier(Modifier::BOLD),
             ));
         let inner = block.inner(area);
@@ -51,7 +51,7 @@ impl Widget for QueueBar<'_> {
                     ""
                 };
                 let text = format!(" {}. {}{}", i + 1, preview, ellipsis);
-                let style = if self.model.hover == Some(i) {
+                let style = if self.model.selected == Some(i) {
                     theme::selected_row()
                 } else {
                     theme::text()
@@ -60,43 +60,5 @@ impl Widget for QueueBar<'_> {
             })
             .collect();
         Paragraph::new(lines).render(inner, buf);
-    }
-}
-
-/// Map a click inside `queue_area` to a 0-based item index, if any.
-pub fn hit_test_queue_row(queue_area: Rect, col: u16, row: u16, item_count: usize) -> Option<usize> {
-    if item_count == 0 || queue_area.height < 2 {
-        return None;
-    }
-    // Inner content: skip border (1 cell each side/top/bottom when borders present).
-    if col < queue_area.x.saturating_add(1)
-        || col >= queue_area.x.saturating_add(queue_area.width.saturating_sub(1))
-    {
-        return None;
-    }
-    if row < queue_area.y.saturating_add(1)
-        || row >= queue_area.y.saturating_add(queue_area.height.saturating_sub(1))
-    {
-        return None;
-    }
-    let inner_y = row.saturating_sub(queue_area.y.saturating_add(1));
-    let idx = inner_y as usize;
-    if idx < item_count {
-        Some(idx)
-    } else {
-        None
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn hit_test_first_row() {
-        let area = Rect::new(0, 10, 40, 5); // borders → inner y 11..13
-        assert_eq!(hit_test_queue_row(area, 5, 11, 3), Some(0));
-        assert_eq!(hit_test_queue_row(area, 5, 12, 3), Some(1));
-        assert_eq!(hit_test_queue_row(area, 5, 10, 3), None); // border
     }
 }

@@ -85,7 +85,11 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
         },
         PaletteItem {
             cmd: "/model".into(),
-            desc: "Switch model (catalog) · /model refresh".into(),
+            desc: "Switch model (catalog)".into(),
+        },
+        PaletteItem {
+            cmd: "/model refresh".into(),
+            desc: "Refresh model catalogs".into(),
         },
         PaletteItem {
             cmd: "/tools".into(),
@@ -146,10 +150,6 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
         PaletteItem {
             cmd: "/clear".into(),
             desc: "Clear banners / notices".into(),
-        },
-        PaletteItem {
-            cmd: "/density".into(),
-            desc: "Toggle compact layout".into(),
         },
         PaletteItem {
             cmd: "/quit".into(),
@@ -502,6 +502,7 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                             | "/status"
                             | "/tools"
                             | "/cost"
+                            | "/model refresh"
                             | "/quit"
                             | "/approve"
                             | "/deny"
@@ -512,7 +513,6 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                             | "/stt"
                             | "/copy"
                             | "/clear"
-                            | "/density"
                     ) {
                         OverlayAction::RunCommand(cmd)
                     } else {

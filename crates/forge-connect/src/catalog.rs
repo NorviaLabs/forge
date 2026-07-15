@@ -169,22 +169,40 @@ pub fn fetch_remote_models(profile: &ConnectProfile, api_key: Option<&str>) -> R
         }
         "anthropic" => {
             let key = api_key.ok_or_else(|| "Anthropic API key required for catalog".to_string())?;
-            let url = format!(
-                "{}/v1/models",
-                if base.is_empty() {
-                    "https://api.anthropic.com"
-                } else {
-                    base
-                }
-            );
-            let raw = http_get_json_ids(
-                &url,
+            let b = if base.is_empty() {
+                "https://api.anthropic.com"
+            } else {
+                base
+            };
+            // Anthropic list endpoints may paginate; ask for a large page size when supported.
+            // If the API rejects query params, fall back to the plain endpoint.
+            let url_big = format!("{b}/v1/models?limit=1000");
+            let url_plain = format!("{b}/v1/models");
+            let raw = match http_get_json_ids(
+                &url_big,
                 &[
                     ("x-api-key", key),
                     ("anthropic-version", "2023-06-01"),
                     ("User-Agent", &ua),
                 ],
-            )?;
+            ) {
+                Ok(v) => v,
+                Err(e) => {
+                    // Retry without query params on strict servers.
+                    if e.contains("HTTP 400") {
+                        http_get_json_ids(
+                            &url_plain,
+                            &[
+                                ("x-api-key", key),
+                                ("anthropic-version", "2023-06-01"),
+                                ("User-Agent", &ua),
+                            ],
+                        )?
+                    } else {
+                        return Err(e);
+                    }
+                }
+            };
             Ok(map_prefix(prefix, raw, |_| true))
         }
         "ollama" => {
@@ -297,18 +315,56 @@ fn map_prefix(prefix: &str, raw: Vec<String>, keep: impl Fn(&str) -> bool) -> Ve
 }
 
 fn http_get_json_ids(url: &str, headers: &[(&str, &str)]) -> Result<Vec<String>, String> {
-    let mut req = ureq::get(url).timeout(std::time::Duration::from_secs(15));
-    for (k, v) in headers {
-        req = req.set(k, v);
+    // ureq's built-in redirect handling may drop auth headers on redirect in some cases.
+    // We follow redirects manually to ensure credentials are preserved.
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(15))
+        .redirects(0)
+        .build();
+
+    let mut cur = url.to_string();
+    for _ in 0..4 {
+        let mut req = agent.get(&cur);
+        for (k, v) in headers {
+            req = req.set(k, v);
+        }
+        let resp = match req.call() {
+            Ok(r) => r,
+            Err(ureq::Error::Status(code, r))
+                if matches!(code, 301 | 302 | 303 | 307 | 308) =>
+            {
+                if let Some(loc) = r.header("Location").map(str::to_string) {
+                    cur = loc;
+                    continue;
+                }
+                return Err(format!("catalog GET {cur}: HTTP {code} (missing Location)"));
+            }
+            Err(ureq::Error::Status(code, r)) => {
+                // Best-effort include small body to help operator debug auth failures.
+                let body = r
+                    .into_string()
+                    .unwrap_or_default()
+                    .chars()
+                    .take(240)
+                    .collect::<String>();
+                let body = body.trim().to_string();
+                if body.is_empty() {
+                    return Err(format!("catalog GET {cur}: HTTP {code}"));
+                }
+                return Err(format!("catalog GET {cur}: HTTP {code} {body}"));
+            }
+            Err(e) => return Err(format!("catalog GET {cur}: {e}")),
+        };
+
+        if !(200..300).contains(&resp.status()) {
+            return Err(format!("catalog GET {cur}: HTTP {}", resp.status()));
+        }
+        let body: serde_json::Value = resp
+            .into_json()
+            .map_err(|e| format!("catalog JSON: {e}"))?;
+        return parse_openai_style_model_ids(&body);
     }
-    let resp = req.call().map_err(|e| format!("catalog GET {url}: {e}"))?;
-    if !(200..300).contains(&resp.status()) {
-        return Err(format!("catalog GET {url}: HTTP {}", resp.status()));
-    }
-    let body: serde_json::Value = resp
-        .into_json()
-        .map_err(|e| format!("catalog JSON: {e}"))?;
-    parse_openai_style_model_ids(&body)
+    return Err(format!("catalog GET {url}: too many redirects"));
 }
 
 fn parse_openai_style_model_ids(body: &serde_json::Value) -> Result<Vec<String>, String> {
