@@ -6,9 +6,9 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{
-    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-    Event, KeyCode, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEvent,
-    MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind,
+    KeyModifiers, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -45,9 +45,8 @@ use crate::overlays::{
 };
 use crate::sidebar::SidebarModel;
 use crate::widgets::{
-    classify_operator_error, hit_test_queue_row, session_chrome_lines, BusyPhase, FeedbackBar,
-    FeedbackModel, FeedbackSeverity, FooterBar, FooterModel, InputBar, InputModel, QueueBar,
-    QueueModel, StatusBar, StatusModel,
+    classify_operator_error, session_chrome_lines, BusyPhase, FeedbackBar, FeedbackModel,
+    FeedbackSeverity, FooterBar, FooterModel, InputBar, InputModel, StatusBar, StatusModel,
 };
 use crate::theme;
 use crate::ExitCode;
@@ -111,10 +110,8 @@ pub struct TuiApp {
     pending_context_reset: bool,
     /// Additional user messages waiting to run after the current turn (FIFO).
     message_queue: MessageQueue,
-    /// Last drawn queue strip rect (for mouse hit-testing).
-    queue_area: Option<ratatui::layout::Rect>,
-    /// Hovered queue row (0-based).
-    queue_hover: Option<usize>,
+    /// Selected queued row for keyboard cancellation.
+    queue_selected: Option<usize>,
     /// Live assistant text while tokens stream in.
     stream_preview: String,
     /// Live thinking/reasoning text while tokens stream in.
@@ -135,8 +132,6 @@ pub struct TuiApp {
     tool_expanded: bool,
     /// Show activity sidebar (Ctrl+B).
     sidebar_visible: bool,
-    /// Compact density (/density).
-    compact: bool,
     /// Soft-cancel in-flight turn (Esc while busy).
     cancel_requested: bool,
     /// Tools allowed for the rest of this session (HITL "s").
@@ -157,8 +152,7 @@ pub struct TuiApp {
 impl TuiApp {
     pub fn new(session: AgentSession, runtime: TuiRuntimeConfig) -> Self {
         let mut input = InputModel::default();
-        input.hint = "Type a task · /command · ⇧Enter newline · Ctrl+K…".into();
-        let compact = std::env::var("FORGE_TUI_COMPACT").is_ok();
+        input.hint = String::new();
         Self {
             session,
             input,
@@ -187,8 +181,7 @@ impl TuiApp {
             pending_hitl_decision: None,
             pending_context_reset: false,
             message_queue: MessageQueue::new(),
-            queue_area: None,
-            queue_hover: None,
+            queue_selected: None,
             stream_preview: String::new(),
             stream_thinking: String::new(),
             turn_started: None,
@@ -197,7 +190,6 @@ impl TuiApp {
             thinking_expanded: false,
             tool_expanded: false,
             sidebar_visible: true,
-            compact,
             cancel_requested: false,
             hitl_session_allow: HashSet::new(),
             toast: None,
@@ -211,46 +203,9 @@ impl TuiApp {
         .apply_connection_chrome()
     }
 
-    fn push_chat_item(&mut self, item: ChatItem) {
-        // Keep UI-only transcript bounded (prevents unbounded growth in long sessions).
-        self.ui_banners.push(item);
-        const MAX_UI_ITEMS: usize = 240;
-        if self.ui_banners.len() > MAX_UI_ITEMS {
-            let drop_n = self.ui_banners.len().saturating_sub(MAX_UI_ITEMS);
-            self.ui_banners.drain(0..drop_n);
-        }
-    }
-
-    fn push_command_echo(&mut self, line: &str) {
-        self.push_chat_item(ChatItem::User {
-            text: line.trim_end().to_string(),
-        });
-    }
-
-    fn push_command_result_echo(&mut self) {
-        // If a command produced immediate output (status + notices), surface it in chat.
-        if self.overlay.is_some() {
-            return;
-        }
-        let mut lines: Vec<String> = Vec::new();
-        if !self.status_message.trim().is_empty() {
-            lines.push(self.status_message.trim().to_string());
-        }
-        for n in self.notices.iter().take(14) {
-            if !n.trim().is_empty() {
-                lines.push(n.trim().to_string());
-            }
-        }
-        if lines.is_empty() {
-            return;
-        }
-        let mut text = lines.join("\n");
-        if text.chars().count() > 900 {
-            text = text.chars().take(900).collect();
-            text.push_str("…");
-        }
-        self.push_chat_item(ChatItem::System { text });
-    }
+    // Intentionally keep the conversation window clean: only real chat (user/assistant)
+    // plus essential banners (errors, HITL, connection). Slash command output lives in
+    // notices / overlays / activity.
 
     /// Mock provider is always "connected" (offline tests / CI).
     fn is_mock_provider(&self) -> bool {
@@ -307,7 +262,7 @@ impl TuiApp {
         self.input.not_connected = !connected;
         if connected {
             if self.input.hint.contains("Not connected") || self.input.hint.contains("/connect") {
-                self.input.hint = "Type a task · /command · ⇧Enter newline · Ctrl+K…".into();
+                self.input.hint = String::new();
             }
             // Drop the sticky not-connected banner once signed in.
             self.ui_banners.retain(|b| {
@@ -913,8 +868,23 @@ impl TuiApp {
             active_profile_id: self.connect_profile.clone(),
             active_model: Some(self.runtime.model_label.clone()),
         };
-        let connected = svc.connected_profiles().unwrap_or_default();
-        if connected.is_empty() {
+        let mut profiles = svc.connected_profiles().unwrap_or_default();
+        // Also try the currently-selected provider/model prefix so `/model refresh` gives a
+        // useful error line even when the profile isn't "connected" yet.
+        let prefix = self.runtime.model_label.split('/').next().unwrap_or("").trim();
+        if !prefix.is_empty() {
+            let pid = match prefix {
+                "opencode-go" => "opencode_go",
+                "opencode-zen" => "opencode_zen",
+                other => other,
+            };
+            if profiles.iter().all(|p| p.id != pid) {
+                if let Some(p) = self.connect_registry.get(pid).cloned() {
+                    profiles.push(p);
+                }
+            }
+        }
+        if profiles.is_empty() {
             self.set_feedback(
                 FeedbackSeverity::Warn,
                 "no connected providers — /connect first",
@@ -928,7 +898,7 @@ impl TuiApp {
         let cache = ModelCatalogCache::user_default();
         let mut lines = Vec::new();
         let mut ok_n = 0usize;
-        for p in &connected {
+        for p in &profiles {
             match refresh_profile_catalog(p, &self.connect_store, &cache) {
                 Ok(models) => {
                     ok_n += 1;
@@ -944,10 +914,10 @@ impl TuiApp {
                 }
             }
         }
-        self.status_message = format!("catalog refresh · {ok_n}/{} ok", connected.len());
+        self.status_message = format!("catalog refresh · {ok_n}/{} ok", profiles.len());
         self.set_feedback(
             FeedbackSeverity::Info,
-            format!("catalogs refreshed ({ok_n}/{})", connected.len()),
+            format!("catalogs refreshed ({ok_n}/{})", profiles.len()),
         );
         self.notices = lines;
         // Open picker with fresh data
@@ -1059,19 +1029,15 @@ impl TuiApp {
 
     /// Enqueue while a message is processing (TUI Enter path only).
     fn enqueue_user_message(&mut self, line: String) {
-        // Show immediately in the conversation window (without duplicating the eventual
-        // real User message once it is dequeued and appended into the session).
-        let preview: String = line.chars().take(800).collect();
-        self.push_chat_item(ChatItem::Banner {
-            text: format!("Queued message:\n{preview}"),
-            kind: BannerKind::Info,
-        });
         let n = self.message_queue.enqueue(line);
+        if self.queue_selected.is_none() {
+            self.queue_selected = Some(0);
+        }
         self.push_toast(format!("queued #{n}"));
         self.set_feedback(
             FeedbackSeverity::Info,
             format!(
-                "queued #{n} · {} waiting · click a row to cancel",
+                "queued #{n} · {} waiting · Ctrl+Up/Down select · Ctrl+Backspace cancel",
                 self.message_queue.len()
             ),
         );
@@ -1082,8 +1048,8 @@ impl TuiApp {
         );
     }
 
-    /// User-driven dequeue: take next message and start a model turn (not automatic).
-    fn user_dequeue_and_send(&mut self) {
+    /// Take next queued message and start a model turn.
+    fn dequeue_and_send_next(&mut self) {
         if self.busy || self.pending_prompt.is_some() {
             self.set_feedback(
                 FeedbackSeverity::Warn,
@@ -1102,11 +1068,10 @@ impl TuiApp {
             self.set_feedback(FeedbackSeverity::Warn, "queue empty");
             return;
         };
+        self.clamp_queue_selection();
         if !self.is_provider_connected() {
             self.message_queue.push_front(next);
-            self.report_error(
-                "Not connected — cannot send queued message. Run /connect, then empty Enter.",
-            );
+            self.report_error("Not connected — cannot send queued message. Run /connect.");
             return;
         }
         self.push_activity(
@@ -1138,7 +1103,7 @@ impl TuiApp {
         );
     }
 
-    /// Cancel a queued message by 0-based index (mouse click).
+    /// Cancel a queued message by 0-based index.
     fn cancel_queued_at(&mut self, index: usize) {
         let one_based = index + 1;
         match self.message_queue.drop_at(one_based) {
@@ -1154,9 +1119,7 @@ impl TuiApp {
                     FeedbackSeverity::Ok,
                     format!("queue cancel #{one_based}: {preview}"),
                 );
-                if self.queue_hover == Some(index) {
-                    self.queue_hover = None;
-                }
+                self.clamp_queue_selection();
             }
             None => {
                 self.set_feedback(FeedbackSeverity::Warn, "queue item gone");
@@ -1164,29 +1127,33 @@ impl TuiApp {
         }
     }
 
-    pub fn handle_mouse(&mut self, ev: MouseEvent) {
-        let col = ev.column;
-        let row = ev.row;
-        match ev.kind {
-            MouseEventKind::Moved | MouseEventKind::Drag(_) => {
-                if let Some(area) = self.queue_area {
-                    self.queue_hover =
-                        hit_test_queue_row(area, col, row, self.message_queue.len());
-                } else {
-                    self.queue_hover = None;
-                }
-            }
-            MouseEventKind::Down(MouseButton::Left) => {
-                if let Some(area) = self.queue_area {
-                    if let Some(idx) =
-                        hit_test_queue_row(area, col, row, self.message_queue.len())
-                    {
-                        self.cancel_queued_at(idx);
-                    }
-                }
-            }
-            _ => {}
+    fn clamp_queue_selection(&mut self) {
+        let len = self.message_queue.len();
+        self.queue_selected = match (len, self.queue_selected) {
+            (0, _) => None,
+            (_, Some(i)) if i < len => Some(i),
+            (_, Some(_)) => Some(len - 1),
+            (_, None) => Some(0),
+        };
+    }
+
+    fn move_queue_selection(&mut self, delta: i32) {
+        let len = self.message_queue.len();
+        if len == 0 {
+            self.queue_selected = None;
+            return;
         }
+        let cur = self.queue_selected.unwrap_or(0) as i32;
+        let next = (cur + delta).rem_euclid(len as i32) as usize;
+        self.queue_selected = Some(next);
+    }
+
+    fn cancel_selected_queue(&mut self) {
+        let Some(idx) = self.queue_selected else {
+            self.set_feedback(FeedbackSeverity::Warn, "queue empty");
+            return;
+        };
+        self.cancel_queued_at(idx);
     }
 
     fn slash_stt(&mut self, action: SttAction) {
@@ -1648,9 +1615,6 @@ Reply with ONLY the commit message line.\n\n\
             let _ = handle_overlay_key(ov, OverlayKey::Paste(data.to_string()));
             return;
         }
-        if self.busy {
-            return;
-        }
         self.input.history_browse = false;
         for c in data.chars() {
             if c == '\n' || c == '\r' {
@@ -1684,7 +1648,6 @@ Reply with ONLY the commit message line.\n\n\
     pub fn draw(&mut self, frame: &mut ratatui::Frame) {
         let area = frame.size();
         if is_too_small(area) {
-            self.queue_area = None;
             frame.render_widget(
                 Paragraph::new("Terminal too small — resize to at least 40x18"),
                 area,
@@ -1693,20 +1656,7 @@ Reply with ONLY the commit message line.\n\n\
         }
         let fb_h = if self.feedback.is_empty() { 0 } else { 1 };
         let input_h = (self.input.visual_lines() + 2).clamp(3, 8);
-        // Queue strip: title border + one row per item (cap 6).
-        let q_items = self.message_queue.len();
-        let queue_h = if q_items == 0 {
-            0
-        } else {
-            ((q_items as u16).min(6) + 2).min(8) // +2 borders
-        };
-        let regions =
-            split_areas_full(area, fb_h, input_h, self.sidebar_visible, queue_h);
-        self.queue_area = if queue_h > 0 {
-            Some(regions.queue)
-        } else {
-            None
-        };
+        let regions = split_areas_full(area, fb_h, input_h, self.sidebar_visible, 0);
         let status = self.refresh_status_model();
         frame.render_widget(StatusBar { model: &status }, regions.status);
 
@@ -1739,12 +1689,16 @@ Reply with ONLY the commit message line.\n\n\
             thinking_expanded: self.thinking_expanded
                 || (self.busy && self.thought_secs.is_none() && !self.stream_thinking.is_empty()),
             tool_expanded: self.tool_expanded,
-            compact: self.compact,
+            compact: false,
             stream_wait,
             stream_thought_secs: self.thought_secs,
         };
         let mut conv = ConversationModel::from_session(&self.session, opts)
             .with_extra_banners(self.ui_banners.iter().cloned());
+        conv = conv.with_queued_messages(
+            self.message_queue.iter().cloned().collect::<Vec<_>>(),
+            self.queue_selected,
+        );
         conv.follow = self.chat_follow;
         conv.scroll = self.chat_scroll;
         if self.busy && self.pending_prompt.is_none() {
@@ -1879,16 +1833,6 @@ Reply with ONLY the commit message line.\n\n\
             );
         }
 
-        // Queued messages: click a row to cancel (no slash commands).
-        if regions.queue.height > 0 {
-            let items: Vec<String> = self.message_queue.iter().cloned().collect();
-            let qm = QueueModel {
-                items,
-                hover: self.queue_hover,
-            };
-            frame.render_widget(QueueBar { model: &qm }, regions.queue);
-        }
-
         let mut input = self.input.clone();
         // Allow composing the next message while a turn runs; only dim slightly when busy.
         input.dimmed = self.busy && self.input.text.is_empty();
@@ -1896,6 +1840,12 @@ Reply with ONLY the commit message line.\n\n\
         frame.render_widget(InputBar { model: &input }, regions.input);
 
         let qn = self.message_queue.len();
+        let tok = self.session.token_usage.total_api_tokens();
+        let tok_hint = if tok > 0 {
+            format!("tok {tok} · ")
+        } else {
+            String::new()
+        };
         let hints = if self.ptt_recording.is_some() {
             format!(
                 "● REC {}s · release Ctrl+Space to stop",
@@ -1906,7 +1856,7 @@ Reply with ONLY the commit message line.\n\n\
             )
         } else if self.busy {
             if qn > 0 {
-                format!("processing · queue {qn} · Enter queues · click row to cancel")
+                format!("processing · queue {qn} · Ctrl+Up/Down select · Ctrl+Backspace cancel")
             } else {
                 "processing · type + Enter to queue · Esc interrupt".into()
             }
@@ -1915,9 +1865,9 @@ Reply with ONLY the commit message line.\n\n\
         } else if !self.is_provider_connected() {
             "/connect to enable chat · hold Ctrl+Space to dictate".into()
         } else if qn > 0 {
-            format!("queue {qn} · click to cancel · empty Enter sends next")
+            format!("queue {qn} · Ctrl+Up/Down select · Ctrl+Backspace cancel")
         } else {
-            "Enter send · hold Ctrl+Space dictate · ⇧Enter ↵ · Ctrl+K".into()
+            format!("{tok_hint}Ctrl+K command palette · hold Ctrl+Space dictate")
         };
         let footer = FooterModel {
             version: self.runtime.version.clone(),
@@ -2071,6 +2021,15 @@ Reply with ONLY the commit message line.\n\n\
         }
 
         match key.code {
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.move_queue_selection(-1);
+            }
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.move_queue_selection(1);
+            }
+            KeyCode::Backspace if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.cancel_selected_queue();
+            }
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if self.busy {
                     // First Ctrl+C while busy: soft cancel; second: quit
@@ -2157,10 +2116,10 @@ Reply with ONLY the commit message line.\n\n\
                     return Ok(());
                 }
                 let line = self.input.take();
-                // Empty Enter while idle + queue non-empty → user dequeues next (explicit action).
+                // Empty Enter while idle + queue non-empty still sends the next message.
                 if line.trim().is_empty() {
                     if !self.busy && !self.message_queue.is_empty() {
-                        self.user_dequeue_and_send();
+                        self.dequeue_and_send_next();
                     }
                     return Ok(());
                 }
@@ -2231,7 +2190,6 @@ Reply with ONLY the commit message line.\n\n\
 
     pub async fn dispatch_line(&mut self, line: &str) -> Result<(), TuiError> {
         if let Some(cmd_res) = parse_slash(line) {
-            self.push_command_echo(line);
             let slash_name = line.split_whitespace().next().unwrap_or("/");
             self.push_activity(
                 ActivityKind::Slash,
@@ -2532,14 +2490,6 @@ Reply with ONLY the commit message line.\n\n\
                     self.status_message.clear();
                     self.push_toast("cleared");
                 }
-                Ok(SlashCommand::Density) => {
-                    self.compact = !self.compact;
-                    self.push_toast(if self.compact {
-                        "compact density"
-                    } else {
-                        "comfortable density"
-                    });
-                }
                 Ok(SlashCommand::Connect(action)) => {
                     self.handle_connect(action);
                 }
@@ -2560,7 +2510,6 @@ Reply with ONLY the commit message line.\n\n\
                     self.notices = vec![msg, "Type /help for commands.".into()];
                 }
             }
-            self.push_command_result_echo();
             return Ok(());
         }
 
@@ -2726,24 +2675,21 @@ Reply with ONLY the commit message line.\n\n\
                     break;
                 }
 
-                // Allow Ctrl+C while streaming
-                if event::poll(Duration::from_millis(0)).unwrap_or(false) {
-                    if let Ok(Event::Key(key)) = event::read() {
-                        if key.code == KeyCode::Char('c')
-                            && key.modifiers.contains(KeyModifiers::CONTROL)
-                        {
-                            handle.abort();
-                            self.busy = false;
-                            self.busy_phase = BusyPhase::Idle;
-                            self.stream_preview.clear();
-                            self.stream_thinking.clear();
-                            self.turn_started = None;
-                            self.thinking_started = None;
-                            self.thought_secs = None;
-                            self.should_quit = true;
-                            self.last_exit = ExitCode::Canceled;
-                            return Ok(());
-                        }
+                // Keep the terminal responsive while the current turn is streaming so
+                // the operator can type the next message and enqueue it with Enter.
+                if terminal.is_some() {
+                    drain_events(self).await?;
+                    if self.should_quit {
+                        handle.abort();
+                        self.busy = false;
+                        self.busy_phase = BusyPhase::Idle;
+                        self.stream_preview.clear();
+                        self.stream_thinking.clear();
+                        self.turn_started = None;
+                        self.thinking_started = None;
+                        self.thought_secs = None;
+                        self.last_exit = ExitCode::Canceled;
+                        return Ok(());
                     }
                 }
 
@@ -2851,7 +2797,7 @@ Reply with ONLY the commit message line.\n\n\
         if let Some(e) = outcome_err {
             self.report_error(&e);
             self.last_exit = ExitCode::Failed;
-            // Leave queue intact so the operator can fix and continue, or click to cancel.
+            // Leave queue intact so the operator can fix and continue.
         } else if self.session.pending_hitl.is_some() {
             if let Some(ref p) = self.session.pending_hitl {
                 self.overlay = Some(Overlay::hitl(p.clone()));
@@ -2868,19 +2814,21 @@ Reply with ONLY the commit message line.\n\n\
                 self.push_toast("done");
             } else {
                 self.push_toast(format!(
-                    "done · {} queued · empty Enter sends next · click to cancel",
+                    "done · {} queued · sending next",
                     self.message_queue.len()
                 ));
                 self.set_feedback(
                     FeedbackSeverity::Info,
                     format!(
-                        "done · {} in queue — empty Enter sends next · click a row to cancel",
+                        "done · {} in queue — sending next",
                         self.message_queue.len()
                     ),
                 );
             }
             self.push_activity(ActivityKind::Model, FeedbackSeverity::Ok, "model ok");
-            // Do not auto-dequeue: user must empty-Enter to send next.
+            if !self.message_queue.is_empty() {
+                self.dequeue_and_send_next();
+            }
         }
         Ok(())
     }
@@ -3006,7 +2954,6 @@ async fn drain_events(app: &mut TuiApp) -> Result<(), TuiError> {
         match event::read()? {
             Event::Key(key) => app.handle_key(key).await?,
             Event::Paste(data) => app.handle_paste(&data),
-            Event::Mouse(m) => app.handle_mouse(m),
             _ => {}
         }
     }
@@ -3026,7 +2973,6 @@ pub async fn run_tui(
         stdout,
         EnterAlternateScreen,
         EnableBracketedPaste,
-        EnableMouseCapture,
         PushKeyboardEnhancementFlags(
             KeyboardEnhancementFlags::REPORT_EVENT_TYPES
                 | KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
@@ -3045,7 +2991,6 @@ pub async fn run_tui(
     execute!(
         terminal.backend_mut(),
         PopKeyboardEnhancementFlags,
-        DisableMouseCapture,
         DisableBracketedPaste,
         LeaveAlternateScreen
     )?;
@@ -3095,7 +3040,6 @@ async fn run_loop(
             match event::read()? {
                 Event::Key(key) => app.handle_key(key).await?,
                 Event::Paste(data) => app.handle_paste(&data),
-                Event::Mouse(m) => app.handle_mouse(m),
                 _ => {}
             }
             drain_events(app).await?;
@@ -3174,6 +3118,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn typing_while_busy_updates_input_buffer() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "mock".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "0.12.0".into(),
+            },
+        );
+        app.busy = true;
+        for c in "next".chars() {
+            app.handle_key(press(KeyCode::Char(c), KeyModifiers::NONE))
+                .await
+                .unwrap();
+        }
+        assert_eq!(app.input.text, "next");
+        assert_eq!(app.message_queue.len(), 0);
+    }
+
+    #[tokio::test]
     async fn empty_enter_when_idle_dequeues_and_sends() {
         use crossterm::event::{KeyCode, KeyModifiers};
         let (_dir, session) = test_session().await;
@@ -3200,8 +3167,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn click_queue_row_cancels_message() {
-        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    async fn ctrl_backspace_cancels_selected_queue_message() {
+        use crossterm::event::{KeyCode, KeyModifiers};
         let (_dir, session) = test_session().await;
         let mut app = TuiApp::new(
             session,
@@ -3212,20 +3179,16 @@ mod tests {
                 version: "0.12.0".into(),
             },
         );
-        app.message_queue.enqueue("a");
-        app.message_queue.enqueue("b");
-        // Simulate layout: queue strip at y=10, height 4 (border + 2 rows)
-        app.queue_area = Some(ratatui::layout::Rect::new(0, 10, 40, 4));
-        app.handle_mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: 5,
-            row: 11, // first content row
-            modifiers: KeyModifiers::NONE,
-        });
+        app.enqueue_user_message("a".into());
+        app.enqueue_user_message("b".into());
+        app.move_queue_selection(1);
+        app.handle_key(press(KeyCode::Backspace, KeyModifiers::CONTROL))
+            .await
+            .unwrap();
         assert_eq!(app.message_queue.len(), 1);
         assert_eq!(
             app.message_queue.iter().next().map(|s| s.as_str()),
-            Some("b")
+            Some("a")
         );
     }
 

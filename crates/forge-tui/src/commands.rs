@@ -45,8 +45,6 @@ pub enum SlashCommand {
     Copy,
     /// Clear chat banners / notices / soft reset of UI chrome
     Clear,
-    /// Toggle compact density
-    Density,
     /// Stage all changes, generate a commit message from the changeset, commit, and push.
     Sync,
     /// Configure STT: `/stt` status or `/stt speed fast|normal|slow`.
@@ -153,7 +151,6 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
         "diff" => Ok(SlashCommand::Diff),
         "copy" => Ok(SlashCommand::Copy),
         "clear" => Ok(SlashCommand::Clear),
-        "density" => Ok(SlashCommand::Density),
         "sync" => Ok(SlashCommand::Sync),
         "stt" => {
             let sub = parts.next().unwrap_or("status").to_ascii_lowercase();
@@ -187,14 +184,14 @@ pub fn help_text() -> &'static str {
      /status         Session status\n\
      /resume <id>    Resume session from journal\n\
      /cancel         Soft-cancel current turn (Esc)\n\
-     /model [id]     Switch model (LiteLLM id) · /model refresh for catalogs\n\
+     /model [id]     Switch model (LiteLLM id)\n\
+     /model refresh  Refresh model catalogs\n\
      /connect …      Connect (xai | opencode_go | opencode_zen | openai | anthropic | ollama)\n\
      /diff           Tools & file changes this session\n\
      /sync           Stage, commit (message from changeset), push\n\
      /stt [speed …]  STT status/speed · hold Ctrl+Space to dictate\n\
      /copy           Copy last assistant answer (clipboard)\n\
      /clear          Clear banners / notices\n\
-     /density        Toggle compact layout\n\
      /journal [n]    Tail journal events\n\
      /tools          List tools\n\
      /cost           Session token usage (prompt/completion/context)\n\

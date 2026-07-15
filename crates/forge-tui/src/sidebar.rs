@@ -6,7 +6,7 @@ use forge_types::SessionStatus;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Gauge, Paragraph, Widget};
+use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
 #[derive(Debug, Clone)]
 pub struct SidebarModel {
@@ -15,11 +15,7 @@ pub struct SidebarModel {
     pub surface: String,
     pub role: String,
     pub ctx_pct: f64,
-    pub tools_allowed: usize,
-    pub tools_total_hint: String,
-    /// Phase 10 — activity feed lines (preferred over raw events when set).
-    pub activity: Vec<String>,
-    pub events: Vec<String>,
+    pub tools: Vec<String>,
     pub worktree: Option<String>,
 }
 
@@ -32,6 +28,7 @@ impl SidebarModel {
         session: &AgentSession,
         activity_lines: &[String],
     ) -> Self {
+        let _ = activity_lines; // sidebar no longer renders activity, but keep API stable
         let id = session.session_id.to_string();
         let short = if id.len() > 8 { &id[..8] } else { &id };
         let status = match session.status {
@@ -40,30 +37,15 @@ impl SidebarModel {
             SessionStatus::Failed => "failed",
             SessionStatus::AwaitingHitl => "awaiting_hitl",
         };
-        let tools = session.list_tools();
-        let events: Vec<String> = session
-            .events
-            .iter()
-            .rev()
-            .take(8)
-            .map(|e| {
-                let d: String = e.detail.chars().take(36).collect();
-                format!("{} {}", e.kind, d)
-            })
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect();
+        let mut tools = session.list_tools();
+        tools.sort();
         Self {
             session_id: short.to_string(),
             status: status.into(),
             surface: "tui".into(),
             role: "generator".into(),
             ctx_pct: session.context_usage_ratio(),
-            tools_allowed: tools.len(),
-            tools_total_hint: format!("{} visible", tools.len()),
-            activity: activity_lines.to_vec(),
-            events,
+            tools,
             worktree: session.worktree_status(),
         }
     }
@@ -86,9 +68,7 @@ impl Widget for SidebarWidget<'_> {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(6),
-                Constraint::Length(4),
-                Constraint::Length(4),
-                Constraint::Min(3),
+                Constraint::Min(4),
             ])
             .split(inner);
 
@@ -114,69 +94,35 @@ impl Widget for SidebarWidget<'_> {
         ];
         Paragraph::new(sess_lines).render(chunks[0], buf);
 
-        // Budget
-        let pct = (self.model.ctx_pct.clamp(0.0, 1.0) * 100.0) as u16;
-        let label = format!("CONTEXT  {pct}%");
-        Paragraph::new(Line::from(Span::styled(label, theme::dim()))).render(
-            Rect {
-                x: chunks[1].x,
-                y: chunks[1].y,
-                width: chunks[1].width,
-                height: 1,
-            },
-            buf,
-        );
-        Gauge::default()
-            .gauge_style(theme::brand())
-            .ratio(self.model.ctx_pct.clamp(0.0, 1.0))
-            .render(
-                Rect {
-                    x: chunks[1].x,
-                    y: chunks[1].y + 1,
-                    width: chunks[1].width,
-                    height: 1,
-                },
-                buf,
-            );
-
-        // Tools
-        let tool_lines = vec![
-            Line::from(Span::styled("TOOLS (ACL)", theme::dim())),
-            Line::from(vec![
-                Span::styled("allowed ", theme::muted()),
-                Span::styled(self.model.tools_allowed.to_string(), theme::ok()),
-            ]),
-            Line::from(Span::styled(self.model.tools_total_hint.clone(), theme::muted())),
-        ];
-        Paragraph::new(tool_lines).render(chunks[2], buf);
-
-        // Activity feed (Phase 10) or legacy events
-        let title = if self.model.activity.is_empty() {
-            "RECENT EVENTS"
+        // Tools list (fits remaining height)
+        let mut tool_lines = vec![Line::from(Span::styled("TOOLS", theme::dim()))];
+        if self.model.tools.is_empty() {
+            tool_lines.push(Line::from(Span::styled("—", theme::dim())));
         } else {
-            "ACTIVITY"
-        };
-        let mut ev = vec![Line::from(Span::styled(title, theme::dim()))];
-        let lines: &[String] = if !self.model.activity.is_empty() {
-            &self.model.activity
-        } else {
-            &self.model.events
-        };
-        if lines.is_empty() {
-            ev.push(Line::from(Span::styled("—", theme::dim())));
-        } else {
-            for e in lines {
-                let truncated: String = e.chars().take(48).collect();
-                ev.push(Line::from(Span::styled(truncated, theme::muted())));
+            // Reserve 2 lines for optional worktree.
+            let reserve = if self.model.worktree.is_some() { 2 } else { 0 };
+            let max = (chunks[1].height as usize).saturating_sub(1 + reserve).max(1);
+            for t in self.model.tools.iter().take(max) {
+                let s: String = t.chars().take(32).collect();
+                tool_lines.push(Line::from(Span::styled(s, theme::muted())));
+            }
+            if self.model.tools.len() > max {
+                tool_lines.push(Line::from(Span::styled(
+                    format!("+{} more", self.model.tools.len() - max),
+                    theme::dim(),
+                )));
             }
         }
+
         if let Some(ref wt) = self.model.worktree {
-            ev.push(Line::from(Span::styled(
-                format!("wt: {wt}"),
-                theme::info(),
+            tool_lines.push(Line::from(Span::styled("WORKTREE", theme::dim())));
+            tool_lines.push(Line::from(Span::styled(
+                wt.chars().take(32).collect::<String>(),
+                theme::muted(),
             )));
         }
-        Paragraph::new(ev).render(chunks[3], buf);
+
+        Paragraph::new(tool_lines).render(chunks[1], buf);
     }
 }
 
@@ -228,8 +174,7 @@ mod tests {
         s.run_user_message("hi").await.unwrap();
         let m = SidebarModel::from_session(&s);
         assert!(!m.session_id.is_empty());
-        assert!(m.tools_allowed >= 1);
-        assert!(!m.events.is_empty() || m.status == "completed");
+        assert!(!m.tools.is_empty() || m.status == "completed");
         assert!(m.ctx_pct >= 0.0);
     }
 }
