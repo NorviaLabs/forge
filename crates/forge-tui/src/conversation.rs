@@ -30,6 +30,11 @@ pub enum ChatItem {
         duration_secs: Option<f64>,
     },
     Assistant { text: String },
+    Queued {
+        index: usize,
+        text: String,
+        selected: bool,
+    },
     ToolCard {
         name: String,
         summary: String,
@@ -190,7 +195,7 @@ impl ConversationModel {
         // Empty transcript → short hint
         if items.is_empty() {
             items.push(ChatItem::Banner {
-                text: "Type a task · /connect · Ctrl+K".into(),
+                text: String::new(),
                 kind: BannerKind::Info,
             });
         }
@@ -234,6 +239,21 @@ impl ConversationModel {
 
     pub fn with_streaming_assistant(self, text: impl Into<String>) -> Self {
         self.with_streaming_preview("", text)
+    }
+
+    pub fn with_queued_messages(
+        mut self,
+        items: impl IntoIterator<Item = String>,
+        selected: Option<usize>,
+    ) -> Self {
+        for (i, text) in items.into_iter().enumerate() {
+            self.items.push(ChatItem::Queued {
+                index: i,
+                text,
+                selected: selected == Some(i),
+            });
+        }
+        self
     }
 
     pub fn with_extra_banners(mut self, banners: impl IntoIterator<Item = ChatItem>) -> Self {
@@ -399,6 +419,40 @@ impl ConversationModel {
                             ),
                             Span::styled(l.clone(), theme::text()),
                         ]));
+                    }
+                    if gap {
+                        lines.push(Line::from(""));
+                    }
+                }
+                ChatItem::Queued {
+                    index,
+                    text,
+                    selected,
+                } => {
+                    let parts = wrap(text, width.saturating_sub(10));
+                    for (i, l) in parts.iter().enumerate() {
+                        let gutter = if i == 0 {
+                            format!("○ {} ", index + 1)
+                        } else {
+                            "    ".to_string()
+                        };
+                        let style = if *selected {
+                            theme::selected_row()
+                        } else {
+                            theme::muted()
+                        };
+                        lines.push(Line::from(vec![
+                            Span::styled(gutter, theme::warn()),
+                            Span::styled(l.clone(), style),
+                        ]));
+                    }
+                    if *selected {
+                        lines.push(Line::from(Span::styled(
+                            "  queued · Ctrl+Backspace cancel",
+                            theme::dim(),
+                        )));
+                    } else {
+                        lines.push(Line::from(Span::styled("  queued", theme::dim())));
                     }
                     if gap {
                         lines.push(Line::from(""));
@@ -650,7 +704,7 @@ impl Widget for ConversationWidget<'_> {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(theme::border())
-            .title(Span::styled(" conversation ", theme::muted()));
+            .title(Span::raw(""));
         Paragraph::new(lines)
             .block(block)
             .scroll((scroll, 0))
