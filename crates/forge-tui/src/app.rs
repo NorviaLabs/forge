@@ -101,6 +101,14 @@ pub struct TuiApp {
     pub busy_phase: BusyPhase,
     /// User prompt queued on Enter; drained by the event loop so the YOU bubble paints first.
     pending_prompt: Option<String>,
+    /// Long-running slash action queued to run on the event loop (so the command echo paints).
+    pending_sync: bool,
+    /// Catalog refresh queued to run on the event loop (can do network).
+    pending_model_refresh: bool,
+    /// HITL resolve queued to run on the event loop (journals + state updates).
+    pending_hitl_decision: Option<HitlDecision>,
+    /// Context reset queued to run on the event loop.
+    pending_context_reset: bool,
     /// Additional user messages waiting to run after the current turn (FIFO).
     message_queue: MessageQueue,
     /// Last drawn queue strip rect (for mouse hit-testing).
@@ -174,6 +182,10 @@ impl TuiApp {
             web_search_label: Some("mock".into()),
             activity: ActivityFeed::default(),
             pending_prompt: None,
+            pending_sync: false,
+            pending_model_refresh: false,
+            pending_hitl_decision: None,
+            pending_context_reset: false,
             message_queue: MessageQueue::new(),
             queue_area: None,
             queue_hover: None,
@@ -1237,11 +1249,160 @@ impl TuiApp {
     }
 
     /// `/sync` — stage all changes, invent a commit message from the changeset, commit, push.
-    async fn slash_sync(&mut self) {
-        if self.busy {
+    fn queue_sync(&mut self) {
+        if self.busy || self.pending_prompt.is_some() || self.pending_sync {
             self.set_feedback(FeedbackSeverity::Warn, "busy — wait before /sync");
             return;
         }
+        self.pending_sync = true;
+        self.busy_phase = BusyPhase::Other("git sync".into());
+        self.set_feedback(FeedbackSeverity::Info, "syncing…");
+        self.status_message = "syncing…".into();
+        self.push_activity(
+            ActivityKind::Tool,
+            FeedbackSeverity::Info,
+            "git sync queued",
+        );
+    }
+
+    fn queue_model_refresh(&mut self) {
+        if self.busy
+            || self.pending_prompt.is_some()
+            || self.pending_sync
+            || self.pending_model_refresh
+            || self.pending_hitl_decision.is_some()
+            || self.pending_context_reset
+        {
+            self.set_feedback(FeedbackSeverity::Warn, "busy — wait before /model refresh");
+            return;
+        }
+        self.pending_model_refresh = true;
+        self.busy_phase = BusyPhase::Other("model catalog refresh".into());
+        self.status_message = "refreshing model catalogs…".into();
+        self.set_feedback(FeedbackSeverity::Info, "refreshing model catalogs…");
+        self.push_activity(
+            ActivityKind::System,
+            FeedbackSeverity::Info,
+            "model refresh queued",
+        );
+    }
+
+    fn queue_hitl(&mut self, decision: HitlDecision) {
+        if self.busy
+            || self.pending_prompt.is_some()
+            || self.pending_sync
+            || self.pending_model_refresh
+            || self.pending_hitl_decision.is_some()
+            || self.pending_context_reset
+        {
+            self.set_feedback(FeedbackSeverity::Warn, "busy — wait before HITL");
+            return;
+        }
+        self.pending_hitl_decision = Some(decision);
+        self.busy_phase = BusyPhase::Other("HITL".into());
+        self.status_message = "resolving approval…".into();
+        self.set_feedback(FeedbackSeverity::Info, "resolving approval…");
+    }
+
+    fn queue_context_reset(&mut self) {
+        if self.busy
+            || self.pending_prompt.is_some()
+            || self.pending_sync
+            || self.pending_model_refresh
+            || self.pending_hitl_decision.is_some()
+            || self.pending_context_reset
+        {
+            self.set_feedback(FeedbackSeverity::Warn, "busy — wait before /reset");
+            return;
+        }
+        self.pending_context_reset = true;
+        self.busy_phase = BusyPhase::Other("context reset".into());
+        self.status_message = "resetting context…".into();
+        self.set_feedback(FeedbackSeverity::Info, "resetting context…");
+    }
+
+    pub async fn drain_pending_model_refresh(
+        &mut self,
+        mut terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
+    ) -> Result<(), TuiError> {
+        if !self.pending_model_refresh {
+            return Ok(());
+        }
+        self.pending_model_refresh = false;
+        if let Some(term) = terminal.as_deref_mut() {
+            let _ = term.draw(|f| self.draw(f));
+        }
+        // `refresh_model_catalogs` is sync (uses ureq). We still run it here, but it's
+        // now drained on the event loop after the command echo has painted.
+        self.refresh_model_catalogs();
+        if let Some(term) = terminal.as_deref_mut() {
+            let _ = term.draw(|f| self.draw(f));
+        }
+        Ok(())
+    }
+
+    pub async fn drain_pending_hitl(
+        &mut self,
+        mut terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
+    ) -> Result<(), TuiError> {
+        let Some(decision) = self.pending_hitl_decision.take() else {
+            return Ok(());
+        };
+        if let Some(term) = terminal.as_deref_mut() {
+            let _ = term.draw(|f| self.draw(f));
+        }
+        self.session
+            .resolve_hitl(decision.clone(), "tui")
+            .await?;
+        self.status_message = match decision {
+            HitlDecision::Approve => "approved".into(),
+            HitlDecision::Deny => "denied".into(),
+        };
+        self.notices = vec![format!("HITL {}.", self.status_message)];
+        self.busy_phase = BusyPhase::Idle;
+        if let Some(term) = terminal.as_deref_mut() {
+            let _ = term.draw(|f| self.draw(f));
+        }
+        Ok(())
+    }
+
+    pub async fn drain_pending_context_reset(
+        &mut self,
+        mut terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
+    ) -> Result<(), TuiError> {
+        if !self.pending_context_reset {
+            return Ok(());
+        }
+        self.pending_context_reset = false;
+        if let Some(term) = terminal.as_deref_mut() {
+            let _ = term.draw(|f| self.draw(f));
+        }
+        self.session.force_context_reset_async().await?;
+        self.push_toast("context reset");
+        self.busy_phase = BusyPhase::Idle;
+        if let Some(term) = terminal.as_deref_mut() {
+            let _ = term.draw(|f| self.draw(f));
+        }
+        Ok(())
+    }
+
+    /// Drive `/sync` work with a terminal handle available for intermediate redraws.
+    pub async fn drain_pending_sync(
+        &mut self,
+        mut terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
+    ) -> Result<(), TuiError> {
+        if !self.pending_sync {
+            return Ok(());
+        }
+        self.pending_sync = false;
+        self.slash_sync_inner(&mut terminal).await;
+        Ok(())
+    }
+
+    async fn slash_sync_inner(
+        &mut self,
+        terminal: &mut Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
+    ) {
         self.push_activity(
             ActivityKind::Tool,
             FeedbackSeverity::Info,
@@ -1249,6 +1410,9 @@ impl TuiApp {
         );
         self.busy_phase = BusyPhase::Other("git sync".into());
         self.set_feedback(FeedbackSeverity::Info, "syncing… inspecting changes");
+        if let Some(term) = terminal.as_deref_mut() {
+            let _ = term.draw(|f| self.draw(f));
+        }
 
         // Anything unstaged or untracked?
         let status = match self
@@ -1274,6 +1438,9 @@ impl TuiApp {
                 "Working tree clean — no changes to commit or push.".into(),
                 "Make edits, then run /sync again.".into(),
             ];
+            if let Some(term) = terminal.as_deref_mut() {
+                let _ = term.draw(|f| self.draw(f));
+            }
             return;
         }
 
@@ -1313,6 +1480,9 @@ impl TuiApp {
             .unwrap_or_default();
 
         self.set_feedback(FeedbackSeverity::Info, "syncing… writing commit message");
+        if let Some(term) = terminal.as_deref_mut() {
+            let _ = term.draw(|f| self.draw(f));
+        }
         let message = self
             .commit_message_from_changeset(&name_status, &stat, &patch_snip)
             .await;
@@ -1353,6 +1523,9 @@ impl TuiApp {
         }
 
         self.set_feedback(FeedbackSeverity::Info, "syncing… push");
+        if let Some(term) = terminal.as_deref_mut() {
+            let _ = term.draw(|f| self.draw(f));
+        }
         let push = self.run_git_tool("push", vec![]).await;
         self.busy_phase = BusyPhase::Idle;
         match push {
@@ -1407,6 +1580,9 @@ impl TuiApp {
                     "git push",
                 );
             }
+        }
+        if let Some(term) = terminal.as_deref_mut() {
+            let _ = term.draw(|f| self.draw(f));
         }
     }
 
@@ -2149,11 +2325,10 @@ Reply with ONLY the commit message line.\n\n\
                         self.status_message = "no pending HITL to approve".into();
                         self.notices = vec!["No human-in-the-loop request is waiting.".into()];
                     } else {
-                        self.session
-                            .resolve_hitl(HitlDecision::Approve, "tui")
-                            .await?;
-                        self.status_message = "approved".into();
-                        self.notices = vec!["HITL approved.".into()];
+                        self.queue_hitl(HitlDecision::Approve);
+                        if cfg!(test) {
+                            let _ = self.drain_pending_hitl(None).await;
+                        }
                     }
                 }
                 Ok(SlashCommand::Deny) => {
@@ -2161,16 +2336,17 @@ Reply with ONLY the commit message line.\n\n\
                         self.status_message = "no pending HITL to deny".into();
                         self.notices = vec!["No human-in-the-loop request is waiting.".into()];
                     } else {
-                        self.session
-                            .resolve_hitl(HitlDecision::Deny, "tui")
-                            .await?;
-                        self.status_message = "denied".into();
-                        self.notices = vec!["HITL denied.".into()];
+                        self.queue_hitl(HitlDecision::Deny);
+                        if cfg!(test) {
+                            let _ = self.drain_pending_hitl(None).await;
+                        }
                     }
                 }
                 Ok(SlashCommand::Reset) | Ok(SlashCommand::Compact) => {
-                    self.session.force_context_reset_async().await?;
-                    self.push_toast("context reset");
+                    self.queue_context_reset();
+                    if cfg!(test) {
+                        let _ = self.drain_pending_context_reset(None).await;
+                    }
                 }
                 Ok(SlashCommand::Model {
                     provider,
@@ -2178,7 +2354,10 @@ Reply with ONLY the commit message line.\n\n\
                     refresh,
                 }) => {
                     if refresh {
-                        self.refresh_model_catalogs();
+                        self.queue_model_refresh();
+                        if cfg!(test) {
+                            let _ = self.drain_pending_model_refresh(None).await;
+                        }
                     } else if provider.is_none() && model.is_none() {
                         let items = self.model_picker_items(false);
                         let mut ov = Overlay::model_open_with(items);
@@ -2365,7 +2544,12 @@ Reply with ONLY the commit message line.\n\n\
                     self.handle_connect(action);
                 }
                 Ok(SlashCommand::Sync) => {
-                    self.slash_sync().await;
+                    self.queue_sync();
+                    // Unit tests call `dispatch_line` directly without the event loop;
+                    // run queued sync immediately in that case.
+                    if cfg!(test) {
+                        let _ = self.drain_pending_sync(None).await;
+                    }
                 }
                 Ok(SlashCommand::Stt { action }) => {
                     self.slash_stt(action);
@@ -2885,6 +3069,23 @@ async fn run_loop(
         // Drain queued user prompt with streaming redraws (YOU paints before first token)
         if app.pending_prompt.is_some() {
             app.drain_pending_prompt(Some(terminal)).await?;
+            continue;
+        }
+        // Drain queued long-running slash tasks (so the command echo paints first).
+        if app.pending_sync {
+            app.drain_pending_sync(Some(terminal)).await?;
+            continue;
+        }
+        if app.pending_model_refresh {
+            app.drain_pending_model_refresh(Some(terminal)).await?;
+            continue;
+        }
+        if app.pending_hitl_decision.is_some() {
+            app.drain_pending_hitl(Some(terminal)).await?;
+            continue;
+        }
+        if app.pending_context_reset {
+            app.drain_pending_context_reset(Some(terminal)).await?;
             continue;
         }
 
