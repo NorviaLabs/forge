@@ -899,7 +899,9 @@ impl TuiApp {
         self.notices = lines;
         // Open picker with fresh data
         let items = self.model_picker_items(false);
-        self.overlay = Some(Overlay::model_open_with(items));
+        let mut ov = Overlay::model_open_with(items);
+        ov.focus_model(&self.runtime.model_label);
+        self.overlay = Some(ov);
     }
 
     fn ptt_start_recording(&mut self) {
@@ -1735,8 +1737,19 @@ Reply with ONLY the commit message line.\n\n\
             }
         }
 
+        // Allow arrow-key auto-repeat for overlays (and other selection UIs).
         if key.kind != KeyEventKind::Press {
-            return Ok(());
+            let allow_repeat = matches!(
+                key.kind,
+                KeyEventKind::Repeat
+                    if matches!(
+                        key.code,
+                        KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right
+                    )
+            );
+            if !allow_repeat {
+                return Ok(());
+            }
         }
 
         // While recording, don't type into the input (except Esc cancels).
@@ -2119,7 +2132,9 @@ Reply with ONLY the commit message line.\n\n\
                         self.refresh_model_catalogs();
                     } else if provider.is_none() && model.is_none() {
                         let items = self.model_picker_items(false);
-                        self.overlay = Some(Overlay::model_open_with(items));
+                        let mut ov = Overlay::model_open_with(items);
+                        ov.focus_model(&self.runtime.model_label);
+                        self.overlay = Some(ov);
                         self.status_message = "pick a model (live catalog when connected)".into();
                     } else {
                         let prefix = self
@@ -2740,6 +2755,8 @@ fn map_key(key: event::KeyEvent) -> OverlayKey {
         KeyCode::Enter => OverlayKey::Enter,
         KeyCode::Up => OverlayKey::Up,
         KeyCode::Down => OverlayKey::Down,
+        KeyCode::Left => OverlayKey::Left,
+        KeyCode::Right => OverlayKey::Right,
         KeyCode::Backspace => OverlayKey::Backspace,
         KeyCode::Char(c) => OverlayKey::Char(c),
         _ => OverlayKey::Other,
