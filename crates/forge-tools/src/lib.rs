@@ -12,9 +12,7 @@ pub use builtins::{
 };
 pub use registry::{ToolContext, ToolRegistry};
 pub use validation::{validate_args, ValidationBudget};
-pub use web_search::{
-    should_register_web_search, web_search_tool, WebSearchArgs, WebSearchTool,
-};
+pub use web_search::{should_register_web_search, web_search_tool, WebSearchArgs, WebSearchTool};
 
 use async_trait::async_trait;
 use forge_types::{SideEffectClass, ToolDescriptor, ToolOutput, ToolValidationError};

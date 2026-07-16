@@ -34,7 +34,7 @@ Long-horizon tasks rot the context window with tool dumps and history. Pure summ
 
 - Estimate tokens for system, user, assistant, tool messages (provider tokenizer when available; heuristic fallback).  
 - Update on each assembly and after each model `usage` event.  
-- Expose usage to surfaces (sidebar meter, `/status`, `/cost`).
+- Expose usage to surfaces (sidebar meter and `/status`).
 
 ### 3.2 Payload offload (CTX-01)
 
@@ -59,7 +59,7 @@ summary: first ~500 chars or model-generated one-liner (optional)
 
 ### 3.3 Hard reset + handoff (CTX-02)
 
-**Trigger:** `usage >= reset_usage_ratio * capacity` (default 0.80), or user `/reset`.
+**Trigger:** `usage >= reset_usage_ratio * capacity` (default 0.80), or user `/compact`.
 
 **Algorithm:**
 
@@ -131,7 +131,7 @@ trait ContextEngine {
 | Item | Phase |
 |------|-------|
 | This entire document | **2** |
-| TUI commands | `/reset`, `/compact`, `/cost` (Phase 2 only) |
+| TUI commands | `/compact` (Phase 2 only) |
 | Exit | Offload + handoff metrics met (CTX-01, CTX-02) |
 
 ## 7. Open questions
@@ -143,4 +143,4 @@ trait ContextEngine {
 ## Related docs
 
 - [workspace-isolation.md](./workspace-isolation.md)  
-- [tui-commands.md](./tui-commands.md) (`/reset`, `/compact`, `/cost`)  
+- [tui-commands.md](./tui-commands.md) (`/compact`)

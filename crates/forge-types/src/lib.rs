@@ -49,6 +49,9 @@ pub struct Message {
     /// How long the model spent thinking (seconds), for "Thought for Xs" UI.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_duration_secs: Option<f64>,
+    /// Tool calls emitted by an assistant message, preserved for the next model step.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ToolCall>,
 }
 
 impl Message {
@@ -60,6 +63,7 @@ impl Message {
             name: None,
             thinking: None,
             thinking_duration_secs: None,
+            tool_calls: vec![],
         }
     }
 }
@@ -109,15 +113,31 @@ pub struct Usage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ModelStreamEvent {
-    TextDelta { text: String },
+    TextDelta {
+        text: String,
+    },
     /// Reasoning / chain-of-thought token chunk (Grok, o-series, DeepSeek-R1, etc.).
-    ThinkingDelta { text: String },
-    ToolCallStart { id: String, name: String },
-    ToolCallDelta { id: String, arguments_delta: String },
-    ToolCallEnd { call: ToolCall },
-    Usage { usage: Usage },
+    ThinkingDelta {
+        text: String,
+    },
+    ToolCallStart {
+        id: String,
+        name: String,
+    },
+    ToolCallDelta {
+        id: String,
+        arguments_delta: String,
+    },
+    ToolCallEnd {
+        call: ToolCall,
+    },
+    Usage {
+        usage: Usage,
+    },
     MessageEnd,
-    Error { message: String },
+    Error {
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

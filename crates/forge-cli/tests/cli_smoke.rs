@@ -38,12 +38,7 @@ fn run_with_provider_mock_via_env() {
     Command::cargo_bin("forge")
         .unwrap()
         .env("FORGE_MODEL_PROVIDER", "mock")
-        .args([
-            "--workspace",
-            dir.path().to_str().unwrap(),
-            "run",
-            "hello",
-        ])
+        .args(["--workspace", dir.path().to_str().unwrap(), "run", "hello"])
         .assert()
         .success()
         .stdout(predicate::str::contains("session_id="));

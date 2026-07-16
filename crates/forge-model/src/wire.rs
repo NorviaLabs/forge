@@ -73,7 +73,10 @@ impl WireEnvelope {
         Self::request(id, "shutdown", Value::Object(Default::default()))
     }
 
-    pub fn complete(id: impl Into<String>, params: &CompleteParams) -> Result<Self, serde_json::Error> {
+    pub fn complete(
+        id: impl Into<String>,
+        params: &CompleteParams,
+    ) -> Result<Self, serde_json::Error> {
         Ok(Self::request(id, "complete", serde_json::to_value(params)?))
     }
 

@@ -57,10 +57,7 @@ impl ChannelSessionKey {
         Self {
             channel: m.channel,
             channel_id: m.channel_id.clone(),
-            thread_id: m
-                .thread_id
-                .clone()
-                .unwrap_or_else(|| m.user_id.clone()),
+            thread_id: m.thread_id.clone().unwrap_or_else(|| m.user_id.clone()),
         }
     }
 
@@ -80,7 +77,7 @@ pub fn restricted_channel_governance(surface: &str) -> Governance {
     acl.deny("bash".into());
     acl.deny("write_file".into());
     acl.deny("mcp:*".into()); // re-allow only demo echo above (last match: need order)
-    // Fix: last match wins — re-allow echo after deny mcp:*
+                              // Fix: last match wins — re-allow echo after deny mcp:*
     acl.allow("mcp:demo:echo".into());
 
     Governance::default()
@@ -96,11 +93,7 @@ pub struct ChannelGateway {
 }
 
 impl ChannelGateway {
-    pub fn new(
-        workspace: PathBuf,
-        journal_dir: PathBuf,
-        model: Arc<dyn ModelClient>,
-    ) -> Self {
+    pub fn new(workspace: PathBuf, journal_dir: PathBuf, model: Arc<dyn ModelClient>) -> Self {
         Self {
             workspace,
             journal_dir,
@@ -133,7 +126,7 @@ impl ChannelGateway {
                         enable_context_lifecycle: true,
                         enable_governance: true,
 
-                    ..Default::default()
+                        ..Default::default()
                     },
                     self.model.clone(),
                     tools,
@@ -247,12 +240,8 @@ mod tests {
             tool_calls: vec![],
             usage: None,
             thinking: None,
-    }]));
-        let gw = ChannelGateway::new(
-            dir.path().to_path_buf(),
-            dir.path().join("j"),
-            model,
-        );
+        }]));
+        let gw = ChannelGateway::new(dir.path().to_path_buf(), dir.path().join("j"), model);
         let resp = gw
             .handle_message(ChannelMessage {
                 channel: ChannelKind::Slack,

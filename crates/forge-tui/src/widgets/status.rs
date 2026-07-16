@@ -50,6 +50,7 @@ pub struct StatusModel {
     pub session_short: String,
     pub model: String,
     pub provider: String,
+    pub effort: String,
     pub ctx_pct: f64,
     pub worktree_on: bool,
     pub busy: bool,
@@ -146,6 +147,8 @@ impl Widget for StatusBar<'_> {
             Span::styled(format!("{label} "), style),
             Span::styled("· ", theme::dim()),
             Span::styled(format!("{provider}/{model_disp} "), theme::text()),
+            Span::styled("· ", theme::dim()),
+            Span::styled(format!("effort={} ", self.model.effort), theme::text()),
         ];
 
         if self.model.worktree_on {
@@ -166,6 +169,7 @@ pub fn session_chrome_lines(m: &StatusModel) -> Vec<String> {
         format!("session={}", m.session_short),
         format!("provider={}", m.provider),
         format!("model={}", m.model),
+        format!("effort={}", m.effort),
         format!("ctx={:.1}%", m.ctx_pct * 100.0),
         format!("worktree={}", if m.worktree_on { "on" } else { "off" }),
         format!("profile={}", m.connect_profile.as_deref().unwrap_or("—")),
@@ -192,6 +196,7 @@ mod tests {
             session_short: "abcd".into(),
             model: "mock".into(),
             provider: "mock".into(),
+            effort: "auto".into(),
             ctx_pct: 0.1,
             worktree_on: false,
             busy: false,
@@ -211,6 +216,7 @@ mod tests {
             session_short: "x".into(),
             model: "m".into(),
             provider: "litellm".into(),
+            effort: "high".into(),
             ctx_pct: 0.0,
             worktree_on: true,
             busy: true,
@@ -230,6 +236,7 @@ mod tests {
             session_short: "abc".into(),
             model: "openai/gpt".into(),
             provider: "litellm".into(),
+            effort: "medium".into(),
             ctx_pct: 0.34,
             worktree_on: false,
             busy: false,
@@ -242,6 +249,7 @@ mod tests {
         let lines = session_chrome_lines(&m);
         assert!(lines.iter().any(|l| l.contains("provider=litellm")));
         assert!(lines.iter().any(|l| l.contains("model=openai/gpt")));
+        assert!(lines.iter().any(|l| l.contains("effort=medium")));
         assert!(lines.iter().any(|l| l.contains("profile=xai")));
         assert!(lines.iter().any(|l| l.contains("connected=yes")));
     }

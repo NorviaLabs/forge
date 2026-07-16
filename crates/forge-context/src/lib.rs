@@ -112,10 +112,7 @@ impl ContextEngine {
     }
 
     /// CTX-01: offload large tool body to disk; return compact in-context form.
-    pub fn offload_tool_output(
-        &self,
-        body: &str,
-    ) -> Result<Option<OffloadResult>, ContextError> {
+    pub fn offload_tool_output(&self, body: &str) -> Result<Option<OffloadResult>, ContextError> {
         let tokens = estimate_tokens(body);
         if tokens <= self.config.offload_token_threshold {
             return Ok(None);
@@ -230,6 +227,7 @@ impl ContextEngine {
             name: None,
             thinking: None,
             thinking_duration_secs: None,
+            tool_calls: vec![],
 }];
         new_msgs.push(Message {
             role: MessageRole::User,
@@ -241,7 +239,8 @@ impl ContextEngine {
             name: None,
             thinking: None,
             thinking_duration_secs: None,
-});
+            tool_calls: vec![],
+        });
         Ok((doc, new_msgs))
     }
 }
@@ -315,7 +314,8 @@ mod tests {
                 name: None,
                 thinking: None,
                 thinking_duration_secs: None,
-},
+                tool_calls: vec![],
+            },
             Message {
                 role: MessageRole::Assistant,
                 content: "x".repeat(1000),
@@ -323,7 +323,8 @@ mod tests {
                 name: None,
                 thinking: None,
                 thinking_duration_secs: None,
-},
+                tool_calls: vec![],
+            },
         ];
         let (doc, new_msgs) = eng.handoff_reset(&messages, "abc123").unwrap();
         assert_eq!(doc.version, 1);
@@ -340,7 +341,8 @@ mod tests {
                 name: None,
                 thinking: None,
                 thinking_duration_secs: None,
-})
+                tool_calls: vec![],
+            })
             .take(200)
             .collect::<Vec<_>>()
         ));
@@ -356,7 +358,8 @@ mod tests {
             name: None,
             thinking: None,
             thinking_duration_secs: None,
-}];
+            tool_calls: vec![],
+        }];
         assert!(eng.usage_ratio(&small) < 0.01);
     }
 }

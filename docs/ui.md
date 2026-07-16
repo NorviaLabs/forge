@@ -183,14 +183,11 @@ done
 | Command | Purpose |
 |---------|---------|
 | `/resume` | Resume session by id |
-| `/reset` | Force handoff + clear context |
-| `/status` | Session, budget, journal cursor |
+| `/compact` | Force handoff + clear context |
+| `/status` | Session, budget, journal cursor, and token usage |
 | `/model` | Switch provider/model (config only) |
 | `/approve` / `/deny` | HITL decision |
-| `/worktree` | Merge or discard isolated worktree |
-| `/cancel` | Cancel current turn |
-| `/compact` | Request compaction path |
-| `/help` `/journal` `/tools` `/cost` `/quit` | Additional commands in design catalog |
+| `/journal` `/quit` | Additional commands in design catalog |
 | `/connect` | Phase 6 provider connect |
 
 The HTML palette mockup (`07-slash-commands`) may omit newer commands until re-rendered; behavior is defined only by [tui-commands.md](./designs/tui-commands.md).

@@ -12,8 +12,8 @@ pub const MUTED: Color = Color::Rgb(139, 155, 176);
 pub const DIM: Color = Color::Rgb(92, 107, 126);
 pub const TEXT: Color = Color::Rgb(230, 237, 243);
 pub const BORDER: Color = Color::Rgb(42, 53, 68);
-#[allow(dead_code)] // reserved for panel fills
 pub const PANEL: Color = Color::Rgb(18, 24, 32);
+pub const HISTORY_BG: Color = Color::Rgb(28, 40, 55);
 
 pub fn brand() -> Style {
     Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
@@ -51,8 +51,32 @@ pub fn tool() -> Style {
     Style::default().fg(TOOL)
 }
 
+pub fn code_keyword() -> Style {
+    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+}
+
+pub fn code_string() -> Style {
+    Style::default().fg(WARN)
+}
+
+pub fn code_number() -> Style {
+    Style::default().fg(ACCENT_2)
+}
+
+pub fn code_comment() -> Style {
+    Style::default().fg(OK).add_modifier(Modifier::ITALIC)
+}
+
+pub fn code_punctuation() -> Style {
+    Style::default().fg(MUTED)
+}
+
 pub fn border() -> Style {
     Style::default().fg(BORDER)
+}
+
+pub fn panel() -> Style {
+    Style::default().bg(PANEL)
 }
 
 /// Full-row selection (suggestion list, palette, connect picker).
@@ -74,7 +98,7 @@ pub fn caret() -> Style {
 
 /// History-recalled input (subtle highlight of the whole field text).
 pub fn history_active() -> Style {
-    Style::default().fg(TEXT).bg(Color::Rgb(28, 40, 55))
+    Style::default().fg(TEXT).bg(HISTORY_BG)
 }
 
 #[cfg(test)]

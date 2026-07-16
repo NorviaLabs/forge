@@ -18,7 +18,7 @@ mod widgets;
 
 pub use activity::{ActivityFeed, ActivityItem, ActivityKind};
 pub use app::{run_tui, TuiApp, TuiError, TuiRuntimeConfig};
-pub use commands::{help_text, parse_slash, CommandError, SlashCommand, SttAction, WorktreeAction};
+pub use commands::{parse_slash, CommandError, SlashCommand, SttAction};
 pub use conversation::{
     BannerKind, ChatItem, ConversationModel, ConversationViewOpts, StreamWaitPhase, ToolCardState,
 };

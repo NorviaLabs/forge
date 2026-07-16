@@ -75,7 +75,7 @@ Rules:
 
 | Event | Feedback strip | Chat banner | Notices |
 |-------|----------------|-------------|---------|
-| Slash one-liner (`/cost`) | Yes | No | Optional |
+| Slash one-liner (`/context`) | Yes | No | Optional |
 | Slash multi-line (`/help`) | Yes (first line) | No | Yes (full) |
 | Model/loop `Err` (e.g. 429) | Yes (full human message) | **Yes** Error banner | Optional detail |
 | Tool hard failure already in tool card | Yes (short) | Prefer tool card; banner if no card | No |

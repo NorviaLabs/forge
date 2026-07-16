@@ -9,7 +9,6 @@ pub const SIDEBAR_WIDTH: u16 = 30;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LayoutRegions {
-    pub status: Rect,
     pub chat: Rect,
     pub sidebar: Option<Rect>,
     /// Phase 10 / TUI-08 — 0-height when empty.
@@ -43,7 +42,6 @@ pub fn split_areas_full(
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),       // status
             Constraint::Min(3),          // main
             Constraint::Length(fb),      // feedback
             Constraint::Length(qh),      // message queue
@@ -52,12 +50,11 @@ pub fn split_areas_full(
         ])
         .split(area);
 
-    let status = rows[0];
-    let main = rows[1];
-    let feedback = rows[2];
-    let queue = rows[3];
-    let input = rows[4];
-    let footer = rows[5];
+    let main = rows[0];
+    let feedback = rows[1];
+    let queue = rows[2];
+    let input = rows[3];
+    let footer = rows[4];
 
     let (chat, sidebar) = if show_sidebar && area.width >= MIN_WIDTH {
         let cols = Layout::default()
@@ -70,7 +67,6 @@ pub fn split_areas_full(
     };
 
     LayoutRegions {
-        status,
         chat,
         sidebar,
         feedback,
@@ -93,7 +89,6 @@ mod tests {
         let area = Rect::new(0, 0, 120, 40);
         let r = split_areas(area);
         assert!(r.sidebar.is_some());
-        assert_eq!(r.status.height, 1);
         assert_eq!(r.footer.height, 1);
         assert_eq!(r.input.height, 3);
         assert_eq!(r.feedback.height, 0);
@@ -101,7 +96,6 @@ mod tests {
         let sb = r.sidebar.unwrap();
         assert_eq!(sb.width, SIDEBAR_WIDTH);
         assert_eq!(r.chat.width + sb.width, area.width);
-        assert_eq!(r.status.y, 0);
         assert_eq!(r.footer.y + r.footer.height, area.height);
     }
 

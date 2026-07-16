@@ -14,7 +14,9 @@ use forge_config::{Config, LitellmLifecycle, ModelProviderKind};
 use forge_types::ModelResponse;
 use tokio::time::timeout;
 
-use crate::normalize::{complete_result_from_value, forge_messages_to_wire, tools_to_openai_functions};
+use crate::normalize::{
+    complete_result_from_value, forge_messages_to_wire, tools_to_openai_functions,
+};
 use crate::wire::{CompleteParams, WireEnvelope, WireErrorBody, WireType};
 use crate::{ModelClient, ModelError, ModelRequest, StreamEventTx};
 use forge_types::ModelStreamEvent;
@@ -309,10 +311,14 @@ impl LiteLlmInner {
         let line = env
             .encode_line()
             .map_err(|e| ModelError::Protocol(e.to_string()))?;
-        if let Err(e) = w.stdin.write_all(line.as_bytes()).and_then(|_| w.stdin.flush()) {
-            return Err(ModelError::Transport(w.dead_worker_message(&format!(
-                "sending message ({e})"
-            ))));
+        if let Err(e) = w
+            .stdin
+            .write_all(line.as_bytes())
+            .and_then(|_| w.stdin.flush())
+        {
+            return Err(ModelError::Transport(
+                w.dead_worker_message(&format!("sending message ({e})")),
+            ));
         }
         Ok(())
     }
@@ -496,7 +502,9 @@ impl LiteLlmInner {
                     return Ok(resp);
                 }
                 WireType::Request => {
-                    return Err(ModelError::Protocol("unexpected request from worker".into()));
+                    return Err(ModelError::Protocol(
+                        "unexpected request from worker".into(),
+                    ));
                 }
             }
         }
@@ -515,8 +523,7 @@ fn parse_stream_event(params: Option<&serde_json::Value>) -> Option<ModelStreamE
         }),
         "usage" => {
             let usage = forge_types::Usage {
-                prompt_tokens: p.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0)
-                    as u32,
+                prompt_tokens: p.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
                 completion_tokens: p
                     .get("completion_tokens")
                     .and_then(|v| v.as_u64())
@@ -645,7 +652,8 @@ for line in sys.stdin:
                     name: None,
                     thinking: None,
                     thinking_duration_secs: None,
-}],
+                    tool_calls: vec![],
+                }],
                 tools: vec![],
                 model: "openai/gpt-test".into(),
             })
@@ -674,7 +682,8 @@ for line in sys.stdin:
                     name: None,
                     thinking: None,
                     thinking_duration_secs: None,
-}],
+                    tool_calls: vec![],
+                }],
                 tools: vec![],
                 model: "xai/grok-3".into(),
             })

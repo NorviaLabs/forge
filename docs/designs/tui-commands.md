@@ -24,7 +24,7 @@ Phase 1 operators need non-LLM session control. **This catalog is Phase 1 comman
 
 **Non-goals**
 
-- Phase 2: `/approve`, `/deny` → [durable-hitl.md](./durable-hitl.md); `/reset`, `/compact`, `/cost` → [context-lifecycle.md](./context-lifecycle.md); `/worktree` → [workspace-isolation.md](./workspace-isolation.md).  
+- Phase 2: `/approve`, `/deny` → [durable-hitl.md](./durable-hitl.md); `/compact` → [context-lifecycle.md](./context-lifecycle.md).
 - Phase 6: `/connect` → [connect-command.md](./connect-command.md) (xAI Grok, OpenCode Go profiles).  
 - Plugin commands.
 
@@ -32,13 +32,10 @@ Phase 1 operators need non-LLM session control. **This catalog is Phase 1 comman
 
 | Command | Args | Behavior | Req |
 |---------|------|----------|-----|
-| `/help` | `[cmd]` | List or detail Phase 1 commands | DX |
-| `/status` | — | Session, model, journal cursor (no Phase 2 budget/HITL fields required) | DX |
+| `/status` | — | Session, model, journal cursor, and context/token usage | DX |
 | `/resume` | `<session_id>` | Replay journal (DUR-02) | DUR-02 |
-| `/cancel` | — | Cancel current turn | Loop |
 | `/model` | `[provider] [model]` | Config-only model switch | Multi-provider |
 | `/journal` | `[tail n]` | Recent journal events (redacted) | DUR |
-| `/tools` | — | List registered tools (built-in + MCP) | CORE-01/02 |
 | `/quit` | — | Exit TUI; session remains on disk | DX |
 
 ### Headless mirrors
