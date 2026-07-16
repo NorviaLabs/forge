@@ -11,6 +11,8 @@ import urllib.request
 import uuid
 from typing import Any, Callable
 
+from forge_litellm_worker.effort import codex_effort
+
 CODEX_URL = "https://chatgpt.com/backend-api/codex/responses"
 
 
@@ -159,9 +161,9 @@ def _request_body(
     tools = _tools(raw_tools, tool_aliases)
     if tools:
         body["tools"] = tools
-    extra = params.get("extra") or {}
-    if isinstance(extra, dict) and extra.get("reasoning_effort"):
-        body["reasoning"] = {"effort": extra["reasoning_effort"], "summary": "auto"}
+    effort = codex_effort(params.get("extra"))
+    if effort:
+        body["reasoning"] = {"effort": effort, "summary": "auto"}
     return body
 
 

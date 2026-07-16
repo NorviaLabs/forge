@@ -31,6 +31,7 @@ use crate::commands::{help_text, parse_slash, SlashCommand, SttAction, WorktreeA
 use crate::conversation::{
     BannerKind, ChatItem, ConversationModel, ConversationViewOpts, StreamWaitPhase,
 };
+use crate::effort::ReasoningEffort;
 use crate::history::InputHistory;
 use crate::layout::is_too_small;
 use crate::layout::split_areas_full;
@@ -127,6 +128,8 @@ pub struct TuiApp {
     pub activity: ActivityFeed,
     /// Expand completed thinking blocks (Ctrl+T). Streaming always expands.
     thinking_expanded: bool,
+    /// Reasoning effort sent to model providers (`auto` omits the parameter).
+    reasoning_effort: ReasoningEffort,
     /// Expand last tool detail (Ctrl+O).
     tool_expanded: bool,
     /// Show activity sidebar (Ctrl+B).
@@ -187,6 +190,7 @@ impl TuiApp {
             thinking_started: None,
             thought_secs: None,
             thinking_expanded: false,
+            reasoning_effort: ReasoningEffort::from_env(),
             tool_expanded: false,
             sidebar_visible: true,
             cancel_requested: false,
@@ -351,10 +355,12 @@ impl TuiApp {
             active_model: None,
         };
         let connected = svc.connected_profiles().unwrap_or_default();
-        // Prefer xAI when present; otherwise first connected profile.
+        let saved_selection = self.connect_store.last_selection().ok().flatten();
+        // Restore the last usable provider; otherwise prefer xAI for backwards compatibility.
         let chosen = connected
             .iter()
-            .find(|p| p.id == "xai")
+            .find(|p| saved_selection.as_ref().is_some_and(|(id, _)| id == &p.id))
+            .or_else(|| connected.iter().find(|p| p.id == "xai"))
             .or_else(|| connected.first())
             .cloned();
         if let Some(profile) = chosen {
@@ -373,7 +379,10 @@ impl TuiApp {
             let looks_default =
                 cur.is_empty() || cur == "openai/gpt-4.1-mini" || cur == "m" || cur == "mock";
             if looks_default {
-                if let Some(model) = profile.default_model() {
+                let saved_model = saved_selection
+                    .as_ref()
+                    .and_then(|(id, model)| (id == &profile.id).then_some(model.as_str()));
+                if let Some(model) = saved_model.or_else(|| profile.default_model()) {
                     self.runtime.model_label = model.to_string();
                     self.runtime.provider = "litellm".into();
                     self.session.set_active_model(model);
@@ -382,7 +391,7 @@ impl TuiApp {
                 self.session
                     .set_active_model(self.runtime.model_label.clone());
             }
-            self.status_message = format!("restored {} credentials", profile.id);
+            self.status_message = format!("restored {} · {}", profile.id, self.runtime.model_label);
         }
         self
     }
@@ -835,6 +844,11 @@ impl TuiApp {
                     self.apply_connect_credentials(&p.id);
                 }
             }
+        }
+        if let Some(profile_id) = self.connect_profile.as_deref() {
+            let _ = self
+                .connect_store
+                .set_last_selection(profile_id, &self.runtime.model_label);
         }
         self.set_feedback(
             FeedbackSeverity::Ok,
@@ -2184,6 +2198,65 @@ Reply with ONLY the commit message line.\n\n\
         Ok(())
     }
 
+    async fn handle_model_command(
+        &mut self,
+        provider: Option<&str>,
+        model: Option<&str>,
+        refresh: bool,
+    ) {
+        if refresh {
+            self.queue_model_refresh();
+            if cfg!(test) {
+                let _ = self.drain_pending_model_refresh(None).await;
+            }
+            return;
+        }
+
+        if provider.is_none() && model.is_none() {
+            let items = self.model_picker_items(false);
+            let mut overlay = Overlay::model_open_with(items);
+            overlay.focus_model(&self.runtime.model_label);
+            self.overlay = Some(overlay);
+            self.status_message = "pick a model (live catalog when connected)".into();
+            return;
+        }
+
+        let connected_prefix = self.connect_profile.as_deref().and_then(|id| {
+            self.connect_registry
+                .get(id)
+                .map(|profile| profile.litellm_provider_prefix.as_str())
+        });
+        let model_id = normalize_model_id(provider.unwrap_or(""), model, connected_prefix);
+        if model_id.trim().is_empty() {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                "usage: /model <litellm-id> | /model refresh",
+            );
+        } else {
+            self.apply_model_selection("litellm", &model_id);
+        }
+    }
+
+    fn handle_effort_command(&mut self, level: Option<ReasoningEffort>) {
+        let Some(level) = level else {
+            self.set_feedback(
+                FeedbackSeverity::Info,
+                format!("reasoning effort: {}", self.reasoning_effort),
+            );
+            self.notices = vec![
+                format!("Current reasoning effort: {}", self.reasoning_effort),
+                format!("Usage: /effort {}", ReasoningEffort::USAGE),
+            ];
+            return;
+        };
+
+        self.reasoning_effort = level;
+        self.session
+            .apply_provider_env(&[("FORGE_REASONING_EFFORT".into(), level.worker_value().into())]);
+        self.set_feedback(FeedbackSeverity::Ok, format!("reasoning effort: {level}"));
+        self.status_message = format!("reasoning effort set to {level}");
+    }
+
     pub async fn dispatch_line(&mut self, line: &str) -> Result<(), TuiError> {
         if let Some(cmd_res) = parse_slash(line) {
             let slash_name = line.split_whitespace().next().unwrap_or("/");
@@ -2303,38 +2376,10 @@ Reply with ONLY the commit message line.\n\n\
                     model,
                     refresh,
                 }) => {
-                    if refresh {
-                        self.queue_model_refresh();
-                        if cfg!(test) {
-                            let _ = self.drain_pending_model_refresh(None).await;
-                        }
-                    } else if provider.is_none() && model.is_none() {
-                        let items = self.model_picker_items(false);
-                        let mut ov = Overlay::model_open_with(items);
-                        ov.focus_model(&self.runtime.model_label);
-                        self.overlay = Some(ov);
-                        self.status_message = "pick a model (live catalog when connected)".into();
-                    } else {
-                        let prefix = self.connect_profile.as_deref().and_then(|id| {
-                            self.connect_registry
-                                .get(id)
-                                .map(|p| p.litellm_provider_prefix.as_str())
-                        });
-                        let id = normalize_model_id(
-                            provider.as_deref().unwrap_or(""),
-                            model.as_deref(),
-                            prefix,
-                        );
-                        if id.trim().is_empty() {
-                            self.set_feedback(
-                                FeedbackSeverity::Warn,
-                                "usage: /model <litellm-id> | /model refresh",
-                            );
-                        } else {
-                            self.apply_model_selection("litellm", &id);
-                        }
-                    }
+                    self.handle_model_command(provider.as_deref(), model.as_deref(), refresh)
+                        .await
                 }
+                Ok(SlashCommand::Effort { level }) => self.handle_effort_command(level),
                 Ok(SlashCommand::Worktree { action }) => match action {
                     WorktreeAction::Status => {
                         let msg = self

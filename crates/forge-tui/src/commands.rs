@@ -4,6 +4,8 @@ use forge_connect::ConnectAction;
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::effort::ReasoningEffort;
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum CommandError {
     #[error("unknown command `/{0}`")]
@@ -30,6 +32,10 @@ pub enum SlashCommand {
         model: Option<String>,
         /// `/model refresh` — re-pull live catalogs.
         refresh: bool,
+    },
+    /// Set model reasoning effort for subsequent calls.
+    Effort {
+        level: Option<ReasoningEffort>,
     },
     Journal {
         tail: Option<usize>,
@@ -121,6 +127,17 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
                 })
             }
         }
+        "effort" => {
+            let level = parts
+                .next()
+                .map(|value| {
+                    value.parse().map_err(|_| {
+                        CommandError::Usage(format!("/effort {}", ReasoningEffort::USAGE))
+                    })
+                })
+                .transpose()?;
+            Ok(SlashCommand::Effort { level })
+        }
         "journal" => Ok(SlashCommand::Journal {
             tail: parts.next().and_then(|s| s.parse().ok()),
         }),
@@ -194,6 +211,7 @@ pub fn help_text() -> &'static str {
      /cancel         Soft-cancel current turn (Esc)\n\
      /model [id]     Switch model (LiteLLM id)\n\
      /model refresh  Refresh model catalogs\n\
+     /effort [level] Set reasoning: auto|minimal|low|medium|high|xhigh|max\n\
      /connect …      Connect (openai_codex | openai | anthropic | xai | opencode_* | ollama)\n\
      /diff           Tools & file changes this session\n\
      /sync           Stage, commit (message from changeset), push\n\
@@ -252,6 +270,20 @@ mod tests {
                 model: Some("gpt-4.1".into()),
                 refresh: false,
             }
+        );
+    }
+
+    #[test]
+    fn parses_effort_level_and_query() {
+        assert_eq!(
+            parse_slash("/effort high").unwrap().unwrap(),
+            SlashCommand::Effort {
+                level: Some(ReasoningEffort::High)
+            }
+        );
+        assert_eq!(
+            parse_slash("/effort").unwrap().unwrap(),
+            SlashCommand::Effort { level: None }
         );
     }
 
