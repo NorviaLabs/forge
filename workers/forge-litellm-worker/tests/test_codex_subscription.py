@@ -48,3 +48,14 @@ def test_namespaced_tools_use_reversible_api_safe_aliases() -> None:
     )
     assert body["tools"][0]["name"] == forward["mcp:demo:echo"]
     assert body["input"][0]["name"] == forward["mcp:demo:echo"]
+
+
+def test_reasoning_effort_from_environment(monkeypatch) -> None:
+    monkeypatch.setenv("FORGE_REASONING_EFFORT", "high")
+    body = _request_body(
+        {
+            "model": "openai-codex/gpt-5.6-sol",
+            "messages": [{"role": "user", "content": "hello"}],
+        }
+    )
+    assert body["reasoning"] == {"effort": "high", "summary": "auto"}

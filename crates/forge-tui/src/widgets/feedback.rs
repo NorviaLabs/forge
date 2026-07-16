@@ -106,7 +106,8 @@ pub fn classify_operator_error(raw: &str) -> String {
         || lower.contains("fixture-")
     {
         return "Model error: authentication failed. Run /connect xai and finish real OAuth \
-(not fixture), or set XAI_API_KEY.".into();
+(not fixture), or set XAI_API_KEY."
+            .into();
     }
     if lower.contains("eof while parsing") || lower.contains("stdout polluted") {
         return "Model error: worker protocol noise (update forge-litellm-worker). Restart forge."
@@ -122,11 +123,13 @@ pub fn classify_operator_error(raw: &str) -> String {
             || lower.contains("no module named"))
     {
         return "Model error: LiteLLM worker unavailable. Install with: \
-cd workers/forge-litellm-worker && pip install -e .  (then restart forge)".into();
+cd workers/forge-litellm-worker && pip install -e .  (then restart forge)"
+            .into();
     }
     if lower.contains("closed stdout") {
         return "Model error: LiteLLM worker crashed. Install with: \
-cd workers/forge-litellm-worker && pip install -e .  (then restart forge)".into();
+cd workers/forge-litellm-worker && pip install -e .  (then restart forge)"
+            .into();
     }
     let trimmed: String = raw.chars().take(200).collect();
     if trimmed.is_empty() {

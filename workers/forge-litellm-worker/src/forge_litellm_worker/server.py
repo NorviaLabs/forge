@@ -14,11 +14,12 @@ import sys
 import traceback
 from typing import Any, TextIO
 
-from forge_litellm_worker.normalize import complete_result_from_litellm
 from forge_litellm_worker.codex_subscription import (
     complete_stream as complete_codex_subscription_stream,
     is_codex_model,
 )
+from forge_litellm_worker.effort import apply_litellm_effort, configured_effort
+from forge_litellm_worker.normalize import complete_result_from_litellm
 
 WIRE_V = 1
 
@@ -236,9 +237,17 @@ def _completion_kwargs(params: dict[str, Any], *, stream: bool) -> dict[str, Any
         kwargs["max_tokens"] = params["max_tokens"]
     extra = params.get("extra") or {}
     if isinstance(extra, dict):
-        # Don't let caller force stream off when we need it
-        extra = {k: v for k, v in extra.items() if k != "stream"}
-        kwargs.update(extra)
+        effort = configured_effort(extra)
+        # Stream and effort are normalized by the worker instead of passed through.
+        passthrough = {
+            key: value
+            for key, value in extra.items()
+            if key not in ("stream", "reasoning_effort")
+        }
+        kwargs.update(passthrough)
+        apply_litellm_effort(kwargs, str(model), effort)
+    else:
+        apply_litellm_effort(kwargs, str(model))
 
     # OpenCode Zen / Go: OpenAI-compatible endpoints. Rewrite prefix → openai/<id>
     # and inject the matching api_base + key.

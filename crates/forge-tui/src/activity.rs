@@ -41,7 +41,12 @@ impl ActivityFeed {
         }
     }
 
-    pub fn push(&mut self, kind: ActivityKind, severity: FeedbackSeverity, summary: impl Into<String>) {
+    pub fn push(
+        &mut self,
+        kind: ActivityKind,
+        severity: FeedbackSeverity,
+        summary: impl Into<String>,
+    ) {
         let summary = summary.into();
         // Redact obvious secret-like tokens
         let summary = if summary.to_ascii_lowercase().contains("api_key")
@@ -89,7 +94,11 @@ mod tests {
     fn ring_buffer_caps() {
         let mut f = ActivityFeed::with_capacity(5);
         for i in 0..12 {
-            f.push(ActivityKind::System, FeedbackSeverity::Info, format!("e{i}"));
+            f.push(
+                ActivityKind::System,
+                FeedbackSeverity::Info,
+                format!("e{i}"),
+            );
         }
         assert_eq!(f.len(), 5);
         assert_eq!(f.recent(5)[0].summary, "e7");

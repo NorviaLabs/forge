@@ -343,7 +343,8 @@ fn default_ffmpeg_input() -> String {
 
 fn transcribe_openai(wav: &Path, api_key: &str, api_base: &str) -> Result<String, String> {
     // Use curl for multipart (portable; no extra crate).
-    let curl = which("curl").ok_or_else(|| "curl not found (needed for Whisper API)".to_string())?;
+    let curl =
+        which("curl").ok_or_else(|| "curl not found (needed for Whisper API)".to_string())?;
     let base = api_base.trim().trim_end_matches('/');
     let url = format!("{base}/audio/transcriptions");
     let out = Command::new(curl)
@@ -434,7 +435,11 @@ pub fn resolve_stt_api_key(store: &forge_connect::CredentialStore) -> Option<Str
             return Some(k);
         }
     }
-    store.get_api_key("openai").ok().flatten().filter(|k| !k.trim().is_empty())
+    store
+        .get_api_key("openai")
+        .ok()
+        .flatten()
+        .filter(|k| !k.trim().is_empty())
 }
 
 #[cfg(test)]
