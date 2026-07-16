@@ -319,6 +319,9 @@ mod tests {
                 }
             }
         }
-        assert!(found_a, "expected inverted block cursor on character under caret");
+        assert!(
+            found_a,
+            "expected inverted block cursor on character under caret"
+        );
     }
 }

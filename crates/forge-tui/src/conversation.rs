@@ -21,15 +21,21 @@ pub enum ToolCardState {
 pub enum ChatItem {
     /// Brand splash (replaces dumping system prompts into the chat).
     Brand,
-    System { text: String },
-    User { text: String },
+    System {
+        text: String,
+    },
+    User {
+        text: String,
+    },
     /// Model chain-of-thought / reasoning (muted; collapses to "Thought for Xs").
     Thinking {
         text: String,
         /// When set, thinking is finished — default UI is "Thought for Xs".
         duration_secs: Option<f64>,
     },
-    Assistant { text: String },
+    Assistant {
+        text: String,
+    },
     Queued {
         index: usize,
         text: String,
@@ -49,7 +55,10 @@ pub enum ChatItem {
         path: String,
         lines: Vec<String>,
     },
-    Banner { text: String, kind: BannerKind },
+    Banner {
+        text: String,
+        kind: BannerKind,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -277,7 +286,9 @@ impl ConversationModel {
 
     /// Index of the last tool card (for expand).
     pub fn last_tool_index(&self) -> Option<usize> {
-        self.items.iter().rposition(|i| matches!(i, ChatItem::ToolCard { .. } | ChatItem::DiffCard { .. }))
+        self.items
+            .iter()
+            .rposition(|i| matches!(i, ChatItem::ToolCard { .. } | ChatItem::DiffCard { .. }))
     }
 
     pub fn lines(&self) -> Vec<Line<'static>> {
@@ -298,10 +309,7 @@ impl ConversationModel {
                     // Compact brand splash (not the model system prompt)
                     lines.push(Line::from(vec![
                         Span::styled("  ⬡  ", theme::brand()),
-                        Span::styled(
-                            "FORGE",
-                            theme::brand().add_modifier(Modifier::BOLD),
-                        ),
+                        Span::styled("FORGE", theme::brand().add_modifier(Modifier::BOLD)),
                         Span::styled("  ·  coding agent", theme::dim()),
                     ]));
                     if gap {
@@ -311,7 +319,11 @@ impl ConversationModel {
                 // Legacy system items (rare): muted only, never dump full prompt
                 ChatItem::System { text } => {
                     let short: String = text.chars().take(120).collect();
-                    let more = if text.chars().count() > 120 { "…" } else { "" };
+                    let more = if text.chars().count() > 120 {
+                        "…"
+                    } else {
+                        ""
+                    };
                     lines.push(Line::from(vec![
                         Span::styled("│ ", theme::dim()),
                         Span::styled(format!("{short}{more}"), theme::muted()),
@@ -326,10 +338,7 @@ impl ConversationModel {
                     for (i, l) in parts.iter().enumerate() {
                         let gutter = if i == 0 { "› " } else { "  " };
                         lines.push(Line::from(vec![
-                            Span::styled(
-                                gutter,
-                                theme::info().add_modifier(Modifier::BOLD),
-                            ),
+                            Span::styled(gutter, theme::info().add_modifier(Modifier::BOLD)),
                             Span::styled(l.clone(), theme::text()),
                         ]));
                     }
@@ -343,9 +352,7 @@ impl ConversationModel {
                     duration_secs,
                 } => {
                     // Live thinking: show body whenever we have text and aren't forcing collapse
-                    let live = self.opts.busy
-                        && duration_secs.is_none()
-                        && !text.is_empty();
+                    let live = self.opts.busy && duration_secs.is_none() && !text.is_empty();
                     let finished = duration_secs.is_some();
                     let expanded =
                         live || self.opts.thinking_expanded || (self.opts.busy && !finished);
@@ -365,19 +372,13 @@ impl ConversationModel {
                         for l in wrap(text, width.saturating_sub(3)) {
                             lines.push(Line::from(vec![
                                 Span::styled("· ", theme::dim()),
-                                Span::styled(
-                                    l,
-                                    theme::muted().add_modifier(Modifier::ITALIC),
-                                ),
+                                Span::styled(l, theme::muted().add_modifier(Modifier::ITALIC)),
                             ]));
                         }
                         if finished {
                             let secs = duration_secs.unwrap_or(0.0);
                             lines.push(Line::from(Span::styled(
-                                format!(
-                                    "  Thought for {} · ⌄ Ctrl+T",
-                                    format_elapsed_tenths(secs)
-                                ),
+                                format!("  Thought for {} · ⌄ Ctrl+T", format_elapsed_tenths(secs)),
                                 theme::dim(),
                             )));
                         }
@@ -413,10 +414,7 @@ impl ConversationModel {
                     for (i, l) in parts.iter().enumerate() {
                         let gutter = if i == 0 { "▍ " } else { "  " };
                         lines.push(Line::from(vec![
-                            Span::styled(
-                                gutter,
-                                theme::brand().add_modifier(Modifier::BOLD),
-                            ),
+                            Span::styled(gutter, theme::brand().add_modifier(Modifier::BOLD)),
                             Span::styled(l.clone(), theme::text()),
                         ]));
                     }
@@ -493,10 +491,7 @@ impl ConversationModel {
                     let expand = self.opts.tool_expanded && is_last;
                     if expand {
                         for l in detail.lines().take(40) {
-                            lines.push(Line::from(Span::styled(
-                                format!("  {l}"),
-                                theme::muted(),
-                            )));
+                            lines.push(Line::from(Span::styled(format!("  {l}"), theme::muted())));
                         }
                         if detail.lines().count() > 40 {
                             lines.push(Line::from(Span::styled(
@@ -511,16 +506,10 @@ impl ConversationModel {
                         }
                     } else {
                         for l in wrap(summary, width.saturating_sub(4)).into_iter().take(3) {
-                            lines.push(Line::from(Span::styled(
-                                format!("  {l}"),
-                                theme::muted(),
-                            )));
+                            lines.push(Line::from(Span::styled(format!("  {l}"), theme::muted())));
                         }
                         if is_last && detail.chars().count() > summary.chars().count() {
-                            lines.push(Line::from(Span::styled(
-                                "  Ctrl+O expand",
-                                theme::dim(),
-                            )));
+                            lines.push(Line::from(Span::styled("  Ctrl+O expand", theme::dim())));
                         }
                     }
                     if gap {
@@ -587,8 +576,7 @@ impl ConversationModel {
 
 #[allow(dead_code)] // kept for optional tool/diff UI later
 fn looks_like_diff(content: &str) -> bool {
-    content.contains("\n+")
-        && content.contains("\n-")
+    content.contains("\n+") && content.contains("\n-")
         || content.lines().any(|l| l.starts_with("@@ "))
         || content.starts_with("diff --git")
 }
@@ -727,7 +715,7 @@ mod tests {
                 name: None,
                 thinking: None,
                 thinking_duration_secs: None,
-},
+            },
             Message {
                 role: MessageRole::User,
                 content: "hi".into(),
@@ -735,7 +723,7 @@ mod tests {
                 name: None,
                 thinking: None,
                 thinking_duration_secs: None,
-},
+            },
             Message {
                 role: MessageRole::Assistant,
                 content: "yo".into(),

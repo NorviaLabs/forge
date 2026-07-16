@@ -184,8 +184,12 @@ mod tests {
 
     #[test]
     fn rejects_secret_like_lines() {
-        assert!(!InputHistory::should_store("sk-abcdefghijklmnopqrstuvwxyz012345"));
-        assert!(!InputHistory::should_store("export API_KEY=secretvaluehere"));
+        assert!(!InputHistory::should_store(
+            "sk-abcdefghijklmnopqrstuvwxyz012345"
+        ));
+        assert!(!InputHistory::should_store(
+            "export API_KEY=secretvaluehere"
+        ));
         assert!(!InputHistory::should_store(
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         ));

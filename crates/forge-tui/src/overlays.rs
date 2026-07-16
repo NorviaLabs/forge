@@ -10,7 +10,9 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Widget}
 
 #[derive(Debug, Clone)]
 pub enum Overlay {
-    Hitl { payload: HitlPayload },
+    Hitl {
+        payload: HitlPayload,
+    },
     Slash {
         filter: String,
         selected: usize,
@@ -90,6 +92,10 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
         PaletteItem {
             cmd: "/model refresh".into(),
             desc: "Refresh model catalogs".into(),
+        },
+        PaletteItem {
+            cmd: "/effort".into(),
+            desc: "Set model reasoning effort".into(),
         },
         PaletteItem {
             cmd: "/tools".into(),
@@ -326,6 +332,13 @@ impl Overlay {
     }
 
     pub fn connect_picker(items: Vec<ConnectProfileItem>) -> Self {
+        let mut items = items;
+        items.sort_by(|a, b| {
+            a.title
+                .to_ascii_lowercase()
+                .cmp(&b.title.to_ascii_lowercase())
+                .then_with(|| a.id.cmp(&b.id))
+        });
         Self::ConnectPicker { selected: 0, items }
     }
 
@@ -344,7 +357,9 @@ impl Overlay {
 
     pub fn move_sel(&mut self, delta: i32) {
         match self {
-            Self::Slash { selected, items, .. } => {
+            Self::Slash {
+                selected, items, ..
+            } => {
                 if items.is_empty() {
                     return;
                 }
@@ -367,7 +382,9 @@ impl Overlay {
                 let n = filtered_models_len(pid, items).max(1) as i32;
                 *model_selected = ((*model_selected as i32 + delta).rem_euclid(n)) as usize;
             }
-            Self::ConnectPicker { selected, items, .. } => {
+            Self::ConnectPicker {
+                selected, items, ..
+            } => {
                 if items.is_empty() {
                     return;
                 }
@@ -427,15 +444,27 @@ pub enum OverlayAction {
     /// Insert into input
     InsertInput(String),
     /// Model selection
-    SelectModel { provider: String, model: String },
+    SelectModel {
+        provider: String,
+        model: String,
+    },
     /// Submit API key from ConnectApiKey overlay
-    ConnectSubmitKey { profile_id: String, api_key: String },
+    ConnectSubmitKey {
+        profile_id: String,
+        api_key: String,
+    },
     /// Poll / continue OAuth from ConnectOauth overlay (Enter)
-    ConnectCompleteOauth { profile_id: String },
+    ConnectCompleteOauth {
+        profile_id: String,
+    },
     /// Use env key without typing (secondary action on API key modal)
-    ConnectUseEnv { profile_id: String },
+    ConnectUseEnv {
+        profile_id: String,
+    },
     /// User picked a connect profile from the picker
-    ConnectPickProfile { profile_id: String },
+    ConnectPickProfile {
+        profile_id: String,
+    },
 }
 
 pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
@@ -465,8 +494,7 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             {
                 if !providers.is_empty() {
                     let n = providers.len() as i32;
-                    *provider_selected =
-                        ((*provider_selected as i32 - 1).rem_euclid(n)) as usize;
+                    *provider_selected = ((*provider_selected as i32 - 1).rem_euclid(n)) as usize;
                     *model_selected = 0;
                 }
             }
@@ -482,8 +510,7 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             {
                 if !providers.is_empty() {
                     let n = providers.len() as i32;
-                    *provider_selected =
-                        ((*provider_selected as i32 + 1).rem_euclid(n)) as usize;
+                    *provider_selected = ((*provider_selected as i32 + 1).rem_euclid(n)) as usize;
                     *model_selected = 0;
                 }
             }
@@ -724,10 +751,7 @@ impl Widget for OverlayWidget<'_> {
                 let block = Block::default()
                     .borders(Borders::ALL)
                     .border_style(theme::border())
-                    .title(Span::styled(
-                        format!(" / {filter} "),
-                        theme::brand(),
-                    ));
+                    .title(Span::styled(format!(" / {filter} "), theme::brand()));
                 let inner = block.inner(r);
                 block.render(r, buf);
                 let list_items: Vec<ListItem> = items
@@ -809,9 +833,7 @@ impl Widget for OverlayWidget<'_> {
                 } else {
                     format!("{}/{}", (*model_selected + 1).min(total), total)
                 };
-                let title = format!(
-                    " model picker · provider {pid} · {page}{prov_hint} "
-                );
+                let title = format!(" model picker · provider {pid} · {page}{prov_hint} ");
                 List::new(list_items)
                     .block(
                         Block::default()
@@ -834,11 +856,7 @@ impl Widget for OverlayWidget<'_> {
                 let n = key_input.chars().count();
                 let env_line = env_hint
                     .as_ref()
-                    .map(|h| {
-                        format!(
-                            "\n[e] Use existing env ({h}) — only while field is empty"
-                        )
-                    })
+                    .map(|h| format!("\n[e] Use existing env ({h}) — only while field is empty"))
                     .unwrap_or_default();
                 let body = format!(
                     "Connect: {title}\n\n1. Sign in and copy your API key:\n   {url}\n\n2. Paste API key below (masked):\n   [{masked}]\n   ({n} chars)\n\n[Enter] Connect    [Esc] Cancel{env_line}"
@@ -886,8 +904,7 @@ impl Widget for OverlayWidget<'_> {
                             theme::text()
                         };
                         let url = it.auth_url.as_deref().unwrap_or("");
-                        let mut row =
-                            format!("{marker}{} ({})  {url}", it.title, it.auth_mode);
+                        let mut row = format!("{marker}{} ({})  {url}", it.title, it.auth_mode);
                         while row.chars().count() < 48 {
                             row.push(' ');
                         }
@@ -932,13 +949,14 @@ mod tests {
             let res = parse_slash(&it.cmd).expect("is slash");
             match it.cmd.as_str() {
                 "/resume" => assert!(res.is_err(), "bare /resume needs uuid"),
-                other => assert!(
-                    res.is_ok(),
-                    "palette cmd {other} should parse: {res:?}"
-                ),
+                other => assert!(res.is_ok(), "palette cmd {other} should parse: {res:?}"),
             }
         }
-        assert!(items.len() >= 14, "expected full command list, got {}", items.len());
+        assert!(
+            items.len() >= 14,
+            "expected full command list, got {}",
+            items.len()
+        );
     }
 
     #[test]
@@ -1101,6 +1119,41 @@ mod tests {
             OverlayAction::ConnectCompleteOauth {
                 profile_id: "xai".into()
             }
+        );
+    }
+
+    #[test]
+    fn connect_picker_sorts_providers_alphabetically() {
+        let overlay = Overlay::connect_picker(vec![
+            ConnectProfileItem {
+                id: "xai".into(),
+                title: "xAI Grok".into(),
+                auth_mode: "oauth".into(),
+                auth_url: None,
+            },
+            ConnectProfileItem {
+                id: "anthropic".into(),
+                title: "Anthropic".into(),
+                auth_mode: "api_key".into(),
+                auth_url: None,
+            },
+            ConnectProfileItem {
+                id: "openai".into(),
+                title: "OpenAI".into(),
+                auth_mode: "api_key".into(),
+                auth_url: None,
+            },
+        ]);
+
+        let Overlay::ConnectPicker { items, .. } = overlay else {
+            panic!("expected connect picker");
+        };
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            ["anthropic", "openai", "xai"]
         );
     }
 }

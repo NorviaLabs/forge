@@ -24,10 +24,7 @@ impl SidebarModel {
         Self::from_session_with_activity(session, &[])
     }
 
-    pub fn from_session_with_activity(
-        session: &AgentSession,
-        activity_lines: &[String],
-    ) -> Self {
+    pub fn from_session_with_activity(session: &AgentSession, activity_lines: &[String]) -> Self {
         let _ = activity_lines; // sidebar no longer renders activity, but keep API stable
         let id = session.session_id.to_string();
         let short = if id.len() > 8 { &id[..8] } else { &id };
@@ -66,10 +63,7 @@ impl Widget for SidebarWidget<'_> {
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(6),
-                Constraint::Min(4),
-            ])
+            .constraints([Constraint::Length(6), Constraint::Min(4)])
             .split(inner);
 
         // Session
@@ -101,7 +95,9 @@ impl Widget for SidebarWidget<'_> {
         } else {
             // Reserve 2 lines for optional worktree.
             let reserve = if self.model.worktree.is_some() { 2 } else { 0 };
-            let max = (chunks[1].height as usize).saturating_sub(1 + reserve).max(1);
+            let max = (chunks[1].height as usize)
+                .saturating_sub(1 + reserve)
+                .max(1);
             for t in self.model.tools.iter().take(max) {
                 let s: String = t.chars().take(32).collect();
                 tool_lines.push(Line::from(Span::styled(s, theme::muted())));
@@ -154,7 +150,7 @@ mod tests {
             tool_calls: vec![],
             usage: None,
             thinking: None,
-    }]));
+        }]));
         let mut s = AgentSession::create(
             LoopConfig {
                 max_turns: 3,
@@ -164,7 +160,7 @@ mod tests {
                 enable_context_lifecycle: true,
                 enable_governance: true,
 
-            ..Default::default()
+                ..Default::default()
             },
             model,
             ToolRegistry::new(),

@@ -43,12 +43,12 @@ pub fn split_areas_full(
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // status
-            Constraint::Min(3),    // main
-            Constraint::Length(fb), // feedback
-            Constraint::Length(qh), // message queue
+            Constraint::Length(1),       // status
+            Constraint::Min(3),          // main
+            Constraint::Length(fb),      // feedback
+            Constraint::Length(qh),      // message queue
             Constraint::Length(input_h), // input (multi-line)
-            Constraint::Length(1), // footer
+            Constraint::Length(1),       // footer
         ])
         .split(area);
 

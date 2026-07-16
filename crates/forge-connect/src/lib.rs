@@ -3,6 +3,7 @@
 mod anthropic;
 mod auth;
 mod catalog;
+mod oauth_dispatch;
 mod oauth_openai_codex;
 mod oauth_xai;
 mod ollama;

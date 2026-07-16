@@ -23,7 +23,7 @@ mod tests {
             tool_calls: vec![],
             usage: None,
             thinking: None,
-    }]));
+        }]));
         let session = AgentSession::create(
             LoopConfig {
                 max_turns: 4,
@@ -33,7 +33,7 @@ mod tests {
                 enable_context_lifecycle: true,
                 enable_governance: true,
 
-            ..Default::default()
+                ..Default::default()
             },
             model,
             ToolRegistry::new(),
@@ -94,7 +94,10 @@ mod tests {
                 || text.contains("suggestions"),
             "frame missing autocomplete:\n{text}"
         );
-        assert!(text.contains("/con") || text.contains("con"), "input missing:\n{text}");
+        assert!(
+            text.contains("/con") || text.contains("con"),
+            "input missing:\n{text}"
+        );
         assert!(
             text.contains('▶') || text.contains('█') || text.contains("/con"),
             "expected selection marker or input:\n{text}"
@@ -116,8 +119,14 @@ mod tests {
                 }
             }
         }
-        assert!(found_sel_bg, "selected suggestion must have ACCENT background");
-        assert!(found_caret_bg, "block cursor must have solid TEXT background");
+        assert!(
+            found_sel_bg,
+            "selected suggestion must have ACCENT background"
+        );
+        assert!(
+            found_caret_bg,
+            "block cursor must have solid TEXT background"
+        );
     }
 
     #[tokio::test]

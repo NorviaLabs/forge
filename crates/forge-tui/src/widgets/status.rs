@@ -15,7 +15,9 @@ pub enum BusyPhase {
     #[default]
     Idle,
     Model,
-    Tool { name: String },
+    Tool {
+        name: String,
+    },
     Connect,
     Other(String),
 }
@@ -123,15 +125,13 @@ impl Widget for StatusBar<'_> {
 
         // Calm single line: connect · state · model · ctx · wt (no product title)
         let (conn_label, conn_style) = if self.model.provider_connected {
-            let who = self
-                .model
-                .connect_profile
-                .as_deref()
-                .unwrap_or(if self.model.provider.eq_ignore_ascii_case("mock") {
+            let who = self.model.connect_profile.as_deref().unwrap_or(
+                if self.model.provider.eq_ignore_ascii_case("mock") {
                     "mock"
                 } else {
                     "ready"
-                });
+                },
+            );
             (format!(" ● connected:{who} "), theme::ok())
         } else {
             (
@@ -145,10 +145,7 @@ impl Widget for StatusBar<'_> {
             Span::styled("· ", theme::dim()),
             Span::styled(format!("{label} "), style),
             Span::styled("· ", theme::dim()),
-            Span::styled(
-                format!("{provider}/{model_disp} "),
-                theme::text(),
-            ),
+            Span::styled(format!("{provider}/{model_disp} "), theme::text()),
         ];
 
         if self.model.worktree_on {
@@ -170,14 +167,8 @@ pub fn session_chrome_lines(m: &StatusModel) -> Vec<String> {
         format!("provider={}", m.provider),
         format!("model={}", m.model),
         format!("ctx={:.1}%", m.ctx_pct * 100.0),
-        format!(
-            "worktree={}",
-            if m.worktree_on { "on" } else { "off" }
-        ),
-        format!(
-            "profile={}",
-            m.connect_profile.as_deref().unwrap_or("—")
-        ),
+        format!("worktree={}", if m.worktree_on { "on" } else { "off" }),
+        format!("profile={}", m.connect_profile.as_deref().unwrap_or("—")),
         format!(
             "connected={}",
             if m.provider_connected { "yes" } else { "no" }
