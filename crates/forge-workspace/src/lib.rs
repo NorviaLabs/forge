@@ -109,9 +109,7 @@ impl WorktreeManager {
             }
         }
         std::fs::create_dir_all(&self.worktree_dir)?;
-        let wt_path = self
-            .worktree_dir
-            .join(self.session_id.to_string());
+        let wt_path = self.worktree_dir.join(self.session_id.to_string());
         // capture base
         self.base_branch = self
             .git(&["rev-parse", "--abbrev-ref", "HEAD"])
@@ -127,14 +125,7 @@ impl WorktreeManager {
 
         // git worktree add -b branch path
         let path_s = wt_path.display().to_string();
-        self.git(&[
-            "worktree",
-            "add",
-            "-b",
-            &self.branch,
-            &path_s,
-            "HEAD",
-        ])?;
+        self.git(&["worktree", "add", "-b", &self.branch, &path_s, "HEAD"])?;
         self.path = Some(wt_path.clone());
         Ok(wt_path)
     }
@@ -167,12 +158,7 @@ impl WorktreeManager {
             return Err(e);
         }
         // remove worktree
-        let _ = self.git(&[
-            "worktree",
-            "remove",
-            "--force",
-            &wt.display().to_string(),
-        ]);
+        let _ = self.git(&["worktree", "remove", "--force", &wt.display().to_string()]);
         let _ = self.git(&["branch", "-D", &self.branch]);
         self.path = None;
         Ok(())
@@ -182,12 +168,7 @@ impl WorktreeManager {
         let Some(ref wt) = self.path else {
             return Ok(());
         };
-        let _ = self.git(&[
-            "worktree",
-            "remove",
-            "--force",
-            &wt.display().to_string(),
-        ]);
+        let _ = self.git(&["worktree", "remove", "--force", &wt.display().to_string()]);
         let _ = self.git(&["branch", "-D", &self.branch]);
         self.path = None;
         Ok(())

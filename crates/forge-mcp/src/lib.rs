@@ -105,12 +105,14 @@ impl McpStdioClient {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
-        let stdin = child.stdin.take().ok_or_else(|| {
-            McpError::Protocol("missing stdin".into())
-        })?;
-        let stdout = child.stdout.take().ok_or_else(|| {
-            McpError::Protocol("missing stdout".into())
-        })?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| McpError::Protocol("missing stdin".into()))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| McpError::Protocol("missing stdout".into()))?;
         let client = Self {
             child,
             stdin: Mutex::new(stdin),
@@ -227,10 +229,7 @@ impl McpStdioClient {
 
     pub async fn call_tool(&self, name: &str, args: Value) -> Result<ToolOutput, McpError> {
         let result = self
-            .request(
-                "tools/call",
-                json!({ "name": name, "arguments": args }),
-            )
+            .request("tools/call", json!({ "name": name, "arguments": args }))
             .await?;
         let is_error = result
             .get("isError")
@@ -240,10 +239,7 @@ impl McpStdioClient {
             .get("content")
             .map(|c| c.to_string())
             .unwrap_or_else(|| result.to_string());
-        Ok(ToolOutput {
-            content,
-            is_error,
-        })
+        Ok(ToolOutput { content, is_error })
     }
 
     pub fn server_id(&self) -> &str {

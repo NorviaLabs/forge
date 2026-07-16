@@ -47,8 +47,8 @@ struct TavilyResult {
 
 /// Parse Tavily JSON (unit-testable without network).
 pub fn parse_tavily_response(body: &str, limit: u32) -> Result<Vec<SearchHit>, SearchError> {
-    let parsed: TavilyResponse =
-        serde_json::from_str(body).map_err(|e| SearchError::Provider(format!("invalid json: {e}")))?;
+    let parsed: TavilyResponse = serde_json::from_str(body)
+        .map_err(|e| SearchError::Provider(format!("invalid json: {e}")))?;
     let mut hits: Vec<SearchHit> = parsed
         .results
         .into_iter()
@@ -92,18 +92,13 @@ impl SearchBackend for TavilyBackend {
             "include_answer": false,
         });
 
-        let resp = client
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| {
-                if e.is_timeout() {
-                    SearchError::Timeout
-                } else {
-                    SearchError::Http(e.to_string())
-                }
-            })?;
+        let resp = client.post(&url).json(&body).send().await.map_err(|e| {
+            if e.is_timeout() {
+                SearchError::Timeout
+            } else {
+                SearchError::Http(e.to_string())
+            }
+        })?;
 
         let status = resp.status();
         let text = resp

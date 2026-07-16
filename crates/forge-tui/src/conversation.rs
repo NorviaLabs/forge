@@ -27,10 +27,10 @@ pub enum ChatItem {
     User {
         text: String,
     },
-    /// Model chain-of-thought / reasoning (muted; collapses to "Thought for Xs").
+    /// Model reasoning, shown in the conversation as muted text.
     Thinking {
         text: String,
-        /// When set, thinking is finished — default UI is "Thought for Xs".
+        /// When set, thinking is finished and includes its elapsed-time summary.
         duration_secs: Option<f64>,
     },
     Assistant {
@@ -82,15 +82,13 @@ pub enum StreamWaitPhase {
 #[derive(Debug, Clone)]
 pub struct ConversationViewOpts {
     pub busy: bool,
-    /// Expand completed thinking blocks (streaming thinking always expands).
-    pub thinking_expanded: bool,
     /// Expand the last tool card's full output.
     pub tool_expanded: bool,
     /// Compact density (fewer blank lines, tighter wrap).
     pub compact: bool,
     /// Spinner + elapsed status while waiting or thinking (answer not started).
     pub stream_wait: Option<(StreamWaitPhase, f64)>,
-    /// When thinking just finished (answer streaming), collapse to "Thought for Xs".
+    /// When thinking just finished (answer streaming), show its elapsed time.
     pub stream_thought_secs: Option<f64>,
 }
 
@@ -98,7 +96,6 @@ impl Default for ConversationViewOpts {
     fn default() -> Self {
         Self {
             busy: false,
-            thinking_expanded: false,
             tool_expanded: false,
             compact: false,
             stream_wait: None,
@@ -118,10 +115,15 @@ fn spinner_frame() -> &'static str {
     SPINNER[((ms / 80) as usize) % SPINNER.len()]
 }
 
-/// Format elapsed seconds in 0.1s increments: `0.0s`, `1.2s`, …
+/// Format elapsed time in 0.1s increments through 5s, then whole seconds.
 pub fn format_elapsed_tenths(secs: f64) -> String {
-    let tenths = (secs.max(0.0) * 10.0).floor() / 10.0;
-    format!("{tenths:.1}s")
+    let secs = secs.max(0.0);
+    if secs < 5.0 {
+        let tenths = (secs * 10.0).floor() / 10.0;
+        format!("{tenths:.1}s")
+    } else {
+        format!("{}s", secs.floor() as u64)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -177,12 +179,7 @@ impl ConversationModel {
             }
         }
         for e in events {
-            if e.kind == "context_reset" {
-                items.push(ChatItem::Banner {
-                    text: format!("Context handoff · {}", e.detail),
-                    kind: BannerKind::Warn,
-                });
-            } else if e.kind == "hitl_wait" {
+            if e.kind == "hitl_wait" {
                 items.push(ChatItem::Banner {
                     text: format!("Approval needed · {}", e.detail),
                     kind: BannerKind::Warn,
@@ -346,63 +343,26 @@ impl ConversationModel {
                         lines.push(Line::from(""));
                     }
                 }
-                // Thinking: while live → body streams; when done → "Thought for Xs"
+                // Thinking: always show the body; completed thoughts also show duration.
                 ChatItem::Thinking {
                     text,
                     duration_secs,
                 } => {
-                    // Live thinking: show body whenever we have text and aren't forcing collapse
-                    let live = self.opts.busy && duration_secs.is_none() && !text.is_empty();
-                    let finished = duration_secs.is_some();
-                    let expanded =
-                        live || self.opts.thinking_expanded || (self.opts.busy && !finished);
-
-                    if finished && !self.opts.thinking_expanded {
-                        // Default completed state: replace body with duration summary
-                        let secs = duration_secs.unwrap_or(0.0);
+                    // Providers sometimes wrap the entire reasoning summary
+                    // in Markdown bold markers. Thinking already has its own
+                    // visual treatment, so do not expose those delimiters.
+                    let text = text.replace("**", "");
+                    for l in wrap(&text, width.saturating_sub(3)) {
                         lines.push(Line::from(vec![
                             Span::styled("· ", theme::dim()),
-                            Span::styled(
-                                format!("Thought for {}", format_elapsed_tenths(secs)),
-                                theme::muted().add_modifier(Modifier::ITALIC),
-                            ),
-                            Span::styled("  ⌃ Ctrl+T", theme::dim()),
+                            Span::styled(l, theme::muted().add_modifier(Modifier::ITALIC)),
                         ]));
-                    } else if expanded {
-                        for l in wrap(text, width.saturating_sub(3)) {
-                            lines.push(Line::from(vec![
-                                Span::styled("· ", theme::dim()),
-                                Span::styled(l, theme::muted().add_modifier(Modifier::ITALIC)),
-                            ]));
-                        }
-                        if finished {
-                            let secs = duration_secs.unwrap_or(0.0);
-                            lines.push(Line::from(Span::styled(
-                                format!("  Thought for {} · ⌄ Ctrl+T", format_elapsed_tenths(secs)),
-                                theme::dim(),
-                            )));
-                        }
-                    } else if finished {
-                        let secs = duration_secs.unwrap_or(0.0);
-                        lines.push(Line::from(vec![
-                            Span::styled("· ", theme::dim()),
-                            Span::styled(
-                                format!("Thought for {}", format_elapsed_tenths(secs)),
-                                theme::muted().add_modifier(Modifier::ITALIC),
-                            ),
-                            Span::styled("  ⌃ Ctrl+T", theme::dim()),
-                        ]));
-                    } else {
-                        let preview: String = text.chars().take(56).collect();
-                        let more = if text.chars().count() > 56 { "…" } else { "" };
-                        lines.push(Line::from(vec![
-                            Span::styled("· ", theme::dim()),
-                            Span::styled(
-                                format!("{preview}{more}"),
-                                theme::muted().add_modifier(Modifier::ITALIC),
-                            ),
-                            Span::styled("  ⌃ Ctrl+T", theme::dim()),
-                        ]));
+                    }
+                    if let Some(secs) = duration_secs {
+                        lines.push(Line::from(Span::styled(
+                            format!("  Thought for {}", format_elapsed_tenths(*secs)),
+                            theme::dim(),
+                        )));
                     }
                     if gap {
                         lines.push(Line::from(""));
@@ -410,13 +370,22 @@ impl ConversationModel {
                 }
                 // Response: teal left bar — no "Forge"
                 ChatItem::Assistant { text } => {
-                    let parts = wrap(text, width.saturating_sub(3));
-                    for (i, l) in parts.iter().enumerate() {
+                    let parts = assistant_lines(text, width.saturating_sub(3));
+                    let long_response = parts.len() > 3;
+                    if long_response {
+                        lines.push(horizontal_rule(width));
+                    }
+                    for (i, line) in parts.into_iter().enumerate() {
                         let gutter = if i == 0 { "▍ " } else { "  " };
-                        lines.push(Line::from(vec![
-                            Span::styled(gutter, theme::brand().add_modifier(Modifier::BOLD)),
-                            Span::styled(l.clone(), theme::text()),
-                        ]));
+                        let mut spans = vec![Span::styled(
+                            gutter,
+                            theme::brand().add_modifier(Modifier::BOLD),
+                        )];
+                        spans.extend(line.spans);
+                        lines.push(Line::from(spans));
+                    }
+                    if long_response {
+                        lines.push(horizontal_rule(width));
                     }
                     if gap {
                         lines.push(Line::from(""));
@@ -552,7 +521,7 @@ impl ConversationModel {
                 }
             }
         }
-        // Live wait / think status: spinner + label + elapsed (0.1s steps)
+        // Live wait / think status: spinner + label + elapsed.
         if let Some((phase, elapsed)) = self.opts.stream_wait {
             let spin = spinner_frame();
             let t = format_elapsed_tenths(elapsed);
@@ -572,6 +541,10 @@ impl ConversationModel {
         }
         lines
     }
+}
+
+fn horizontal_rule(width: usize) -> Line<'static> {
+    Line::from(Span::styled("─".repeat(width), theme::dim()))
 }
 
 #[allow(dead_code)] // kept for optional tool/diff UI later
@@ -674,6 +647,204 @@ fn wrap(s: &str, width: usize) -> Vec<String> {
     out
 }
 
+/// Render assistant Markdown without pulling a full Markdown parser into the
+/// TUI. Fenced code gets token coloring; inline backtick sections get a code
+/// color while ordinary prose keeps the normal conversation style.
+fn assistant_lines(text: &str, width: usize) -> Vec<Line<'static>> {
+    let width = width.max(1);
+    let mut out = Vec::new();
+    let mut language = String::new();
+    let mut fenced = false;
+
+    for raw in text.lines() {
+        let trimmed = raw.trim_start();
+        if let Some(fence) = trimmed.strip_prefix("```") {
+            if fenced {
+                out.push(Line::from(Span::styled(
+                    "  ```".to_string(),
+                    theme::code_punctuation(),
+                )));
+                fenced = false;
+                language.clear();
+            } else {
+                language = fence.trim().to_ascii_lowercase();
+                let label = if language.is_empty() {
+                    "  ```".to_string()
+                } else {
+                    format!("  ```{language}")
+                };
+                out.push(Line::from(Span::styled(label, theme::code_punctuation())));
+                fenced = true;
+            }
+            continue;
+        }
+
+        if fenced {
+            let chunks = if raw.is_empty() {
+                vec![String::new()]
+            } else {
+                raw.chars()
+                    .collect::<Vec<_>>()
+                    .chunks(width)
+                    .map(|chunk| chunk.iter().collect())
+                    .collect()
+            };
+            for chunk in chunks {
+                out.push(Line::from(highlight_code_line(&chunk, &language)));
+            }
+        } else {
+            let wrapped = wrap(raw, width);
+            for line in wrapped {
+                out.push(Line::from(highlight_inline_code(&line)));
+            }
+        }
+    }
+
+    if out.is_empty() {
+        out.push(Line::from(String::new()));
+    }
+    out
+}
+
+fn highlight_inline_code(line: &str) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let mut rest = line;
+    while let Some(start) = rest.find('`') {
+        if start > 0 {
+            spans.push(Span::styled(rest[..start].to_string(), theme::text()));
+        }
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('`') else {
+            spans.push(Span::styled(after.to_string(), theme::tool()));
+            return spans;
+        };
+        spans.push(Span::styled(
+            after[..end].to_string(),
+            theme::tool().add_modifier(Modifier::BOLD),
+        ));
+        rest = &after[end + 1..];
+    }
+    if !rest.is_empty() {
+        spans.push(Span::styled(rest.to_string(), theme::text()));
+    }
+    if spans.is_empty() {
+        spans.push(Span::styled(String::new(), theme::text()));
+    }
+    spans
+}
+
+fn highlight_code_line(line: &str, language: &str) -> Vec<Span<'static>> {
+    let keywords = match language {
+        "rust" | "rs" => &[
+            "as", "async", "await", "const", "crate", "else", "enum", "fn", "for", "if", "impl",
+            "in", "let", "match", "mod", "move", "pub", "ref", "return", "self", "Self", "struct",
+            "trait", "type", "use", "where", "while",
+        ][..],
+        "python" | "py" => &[
+            "and", "as", "assert", "class", "def", "elif", "else", "False", "for", "from", "if",
+            "import", "in", "is", "None", "not", "or", "pass", "return", "True", "while", "with",
+        ][..],
+        "javascript" | "js" | "typescript" | "ts" => &[
+            "async",
+            "await",
+            "class",
+            "const",
+            "else",
+            "export",
+            "false",
+            "for",
+            "from",
+            "function",
+            "if",
+            "import",
+            "interface",
+            "let",
+            "new",
+            "null",
+            "return",
+            "true",
+            "type",
+            "var",
+            "while",
+        ][..],
+        "json" | "yaml" | "yml" => &["true", "false", "null"][..],
+        "bash" | "sh" | "shell" => &[
+            "case", "do", "done", "elif", "else", "esac", "fi", "for", "function", "if", "in",
+            "then", "while",
+        ][..],
+        _ => &[
+            "fn", "function", "if", "else", "for", "while", "return", "class", "const", "let",
+            "true", "false", "null",
+        ][..],
+    };
+
+    let chars: Vec<char> = line.chars().collect();
+    let mut spans = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if (c == '/' && chars.get(i + 1) == Some(&'/'))
+            || (c == '#' && matches!(language, "python" | "py" | "bash" | "sh" | "shell"))
+            || (c == '-' && chars.get(i + 1) == Some(&'-'))
+        {
+            let comment: String = chars[i..].iter().collect();
+            spans.push(Span::styled(comment, theme::code_comment()));
+            break;
+        }
+        if c == '"' || c == '\'' || c == '`' {
+            let quote = c;
+            let start = i;
+            i += 1;
+            while i < chars.len() {
+                if chars[i] == '\\' {
+                    i += 2;
+                    continue;
+                }
+                let closed = chars[i] == quote;
+                i += 1;
+                if closed {
+                    break;
+                }
+            }
+            spans.push(Span::styled(
+                chars[start..i.min(chars.len())].iter().collect::<String>(),
+                theme::code_string(),
+            ));
+            continue;
+        }
+        if c.is_ascii_digit() {
+            let start = i;
+            i += 1;
+            while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.') {
+                i += 1;
+            }
+            spans.push(Span::styled(
+                chars[start..i].iter().collect::<String>(),
+                theme::code_number(),
+            ));
+            continue;
+        }
+        if c.is_ascii_alphabetic() || c == '_' {
+            let start = i;
+            i += 1;
+            while i < chars.len() && (chars[i].is_ascii_alphanumeric() || chars[i] == '_') {
+                i += 1;
+            }
+            let word: String = chars[start..i].iter().collect();
+            let style = if keywords.contains(&word.as_str()) {
+                theme::code_keyword()
+            } else {
+                theme::text()
+            };
+            spans.push(Span::styled(word, style));
+            continue;
+        }
+        spans.push(Span::styled(c.to_string(), theme::code_punctuation()));
+        i += 1;
+    }
+    spans
+}
+
 pub struct ConversationWidget<'a> {
     pub model: &'a ConversationModel,
 }
@@ -687,11 +858,14 @@ impl Widget for ConversationWidget<'_> {
         let scroll = if self.model.follow {
             max_scroll
         } else {
-            self.model.scroll.min(max_scroll)
+            // `model.scroll` is the distance from the bottom, so scrolling up
+            // moves the viewport back from the live tail of the conversation.
+            max_scroll.saturating_sub(self.model.scroll.min(max_scroll))
         };
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(theme::border())
+            .style(theme::panel())
             .title(Span::raw(""));
         Paragraph::new(lines)
             .block(block)
@@ -715,6 +889,7 @@ mod tests {
                 name: None,
                 thinking: None,
                 thinking_duration_secs: None,
+                tool_calls: vec![],
             },
             Message {
                 role: MessageRole::User,
@@ -723,14 +898,16 @@ mod tests {
                 name: None,
                 thinking: None,
                 thinking_duration_secs: None,
+                tool_calls: vec![],
             },
             Message {
                 role: MessageRole::Assistant,
                 content: "yo".into(),
                 tool_call_id: None,
                 name: None,
-                thinking: Some("ponder".into()),
+                thinking: Some("**ponder**".into()),
                 thinking_duration_secs: Some(2.4),
+                tool_calls: vec![],
             },
             Message {
                 role: MessageRole::Tool,
@@ -739,6 +916,7 @@ mod tests {
                 name: Some("read_file".into()),
                 thinking: None,
                 thinking_duration_secs: None,
+                tool_calls: vec![],
             },
         ];
         let m = ConversationModel::from_messages(
@@ -787,13 +965,17 @@ mod tests {
             "expected thought duration summary:\n{rendered}"
         );
         assert!(
-            !rendered.contains("ponder"),
-            "finished thinking body should be hidden by default:\n{rendered}"
+            rendered.contains("ponder"),
+            "finished thinking body should remain visible:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("**"),
+            "Markdown bold delimiters should not leak into thoughts:\n{rendered}"
         );
     }
 
     #[test]
-    fn thinking_collapses_in_lines() {
+    fn thinking_remains_visible_in_lines() {
         let msgs = vec![Message {
             role: MessageRole::Assistant,
             content: "ans".into(),
@@ -801,13 +983,13 @@ mod tests {
             name: None,
             thinking: Some("long thinking text here that should collapse".into()),
             thinking_duration_secs: Some(3.1),
+            tool_calls: vec![],
         }];
         let m = ConversationModel::from_messages(
             &msgs,
             &[],
             SessionStatus::Running,
             ConversationViewOpts {
-                thinking_expanded: false,
                 ..Default::default()
             },
         );
@@ -828,9 +1010,39 @@ mod tests {
             "expected Thought for summary, got:\n{text}"
         );
         assert!(
-            !text.contains("long thinking"),
-            "body should be replaced:\n{text}"
+            text.contains("long thinking"),
+            "thinking body should remain visible:\n{text}"
         );
+    }
+
+    #[test]
+    fn long_assistant_responses_get_horizontal_rules() {
+        let msgs = vec![Message {
+            role: MessageRole::Assistant,
+            content: "line one\nline two\nline three\nline four".into(),
+            tool_call_id: None,
+            name: None,
+            thinking: None,
+            thinking_duration_secs: None,
+            tool_calls: vec![],
+        }];
+        let model = ConversationModel::from_messages(
+            &msgs,
+            &[],
+            SessionStatus::Running,
+            ConversationViewOpts::default(),
+        );
+        let rendered = model
+            .lines()
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(rendered.iter().filter(|line| line.contains('─')).count(), 2);
     }
 
     #[test]
@@ -842,6 +1054,7 @@ mod tests {
             name: Some("read_file".into()),
             thinking: None,
             thinking_duration_secs: None,
+            tool_calls: vec![],
         }];
         let m = ConversationModel::from_messages(
             &msgs,
@@ -875,7 +1088,10 @@ mod tests {
         assert_eq!(format_elapsed_tenths(0.0), "0.0s");
         assert_eq!(format_elapsed_tenths(0.14), "0.1s");
         assert_eq!(format_elapsed_tenths(1.29), "1.2s");
-        assert_eq!(format_elapsed_tenths(12.99), "12.9s");
+        assert_eq!(format_elapsed_tenths(4.99), "4.9s");
+        assert_eq!(format_elapsed_tenths(5.0), "5s");
+        assert_eq!(format_elapsed_tenths(5.99), "5s");
+        assert_eq!(format_elapsed_tenths(12.99), "12s");
     }
 
     #[test]

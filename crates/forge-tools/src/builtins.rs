@@ -95,8 +95,8 @@ impl Tool for WriteFileTool {
     }
 
     async fn call(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
-        let a: WriteFileArgs = serde_json::from_value(args)
-            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        let a: WriteFileArgs =
+            serde_json::from_value(args).map_err(|e| ToolError::Execution(e.to_string()))?;
         let path = ctx.resolve_path(&a.path)?;
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await?;
@@ -382,10 +382,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let ctx = ToolContext::new(dir.path().to_path_buf());
         WriteFileTool
-            .call(
-                &ctx,
-                json!({"path": "n/a.txt", "content": "xyz"}),
-            )
+            .call(&ctx, json!({"path": "n/a.txt", "content": "xyz"}))
             .await
             .unwrap();
         let out = ReadFileTool

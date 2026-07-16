@@ -7,7 +7,9 @@ mod wire;
 
 pub use litellm_client::LiteLlmModelClient;
 pub use mock::MockModelClient;
-pub use normalize::{complete_result_from_value, forge_messages_to_wire, tools_to_openai_functions};
+pub use normalize::{
+    complete_result_from_value, forge_messages_to_wire, tools_to_openai_functions,
+};
 pub use wire::{error_codes, CompleteParams, WireEnvelope, WireErrorBody, WireType, WIRE_VERSION};
 
 use async_trait::async_trait;
@@ -86,7 +88,7 @@ pub fn client_from_config(cfg: &Config) -> Result<Box<dyn ModelClient>, ModelErr
             tool_calls: vec![],
             usage: None,
             thinking: None,
-    }]))),
+        }]))),
         ModelProviderKind::Litellm => {
             let client = LiteLlmModelClient::from_config(cfg)?;
             Ok(Box::new(client))
@@ -106,7 +108,7 @@ mod tests {
             tool_calls: vec![],
             usage: None,
             thinking: None,
-    }]);
+        }]);
         let resp = client
             .complete(ModelRequest {
                 messages: vec![Message {
@@ -116,7 +118,8 @@ mod tests {
                     name: None,
                     thinking: None,
                     thinking_duration_secs: None,
-}],
+                    tool_calls: vec![],
+                }],
                 tools: vec![],
                 model: "mock".into(),
             })
@@ -136,7 +139,7 @@ mod tests {
             }],
             usage: None,
             thinking: None,
-    }]);
+        }]);
         let resp = client
             .complete(ModelRequest {
                 messages: vec![],

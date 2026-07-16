@@ -3,11 +3,11 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use forge_config::WebSearchConfig;
 use forge_context::{estimate_messages_tokens, estimate_tokens, ContextEngine};
 use forge_durable::{new_session_id, Journal};
 use forge_governance::{AuditEvent, Governance};
 use forge_model::{ModelClient, ModelRequest, StreamEventTx};
-use forge_config::WebSearchConfig;
 use forge_tools::{
     default_builtins_with_web_search, ToolContext, ToolError, ToolRegistry, ValidationBudget,
 };
@@ -95,9 +95,7 @@ impl SessionTokenUsage {
     pub fn record_response(&mut self, usage: Option<&Usage>, thinking: Option<&str>) {
         self.model_steps = self.model_steps.saturating_add(1);
         if let Some(u) = usage {
-            self.prompt_tokens = self
-                .prompt_tokens
-                .saturating_add(u.prompt_tokens as u64);
+            self.prompt_tokens = self.prompt_tokens.saturating_add(u.prompt_tokens as u64);
             self.completion_tokens = self
                 .completion_tokens
                 .saturating_add(u.completion_tokens as u64);
@@ -201,7 +199,8 @@ impl AgentSession {
                 name: None,
                 thinking: None,
                 thinking_duration_secs: None,
-}],
+                tool_calls: vec![],
+            }],
             events: vec![],
             pending_hitl: None,
             active_model: String::new(),
@@ -239,7 +238,8 @@ impl AgentSession {
             name: None,
             thinking: None,
             thinking_duration_secs: None,
-}];
+            tool_calls: vec![],
+        }];
         for u in &state.user_messages {
             messages.push(Message {
                 role: MessageRole::User,
@@ -248,7 +248,8 @@ impl AgentSession {
                 name: None,
                 thinking: None,
                 thinking_duration_secs: None,
-});
+                tool_calls: vec![],
+            });
         }
         for (id, tr) in &state.tool_results {
             messages.push(Message {
@@ -258,7 +259,8 @@ impl AgentSession {
                 name: Some(tr.name.clone()),
                 thinking: None,
                 thinking_duration_secs: None,
-});
+                tool_calls: vec![],
+            });
         }
         for incomplete in &state.incomplete_intents {
             warn!(call_id = %incomplete, "incomplete tool intent on resume (fail-safe)");
@@ -272,9 +274,9 @@ impl AgentSession {
             worktree = Some(wt);
         }
 
-        let pending_hitl = state.pending_hitl.and_then(|v| {
-            serde_json::from_value::<HitlPayload>(v).ok()
-        });
+        let pending_hitl = state
+            .pending_hitl
+            .and_then(|v| serde_json::from_value::<HitlPayload>(v).ok());
 
         Ok(Self {
             session_id,
@@ -348,8 +350,8 @@ impl AgentSession {
                 }
             }
         }
-        let context_tokens_est = estimate_messages_tokens(&self.messages)
-            .saturating_add(thinking_in_context_est);
+        let context_tokens_est =
+            estimate_messages_tokens(&self.messages).saturating_add(thinking_in_context_est);
         let context_capacity = self.context.config.capacity_tokens.max(1);
         let context_pct = (context_tokens_est as f64 / context_capacity as f64) * 100.0;
         TokenUsageReport {
@@ -382,10 +384,7 @@ impl AgentSession {
                 "  model steps:              {} ({} with usage metadata)",
                 api.model_steps, api.model_calls_with_usage
             ),
-            format!(
-                "  thinking tokens (est.):   {}",
-                api.thinking_tokens_est
-            ),
+            format!("  thinking tokens (est.):   {}", api.thinking_tokens_est),
             String::new(),
             "In-context estimate (~4 chars/token)".into(),
             format!(
@@ -395,15 +394,16 @@ impl AgentSession {
             format!("  system:    {}", r.system_tokens_est),
             format!("  user:      {}", r.user_tokens_est),
             format!("  assistant: {}", r.assistant_tokens_est),
-            format!("  tool:      {} ({} tool msgs)", r.tool_tokens_est, r.tool_message_count),
+            format!(
+                "  tool:      {} ({} tool msgs)",
+                r.tool_tokens_est, r.tool_message_count
+            ),
             format!("  thinking:  {}", r.thinking_in_context_est),
             format!("  messages:  {}", r.message_count),
         ];
         if api.model_steps > 0 && api.model_calls_with_usage == 0 {
             lines.push(String::new());
-            lines.push(
-                "Note: provider did not return usage; API totals may stay 0.".into(),
-            );
+            lines.push("Note: provider did not return usage; API totals may stay 0.".into());
         }
         lines
     }
@@ -424,7 +424,8 @@ impl AgentSession {
             name: None,
             thinking: None,
             thinking_duration_secs: None,
-});
+            tool_calls: vec![],
+        });
         if self.context.goal.is_empty() {
             self.context.goal = text.chars().take(200).collect();
         }
@@ -483,7 +484,7 @@ impl AgentSession {
             .as_ref()
             .map(|t| !t.trim().is_empty())
             .unwrap_or(false);
-        if !last.text.is_empty() || has_thinking {
+        if !last.text.is_empty() || has_thinking || !last.tool_calls.is_empty() {
             self.messages.push(Message {
                 role: MessageRole::Assistant,
                 content: last.text.clone(),
@@ -491,7 +492,8 @@ impl AgentSession {
                 name: None,
                 thinking: last.thinking.clone().filter(|t| !t.trim().is_empty()),
                 thinking_duration_secs: None,
-});
+                tool_calls: last.tool_calls.clone(),
+            });
             if has_thinking {
                 if let Some(ref th) = last.thinking {
                     self.events.push(TurnEvent {
@@ -646,7 +648,8 @@ impl AgentSession {
                         name: Some(call.name.clone()),
                         thinking: None,
                         thinking_duration_secs: None,
-});
+                        tool_calls: vec![],
+                    });
                     return Ok(None);
                 }
                 PolicyDecision::Hitl => {
@@ -673,7 +676,7 @@ impl AgentSession {
                         tool_calls: vec![call.clone()],
                         usage: None,
                         thinking: None,
-}));
+                    }));
                 }
                 PolicyDecision::Allow => {}
             }
@@ -690,9 +693,7 @@ impl AgentSession {
         {
             Ok(mut output) => {
                 if self.enable_context {
-                    output.content = self
-                        .context
-                        .maybe_offload_tool_content(output.content)?;
+                    output.content = self.context.maybe_offload_tool_content(output.content)?;
                 }
                 self.journal
                     .append_tool_result(self.session_id, call, &output)
@@ -704,7 +705,8 @@ impl AgentSession {
                     name: Some(call.name.clone()),
                     thinking: None,
                     thinking_duration_secs: None,
-});
+                    tool_calls: vec![],
+                });
                 self.events.push(TurnEvent {
                     kind: "tool".into(),
                     detail: format!("{} -> {} chars", call.name, output.content.len()),
@@ -722,7 +724,8 @@ impl AgentSession {
                     name: Some(call.name.clone()),
                     thinking: None,
                     thinking_duration_secs: None,
-});
+                    tool_calls: vec![],
+                });
                 self.events.push(TurnEvent {
                     kind: "validation".into(),
                     detail: msg,
@@ -743,7 +746,8 @@ impl AgentSession {
                     name: Some(call.name.clone()),
                     thinking: None,
                     thinking_duration_secs: None,
-});
+                    tool_calls: vec![],
+                });
             }
         }
         Ok(None)
@@ -755,10 +759,7 @@ impl AgentSession {
         decision: HitlDecision,
         actor: &str,
     ) -> Result<(), LoopError> {
-        let payload = self
-            .pending_hitl
-            .clone()
-            .ok_or(LoopError::NoPendingHitl)?;
+        let payload = self.pending_hitl.clone().ok_or(LoopError::NoPendingHitl)?;
         let dec = match decision {
             HitlDecision::Approve => "approve",
             HitlDecision::Deny => "deny",
@@ -790,7 +791,8 @@ impl AgentSession {
                 name: Some(payload.tool),
                 thinking: None,
                 thinking_duration_secs: None,
-});
+                tool_calls: vec![],
+            });
             self.pending_hitl = None;
             self.status = SessionStatus::Running;
             self.journal
@@ -859,7 +861,8 @@ impl AgentSession {
                     name: Some(call.name.clone()),
                     thinking: None,
                     thinking_duration_secs: None,
-});
+                    tool_calls: vec![],
+                });
             }
             Err(e) => {
                 let output = ToolOutput {
@@ -961,7 +964,7 @@ mod tests {
             tool_calls: vec![],
             usage: None,
             thinking: None,
-    }]));
+        }]));
         let s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
             .await
             .unwrap();
@@ -980,7 +983,7 @@ mod tests {
             tool_calls: vec![],
             usage: None,
             thinking: None,
-    }]));
+        }]));
         let mut cfg = base_cfg(dir.path());
         cfg.web_search.enabled = false;
         let s = AgentSession::create(cfg, model, ToolRegistry::new())
@@ -997,7 +1000,7 @@ mod tests {
             tool_calls: vec![],
             usage: None,
             thinking: None,
-    }]));
+        }]));
         let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
             .await
             .unwrap();
@@ -1020,19 +1023,25 @@ mod tests {
                 }],
                 usage: None,
                 thinking: None,
-},
+            },
             ModelResponse {
                 text: "read ok".into(),
                 tool_calls: vec![],
                 usage: None,
                 thinking: None,
-},
+            },
         ]));
         let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
             .await
             .unwrap();
         let r = s.run_user_message("read it").await.unwrap();
         assert_eq!(r.text, "read ok");
+        let assistant = s
+            .messages
+            .iter()
+            .find(|m| m.role == MessageRole::Assistant)
+            .unwrap();
+        assert_eq!(assistant.tool_calls[0].id, "1");
     }
 
     #[tokio::test]
@@ -1047,7 +1056,7 @@ mod tests {
             }],
             usage: None,
             thinking: None,
-    }]));
+        }]));
         let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
             .await
             .unwrap();
@@ -1068,7 +1077,7 @@ mod tests {
             tool_calls: vec![],
             usage: None,
             thinking: None,
-    }]));
+        }]));
         let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
             .await
             .unwrap();
@@ -1095,13 +1104,13 @@ mod tests {
                 }],
                 usage: None,
                 thinking: None,
-},
+            },
             ModelResponse {
                 text: "done".into(),
                 tool_calls: vec![],
                 usage: None,
                 thinking: None,
-},
+            },
         ]));
         let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
             .await
@@ -1118,17 +1127,15 @@ mod tests {
     #[tokio::test]
     async fn accumulates_api_token_usage_for_cost() {
         let dir = tempdir().unwrap();
-        let model = Arc::new(MockModelClient::script(vec![
-            ModelResponse {
-                text: "one".into(),
-                tool_calls: vec![],
-                usage: Some(Usage {
-                    prompt_tokens: 10,
-                    completion_tokens: 3,
-                }),
-                thinking: Some("hmm".into()),
-            },
-        ]));
+        let model = Arc::new(MockModelClient::script(vec![ModelResponse {
+            text: "one".into(),
+            tool_calls: vec![],
+            usage: Some(Usage {
+                prompt_tokens: 10,
+                completion_tokens: 3,
+            }),
+            thinking: Some("hmm".into()),
+        }]));
         // Need two responses if we call twice — first call only.
         let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
             .await
@@ -1144,7 +1151,9 @@ mod tests {
         assert!(lines.iter().any(|l| l.contains("completion/output")));
         assert!(lines.iter().any(|l| l.contains("In-context estimate")));
         assert!(
-            !lines.iter().any(|l| l.contains("$0") || l.contains("USD") || l.contains("price")),
+            !lines
+                .iter()
+                .any(|l| l.contains("$0") || l.contains("USD") || l.contains("price")),
             "should not report dollar cost: {lines:?}"
         );
         let report = s.token_usage_report();

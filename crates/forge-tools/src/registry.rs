@@ -134,10 +134,7 @@ mod tests {
         let reg = ToolRegistry::new();
         let ctx = ToolContext::new(std::env::current_dir().unwrap());
         let mut b = ValidationBudget::with_default_max();
-        let err = reg
-            .call(&ctx, "nope", json!({}), &mut b)
-            .await
-            .unwrap_err();
+        let err = reg.call(&ctx, "nope", json!({}), &mut b).await.unwrap_err();
         assert!(matches!(err, ToolError::Unknown(_)));
     }
 
