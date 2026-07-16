@@ -28,9 +28,7 @@ impl ConnectRegistry {
 
     pub fn get(&self, id: &str) -> Option<&ConnectProfile> {
         let id = id.trim();
-        self.profiles
-            .iter()
-            .find(|p| p.id.eq_ignore_ascii_case(id))
+        self.profiles.iter().find(|p| p.id.eq_ignore_ascii_case(id))
     }
 
     pub fn ids(&self) -> Vec<&str> {

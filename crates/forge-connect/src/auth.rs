@@ -93,6 +93,9 @@ impl OauthTokens {
 
 /// Parse `YYYY-MM-DDTHH:MM:SSZ` (the shape we write from OAuth).
 fn parse_rfc3339_approx(s: &str) -> Option<std::time::SystemTime> {
+    if let Ok(epoch) = s.trim().parse::<u64>() {
+        return Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(epoch));
+    }
     let s = s.trim().trim_end_matches('Z');
     let (date, time) = s.split_once('T')?;
     let mut d = date.split('-');
@@ -142,7 +145,11 @@ pub struct OauthPending {
 impl OauthPending {
     /// Local stub for tests / offline fixture (not a real xAI session).
     pub fn start_stub(profile_id: &str, auth_server: &str) -> Self {
-        let suffix = profile_id.chars().take(3).collect::<String>().to_uppercase();
+        let suffix = profile_id
+            .chars()
+            .take(3)
+            .collect::<String>()
+            .to_uppercase();
         Self {
             profile_id: profile_id.into(),
             verification_uri: format!("{auth_server}/oauth2/device"),
@@ -168,6 +175,16 @@ impl OauthPending {
     }
 
     pub fn operator_instructions(&self) -> String {
+        if self.profile_id == crate::openai_codex::PROFILE_ID {
+            return format!(
+                "Sign in with ChatGPT for Codex subscription access:\n\
+  1. Open {uri}\n\
+  2. Enter code: {code}\n\
+  3. Return here — Forge will continue automatically",
+                uri = self.open_url(),
+                code = self.user_code,
+            );
+        }
         format!(
             "Sign in with your xAI account (same OAuth as Grok Build):\n\
   1. Open {uri}\n\
