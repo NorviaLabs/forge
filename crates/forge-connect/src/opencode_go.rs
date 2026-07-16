@@ -74,11 +74,9 @@ Check network access to {base}."
     if (200..300).contains(&status) {
         Ok(())
     } else if status == 401 || status == 403 {
-        Err(
-            "OpenCode Go rejected the API key (unauthorized). \
+        Err("OpenCode Go rejected the API key (unauthorized). \
 Get a key from https://opencode.ai/auth and run `forge connect opencode_go --key …`."
-                .into(),
-        )
+            .into())
     } else {
         Err(format!(
             "OpenCode Go key verification failed (HTTP {status}). Try again or check account status."
@@ -175,7 +173,14 @@ mod tests {
     #[test]
     fn profile_uses_go_endpoint() {
         let p = opencode_go_profile();
-        assert!(p.default_base_url.as_deref().unwrap().contains("/zen/go/v1"));
-        assert!(!p.default_models.iter().any(|m| m.starts_with("openrouter/")));
+        assert!(p
+            .default_base_url
+            .as_deref()
+            .unwrap()
+            .contains("/zen/go/v1"));
+        assert!(!p
+            .default_models
+            .iter()
+            .any(|m| m.starts_with("openrouter/")));
     }
 }

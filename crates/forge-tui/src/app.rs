@@ -6,9 +6,8 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{
-    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind,
-    KeyModifiers, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
+    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers,
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -22,33 +21,33 @@ use forge_connect::{
 use forge_core::{AgentSession, ApplyOutcome, LoopError};
 use forge_tools::{GitTool, Tool, ToolContext};
 use forge_types::{HitlDecision, ModelStreamEvent};
-use serde_json::json;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
+use serde_json::json;
 use thiserror::Error;
 
 use crate::activity::{ActivityFeed, ActivityKind};
 use crate::commands::{help_text, parse_slash, SlashCommand, SttAction, WorktreeAction};
-use crate::msg_queue::MessageQueue;
-use crate::stt::{
-    is_ptt_key, resolve_stt_api_key, transcribe_wav_file, LiveRecorder, SttSettings, SttSpeed,
-};
 use crate::conversation::{
     BannerKind, ChatItem, ConversationModel, ConversationViewOpts, StreamWaitPhase,
 };
-use crate::layout::split_areas_full;
 use crate::history::InputHistory;
 use crate::layout::is_too_small;
+use crate::layout::split_areas_full;
+use crate::msg_queue::MessageQueue;
 use crate::overlays::{
     filter_palette, handle_overlay_key, models_from_catalog, ConnectProfileItem, Key as OverlayKey,
     Overlay, OverlayAction, OverlayWidget, PaletteItem,
 };
 use crate::sidebar::SidebarModel;
+use crate::stt::{
+    is_ptt_key, resolve_stt_api_key, transcribe_wav_file, LiveRecorder, SttSettings, SttSpeed,
+};
+use crate::theme;
 use crate::widgets::{
     classify_operator_error, session_chrome_lines, BusyPhase, FeedbackBar, FeedbackModel,
     FeedbackSeverity, FooterBar, FooterModel, InputBar, InputModel, StatusBar, StatusModel,
 };
-use crate::theme;
 use crate::ExitCode;
 use ratatui::widgets::Paragraph;
 
@@ -371,10 +370,8 @@ impl TuiApp {
             // Only switch the active model when it still looks like the forge default
             // (don't clobber an explicit --model / test runtime label).
             let cur = self.runtime.model_label.as_str();
-            let looks_default = cur.is_empty()
-                || cur == "openai/gpt-4.1-mini"
-                || cur == "m"
-                || cur == "mock";
+            let looks_default =
+                cur.is_empty() || cur == "openai/gpt-4.1-mini" || cur == "m" || cur == "mock";
             if looks_default {
                 if let Some(model) = profile.default_model() {
                     self.runtime.model_label = model.to_string();
@@ -382,7 +379,8 @@ impl TuiApp {
                     self.session.set_active_model(model);
                 }
             } else if self.session.active_model.is_empty() {
-                self.session.set_active_model(self.runtime.model_label.clone());
+                self.session
+                    .set_active_model(self.runtime.model_label.clone());
             }
             self.status_message = format!("restored {} credentials", profile.id);
         }
@@ -409,8 +407,15 @@ impl TuiApp {
         self.feedback = FeedbackModel::default();
         self.status_message.clear();
         // Replace prior error banners — don't accumulate red clutter in the chat.
-        self.ui_banners
-            .retain(|b| !matches!(b, ChatItem::Banner { kind: BannerKind::Error, .. }));
+        self.ui_banners.retain(|b| {
+            !matches!(
+                b,
+                ChatItem::Banner {
+                    kind: BannerKind::Error,
+                    ..
+                }
+            )
+        });
         self.ui_banners.push(ChatItem::Banner {
             text: msg.clone(),
             kind: BannerKind::Error,
@@ -422,8 +427,15 @@ impl TuiApp {
 
     /// Drop ephemeral error UI (call on new user turn / Esc).
     fn clear_error_chrome(&mut self) {
-        self.ui_banners
-            .retain(|b| !matches!(b, ChatItem::Banner { kind: BannerKind::Error, .. }));
+        self.ui_banners.retain(|b| {
+            !matches!(
+                b,
+                ChatItem::Banner {
+                    kind: BannerKind::Error,
+                    ..
+                }
+            )
+        });
         if self.feedback.severity == FeedbackSeverity::Error {
             self.feedback = FeedbackModel::default();
             self.status_message.clear();
@@ -553,11 +565,16 @@ impl TuiApp {
             if api_key.is_none() && !oauth_fixture {
                 if needs_tui_api_key_prompt(&self.connect_registry, profile_id) {
                     let p = self.connect_registry.get(profile_id);
-                    let title = p.map(|x| x.title.clone()).unwrap_or_else(|| profile_id.clone());
+                    let title = p
+                        .map(|x| x.title.clone())
+                        .unwrap_or_else(|| profile_id.clone());
                     let auth_url = p.and_then(|x| x.auth_url.clone());
                     let env_hint = p.and_then(|x| {
                         x.api_key_env.iter().find_map(|e| {
-                            std::env::var(e).ok().filter(|v| !v.is_empty()).map(|_| e.clone())
+                            std::env::var(e)
+                                .ok()
+                                .filter(|v| !v.is_empty())
+                                .map(|_| e.clone())
                         })
                     });
                     self.overlay = Some(Overlay::connect_api_key(
@@ -731,12 +748,7 @@ impl TuiApp {
         }
     }
 
-    fn finish_connect(
-        &mut self,
-        profile_id: &str,
-        api_key: Option<String>,
-        oauth_fixture: bool,
-    ) {
+    fn finish_connect(&mut self, profile_id: &str, api_key: Option<String>, oauth_fixture: bool) {
         self.handle_connect(ConnectAction::Connect {
             profile_id: profile_id.into(),
             api_key,
@@ -871,7 +883,13 @@ impl TuiApp {
         let mut profiles = svc.connected_profiles().unwrap_or_default();
         // Also try the currently-selected provider/model prefix so `/model refresh` gives a
         // useful error line even when the profile isn't "connected" yet.
-        let prefix = self.runtime.model_label.split('/').next().unwrap_or("").trim();
+        let prefix = self
+            .runtime
+            .model_label
+            .split('/')
+            .next()
+            .unwrap_or("")
+            .trim();
         if !prefix.is_empty() {
             let pid = match prefix {
                 "opencode-go" => "opencode_go",
@@ -1058,10 +1076,7 @@ impl TuiApp {
             return;
         }
         if self.session.pending_hitl.is_some() {
-            self.set_feedback(
-                FeedbackSeverity::Warn,
-                "resolve HITL before dequeuing",
-            );
+            self.set_feedback(FeedbackSeverity::Warn, "resolve HITL before dequeuing");
             return;
         }
         let Some(next) = self.message_queue.dequeue() else {
@@ -1081,10 +1096,7 @@ impl TuiApp {
         );
         self.set_feedback(
             FeedbackSeverity::Info,
-            format!(
-                "sending dequeued · {} remaining",
-                self.message_queue.len()
-            ),
+            format!("sending dequeued · {} remaining", self.message_queue.len()),
         );
         // Start the turn the same way as a normal Enter send (no dispatch recursion).
         self.clear_error_chrome();
@@ -1112,7 +1124,10 @@ impl TuiApp {
                 self.push_toast(format!("cancelled #{one_based}"));
                 self.set_feedback(
                     FeedbackSeverity::Ok,
-                    format!("cancelled queued #{one_based} · {} left", self.message_queue.len()),
+                    format!(
+                        "cancelled queued #{one_based} · {} left",
+                        self.message_queue.len()
+                    ),
                 );
                 self.push_activity(
                     ActivityKind::System,
@@ -1188,10 +1203,7 @@ impl TuiApp {
                     self.set_feedback(FeedbackSeverity::Ok, msg);
                 }
                 None => {
-                    self.set_feedback(
-                        FeedbackSeverity::Warn,
-                        "usage: /stt speed fast|normal|slow",
-                    );
+                    self.set_feedback(FeedbackSeverity::Warn, "usage: /stt speed fast|normal|slow");
                 }
             },
         }
@@ -1318,9 +1330,7 @@ impl TuiApp {
         if let Some(term) = terminal.as_deref_mut() {
             let _ = term.draw(|f| self.draw(f));
         }
-        self.session
-            .resolve_hitl(decision.clone(), "tui")
-            .await?;
+        self.session.resolve_hitl(decision.clone(), "tui").await?;
         self.status_message = match decision {
             HitlDecision::Approve => "approved".into(),
             HitlDecision::Deny => "denied".into(),
@@ -1428,10 +1438,7 @@ impl TuiApp {
 
         // Build a message from the staged changeset (stat + name-status + optional LLM).
         let name_status = self
-            .run_git_tool(
-                "diff",
-                vec!["--cached".into(), "--name-status".into()],
-            )
+            .run_git_tool("diff", vec!["--cached".into(), "--name-status".into()])
             .await
             .map(|o| o.content)
             .unwrap_or_default();
@@ -1499,19 +1506,16 @@ impl TuiApp {
             Ok(o) if o.is_error => {
                 // Commit succeeded; push failed — surface both.
                 self.report_error(&format!("committed but push failed: {}", o.content.trim()));
-                self.notices = vec![
-                    format!("Committed: {message}"),
-                    "Push failed:".into(),
-                ]
-                .into_iter()
-                .chain(
-                    o.content
-                        .lines()
-                        .map(|s| s.to_string())
-                        .filter(|s| !s.is_empty())
-                        .take(12),
-                )
-                .collect();
+                self.notices = vec![format!("Committed: {message}"), "Push failed:".into()]
+                    .into_iter()
+                    .chain(
+                        o.content
+                            .lines()
+                            .map(|s| s.to_string())
+                            .filter(|s| !s.is_empty())
+                            .take(12),
+                    )
+                    .collect();
             }
             Err(e) => {
                 self.report_error(&format!("committed but push failed: {e}"));
@@ -1523,10 +1527,7 @@ impl TuiApp {
                     FeedbackSeverity::Ok,
                     format!("synced · {}", truncate_one_line(&message, 40)),
                 );
-                let mut lines = vec![
-                    format!("Commit: {message}"),
-                    "Push: ok".into(),
-                ];
+                let mut lines = vec![format!("Commit: {message}"), "Push: ok".into()];
                 if !stat.trim().is_empty() {
                     lines.push(String::new());
                     lines.push("Changeset:".into());
@@ -1541,11 +1542,7 @@ impl TuiApp {
                     }
                 }
                 self.notices = lines;
-                self.push_activity(
-                    ActivityKind::Tool,
-                    FeedbackSeverity::Ok,
-                    "git push",
-                );
+                self.push_activity(ActivityKind::Tool, FeedbackSeverity::Ok, "git push");
             }
         }
         if let Some(term) = terminal.as_deref_mut() {
@@ -1628,7 +1625,11 @@ Reply with ONLY the commit message line.\n\n\
 
     pub fn refresh_status_model(&self) -> StatusModel {
         let id = self.session.session_id.to_string();
-        let short = if id.len() > 8 { id[..8].to_string() } else { id };
+        let short = if id.len() > 8 {
+            id[..8].to_string()
+        } else {
+            id
+        };
         StatusModel {
             status: self.session.status,
             session_short: short,
@@ -1703,10 +1704,8 @@ Reply with ONLY the commit message line.\n\n\
         conv.scroll = self.chat_scroll;
         if self.busy && self.pending_prompt.is_none() {
             // Stream thinking body + answer (status line covers wait/think timers)
-            conv = conv.with_streaming_preview(
-                self.stream_thinking.clone(),
-                self.stream_preview.clone(),
-            );
+            conv = conv
+                .with_streaming_preview(self.stream_thinking.clone(), self.stream_preview.clone());
         }
         frame.render_widget(
             crate::conversation::ConversationWidget { model: &conv },
@@ -1787,8 +1786,10 @@ Reply with ONLY the commit message line.\n\n\
                         .map(|(i, it)| {
                             let marker = if i == idx { "▶ " } else { "  " };
                             let raw = format!("{marker}{:<14} {}", it.cmd, it.desc);
-                            let mut row =
-                                raw.chars().take(inner_w.saturating_sub(1)).collect::<String>();
+                            let mut row = raw
+                                .chars()
+                                .take(inner_w.saturating_sub(1))
+                                .collect::<String>();
                             while row.chars().count() < inner_w.saturating_sub(1) {
                                 row.push(' ');
                             }
@@ -1897,9 +1898,7 @@ Reply with ONLY the commit message line.\n\n\
                     return Ok(());
                 }
                 // Toggle fallback when the terminal never emits Release.
-                KeyEventKind::Press
-                    if self.ptt_recording.is_some() && !self.ptt_release_seen =>
-                {
+                KeyEventKind::Press if self.ptt_recording.is_some() && !self.ptt_release_seen => {
                     self.ptt_stop_and_transcribe().await;
                     return Ok(());
                 }
@@ -1958,9 +1957,7 @@ Reply with ONLY the commit message line.\n\n\
                     self.push_toast("allowed for session");
                 }
                 OverlayAction::HitlDeny => {
-                    self.session
-                        .resolve_hitl(HitlDecision::Deny, "tui")
-                        .await?;
+                    self.session.resolve_hitl(HitlDecision::Deny, "tui").await?;
                     self.overlay = None;
                     self.push_toast("denied");
                 }
@@ -2141,8 +2138,7 @@ Reply with ONLY the commit message line.\n\n\
                 let suggestions = self.slash_suggestions();
                 if self.input.text.starts_with('/') && !suggestions.is_empty() {
                     let n = suggestions.len();
-                    self.slash_suggest_idx =
-                        (self.slash_suggest_idx + n - 1) % n;
+                    self.slash_suggest_idx = (self.slash_suggest_idx + n - 1) % n;
                 } else if let Some(text) = self.history.up(&self.input.text) {
                     self.apply_history_text(text);
                 }
@@ -2191,11 +2187,7 @@ Reply with ONLY the commit message line.\n\n\
     pub async fn dispatch_line(&mut self, line: &str) -> Result<(), TuiError> {
         if let Some(cmd_res) = parse_slash(line) {
             let slash_name = line.split_whitespace().next().unwrap_or("/");
-            self.push_activity(
-                ActivityKind::Slash,
-                FeedbackSeverity::Info,
-                slash_name,
-            );
+            self.push_activity(ActivityKind::Slash, FeedbackSeverity::Info, slash_name);
             match cmd_res {
                 Ok(SlashCommand::Quit) => {
                     self.should_quit = true;
@@ -2323,14 +2315,11 @@ Reply with ONLY the commit message line.\n\n\
                         self.overlay = Some(ov);
                         self.status_message = "pick a model (live catalog when connected)".into();
                     } else {
-                        let prefix = self
-                            .connect_profile
-                            .as_deref()
-                            .and_then(|id| {
-                                self.connect_registry
-                                    .get(id)
-                                    .map(|p| p.litellm_provider_prefix.as_str())
-                            });
+                        let prefix = self.connect_profile.as_deref().and_then(|id| {
+                            self.connect_registry
+                                .get(id)
+                                .map(|p| p.litellm_provider_prefix.as_str())
+                        });
                         let id = normalize_model_id(
                             provider.as_deref().unwrap_or(""),
                             model.as_deref(),
@@ -2398,9 +2387,8 @@ Reply with ONLY the commit message line.\n\n\
                     }
                 }
                 Ok(SlashCommand::Resume { session_id }) => {
-                    let msg = format!(
-                        "To resume {session_id}, restart: forge --resume {session_id}"
-                    );
+                    let msg =
+                        format!("To resume {session_id}, restart: forge --resume {session_id}");
                     self.status_message = "resume requires CLI restart".into();
                     self.notices = vec![msg];
                 }
@@ -2430,10 +2418,7 @@ Reply with ONLY the commit message line.\n\n\
                     if n_tools == 0 {
                         lines.push("(no tool results yet)".into());
                     } else {
-                        lines.insert(
-                            1,
-                            format!("{n_tools} tool results · {n_write} write-like"),
-                        );
+                        lines.insert(1, format!("{n_tools} tool results · {n_write} write-like"));
                     }
                     if let Some(wt) = self.session.worktree_status() {
                         lines.push(format!("worktree: {wt}"));
@@ -2579,6 +2564,11 @@ Reply with ONLY the commit message line.\n\n\
             return Ok(());
         };
 
+        // Refresh OAuth close to expiry and recycle the worker with the current token.
+        if let Some(profile_id) = self.connect_profile.clone() {
+            self.apply_connect_credentials(&profile_id);
+        }
+
         self.busy = true;
         self.busy_phase = BusyPhase::Model;
         self.stream_preview.clear();
@@ -2614,7 +2604,8 @@ Reply with ONLY the commit message line.\n\n\
 
             let model = self.session.model_client();
             let (tx, rx) = std::sync::mpsc::channel::<ModelStreamEvent>();
-            let handle = tokio::spawn(async move { model.complete_with_stream(req, Some(tx)).await });
+            let handle =
+                tokio::spawn(async move { model.complete_with_stream(req, Some(tx)).await });
 
             // Pump stream events + redraw until the model call finishes
             loop {
@@ -2879,7 +2870,10 @@ fn truncate_one_line(s: &str, max: usize) -> String {
     if t.chars().count() <= max {
         t.to_string()
     } else {
-        format!("{}…", t.chars().take(max.saturating_sub(1)).collect::<String>())
+        format!(
+            "{}…",
+            t.chars().take(max.saturating_sub(1)).collect::<String>()
+        )
     }
 }
 
@@ -2900,11 +2894,7 @@ fn heuristic_commit_message(name_status: &str) -> String {
         if path.is_empty() {
             continue;
         }
-        let base = path
-            .rsplit('/')
-            .next()
-            .unwrap_or(path.as_str())
-            .to_string();
+        let base = path.rsplit('/').next().unwrap_or(path.as_str()).to_string();
         if names.len() < 3 && !names.iter().any(|n| n == &base) {
             names.push(base);
         }
@@ -3067,7 +3057,7 @@ mod tests {
             tool_calls: vec![],
             usage: None,
             thinking: None,
-    }]));
+        }]));
         let session = AgentSession::create(
             LoopConfig {
                 max_turns: 4,
@@ -3077,7 +3067,7 @@ mod tests {
                 enable_context_lifecycle: true,
                 enable_governance: true,
 
-            ..Default::default()
+                ..Default::default()
             },
             model,
             ToolRegistry::new(),
@@ -3204,7 +3194,9 @@ mod tests {
                 version: "0.12.0".into(),
             },
         );
-        app.dispatch_line("/model openai/gpt-4.1-mini").await.unwrap();
+        app.dispatch_line("/model openai/gpt-4.1-mini")
+            .await
+            .unwrap();
         assert_eq!(app.runtime.model_label, "openai/gpt-4.1-mini");
         assert_eq!(app.session.active_model, "openai/gpt-4.1-mini");
         assert!(app.pending_prompt.is_none());
@@ -3335,7 +3327,10 @@ mod tests {
         app.dispatch_line("/status").await.unwrap();
         assert!(
             app.status_message.contains("ctx")
-                || app.notices.iter().any(|l| l.contains("session") || l.contains("model=")),
+                || app
+                    .notices
+                    .iter()
+                    .any(|l| l.contains("session") || l.contains("model=")),
             "status={} notices={:?}",
             app.status_message,
             app.notices
@@ -3372,7 +3367,9 @@ mod tests {
         );
         app.dispatch_line("/connect opencode_go").await.unwrap();
         match &app.overlay {
-            Some(Overlay::ConnectApiKey { profile_id, title, .. }) => {
+            Some(Overlay::ConnectApiKey {
+                profile_id, title, ..
+            }) => {
                 assert_eq!(profile_id, "opencode_go");
                 assert!(title.contains("OpenCode"));
             }
@@ -3401,7 +3398,9 @@ mod tests {
         app.dispatch_line("/connect xai").await.unwrap();
         std::env::remove_var("FORGE_CONNECT_OAUTH_STUB");
         match &app.overlay {
-            Some(Overlay::ConnectOauth { profile_id, title, .. }) => {
+            Some(Overlay::ConnectOauth {
+                profile_id, title, ..
+            }) => {
                 assert_eq!(profile_id, "xai");
                 assert!(title.contains("Grok") || title.contains("xAI"));
             }
@@ -3543,7 +3542,10 @@ mod tests {
             .unwrap();
         assert!(
             app.status_message.contains("ctx")
-                || app.notices.iter().any(|l| l.contains("model=") || l.contains("provider=")),
+                || app
+                    .notices
+                    .iter()
+                    .any(|l| l.contains("model=") || l.contains("provider=")),
             "status={} notices={:?}",
             app.status_message,
             app.notices
@@ -3873,7 +3875,10 @@ mod tests {
         // Ensure no restored connect profile from developer machine credentials.
         app.connect_profile = None;
         app.connect_store = CredentialStore::new(
-            tempfile::TempDir::new().unwrap().path().join("empty-creds.toml"),
+            tempfile::TempDir::new()
+                .unwrap()
+                .path()
+                .join("empty-creds.toml"),
         );
         app.refresh_connection_ui();
         assert!(!app.is_provider_connected());
@@ -3936,7 +3941,10 @@ mod tests {
         );
         app.connect_profile = None;
         app.connect_store = CredentialStore::new(
-            tempfile::TempDir::new().unwrap().path().join("empty-creds.toml"),
+            tempfile::TempDir::new()
+                .unwrap()
+                .path()
+                .join("empty-creds.toml"),
         );
         app.refresh_connection_ui();
         let backend = TestBackend::new(100, 24);
@@ -4069,7 +4077,10 @@ mod tests {
         );
         app.report_error("upstream returned 429 rate limit exceeded");
         // Sticky red status strip intentionally not used for errors.
-        assert!(app.feedback.is_empty(), "errors must not stick in feedback strip");
+        assert!(
+            app.feedback.is_empty(),
+            "errors must not stick in feedback strip"
+        );
         assert!(app.status_message.is_empty());
         assert!(
             app.ui_banners.iter().any(|b| matches!(
@@ -4148,7 +4159,9 @@ mod tests {
             .map(|i| i.summary.clone())
             .collect();
         assert!(
-            recent.iter().any(|s| s.contains("rate") || s.contains("429") || s.contains("Model")),
+            recent
+                .iter()
+                .any(|s| s.contains("rate") || s.contains("429") || s.contains("Model")),
             "recent={recent:?}"
         );
         assert_eq!(app.busy_phase, BusyPhase::Idle);
@@ -4194,11 +4207,7 @@ mod tests {
                 version: "0.10.0".into(),
             },
         );
-        app.push_activity(
-            ActivityKind::Tool,
-            FeedbackSeverity::Ok,
-            "web_search done",
-        );
+        app.push_activity(ActivityKind::Tool, FeedbackSeverity::Ok, "web_search done");
         app.report_error("429 rate limit");
         let backend = TestBackend::new(120, 30);
         let mut term = Terminal::new(backend).unwrap();

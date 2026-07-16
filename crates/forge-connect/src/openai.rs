@@ -59,11 +59,9 @@ Check the key at https://platform.openai.com/api-keys."
     if (200..300).contains(&status) {
         Ok(())
     } else if status == 401 || status == 403 {
-        Err(
-            "OpenAI rejected the API key (unauthorized). \
+        Err("OpenAI rejected the API key (unauthorized). \
 Create a key at https://platform.openai.com/api-keys."
-                .into(),
-        )
+            .into())
     } else {
         Err(format!("OpenAI key verification failed (HTTP {status})."))
     }

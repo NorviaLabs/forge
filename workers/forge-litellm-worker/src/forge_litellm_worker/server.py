@@ -15,6 +15,10 @@ import traceback
 from typing import Any, TextIO
 
 from forge_litellm_worker.normalize import complete_result_from_litellm
+from forge_litellm_worker.codex_subscription import (
+    complete_stream as complete_codex_subscription_stream,
+    is_codex_model,
+)
 
 WIRE_V = 1
 
@@ -144,6 +148,8 @@ def _is_opencode_zen_model(model: str) -> bool:
 def _credential_hint(model: str) -> str | None:
     """Detect missing / fixture credentials before calling upstream."""
     m = (model or "").lower()
+    if is_codex_model(m):
+        return None
     if m.startswith("xai/") or m.startswith("grok"):
         key = os.environ.get("XAI_API_KEY") or os.environ.get("GROK_CODE_XAI_API_KEY")
         if not key or not key.strip():
@@ -423,6 +429,15 @@ def _message_thinking(message: Any) -> str:
 
 
 def handle_complete(mid: str, params: dict[str, Any]) -> None:
+    if is_codex_model(str(params.get("model") or "")):
+        try:
+            result = complete_codex_subscription_stream(params, lambda _text: None, lambda _text: None)
+            respond(mid, "complete", result)
+        except Exception as e:  # noqa: BLE001
+            code, msg = _map_upstream_error(e)
+            fail(mid, code, msg)
+        return
+
     try:
         import litellm
     except ImportError:
@@ -525,6 +540,19 @@ def _finalize_tool_calls(acc: dict[int, dict[str, Any]]) -> list[dict[str, Any]]
 
 def handle_complete_stream(mid: str, params: dict[str, Any]) -> None:
     """Stream thinking_delta + text_delta events, then a final complete_stream response."""
+    if is_codex_model(str(params.get("model") or "")):
+        try:
+            result = complete_codex_subscription_stream(
+                params,
+                lambda text: _emit_text_delta(mid, text),
+                lambda text: _emit_thinking_delta(mid, text),
+            )
+            respond(mid, "complete_stream", result)
+        except Exception as e:  # noqa: BLE001
+            code, msg = _map_upstream_error(e)
+            fail(mid, code, msg)
+        return
+
     try:
         import litellm
     except ImportError:

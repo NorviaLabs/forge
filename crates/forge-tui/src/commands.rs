@@ -14,9 +14,13 @@ pub enum CommandError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SlashCommand {
-    Help { cmd: Option<String> },
+    Help {
+        cmd: Option<String>,
+    },
     Status,
-    Resume { session_id: Uuid },
+    Resume {
+        session_id: Uuid,
+    },
     Cancel,
     /// Switch model. `id` is a LiteLLM string (`openai/gpt-4.1`) or prefix+name.
     /// `refresh` re-fetches remote catalogs for connected providers.
@@ -27,7 +31,9 @@ pub enum SlashCommand {
         /// `/model refresh` — re-pull live catalogs.
         refresh: bool,
     },
-    Journal { tail: Option<usize> },
+    Journal {
+        tail: Option<usize>,
+    },
     Tools,
     Quit,
     // Phase 2
@@ -36,7 +42,9 @@ pub enum SlashCommand {
     Reset,
     Compact,
     Cost,
-    Worktree { action: WorktreeAction },
+    Worktree {
+        action: WorktreeAction,
+    },
     /// Phase 6 — provider connect flow
     Connect(ConnectAction),
     /// Session file/tool change summary
@@ -97,7 +105,9 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
         "model" => {
             let a = parts.next().map(|s| s.to_string());
             let b = parts.next().map(|s| s.to_string());
-            if a.as_deref().is_some_and(|s| s.eq_ignore_ascii_case("refresh")) {
+            if a.as_deref()
+                .is_some_and(|s| s.eq_ignore_ascii_case("refresh"))
+            {
                 Ok(SlashCommand::Model {
                     provider: None,
                     model: None,
@@ -161,9 +171,7 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
                 "speed" => {
                     let v = parts
                         .next()
-                        .ok_or_else(|| {
-                            CommandError::Usage("/stt speed fast|normal|slow".into())
-                        })?
+                        .ok_or_else(|| CommandError::Usage("/stt speed fast|normal|slow".into()))?
                         .to_string();
                     Ok(SlashCommand::Stt {
                         action: SttAction::Speed(v),
@@ -186,7 +194,7 @@ pub fn help_text() -> &'static str {
      /cancel         Soft-cancel current turn (Esc)\n\
      /model [id]     Switch model (LiteLLM id)\n\
      /model refresh  Refresh model catalogs\n\
-     /connect …      Connect (xai | opencode_go | opencode_zen | openai | anthropic | ollama)\n\
+     /connect …      Connect (openai_codex | openai | anthropic | xai | opencode_* | ollama)\n\
      /diff           Tools & file changes this session\n\
      /sync           Stage, commit (message from changeset), push\n\
      /stt [speed …]  STT status/speed · hold Ctrl+Space to dictate\n\

@@ -24,8 +24,7 @@ pub const DEFAULT_CLIENT_ID: &str = "b1a00492-073a-47ea-816f-4c329264a828";
 pub const DEFAULT_ISSUER: &str = "https://auth.x.ai";
 
 /// Scopes that grant API-usable session tokens (and refresh).
-pub const DEFAULT_SCOPES: &str =
-    "openid profile email offline_access api:access grok-cli:access";
+pub const DEFAULT_SCOPES: &str = "openid profile email offline_access api:access grok-cli:access";
 
 const GRANT_DEVICE_CODE: &str = "urn:ietf:params:oauth:grant-type:device_code";
 
@@ -126,14 +125,11 @@ impl XaiOauthClient {
         )?;
 
         if !(200..300).contains(&status) {
-            return Err(XaiOauthError::DeviceCode(format!(
-                "HTTP {status}: {body}"
-            )));
+            return Err(XaiOauthError::DeviceCode(format!("HTTP {status}: {body}")));
         }
 
-        let parsed: DeviceCodeResponse = serde_json::from_str(&body).map_err(|e| {
-            XaiOauthError::DeviceCode(format!("invalid JSON: {e}; body={body}"))
-        })?;
+        let parsed: DeviceCodeResponse = serde_json::from_str(&body)
+            .map_err(|e| XaiOauthError::DeviceCode(format!("invalid JSON: {e}; body={body}")))?;
 
         if parsed.device_code.is_empty() || parsed.user_code.is_empty() {
             return Err(XaiOauthError::DeviceCode(format!(
@@ -175,9 +171,7 @@ impl XaiOauthClient {
             let tok: TokenResponse = serde_json::from_str(&body)
                 .map_err(|e| XaiOauthError::Token(format!("invalid JSON: {e}; body={body}")))?;
             if tok.access_token.is_empty() {
-                return Err(XaiOauthError::Token(format!(
-                    "empty access_token: {body}"
-                )));
+                return Err(XaiOauthError::Token(format!("empty access_token: {body}")));
             }
             let expires_at = tok.expires_in.map(|secs| {
                 let exp = std::time::SystemTime::now() + std::time::Duration::from_secs(secs);
@@ -198,8 +192,7 @@ impl XaiOauthClient {
                 "expired_token" | "expired" => Err(XaiOauthError::Expired),
                 "access_denied" => Err(XaiOauthError::AccessDenied),
                 other => Err(XaiOauthError::Oauth(
-                    err.error_description
-                        .unwrap_or_else(|| other.to_string()),
+                    err.error_description.unwrap_or_else(|| other.to_string()),
                 )),
             };
         }
@@ -221,8 +214,7 @@ impl XaiOauthClient {
         if !(200..300).contains(&status) {
             if let Ok(err) = serde_json::from_str::<TokenErrorResponse>(&body) {
                 return Err(XaiOauthError::Oauth(
-                    err.error_description
-                        .unwrap_or_else(|| err.error),
+                    err.error_description.unwrap_or_else(|| err.error),
                 ));
             }
             return Err(XaiOauthError::Token(format!("HTTP {status}: {body}")));
