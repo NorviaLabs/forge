@@ -122,10 +122,7 @@ impl ModelCatalogCache {
 }
 
 /// Resolve API key for catalog HTTP (env or store). OAuth access token for xAI.
-pub fn credential_for_catalog(
-    profile: &ConnectProfile,
-    store: &CredentialStore,
-) -> Option<String> {
+pub fn credential_for_catalog(profile: &ConnectProfile, store: &CredentialStore) -> Option<String> {
     if profile.auth_mode.is_oauth() {
         return store
             .get_oauth(&profile.id)
@@ -144,7 +141,10 @@ pub fn credential_for_catalog(
 }
 
 /// Fetch remote model ids and rewrite to LiteLLM strings. Network call.
-pub fn fetch_remote_models(profile: &ConnectProfile, api_key: Option<&str>) -> Result<Vec<String>, String> {
+pub fn fetch_remote_models(
+    profile: &ConnectProfile,
+    api_key: Option<&str>,
+) -> Result<Vec<String>, String> {
     let base = profile
         .default_base_url
         .as_deref()
@@ -155,9 +155,41 @@ pub fn fetch_remote_models(profile: &ConnectProfile, api_key: Option<&str>) -> R
     let ua = format!("forge-connect/{}", env!("CARGO_PKG_VERSION"));
 
     match profile.id.as_str() {
+        "openai_codex" => {
+            let token =
+                api_key.ok_or_else(|| "OpenAI Codex login required for catalog".to_string())?;
+            let account_id = crate::openai_codex::account_id_from_token(token)?;
+            let url = format!(
+                "{}/codex/models?client_version={}",
+                if base.is_empty() {
+                    "https://chatgpt.com/backend-api"
+                } else {
+                    base
+                },
+                env!("CARGO_PKG_VERSION")
+            );
+            let raw = http_get_json_ids(
+                &url,
+                &[
+                    ("Authorization", &format!("Bearer {token}")),
+                    ("chatgpt-account-id", &account_id),
+                    ("User-Agent", &ua),
+                ],
+            )?;
+            Ok(map_prefix(prefix, raw, |id| {
+                !id.eq_ignore_ascii_case("codex-auto-review")
+            }))
+        }
         "openai" => {
             let key = api_key.ok_or_else(|| "OpenAI API key required for catalog".to_string())?;
-            let url = format!("{}/models", if base.is_empty() { "https://api.openai.com/v1" } else { base });
+            let url = format!(
+                "{}/models",
+                if base.is_empty() {
+                    "https://api.openai.com/v1"
+                } else {
+                    base
+                }
+            );
             let raw = http_get_json_ids(
                 &url,
                 &[
@@ -168,7 +200,8 @@ pub fn fetch_remote_models(profile: &ConnectProfile, api_key: Option<&str>) -> R
             Ok(map_prefix(prefix, raw, filter_openai_chat_ish))
         }
         "anthropic" => {
-            let key = api_key.ok_or_else(|| "Anthropic API key required for catalog".to_string())?;
+            let key =
+                api_key.ok_or_else(|| "Anthropic API key required for catalog".to_string())?;
             let b = if base.is_empty() {
                 "https://api.anthropic.com"
             } else {
@@ -223,7 +256,8 @@ pub fn fetch_remote_models(profile: &ConnectProfile, api_key: Option<&str>) -> R
             }
         }
         "opencode_go" => {
-            let key = api_key.ok_or_else(|| "OpenCode Go API key required for catalog".to_string())?;
+            let key =
+                api_key.ok_or_else(|| "OpenCode Go API key required for catalog".to_string())?;
             let b = if base.is_empty() {
                 crate::opencode_go::DEFAULT_BASE_URL
             } else {
@@ -275,7 +309,9 @@ pub fn fetch_remote_models(profile: &ConnectProfile, api_key: Option<&str>) -> R
             )?;
             Ok(map_prefix(prefix, raw, |_| true))
         }
-        other => Err(format!("no remote catalog implemented for profile `{other}`")),
+        other => Err(format!(
+            "no remote catalog implemented for profile `{other}`"
+        )),
     }
 }
 
@@ -330,9 +366,7 @@ fn http_get_json_ids(url: &str, headers: &[(&str, &str)]) -> Result<Vec<String>,
         }
         let resp = match req.call() {
             Ok(r) => r,
-            Err(ureq::Error::Status(code, r))
-                if matches!(code, 301 | 302 | 303 | 307 | 308) =>
-            {
+            Err(ureq::Error::Status(code, r)) if matches!(code, 301 | 302 | 303 | 307 | 308) => {
                 if let Some(loc) = r.header("Location").map(str::to_string) {
                     cur = loc;
                     continue;
@@ -359,9 +393,7 @@ fn http_get_json_ids(url: &str, headers: &[(&str, &str)]) -> Result<Vec<String>,
         if !(200..300).contains(&resp.status()) {
             return Err(format!("catalog GET {cur}: HTTP {}", resp.status()));
         }
-        let body: serde_json::Value = resp
-            .into_json()
-            .map_err(|e| format!("catalog JSON: {e}"))?;
+        let body: serde_json::Value = resp.into_json().map_err(|e| format!("catalog JSON: {e}"))?;
         return parse_openai_style_model_ids(&body);
     }
     return Err(format!("catalog GET {url}: too many redirects"));
@@ -372,7 +404,11 @@ fn parse_openai_style_model_ids(body: &serde_json::Value) -> Result<Vec<String>,
     if let Some(arr) = body.get("data").and_then(|d| d.as_array()) {
         let mut ids = Vec::new();
         for item in arr {
-            if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
+            if let Some(id) = item
+                .get("id")
+                .or_else(|| item.get("slug"))
+                .and_then(|v| v.as_str())
+            {
                 ids.push(id.to_string());
             } else if let Some(id) = item.as_str() {
                 ids.push(id.to_string());
@@ -384,7 +420,11 @@ fn parse_openai_style_model_ids(body: &serde_json::Value) -> Result<Vec<String>,
     if let Some(arr) = body.get("models").and_then(|d| d.as_array()) {
         let mut ids = Vec::new();
         for item in arr {
-            if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
+            if let Some(id) = item
+                .get("id")
+                .or_else(|| item.get("slug"))
+                .and_then(|v| v.as_str())
+            {
                 ids.push(id.to_string());
             } else if let Some(id) = item.as_str() {
                 ids.push(id.to_string());
@@ -429,10 +469,7 @@ pub fn refresh_profile_catalog(
     let key = credential_for_catalog(profile, store);
     let models = fetch_remote_models(profile, key.as_deref())?;
     if models.is_empty() {
-        return Err(format!(
-            "catalog for `{}` returned no models",
-            profile.id
-        ));
+        return Err(format!("catalog for `{}` returned no models", profile.id));
     }
     cache.put(&profile.id, models.clone())?;
     Ok(models)
@@ -570,6 +607,20 @@ mod tests {
         });
         let ids = parse_openai_style_model_ids(&v).unwrap();
         assert!(ids.contains(&"gpt-4.1-mini".into()));
+    }
+
+    #[test]
+    fn parse_codex_catalog_slugs() {
+        let value = serde_json::json!({
+            "models": [
+                {"slug": "gpt-5.6-sol"},
+                {"slug": "gpt-5.6-terra"}
+            ]
+        });
+        assert_eq!(
+            parse_openai_style_model_ids(&value).unwrap(),
+            vec!["gpt-5.6-sol", "gpt-5.6-terra"]
+        );
     }
 
     #[test]

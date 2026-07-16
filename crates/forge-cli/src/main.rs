@@ -59,7 +59,7 @@ enum Commands {
     },
     /// Print version, workspace, and model
     Status,
-    /// Connect a provider (xai | opencode_go | opencode_zen | openai | anthropic | ollama | list | status)
+    /// Connect a provider (openai_codex | openai | anthropic | xai | opencode_go | opencode_zen | ollama | list | status)
     Connect {
         /// Profile id, or list|status|disconnect
         profile: Option<String>,
@@ -80,8 +80,8 @@ async fn main() {
     } else {
         "warn"
     };
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(default_level));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
@@ -112,8 +112,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
 
     match cli.command {
         None => {
-            let session =
-                open_session(&cfg, cli.max_turns, cli.resume, cli.worktree).await?;
+            let session = open_session(&cfg, cli.max_turns, cli.resume, cli.worktree).await?;
             let runtime = TuiRuntimeConfig {
                 model_label: cfg.model.model.clone(),
                 provider: cfg.model.provider.as_str().into(),
@@ -136,8 +135,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             Ok(ExitCode::Success)
         }
         Some(Commands::Run { prompt }) => {
-            let mut session =
-                open_session(&cfg, cli.max_turns, cli.resume, cli.worktree).await?;
+            let mut session = open_session(&cfg, cli.max_turns, cli.resume, cli.worktree).await?;
             let _resp = session.run_user_message(&prompt).await?;
             print_session_tail(&session);
             println!("session_id={}", session.session_id);
