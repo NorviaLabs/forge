@@ -47,8 +47,14 @@ impl Sandbox for LightSandbox {
             .arg(&req.command)
             .current_dir(&req.cwd)
             .env_clear()
-            .env("PATH", std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into()))
-            .env("HOME", std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()))
+            .env(
+                "PATH",
+                std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into()),
+            )
+            .env(
+                "HOME",
+                std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()),
+            )
             .env("LANG", "C");
         for (k, v) in &req.env {
             // Never inject keys that look like secrets into child without explicit list —

@@ -5,7 +5,7 @@
 mod scim;
 mod siem;
 
-pub use scim::{ScimGroup, ScimPlugin, ScimUser, InMemoryScimStore};
+pub use scim::{InMemoryScimStore, ScimGroup, ScimPlugin, ScimUser};
 pub use siem::{SiemEncoding, SiemExporter, SiemPlugin};
 
 use serde::{Deserialize, Serialize};

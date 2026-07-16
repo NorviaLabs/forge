@@ -45,8 +45,8 @@ struct SerperOrganic {
 }
 
 pub fn parse_serper_response(body: &str, limit: u32) -> Result<Vec<SearchHit>, SearchError> {
-    let parsed: SerperResponse =
-        serde_json::from_str(body).map_err(|e| SearchError::Provider(format!("invalid json: {e}")))?;
+    let parsed: SerperResponse = serde_json::from_str(body)
+        .map_err(|e| SearchError::Provider(format!("invalid json: {e}")))?;
     let mut hits: Vec<SearchHit> = parsed
         .organic
         .into_iter()

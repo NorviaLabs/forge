@@ -4,11 +4,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 /// Validate `args` against a JSON Schema object. Fail closed.
-pub fn validate_args(
-    tool: &str,
-    schema: &Value,
-    args: &Value,
-) -> Result<(), ToolValidationError> {
+pub fn validate_args(tool: &str, schema: &Value, args: &Value) -> Result<(), ToolValidationError> {
     let validator = Validator::new(schema).map_err(|e| ToolValidationError {
         tool: tool.to_string(),
         path: "$".into(),
@@ -20,11 +16,7 @@ pub fn validate_args(
         let path = err.instance_path.to_string();
         return Err(ToolValidationError {
             tool: tool.to_string(),
-            path: if path.is_empty() {
-                "$".into()
-            } else {
-                path
-            },
+            path: if path.is_empty() { "$".into() } else { path },
             message: err.to_string(),
             schema_hint: Some(schema.to_string()),
         });

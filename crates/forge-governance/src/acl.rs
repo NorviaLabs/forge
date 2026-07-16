@@ -37,12 +37,7 @@ impl AclPolicy {
     }
 
     /// Last matching rule wins; default deny if no rules, allow if allow_all.
-    pub fn is_allowed(
-        &self,
-        _principal: &Principal,
-        tool: &str,
-        _class: SideEffectClass,
-    ) -> bool {
+    pub fn is_allowed(&self, _principal: &Principal, tool: &str, _class: SideEffectClass) -> bool {
         if self.rules.is_empty() {
             return false;
         }

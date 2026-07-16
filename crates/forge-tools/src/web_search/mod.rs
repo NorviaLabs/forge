@@ -249,7 +249,10 @@ mod tests {
         let tool = WebSearchTool::try_new(&cfg).unwrap();
         let ctx = ToolContext::new(std::env::current_dir().unwrap());
         let out = tool
-            .call(&ctx, json!({"query": "forge agent harness", "num_results": 3}))
+            .call(
+                &ctx,
+                json!({"query": "forge agent harness", "num_results": 3}),
+            )
             .await
             .unwrap();
         assert!(!out.is_error, "{}", out.content);
@@ -266,10 +269,7 @@ mod tests {
         let cfg = WebSearchConfig::default();
         let tool = WebSearchTool::try_new(&cfg).unwrap();
         let ctx = ToolContext::new(std::env::current_dir().unwrap());
-        let out = tool
-            .call(&ctx, json!({"query": "   "}))
-            .await
-            .unwrap();
+        let out = tool.call(&ctx, json!({"query": "   "})).await.unwrap();
         assert!(out.is_error);
     }
 

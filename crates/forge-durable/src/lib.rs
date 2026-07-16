@@ -4,9 +4,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use chrono::Utc;
-use forge_types::{
-    JournalEvent, JournalEventType, SessionId, SessionStatus, ToolCall, ToolOutput,
-};
+use forge_types::{JournalEvent, JournalEventType, SessionId, SessionStatus, ToolCall, ToolOutput};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};

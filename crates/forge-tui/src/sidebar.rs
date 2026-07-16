@@ -57,6 +57,7 @@ impl Widget for SidebarWidget<'_> {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(theme::border())
+            .style(theme::panel())
             .title(Span::styled(" session ", theme::muted()));
         let inner = block.inner(area);
         block.render(area, buf);

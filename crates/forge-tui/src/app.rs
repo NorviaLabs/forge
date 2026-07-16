@@ -6,8 +6,9 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{
-    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers,
-    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event, KeyCode, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags, MouseEventKind,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -27,7 +28,7 @@ use serde_json::json;
 use thiserror::Error;
 
 use crate::activity::{ActivityFeed, ActivityKind};
-use crate::commands::{help_text, parse_slash, SlashCommand, SttAction, WorktreeAction};
+use crate::commands::{parse_slash, SlashCommand, SttAction};
 use crate::conversation::{
     BannerKind, ChatItem, ConversationModel, ConversationViewOpts, StreamWaitPhase,
 };
@@ -47,7 +48,7 @@ use crate::stt::{
 use crate::theme;
 use crate::widgets::{
     classify_operator_error, session_chrome_lines, BusyPhase, FeedbackBar, FeedbackModel,
-    FeedbackSeverity, FooterBar, FooterModel, InputBar, InputModel, StatusBar, StatusModel,
+    FeedbackSeverity, FooterBar, FooterModel, InputBar, InputModel, StatusModel,
 };
 use crate::ExitCode;
 use ratatui::widgets::Paragraph;
@@ -126,8 +127,6 @@ pub struct TuiApp {
     pub web_search_label: Option<String>,
     /// Phase 10 / TUI-10 — activity ring buffer.
     pub activity: ActivityFeed,
-    /// Expand completed thinking blocks (Ctrl+T). Streaming always expands.
-    thinking_expanded: bool,
     /// Reasoning effort sent to model providers (`auto` omits the parameter).
     reasoning_effort: ReasoningEffort,
     /// Expand last tool detail (Ctrl+O).
@@ -189,7 +188,6 @@ impl TuiApp {
             turn_started: None,
             thinking_started: None,
             thought_secs: None,
-            thinking_expanded: false,
             reasoning_effort: ReasoningEffort::from_env(),
             tool_expanded: false,
             sidebar_visible: true,
@@ -343,6 +341,20 @@ impl TuiApp {
             from_turn
         };
         self.thought_secs = Some(secs);
+    }
+
+    fn persist_turn_thinking_duration(&mut self, secs: f64) {
+        if let Some(m) = self
+            .session
+            .messages
+            .iter_mut()
+            .rev()
+            .find(|m| m.role == forge_types::MessageRole::Assistant)
+        {
+            if m.thinking.is_some() {
+                m.thinking_duration_secs = Some(secs);
+            }
+        }
     }
 
     /// Reload credentials from disk: silent OAuth refresh, inject worker env, activate profile.
@@ -528,6 +540,19 @@ impl TuiApp {
     }
 
     fn open_connect_picker(&mut self) {
+        let connected: HashSet<String> = {
+            let svc = ConnectService {
+                registry: &self.connect_registry,
+                store: &self.connect_store,
+                active_profile_id: self.connect_profile.clone(),
+                active_model: Some(self.runtime.model_label.clone()),
+            };
+            svc.connected_profiles()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|p| p.id)
+                .collect()
+        };
         let items: Vec<ConnectProfileItem> = self
             .connect_registry
             .profiles()
@@ -537,10 +562,60 @@ impl TuiApp {
                 title: p.title.clone(),
                 auth_mode: p.auth_mode.label().into(),
                 auth_url: p.auth_url.clone(),
+                connected: connected.contains(&p.id),
             })
             .collect();
         self.overlay = Some(Overlay::connect_picker(items));
-        self.status_message = "Select a provider to connect".into();
+        self.status_message = "Choose a provider".into();
+        self.notices.clear();
+    }
+
+    fn open_api_key_prompt(&mut self, profile_id: &str, error: Option<String>) {
+        let p = self.connect_registry.get(profile_id);
+        let title = p
+            .map(|x| x.title.clone())
+            .unwrap_or_else(|| profile_id.to_string());
+        let auth_url = p.and_then(|x| x.auth_url.clone());
+        let env_hint = if error.is_none() {
+            p.and_then(|x| {
+                x.api_key_env.iter().find_map(|env_name| {
+                    std::env::var(env_name)
+                        .ok()
+                        .filter(|value| !value.is_empty())
+                        .map(|_| env_name.clone())
+                })
+            })
+        } else {
+            None
+        };
+        let mut overlay = Overlay::connect_api_key(profile_id, title, auth_url, env_hint);
+        if let Overlay::ConnectApiKey {
+            error: overlay_error,
+            ..
+        } = &mut overlay
+        {
+            *overlay_error = error;
+        }
+        self.overlay = Some(overlay);
+        self.status_message = format!("Connect {profile_id}");
+        self.notices.clear();
+    }
+
+    fn open_model_picker_after_connect(&mut self, profile_id: &str) {
+        let items = self.model_picker_items(false);
+        let mut overlay = Overlay::model_open_with(items);
+        overlay.focus_model(&self.runtime.model_label);
+        self.overlay = Some(overlay);
+        let title = self
+            .connect_registry
+            .get(profile_id)
+            .map(|p| p.title.as_str())
+            .unwrap_or(profile_id);
+        self.set_feedback(
+            FeedbackSeverity::Ok,
+            format!("{title} connected · choose a model"),
+        );
+        self.notices.clear();
     }
 
     fn handle_connect(&mut self, action: ConnectAction) {
@@ -565,7 +640,7 @@ impl TuiApp {
         }
 
         // Phase 6.1: open mode-specific overlays for interactive connect
-        if let ConnectAction::Connect {
+        let connect_target = if let ConnectAction::Connect {
             ref profile_id,
             ref api_key,
             oauth_fixture,
@@ -573,35 +648,22 @@ impl TuiApp {
         {
             if api_key.is_none() && !oauth_fixture {
                 if needs_tui_api_key_prompt(&self.connect_registry, profile_id) {
-                    let p = self.connect_registry.get(profile_id);
-                    let title = p
-                        .map(|x| x.title.clone())
-                        .unwrap_or_else(|| profile_id.clone());
-                    let auth_url = p.and_then(|x| x.auth_url.clone());
-                    let env_hint = p.and_then(|x| {
-                        x.api_key_env.iter().find_map(|e| {
-                            std::env::var(e)
-                                .ok()
-                                .filter(|v| !v.is_empty())
-                                .map(|_| e.clone())
-                        })
-                    });
-                    self.overlay = Some(Overlay::connect_api_key(
-                        profile_id.clone(),
-                        title,
-                        auth_url,
-                        env_hint,
-                    ));
-                    self.status_message = format!("Enter API key for {profile_id}");
-                    self.notices.clear();
-                    return;
+                    // Existing file/env credentials should reconnect without
+                    // asking the user to paste the same secret again.
+                    if !self.credentials_live_for(profile_id) {
+                        self.open_api_key_prompt(profile_id, None);
+                        return;
+                    }
                 }
                 if needs_tui_oauth(&self.connect_registry, profile_id) {
                     self.begin_oauth_flow(profile_id);
                     return;
                 }
             }
-        }
+            Some(profile_id.clone())
+        } else {
+            None
+        };
 
         let mut model = Some(self.runtime.model_label.clone());
         match handle_connect_action(
@@ -624,13 +686,23 @@ impl TuiApp {
                 self.status_message = lines.first().cloned().unwrap_or_default();
                 self.notices = lines;
                 self.refresh_connection_ui();
+                if let Some(profile_id) = connect_target {
+                    self.open_model_picker_after_connect(&profile_id);
+                }
             }
             Err(ConnectError::OauthDevicePending(pending)) => {
                 self.show_oauth_pending(pending);
             }
             Err(e) => {
-                self.status_message = e.to_string();
-                self.notices = vec![e.to_string()];
+                let error = e.to_string();
+                if let Some(profile_id) =
+                    connect_target.filter(|id| needs_tui_api_key_prompt(&self.connect_registry, id))
+                {
+                    self.open_api_key_prompt(&profile_id, Some(error));
+                } else {
+                    self.status_message = error.clone();
+                    self.notices = vec![error];
+                }
             }
         }
     }
@@ -656,25 +728,16 @@ impl TuiApp {
     }
 
     /// After a successful connect: update model, inject worker credentials, clear OAuth UI.
-    fn on_connect_success(&mut self, out: &forge_connect::ConnectOutcome) -> String {
+    fn on_connect_success(&mut self, out: &forge_connect::ConnectOutcome) {
         self.connect_profile = Some(out.profile_id.clone());
         self.runtime.model_label = out.model.clone();
         self.runtime.provider = "litellm".into();
         self.session.set_active_model(out.model.clone());
         self.apply_connect_credentials(&out.profile_id);
-        let title = self
-            .connect_registry
-            .get(&out.profile_id)
-            .map(|p| p.title.as_str())
-            .unwrap_or(out.profile_id.as_str());
-        let msg = forge_connect::format_connected(out, title);
-        self.status_message = msg.clone();
-        self.notices = vec![msg.clone()];
         self.oauth_pending = None;
         self.oauth_last_poll = None;
-        self.overlay = None;
         self.refresh_connection_ui();
-        msg
+        self.open_model_picker_after_connect(&out.profile_id);
     }
 
     /// Export stored OAuth / API key material into the model worker env (and process env).
@@ -742,8 +805,7 @@ impl TuiApp {
         };
         match svc.poll_oauth_once(&pending) {
             Ok(Some(out)) => {
-                let msg = self.on_connect_success(&out);
-                self.set_feedback(FeedbackSeverity::Ok, msg);
+                self.on_connect_success(&out);
             }
             Ok(None) => {
                 // still waiting
@@ -792,18 +854,22 @@ impl TuiApp {
                 if let Some(pid) = self.connect_profile.clone() {
                     self.apply_connect_credentials(&pid);
                 }
-                let lines: Vec<String> = msg.lines().map(|s| s.to_string()).collect();
-                self.status_message = lines.first().cloned().unwrap_or_default();
-                self.notices = lines;
-                self.overlay = None;
+                self.status_message = msg.lines().next().unwrap_or_default().to_string();
                 self.refresh_connection_ui();
+                self.open_model_picker_after_connect(profile_id);
             }
             Err(e) => {
                 let err = e.to_string();
-                self.report_error(&err);
-                // Restore modal (preserve typed/pasted key) so user can fix and retry.
                 self.overlay = saved_overlay;
+                if let Some(Overlay::ConnectApiKey { error, .. }) = &mut self.overlay {
+                    *error = Some(err.clone());
+                }
                 self.status_message = err;
+                self.push_activity(
+                    ActivityKind::Connect,
+                    FeedbackSeverity::Error,
+                    format!("connect {profile_id} failed"),
+                );
             }
         }
     }
@@ -821,44 +887,36 @@ impl TuiApp {
         };
         self.runtime.model_label = model.to_string();
         self.session.set_active_model(model);
-        // Re-inject credentials so the worker sees the right keys for this model family.
-        if let Some(pid) = self.connect_profile.clone() {
-            self.apply_connect_credentials(&pid);
-        } else {
-            // Try match model prefix → connected profile
-            let prefix = model.split('/').next().unwrap_or("");
-            let svc = ConnectService {
-                registry: &self.connect_registry,
-                store: &self.connect_store,
-                active_profile_id: None,
-                active_model: None,
-            };
-            if let Ok(connected) = svc.connected_profiles() {
-                if let Some(p) = connected.iter().find(|p| {
-                    p.litellm_provider_prefix == prefix
-                        || p.id == prefix
-                        || (prefix == "opencode-go" && p.id == "opencode_go")
-                        || (prefix == "opencode-zen" && p.id == "opencode_zen")
-                }) {
-                    self.connect_profile = Some(p.id.clone());
-                    self.apply_connect_credentials(&p.id);
-                }
+        // Match the selected model to its connected profile even when a
+        // different provider was active before opening the picker.
+        let prefix = model.split('/').next().unwrap_or("");
+        let svc = ConnectService {
+            registry: &self.connect_registry,
+            store: &self.connect_store,
+            active_profile_id: None,
+            active_model: None,
+        };
+        if let Ok(connected) = svc.connected_profiles() {
+            if let Some(profile) = connected.iter().find(|p| {
+                p.litellm_provider_prefix == prefix
+                    || p.id == prefix
+                    || (prefix == "opencode-go" && p.id == "opencode_go")
+                    || (prefix == "opencode-zen" && p.id == "opencode_zen")
+            }) {
+                self.connect_profile = Some(profile.id.clone());
             }
+        }
+        if let Some(profile_id) = self.connect_profile.clone() {
+            self.apply_connect_credentials(&profile_id);
         }
         if let Some(profile_id) = self.connect_profile.as_deref() {
             let _ = self
                 .connect_store
                 .set_last_selection(profile_id, &self.runtime.model_label);
         }
-        self.set_feedback(
-            FeedbackSeverity::Ok,
-            format!("model {}", self.runtime.model_label),
-        );
-        self.status_message = format!("model {}", self.runtime.model_label);
-        self.notices = vec![
-            format!("Active model: {}", self.runtime.model_label),
-            "Applied to this session (LiteLLM). Use /model to pick from the catalog.".into(),
-        ];
+        self.feedback = FeedbackModel::default();
+        self.status_message.clear();
+        self.notices.clear();
         self.push_activity(
             ActivityKind::System,
             FeedbackSeverity::Ok,
@@ -1046,7 +1104,7 @@ impl TuiApp {
                 self.push_activity(
                     ActivityKind::System,
                     FeedbackSeverity::Ok,
-                    "ptt transcript ready",
+                    "ptt transcript inserted",
                 );
             }
             Ok(Err(e)) => {
@@ -1305,7 +1363,7 @@ impl TuiApp {
             || self.pending_hitl_decision.is_some()
             || self.pending_context_reset
         {
-            self.set_feedback(FeedbackSeverity::Warn, "busy — wait before /reset");
+            self.set_feedback(FeedbackSeverity::Warn, "busy — wait before /compact");
             return;
         }
         self.pending_context_reset = true;
@@ -1368,8 +1426,19 @@ impl TuiApp {
         if let Some(term) = terminal.as_deref_mut() {
             let _ = term.draw(|f| self.draw(f));
         }
+        let before = self.session.token_usage_report().context_tokens_est;
         self.session.force_context_reset_async().await?;
-        self.push_toast("context reset");
+        let after = self.session.token_usage_report().context_tokens_est;
+        self.push_toast("context compacted");
+        self.set_feedback(
+            FeedbackSeverity::Ok,
+            format!("context compacted · {before} → {after} tokens"),
+        );
+        self.status_message = "context compacted".into();
+        self.notices = vec![
+            format!("Context compacted: {before} → {after} estimated tokens."),
+            "Progress written to .forge/progress.json.".into(),
+        ];
         self.busy_phase = BusyPhase::Idle;
         if let Some(term) = terminal.as_deref_mut() {
             let _ = term.draw(|f| self.draw(f));
@@ -1649,6 +1718,7 @@ Reply with ONLY the commit message line.\n\n\
             session_short: short,
             model: self.runtime.model_label.clone(),
             provider: self.runtime.provider.clone(),
+            effort: self.reasoning_effort.to_string(),
             ctx_pct: self.session.context_usage_ratio(),
             worktree_on: self.session.worktree_status().is_some(),
             busy: self.busy,
@@ -1673,7 +1743,6 @@ Reply with ONLY the commit message line.\n\n\
         let input_h = (self.input.visual_lines() + 2).clamp(3, 8);
         let regions = split_areas_full(area, fb_h, input_h, self.sidebar_visible, 0);
         let status = self.refresh_status_model();
-        frame.render_widget(StatusBar { model: &status }, regions.status);
 
         let stream_wait = if self.busy && self.pending_prompt.is_none() {
             let elapsed = if !self.stream_thinking.is_empty() {
@@ -1701,8 +1770,6 @@ Reply with ONLY the commit message line.\n\n\
         let opts = ConversationViewOpts {
             busy: self.busy,
             // Don't force-expand finished thinking just because busy (answer may be streaming)
-            thinking_expanded: self.thinking_expanded
-                || (self.busy && self.thought_secs.is_none() && !self.stream_thinking.is_empty()),
             tool_expanded: self.tool_expanded,
             compact: false,
             stream_wait,
@@ -1855,12 +1922,8 @@ Reply with ONLY the commit message line.\n\n\
         frame.render_widget(InputBar { model: &input }, regions.input);
 
         let qn = self.message_queue.len();
-        let tok = self.session.token_usage.total_api_tokens();
-        let tok_hint = if tok > 0 {
-            format!("tok {tok} · ")
-        } else {
-            String::new()
-        };
+        let context = self.session.token_usage_report();
+        let (status_label, _) = status.status_label();
         let hints = if self.ptt_recording.is_some() {
             format!(
                 "● REC {}s · release Ctrl+Space to stop",
@@ -1882,12 +1945,21 @@ Reply with ONLY the commit message line.\n\n\
         } else if qn > 0 {
             format!("queue {qn} · Ctrl+Up/Down select · Ctrl+Backspace cancel")
         } else {
-            format!("{tok_hint}Ctrl+K command palette · hold Ctrl+Space dictate")
+            "Ctrl+K command palette · hold Ctrl+Space dictate".into()
         };
         let footer = FooterModel {
-            version: self.runtime.version.clone(),
             cwd: self.runtime.cwd.display().to_string(),
+            session_short: status.session_short,
+            status: status_label,
             provider: self.runtime.provider.clone(),
+            model: self.runtime.model_label.clone(),
+            effort: self.reasoning_effort.to_string(),
+            ctx_used: context.context_tokens_est,
+            ctx_total: context.context_capacity,
+            ctx_pct: status.ctx_pct,
+            connected: status.provider_connected,
+            connect_profile: status.connect_profile,
+            worktree_on: status.worktree_on,
             hints,
         };
         frame.render_widget(FooterBar { model: &footer }, regions.footer);
@@ -1999,6 +2071,7 @@ Reply with ONLY the commit message line.\n\n\
                 OverlayAction::ConnectCompleteOauth { profile_id } => {
                     // Enter: try one poll now; keep overlay if still pending
                     if self.oauth_pending.is_some() {
+                        self.oauth_last_poll = None;
                         self.poll_oauth_tick();
                         if self.oauth_pending.is_some() {
                             self.status_message =
@@ -2063,9 +2136,6 @@ Reply with ONLY the commit message line.\n\n\
                 if !self.busy {
                     self.overlay = Some(Overlay::slash_open(""));
                 }
-            }
-            KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.thinking_expanded = !self.thinking_expanded;
             }
             KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.tool_expanded = !self.tool_expanded;
@@ -2183,19 +2253,31 @@ Reply with ONLY the commit message line.\n\n\
             }
             KeyCode::Left => self.input.move_left(),
             KeyCode::Right => self.input.move_right(),
-            KeyCode::PageUp => {
-                self.chat_follow = false;
-                self.chat_scroll = self.chat_scroll.saturating_add(5);
-            }
-            KeyCode::PageDown => {
-                self.chat_scroll = self.chat_scroll.saturating_sub(5);
-                if self.chat_scroll == 0 {
-                    self.chat_follow = true;
-                }
-            }
+            KeyCode::PageUp => self.scroll_conversation_up(5),
+            KeyCode::PageDown => self.scroll_conversation_down(5),
             _ => {}
         }
         Ok(())
+    }
+
+    fn scroll_conversation_up(&mut self, amount: u16) {
+        self.chat_follow = false;
+        self.chat_scroll = self.chat_scroll.saturating_add(amount);
+    }
+
+    fn scroll_conversation_down(&mut self, amount: u16) {
+        self.chat_scroll = self.chat_scroll.saturating_sub(amount);
+        if self.chat_scroll == 0 {
+            self.chat_follow = true;
+        }
+    }
+
+    pub fn handle_mouse(&mut self, kind: MouseEventKind) {
+        match kind {
+            MouseEventKind::ScrollUp => self.scroll_conversation_up(3),
+            MouseEventKind::ScrollDown => self.scroll_conversation_down(3),
+            _ => {}
+        }
     }
 
     async fn handle_model_command(
@@ -2266,82 +2348,27 @@ Reply with ONLY the commit message line.\n\n\
                     self.should_quit = true;
                     self.status_message = "quitting…".into();
                 }
-                Ok(SlashCommand::Help { cmd }) => {
-                    if let Some(name) = cmd {
-                        // Point at one entry if possible
-                        let needle = name.trim_start_matches('/').to_ascii_lowercase();
-                        let hits: Vec<String> = filter_palette(&needle)
-                            .into_iter()
-                            .map(|i| format!("{}  —  {}", i.cmd, i.desc))
-                            .collect();
-                        if hits.is_empty() {
-                            self.status_message = format!("unknown help topic: {name}");
-                            self.notices = vec![
-                                format!("No command matching `{name}`."),
-                                "Type /help for the full list.".into(),
-                            ];
-                        } else {
-                            self.status_message = format!("help: {name}");
-                            self.notices = hits;
-                        }
-                    } else {
-                        self.status_message =
-                            "commands listed below · type /cmd · Ctrl+K palette".into();
-                        self.notices = help_text()
-                            .lines()
-                            .map(|s| s.to_string())
-                            .filter(|s| !s.is_empty())
-                            .collect();
-                    }
-                }
                 Ok(SlashCommand::Status) => {
                     let chrome = self.refresh_status_model();
                     let mut lines = session_chrome_lines(&chrome);
                     lines.insert(0, format!("session_id={}", self.session.session_id));
+                    let report = self.session.token_usage_report();
+                    lines.extend(self.session.token_usage_lines());
+                    let api = &report.api;
                     self.set_feedback(
                         FeedbackSeverity::Info,
                         format!(
-                            "{} · {} · ctx {:.0}%",
+                            "{} · {} · ctx {:.0}% · tokens in {} · out {} · total {}",
                             chrome.provider,
                             chrome.model,
-                            chrome.ctx_pct * 100.0
-                        ),
-                    );
-                    self.notices = lines;
-                }
-                Ok(SlashCommand::Tools) => {
-                    let tools = self.session.list_tools();
-                    if tools.is_empty() {
-                        self.status_message = "no tools registered".into();
-                        self.notices = vec![
-                            "No tools are registered on this session.".into(),
-                            "Tools appear when the agent runtime attaches them.".into(),
-                        ];
-                    } else {
-                        self.status_message = format!("{} tools", tools.len());
-                        self.notices = tools;
-                    }
-                }
-                Ok(SlashCommand::Cost) => {
-                    let report = self.session.token_usage_report();
-                    let api = &report.api;
-                    let strip = if api.model_calls_with_usage > 0 {
-                        format!(
-                            "tokens in {} · out {} · total {} · ctx {:.0}%",
+                            chrome.ctx_pct * 100.0,
                             api.prompt_tokens,
                             api.completion_tokens,
-                            api.total_api_tokens(),
-                            report.context_pct
-                        )
-                    } else {
-                        format!(
-                            "ctx {} tok · {:.0}% capacity · API usage n/a",
-                            report.context_tokens_est, report.context_pct
-                        )
-                    };
-                    self.set_feedback(FeedbackSeverity::Info, strip);
-                    self.status_message = "token usage".into();
-                    self.notices = self.session.token_usage_lines();
+                            api.total_api_tokens()
+                        ),
+                    );
+                    self.status_message = "status · context".into();
+                    self.notices = lines;
                 }
                 Ok(SlashCommand::Approve) => {
                     if self.session.pending_hitl.is_none() {
@@ -2365,7 +2392,7 @@ Reply with ONLY the commit message line.\n\n\
                         }
                     }
                 }
-                Ok(SlashCommand::Reset) | Ok(SlashCommand::Compact) => {
+                Ok(SlashCommand::Compact) => {
                     self.queue_context_reset();
                     if cfg!(test) {
                         let _ = self.drain_pending_context_reset(None).await;
@@ -2380,37 +2407,6 @@ Reply with ONLY the commit message line.\n\n\
                         .await
                 }
                 Ok(SlashCommand::Effort { level }) => self.handle_effort_command(level),
-                Ok(SlashCommand::Worktree { action }) => match action {
-                    WorktreeAction::Status => {
-                        let msg = self
-                            .session
-                            .worktree_status()
-                            .unwrap_or_else(|| "worktree off".into());
-                        self.status_message = msg.clone();
-                        self.notices = vec![
-                            msg,
-                            "Usage: /worktree status | merge | discard --yes".into(),
-                        ];
-                    }
-                    WorktreeAction::Merge => {
-                        self.session.worktree_merge()?;
-                        self.status_message = "worktree merged".into();
-                        self.notices = vec!["Worktree merged into the main checkout.".into()];
-                    }
-                    WorktreeAction::Discard { confirm } => {
-                        if confirm {
-                            self.session.worktree_discard()?;
-                            self.status_message = "worktree discarded".into();
-                            self.notices = vec!["Worktree discarded.".into()];
-                        } else {
-                            self.status_message = "confirm discard with --yes".into();
-                            self.notices = vec![
-                                "Usage: /worktree discard --yes".into(),
-                                "This permanently discards the session worktree.".into(),
-                            ];
-                        }
-                    }
-                },
                 Ok(SlashCommand::Journal { tail }) => {
                     let n = self.session.events.len();
                     let take = tail.unwrap_or(12).min(n).min(20);
@@ -2436,10 +2432,6 @@ Reply with ONLY the commit message line.\n\n\
                         format!("To resume {session_id}, restart: forge --resume {session_id}");
                     self.status_message = "resume requires CLI restart".into();
                     self.notices = vec![msg];
-                }
-                Ok(SlashCommand::Cancel) => {
-                    self.cancel_requested = true;
-                    self.push_toast("interrupt requested");
                 }
                 Ok(SlashCommand::Diff) => {
                     let mut lines = vec!["Session tools & changes:".into()];
@@ -2467,7 +2459,6 @@ Reply with ONLY the commit message line.\n\n\
                     }
                     if let Some(wt) = self.session.worktree_status() {
                         lines.push(format!("worktree: {wt}"));
-                        lines.push("  /worktree merge | /worktree discard --yes".into());
                     }
                     self.notices = lines;
                     self.status_message = "diff".into();
@@ -2537,7 +2528,7 @@ Reply with ONLY the commit message line.\n\n\
                 Err(e) => {
                     let msg = e.to_string();
                     self.set_feedback(FeedbackSeverity::Warn, msg.clone());
-                    self.notices = vec![msg, "Type /help for commands.".into()];
+                    self.notices = vec![msg];
                 }
             }
             return Ok(());
@@ -2589,6 +2580,11 @@ Reply with ONLY the commit message line.\n\n\
         self.pending_prompt = Some(line.to_string());
         self.busy = true;
         self.busy_phase = BusyPhase::Model;
+        // A new user turn should always follow the live conversation tail.
+        // This also ensures its thinking block is visible after the user has
+        // previously scrolled up to inspect an older response.
+        self.chat_follow = true;
+        self.chat_scroll = 0;
         self.stream_preview.clear();
         self.stream_thinking.clear();
         self.push_activity(
@@ -2637,6 +2633,8 @@ Reply with ONLY the commit message line.\n\n\
 
         let max_turns = self.session.max_turns();
         let mut outcome_err: Option<String> = None;
+        let mut turn_thought_secs = 0.0f64;
+        let mut saw_thinking = false;
 
         'turns: for turn in 0..max_turns {
             let req = match self.session.prepare_model_step(turn).await {
@@ -2680,7 +2678,7 @@ Reply with ONLY the commit message line.\n\n\
                         _ => {}
                     }
                 }
-                // Redraw every tick so spinner + 0.1s elapsed keep updating (even with no tokens).
+                // Redraw every tick so spinner and elapsed time stay current.
                 if let Some(term) = terminal.as_deref_mut() {
                     term.draw(|f| self.draw(f))?;
                 }
@@ -2729,7 +2727,7 @@ Reply with ONLY the commit message line.\n\n\
                     }
                 }
 
-                // ~10 Hz keeps 0.1s timer + spinner smooth without burning CPU
+                // ~10 Hz keeps the timer + spinner smooth without burning CPU
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
 
@@ -2766,27 +2764,17 @@ Reply with ONLY the commit message line.\n\n\
             }
             self.close_thinking_timer();
 
-            let thought = self.thought_secs;
+            let thought = self.thought_secs.take();
             self.stream_preview.clear();
             self.stream_thinking.clear();
             // Keep turn_started until full agent turn ends (multi-tool steps).
             match self.session.apply_model_response(last).await {
                 Ok(out) => {
-                    // Persist "Thought for Xs" on the assistant message
                     if let Some(secs) = thought {
-                        if let Some(m) = self
-                            .session
-                            .messages
-                            .iter_mut()
-                            .rev()
-                            .find(|m| m.role == forge_types::MessageRole::Assistant)
-                        {
-                            if m.thinking.is_some() {
-                                m.thinking_duration_secs = Some(secs);
-                            }
-                        }
+                        saw_thinking = true;
+                        turn_thought_secs += secs;
                     }
-                    // Reset per-model-step thinking timers for multi-tool loops
+                    // Reset per-model-step thinking timers for multi-tool loops.
                     self.thinking_started = None;
                     self.thought_secs = None;
                     match out {
@@ -2843,22 +2831,22 @@ Reply with ONLY the commit message line.\n\n\
             self.push_activity(ActivityKind::Hitl, FeedbackSeverity::Warn, "hitl waiting");
             // Do not auto-dequeue until HITL is resolved.
         } else {
+            if saw_thinking {
+                self.persist_turn_thinking_duration(turn_thought_secs);
+            }
             self.clear_error_chrome();
-            self.thinking_expanded = false; // collapse thinking after turn
             self.tool_expanded = false;
             if self.message_queue.is_empty() {
-                self.push_toast("done");
+                self.feedback = FeedbackModel::default();
+                self.status_message.clear();
             } else {
                 self.push_toast(format!(
-                    "done · {} queued · sending next",
+                    "{} queued · sending next",
                     self.message_queue.len()
                 ));
                 self.set_feedback(
                     FeedbackSeverity::Info,
-                    format!(
-                        "done · {} in queue — sending next",
-                        self.message_queue.len()
-                    ),
+                    format!("{} in queue — sending next", self.message_queue.len()),
                 );
             }
             self.push_activity(ActivityKind::Model, FeedbackSeverity::Ok, "model ok");
@@ -2988,6 +2976,7 @@ async fn drain_events(app: &mut TuiApp) -> Result<(), TuiError> {
         }
         match event::read()? {
             Event::Key(key) => app.handle_key(key).await?,
+            Event::Mouse(mouse) => app.handle_mouse(mouse.kind),
             Event::Paste(data) => app.handle_paste(&data),
             _ => {}
         }
@@ -3008,6 +2997,7 @@ pub async fn run_tui(
         stdout,
         EnterAlternateScreen,
         EnableBracketedPaste,
+        EnableMouseCapture,
         PushKeyboardEnhancementFlags(
             KeyboardEnhancementFlags::REPORT_EVENT_TYPES
                 | KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
@@ -3017,6 +3007,10 @@ pub async fn run_tui(
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = TuiApp::new(session, runtime);
+    if !app.is_provider_connected() {
+        app.open_connect_picker();
+        app.set_feedback(FeedbackSeverity::Info, "Choose a provider to get started");
+    }
     let result = run_loop(&mut terminal, &mut app).await;
 
     // Ensure mic capture is stopped if the user quits mid-record.
@@ -3027,6 +3021,7 @@ pub async fn run_tui(
         terminal.backend_mut(),
         PopKeyboardEnhancementFlags,
         DisableBracketedPaste,
+        DisableMouseCapture,
         LeaveAlternateScreen
     )?;
     terminal.show_cursor()?;
@@ -3074,6 +3069,7 @@ async fn run_loop(
             // of a long API key is not truncated to a handful of characters.
             match event::read()? {
                 Event::Key(key) => app.handle_key(key).await?,
+                Event::Mouse(mouse) => app.handle_mouse(mouse.kind),
                 Event::Paste(data) => app.handle_paste(&data),
                 _ => {}
             }
@@ -3423,6 +3419,142 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn connect_picker_marks_saved_credentials_as_connected() {
+        let (_dir, session) = test_session().await;
+        let cred_dir = tempfile::tempdir().unwrap();
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "openai/gpt-4.1-mini".into(),
+                provider: "litellm".into(),
+                cwd: PathBuf::from("."),
+                version: "0.6.1".into(),
+            },
+        );
+        app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
+        app.connect_store
+            .set_api_key("openai", "sk-test-saved-credential")
+            .unwrap();
+
+        app.open_connect_picker();
+        let Some(Overlay::ConnectPicker { items, .. }) = &app.overlay else {
+            panic!("expected connect picker");
+        };
+        assert!(
+            items
+                .iter()
+                .any(|item| item.id == "openai" && item.connected),
+            "saved provider should be marked connected"
+        );
+    }
+
+    #[tokio::test]
+    async fn successful_connect_hands_off_to_model_picker() {
+        let (_dir, session) = test_session().await;
+        let cred_dir = tempfile::tempdir().unwrap();
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "openai/gpt-4.1-mini".into(),
+                provider: "litellm".into(),
+                cwd: PathBuf::from("."),
+                version: "0.6.1".into(),
+            },
+        );
+        app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
+        app.connect_store
+            .set_api_key("openai", "sk-test-saved-credential")
+            .unwrap();
+        app.connect_profile = Some("openai".into());
+        app.runtime.model_label = "openai/gpt-4.1-mini".into();
+        app.session.set_active_model("openai/gpt-4.1-mini");
+
+        app.open_model_picker_after_connect("openai");
+        let Some(Overlay::Model {
+            provider_selected,
+            providers,
+            ..
+        }) = &app.overlay
+        else {
+            panic!("expected model picker");
+        };
+        assert_eq!(
+            providers.get(*provider_selected).map(String::as_str),
+            Some("openai")
+        );
+        assert!(app.feedback.text.contains("choose a model"));
+    }
+
+    #[tokio::test]
+    async fn model_selection_switches_to_the_matching_connected_provider() {
+        let (_dir, session) = test_session().await;
+        let cred_dir = tempfile::tempdir().unwrap();
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "openai/gpt-4.1-mini".into(),
+                provider: "litellm".into(),
+                cwd: PathBuf::from("."),
+                version: "0.6.1".into(),
+            },
+        );
+        app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
+        app.connect_store
+            .set_api_key("openai", "sk-test-openai-credential")
+            .unwrap();
+        app.connect_store
+            .set_api_key("anthropic", "sk-test-anthropic-credential")
+            .unwrap();
+        app.connect_profile = Some("openai".into());
+
+        app.apply_model_selection("litellm", "anthropic/claude-sonnet-4-5");
+
+        assert_eq!(app.connect_profile.as_deref(), Some("anthropic"));
+        assert_eq!(app.runtime.model_label, "anthropic/claude-sonnet-4-5");
+    }
+
+    #[tokio::test]
+    async fn invalid_api_key_error_stays_inside_key_modal() {
+        let (_dir, session) = test_session().await;
+        let cred_dir = tempfile::tempdir().unwrap();
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "openai/gpt-4.1-mini".into(),
+                provider: "litellm".into(),
+                cwd: PathBuf::from("."),
+                version: "0.6.1".into(),
+            },
+        );
+        app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
+        let mut overlay = Overlay::connect_api_key("openai", "OpenAI", None, None);
+        if let Overlay::ConnectApiKey { key_input, .. } = &mut overlay {
+            *key_input = "bad".into();
+        }
+        app.overlay = Some(overlay);
+
+        app.try_connect_api_key("openai", Some("bad".into()));
+        let Some(Overlay::ConnectApiKey {
+            key_input, error, ..
+        }) = &app.overlay
+        else {
+            panic!("expected API key modal to remain open");
+        };
+        assert_eq!(key_input, "bad");
+        assert!(error.as_deref().is_some_and(|text| text.contains("short")));
+        assert!(
+            !app.ui_banners.iter().any(|item| matches!(
+                item,
+                ChatItem::Banner {
+                    kind: BannerKind::Error,
+                    ..
+                }
+            )),
+            "onboarding errors should stay in the modal"
+        );
+    }
+
+    #[tokio::test]
     async fn connect_xai_opens_oauth_overlay() {
         let (_dir, session) = test_session().await;
         let cred_dir = tempfile::tempdir().unwrap();
@@ -3475,18 +3607,18 @@ mod tests {
         };
         app.input.set_text("/status");
         app.handle_key(enter).await.unwrap();
-        app.input.set_text("/tools");
+        app.input.set_text("/model");
         app.handle_key(enter).await.unwrap();
         assert!(app.history.len() >= 2);
         let t = app.history.up(&app.input.text).unwrap();
         app.apply_history_text(t);
-        assert_eq!(app.input.text, "/tools");
+        assert_eq!(app.input.text, "/model");
         let t = app.history.up(&app.input.text).unwrap();
         app.apply_history_text(t);
         assert_eq!(app.input.text, "/status");
         let t = app.history.down().unwrap();
         app.apply_history_text(t);
-        assert_eq!(app.input.text, "/tools");
+        assert_eq!(app.input.text, "/model");
     }
 
     #[tokio::test]
@@ -3713,7 +3845,7 @@ mod tests {
                 version: "0.8.0".into(),
             },
         );
-        // Partial type; suggestions include /connect (and possibly /cost via "Context")
+        // Partial type; suggestions include /connect and /status.
         for c in "/con".chars() {
             app.handle_key(press(KeyCode::Char(c), KeyModifiers::NONE))
                 .await
@@ -3778,62 +3910,14 @@ mod tests {
             suggestions.iter().map(|s| &s.cmd).collect::<Vec<_>>()
         );
         for cmd in [
-            "/help",
-            "/status",
-            "/connect",
-            "/model",
-            "/tools",
-            "/cost",
-            "/journal",
-            "/worktree",
-            "/approve",
-            "/deny",
-            "/reset",
-            "/compact",
-            "/resume",
-            "/sync",
-            "/cancel",
-            "/quit",
+            "/status", "/connect", "/model", "/journal", "/approve", "/deny", "/compact",
+            "/resume", "/sync", "/quit",
         ] {
             assert!(
                 suggestions.iter().any(|s| s.cmd == cmd),
                 "missing {cmd} in suggestions"
             );
         }
-    }
-
-    #[tokio::test]
-    async fn help_command_fills_notices_with_full_list() {
-        use crossterm::event::{KeyCode, KeyModifiers};
-        let (_dir, session) = test_session().await;
-        let mut app = TuiApp::new(
-            session,
-            TuiRuntimeConfig {
-                model_label: "m".into(),
-                provider: "mock".into(),
-                cwd: PathBuf::from("."),
-                version: "0.8.0".into(),
-            },
-        );
-        for c in "/help".chars() {
-            app.handle_key(press(KeyCode::Char(c), KeyModifiers::NONE))
-                .await
-                .unwrap();
-        }
-        app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
-            .await
-            .unwrap();
-        assert!(
-            app.notices.len() > 5,
-            "help should populate multi-line notices, got {:?}",
-            app.notices
-        );
-        assert!(
-            app.notices.iter().any(|l| l.contains("/connect"))
-                && app.notices.iter().any(|l| l.contains("/status")),
-            "help notices missing expected commands: {:?}",
-            app.notices
-        );
     }
 
     #[tokio::test]
@@ -3892,6 +3976,7 @@ mod tests {
             session_short: "abc".into(),
             model: "m".into(),
             provider: "mock".into(),
+            effort: "auto".into(),
             ctx_pct: 0.2,
             worktree_on: false,
             busy: false,
@@ -4275,7 +4360,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tui08_cost_sets_feedback_strip() {
+    async fn tui08_context_sets_feedback_strip() {
         use crossterm::event::{KeyCode, KeyModifiers};
         let (_dir, session) = test_session().await;
         let mut app = TuiApp::new(
@@ -4287,7 +4372,7 @@ mod tests {
                 version: "0.10.0".into(),
             },
         );
-        for c in "/cost".chars() {
+        for c in "/status".chars() {
             app.handle_key(press(KeyCode::Char(c), KeyModifiers::NONE))
                 .await
                 .unwrap();

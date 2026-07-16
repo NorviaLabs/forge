@@ -6,9 +6,7 @@ mod sensor;
 
 pub use evaluator::{EvaluatorConfig, EvaluatorReport, Finding, FindingSeverity};
 pub use repair::{inject_repair_messages, RepairTask};
-pub use sensor::{
-    CommandSensor, Sensor, SensorContext, SensorReport, SensorStatus,
-};
+pub use sensor::{CommandSensor, Sensor, SensorContext, SensorReport, SensorStatus};
 
 use forge_types::Message;
 use serde::{Deserialize, Serialize};

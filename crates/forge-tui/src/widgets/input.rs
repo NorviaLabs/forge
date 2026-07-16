@@ -193,6 +193,7 @@ impl Widget for InputBar<'_> {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(border)
+            .style(theme::panel())
             .title(Span::styled(title, theme::muted()));
         Paragraph::new(lines)
             .style(Style::default().add_modifier(if self.model.dimmed {
