@@ -188,6 +188,20 @@ pub fn forge_messages_to_wire(messages: &[Message]) -> Vec<Value> {
             if let Some(ref name) = m.name {
                 obj["name"] = json!(name);
             }
+            if !m.tool_calls.is_empty() {
+                obj["tool_calls"] = json!(m
+                    .tool_calls
+                    .iter()
+                    .map(|call| json!({
+                        "id": call.id,
+                        "type": "function",
+                        "function": {
+                            "name": call.name,
+                            "arguments": call.arguments.to_string(),
+                        }
+                    }))
+                    .collect::<Vec<_>>());
+            }
             obj
         })
         .collect()
@@ -294,8 +308,27 @@ mod tests {
             name: None,
             thinking: None,
             thinking_duration_secs: None,
-}]);
+            tool_calls: vec![],
+        }]);
         assert_eq!(msgs[0]["role"], "user");
+        let assistant = forge_messages_to_wire(&[Message {
+            role: MessageRole::Assistant,
+            content: "".into(),
+            tool_call_id: None,
+            name: None,
+            thinking: None,
+            thinking_duration_secs: None,
+            tool_calls: vec![forge_types::ToolCall {
+                id: "call_1".into(),
+                name: "read_file".into(),
+                arguments: json!({"path": "README.md"}),
+            }],
+        }]);
+        assert_eq!(assistant[0]["tool_calls"][0]["id"], "call_1");
+        assert_eq!(
+            assistant[0]["tool_calls"][0]["function"]["name"],
+            "read_file"
+        );
         let tools = tools_to_openai_functions(&[ToolDescriptor {
             name: "read_file".into(),
             description: "r".into(),

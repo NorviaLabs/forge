@@ -451,10 +451,11 @@ impl Config {
             }
         }
 
-        let project = overrides
-            .config_path
-            .clone()
-            .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")).join("forge.toml"));
+        let project = overrides.config_path.clone().unwrap_or_else(|| {
+            env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join("forge.toml")
+        });
         if project.is_file() {
             merge_file(&mut cfg, &project)?;
         }
@@ -463,7 +464,8 @@ impl Config {
         apply_overrides(&mut cfg, &overrides)?;
 
         let cwd = env::current_dir().map_err(ConfigError::Io)?;
-        cfg.resolved_workspace = resolve_workspace(&cfg.workspace_root, overrides.workspace.as_deref(), &cwd);
+        cfg.resolved_workspace =
+            resolve_workspace(&cfg.workspace_root, overrides.workspace.as_deref(), &cwd);
 
         Ok(cfg)
     }
@@ -666,10 +668,8 @@ fn apply_env(cfg: &mut Config) -> Result<(), ConfigError> {
     }
     // Phase 9 — web_search
     if let Ok(v) = env::var("FORGE_WEB_SEARCH_ENABLED") {
-        cfg.tools.web_search.enabled = matches!(
-            v.to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        );
+        cfg.tools.web_search.enabled =
+            matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on");
     }
     if let Ok(p) = env::var("FORGE_WEB_SEARCH_PROVIDER") {
         cfg.tools.web_search.provider = WebSearchProvider::parse(&p)?;
@@ -688,10 +688,8 @@ fn apply_env(cfg: &mut Config) -> Result<(), ConfigError> {
         }
     }
     if let Ok(v) = env::var("FORGE_WEB_SEARCH_REQUIRE_KEY") {
-        cfg.tools.web_search.require_key = matches!(
-            v.to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        );
+        cfg.tools.web_search.require_key =
+            matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on");
     }
     Ok(())
 }
@@ -720,11 +718,7 @@ fn apply_overrides(cfg: &mut Config, o: &ConfigOverrides) -> Result<(), ConfigEr
     Ok(())
 }
 
-fn resolve_workspace(
-    from_cfg: &Option<String>,
-    from_cli: Option<&Path>,
-    cwd: &Path,
-) -> PathBuf {
+fn resolve_workspace(from_cfg: &Option<String>, from_cli: Option<&Path>, cwd: &Path) -> PathBuf {
     if let Some(cli) = from_cli {
         return if cli.is_absolute() {
             cli.to_path_buf()
@@ -792,10 +786,7 @@ mod tests {
                 saved.push(((*key).to_string(), env::var(key).ok()));
                 env::remove_var(key);
             }
-            Self {
-                saved,
-                _lock: lock,
-            }
+            Self { saved, _lock: lock }
         }
 
         fn set(&self, key: &str, value: &str) {

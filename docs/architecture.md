@@ -532,7 +532,7 @@ sequenceDiagram
 
 ### 5.8 Context reset and handoff
 
-Triggered when usage crosses the configured threshold (default ~80% of capacity) or via explicit `/reset` / `/compact` (`CTX-01`, `CTX-02`).
+Triggered when usage crosses the configured threshold (default ~80% of capacity) or via explicit `/compact` (`CTX-01`, `CTX-02`).
 
 ```mermaid
 sequenceDiagram

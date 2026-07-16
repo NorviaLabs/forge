@@ -161,9 +161,14 @@ def _request_body(
     tools = _tools(raw_tools, tool_aliases)
     if tools:
         body["tools"] = tools
+    # Always request the provider's readable reasoning summary.  `auto` is a
+    # valid effort default, but omitting the reasoning object entirely means
+    # Codex may return only encrypted reasoning content, which Forge cannot
+    # display in the conversation.
     effort = codex_effort(params.get("extra"))
+    body["reasoning"] = {"summary": "auto"}
     if effort:
-        body["reasoning"] = {"effort": effort, "summary": "auto"}
+        body["reasoning"]["effort"] = effort
     return body
 
 

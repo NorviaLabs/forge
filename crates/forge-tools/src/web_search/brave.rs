@@ -50,8 +50,8 @@ struct BraveResult {
 }
 
 pub fn parse_brave_response(body: &str, limit: u32) -> Result<Vec<SearchHit>, SearchError> {
-    let parsed: BraveResponse =
-        serde_json::from_str(body).map_err(|e| SearchError::Provider(format!("invalid json: {e}")))?;
+    let parsed: BraveResponse = serde_json::from_str(body)
+        .map_err(|e| SearchError::Provider(format!("invalid json: {e}")))?;
     let mut hits: Vec<SearchHit> = parsed
         .web
         .map(|w| w.results)
@@ -89,10 +89,7 @@ impl SearchBackend for BraveBackend {
             .build()
             .map_err(|e| SearchError::Http(e.to_string()))?;
 
-        let url = format!(
-            "{}/res/v1/web/search",
-            self.base_url.trim_end_matches('/')
-        );
+        let url = format!("{}/res/v1/web/search", self.base_url.trim_end_matches('/'));
 
         let resp = client
             .get(&url)

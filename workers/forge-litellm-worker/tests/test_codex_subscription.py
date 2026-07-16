@@ -59,3 +59,47 @@ def test_reasoning_effort_from_environment(monkeypatch) -> None:
         }
     )
     assert body["reasoning"] == {"effort": "high", "summary": "auto"}
+
+
+def test_reasoning_summary_is_requested_with_auto_effort(monkeypatch) -> None:
+    monkeypatch.delenv("FORGE_REASONING_EFFORT", raising=False)
+    body = _request_body(
+        {
+            "model": "openai-codex/gpt-5.6-sol",
+            "messages": [{"role": "user", "content": "summarize this codebase"}],
+        }
+    )
+    assert body["reasoning"] == {"summary": "auto"}
+
+
+def test_tool_output_has_matching_function_call() -> None:
+    body = _request_body(
+        {
+            "model": "openai-codex/gpt-5.6-sol",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_123",
+                            "function": {
+                                "name": "read_file",
+                                "arguments": '{"path":"README.md"}',
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_123",
+                    "content": "hello",
+                },
+            ],
+        }
+    )
+    assert [item["type"] for item in body["input"]] == [
+        "function_call",
+        "function_call_output",
+    ]
+    assert body["input"][0]["call_id"] == body["input"][1]["call_id"]

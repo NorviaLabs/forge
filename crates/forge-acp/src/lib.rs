@@ -16,7 +16,6 @@ use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 
-
 #[derive(Debug, Error)]
 pub enum AcpError {
     #[error(transparent)]
@@ -135,7 +134,7 @@ impl AcpServer {
                     enable_context_lifecycle: true,
                     enable_governance: true,
 
-                ..Default::default()
+                    ..Default::default()
                 },
                 self.model.clone(),
                 ToolRegistry::new(),
@@ -212,8 +211,8 @@ impl AcpServer {
             if line.trim().is_empty() {
                 continue;
             }
-            let req: AcpRequest = serde_json::from_str(&line)
-                .map_err(|e| AcpError::Protocol(e.to_string()))?;
+            let req: AcpRequest =
+                serde_json::from_str(&line).map_err(|e| AcpError::Protocol(e.to_string()))?;
             let resp = self.handle_request(req).await;
             let mut out = serde_json::to_string(&resp)?;
             out.push('\n');
@@ -224,7 +223,10 @@ impl AcpServer {
     }
 }
 
-pub async fn open_mock_handle(workspace: PathBuf, journal_dir: PathBuf) -> Result<AgentHandle, AcpError> {
+pub async fn open_mock_handle(
+    workspace: PathBuf,
+    journal_dir: PathBuf,
+) -> Result<AgentHandle, AcpError> {
     let model = Arc::new(MockModelClient::script(vec![forge_types::ModelResponse {
         text: "acp ok".into(),
         tool_calls: vec![],
@@ -240,7 +242,7 @@ pub async fn open_mock_handle(workspace: PathBuf, journal_dir: PathBuf) -> Resul
             enable_context_lifecycle: true,
             enable_governance: true,
 
-        ..Default::default()
+            ..Default::default()
         },
         model,
         ToolRegistry::new(),
@@ -262,20 +264,14 @@ mod tests {
             tool_calls: vec![],
             usage: None,
             thinking: None,
-    }]));
-        let mut server = AcpServer::new(
-            dir.path().to_path_buf(),
-            dir.path().join("j"),
-            model,
-        );
+        }]));
+        let mut server = AcpServer::new(dir.path().to_path_buf(), dir.path().join("j"), model);
         let init = server.handle_request(AcpRequest::Initialize {}).await;
         assert!(init.ok);
         let created = server.handle_request(AcpRequest::SessionNew {}).await;
         assert!(created.ok);
         let prompt = server
-            .handle_request(AcpRequest::SessionPrompt {
-                text: "hi".into(),
-            })
+            .handle_request(AcpRequest::SessionPrompt { text: "hi".into() })
             .await;
         assert!(prompt.ok);
         let result = prompt.result.unwrap();

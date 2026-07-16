@@ -21,7 +21,9 @@ impl Default for OtelConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            endpoint: std::env::var("FORGE_OTEL_ENDPOINT").ok().filter(|s| !s.is_empty()),
+            endpoint: std::env::var("FORGE_OTEL_ENDPOINT")
+                .ok()
+                .filter(|s| !s.is_empty()),
             export_path: None,
         }
     }
@@ -42,10 +44,7 @@ pub fn export_jsonl(
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let mut f = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
+    let mut f = OpenOptions::new().create(true).append(true).open(path)?;
     let line = ExportLine {
         resource_spans: true,
         spans,

@@ -33,8 +33,9 @@ impl SiemPlugin {
         let mut n = 0;
         for e in events {
             let line = match self.encoding {
-                SiemEncoding::JsonlOtlp => serde_json::to_string(&jsonl_otlp(e))
-                    .map_err(std::io::Error::other)?,
+                SiemEncoding::JsonlOtlp => {
+                    serde_json::to_string(&jsonl_otlp(e)).map_err(std::io::Error::other)?
+                }
                 SiemEncoding::Cef => cef_line(e),
             };
             writeln!(f, "{line}")?;

@@ -16,14 +16,10 @@ pub enum CommandError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SlashCommand {
-    Help {
-        cmd: Option<String>,
-    },
     Status,
     Resume {
         session_id: Uuid,
     },
-    Cancel,
     /// Switch model. `id` is a LiteLLM string (`openai/gpt-4.1`) or prefix+name.
     /// `refresh` re-fetches remote catalogs for connected providers.
     Model {
@@ -40,17 +36,11 @@ pub enum SlashCommand {
     Journal {
         tail: Option<usize>,
     },
-    Tools,
     Quit,
     // Phase 2
     Approve,
     Deny,
-    Reset,
     Compact,
-    Cost,
-    Worktree {
-        action: WorktreeAction,
-    },
     /// Phase 6 — provider connect flow
     Connect(ConnectAction),
     /// Session file/tool change summary
@@ -75,13 +65,6 @@ pub enum SttAction {
     Speed(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum WorktreeAction {
-    Status,
-    Merge,
-    Discard { confirm: bool },
-}
-
 pub fn parse_slash(line: &str) -> Option<Result<SlashCommand, CommandError>> {
     let line = line.trim();
     if !line.starts_with('/') {
@@ -95,9 +78,6 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
     let mut parts = rest.split_whitespace();
     let cmd = parts.next().unwrap_or("").to_ascii_lowercase();
     match cmd.as_str() {
-        "help" => Ok(SlashCommand::Help {
-            cmd: parts.next().map(|s| s.to_string()),
-        }),
         "status" => Ok(SlashCommand::Status),
         "resume" => {
             let id = parts
@@ -107,7 +87,6 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
                 .map_err(|_| CommandError::Usage("/resume <uuid session_id>".into()))?;
             Ok(SlashCommand::Resume { session_id })
         }
-        "cancel" => Ok(SlashCommand::Cancel),
         "model" => {
             let a = parts.next().map(|s| s.to_string());
             let b = parts.next().map(|s| s.to_string());
@@ -141,33 +120,10 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
         "journal" => Ok(SlashCommand::Journal {
             tail: parts.next().and_then(|s| s.parse().ok()),
         }),
-        "tools" => Ok(SlashCommand::Tools),
         "quit" | "exit" => Ok(SlashCommand::Quit),
         "approve" => Ok(SlashCommand::Approve),
         "deny" => Ok(SlashCommand::Deny),
-        "reset" => Ok(SlashCommand::Reset),
         "compact" => Ok(SlashCommand::Compact),
-        "cost" => Ok(SlashCommand::Cost),
-        "worktree" => {
-            let sub = parts.next().unwrap_or("status").to_ascii_lowercase();
-            match sub.as_str() {
-                "status" => Ok(SlashCommand::Worktree {
-                    action: WorktreeAction::Status,
-                }),
-                "merge" => Ok(SlashCommand::Worktree {
-                    action: WorktreeAction::Merge,
-                }),
-                "discard" => {
-                    let confirm = parts.any(|p| p == "--yes" || p == "-y");
-                    Ok(SlashCommand::Worktree {
-                        action: WorktreeAction::Discard { confirm },
-                    })
-                }
-                other => Err(CommandError::Usage(format!(
-                    "/worktree status|merge|discard, got {other}"
-                ))),
-            }
-        }
         "connect" => {
             let rest: Vec<&str> = parts.collect();
             let args = rest.join(" ");
@@ -203,35 +159,6 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
     }
 }
 
-pub fn help_text() -> &'static str {
-    "Commands:\n\
-     /help [cmd]     List or detail commands\n\
-     /status         Session status\n\
-     /resume <id>    Resume session from journal\n\
-     /cancel         Soft-cancel current turn (Esc)\n\
-     /model [id]     Switch model (LiteLLM id)\n\
-     /model refresh  Refresh model catalogs\n\
-     /effort [level] Set reasoning: auto|minimal|low|medium|high|xhigh|max\n\
-     /connect …      Connect (openai_codex | openai | anthropic | xai | opencode_* | ollama)\n\
-     /diff           Tools & file changes this session\n\
-     /sync           Stage, commit (message from changeset), push\n\
-     /stt [speed …]  STT status/speed · hold Ctrl+Space to dictate\n\
-     /copy           Copy last assistant answer (clipboard)\n\
-     /clear          Clear banners / notices\n\
-     /journal [n]    Tail journal events\n\
-     /tools          List tools\n\
-     /cost           Session token usage (prompt/completion/context)\n\
-     /reset          Force context handoff reset\n\
-     /compact        Alias → /reset\n\
-     /approve        Approve pending HITL (a)\n\
-     /deny           Deny pending HITL (d)\n\
-     /worktree …     status|merge|discard [--yes]\n\
-     /quit           Exit\n\
-     \n\
-     Keys: Enter send · ⇧Enter newline · Ctrl+T thinking · Ctrl+O tool ·\n\
-           Ctrl+B sidebar · Ctrl+K commands · Esc interrupt/clear · Ctrl+C quit\n"
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -242,7 +169,7 @@ mod tests {
             parse_slash("/status").unwrap().unwrap(),
             SlashCommand::Status
         );
-        assert_eq!(parse_slash("/tools").unwrap().unwrap(), SlashCommand::Tools);
+        assert!(parse_slash("/tools").unwrap().is_err());
     }
 
     #[test]
@@ -294,20 +221,9 @@ mod tests {
             SlashCommand::Approve
         );
         assert_eq!(parse_slash("/deny").unwrap().unwrap(), SlashCommand::Deny);
-        assert_eq!(parse_slash("/reset").unwrap().unwrap(), SlashCommand::Reset);
-        assert_eq!(parse_slash("/cost").unwrap().unwrap(), SlashCommand::Cost);
-        assert_eq!(
-            parse_slash("/worktree merge").unwrap().unwrap(),
-            SlashCommand::Worktree {
-                action: WorktreeAction::Merge
-            }
-        );
-        assert_eq!(
-            parse_slash("/worktree discard --yes").unwrap().unwrap(),
-            SlashCommand::Worktree {
-                action: WorktreeAction::Discard { confirm: true }
-            }
-        );
+        assert!(parse_slash("/reset").unwrap().is_err());
+        assert!(parse_slash("/context").unwrap().is_err());
+        assert!(parse_slash("/worktree merge").unwrap().is_err());
     }
 
     #[test]

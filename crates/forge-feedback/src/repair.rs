@@ -50,6 +50,7 @@ impl RepairTask {
             name: None,
             thinking: None,
             thinking_duration_secs: None,
+            tool_calls: vec![],
         }
     }
 }

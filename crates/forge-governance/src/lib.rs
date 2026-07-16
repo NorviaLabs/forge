@@ -2,13 +2,13 @@
 
 mod acl;
 mod audit;
-mod secrets;
 mod sandbox;
+mod secrets;
 
 pub use acl::{AclPolicy, AclRule};
 pub use audit::{AuditEvent, AuditLog};
-pub use secrets::{EnvSecretBroker, SecretBroker, SecretMaterial, SecretRef};
 pub use sandbox::{ExecRequest, ExecResult, LightSandbox, Sandbox, SandboxProfile};
+pub use secrets::{EnvSecretBroker, SecretBroker, SecretMaterial, SecretRef};
 
 use forge_types::{PolicyDecision, Principal, SideEffectClass, ToolCall, ToolDescriptor};
 use serde::{Deserialize, Serialize};
@@ -57,7 +57,10 @@ impl Governance {
     pub fn filter_tools(&self, tools: Vec<ToolDescriptor>) -> Vec<ToolDescriptor> {
         tools
             .into_iter()
-            .filter(|t| self.acl.is_allowed(&self.principal, &t.name, t.side_effect_class))
+            .filter(|t| {
+                self.acl
+                    .is_allowed(&self.principal, &t.name, t.side_effect_class)
+            })
             .collect()
     }
 
@@ -66,7 +69,10 @@ impl Governance {
         if !self.acl.is_allowed(&self.principal, &call.name, class) {
             return PolicyDecision::Deny;
         }
-        if self.hitl_tools.iter().any(|t| t == &call.name || glob_match(t, &call.name))
+        if self
+            .hitl_tools
+            .iter()
+            .any(|t| t == &call.name || glob_match(t, &call.name))
             || self.hitl_classes.contains(&class)
         {
             // High-risk: bash with git push-ish args
@@ -239,7 +245,10 @@ mod tests {
     fn allow_safe_read() {
         let g = Governance::default();
         assert_eq!(
-            g.authorize(&call("read_file", json!({"path": "a"})), SideEffectClass::Read),
+            g.authorize(
+                &call("read_file", json!({"path": "a"})),
+                SideEffectClass::Read
+            ),
             PolicyDecision::Allow
         );
     }

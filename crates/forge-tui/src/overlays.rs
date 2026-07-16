@@ -34,6 +34,8 @@ pub enum Overlay {
         key_input: String,
         /// Optional hint when env key exists
         env_hint: Option<String>,
+        /// Validation/authentication error shown inside the modal.
+        error: Option<String>,
     },
     /// Phase 6.1 — xAI Grok OAuth progress
     ConnectOauth {
@@ -54,6 +56,7 @@ pub struct ConnectProfileItem {
     pub title: String,
     pub auth_mode: String,
     pub auth_url: Option<String>,
+    pub connected: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -71,12 +74,8 @@ pub struct ModelItem {
 }
 
 pub fn default_palette_items() -> Vec<PaletteItem> {
-    // Keep in sync with `commands::parse_slash` / `help_text`.
+    // Keep in sync with `commands::parse_slash`.
     vec![
-        PaletteItem {
-            cmd: "/help".into(),
-            desc: "List all commands".into(),
-        },
         PaletteItem {
             cmd: "/status".into(),
             desc: "Session status".into(),
@@ -98,20 +97,8 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
             desc: "Set model reasoning effort".into(),
         },
         PaletteItem {
-            cmd: "/tools".into(),
-            desc: "List tools".into(),
-        },
-        PaletteItem {
-            cmd: "/cost".into(),
-            desc: "Token usage this session".into(),
-        },
-        PaletteItem {
             cmd: "/journal".into(),
             desc: "Tail journal events".into(),
-        },
-        PaletteItem {
-            cmd: "/worktree".into(),
-            desc: "status | merge | discard".into(),
         },
         PaletteItem {
             cmd: "/approve".into(),
@@ -122,20 +109,12 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
             desc: "Deny pending HITL".into(),
         },
         PaletteItem {
-            cmd: "/reset".into(),
-            desc: "Force context handoff".into(),
-        },
-        PaletteItem {
             cmd: "/compact".into(),
-            desc: "Alias for /reset".into(),
+            desc: "Force context handoff".into(),
         },
         PaletteItem {
             cmd: "/resume".into(),
             desc: "Resume session by uuid".into(),
-        },
-        PaletteItem {
-            cmd: "/cancel".into(),
-            desc: "Soft-cancel current turn".into(),
         },
         PaletteItem {
             cmd: "/diff".into(),
@@ -316,6 +295,7 @@ impl Overlay {
             auth_url,
             key_input: String::new(),
             env_hint,
+            error: None,
         }
     }
 
@@ -525,15 +505,11 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                     // no-arg commands execute; others insert
                     if matches!(
                         cmd.as_str(),
-                        "/help"
-                            | "/status"
-                            | "/tools"
-                            | "/cost"
+                        "/status"
                             | "/model refresh"
                             | "/quit"
                             | "/approve"
                             | "/deny"
-                            | "/reset"
                             | "/compact"
                             | "/diff"
                             | "/sync"
@@ -824,7 +800,7 @@ impl Widget for OverlayWidget<'_> {
                     })
                     .collect();
                 let prov_hint = if providers.len() > 1 {
-                    " (←/→ provider)"
+                    " · ←/→ provider"
                 } else {
                     ""
                 };
@@ -833,13 +809,14 @@ impl Widget for OverlayWidget<'_> {
                 } else {
                     format!("{}/{}", (*model_selected + 1).min(total), total)
                 };
-                let title = format!(" model picker · provider {pid} · {page}{prov_hint} ");
+                let title = format!(" Choose a model · {pid} · {page}{prov_hint} · Enter use ");
                 List::new(list_items)
                     .block(
                         Block::default()
                             .borders(Borders::ALL)
                             .border_style(theme::border())
-                            .title(Span::styled(title, theme::muted())),
+                            .style(theme::panel())
+                            .title(Span::styled(title, theme::brand())),
                     )
                     .render(r, buf);
             }
@@ -848,26 +825,32 @@ impl Widget for OverlayWidget<'_> {
                 auth_url,
                 key_input,
                 env_hint,
+                error,
                 ..
             } => {
-                let r = centered_rect(70, 45, area);
-                let masked: String = "*".repeat(key_input.chars().count());
+                let r = centered_rect(66, 42, area);
+                let masked: String = "•".repeat(key_input.chars().count());
                 let url = auth_url.as_deref().unwrap_or("(see docs)");
                 let n = key_input.chars().count();
                 let env_line = env_hint
                     .as_ref()
-                    .map(|h| format!("\n[e] Use existing env ({h}) — only while field is empty"))
+                    .map(|h| format!("\n[e] Use {h}"))
+                    .unwrap_or_default();
+                let error_line = error
+                    .as_ref()
+                    .map(|e| format!("\n\nCould not connect: {e}"))
                     .unwrap_or_default();
                 let body = format!(
-                    "Connect: {title}\n\n1. Sign in and copy your API key:\n   {url}\n\n2. Paste API key below (masked):\n   [{masked}]\n   ({n} chars)\n\n[Enter] Connect    [Esc] Cancel{env_line}"
+                    "{title}\n\nCreate or manage keys:\n{url}\n\nPaste API key:\n{masked}█  ({n} chars){error_line}\n\nEnter connect · Esc back{env_line}"
                 );
                 Paragraph::new(body)
                     .block(
                         Block::default()
                             .borders(Borders::ALL)
                             .border_style(theme::brand())
+                            .style(theme::panel())
                             .title(Span::styled(
-                                " API key required ",
+                                " Connect with API key ",
                                 theme::brand().add_modifier(Modifier::BOLD),
                             )),
                     )
@@ -880,19 +863,20 @@ impl Widget for OverlayWidget<'_> {
             } => {
                 let r = centered_rect(70, 50, area);
                 let body = format!(
-                    "Connect: {title} (OAuth)\n\nAPI keys are not used for this profile.\n\n{instructions}\n\n[Enter] Complete (fixture/env)    [Esc] Cancel"
+                    "{title}\n\n{instructions}\n\nWaiting for sign-in…\nEnter check now · Esc back"
                 );
                 Paragraph::new(body)
                     .block(
                         Block::default()
                             .borders(Borders::ALL)
                             .border_style(theme::info())
-                            .title(Span::styled(" OAuth ", theme::info())),
+                            .style(theme::panel())
+                            .title(Span::styled(" Sign in ", theme::info())),
                     )
                     .render(r, buf);
             }
             Overlay::ConnectPicker { selected, items } => {
-                let r = centered_rect(60, 45, area);
+                let r = centered_rect(58, 42, area);
                 let list_items: Vec<ListItem> = items
                     .iter()
                     .enumerate()
@@ -903,8 +887,14 @@ impl Widget for OverlayWidget<'_> {
                         } else {
                             theme::text()
                         };
-                        let url = it.auth_url.as_deref().unwrap_or("");
-                        let mut row = format!("{marker}{} ({})  {url}", it.title, it.auth_mode);
+                        let mode = match it.auth_mode.as_str() {
+                            "oauth" => "Sign in",
+                            "api_key" if it.id == "ollama" => "Local",
+                            "api_key" => "API key",
+                            other => other,
+                        };
+                        let state = if it.connected { "✓ connected" } else { mode };
+                        let mut row = format!("{marker}{:<30} {state}", it.title);
                         while row.chars().count() < 48 {
                             row.push(' ');
                         }
@@ -916,8 +906,9 @@ impl Widget for OverlayWidget<'_> {
                         Block::default()
                             .borders(Borders::ALL)
                             .border_style(theme::brand())
+                            .style(theme::panel())
                             .title(Span::styled(
-                                " /connect — select profile ↑↓ Enter ",
+                                " Choose a provider · ↑↓ Enter ",
                                 theme::brand(),
                             )),
                     )
@@ -1130,18 +1121,21 @@ mod tests {
                 title: "xAI Grok".into(),
                 auth_mode: "oauth".into(),
                 auth_url: None,
+                connected: false,
             },
             ConnectProfileItem {
                 id: "anthropic".into(),
                 title: "Anthropic".into(),
                 auth_mode: "api_key".into(),
                 auth_url: None,
+                connected: false,
             },
             ConnectProfileItem {
                 id: "openai".into(),
                 title: "OpenAI".into(),
                 auth_mode: "api_key".into(),
                 auth_url: None,
+                connected: false,
             },
         ]);
 

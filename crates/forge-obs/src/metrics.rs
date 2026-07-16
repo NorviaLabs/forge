@@ -40,8 +40,7 @@ impl Metrics {
         self.tool_latency_count.fetch_add(1, Ordering::Relaxed);
     }
     pub fn record_journal_latency(&self, ms: u64) {
-        self.journal_latency_sum_ms
-            .fetch_add(ms, Ordering::Relaxed);
+        self.journal_latency_sum_ms.fetch_add(ms, Ordering::Relaxed);
         self.journal_latency_count.fetch_add(1, Ordering::Relaxed);
     }
     pub fn set_context_usage(&self, ratio: f64) {
