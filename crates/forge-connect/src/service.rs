@@ -3,6 +3,7 @@
 use thiserror::Error;
 
 use crate::auth::{AuthMode, OauthPending, OauthTokens};
+use crate::oauth_openai_codex::{OpenAiCodexOauthClient, OpenAiCodexOauthError};
 use crate::oauth_xai::{try_open_browser, XaiOauthClient, XaiOauthError};
 use crate::profile::{ConnectOutcome, ConnectProfile, ConnectStatus, KeySource};
 use crate::registry::ConnectRegistry;
@@ -54,7 +55,9 @@ pub enum ConnectAction {
         /// When true, complete OAuth with fixture tokens (tests / FORGE_CONNECT_OAUTH_FIXTURE).
         oauth_fixture: bool,
     },
-    Disconnect { profile_id: Option<String> },
+    Disconnect {
+        profile_id: Option<String>,
+    },
 }
 
 /// Parse `/connect …` args (without the leading `/connect`).
@@ -93,8 +96,7 @@ impl<'a> ConnectService<'a> {
     pub fn list_lines(&self) -> Result<Vec<String>, ConnectError> {
         let mut lines = Vec::new();
         for p in self.registry.profiles() {
-            let connected =
-                resolve_connected(&p.api_key_env, &p.id, self.store)?.is_some();
+            let connected = resolve_connected(&p.api_key_env, &p.id, self.store)?.is_some();
             let active = self
                 .active_profile_id
                 .as_deref()
@@ -166,9 +168,7 @@ impl<'a> ConnectService<'a> {
 
         let (key, key_source) = if let Some(k) = api_key.map(str::trim).filter(|s| !s.is_empty()) {
             (k.to_string(), KeySource::Provided)
-        } else if let Some((k, src)) =
-            resolve_key(&profile.api_key_env, &profile.id, self.store)?
-        {
+        } else if let Some((k, src)) = resolve_key(&profile.api_key_env, &profile.id, self.store)? {
             (k, src)
         } else if profile.id == crate::ollama::PROFILE_ID {
             // Local Ollama does not require a cloud API key.
@@ -212,8 +212,7 @@ impl<'a> ConnectService<'a> {
                         .default_base_url
                         .as_deref()
                         .unwrap_or(crate::anthropic::DEFAULT_BASE_URL);
-                    crate::anthropic::verify_api_key(&key, base)
-                        .map_err(ConnectError::Message)?;
+                    crate::anthropic::verify_api_key(&key, base).map_err(ConnectError::Message)?;
                 }
                 id if id == crate::ollama::PROFILE_ID => {
                     let base = profile
@@ -299,6 +298,15 @@ impl<'a> ConnectService<'a> {
             return Ok(OauthPending::start_stub(&profile.id, auth_server));
         }
 
+        if profile.id == crate::openai_codex::PROFILE_ID {
+            let pending = OpenAiCodexOauthClient::start_device_code()
+                .map_err(|error| ConnectError::Oauth(error.to_string()))?;
+            if *system_browser {
+                try_open_browser(pending.open_url());
+            }
+            return Ok(pending);
+        }
+
         let client = if profile.id == "xai" {
             XaiOauthClient::from_env()
         } else {
@@ -326,6 +334,13 @@ impl<'a> ConnectService<'a> {
         if pending.profile_id != "xai" && pending.client_id == "stub" {
             return Ok(None);
         }
+        if pending.profile_id == crate::openai_codex::PROFILE_ID {
+            return match OpenAiCodexOauthClient::poll_token_once(pending) {
+                Ok(tokens) => Ok(Some(self.connect_oauth(&pending.profile_id, tokens)?)),
+                Err(OpenAiCodexOauthError::Pending | OpenAiCodexOauthError::SlowDown) => Ok(None),
+                Err(error) => Err(ConnectError::Oauth(error.to_string())),
+            };
+        }
         let client = XaiOauthClient {
             issuer: pending.auth_server.clone(),
             client_id: pending.client_id.clone(),
@@ -351,6 +366,28 @@ impl<'a> ConnectService<'a> {
             return Err(ConnectError::Oauth(
                 "stub OAuth cannot complete; unset FORGE_CONNECT_OAUTH_STUB/FIXTURE or use fixture connect".into(),
             ));
+        }
+        if pending.profile_id == crate::openai_codex::PROFILE_ID {
+            let deadline = std::time::Instant::now() + max_wait;
+            loop {
+                if std::time::Instant::now() >= deadline {
+                    return Err(ConnectError::Oauth("device authorization expired".into()));
+                }
+                match OpenAiCodexOauthClient::poll_token_once(pending) {
+                    Ok(tokens) => return self.connect_oauth(&pending.profile_id, tokens),
+                    Err(OpenAiCodexOauthError::Pending) => {
+                        std::thread::sleep(std::time::Duration::from_secs(
+                            pending.interval_secs.max(1),
+                        ));
+                    }
+                    Err(OpenAiCodexOauthError::SlowDown) => {
+                        std::thread::sleep(std::time::Duration::from_secs(
+                            pending.interval_secs.max(1) + 2,
+                        ));
+                    }
+                    Err(error) => return Err(ConnectError::Oauth(error.to_string())),
+                }
+            }
         }
         let client = XaiOauthClient {
             issuer: pending.auth_server.clone(),
@@ -521,6 +558,17 @@ impl<'a> ConnectService<'a> {
         let AuthMode::Oauth { auth_server, .. } = &profile.auth_mode else {
             return Ok(Some(tok));
         };
+        if profile.id == crate::openai_codex::PROFILE_ID {
+            return match OpenAiCodexOauthClient::refresh(&refresh) {
+                Ok(fresh) => {
+                    self.store.set_oauth(profile_id, fresh.clone())?;
+                    Ok(Some(fresh))
+                }
+                Err(error) => Err(ConnectError::Oauth(format!(
+                    "token refresh failed ({error}); run `/connect {profile_id}` again"
+                ))),
+            };
+        }
         let client = XaiOauthClient {
             issuer: auth_server.clone(),
             client_id: std::env::var("FORGE_XAI_OAUTH_CLIENT_ID")
@@ -555,20 +603,26 @@ impl<'a> ConnectService<'a> {
                 if let Some(tok) = tok {
                     let at = tok.access_token.trim();
                     // Never export fixture tokens to the live worker — they only exist for unit tests.
-                    if at.is_empty()
-                        || at.starts_with("fixture-")
-                        || at == "fixture-access-token"
-                    {
+                    if at.is_empty() || at.starts_with("fixture-") || at == "fixture-access-token" {
                         // skip — operator must complete real OAuth
                     } else {
-                        // LiteLLM xAI provider reads XAI_API_KEY as Bearer.
-                        out.push(("XAI_API_KEY".into(), at.to_string()));
+                        if profile.id == crate::openai_codex::PROFILE_ID {
+                            let account_id = crate::openai_codex::account_id_from_token(at)
+                                .map_err(ConnectError::Message)?;
+                            out.push((
+                                crate::openai_codex::ACCESS_TOKEN_ENV.into(),
+                                at.to_string(),
+                            ));
+                            out.push((crate::openai_codex::ACCOUNT_ID_ENV.into(), account_id));
+                        } else {
+                            // LiteLLM xAI provider reads XAI_API_KEY as Bearer.
+                            out.push(("XAI_API_KEY".into(), at.to_string()));
+                        }
                     }
                 }
             }
             AuthMode::ApiKey { .. } => {
-                if let Some((key, _)) =
-                    resolve_key(&profile.api_key_env, &profile.id, self.store)?
+                if let Some((key, _)) = resolve_key(&profile.api_key_env, &profile.id, self.store)?
                 {
                     if let Some(primary) = profile.api_key_env.first() {
                         out.push((primary.clone(), key.clone()));
@@ -578,20 +632,23 @@ impl<'a> ConnectService<'a> {
                         out.push((name.clone(), key.clone()));
                     }
                     // Provider-specific base URLs for LiteLLM / OpenAI-compatible routes.
-                    if let Some(base) = profile.default_base_url.clone().or_else(|| {
-                        match profile.id.as_str() {
-                            id if id == crate::opencode_go::PROFILE_ID => {
-                                Some(crate::opencode_go::DEFAULT_BASE_URL.into())
-                            }
-                            id if id == crate::opencode_zen::PROFILE_ID => {
-                                Some(crate::opencode_zen::DEFAULT_BASE_URL.into())
-                            }
-                            id if id == crate::ollama::PROFILE_ID => {
-                                Some(crate::ollama::DEFAULT_BASE_URL.into())
-                            }
-                            _ => None,
-                        }
-                    }) {
+                    if let Some(base) =
+                        profile
+                            .default_base_url
+                            .clone()
+                            .or_else(|| match profile.id.as_str() {
+                                id if id == crate::opencode_go::PROFILE_ID => {
+                                    Some(crate::opencode_go::DEFAULT_BASE_URL.into())
+                                }
+                                id if id == crate::opencode_zen::PROFILE_ID => {
+                                    Some(crate::opencode_zen::DEFAULT_BASE_URL.into())
+                                }
+                                id if id == crate::ollama::PROFILE_ID => {
+                                    Some(crate::ollama::DEFAULT_BASE_URL.into())
+                                }
+                                _ => None,
+                            })
+                    {
                         let env_name = match profile.id.as_str() {
                             id if id == crate::opencode_go::PROFILE_ID => {
                                 crate::opencode_go::API_BASE_ENV.to_string()
@@ -603,9 +660,7 @@ impl<'a> ConnectService<'a> {
                                 crate::ollama::API_BASE_ENV.to_string()
                             }
                             id if id == crate::openai::PROFILE_ID => "OPENAI_API_BASE".into(),
-                            id if id == crate::anthropic::PROFILE_ID => {
-                                "ANTHROPIC_API_BASE".into()
-                            }
+                            id if id == crate::anthropic::PROFILE_ID => "ANTHROPIC_API_BASE".into(),
                             other => format!("{}_API_BASE", other.to_ascii_uppercase()),
                         };
                         out.push((env_name, base));
@@ -642,12 +697,9 @@ impl<'a> ConnectService<'a> {
     }
 
     fn profile_or_err(&self, profile_id: &str) -> Result<ConnectProfile, ConnectError> {
-        self.registry
-            .get(profile_id)
-            .cloned()
-            .ok_or_else(|| {
-                ConnectError::UnknownProfile(profile_id.into(), self.registry.ids().join(", "))
-            })
+        self.registry.get(profile_id).cloned().ok_or_else(|| {
+            ConnectError::UnknownProfile(profile_id.into(), self.registry.ids().join(", "))
+        })
     }
 
     fn activate(

@@ -3,9 +3,11 @@
 mod anthropic;
 mod auth;
 mod catalog;
+mod oauth_openai_codex;
 mod oauth_xai;
 mod ollama;
 mod openai;
+mod openai_codex;
 mod opencode_go;
 mod opencode_zen;
 mod profile;
@@ -15,20 +17,28 @@ mod store;
 mod xai;
 
 pub use anthropic::{anthropic_profile, PROFILE_ID as ANTHROPIC_PROFILE_ID};
+pub use auth::{AuthMode, OauthPending, OauthTokens};
 pub use catalog::{
     credential_for_catalog, fetch_remote_models, models_for_picker, normalize_model_id,
     refresh_profile_catalog, CatalogEntry, ModelCatalogCache, DEFAULT_TTL_SECS,
 };
-pub use auth::{AuthMode, OauthPending, OauthTokens};
-pub use oauth_xai::{try_open_browser, XaiOauthClient, XaiOauthError, DEFAULT_CLIENT_ID, DEFAULT_ISSUER, DEFAULT_SCOPES};
+pub use oauth_xai::{
+    try_open_browser, XaiOauthClient, XaiOauthError, DEFAULT_CLIENT_ID, DEFAULT_ISSUER,
+    DEFAULT_SCOPES,
+};
 pub use ollama::{
-    ollama_profile, API_BASE_ENV as OLLAMA_API_BASE_ENV, DEFAULT_BASE_URL as OLLAMA_DEFAULT_BASE_URL,
-    PROFILE_ID as OLLAMA_PROFILE_ID,
+    ollama_profile, API_BASE_ENV as OLLAMA_API_BASE_ENV,
+    DEFAULT_BASE_URL as OLLAMA_DEFAULT_BASE_URL, PROFILE_ID as OLLAMA_PROFILE_ID,
 };
 pub use openai::{openai_profile, PROFILE_ID as OPENAI_PROFILE_ID};
+pub use openai_codex::{
+    openai_codex_profile, ACCESS_TOKEN_ENV as OPENAI_CODEX_ACCESS_TOKEN_ENV,
+    ACCOUNT_ID_ENV as OPENAI_CODEX_ACCOUNT_ID_ENV, PROFILE_ID as OPENAI_CODEX_PROFILE_ID,
+};
 pub use opencode_go::{
-    opencode_go_profile, verify_api_key as verify_opencode_go_api_key, API_BASE_ENV as OPENCODE_API_BASE_ENV,
-    DEFAULT_BASE_URL as OPENCODE_GO_DEFAULT_BASE_URL, PROFILE_ID as OPENCODE_GO_PROFILE_ID,
+    opencode_go_profile, verify_api_key as verify_opencode_go_api_key,
+    API_BASE_ENV as OPENCODE_API_BASE_ENV, DEFAULT_BASE_URL as OPENCODE_GO_DEFAULT_BASE_URL,
+    PROFILE_ID as OPENCODE_GO_PROFILE_ID,
 };
 pub use opencode_zen::{
     opencode_zen_profile, verify_api_key as verify_opencode_zen_api_key,
@@ -49,6 +59,7 @@ pub(crate) fn register_builtin_profiles(registry: &mut ConnectRegistry) {
     registry.register(opencode_go::opencode_go_profile());
     registry.register(opencode_zen::opencode_zen_profile());
     registry.register(openai::openai_profile());
+    registry.register(openai_codex::openai_codex_profile());
     registry.register(anthropic::anthropic_profile());
     registry.register(ollama::ollama_profile());
 }
@@ -64,9 +75,10 @@ mod tests {
         assert!(r.get("opencode_go").unwrap().needs_tui_api_key_prompt());
         assert!(r.get("opencode_zen").unwrap().needs_tui_api_key_prompt());
         assert!(r.get("openai").unwrap().needs_tui_api_key_prompt());
+        assert!(!r.get("openai_codex").unwrap().needs_tui_api_key_prompt());
         assert!(r.get("anthropic").unwrap().needs_tui_api_key_prompt());
         assert!(!r.get("ollama").unwrap().needs_tui_api_key_prompt());
-        assert_eq!(r.profiles().len(), 6);
+        assert_eq!(r.profiles().len(), 7);
         assert!(r
             .get("opencode_zen")
             .unwrap()

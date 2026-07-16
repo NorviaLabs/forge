@@ -55,11 +55,11 @@ https://console.anthropic.com/settings/keys.",
         .call();
     match resp {
         Ok(r) if (200..300).contains(&r.status()) => Ok(()),
-        Ok(r) if r.status() == 401 || r.status() == 403 => Err(
-            "Anthropic rejected the API key (unauthorized). \
+        Ok(r) if r.status() == 401 || r.status() == 403 => {
+            Err("Anthropic rejected the API key (unauthorized). \
 Create a key at https://console.anthropic.com/settings/keys."
-                .into(),
-        ),
+                .into())
+        }
         Ok(r) if r.status() == 404 => {
             // Older APIs may not expose /v1/models — fall back to a tiny messages call.
             verify_via_messages(key, base)
@@ -75,11 +75,11 @@ Create a key at https://console.anthropic.com/settings/keys."
                 ))
             }
         }
-        Err(ureq::Error::Status(code, _)) if code == 401 || code == 403 => Err(
-            "Anthropic rejected the API key (unauthorized). \
+        Err(ureq::Error::Status(code, _)) if code == 401 || code == 403 => {
+            Err("Anthropic rejected the API key (unauthorized). \
 Create a key at https://console.anthropic.com/settings/keys."
-                .into(),
-        ),
+                .into())
+        }
         Err(ureq::Error::Status(code, _)) if code == 404 => verify_via_messages(key, base),
         Err(ureq::Error::Status(code, _)) if code < 500 => Ok(()),
         Err(other) => Err(format!(
@@ -103,11 +103,11 @@ fn verify_via_messages(key: &str, base: &str) -> Result<(), String> {
         .send_string(body)
     {
         Ok(_) => Ok(()),
-        Err(ureq::Error::Status(401, _)) | Err(ureq::Error::Status(403, _)) => Err(
-            "Anthropic rejected the API key (unauthorized). \
+        Err(ureq::Error::Status(401, _)) | Err(ureq::Error::Status(403, _)) => {
+            Err("Anthropic rejected the API key (unauthorized). \
 Create a key at https://console.anthropic.com/settings/keys."
-                .into(),
-        ),
+                .into())
+        }
         Err(ureq::Error::Status(_, _)) => Ok(()), // 400/404/etc. means auth passed
         Err(other) => Err(format!(
             "Could not reach Anthropic to verify key ({other}). Check network."
