@@ -44,7 +44,10 @@ impl Widget for QueueBar<'_> {
             .enumerate()
             .take(max_rows)
             .map(|(i, t)| {
-                let preview: String = t.chars().take(inner.width.saturating_sub(6) as usize).collect();
+                let preview: String = t
+                    .chars()
+                    .take(inner.width.saturating_sub(6) as usize)
+                    .collect();
                 let ellipsis = if t.chars().count() > preview.chars().count() {
                     "…"
                 } else {

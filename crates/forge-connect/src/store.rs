@@ -28,6 +28,11 @@ struct CredentialsFile {
     /// profile_id → oauth tokens
     #[serde(default)]
     oauth: BTreeMap<String, OauthTokens>,
+    /// Last non-secret provider/model selection used by the interactive client.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_profile_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_model: Option<String>,
 }
 
 /// File-backed credential store. Secrets are never returned in status Display APIs.
@@ -105,6 +110,37 @@ impl CredentialStore {
         }
         ids.sort();
         Ok(ids)
+    }
+
+    /// Return the last provider/model selection, if one was recorded.
+    pub fn last_selection(&self) -> Result<Option<(String, String)>, StoreError> {
+        let file = self.load()?;
+        Ok(match (file.last_profile_id, file.last_model) {
+            (Some(profile_id), Some(model))
+                if !profile_id.trim().is_empty() && !model.trim().is_empty() =>
+            {
+                Some((profile_id, model))
+            }
+            _ => None,
+        })
+    }
+
+    /// Persist the last provider/model selection. This contains no credentials.
+    pub fn set_last_selection(&self, profile_id: &str, model: &str) -> Result<(), StoreError> {
+        let mut file = self.load()?;
+        file.last_profile_id = Some(profile_id.trim().to_string());
+        file.last_model = Some(model.trim().to_string());
+        self.save(&file)
+    }
+
+    pub fn clear_last_selection(&self, profile_id: Option<&str>) -> Result<(), StoreError> {
+        let mut file = self.load()?;
+        if profile_id.is_none() || file.last_profile_id.as_deref() == profile_id {
+            file.last_profile_id = None;
+            file.last_model = None;
+            self.save(&file)?;
+        }
+        Ok(())
     }
 
     fn load(&self) -> Result<CredentialsFile, StoreError> {
@@ -215,6 +251,24 @@ mod tests {
             resolve_connected(&[], "xai", &store).unwrap(),
             Some(KeySource::Oauth)
         );
+    }
+
+    #[test]
+    fn last_selection_roundtrip() {
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+        assert_eq!(store.last_selection().unwrap(), None);
+        store
+            .set_last_selection("anthropic", "anthropic/claude-sonnet-4-5")
+            .unwrap();
+        assert_eq!(
+            store.last_selection().unwrap(),
+            Some(("anthropic".into(), "anthropic/claude-sonnet-4-5".into()))
+        );
+        store.clear_last_selection(Some("openai")).unwrap();
+        assert!(store.last_selection().unwrap().is_some());
+        store.clear_last_selection(Some("anthropic")).unwrap();
+        assert_eq!(store.last_selection().unwrap(), None);
     }
 
     #[test]

@@ -4,6 +4,7 @@ mod activity;
 mod app;
 mod commands;
 mod conversation;
+mod effort;
 mod history;
 mod layout;
 mod msg_queue;
@@ -17,22 +18,20 @@ mod widgets;
 
 pub use activity::{ActivityFeed, ActivityItem, ActivityKind};
 pub use app::{run_tui, TuiApp, TuiError, TuiRuntimeConfig};
-pub use history::InputHistory;
-pub use commands::{
-    help_text, parse_slash, CommandError, SlashCommand, SttAction, WorktreeAction,
-};
-pub use msg_queue::MessageQueue;
+pub use commands::{help_text, parse_slash, CommandError, SlashCommand, SttAction, WorktreeAction};
 pub use conversation::{
     BannerKind, ChatItem, ConversationModel, ConversationViewOpts, StreamWaitPhase, ToolCardState,
 };
+pub use effort::ReasoningEffort;
+pub use history::InputHistory;
 pub use layout::{
     is_too_small, split_areas, split_areas_ex, split_areas_full, LayoutRegions, MIN_HEIGHT,
     MIN_WIDTH,
 };
+pub use msg_queue::MessageQueue;
 pub use overlays::{
-    default_models, filter_palette, handle_overlay_key, models_from_catalog,
-    default_palette_items, Key as OverlayKey,
-    Overlay, OverlayAction,
+    default_models, default_palette_items, filter_palette, handle_overlay_key, models_from_catalog,
+    Key as OverlayKey, Overlay, OverlayAction,
 };
 pub use sidebar::SidebarModel;
 pub use widgets::{

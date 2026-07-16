@@ -3,8 +3,8 @@
 use thiserror::Error;
 
 use crate::auth::{AuthMode, OauthPending, OauthTokens};
-use crate::oauth_openai_codex::{OpenAiCodexOauthClient, OpenAiCodexOauthError};
-use crate::oauth_xai::{try_open_browser, XaiOauthClient, XaiOauthError};
+use crate::oauth_dispatch::{OauthDispatcher, PollResult};
+use crate::oauth_xai::try_open_browser;
 use crate::profile::{ConnectOutcome, ConnectProfile, ConnectStatus, KeySource};
 use crate::registry::ConnectRegistry;
 use crate::store::{resolve_connected, resolve_key, CredentialStore, StoreError};
@@ -276,7 +276,7 @@ impl<'a> ConnectService<'a> {
         self.activate(&profile, KeySource::Oauth)
     }
 
-    /// Start OAuth pending session (real xAI device-code, matching Grok Build).
+    /// Start an OAuth device-code session for the selected provider.
     pub fn start_oauth(&self, profile_id: &str) -> Result<OauthPending, ConnectError> {
         let profile = self.profile_or_err(profile_id)?;
         let AuthMode::Oauth {
@@ -298,28 +298,7 @@ impl<'a> ConnectService<'a> {
             return Ok(OauthPending::start_stub(&profile.id, auth_server));
         }
 
-        if profile.id == crate::openai_codex::PROFILE_ID {
-            let pending = OpenAiCodexOauthClient::start_device_code()
-                .map_err(|error| ConnectError::Oauth(error.to_string()))?;
-            if *system_browser {
-                try_open_browser(pending.open_url());
-            }
-            return Ok(pending);
-        }
-
-        let client = if profile.id == "xai" {
-            XaiOauthClient::from_env()
-        } else {
-            XaiOauthClient {
-                issuer: auth_server.clone(),
-                ..XaiOauthClient::from_env()
-            }
-        };
-
-        let pending = client
-            .start_device_code(&profile.id)
-            .map_err(|e| ConnectError::Oauth(e.to_string()))?;
-
+        let pending = OauthDispatcher::start(&profile).map_err(ConnectError::Oauth)?;
         if *system_browser {
             try_open_browser(pending.open_url());
         }
@@ -334,29 +313,15 @@ impl<'a> ConnectService<'a> {
         if pending.profile_id != "xai" && pending.client_id == "stub" {
             return Ok(None);
         }
-        if pending.profile_id == crate::openai_codex::PROFILE_ID {
-            return match OpenAiCodexOauthClient::poll_token_once(pending) {
-                Ok(tokens) => Ok(Some(self.connect_oauth(&pending.profile_id, tokens)?)),
-                Err(OpenAiCodexOauthError::Pending | OpenAiCodexOauthError::SlowDown) => Ok(None),
-                Err(error) => Err(ConnectError::Oauth(error.to_string())),
-            };
-        }
-        let client = XaiOauthClient {
-            issuer: pending.auth_server.clone(),
-            client_id: pending.client_id.clone(),
-            ..XaiOauthClient::from_env()
-        };
-        match client.poll_token_once(pending) {
-            Ok(tokens) => {
-                let out = self.connect_oauth(&pending.profile_id, tokens)?;
-                Ok(Some(out))
+        match OauthDispatcher::poll(pending).map_err(ConnectError::Oauth)? {
+            PollResult::Complete(tokens) => {
+                Ok(Some(self.connect_oauth(&pending.profile_id, tokens)?))
             }
-            Err(XaiOauthError::AuthorizationPending) | Err(XaiOauthError::SlowDown) => Ok(None),
-            Err(e) => Err(ConnectError::Oauth(e.to_string())),
+            PollResult::Pending | PollResult::SlowDown => Ok(None),
         }
     }
 
-    /// Block until device login completes (CLI / `forge connect xai`).
+    /// Block until device login completes for CLI callers.
     pub fn complete_oauth_device_flow(
         &mut self,
         pending: &OauthPending,
@@ -367,37 +332,23 @@ impl<'a> ConnectService<'a> {
                 "stub OAuth cannot complete; unset FORGE_CONNECT_OAUTH_STUB/FIXTURE or use fixture connect".into(),
             ));
         }
-        if pending.profile_id == crate::openai_codex::PROFILE_ID {
-            let deadline = std::time::Instant::now() + max_wait;
-            loop {
-                if std::time::Instant::now() >= deadline {
-                    return Err(ConnectError::Oauth("device authorization expired".into()));
+        let deadline = std::time::Instant::now() + max_wait;
+        let mut interval = std::time::Duration::from_secs(pending.interval_secs.max(1));
+        loop {
+            if std::time::Instant::now() >= deadline {
+                return Err(ConnectError::Oauth("device authorization expired".into()));
+            }
+            match OauthDispatcher::poll(pending).map_err(ConnectError::Oauth)? {
+                PollResult::Complete(tokens) => {
+                    return self.connect_oauth(&pending.profile_id, tokens)
                 }
-                match OpenAiCodexOauthClient::poll_token_once(pending) {
-                    Ok(tokens) => return self.connect_oauth(&pending.profile_id, tokens),
-                    Err(OpenAiCodexOauthError::Pending) => {
-                        std::thread::sleep(std::time::Duration::from_secs(
-                            pending.interval_secs.max(1),
-                        ));
-                    }
-                    Err(OpenAiCodexOauthError::SlowDown) => {
-                        std::thread::sleep(std::time::Duration::from_secs(
-                            pending.interval_secs.max(1) + 2,
-                        ));
-                    }
-                    Err(error) => return Err(ConnectError::Oauth(error.to_string())),
+                PollResult::Pending => std::thread::sleep(interval),
+                PollResult::SlowDown => {
+                    interval += std::time::Duration::from_secs(5);
+                    std::thread::sleep(interval);
                 }
             }
         }
-        let client = XaiOauthClient {
-            issuer: pending.auth_server.clone(),
-            client_id: pending.client_id.clone(),
-            ..XaiOauthClient::from_env()
-        };
-        let tokens = client
-            .poll_until_tokens(pending, max_wait)
-            .map_err(|e| ConnectError::Oauth(e.to_string()))?;
-        self.connect_oauth(&pending.profile_id, tokens)
     }
 
     /// Connect dispatch used by CLI/TUI after collecting secrets.
@@ -514,6 +465,7 @@ impl<'a> ConnectService<'a> {
             ));
         }
         let removed = self.store.clear(&id)?;
+        self.store.clear_last_selection(Some(&id))?;
         if removed {
             Ok(format!(
                 "cleared stored credentials for `{id}` (env unchanged if set)"
@@ -555,34 +507,16 @@ impl<'a> ConnectService<'a> {
             return Ok(Some(tok));
         };
         let profile = self.profile_or_err(profile_id)?;
-        let AuthMode::Oauth { auth_server, .. } = &profile.auth_mode else {
+        let AuthMode::Oauth { .. } = &profile.auth_mode else {
             return Ok(Some(tok));
         };
-        if profile.id == crate::openai_codex::PROFILE_ID {
-            return match OpenAiCodexOauthClient::refresh(&refresh) {
-                Ok(fresh) => {
-                    self.store.set_oauth(profile_id, fresh.clone())?;
-                    Ok(Some(fresh))
-                }
-                Err(error) => Err(ConnectError::Oauth(format!(
-                    "token refresh failed ({error}); run `/connect {profile_id}` again"
-                ))),
-            };
-        }
-        let client = XaiOauthClient {
-            issuer: auth_server.clone(),
-            client_id: std::env::var("FORGE_XAI_OAUTH_CLIENT_ID")
-                .or_else(|_| std::env::var("GROK_OAUTH2_CLIENT_ID"))
-                .unwrap_or_else(|_| crate::oauth_xai::DEFAULT_CLIENT_ID.into()),
-            ..XaiOauthClient::from_env()
-        };
-        match client.refresh_access_token(&refresh) {
+        match OauthDispatcher::refresh(&profile, &refresh) {
             Ok(fresh) => {
                 self.store.set_oauth(profile_id, fresh.clone())?;
                 Ok(Some(fresh))
             }
-            Err(e) => Err(ConnectError::Oauth(format!(
-                "token refresh failed ({e}); run `/connect {profile_id}` again"
+            Err(error) => Err(ConnectError::Oauth(format!(
+                "token refresh failed ({error}); run `/connect {profile_id}` again"
             ))),
         }
     }
@@ -605,19 +539,14 @@ impl<'a> ConnectService<'a> {
                     // Never export fixture tokens to the live worker — they only exist for unit tests.
                     if at.is_empty() || at.starts_with("fixture-") || at == "fixture-access-token" {
                         // skip — operator must complete real OAuth
+                    } else if profile.id == crate::openai_codex::PROFILE_ID {
+                        let account_id = crate::openai_codex::account_id_from_token(at)
+                            .map_err(ConnectError::Message)?;
+                        out.push((crate::openai_codex::ACCESS_TOKEN_ENV.into(), at.to_string()));
+                        out.push((crate::openai_codex::ACCOUNT_ID_ENV.into(), account_id));
                     } else {
-                        if profile.id == crate::openai_codex::PROFILE_ID {
-                            let account_id = crate::openai_codex::account_id_from_token(at)
-                                .map_err(ConnectError::Message)?;
-                            out.push((
-                                crate::openai_codex::ACCESS_TOKEN_ENV.into(),
-                                at.to_string(),
-                            ));
-                            out.push((crate::openai_codex::ACCOUNT_ID_ENV.into(), account_id));
-                        } else {
-                            // LiteLLM xAI provider reads XAI_API_KEY as Bearer.
-                            out.push(("XAI_API_KEY".into(), at.to_string()));
-                        }
+                        // LiteLLM xAI provider reads XAI_API_KEY as Bearer.
+                        out.push(("XAI_API_KEY".into(), at.to_string()));
                     }
                 }
             }
@@ -713,6 +642,9 @@ impl<'a> ConnectService<'a> {
             .to_string();
         self.active_profile_id = Some(profile.id.clone());
         self.active_model = Some(model.clone());
+        // Selection persistence is convenience metadata; never make a successful
+        // credential connection fail because it cannot be written.
+        let _ = self.store.set_last_selection(&profile.id, &model);
         Ok(ConnectOutcome {
             profile_id: profile.id.clone(),
             model,
