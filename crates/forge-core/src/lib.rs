@@ -911,6 +911,11 @@ impl AgentSession {
     pub fn apply_provider_env(&self, pairs: &[(String, String)]) {
         self.model.apply_provider_env(pairs);
     }
+
+    /// Clear provider credentials from the model client and recycle the worker.
+    pub fn clear_provider_env(&self) {
+        self.model.clear_provider_env();
+    }
 }
 
 impl AgentSession {

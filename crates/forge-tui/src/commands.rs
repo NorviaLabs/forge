@@ -49,6 +49,10 @@ pub enum SlashCommand {
     Copy,
     /// Clear chat banners / notices / soft reset of UI chrome
     Clear,
+    /// Disconnect from the current provider and clear stored credentials.
+    Disconnect {
+        profile_id: Option<String>,
+    },
     /// Stage all changes, generate a commit message from the changeset, commit, and push.
     Sync,
     /// Configure STT: `/stt` status or `/stt speed fast|normal|slow`.
@@ -121,6 +125,9 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
             tail: parts.next().and_then(|s| s.parse().ok()),
         }),
         "quit" | "exit" => Ok(SlashCommand::Quit),
+        "disconnect" => Ok(SlashCommand::Disconnect {
+            profile_id: parts.next().map(|s| s.to_string()),
+        }),
         "approve" => Ok(SlashCommand::Approve),
         "deny" => Ok(SlashCommand::Deny),
         "compact" => Ok(SlashCommand::Compact),
@@ -224,6 +231,10 @@ mod tests {
         assert!(parse_slash("/reset").unwrap().is_err());
         assert!(parse_slash("/context").unwrap().is_err());
         assert!(parse_slash("/worktree merge").unwrap().is_err());
+        assert_eq!(
+            parse_slash("/disconnect").unwrap().unwrap(),
+            SlashCommand::Disconnect { profile_id: None }
+        );
     }
 
     #[test]
