@@ -31,4 +31,6 @@ impl ModelClient for MockModelClient {
         }
         Ok(g.remove(0))
     }
+
+    fn clear_provider_env(&self) {}
 }
