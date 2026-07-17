@@ -123,7 +123,7 @@ pub struct TuiApp {
     turn_started: Option<Instant>,
     /// When the first thinking token arrived.
     thinking_started: Option<Instant>,
-    /// Duration of the thinking phase once it ends (for "Thought for Xs").
+    /// Duration of the thinking phase once it ends (used for persistence/telemetry).
     thought_secs: Option<f64>,
     /// Optional web_search label for chrome (`mock` / `off` / provider id).
     pub web_search_label: Option<String>,
@@ -701,7 +701,7 @@ impl TuiApp {
     }
 
     fn open_model_picker_after_connect(&mut self, profile_id: &str) {
-        let items = self.model_picker_items(false);
+        let items = self.model_picker_items(true);
         let mut overlay = Overlay::model_open_with(items);
         overlay.focus_model(&self.runtime.model_label);
         self.overlay = Some(overlay);
@@ -1114,7 +1114,7 @@ impl TuiApp {
         );
         self.notices = lines;
         // Open picker with fresh data
-        let items = self.model_picker_items(false);
+        let items = self.model_picker_items(true);
         let mut ov = Overlay::model_open_with(items);
         ov.focus_model(&self.runtime.model_label);
         self.overlay = Some(ov);
@@ -2398,7 +2398,7 @@ Reply with ONLY the commit message line.\n\n\
         }
 
         if provider.is_none() && model.is_none() {
-            let items = self.model_picker_items(false);
+            let items = self.model_picker_items(true);
             let mut overlay = Overlay::model_open_with(items);
             overlay.focus_model(&self.runtime.model_label);
             self.overlay = Some(overlay);
@@ -2510,26 +2510,6 @@ Reply with ONLY the commit message line.\n\n\
                         .await
                 }
                 Ok(SlashCommand::Effort { level }) => self.handle_effort_command(level),
-                Ok(SlashCommand::Journal { tail }) => {
-                    let n = self.session.events.len();
-                    let take = tail.unwrap_or(12).min(n).min(20);
-                    self.status_message = format!("{n} events · showing last {take}");
-                    if n == 0 {
-                        self.notices = vec!["Journal is empty for this session.".into()];
-                    } else {
-                        self.notices = self
-                            .session
-                            .events
-                            .iter()
-                            .rev()
-                            .take(take)
-                            .map(|e| format!("{e:?}"))
-                            .collect::<Vec<_>>()
-                            .into_iter()
-                            .rev()
-                            .collect();
-                    }
-                }
                 Ok(SlashCommand::Resume { session_id }) => {
                     let msg =
                         format!("To resume {session_id}, restart: forge --resume {session_id}");
@@ -4054,8 +4034,8 @@ mod tests {
             suggestions.iter().map(|s| &s.cmd).collect::<Vec<_>>()
         );
         for cmd in [
-            "/status", "/connect", "/model", "/journal", "/approve", "/deny", "/compact",
-            "/resume", "/sync", "/quit",
+            "/status", "/connect", "/model", "/approve", "/deny", "/compact", "/resume", "/sync",
+            "/quit",
         ] {
             assert!(
                 suggestions.iter().any(|s| s.cmd == cmd),

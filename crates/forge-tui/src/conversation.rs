@@ -115,6 +115,37 @@ fn spinner_frame() -> &'static str {
     SPINNER[((ms / 80) as usize) % SPINNER.len()]
 }
 
+fn processing_label_spans(label: &str, phase_offset: f64, speed_ms: f64) -> Vec<Span<'static>> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let t = (ms as f64 / speed_ms) + phase_offset;
+    let chars: Vec<char> = label.chars().collect();
+    if chars.is_empty() {
+        return vec![Span::styled(String::new(), theme::text())];
+    }
+
+    chars
+        .into_iter()
+        .enumerate()
+        .map(|(idx, ch)| {
+            let wave = ((idx as f64 * 0.75) + t).sin();
+            let style = if ch == ' ' {
+                theme::text()
+            } else if wave > 0.65 {
+                theme::text().add_modifier(Modifier::BOLD)
+            } else if wave > 0.0 {
+                theme::info()
+            } else {
+                theme::muted()
+            };
+            Span::styled(ch.to_string(), style)
+        })
+        .collect()
+}
+
 /// Format elapsed time in 0.1s increments through 5s, then whole seconds.
 pub fn format_elapsed_tenths(secs: f64) -> String {
     let secs = secs.max(0.0);
@@ -334,35 +365,41 @@ impl ConversationModel {
                     let parts = wrap(text, width.saturating_sub(3));
                     for (i, l) in parts.iter().enumerate() {
                         let gutter = if i == 0 { "› " } else { "  " };
-                        lines.push(Line::from(vec![
-                            Span::styled(gutter, theme::info().add_modifier(Modifier::BOLD)),
-                            Span::styled(l.clone(), theme::text()),
-                        ]));
+                        lines.push(
+                            Line::from(vec![
+                                Span::styled(gutter, theme::info().add_modifier(Modifier::BOLD)),
+                                Span::styled(l.clone(), theme::text()),
+                            ])
+                            .style(theme::user_message()),
+                        );
                     }
                     if gap {
                         lines.push(Line::from(""));
                     }
                 }
-                // Thinking: always show the body; completed thoughts also show duration.
+                // Thinking: show the live body while processing; hide completed thoughts.
                 ChatItem::Thinking {
                     text,
                     duration_secs,
                 } => {
+                    if duration_secs.is_some() && !self.opts.busy {
+                        if gap {
+                            lines.push(Line::from(""));
+                        }
+                        continue;
+                    }
                     // Providers sometimes wrap the entire reasoning summary
                     // in Markdown bold markers. Thinking already has its own
                     // visual treatment, so do not expose those delimiters.
                     let text = text.replace("**", "");
                     for l in wrap(&text, width.saturating_sub(3)) {
-                        lines.push(Line::from(vec![
-                            Span::styled("· ", theme::dim()),
-                            Span::styled(l, theme::muted().add_modifier(Modifier::ITALIC)),
-                        ]));
-                    }
-                    if let Some(secs) = duration_secs {
-                        lines.push(Line::from(Span::styled(
-                            format!("  Thought for {}", format_elapsed_tenths(*secs)),
-                            theme::dim(),
-                        )));
+                        lines.push(
+                            Line::from(vec![
+                                Span::styled("⋯ ", theme::info().add_modifier(Modifier::BOLD)),
+                                Span::styled(l, theme::muted().add_modifier(Modifier::ITALIC)),
+                            ])
+                            .style(theme::thinking_message()),
+                        );
                     }
                     if gap {
                         lines.push(Line::from(""));
@@ -382,7 +419,7 @@ impl ConversationModel {
                             theme::brand().add_modifier(Modifier::BOLD),
                         )];
                         spans.extend(line.spans);
-                        lines.push(Line::from(spans));
+                        lines.push(Line::from(spans).style(theme::assistant_message()));
                     }
                     if long_response {
                         lines.push(horizontal_rule(width));
@@ -526,18 +563,33 @@ impl ConversationModel {
             let spin = spinner_frame();
             let t = format_elapsed_tenths(elapsed);
             let label = match phase {
-                StreamWaitPhase::Waiting => "Waiting for response ...",
+                StreamWaitPhase::Waiting => "Working...",
                 StreamWaitPhase::Thinking => "Thinking...",
             };
-            lines.push(Line::from(Span::styled(
-                format!("  {spin} {label} {t}"),
+            let mut spans = vec![Span::styled(
+                format!("  {spin} "),
                 theme::info().add_modifier(Modifier::ITALIC),
-            )));
+            )];
+            spans.extend(processing_label_spans(
+                label,
+                match phase {
+                    StreamWaitPhase::Waiting => 0.0,
+                    StreamWaitPhase::Thinking => 1.3,
+                },
+                match phase {
+                    StreamWaitPhase::Waiting => 140.0,
+                    StreamWaitPhase::Thinking => 175.0,
+                },
+            ));
+            spans.push(Span::styled(format!(" {t}"), theme::dim()));
+            lines.push(Line::from(spans).style(theme::thinking_message()));
         } else if self.opts.busy {
-            lines.push(Line::from(Span::styled(
-                format!("  {}  Esc", spinner_frame()),
+            let mut spans = vec![Span::styled(
+                format!("  {} ", spinner_frame()),
                 theme::info().add_modifier(Modifier::ITALIC),
-            )));
+            )];
+            spans.extend(processing_label_spans("Working...", 2.1, 140.0));
+            lines.push(Line::from(spans).style(theme::thinking_message()));
         }
         lines
     }
@@ -961,12 +1013,12 @@ mod tests {
             "tool call should not render:\n{rendered}"
         );
         assert!(
-            rendered.contains("Thought for 2.4s"),
-            "expected thought duration summary:\n{rendered}"
+            !rendered.contains("Thought for"),
+            "completed thought summary should be hidden:\n{rendered}"
         );
         assert!(
-            rendered.contains("ponder"),
-            "finished thinking body should remain visible:\n{rendered}"
+            !rendered.contains("ponder"),
+            "completed thinking body should be hidden:\n{rendered}"
         );
         assert!(
             !rendered.contains("**"),
@@ -975,7 +1027,7 @@ mod tests {
     }
 
     #[test]
-    fn thinking_remains_visible_in_lines() {
+    fn completed_thinking_is_hidden_in_lines() {
         let msgs = vec![Message {
             role: MessageRole::Assistant,
             content: "ans".into(),
@@ -1006,12 +1058,50 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(
-            text.contains("Thought for 3.1s"),
-            "expected Thought for summary, got:\n{text}"
+            !text.contains("Thought for"),
+            "completed thought summary should be hidden, got:\n{text}"
         );
         assert!(
-            text.contains("long thinking"),
-            "thinking body should remain visible:\n{text}"
+            !text.contains("long thinking"),
+            "completed thinking body should be hidden, got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn active_thinking_wraps_across_lines() {
+        let msgs = vec![Message {
+            role: MessageRole::Assistant,
+            content: "ans".into(),
+            tool_call_id: None,
+            name: None,
+            thinking: Some("this is a very long active thinking message that should wrap into multiple lines in the conversation pane".into()),
+            thinking_duration_secs: None,
+            tool_calls: vec![],
+        }];
+        let m = ConversationModel::from_messages(
+            &msgs,
+            &[],
+            SessionStatus::Running,
+            ConversationViewOpts::default(),
+        );
+        let rendered_lines: Vec<String> = m
+            .lines()
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect();
+        let thought_lines = rendered_lines
+            .iter()
+            .filter(|line| line.starts_with("⋯ "))
+            .count();
+        assert!(
+            thought_lines > 1,
+            "active thinking should wrap to multiple lines, got:\n{}",
+            rendered_lines.join("\n")
         );
     }
 
@@ -1134,7 +1224,7 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(text.contains("Waiting for response"), "{text}");
+        assert!(text.contains("Working..."), "{text}");
         assert!(text.contains("0.3s"), "{text}");
     }
 
