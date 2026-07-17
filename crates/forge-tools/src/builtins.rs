@@ -3,7 +3,9 @@ use forge_types::{SideEffectClass, ToolOutput};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::path::PathBuf;
 use std::process::Stdio;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::process::Command;
 
 use crate::registry::ToolContext;
@@ -79,6 +81,55 @@ pub struct WriteFileArgs {
 
 pub struct WriteFileTool;
 
+fn unique_temp_path(label: &str) -> PathBuf {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    std::env::temp_dir().join(format!(
+        "forge-write-{label}-{stamp}-{}",
+        std::process::id()
+    ))
+}
+
+async fn unified_diff(path: &str, old: Option<&str>, new: &str) -> Result<String, ToolError> {
+    let old_path = unique_temp_path("old");
+    let new_path = unique_temp_path("new");
+    let old_content = old.unwrap_or("");
+    tokio::fs::write(&old_path, old_content).await?;
+    tokio::fs::write(&new_path, new).await?;
+
+    let out = Command::new("git")
+        .arg("diff")
+        .arg("--no-index")
+        .arg("--no-color")
+        .arg("--unified=999999")
+        .arg("--label")
+        .arg(format!("a/{path}"))
+        .arg("--label")
+        .arg(format!("b/{path}"))
+        .arg(&old_path)
+        .arg(&new_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| ToolError::Execution(e.to_string()))?;
+
+    let _ = tokio::fs::remove_file(&old_path).await;
+    let _ = tokio::fs::remove_file(&new_path).await;
+
+    let mut diff = String::from_utf8_lossy(&out.stdout).into_owned();
+    let err = String::from_utf8_lossy(&out.stderr);
+    if !err.trim().is_empty() {
+        if !diff.is_empty() {
+            diff.push('\n');
+        }
+        diff.push_str(&err);
+    }
+    Ok(diff)
+}
+
 #[async_trait]
 impl Tool for WriteFileTool {
     fn name(&self) -> &str {
@@ -98,12 +149,19 @@ impl Tool for WriteFileTool {
         let a: WriteFileArgs =
             serde_json::from_value(args).map_err(|e| ToolError::Execution(e.to_string()))?;
         let path = ctx.resolve_path(&a.path)?;
+        let old = tokio::fs::read_to_string(&path).await.ok();
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
         tokio::fs::write(&path, a.content.as_bytes()).await?;
+        let diff = unified_diff(&a.path, old.as_deref(), &a.content).await?;
+        let content = if diff.trim().is_empty() {
+            format!("wrote {} bytes to {}", a.content.len(), a.path)
+        } else {
+            diff
+        };
         Ok(ToolOutput {
-            content: format!("wrote {} bytes to {}", a.content.len(), a.path),
+            content,
             is_error: false,
         })
     }
