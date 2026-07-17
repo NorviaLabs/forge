@@ -206,7 +206,20 @@ impl ConversationModel {
                     }
                 }
                 // Tool results are not shown as chat messages (keeps the transcript clean).
-                MessageRole::Tool => {}
+                MessageRole::Tool => {
+                    let name = m.name.as_deref().unwrap_or("tool");
+                    if looks_like_diff(&m.content)
+                        || name.contains("write")
+                        || name.contains("search_replace")
+                        || name == "edit"
+                        || name == "git"
+                    {
+                        items.push(ChatItem::DiffCard {
+                            path: extract_path_hint(name, &m.content),
+                            lines: m.content.lines().map(|s| s.to_string()).collect(),
+                        });
+                    }
+                }
             }
         }
         for e in events {
@@ -1160,6 +1173,44 @@ mod tests {
         );
         // Empty chat → welcome banner only
         assert!(matches!(m.items[0], ChatItem::Banner { .. }));
+    }
+
+    #[test]
+    fn diff_like_tool_messages_render_as_diff_cards() {
+        let msgs = vec![Message {
+            role: MessageRole::Tool,
+            content: "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+new\n"
+                .into(),
+            tool_call_id: Some("1".into()),
+            name: Some("write_file".into()),
+            thinking: None,
+            thinking_duration_secs: None,
+            tool_calls: vec![],
+        }];
+        let m = ConversationModel::from_messages(
+            &msgs,
+            &[],
+            SessionStatus::Running,
+            ConversationViewOpts::default(),
+        );
+        assert!(matches!(m.items[0], ChatItem::DiffCard { .. }));
+        let rendered: String = m
+            .lines()
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<Vec<_>>()
+                    .join("")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            rendered.contains("diff --git a/src/lib.rs b/src/lib.rs"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("+new"), "{rendered}");
     }
 
     #[test]
