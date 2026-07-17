@@ -78,6 +78,10 @@ pub trait ModelClient: Send + Sync {
     /// Inject provider credentials into the transport (e.g. OAuth → `XAI_API_KEY` for LiteLLM).
     /// Default: no-op (mock).
     fn apply_provider_env(&self, _pairs: &[(String, String)]) {}
+
+    /// Clear provider credentials from the transport and recycle any long-lived worker.
+    /// Default: no-op (mock).
+    fn clear_provider_env(&self) {}
 }
 
 /// Phase 5: mock or LiteLLM worker only (native HTTP adapters removed).

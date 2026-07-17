@@ -95,6 +95,22 @@ impl CredentialStore {
         Ok(removed)
     }
 
+    pub fn clear_all(&self) -> Result<bool, StoreError> {
+        let mut file = self.load()?;
+        let removed = !file.keys.is_empty()
+            || !file.oauth.is_empty()
+            || file.last_profile_id.is_some()
+            || file.last_model.is_some();
+        if removed {
+            file.keys.clear();
+            file.oauth.clear();
+            file.last_profile_id = None;
+            file.last_model = None;
+            self.save(&file)?;
+        }
+        Ok(removed)
+    }
+
     pub fn is_connected(&self, profile_id: &str) -> Result<bool, StoreError> {
         let file = self.load()?;
         Ok(file.keys.contains_key(profile_id) || file.oauth.contains_key(profile_id))
@@ -268,6 +284,30 @@ mod tests {
         store.clear_last_selection(Some("openai")).unwrap();
         assert!(store.last_selection().unwrap().is_some());
         store.clear_last_selection(Some("anthropic")).unwrap();
+        assert_eq!(store.last_selection().unwrap(), None);
+    }
+
+    #[test]
+    fn clear_all_roundtrip() {
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+        store.set_api_key("xai", "secret").unwrap();
+        store
+            .set_oauth(
+                "openai_codex",
+                OauthTokens {
+                    access_token: "at".into(),
+                    refresh_token: None,
+                    expires_at: None,
+                },
+            )
+            .unwrap();
+        store
+            .set_last_selection("openai", "openai/gpt-4.1-mini")
+            .unwrap();
+        assert!(store.clear_all().unwrap());
+        assert!(store.get_api_key("xai").unwrap().is_none());
+        assert!(store.get_oauth("openai_codex").unwrap().is_none());
         assert_eq!(store.last_selection().unwrap(), None);
     }
 
