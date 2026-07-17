@@ -33,9 +33,6 @@ pub enum SlashCommand {
     Effort {
         level: Option<ReasoningEffort>,
     },
-    Journal {
-        tail: Option<usize>,
-    },
     Quit,
     // Phase 2
     Approve,
@@ -121,9 +118,6 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
                 .transpose()?;
             Ok(SlashCommand::Effort { level })
         }
-        "journal" => Ok(SlashCommand::Journal {
-            tail: parts.next().and_then(|s| s.parse().ok()),
-        }),
         "quit" | "exit" => Ok(SlashCommand::Quit),
         "disconnect" => Ok(SlashCommand::Disconnect {
             profile_id: parts.next().map(|s| s.to_string()),
@@ -177,6 +171,7 @@ mod tests {
             SlashCommand::Status
         );
         assert!(parse_slash("/tools").unwrap().is_err());
+        assert!(parse_slash("/journal").unwrap().is_err());
     }
 
     #[test]

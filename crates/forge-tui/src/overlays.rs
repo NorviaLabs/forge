@@ -97,10 +97,6 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
             desc: "Set model reasoning effort".into(),
         },
         PaletteItem {
-            cmd: "/journal".into(),
-            desc: "Tail journal events".into(),
-        },
-        PaletteItem {
             cmd: "/approve".into(),
             desc: "Approve pending HITL".into(),
         },
