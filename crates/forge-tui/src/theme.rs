@@ -14,6 +14,9 @@ pub const TEXT: Color = Color::Rgb(230, 237, 243);
 pub const BORDER: Color = Color::Rgb(42, 53, 68);
 pub const PANEL: Color = Color::Rgb(18, 24, 32);
 pub const HISTORY_BG: Color = Color::Rgb(28, 40, 55);
+pub const USER_BG: Color = Color::Rgb(14, 20, 27);
+pub const RESPONSE_BG: Color = Color::Rgb(19, 26, 35);
+pub const THINKING_BG: Color = Color::Rgb(21, 30, 42);
 
 pub fn brand() -> Style {
     Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
@@ -79,6 +82,18 @@ pub fn panel() -> Style {
     Style::default().bg(PANEL)
 }
 
+pub fn user_message() -> Style {
+    Style::default().bg(USER_BG)
+}
+
+pub fn assistant_message() -> Style {
+    Style::default().bg(RESPONSE_BG)
+}
+
+pub fn thinking_message() -> Style {
+    Style::default().bg(THINKING_BG)
+}
+
 /// Full-row selection (suggestion list, palette, connect picker).
 /// Explicit bg — bare REVERSED is unreliable across terminals.
 pub fn selected_row() -> Style {
@@ -117,5 +132,11 @@ mod tests {
         assert_eq!(selected_row().bg, Some(ACCENT));
         assert_eq!(caret().bg, Some(TEXT));
         assert_eq!(selected_row().fg, Some(PANEL));
+    }
+
+    #[test]
+    fn conversation_backgrounds_are_distinct() {
+        assert_ne!(user_message().bg, assistant_message().bg);
+        assert_ne!(assistant_message().bg, thinking_message().bg);
     }
 }
