@@ -137,6 +137,10 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
             desc: "Clear banners / notices".into(),
         },
         PaletteItem {
+            cmd: "/disconnect".into(),
+            desc: "Log out and clear credentials".into(),
+        },
+        PaletteItem {
             cmd: "/quit".into(),
             desc: "Exit TUI".into(),
         },

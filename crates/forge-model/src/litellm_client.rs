@@ -598,6 +598,13 @@ impl ModelClient for LiteLlmModelClient {
     fn apply_provider_env(&self, pairs: &[(String, String)]) {
         self.set_provider_env(pairs.iter().cloned());
     }
+
+    fn clear_provider_env(&self) {
+        if let Ok(mut g) = self.inner.extra_env.lock() {
+            g.clear();
+        }
+        self.recycle_worker();
+    }
 }
 
 #[cfg(test)]

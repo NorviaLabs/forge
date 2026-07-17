@@ -83,6 +83,8 @@ pub struct TuiApp {
     pub connect_registry: ConnectRegistry,
     pub connect_store: CredentialStore,
     pub connect_profile: Option<String>,
+    /// Manual disconnect latch: prevents auto-restore until the user signs in again.
+    pub auth_suspended: bool,
     /// In-flight xAI device-code OAuth (polled on the event loop tick).
     pub oauth_pending: Option<OauthPending>,
     /// Last time we polled the token endpoint (respect server `interval`).
@@ -166,6 +168,7 @@ impl TuiApp {
             connect_registry: builtin_registry(),
             connect_store: CredentialStore::user_default(),
             connect_profile: None,
+            auth_suspended: false,
             oauth_pending: None,
             oauth_last_poll: None,
             history: InputHistory::default(),
@@ -241,6 +244,9 @@ impl TuiApp {
 
     /// Drop stale `connect_profile` if credentials were cleared out-of-band.
     fn sync_provider_connection(&mut self) {
+        if self.auth_suspended {
+            return;
+        }
         if self.is_mock_provider() {
             return;
         }
@@ -293,6 +299,99 @@ impl TuiApp {
                 });
             }
         }
+    }
+
+    fn disconnect_auth(&mut self, profile_id: Option<&str>) -> Result<String, TuiError> {
+        let mut env_keys = Vec::new();
+        {
+            let svc = ConnectService {
+                registry: &self.connect_registry,
+                store: &self.connect_store,
+                active_profile_id: self.connect_profile.clone(),
+                active_model: Some(self.runtime.model_label.clone()),
+            };
+            let profiles: Vec<_> = if let Some(id) = profile_id {
+                svc.profile(id).into_iter().cloned().collect()
+            } else {
+                svc.connected_profiles().unwrap_or_default()
+            };
+            for p in profiles {
+                if let Ok(pairs) = svc.worker_env_for_profile(&p.id) {
+                    env_keys.extend(pairs.into_iter().map(|(k, _)| k));
+                }
+            }
+        }
+        for key in env_keys {
+            std::env::remove_var(key);
+        }
+        self.session.clear_provider_env();
+        self.oauth_pending = None;
+        self.oauth_last_poll = None;
+        self.pending_prompt = None;
+        self.pending_sync = false;
+        self.pending_model_refresh = false;
+        self.pending_hitl_decision = None;
+        self.pending_context_reset = false;
+        self.message_queue = MessageQueue::new();
+        self.queue_selected = None;
+        self.stream_preview.clear();
+        self.stream_thinking.clear();
+        self.turn_started = None;
+        self.thinking_started = None;
+        self.thought_secs = None;
+        self.cancel_requested = false;
+        self.busy = false;
+        self.busy_phase = BusyPhase::Idle;
+        self.tool_expanded = false;
+        self.chat_follow = true;
+        self.chat_scroll = 0;
+        self.connect_profile = None;
+        self.runtime.provider.clear();
+        self.runtime.model_label.clear();
+        self.session.set_active_model(String::new());
+        self.feedback = FeedbackModel::default();
+        self.status_message = "disconnected".into();
+        self.notices.clear();
+        self.ui_banners.retain(|b| {
+            !matches!(
+                b,
+                ChatItem::Banner {
+                    kind: BannerKind::Warn,
+                    text
+                } if text.contains("Not connected")
+            )
+        });
+        self.auth_suspended = true;
+
+        let cleared = if let Some(id) = profile_id {
+            self.connect_store
+                .clear(id)
+                .map_err(|e| TuiError::Other(e.to_string()))?
+        } else {
+            self.connect_store
+                .clear_all()
+                .map_err(|e| TuiError::Other(e.to_string()))?
+        };
+        if let Some(id) = profile_id {
+            let _ = self.connect_store.clear_last_selection(Some(id));
+        } else {
+            let _ = self.connect_store.clear_last_selection(None);
+        }
+        self.refresh_connection_ui();
+        let msg = if let Some(id) = profile_id {
+            if cleared {
+                format!("disconnected `{id}`")
+            } else {
+                format!("no stored credentials for `{id}`")
+            }
+        } else if cleared {
+            "disconnected · cleared stored credentials".into()
+        } else {
+            "disconnected · no stored credentials".into()
+        };
+        self.push_activity(ActivityKind::Connect, FeedbackSeverity::Info, msg.clone());
+        self.set_feedback(FeedbackSeverity::Info, msg.clone());
+        Ok(msg)
     }
 
     fn push_toast(&mut self, text: impl Into<String>) {
@@ -677,6 +776,7 @@ impl TuiApp {
                 if let Some(m) = model {
                     self.runtime.model_label = m.clone();
                     self.runtime.provider = "litellm".into();
+                    self.auth_suspended = false;
                     self.session.set_active_model(m);
                 }
                 if let Some(pid) = self.connect_profile.clone() {
@@ -732,6 +832,7 @@ impl TuiApp {
         self.connect_profile = Some(out.profile_id.clone());
         self.runtime.model_label = out.model.clone();
         self.runtime.provider = "litellm".into();
+        self.auth_suspended = false;
         self.session.set_active_model(out.model.clone());
         self.apply_connect_credentials(&out.profile_id);
         self.oauth_pending = None;
@@ -849,6 +950,7 @@ impl TuiApp {
                 if let Some(m) = model {
                     self.runtime.model_label = m.clone();
                     self.runtime.provider = "litellm".into();
+                    self.auth_suspended = false;
                     self.session.set_active_model(m);
                 }
                 if let Some(pid) = self.connect_profile.clone() {
@@ -885,6 +987,7 @@ impl TuiApp {
         } else {
             provider.to_string()
         };
+        self.auth_suspended = false;
         self.runtime.model_label = model.to_string();
         self.session.set_active_model(model);
         // Match the selected model to its connected profile even when a
@@ -2511,6 +2614,11 @@ Reply with ONLY the commit message line.\n\n\
                     self.status_message.clear();
                     self.push_toast("cleared");
                 }
+                Ok(SlashCommand::Disconnect { profile_id }) => {
+                    let msg = self.disconnect_auth(profile_id.as_deref())?;
+                    self.open_connect_picker();
+                    self.status_message = msg;
+                }
                 Ok(SlashCommand::Connect(action)) => {
                     self.handle_connect(action);
                 }
@@ -2538,32 +2646,34 @@ Reply with ONLY the commit message line.\n\n\
         // before the model call, and so stream deltas can redraw each frame.
         self.clear_error_chrome();
         // Re-apply credentials (with silent refresh) before each turn so sessions stay signed in.
-        if let Some(pid) = self.connect_profile.clone() {
-            self.apply_connect_credentials(&pid);
-        } else {
-            // Try restore mid-session if credentials appeared (e.g. forge connect in another terminal)
-            let restored = {
-                let svc = ConnectService {
-                    registry: &self.connect_registry,
-                    store: &self.connect_store,
-                    active_profile_id: None,
-                    active_model: None,
+        if !self.auth_suspended {
+            if let Some(pid) = self.connect_profile.clone() {
+                self.apply_connect_credentials(&pid);
+            } else {
+                // Try restore mid-session if credentials appeared (e.g. forge connect in another terminal)
+                let restored = {
+                    let svc = ConnectService {
+                        registry: &self.connect_registry,
+                        store: &self.connect_store,
+                        active_profile_id: None,
+                        active_model: None,
+                    };
+                    svc.connected_profiles().ok().and_then(|v| {
+                        v.iter()
+                            .find(|p| p.id == "xai")
+                            .cloned()
+                            .or_else(|| v.into_iter().next())
+                    })
                 };
-                svc.connected_profiles().ok().and_then(|v| {
-                    v.iter()
-                        .find(|p| p.id == "xai")
-                        .cloned()
-                        .or_else(|| v.into_iter().next())
-                })
-            };
-            if let Some(p) = restored {
-                self.connect_profile = Some(p.id.clone());
-                self.apply_connect_credentials(&p.id);
-                if let Some(m) = p.default_model() {
-                    self.runtime.model_label = m.to_string();
-                    self.session.set_active_model(m);
+                if let Some(p) = restored {
+                    self.connect_profile = Some(p.id.clone());
+                    self.apply_connect_credentials(&p.id);
+                    if let Some(m) = p.default_model() {
+                        self.runtime.model_label = m.to_string();
+                        self.session.set_active_model(m);
+                    }
+                    self.refresh_connection_ui();
                 }
-                self.refresh_connection_ui();
             }
         }
 
@@ -3416,6 +3526,40 @@ mod tests {
             }
             other => panic!("expected ConnectApiKey overlay, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn disconnect_clears_credentials_and_prompts_reauth() {
+        let (_dir, session) = test_session().await;
+        let cred_dir = tempfile::tempdir().unwrap();
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "openai/gpt-4.1-mini".into(),
+                provider: "litellm".into(),
+                cwd: PathBuf::from("."),
+                version: "0.6.1".into(),
+            },
+        );
+        app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
+        app.connect_store
+            .set_api_key("openai", "sk-test-saved-credential")
+            .unwrap();
+        app.connect_profile = Some("openai".into());
+        app.runtime.model_label = "openai/gpt-4.1-mini".into();
+        app.session.set_active_model("openai/gpt-4.1-mini");
+
+        app.dispatch_line("/disconnect").await.unwrap();
+
+        assert!(app.auth_suspended);
+        assert!(app.connect_profile.is_none());
+        assert!(!app.is_provider_connected());
+        assert!(!app.connect_store.is_connected("openai").unwrap());
+        assert!(matches!(app.overlay, Some(Overlay::ConnectPicker { .. })));
+        assert!(
+            app.notices.iter().any(|l| l.contains("disconnected"))
+                || app.status_message.contains("disconnected")
+        );
     }
 
     #[tokio::test]
