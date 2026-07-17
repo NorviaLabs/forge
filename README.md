@@ -150,7 +150,8 @@ forge
    - `/tools` — tools the model can see  
    - `/help` — command list  
 5. **Ctrl+K** opens the command palette; **/** + **Tab** completes slash suggestions; **↑/↓** recall prior lines when not in the suggest list.
-6. Quit with `/quit` or **Ctrl+C**.
+6. Select visible output with the mouse and use your terminal’s normal copy shortcut. Use **Page Up/Page Down** to scroll the conversation, or `/copy` to copy the last assistant answer.
+7. Quit with `/quit` or **Ctrl+C**.
 
 <p align="center">
   <img src="docs/ui/images/01-home.png" alt="Forge TUI" width="880" />
