@@ -338,7 +338,17 @@ impl ConversationModel {
     }
 
     pub fn lines(&self) -> Vec<Line<'static>> {
-        let width: usize = if self.opts.compact { 88 } else { 100 };
+        self.lines_for_width(if self.opts.compact { 88 } else { 100 })
+    }
+
+    /// Build display lines for the actual conversation viewport. Paragraph does
+    /// not wrap unless explicitly configured, so pre-wrapping to a fixed 100
+    /// columns caused text (most noticeably streamed thinking) to be clipped in
+    /// narrower panes. In an 80-column terminal with the sidebar visible, that
+    /// made it look as if only one thought line was arriving at a time.
+    fn lines_for_width(&self, available_width: usize) -> Vec<Line<'static>> {
+        let preferred_width: usize = if self.opts.compact { 88 } else { 100 };
+        let width = available_width.min(preferred_width).max(4);
         let gap = !self.opts.compact;
         let mut lines = Vec::new();
         let tool_count = self
@@ -553,7 +563,7 @@ impl ConversationModel {
                     if !rationale.is_empty() {
                         for l in wrap(rationale, width.saturating_sub(4)).into_iter().take(2) {
                             lines.push(Line::from(vec![
-                                Span::styled("  why: ", theme::info()),
+                                Span::styled("  ", theme::info()),
                                 Span::styled(l, theme::muted().add_modifier(Modifier::ITALIC)),
                             ]));
                         }
@@ -952,7 +962,12 @@ pub struct ConversationWidget<'a> {
 
 impl Widget for ConversationWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let lines = self.model.lines();
+        // Account for the left and right borders. The model performs its own
+        // styled wrapping, so it must use the viewport width rather than the
+        // historical 100-column default.
+        let lines = self
+            .model
+            .lines_for_width(area.width.saturating_sub(2) as usize);
         let total = lines.len() as u16;
         let height = area.height.saturating_sub(2);
         let max_scroll = total.saturating_sub(height);
@@ -1117,6 +1132,38 @@ mod tests {
     }
 
     #[test]
+    fn active_thinking_wraps_to_the_viewport_width() {
+        let msgs = vec![Message {
+            role: MessageRole::Assistant,
+            content: String::new(),
+            tool_call_id: None,
+            name: None,
+            thinking: Some(
+                "one two three four five six seven eight nine ten eleven twelve thirteen".into(),
+            ),
+            thinking_duration_secs: None,
+            tool_calls: vec![],
+        }];
+        let model = ConversationModel::from_messages(
+            &msgs,
+            &[],
+            SessionStatus::Running,
+            ConversationViewOpts::default(),
+        );
+
+        let thought_lines = model
+            .lines_for_width(24)
+            .iter()
+            .filter(|line| {
+                line.spans
+                    .first()
+                    .is_some_and(|span| span.content.as_ref() == "⋯ ")
+            })
+            .count();
+        assert_eq!(thought_lines, 4, "thinking must wrap at the pane width");
+    }
+
+    #[test]
     fn active_thinking_wraps_across_lines() {
         let msgs = vec![Message {
             role: MessageRole::Assistant,
@@ -1247,6 +1294,14 @@ mod tests {
             "{rendered}"
         );
         assert!(rendered.contains("+new"), "{rendered}");
+        assert!(
+            rendered.contains("Applied by write_file to implement the requested change."),
+            "every code change should include a rationale: {rendered}"
+        );
+        assert!(
+            !rendered.contains("why:"),
+            "the rationale should not have a why prefix: {rendered}"
+        );
     }
 
     #[test]
