@@ -465,13 +465,14 @@ impl TuiApp {
             active_profile_id: None,
             active_model: None,
         };
-        let connected = svc.connected_profiles().unwrap_or_default();
+        let mut connected = svc.connected_profiles().unwrap_or_default();
+        connected.sort_by(|a, b| a.id.cmp(&b.id));
         let saved_selection = self.connect_store.last_selection().ok().flatten();
-        // Restore the last usable provider; otherwise prefer xAI for backwards compatibility.
+        // Restore the last usable provider; otherwise fall back to a deterministic
+        // connected profile instead of silently preferring one backend family.
         let chosen = connected
             .iter()
             .find(|p| saved_selection.as_ref().is_some_and(|(id, _)| id == &p.id))
-            .or_else(|| connected.iter().find(|p| p.id == "xai"))
             .or_else(|| connected.first())
             .cloned();
         if let Some(profile) = chosen {
@@ -492,7 +493,19 @@ impl TuiApp {
             if looks_default {
                 let saved_model = saved_selection
                     .as_ref()
-                    .and_then(|(id, model)| (id == &profile.id).then_some(model.as_str()));
+                    .and_then(|(id, model)| (id == &profile.id).then_some(model.as_str()))
+                    .filter(|model| {
+                        let prefix = Self::model_prefix(model);
+                        let pid = profile.id.as_str();
+                        let litellm = profile.litellm_provider_prefix.as_str();
+                        prefix == pid
+                            || prefix == litellm
+                            || (prefix == "openai" && pid == "openai_codex")
+                            || (prefix == "openai-codex" && pid == "openai_codex")
+                            || (prefix == "opencode-go" && pid == "opencode_go")
+                            || (prefix == "opencode-zen" && pid == "opencode_zen")
+                            || (prefix == "grok" && pid == "xai")
+                    });
                 if let Some(model) = saved_model.or_else(|| profile.default_model()) {
                     self.runtime.model_label = model.to_string();
                     self.runtime.provider = "litellm".into();
@@ -1025,6 +1038,40 @@ impl TuiApp {
             FeedbackSeverity::Ok,
             format!("model {}", self.runtime.model_label),
         );
+    }
+
+    fn model_prefix(model: &str) -> &str {
+        model.split('/').next().unwrap_or("").trim()
+    }
+
+    fn connected_profile_for_model_prefix(&self, prefix: &str) -> Option<String> {
+        let prefix = prefix.trim();
+        if prefix.is_empty() {
+            return None;
+        }
+        let svc = ConnectService {
+            registry: &self.connect_registry,
+            store: &self.connect_store,
+            active_profile_id: self.connect_profile.clone(),
+            active_model: Some(self.runtime.model_label.clone()),
+        };
+        let connected = svc.connected_profiles().ok()?;
+        connected.iter().find_map(|profile| {
+            let pid = profile.id.as_str();
+            let litellm = profile.litellm_provider_prefix.as_str();
+            let matches = prefix == pid
+                || prefix == litellm
+                || (prefix == "openai" && pid == "openai_codex")
+                || (prefix == "openai-codex" && pid == "openai_codex")
+                || (prefix == "opencode-go" && pid == "opencode_go")
+                || (prefix == "opencode-zen" && pid == "opencode_zen")
+                || (prefix == "grok" && pid == "xai");
+            if matches {
+                Some(profile.id.clone())
+            } else {
+                None
+            }
+        })
     }
 
     /// Build `/model` picker rows from connected-profile catalogs (cache + optional refresh).
@@ -2417,6 +2464,20 @@ Reply with ONLY the commit message line.\n\n\
                 FeedbackSeverity::Warn,
                 "usage: /model <litellm-id> | /model refresh",
             );
+            return;
+        }
+        let target_prefix = Self::model_prefix(&model_id);
+        let matching_profile = self.connected_profile_for_model_prefix(target_prefix);
+        if matching_profile.is_none() {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                format!("connect `{target_prefix}` first before selecting {model_id}"),
+            );
+            self.notices = vec![
+                format!("No connected provider matches `{target_prefix}`."),
+                "Use /connect, or pick a model from the current provider catalog.".into(),
+            ];
+            return;
         } else {
             self.apply_model_selection("litellm", &model_id);
         }
@@ -3335,6 +3396,51 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(app.runtime.model_label, "anthropic/claude-sonnet-4-5");
+    }
+
+    #[tokio::test]
+    async fn model_command_rejects_cross_provider_selection_without_matching_connection() {
+        let (_dir, session) = test_session().await;
+        let cred_dir = tempfile::tempdir().unwrap();
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "openai-codex/gpt-5.6-sol".into(),
+                provider: "litellm".into(),
+                cwd: PathBuf::from("."),
+                version: "0.12.0".into(),
+            },
+        );
+        app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
+        app.connect_store
+            .set_oauth(
+                "openai_codex",
+                forge_connect::OauthTokens {
+                    access_token:
+                        "header.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjb3VudC0xMjMifX0.sig"
+                            .to_string(),
+                    refresh_token: None,
+                    expires_at: None,
+                },
+            )
+            .unwrap();
+        app.connect_profile = Some("openai_codex".into());
+        app.runtime.model_label = "openai-codex/gpt-5.6-sol".into();
+        app.session.set_active_model("openai-codex/gpt-5.6-sol");
+
+        app.dispatch_line("/model anthropic claude-sonnet-4-5")
+            .await
+            .unwrap();
+
+        assert_eq!(app.connect_profile.as_deref(), Some("openai_codex"));
+        assert_eq!(app.runtime.model_label, "openai-codex/gpt-5.6-sol");
+        assert!(
+            app.status_message.contains("connect `anthropic` first")
+                || app.notices.iter().any(|l| l.contains("anthropic")),
+            "expected rejection notice, got status={} notices={:?}",
+            app.status_message,
+            app.notices
+        );
     }
 
     #[tokio::test]
