@@ -54,6 +54,8 @@ pub enum ChatItem {
     DiffCard {
         path: String,
         lines: Vec<String>,
+        /// Brief operator-facing explanation for the change.
+        rationale: String,
     },
     Banner {
         text: String,
@@ -174,6 +176,7 @@ impl ConversationModel {
     ) -> Self {
         // System prompts and tool call cards stay out of the operator chat.
         let mut items: Vec<ChatItem> = Vec::new();
+        let mut latest_thinking: Option<String> = None;
         for m in messages {
             match m.role {
                 // System prompts are for the model, not the operator UI.
@@ -193,6 +196,7 @@ impl ConversationModel {
                 MessageRole::Assistant => {
                     if let Some(ref th) = m.thinking {
                         if !th.trim().is_empty() {
+                            latest_thinking = Some(th.clone());
                             items.push(ChatItem::Thinking {
                                 text: th.clone(),
                                 duration_secs: m.thinking_duration_secs,
@@ -217,6 +221,7 @@ impl ConversationModel {
                         items.push(ChatItem::DiffCard {
                             path: extract_path_hint(name, &m.content),
                             lines: m.content.lines().map(|s| s.to_string()).collect(),
+                            rationale: change_rationale(latest_thinking.as_deref(), name),
                         });
                     }
                 }
@@ -535,12 +540,24 @@ impl ConversationModel {
                         lines.push(Line::from(""));
                     }
                 }
-                ChatItem::DiffCard { path, lines: dl } => {
+                ChatItem::DiffCard {
+                    path,
+                    lines: dl,
+                    rationale,
+                } => {
                     lines.push(Line::from(vec![
                         Span::styled("Δ ", theme::brand()),
                         Span::styled(path.clone(), theme::text().add_modifier(Modifier::BOLD)),
                         Span::styled("  diff", theme::dim()),
                     ]));
+                    if !rationale.is_empty() {
+                        for l in wrap(rationale, width.saturating_sub(4)).into_iter().take(2) {
+                            lines.push(Line::from(vec![
+                                Span::styled("  why: ", theme::info()),
+                                Span::styled(l, theme::muted().add_modifier(Modifier::ITALIC)),
+                            ]));
+                        }
+                    }
                     for l in dl {
                         let style = if l.starts_with('+') && !l.starts_with("+++") {
                             theme::ok()
@@ -605,6 +622,25 @@ impl ConversationModel {
             lines.push(Line::from(spans).style(theme::thinking_message()));
         }
         lines
+    }
+}
+
+fn change_rationale(thinking: Option<&str>, tool: &str) -> String {
+    let Some(text) = thinking else {
+        return format!("Applied by {tool} to implement the requested change.");
+    };
+    let summary = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter(|line| !line.starts_with("**"))
+        .take(2)
+        .collect::<Vec<_>>()
+        .join(" ");
+    if summary.is_empty() {
+        format!("Applied by {tool} to implement the requested change.")
+    } else {
+        summary.chars().take(240).collect()
     }
 }
 
