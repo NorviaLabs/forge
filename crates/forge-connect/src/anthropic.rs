@@ -16,12 +16,7 @@ pub fn anthropic_profile() -> ConnectProfile {
         },
         api_key_env: vec!["ANTHROPIC_API_KEY".into()],
         default_base_url: Some(DEFAULT_BASE_URL.into()),
-        default_models: vec![
-            "anthropic/claude-sonnet-4-5".into(),
-            "anthropic/claude-opus-4-5".into(),
-            "anthropic/claude-haiku-4-5".into(),
-            "anthropic/claude-sonnet-4-0".into(),
-        ],
+        default_models: Vec::new(),
         auth_url: Some("https://console.anthropic.com/settings/keys".into()),
         litellm_provider_prefix: "anthropic".into(),
     }
@@ -91,7 +86,7 @@ Create a key at https://console.anthropic.com/settings/keys."
 fn verify_via_messages(key: &str, base: &str) -> Result<(), String> {
     // Intentionally tiny/invalid payload — we only care about auth status codes.
     let url = format!("{base}/v1/messages");
-    let body = r#"{"model":"claude-haiku-4-5","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}"#;
+    let body = r#"{"model":"","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}"#;
     match ureq::post(&url)
         .set("x-api-key", key)
         .set("anthropic-version", "2023-06-01")
