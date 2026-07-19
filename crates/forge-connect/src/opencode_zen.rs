@@ -31,12 +31,7 @@ pub fn opencode_zen_profile() -> ConnectProfile {
         ],
         default_base_url: Some(DEFAULT_BASE_URL.into()),
         // Fallbacks until live catalog refresh; /model pulls full Zen list after connect.
-        default_models: vec![
-            "opencode-zen/grok-code".into(),
-            "opencode-zen/minimax-m2.5".into(),
-            "opencode-zen/glm-4.6".into(),
-            "opencode-zen/kimi-k2.5".into(),
-        ],
+        default_models: Vec::new(),
         auth_url: Some("https://opencode.ai/auth".into()),
         litellm_provider_prefix: "opencode-zen".into(),
     }

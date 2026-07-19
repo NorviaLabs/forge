@@ -180,7 +180,7 @@ impl Default for ModelConfig {
     fn default() -> Self {
         Self {
             provider: ModelProviderKind::Litellm,
-            model: "openai/gpt-4.1-mini".into(),
+            model: String::new(),
             base_url: None,
             api_key: None,
             litellm: LitellmConfig::default(),
@@ -811,7 +811,7 @@ mod tests {
         let cfg = Config::load(ConfigOverrides::default()).unwrap();
         assert!(cfg.workspace_root().is_absolute() || cfg.workspace_root() == Path::new("."));
         assert_eq!(cfg.model.provider, ModelProviderKind::Litellm);
-        assert_eq!(cfg.model.model, "openai/gpt-4.1-mini");
+        assert!(cfg.model.model.is_empty());
         assert_eq!(cfg.model.litellm.python, "python3");
         assert_eq!(cfg.journal.backend, "sqlite");
     }

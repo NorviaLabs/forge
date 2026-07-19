@@ -143,7 +143,7 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
     ]
 }
 
-/// Fallback model list from built-in profile defaults (no network).
+/// Model list from cached provider catalogs (no network).
 pub fn default_models() -> Vec<ModelItem> {
     let mut items = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
@@ -157,14 +157,6 @@ pub fn default_models() -> Vec<ModelItem> {
                 });
             }
         }
-    }
-    // Offline baseline if registry empty
-    if items.is_empty() {
-        items.push(ModelItem {
-            provider: "litellm".into(),
-            model: "openai/gpt-4.1-mini".into(),
-            profile_id: None,
-        });
     }
     items
 }

@@ -25,12 +25,7 @@ pub fn opencode_go_profile() -> ConnectProfile {
         default_base_url: Some(DEFAULT_BASE_URL.into()),
         // Distinctive prefix so the LiteLLM worker can inject api_base/key without
         // hijacking real OpenAI (`openai/gpt-*`) routes. See opencode.ai/docs/go.
-        default_models: vec![
-            "opencode-go/kimi-k3".into(),
-            "opencode-go/glm-5.1".into(),
-            "opencode-go/minimax-m2.7".into(),
-            "opencode-go/deepseek-v4-flash".into(),
-        ],
+        default_models: Vec::new(),
         auth_url: Some("https://opencode.ai/auth".into()),
         litellm_provider_prefix: "opencode-go".into(),
     }
