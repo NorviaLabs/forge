@@ -141,6 +141,9 @@ pub struct TuiApp {
     hitl_session_allow: HashSet<String>,
     /// Transient toast (auto-clears).
     toast: Option<(Instant, String)>,
+    /// Session message/event offsets hidden by the most recent `/clear`.
+    chat_message_start: usize,
+    chat_event_start: usize,
     /// Conversation scroll offset (when not following).
     chat_scroll: u16,
     chat_follow: bool,
@@ -197,6 +200,8 @@ impl TuiApp {
             cancel_requested: false,
             hitl_session_allow: HashSet::new(),
             toast: None,
+            chat_message_start: 0,
+            chat_event_start: 0,
             chat_scroll: 0,
             chat_follow: true,
             stt: SttSettings::default(),
@@ -1925,8 +1930,18 @@ Reply with ONLY the commit message line.\n\n\
             stream_wait,
             stream_thought_secs: self.thought_secs,
         };
-        let mut conv = ConversationModel::from_session(&self.session, opts)
-            .with_extra_banners(self.ui_banners.iter().cloned());
+        // `/clear` only clears the viewport; the full session remains available to the model.
+        let visible_messages =
+            &self.session.messages[self.chat_message_start.min(self.session.messages.len())..];
+        let visible_events =
+            &self.session.events[self.chat_event_start.min(self.session.events.len())..];
+        let mut conv = ConversationModel::from_messages(
+            visible_messages,
+            visible_events,
+            self.session.status,
+            opts,
+        )
+        .with_extra_banners(self.ui_banners.iter().cloned());
         conv = conv.with_queued_messages(
             self.message_queue.iter().cloned().collect::<Vec<_>>(),
             self.queue_selected,
@@ -2648,12 +2663,18 @@ Reply with ONLY the commit message line.\n\n\
                     }
                 }
                 Ok(SlashCommand::Clear) => {
+                    // Hide everything currently in the transcript without deleting session
+                    // context, so subsequent model turns still see the full conversation.
+                    self.chat_message_start = self.session.messages.len();
+                    self.chat_event_start = self.session.events.len();
                     self.ui_banners.clear();
                     self.notices.clear();
                     self.clear_error_chrome();
                     self.feedback = FeedbackModel::default();
                     self.status_message.clear();
-                    self.push_toast("cleared");
+                    self.toast = None;
+                    self.chat_scroll = 0;
+                    self.chat_follow = true;
                 }
                 Ok(SlashCommand::Disconnect { profile_id }) => {
                     let msg = self.disconnect_auth(profile_id.as_deref())?;
@@ -3572,6 +3593,36 @@ mod tests {
             app.status_message,
             app.notices
         );
+    }
+
+    #[tokio::test]
+    async fn clear_hides_existing_chat_without_deleting_context() {
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "mock".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "0.4.0".into(),
+            },
+        );
+        app.dispatch_line("hi").await.unwrap();
+        app.drain_pending_prompt(None).await.unwrap();
+        let message_count = app.session.messages.len();
+        let event_count = app.session.events.len();
+        assert!(message_count > 0);
+
+        app.dispatch_line("/clear").await.unwrap();
+
+        assert_eq!(app.chat_message_start, message_count);
+        assert_eq!(app.chat_event_start, event_count);
+        assert_eq!(app.session.messages.len(), message_count);
+        assert_eq!(app.session.events.len(), event_count);
+        assert!(app.ui_banners.is_empty());
+        assert!(app.notices.is_empty());
+        assert_eq!(app.chat_scroll, 0);
+        assert!(app.chat_follow);
     }
 
     #[tokio::test]
