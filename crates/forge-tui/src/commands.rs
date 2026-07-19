@@ -44,7 +44,7 @@ pub enum SlashCommand {
     Diff,
     /// Copy last assistant message to clipboard (best-effort)
     Copy,
-    /// Clear chat banners / notices / soft reset of UI chrome
+    /// Clear the visible transcript without deleting model context.
     Clear,
     /// Disconnect from the current provider and clear stored credentials.
     Disconnect {
@@ -223,6 +223,7 @@ mod tests {
             SlashCommand::Approve
         );
         assert_eq!(parse_slash("/deny").unwrap().unwrap(), SlashCommand::Deny);
+        assert_eq!(parse_slash("/clear").unwrap().unwrap(), SlashCommand::Clear);
         assert!(parse_slash("/reset").unwrap().is_err());
         assert!(parse_slash("/context").unwrap().is_err());
         assert!(parse_slash("/worktree merge").unwrap().is_err());
