@@ -3,6 +3,7 @@
 use thiserror::Error;
 
 use crate::auth::{AuthMode, OauthPending, OauthTokens};
+use crate::catalog::ModelCatalogCache;
 use crate::oauth_dispatch::{OauthDispatcher, PollResult};
 use crate::oauth_xai::try_open_browser;
 use crate::profile::{ConnectOutcome, ConnectProfile, ConnectStatus, KeySource};
@@ -636,10 +637,13 @@ impl<'a> ConnectService<'a> {
         profile: &ConnectProfile,
         key_source: KeySource,
     ) -> Result<ConnectOutcome, ConnectError> {
-        let model = profile
-            .default_model()
-            .ok_or_else(|| ConnectError::Message("profile has no default models".into()))?
-            .to_string();
+        // Providers expose their available models through the live catalog. Do not
+        // select or invent a provider model while connecting.
+        let model = ModelCatalogCache::user_default()
+            .get_cached(&profile.id)
+            .into_iter()
+            .next()
+            .unwrap_or_default();
         self.active_profile_id = Some(profile.id.clone());
         self.active_model = Some(model.clone());
         // Selection persistence is convenience metadata; never make a successful
