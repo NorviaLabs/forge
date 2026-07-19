@@ -221,7 +221,7 @@ impl ConversationModel {
                         items.push(ChatItem::DiffCard {
                             path: extract_path_hint(name, &m.content),
                             lines: m.content.lines().map(|s| s.to_string()).collect(),
-                            rationale: change_rationale(latest_thinking.as_deref(), name),
+                            rationale: change_rationale(latest_thinking.as_deref()),
                         });
                     }
                 }
@@ -635,9 +635,9 @@ impl ConversationModel {
     }
 }
 
-fn change_rationale(thinking: Option<&str>, tool: &str) -> String {
+fn change_rationale(thinking: Option<&str>) -> String {
     let Some(text) = thinking else {
-        return format!("Applied by {tool} to implement the requested change.");
+        return String::new();
     };
     let summary = text
         .lines()
@@ -648,7 +648,7 @@ fn change_rationale(thinking: Option<&str>, tool: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ");
     if summary.is_empty() {
-        format!("Applied by {tool} to implement the requested change.")
+        String::new()
     } else {
         summary.chars().take(240).collect()
     }
@@ -1295,8 +1295,8 @@ mod tests {
         );
         assert!(rendered.contains("+new"), "{rendered}");
         assert!(
-            rendered.contains("Applied by write_file to implement the requested change."),
-            "every code change should include a rationale: {rendered}"
+            !rendered.contains("Applied by"),
+            "code changes without reasoning should not show a generated rationale: {rendered}"
         );
         assert!(
             !rendered.contains("why:"),
