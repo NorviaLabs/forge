@@ -21,11 +21,7 @@ pub fn openai_codex_profile() -> ConnectProfile {
         },
         api_key_env: vec![],
         default_base_url: Some("https://chatgpt.com/backend-api".into()),
-        default_models: vec![
-            "openai-codex/gpt-5.6-sol".into(),
-            "openai-codex/gpt-5.6-terra".into(),
-            "openai-codex/gpt-5.6-luna".into(),
-        ],
+        default_models: Vec::new(),
         auth_url: Some("https://auth.openai.com/codex/device".into()),
         litellm_provider_prefix: "openai-codex".into(),
     }

@@ -1,7 +1,7 @@
 //! Remote model catalog fetch + on-disk cache (connect-command.md §3.5).
 //!
 //! After `/connect`, Forge can list live models from each provider and feed `/model`.
-//! Falls back to profile `default_models` when offline or fetch fails.
+//! Uses cached or live provider catalogs; providers own model availability.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -495,9 +495,6 @@ pub fn models_for_picker(
         if ids.is_empty() {
             ids = cache.get_cached(&p.id);
         }
-        if ids.is_empty() {
-            ids = p.default_models.clone();
-        }
         for id in ids {
             if seen.insert(id.clone()) {
                 out.push(CatalogEntry {
@@ -508,19 +505,6 @@ pub fn models_for_picker(
         }
     }
 
-    // Always offer profile defaults even if nothing connected (offline UX).
-    if out.is_empty() {
-        for p in profiles {
-            for id in &p.default_models {
-                if seen.insert(id.clone()) {
-                    out.push(CatalogEntry {
-                        id: id.clone(),
-                        profile_id: p.id.clone(),
-                    });
-                }
-            }
-        }
-    }
     out
 }
 
