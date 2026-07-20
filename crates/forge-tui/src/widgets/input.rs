@@ -21,6 +21,8 @@ pub struct InputModel {
     pasted_lines: Option<usize>,
 }
 
+const PASTE_PREVIEW_LINES: usize = 3;
+
 impl InputModel {
     pub fn insert(&mut self, c: char) {
         self.pasted_lines = None;
@@ -55,6 +57,7 @@ impl InputModel {
     }
 
     pub fn move_left(&mut self) {
+        self.pasted_lines = None;
         if self.cursor == 0 {
             return;
         }
@@ -67,6 +70,7 @@ impl InputModel {
     }
 
     pub fn move_right(&mut self) {
+        self.pasted_lines = None;
         if self.cursor >= self.text.len() {
             return;
         }
@@ -103,7 +107,7 @@ impl InputModel {
     /// Number of visual lines for layout (capped).
     pub fn visual_lines(&self) -> u16 {
         if self.pasted_lines.is_some() {
-            return 1;
+            return (PASTE_PREVIEW_LINES + 1) as u16;
         }
         let n = self.text.lines().count().max(1) as u16;
         n.min(6)
@@ -126,11 +130,32 @@ impl Widget for InputBar<'_> {
 
         // Block cursor: solid cell at caret (█ at EOL, inverted char mid-text).
         let lines: Vec<Line> = if let Some(n) = self.model.pasted_lines {
-            vec![Line::from(vec![
-                Span::styled(" ❯ ", theme::brand()),
-                Span::styled(format!("pasted {n} lines"), base),
+            let mut preview: Vec<Line> = self
+                .model
+                .text
+                .lines()
+                .take(PASTE_PREVIEW_LINES)
+                .enumerate()
+                .map(|(i, raw)| {
+                    let prefix = if i == 0 { " ❯ " } else { "   " };
+                    Line::from(vec![
+                        Span::styled(prefix, theme::brand()),
+                        Span::styled(raw, base),
+                    ])
+                })
+                .collect();
+            let remaining = n.saturating_sub(PASTE_PREVIEW_LINES);
+            let suffix = if remaining == 1 {
+                "… +1 line".to_string()
+            } else {
+                format!("… +{remaining} lines")
+            };
+            preview.push(Line::from(vec![
+                Span::styled("   ", theme::brand()),
+                Span::styled(suffix, theme::muted()),
                 Span::styled(" ", theme::caret()),
-            ])]
+            ]));
+            preview
         } else if self.model.text.is_empty() && !self.model.hint.is_empty() {
             vec![Line::from(vec![
                 Span::styled(" ❯ ", theme::brand()),
@@ -276,6 +301,49 @@ mod tests {
         };
         assert_eq!(m.take(), "cmd");
         assert!(m.text.is_empty());
+    }
+
+    #[test]
+    fn large_paste_renders_folded_preview() {
+        let mut m = InputModel {
+            text: "one\ntwo\nthree\nfour\nfive".into(),
+            cursor: "one\ntwo\nthree\nfour\nfive".len(),
+            ..Default::default()
+        };
+        m.mark_large_paste(5);
+        assert_eq!(m.visual_lines(), 4);
+        let backend = TestBackend::new(40, 8);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| {
+            f.render_widget(InputBar { model: &m }, f.size());
+        })
+        .unwrap();
+        let buf = term.backend().buffer();
+        let mut text = String::new();
+        for y in 0..buf.area().height {
+            for x in 0..buf.area().width {
+                text.push_str(buf.get(x, y).symbol());
+            }
+            text.push('\n');
+        }
+        assert!(text.contains("one"));
+        assert!(text.contains("two"));
+        assert!(text.contains("three"));
+        assert!(text.contains("… +2 lines"));
+        assert!(!text.contains("four"));
+        assert!(!text.contains("five"));
+    }
+
+    #[test]
+    fn cursor_motion_clears_folded_paste_preview() {
+        let mut m = InputModel {
+            text: "one\ntwo\nthree\nfour".into(),
+            cursor: 0,
+            ..Default::default()
+        };
+        m.mark_large_paste(4);
+        m.move_right();
+        assert!(m.pasted_lines.is_none());
     }
 
     #[test]
