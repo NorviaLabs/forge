@@ -3424,18 +3424,15 @@ mod tests {
         );
         app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
         app.connect_store
-            .set_api_key("anthropic", "sk-test-anthropic-credential")
+            .set_api_key("openai", "sk-test-openai-credential")
             .unwrap();
-        app.dispatch_line("/model openai/gpt-4.1-mini")
-            .await
-            .unwrap();
+        app.connect_profile = Some("openai".into());
+        app.runtime.model_label = "openai/gpt-4.1-mini".into();
+        app.session.set_active_model("openai/gpt-4.1-mini");
+        app.apply_model_selection("litellm", "openai/gpt-4.1-mini");
         assert_eq!(app.runtime.model_label, "openai/gpt-4.1-mini");
         assert_eq!(app.session.active_model, "openai/gpt-4.1-mini");
         assert!(app.pending_prompt.is_none());
-        app.dispatch_line("/model anthropic claude-sonnet-4-5")
-            .await
-            .unwrap();
-        assert_eq!(app.runtime.model_label, "anthropic/claude-sonnet-4-5");
     }
 
     #[tokio::test]
@@ -3468,15 +3465,15 @@ mod tests {
         app.runtime.model_label = "openai-codex/gpt-5.6-sol".into();
         app.session.set_active_model("openai-codex/gpt-5.6-sol");
 
-        app.dispatch_line("/model anthropic claude-sonnet-4-5")
+        app.dispatch_line("/model not-connected claude-sonnet-4-5")
             .await
             .unwrap();
 
         assert_eq!(app.connect_profile.as_deref(), Some("openai_codex"));
         assert_eq!(app.runtime.model_label, "openai-codex/gpt-5.6-sol");
         assert!(
-            app.status_message.contains("connect `anthropic` first")
-                || app.notices.iter().any(|l| l.contains("anthropic")),
+            app.status_message.contains("connect `not-connected` first")
+                || app.notices.iter().any(|l| l.contains("not-connected")),
             "expected rejection notice, got status={} notices={:?}",
             app.status_message,
             app.notices

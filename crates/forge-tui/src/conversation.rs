@@ -247,13 +247,6 @@ impl ConversationModel {
                 kind: BannerKind::Warn,
             });
         }
-        // Empty transcript → short hint
-        if items.is_empty() {
-            items.push(ChatItem::Banner {
-                text: String::new(),
-                kind: BannerKind::Info,
-            });
-        }
         Self {
             items,
             scroll: 0,
@@ -388,17 +381,13 @@ impl ConversationModel {
                         lines.push(Line::from(""));
                     }
                 }
-                // User: right-of-gutter › in info blue — no "You"
+                // User: plain text with no prompt marker or indent.
                 ChatItem::User { text } => {
-                    let parts = wrap(text, width.saturating_sub(3));
-                    for (i, l) in parts.iter().enumerate() {
-                        let gutter = if i == 0 { "› " } else { "  " };
+                    let parts = wrap(text, width);
+                    for l in parts {
                         lines.push(
-                            Line::from(vec![
-                                Span::styled(gutter, theme::info().add_modifier(Modifier::BOLD)),
-                                Span::styled(l.clone(), theme::text()),
-                            ])
-                            .style(theme::user_message()),
+                            Line::from(vec![Span::styled(l, theme::text())])
+                                .style(theme::user_message()),
                         );
                     }
                     if gap {
@@ -1202,6 +1191,62 @@ mod tests {
     }
 
     #[test]
+    fn user_messages_render_without_prompt_marker() {
+        let msgs = vec![Message {
+            role: MessageRole::User,
+            content: "hello world".into(),
+            tool_call_id: None,
+            name: None,
+            thinking: None,
+            thinking_duration_secs: None,
+            tool_calls: vec![],
+        }];
+        let m = ConversationModel::from_messages(
+            &msgs,
+            &[],
+            SessionStatus::Running,
+            ConversationViewOpts::default(),
+        );
+        let rendered = m
+            .lines()
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!rendered.contains('›'), "{rendered}");
+        assert!(!rendered.contains("❯"), "{rendered}");
+        assert!(rendered.contains("hello world"), "{rendered}");
+    }
+
+    #[test]
+    fn empty_transcript_renders_without_initial_marker() {
+        let model = ConversationModel::from_messages(
+            &[],
+            &[],
+            SessionStatus::Running,
+            ConversationViewOpts::default(),
+        );
+        let rendered = model
+            .lines()
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.is_empty(), "{rendered}");
+        assert!(!rendered.contains('▸'), "{rendered}");
+    }
+
+    #[test]
     fn long_assistant_responses_get_horizontal_rules() {
         let msgs = vec![Message {
             role: MessageRole::Assistant,
@@ -1254,8 +1299,8 @@ mod tests {
                 .any(|i| matches!(i, ChatItem::ToolCard { .. })),
             "tool messages must not become chat cards"
         );
-        // Empty chat → welcome banner only
-        assert!(matches!(m.items[0], ChatItem::Banner { .. }));
+        // Empty chat stays empty; the pane no longer seeds a placeholder row.
+        assert!(m.items.is_empty());
     }
 
     #[test]
@@ -1305,14 +1350,15 @@ mod tests {
     }
 
     #[test]
-    fn empty_shows_hint_banner() {
+    fn empty_shows_blank_conversation() {
         let m = ConversationModel::from_messages(
             &[],
             &[],
             SessionStatus::Running,
             ConversationViewOpts::default(),
         );
-        assert!(matches!(m.items[0], ChatItem::Banner { .. }));
+        assert!(m.items.is_empty());
+        assert!(m.lines().is_empty());
     }
 
     #[test]
