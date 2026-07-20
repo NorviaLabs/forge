@@ -495,6 +495,9 @@ pub fn models_for_picker(
         if ids.is_empty() {
             ids = cache.get_cached(&p.id);
         }
+        if ids.is_empty() {
+            ids = p.default_models.clone();
+        }
         for id in ids {
             if seen.insert(id.clone()) {
                 out.push(CatalogEntry {

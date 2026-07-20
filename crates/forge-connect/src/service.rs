@@ -637,13 +637,14 @@ impl<'a> ConnectService<'a> {
         profile: &ConnectProfile,
         key_source: KeySource,
     ) -> Result<ConnectOutcome, ConnectError> {
-        // Providers expose their available models through the live catalog. Do not
-        // select or invent a provider model while connecting.
+        // Prefer the live catalog, then a configured default, then a provider-scoped
+        // placeholder so connect output is non-empty even before the first refresh.
         let model = ModelCatalogCache::user_default()
             .get_cached(&profile.id)
             .into_iter()
             .next()
-            .unwrap_or_default();
+            .or_else(|| profile.default_model().map(str::to_string))
+            .unwrap_or_else(|| format!("{}/default", profile.litellm_provider_prefix));
         self.active_profile_id = Some(profile.id.clone());
         self.active_model = Some(model.clone());
         // Selection persistence is convenience metadata; never make a successful

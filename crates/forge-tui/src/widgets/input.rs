@@ -17,10 +17,13 @@ pub struct InputModel {
     pub history_browse: bool,
     /// No live LLM provider — chrome warns; chat send is gated in the app.
     pub not_connected: bool,
+    /// Large clipboard pastes remain in `text` but are rendered compactly.
+    pasted_lines: Option<usize>,
 }
 
 impl InputModel {
     pub fn insert(&mut self, c: char) {
+        self.pasted_lines = None;
         let i = self.cursor.min(self.text.len());
         self.text.insert(i, c);
         self.cursor = i + c.len_utf8();
@@ -31,7 +34,13 @@ impl InputModel {
         self.insert('\n');
     }
 
+    /// Record a compact display for a large paste without losing its contents.
+    pub fn mark_large_paste(&mut self, lines: usize) {
+        self.pasted_lines = Some(lines);
+    }
+
     pub fn backspace(&mut self) {
+        self.pasted_lines = None;
         if self.cursor == 0 {
             return;
         }
@@ -70,12 +79,14 @@ impl InputModel {
     }
 
     pub fn clear(&mut self) {
+        self.pasted_lines = None;
         self.text.clear();
         self.cursor = 0;
         self.history_browse = false;
     }
 
     pub fn take(&mut self) -> String {
+        self.pasted_lines = None;
         let t = std::mem::take(&mut self.text);
         self.cursor = 0;
         self.history_browse = false;
@@ -86,10 +97,14 @@ impl InputModel {
     pub fn set_text(&mut self, text: impl Into<String>) {
         self.text = text.into();
         self.cursor = self.text.len();
+        self.pasted_lines = None;
     }
 
     /// Number of visual lines for layout (capped).
     pub fn visual_lines(&self) -> u16 {
+        if self.pasted_lines.is_some() {
+            return 1;
+        }
         let n = self.text.lines().count().max(1) as u16;
         n.min(6)
     }
@@ -110,7 +125,13 @@ impl Widget for InputBar<'_> {
         };
 
         // Block cursor: solid cell at caret (█ at EOL, inverted char mid-text).
-        let lines: Vec<Line> = if self.model.text.is_empty() && !self.model.hint.is_empty() {
+        let lines: Vec<Line> = if let Some(n) = self.model.pasted_lines {
+            vec![Line::from(vec![
+                Span::styled(" ❯ ", theme::brand()),
+                Span::styled(format!("pasted {n} lines"), base),
+                Span::styled(" ", theme::caret()),
+            ])]
+        } else if self.model.text.is_empty() && !self.model.hint.is_empty() {
             vec![Line::from(vec![
                 Span::styled(" ❯ ", theme::brand()),
                 Span::styled(" ", theme::caret()), // block cell
