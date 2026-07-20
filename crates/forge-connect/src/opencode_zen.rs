@@ -31,7 +31,7 @@ pub fn opencode_zen_profile() -> ConnectProfile {
         ],
         default_base_url: Some(DEFAULT_BASE_URL.into()),
         // Fallbacks until live catalog refresh; /model pulls full Zen list after connect.
-        default_models: Vec::new(),
+        default_models: vec!["opencode-zen/gpt-4.1-mini".into()],
         auth_url: Some("https://opencode.ai/auth".into()),
         litellm_provider_prefix: "opencode-zen".into(),
     }
