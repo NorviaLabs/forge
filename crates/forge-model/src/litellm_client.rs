@@ -101,11 +101,6 @@ impl LiteLlmModelClient {
                 "LiteLlmModelClient requires provider=litellm".into(),
             ));
         }
-        if cfg.model.model.trim().is_empty() {
-            return Err(ModelError::Other(
-                "model id required for litellm provider".into(),
-            ));
-        }
         Ok(Self {
             inner: Arc::new(LiteLlmInner {
                 python: cfg.model.litellm.python.clone(),
@@ -401,24 +396,29 @@ impl LiteLlmInner {
         Ok(())
     }
 
-    fn build_params(&self, req: &ModelRequest) -> CompleteParams {
+    fn build_params(&self, req: &ModelRequest) -> Result<CompleteParams, ModelError> {
         let model = if req.model.is_empty() {
             self.default_model.clone()
         } else {
             req.model.clone()
         };
-        CompleteParams {
+        if model.trim().is_empty() {
+            return Err(ModelError::Other(
+                "model id required for litellm provider".into(),
+            ));
+        }
+        Ok(CompleteParams {
             model,
             messages: forge_messages_to_wire(&req.messages),
             tools: tools_to_openai_functions(&req.tools),
             temperature: None,
             max_tokens: None,
             extra: None,
-        }
+        })
     }
 
     fn complete_blocking(&self, req: ModelRequest) -> Result<ModelResponse, ModelError> {
-        let params = self.build_params(&req);
+        let params = self.build_params(&req)?;
         let id = next_id();
         let request = WireEnvelope::complete(&id, &params)
             .map_err(|e| ModelError::Protocol(e.to_string()))?;
@@ -432,7 +432,7 @@ impl LiteLlmInner {
         req: ModelRequest,
         tx: Option<StreamEventTx>,
     ) -> Result<ModelResponse, ModelError> {
-        let params = self.build_params(&req);
+        let params = self.build_params(&req)?;
         let id = next_id();
         let request = WireEnvelope::complete_stream(&id, &params)
             .map_err(|e| ModelError::Protocol(e.to_string()))?;
@@ -713,5 +713,34 @@ for line in sys.stdin:
         if Path::new("workers/forge-litellm-worker/src/forge_litellm_worker").is_dir() {
             assert!(discover_worker_src().is_some());
         }
+    }
+
+    #[test]
+    fn empty_model_is_allowed_at_construction_time() {
+        let mut cfg = forge_config::Config::default();
+        cfg.model.provider = ModelProviderKind::Litellm;
+        cfg.model.model.clear();
+        assert!(LiteLlmModelClient::from_config(&cfg).is_ok());
+    }
+
+    #[test]
+    fn build_params_requires_a_model_id_before_requesting() {
+        let client = LiteLlmModelClient::with_command(
+            vec![
+                "python3".into(),
+                "-c".into(),
+                "import sys; sys.exit(0)".into(),
+            ],
+            "",
+        );
+        let err = client
+            .inner
+            .build_params(&ModelRequest {
+                messages: vec![],
+                tools: vec![],
+                model: String::new(),
+            })
+            .unwrap_err();
+        assert!(err.to_string().contains("model id required"));
     }
 }

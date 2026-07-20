@@ -1851,12 +1851,26 @@ Reply with ONLY the commit message line.\n\n\
             return;
         }
         self.input.history_browse = false;
-        for c in data.chars() {
-            if c == '\n' || c == '\r' {
+        // Keep the complete payload for submission, while representing genuinely
+        // multiline pastes compactly (as Codex does) so the input stays readable.
+        let line_count = data.lines().count();
+        let large_paste = line_count > 3;
+        let mut chars = data.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\r' {
+                // Clipboard text commonly uses CRLF; insert one logical newline.
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                self.input.insert_newline();
+            } else if c == '\n' {
                 self.input.insert_newline();
             } else if !c.is_control() {
                 self.input.insert(c);
             }
+        }
+        if large_paste {
+            self.input.mark_large_paste(line_count);
         }
         self.clamp_slash_suggest();
     }
