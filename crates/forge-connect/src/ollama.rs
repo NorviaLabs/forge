@@ -23,7 +23,7 @@ pub fn ollama_profile() -> ConnectProfile {
         },
         api_key_env: vec!["OLLAMA_API_KEY".into()],
         default_base_url: Some(DEFAULT_BASE_URL.into()),
-        default_models: Vec::new(),
+        default_models: vec!["ollama/llama3.2".into()],
         auth_url: Some("https://ollama.com/download".into()),
         litellm_provider_prefix: "ollama".into(),
     }
