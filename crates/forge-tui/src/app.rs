@@ -3412,6 +3412,7 @@ mod tests {
     #[tokio::test]
     async fn model_command_applies_litellm_id_to_session() {
         let (_dir, session) = test_session().await;
+        let cred_dir = tempfile::tempdir().unwrap();
         let mut app = TuiApp::new(
             session,
             TuiRuntimeConfig {
@@ -3421,6 +3422,10 @@ mod tests {
                 version: "0.12.0".into(),
             },
         );
+        app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
+        app.connect_store
+            .set_api_key("anthropic", "sk-test-anthropic-credential")
+            .unwrap();
         app.dispatch_line("/model openai/gpt-4.1-mini")
             .await
             .unwrap();
