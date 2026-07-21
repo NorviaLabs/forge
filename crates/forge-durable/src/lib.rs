@@ -4,7 +4,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
-use forge_types::{JournalEvent, JournalEventType, SessionId, SessionStatus, ToolCall, ToolOutput};
+use forge_types::{
+    JournalEvent, JournalEventType, Message, MessageRole, ModelResponse, SessionId, SessionStatus,
+    ToolCall, ToolOutput,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -47,6 +50,10 @@ pub struct ReplayState {
     /// tool intents without results (fail-safe)
     pub incomplete_intents: Vec<String>,
     pub user_messages: Vec<String>,
+    /// Ordered active conversation reconstructed from journal events.
+    pub messages: Vec<Message>,
+    /// Completed model responses, used to restore cumulative usage metrics.
+    pub model_responses: Vec<ModelResponse>,
     pub events: Vec<JournalEvent>,
     /// Phase 2: pending HITL payload if status is AwaitingHitl
     pub pending_hitl: Option<serde_json::Value>,
@@ -280,6 +287,8 @@ impl Journal {
             tool_results: HashMap::new(),
             incomplete_intents: Vec::new(),
             user_messages: Vec::new(),
+            messages: Vec::new(),
+            model_responses: Vec::new(),
             events: Vec::new(),
             pending_hitl: None,
         };
@@ -313,6 +322,35 @@ impl Journal {
                 JournalEventType::UserMessage => {
                     if let Some(c) = payload.get("content").and_then(|v| v.as_str()) {
                         state.user_messages.push(c.to_string());
+                        state.messages.push(Message::new(MessageRole::User, c));
+                    }
+                }
+                JournalEventType::ModelResponse => {
+                    // Older journals only contain response metadata and remain resumable with
+                    // partial history; current journals persist the complete response.
+                    if let Ok(response) = serde_json::from_value::<ModelResponse>(payload.clone()) {
+                        let has_thinking = response
+                            .thinking
+                            .as_ref()
+                            .is_some_and(|thinking| !thinking.trim().is_empty());
+                        if !response.text.is_empty()
+                            || has_thinking
+                            || !response.tool_calls.is_empty()
+                        {
+                            state.messages.push(Message {
+                                role: MessageRole::Assistant,
+                                content: response.text.clone(),
+                                tool_call_id: None,
+                                name: None,
+                                thinking: response
+                                    .thinking
+                                    .clone()
+                                    .filter(|thinking| !thinking.trim().is_empty()),
+                                thinking_duration_secs: None,
+                                tool_calls: response.tool_calls.clone(),
+                            });
+                        }
+                        state.model_responses.push(response);
                     }
                 }
                 JournalEventType::ToolIntent => {
@@ -323,6 +361,15 @@ impl Journal {
                 JournalEventType::ToolResult => {
                     if let Ok(p) = serde_json::from_value::<ToolResultPayload>(payload.clone()) {
                         open_intents.remove(&p.call_id);
+                        state.messages.push(Message {
+                            role: MessageRole::Tool,
+                            content: p.output.content.clone(),
+                            tool_call_id: Some(p.call_id.clone()),
+                            name: Some(p.name.clone()),
+                            thinking: None,
+                            thinking_duration_secs: None,
+                            tool_calls: vec![],
+                        });
                         state.tool_results.insert(p.call_id.clone(), p);
                     }
                 }
@@ -343,7 +390,15 @@ impl Journal {
                         state.status = SessionStatus::Running;
                     }
                 }
-                JournalEventType::ContextReset => {}
+                JournalEventType::ContextReset => {
+                    if let Some(messages) = payload.get("messages") {
+                        if let Ok(messages) =
+                            serde_json::from_value::<Vec<Message>>(messages.clone())
+                        {
+                            state.messages = messages;
+                        }
+                    }
+                }
                 _ => {}
             }
 
@@ -408,6 +463,69 @@ mod tests {
         let cached = Journal::cached_tool_result(&state2, "c1").unwrap();
         assert_eq!(cached.output.content, "ok");
         assert_eq!(state2.user_messages, vec!["hi".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn replay_restores_ordered_conversation_and_reset_context() {
+        let dir = tempdir().unwrap();
+        let sid = new_session_id();
+        let journal = Journal::open(dir.path(), sid).await.unwrap();
+        journal
+            .append_user_message(sid, "inspect it")
+            .await
+            .unwrap();
+        let response = ModelResponse {
+            text: "checking".into(),
+            tool_calls: vec![ToolCall {
+                id: "c1".into(),
+                name: "read_file".into(),
+                arguments: json!({"path": "a"}),
+            }],
+            usage: Some(forge_types::Usage {
+                prompt_tokens: 12,
+                completion_tokens: 3,
+            }),
+            thinking: Some("need the file".into()),
+        };
+        journal
+            .append_model_response(sid, serde_json::to_value(&response).unwrap())
+            .await
+            .unwrap();
+        journal
+            .append_tool_result(
+                sid,
+                &response.tool_calls[0],
+                &ToolOutput {
+                    content: "contents".into(),
+                    is_error: false,
+                },
+            )
+            .await
+            .unwrap();
+
+        let state = journal.replay(sid).await.unwrap();
+        assert_eq!(state.messages.len(), 3);
+        assert_eq!(state.messages[0].role, MessageRole::User);
+        assert_eq!(state.messages[1].role, MessageRole::Assistant);
+        assert_eq!(state.messages[1].tool_calls[0].id, "c1");
+        assert_eq!(state.messages[2].role, MessageRole::Tool);
+        assert_eq!(
+            state.model_responses[0]
+                .usage
+                .as_ref()
+                .unwrap()
+                .prompt_tokens,
+            12
+        );
+
+        let reset_messages = vec![Message::new(MessageRole::User, "handoff context")];
+        journal
+            .append_context_reset(sid, json!({"messages": reset_messages}))
+            .await
+            .unwrap();
+        let reset_state = journal.replay(sid).await.unwrap();
+        assert_eq!(reset_state.messages.len(), 1);
+        assert_eq!(reset_state.messages[0].content, "handoff context");
     }
 
     #[tokio::test]
