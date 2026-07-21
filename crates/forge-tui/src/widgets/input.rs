@@ -6,6 +6,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
+use std::ops::Range;
 
 #[derive(Debug, Clone, Default)]
 pub struct InputModel {
@@ -17,16 +18,23 @@ pub struct InputModel {
     pub history_browse: bool,
     /// No live LLM provider — chrome warns; chat send is gated in the app.
     pub not_connected: bool,
-    /// Large clipboard pastes remain in `text` but are rendered compactly.
-    pasted_lines: Option<usize>,
+    /// Full payloads represented by compact, atomic placeholders in `text`.
+    pending_pastes: Vec<PendingPaste>,
 }
 
-const PASTE_PREVIEW_LINES: usize = 3;
+const LARGE_PASTE_CHAR_THRESHOLD: usize = 1000;
+
+#[derive(Debug, Clone)]
+struct PendingPaste {
+    placeholder: String,
+    content: String,
+    range: Range<usize>,
+}
 
 impl InputModel {
     pub fn insert(&mut self, c: char) {
-        self.pasted_lines = None;
-        let i = self.cursor.min(self.text.len());
+        let i = self.insertion_cursor();
+        self.shift_ranges_for_insert(i, c.len_utf8());
         self.text.insert(i, c);
         self.cursor = i + c.len_utf8();
     }
@@ -36,16 +44,48 @@ impl InputModel {
         self.insert('\n');
     }
 
-    /// Record a compact display for a large paste without losing its contents.
-    pub fn mark_large_paste(&mut self, lines: usize) {
-        self.pasted_lines = Some(lines);
+    /// Insert clipboard text, compacting payloads over 1,000 characters into an
+    /// atomic Codex-style placeholder while retaining the full submission text.
+    pub fn insert_paste(&mut self, pasted: &str) {
+        let pasted = normalize_pasted_text(pasted);
+        if pasted.is_empty() {
+            return;
+        }
+
+        let char_count = pasted.chars().count();
+        if char_count > LARGE_PASTE_CHAR_THRESHOLD {
+            let placeholder = self.next_large_paste_placeholder(char_count);
+            let start = self.insertion_cursor();
+            self.shift_ranges_for_insert(start, placeholder.len());
+            self.text.insert_str(start, &placeholder);
+            self.cursor = start + placeholder.len();
+            self.pending_pastes.push(PendingPaste {
+                range: start..self.cursor,
+                placeholder,
+                content: pasted,
+            });
+        } else {
+            self.insert_str(&pasted);
+        }
     }
 
     pub fn backspace(&mut self) {
-        self.pasted_lines = None;
         if self.cursor == 0 {
             return;
         }
+        if let Some(index) = self
+            .pending_pastes
+            .iter()
+            .position(|paste| self.cursor > paste.range.start && self.cursor <= paste.range.end)
+        {
+            let paste = self.pending_pastes.remove(index);
+            let removed = paste.range.end - paste.range.start;
+            self.text.replace_range(paste.range.clone(), "");
+            self.cursor = paste.range.start;
+            self.shift_ranges_after_remove(paste.range.end, removed);
+            return;
+        }
+
         let prev = self.text[..self.cursor]
             .chars()
             .next_back()
@@ -54,11 +94,19 @@ impl InputModel {
         let start = self.cursor - prev;
         self.text.replace_range(start..self.cursor, "");
         self.cursor = start;
+        self.shift_ranges_after_remove(start + prev, prev);
     }
 
     pub fn move_left(&mut self) {
-        self.pasted_lines = None;
         if self.cursor == 0 {
+            return;
+        }
+        if let Some(paste) = self
+            .pending_pastes
+            .iter()
+            .find(|paste| self.cursor > paste.range.start && self.cursor <= paste.range.end)
+        {
+            self.cursor = paste.range.start;
             return;
         }
         let prev = self.text[..self.cursor]
@@ -70,8 +118,15 @@ impl InputModel {
     }
 
     pub fn move_right(&mut self) {
-        self.pasted_lines = None;
         if self.cursor >= self.text.len() {
+            return;
+        }
+        if let Some(paste) = self
+            .pending_pastes
+            .iter()
+            .find(|paste| self.cursor >= paste.range.start && self.cursor < paste.range.end)
+        {
+            self.cursor = paste.range.end;
             return;
         }
         let next = self.text[self.cursor..]
@@ -83,15 +138,19 @@ impl InputModel {
     }
 
     pub fn clear(&mut self) {
-        self.pasted_lines = None;
         self.text.clear();
         self.cursor = 0;
         self.history_browse = false;
+        self.pending_pastes.clear();
     }
 
     pub fn take(&mut self) -> String {
-        self.pasted_lines = None;
-        let t = std::mem::take(&mut self.text);
+        let mut t = std::mem::take(&mut self.text);
+        self.pending_pastes
+            .sort_by_key(|paste| std::cmp::Reverse(paste.range.start));
+        for paste in self.pending_pastes.drain(..) {
+            t.replace_range(paste.range, &paste.content);
+        }
         self.cursor = 0;
         self.history_browse = false;
         t
@@ -101,17 +160,86 @@ impl InputModel {
     pub fn set_text(&mut self, text: impl Into<String>) {
         self.text = text.into();
         self.cursor = self.text.len();
-        self.pasted_lines = None;
+        self.pending_pastes.clear();
     }
 
     /// Number of visual lines for layout (capped).
     pub fn visual_lines(&self) -> u16 {
-        if self.pasted_lines.is_some() {
-            return (PASTE_PREVIEW_LINES + 1) as u16;
-        }
         let n = self.text.lines().count().max(1) as u16;
         n.min(6)
     }
+
+    fn insert_str(&mut self, text: &str) {
+        let i = self.insertion_cursor();
+        self.shift_ranges_for_insert(i, text.len());
+        self.text.insert_str(i, text);
+        self.cursor = i + text.len();
+    }
+
+    fn insertion_cursor(&self) -> usize {
+        let cursor = self.cursor.min(self.text.len());
+        self.pending_pastes
+            .iter()
+            .find(|paste| cursor > paste.range.start && cursor < paste.range.end)
+            .map_or(cursor, |paste| paste.range.end)
+    }
+
+    fn shift_ranges_for_insert(&mut self, at: usize, inserted: usize) {
+        for paste in &mut self.pending_pastes {
+            if paste.range.start >= at {
+                paste.range.start += inserted;
+                paste.range.end += inserted;
+            }
+        }
+    }
+
+    fn shift_ranges_after_remove(&mut self, removed_end: usize, removed: usize) {
+        for paste in &mut self.pending_pastes {
+            if paste.range.start >= removed_end {
+                paste.range.start -= removed;
+                paste.range.end -= removed;
+            }
+        }
+    }
+
+    fn next_large_paste_placeholder(&self, char_count: usize) -> String {
+        let base = format!("[Pasted Content {char_count} chars]");
+        let prefix = format!("{base} #");
+        let mut max_suffix = 0usize;
+        for paste in &self.pending_pastes {
+            if paste.placeholder == base {
+                max_suffix = max_suffix.max(1);
+            } else if let Some(suffix) = paste.placeholder.strip_prefix(&prefix) {
+                if let Ok(value) = suffix.parse::<usize>() {
+                    max_suffix = max_suffix.max(value);
+                }
+            }
+        }
+        if max_suffix == 0 {
+            base
+        } else {
+            format!("{base} #{}", max_suffix + 1)
+        }
+    }
+}
+
+fn normalize_pasted_text(pasted: &str) -> String {
+    let mut normalized = String::with_capacity(pasted.len());
+    let mut chars = pasted.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                normalized.push('\n');
+            }
+            '\n' | '\t' => normalized.push(c),
+            _ if !c.is_control() => normalized.push(c),
+            _ => {}
+        }
+    }
+    normalized
 }
 
 pub struct InputBar<'a> {
@@ -129,34 +257,7 @@ impl Widget for InputBar<'_> {
         };
 
         // Block cursor: solid cell at caret (█ at EOL, inverted char mid-text).
-        let lines: Vec<Line> = if let Some(n) = self.model.pasted_lines {
-            let mut preview: Vec<Line> = self
-                .model
-                .text
-                .lines()
-                .take(PASTE_PREVIEW_LINES)
-                .enumerate()
-                .map(|(i, raw)| {
-                    let prefix = if i == 0 { " ❯ " } else { "   " };
-                    Line::from(vec![
-                        Span::styled(prefix, theme::brand()),
-                        Span::styled(raw, base),
-                    ])
-                })
-                .collect();
-            let remaining = n.saturating_sub(PASTE_PREVIEW_LINES);
-            let suffix = if remaining == 1 {
-                "… +1 line".to_string()
-            } else {
-                format!("… +{remaining} lines")
-            };
-            preview.push(Line::from(vec![
-                Span::styled("   ", theme::brand()),
-                Span::styled(suffix, theme::muted()),
-                Span::styled(" ", theme::caret()),
-            ]));
-            preview
-        } else if self.model.text.is_empty() && !self.model.hint.is_empty() {
+        let lines: Vec<Line> = if self.model.text.is_empty() && !self.model.hint.is_empty() {
             vec![Line::from(vec![
                 Span::styled(" ❯ ", theme::brand()),
                 Span::styled(" ", theme::caret()), // block cell
@@ -304,46 +405,61 @@ mod tests {
     }
 
     #[test]
-    fn large_paste_renders_folded_preview() {
-        let mut m = InputModel {
-            text: "one\ntwo\nthree\nfour\nfive".into(),
-            cursor: "one\ntwo\nthree\nfour\nfive".len(),
-            ..Default::default()
-        };
-        m.mark_large_paste(5);
-        assert_eq!(m.visual_lines(), 4);
-        let backend = TestBackend::new(40, 8);
-        let mut term = Terminal::new(backend).unwrap();
-        term.draw(|f| {
-            f.render_widget(InputBar { model: &m }, f.size());
-        })
-        .unwrap();
-        let buf = term.backend().buffer();
-        let mut text = String::new();
-        for y in 0..buf.area().height {
-            for x in 0..buf.area().width {
-                text.push_str(buf.get(x, y).symbol());
-            }
-            text.push('\n');
-        }
-        assert!(text.contains("one"));
-        assert!(text.contains("two"));
-        assert!(text.contains("three"));
-        assert!(text.contains("… +2 lines"));
-        assert!(!text.contains("four"));
-        assert!(!text.contains("five"));
+    fn large_paste_uses_placeholder_and_expands_on_take() {
+        let pasted = "λ".repeat(LARGE_PASTE_CHAR_THRESHOLD + 1);
+        let mut m = InputModel::default();
+        m.insert_paste(&pasted);
+        assert_eq!(m.text, "[Pasted Content 1001 chars]");
+        assert_eq!(m.visual_lines(), 1);
+        assert_eq!(m.take(), pasted);
+        assert!(m.text.is_empty());
     }
 
     #[test]
-    fn cursor_motion_clears_folded_paste_preview() {
-        let mut m = InputModel {
-            text: "one\ntwo\nthree\nfour".into(),
-            cursor: 0,
-            ..Default::default()
-        };
-        m.mark_large_paste(4);
+    fn large_paste_placeholder_is_atomic_for_cursor_and_backspace() {
+        let mut m = InputModel::default();
+        m.insert_paste(&"x".repeat(LARGE_PASTE_CHAR_THRESHOLD + 1));
+        let end = m.cursor;
+        m.move_left();
+        assert_eq!(m.cursor, 0);
         m.move_right();
-        assert!(m.pasted_lines.is_none());
+        assert_eq!(m.cursor, end);
+        m.backspace();
+        assert!(m.text.is_empty());
+        assert!(m.pending_pastes.is_empty());
+    }
+
+    #[test]
+    fn duplicate_length_pastes_get_unique_placeholders() {
+        let pasted = "x".repeat(LARGE_PASTE_CHAR_THRESHOLD + 1);
+        let base = "[Pasted Content 1001 chars]";
+        let mut m = InputModel::default();
+        m.insert_paste(&pasted);
+        m.insert_paste(&pasted);
+        assert_eq!(m.text, format!("{base}{base} #2"));
+        assert_eq!(m.take(), format!("{pasted}{pasted}"));
+    }
+
+    #[test]
+    fn surrounding_edits_preserve_large_paste_expansion() {
+        let pasted = "x".repeat(LARGE_PASTE_CHAR_THRESHOLD + 1);
+        let mut m = InputModel::default();
+        m.insert_paste(&pasted);
+        m.insert('!');
+        m.move_left();
+        m.move_left();
+        m.insert('>');
+        assert_eq!(m.take(), format!(">{pasted}!"));
+    }
+
+    #[test]
+    fn small_paste_is_bulk_inserted_and_normalized() {
+        let mut m = InputModel::default();
+        m.set_text("before after");
+        m.cursor = "before".len();
+        m.insert_paste("\r\n\tmiddle\u{0000}");
+        assert_eq!(m.text, "before\n\tmiddle after");
+        assert_eq!(m.take(), "before\n\tmiddle after");
     }
 
     #[test]
