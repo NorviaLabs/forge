@@ -170,6 +170,69 @@ pub struct AgentSession {
 }
 
 impl AgentSession {
+    /// Replace the active conversation by replaying another session journal.
+    pub async fn resume_session(&mut self, session_id: SessionId) -> Result<(), LoopError> {
+        if session_id == self.session_id {
+            return Ok(());
+        }
+
+        let journal = Journal::open(self.journal.directory(), session_id).await?;
+        let state = journal.replay(session_id).await?;
+        let mut context = ContextEngine::new(self.context.workspace.clone(), session_id);
+        context.config = self.context.config.clone();
+        let system_message = Message {
+            role: MessageRole::System,
+            content: assemble_system_prompt(&context.load_agents_md()),
+            tool_call_id: None,
+            name: None,
+            thinking: None,
+            thinking_duration_secs: None,
+            tool_calls: vec![],
+        };
+        let mut messages = state.messages;
+        if let Some(first) = messages
+            .first_mut()
+            .filter(|message| message.role == MessageRole::System)
+        {
+            *first = system_message;
+        } else {
+            messages.insert(0, system_message);
+        }
+        for incomplete in &state.incomplete_intents {
+            warn!(call_id = %incomplete, "incomplete tool intent on resume (fail-safe)");
+        }
+
+        let mut worktree = None;
+        let mut active_root = context.workspace.clone();
+        if self.worktree.is_some() {
+            let mut manager = WorktreeManager::new(context.workspace.clone(), session_id);
+            active_root = manager.ensure()?;
+            worktree = Some(manager);
+        }
+        let pending_hitl = state
+            .pending_hitl
+            .and_then(|value| serde_json::from_value::<HitlPayload>(value).ok());
+        let mut token_usage = SessionTokenUsage::default();
+        for response in &state.model_responses {
+            token_usage.record_response(response.usage.as_ref(), response.thinking.as_deref());
+        }
+
+        self.session_id = session_id;
+        self.status = state.status;
+        self.messages = messages;
+        self.events = vec![TurnEvent {
+            kind: "resume".into(),
+            detail: format!("seq={}", state.last_seq),
+        }];
+        self.pending_hitl = pending_hitl;
+        self.journal = journal;
+        self.tool_ctx = ToolContext::new(active_root);
+        self.context = context;
+        self.worktree = worktree;
+        self.token_usage = token_usage;
+        Ok(())
+    }
+
     pub async fn create(
         loop_cfg: LoopConfig,
         model: Arc<dyn ModelClient>,
@@ -240,7 +303,7 @@ impl AgentSession {
         let state = journal.replay(session_id).await?;
         let context = ContextEngine::new(loop_cfg.workspace.clone(), session_id);
         let system = assemble_system_prompt(&context.load_agents_md());
-        let mut messages = vec![Message {
+        let system_message = Message {
             role: MessageRole::System,
             content: system,
             tool_call_id: None,
@@ -248,28 +311,15 @@ impl AgentSession {
             thinking: None,
             thinking_duration_secs: None,
             tool_calls: vec![],
-        }];
-        for u in &state.user_messages {
-            messages.push(Message {
-                role: MessageRole::User,
-                content: u.clone(),
-                tool_call_id: None,
-                name: None,
-                thinking: None,
-                thinking_duration_secs: None,
-                tool_calls: vec![],
-            });
-        }
-        for (id, tr) in &state.tool_results {
-            messages.push(Message {
-                role: MessageRole::Tool,
-                content: tr.output.content.clone(),
-                tool_call_id: Some(id.clone()),
-                name: Some(tr.name.clone()),
-                thinking: None,
-                thinking_duration_secs: None,
-                tool_calls: vec![],
-            });
+        };
+        let mut messages = state.messages.clone();
+        if let Some(first) = messages
+            .first_mut()
+            .filter(|message| message.role == MessageRole::System)
+        {
+            *first = system_message;
+        } else {
+            messages.insert(0, system_message);
         }
         for incomplete in &state.incomplete_intents {
             warn!(call_id = %incomplete, "incomplete tool intent on resume (fail-safe)");
@@ -286,6 +336,11 @@ impl AgentSession {
         let pending_hitl = state
             .pending_hitl
             .and_then(|v| serde_json::from_value::<HitlPayload>(v).ok());
+
+        let mut token_usage = SessionTokenUsage::default();
+        for response in &state.model_responses {
+            token_usage.record_response(response.usage.as_ref(), response.thinking.as_deref());
+        }
 
         Ok(Self {
             session_id,
@@ -307,8 +362,7 @@ impl AgentSession {
             worktree,
             enable_context: loop_cfg.enable_context_lifecycle,
             enable_gov: loop_cfg.enable_governance,
-            // Resume does not rehydrate historical usage from the journal yet.
-            token_usage: SessionTokenUsage::default(),
+            token_usage,
         })
     }
 
@@ -478,14 +532,7 @@ impl AgentSession {
         self.journal
             .append_model_response(
                 self.session_id,
-                json!({
-                    "text_len": last.text.len(),
-                    "tool_calls": last.tool_calls.len(),
-                    "usage": last.usage.as_ref().map(|u| json!({
-                        "prompt_tokens": u.prompt_tokens,
-                        "completion_tokens": u.completion_tokens,
-                    })),
-                }),
+                serde_json::to_value(&last).map_err(|error| LoopError::Other(error.to_string()))?,
             )
             .await?;
 
@@ -559,7 +606,10 @@ impl AgentSession {
                 .context
                 .handoff_reset(&self.messages, &ws_ref, &system)?;
             self.journal
-                .append_context_reset(self.session_id, json!({ "progress": doc }))
+                .append_context_reset(
+                    self.session_id,
+                    json!({ "progress": doc, "messages": msgs }),
+                )
                 .await?;
             self.messages = msgs;
             self.events.push(TurnEvent {
@@ -948,7 +998,7 @@ impl AgentSession {
         self.journal
             .append_context_reset(
                 self.session_id,
-                json!({ "progress": doc, "workspace_ref": ws_ref }),
+                json!({ "progress": doc, "workspace_ref": ws_ref, "messages": msgs }),
             )
             .await?;
         self.messages = msgs;
@@ -1081,6 +1131,72 @@ mod tests {
             .find(|m| m.role == MessageRole::Assistant)
             .unwrap();
         assert_eq!(assistant.tool_calls[0].id, "1");
+    }
+
+    #[tokio::test]
+    async fn resume_restores_conversation_context_and_usage() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("f.txt"), "data").unwrap();
+        let model = Arc::new(MockModelClient::script(vec![
+            ModelResponse {
+                text: "".into(),
+                tool_calls: vec![ToolCall {
+                    id: "1".into(),
+                    name: "read_file".into(),
+                    arguments: json!({"path": "f.txt"}),
+                }],
+                usage: Some(Usage {
+                    prompt_tokens: 10,
+                    completion_tokens: 2,
+                }),
+                thinking: Some("inspect".into()),
+            },
+            ModelResponse {
+                text: "read ok".into(),
+                tool_calls: vec![],
+                usage: Some(Usage {
+                    prompt_tokens: 20,
+                    completion_tokens: 4,
+                }),
+                thinking: None,
+            },
+        ]));
+        let cfg = base_cfg(dir.path());
+        let mut session = AgentSession::create(cfg.clone(), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        session.run_user_message("read it").await.unwrap();
+        let session_id = session.session_id;
+        drop(session);
+
+        let resumed = AgentSession::resume(
+            cfg,
+            Arc::new(MockModelClient::script(vec![])),
+            ToolRegistry::new(),
+            session_id,
+        )
+        .await
+        .unwrap();
+        let roles = resumed
+            .messages
+            .iter()
+            .map(|message| message.role)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            roles,
+            vec![
+                MessageRole::System,
+                MessageRole::User,
+                MessageRole::Assistant,
+                MessageRole::Tool,
+                MessageRole::Assistant,
+            ]
+        );
+        assert_eq!(resumed.messages[2].tool_calls[0].id, "1");
+        assert_eq!(resumed.messages[4].content, "read ok");
+        assert_eq!(resumed.token_usage.prompt_tokens, 30);
+        assert_eq!(resumed.token_usage.completion_tokens, 6);
+        assert_eq!(resumed.token_usage.model_steps, 2);
     }
 
     #[tokio::test]
