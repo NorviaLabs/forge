@@ -11,6 +11,7 @@ pub struct FooterModel {
     pub cwd: String,
     pub session_short: String,
     pub status: String,
+    pub status_busy: bool,
     pub provider: String,
     pub model: String,
     pub effort: String,
@@ -30,6 +31,7 @@ impl Default for FooterModel {
             cwd: String::new(),
             session_short: String::new(),
             status: String::new(),
+            status_busy: false,
             provider: String::new(),
             model: String::new(),
             effort: String::new(),
@@ -90,8 +92,6 @@ impl Widget for FooterBar<'_> {
                 },
             ),
             Span::styled("· ", theme::dim()),
-            Span::styled(format!("{} ", self.model.status), theme::text()),
-            Span::styled("· ", theme::dim()),
             Span::styled(format!("{} ", model_disp), theme::text()),
             Span::styled("· ", theme::dim()),
             Span::styled(format!("effort={} ", self.model.effort), theme::text()),
@@ -114,7 +114,22 @@ impl Widget for FooterBar<'_> {
             theme::muted(),
         ));
         let line = Line::from(spans);
-        buf.set_line(area.x, area.y, &line, area.width);
+        let status = format!("{} ", self.model.status);
+        let status_width = status.chars().count().min(area.width as usize) as u16;
+        let status_x = area.x + area.width.saturating_sub(status_width);
+        let left_width = status_x.saturating_sub(area.x + 1);
+
+        buf.set_line(area.x, area.y, &line, left_width);
+        buf.set_string(
+            status_x,
+            area.y,
+            status,
+            if self.model.status_busy {
+                theme::info()
+            } else {
+                theme::text()
+            },
+        );
     }
 }
 
@@ -128,6 +143,7 @@ mod tests {
             cwd: "/tmp".into(),
             session_short: "abcd".into(),
             status: "idle".into(),
+            status_busy: false,
             provider: "mock".into(),
             model: "m".into(),
             effort: "auto".into(),
@@ -140,5 +156,22 @@ mod tests {
             hints: "test".into(),
         };
         assert!(m.cwd.contains("tmp"));
+    }
+
+    #[test]
+    fn renders_status_at_bottom_right() {
+        let model = FooterModel {
+            status: "thinking".into(),
+            status_busy: true,
+            hints: String::new(),
+            ..FooterModel::default()
+        };
+        let area = Rect::new(0, 0, 80, 1);
+        let mut buf = Buffer::empty(area);
+
+        FooterBar { model: &model }.render(area, &mut buf);
+
+        let rendered: String = (0..area.width).map(|x| buf.get(x, 0).symbol()).collect();
+        assert!(rendered.ends_with("thinking "));
     }
 }

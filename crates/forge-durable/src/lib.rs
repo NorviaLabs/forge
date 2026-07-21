@@ -1,7 +1,7 @@
 //! Durable execution journal (durable-execution.md) — DUR-01, DUR-02.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 use forge_types::{JournalEvent, JournalEventType, SessionId, SessionStatus, ToolCall, ToolOutput};
@@ -27,6 +27,7 @@ pub enum JournalError {
 #[derive(Debug, Clone)]
 pub struct Journal {
     pool: SqlitePool,
+    db_path: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,6 +53,10 @@ pub struct ReplayState {
 }
 
 impl Journal {
+    pub fn directory(&self) -> &Path {
+        self.db_path.parent().unwrap_or_else(|| Path::new("."))
+    }
+
     pub async fn open(dir: &Path, session_id: SessionId) -> Result<Self, JournalError> {
         std::fs::create_dir_all(dir)?;
         let db_path = dir.join(format!("{session_id}.db"));
@@ -62,7 +67,7 @@ impl Journal {
             .max_connections(1)
             .connect_with(opts)
             .await?;
-        let j = Self { pool };
+        let j = Self { pool, db_path };
         j.migrate().await?;
         Ok(j)
     }

@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 use std::io::{self, stdout};
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use crossterm::event::{
     self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers,
@@ -30,7 +30,8 @@ use thiserror::Error;
 use crate::activity::{ActivityFeed, ActivityKind};
 use crate::commands::{parse_slash, SlashCommand, SttAction};
 use crate::conversation::{
-    BannerKind, ChatItem, ConversationModel, ConversationViewOpts, StreamWaitPhase,
+    format_elapsed_tenths, BannerKind, ChatItem, ConversationModel, ConversationViewOpts,
+    StreamWaitPhase,
 };
 use crate::effort::ReasoningEffort;
 use crate::history::InputHistory;
@@ -39,7 +40,7 @@ use crate::layout::split_areas_full;
 use crate::msg_queue::MessageQueue;
 use crate::overlays::{
     filter_palette, handle_overlay_key, models_from_catalog, ConnectProfileItem, Key as OverlayKey,
-    Overlay, OverlayAction, OverlayWidget, PaletteItem,
+    Overlay, OverlayAction, OverlayWidget, PaletteItem, ResumeSessionItem,
 };
 use crate::sidebar::SidebarModel;
 use crate::stt::{
@@ -69,6 +70,48 @@ pub struct TuiRuntimeConfig {
     pub provider: String,
     pub cwd: PathBuf,
     pub version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResumeSession {
+    id: uuid::Uuid,
+    modified: SystemTime,
+}
+
+fn recent_resume_sessions(
+    dir: &std::path::Path,
+    current: uuid::Uuid,
+    limit: usize,
+) -> io::Result<Vec<ResumeSession>> {
+    let mut sessions = Vec::new();
+    if !dir.is_dir() {
+        return Ok(sessions);
+    }
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("db") {
+            continue;
+        }
+        let Some(id) = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .and_then(|value| uuid::Uuid::parse_str(value).ok())
+        else {
+            continue;
+        };
+        if id == current {
+            continue;
+        }
+        let modified = entry
+            .metadata()?
+            .modified()
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        sessions.push(ResumeSession { id, modified });
+    }
+    sessions.sort_by(|left, right| right.modified.cmp(&left.modified));
+    sessions.truncate(limit);
+    Ok(sessions)
 }
 
 pub struct TuiApp {
@@ -1333,6 +1376,7 @@ impl TuiApp {
         self.pending_prompt = Some(next);
         self.busy = true;
         self.busy_phase = BusyPhase::Model;
+        self.turn_started = Some(Instant::now());
         self.stream_preview.clear();
         self.stream_thinking.clear();
         self.push_activity(
@@ -1879,6 +1923,21 @@ Reply with ONLY the commit message line.\n\n\
         }
     }
 
+    fn busy_status_detail(&self) -> Option<String> {
+        self.busy.then(|| {
+            let label = if !self.stream_thinking.is_empty() && self.stream_preview.is_empty() {
+                "Thinking..."
+            } else {
+                "Working..."
+            };
+            let elapsed = self
+                .turn_started
+                .map(|started| started.elapsed().as_secs_f64())
+                .unwrap_or(0.0);
+            format!("{label} {}", format_elapsed_tenths(elapsed))
+        })
+    }
+
     pub fn draw(&mut self, frame: &mut ratatui::Frame) {
         let area = frame.size();
         if is_too_small(area) {
@@ -2082,7 +2141,8 @@ Reply with ONLY the commit message line.\n\n\
 
         let qn = self.message_queue.len();
         let context = self.session.token_usage_report();
-        let (status_label, _) = status.status_label();
+        let busy_detail = self.busy_status_detail();
+        let (status_label, _) = status.status_label_with_busy_detail(busy_detail.as_deref());
         let hints = if self.ptt_recording.is_some() {
             format!(
                 "● REC {}s · release Ctrl+Space to stop",
@@ -2110,6 +2170,7 @@ Reply with ONLY the commit message line.\n\n\
             cwd: self.runtime.cwd.display().to_string(),
             session_short: status.session_short,
             status: status_label,
+            status_busy: status.busy,
             provider: self.runtime.provider.clone(),
             model: self.runtime.model_label.clone(),
             effort: self.reasoning_effort.to_string(),
@@ -2580,6 +2641,38 @@ Reply with ONLY the commit message line.\n\n\
                         .await
                 }
                 Ok(SlashCommand::Effort { level }) => self.handle_effort_command(level),
+                Ok(SlashCommand::ResumeList) => {
+                    match recent_resume_sessions(
+                        self.session.journal_dir(),
+                        self.session.session_id,
+                        10,
+                    ) {
+                        Ok(sessions) if sessions.is_empty() => {
+                            self.status_message = "no previous sessions".into();
+                            self.notices =
+                                vec!["No previous sessions found for this workspace.".into()];
+                        }
+                        Ok(sessions) => {
+                            self.status_message = format!("{} resumable sessions", sessions.len());
+                            let items = sessions
+                                .into_iter()
+                                .map(|session| {
+                                    let timestamp: chrono::DateTime<chrono::Local> =
+                                        session.modified.into();
+                                    ResumeSessionItem {
+                                        id: session.id.to_string(),
+                                        modified: timestamp.format("%Y-%m-%d %H:%M").to_string(),
+                                    }
+                                })
+                                .collect();
+                            self.notices.clear();
+                            self.overlay = Some(Overlay::resume_picker(items));
+                        }
+                        Err(error) => {
+                            self.report_error(&format!("Could not list previous sessions: {error}"))
+                        }
+                    }
+                }
                 Ok(SlashCommand::Resume { session_id }) => {
                     let msg =
                         format!("To resume {session_id}, restart: forge --resume {session_id}");
@@ -2746,6 +2839,7 @@ Reply with ONLY the commit message line.\n\n\
         self.pending_prompt = Some(line.to_string());
         self.busy = true;
         self.busy_phase = BusyPhase::Model;
+        self.turn_started = Some(Instant::now());
         // A new user turn should always follow the live conversation tail.
         // This also ensures its thinking block is visible after the user has
         // previously scrolled up to inspect an older response.
@@ -2780,7 +2874,7 @@ Reply with ONLY the commit message line.\n\n\
         self.busy_phase = BusyPhase::Model;
         self.stream_preview.clear();
         self.stream_thinking.clear();
-        self.turn_started = Some(Instant::now());
+        self.turn_started.get_or_insert_with(Instant::now);
         self.thinking_started = None;
         self.thought_secs = None;
 
@@ -3282,6 +3376,22 @@ mod tests {
         .await
         .unwrap();
         (dir, session)
+    }
+
+    #[test]
+    fn recent_resume_sessions_lists_previous_valid_journals() {
+        let dir = TempDir::new().unwrap();
+        let current = uuid::Uuid::new_v4();
+        let previous = uuid::Uuid::new_v4();
+        std::fs::write(dir.path().join(format!("{current}.db")), "").unwrap();
+        std::fs::write(dir.path().join(format!("{previous}.db")), "").unwrap();
+        std::fs::write(dir.path().join("not-a-session.db"), "").unwrap();
+        std::fs::write(dir.path().join(format!("{}.txt", uuid::Uuid::new_v4())), "").unwrap();
+
+        let sessions = recent_resume_sessions(dir.path(), current, 10).unwrap();
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, previous);
     }
 
     #[tokio::test]
@@ -4572,6 +4682,33 @@ mod tests {
             "recent={recent:?}"
         );
         assert_eq!(app.busy_phase, BusyPhase::Idle);
+    }
+
+    #[tokio::test]
+    async fn elapsed_status_persists_during_answer_and_tool_processing() {
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "m".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "0.10.0".into(),
+            },
+        );
+        app.busy = true;
+        app.turn_started = Some(Instant::now() - Duration::from_millis(1200));
+        app.stream_preview = "partial answer".into();
+        assert_eq!(app.busy_status_detail().as_deref(), Some("Working... 1.2s"));
+
+        app.stream_preview.clear();
+        app.busy_phase = BusyPhase::Tool {
+            name: "read_file".into(),
+        };
+        assert!(app
+            .busy_status_detail()
+            .unwrap()
+            .starts_with("Working... 1.2s"));
     }
 
     #[tokio::test]
