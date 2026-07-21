@@ -26,7 +26,7 @@ impl BusyPhase {
     pub fn label(&self) -> String {
         match self {
             Self::Idle => String::new(),
-            Self::Model => "model".into(),
+            Self::Model => "thinking".into(),
             Self::Tool { name } => format!("tool:{name}"),
             Self::Connect => "connect".into(),
             Self::Other(s) => s.clone(),
@@ -64,10 +64,19 @@ pub struct StatusModel {
 
 impl StatusModel {
     pub fn status_label(&self) -> (String, ratatui::style::Style) {
+        self.status_label_with_busy_detail(None)
+    }
+
+    pub fn status_label_with_busy_detail(
+        &self,
+        busy_detail: Option<&str>,
+    ) -> (String, ratatui::style::Style) {
         if self.busy {
             let phase = self.busy_phase.label();
             let spin = spinner_frame();
-            let text = if phase.is_empty() {
+            let text = if let Some(detail) = busy_detail.filter(|detail| !detail.is_empty()) {
+                format!("{spin} {detail}")
+            } else if phase.is_empty() {
                 format!("{spin} running")
             } else {
                 format!("{spin} {phase}")
@@ -226,7 +235,7 @@ mod tests {
             web_search_label: Some("mock".into()),
             tools_visible: 5,
         };
-        assert!(m.status_label().0.contains("model"));
+        assert!(m.status_label().0.contains("thinking"));
     }
 
     #[test]
