@@ -48,6 +48,10 @@ pub enum Overlay {
         selected: usize,
         items: Vec<ConnectProfileItem>,
     },
+    ResumePicker {
+        selected: usize,
+        items: Vec<ResumeSessionItem>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -57,6 +61,12 @@ pub struct ConnectProfileItem {
     pub auth_mode: String,
     pub auth_url: Option<String>,
     pub connected: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResumeSessionItem {
+    pub id: String,
+    pub modified: String,
 }
 
 #[derive(Debug, Clone)]
@@ -110,7 +120,7 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
         },
         PaletteItem {
             cmd: "/resume".into(),
-            desc: "Resume session by uuid".into(),
+            desc: "List recent sessions to resume".into(),
         },
         PaletteItem {
             cmd: "/diff".into(),
@@ -314,6 +324,10 @@ impl Overlay {
         Self::ConnectPicker { selected: 0, items }
     }
 
+    pub fn resume_picker(items: Vec<ResumeSessionItem>) -> Self {
+        Self::ResumePicker { selected: 0, items }
+    }
+
     pub fn filter_slash(&mut self, f: &str) {
         if let Self::Slash {
             filter,
@@ -355,6 +369,15 @@ impl Overlay {
                 *model_selected = ((*model_selected as i32 + delta).rem_euclid(n)) as usize;
             }
             Self::ConnectPicker {
+                selected, items, ..
+            } => {
+                if items.is_empty() {
+                    return;
+                }
+                let n = items.len() as i32;
+                *selected = ((*selected as i32 + delta).rem_euclid(n)) as usize;
+            }
+            Self::ResumePicker {
                 selected, items, ..
             } => {
                 if items.is_empty() {
@@ -564,6 +587,15 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                     OverlayAction::ConnectPickProfile {
                         profile_id: it.id.clone(),
                     }
+                } else {
+                    OverlayAction::None
+                }
+            }
+            Overlay::ResumePicker {
+                selected, items, ..
+            } => {
+                if let Some(item) = items.get(*selected) {
+                    OverlayAction::RunCommand(format!("/resume {}", item.id))
                 } else {
                     OverlayAction::None
                 }
@@ -867,6 +899,42 @@ impl Widget for OverlayWidget<'_> {
                     )
                     .render(r, buf);
             }
+            Overlay::ResumePicker { selected, items } => {
+                let r = centered_rect(70, 48, area);
+                let visible = r.height.saturating_sub(2).max(1) as usize;
+                let start = selected
+                    .saturating_add(1)
+                    .saturating_sub(visible)
+                    .min(items.len().saturating_sub(visible));
+                let list_items: Vec<ListItem> = items
+                    .iter()
+                    .enumerate()
+                    .skip(start)
+                    .take(visible)
+                    .map(|(index, item)| {
+                        let marker = if index == *selected { "▶ " } else { "  " };
+                        let style = if index == *selected {
+                            theme::selected_row()
+                        } else {
+                            theme::text()
+                        };
+                        let row = format!("{marker}{}  ·  {}", item.id, item.modified);
+                        ListItem::new(Span::styled(row, style))
+                    })
+                    .collect();
+                List::new(list_items)
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_style(theme::brand())
+                            .style(theme::panel())
+                            .title(Span::styled(
+                                " Resume a session · ↑↓ Enter · Esc cancel ",
+                                theme::brand(),
+                            )),
+                    )
+                    .render(r, buf);
+            }
             Overlay::ConnectPicker { selected, items } => {
                 let r = centered_rect(58, 42, area);
                 let list_items: Vec<ListItem> = items
@@ -931,7 +999,7 @@ mod tests {
         for it in &items {
             let res = parse_slash(&it.cmd).expect("is slash");
             match it.cmd.as_str() {
-                "/resume" => assert!(res.is_err(), "bare /resume needs uuid"),
+                "/resume" => assert_eq!(res.unwrap(), SlashCommand::ResumeList),
                 other => assert!(res.is_ok(), "palette cmd {other} should parse: {res:?}"),
             }
         }
@@ -997,6 +1065,28 @@ mod tests {
         } else {
             panic!();
         }
+    }
+
+    #[test]
+    fn resume_picker_moves_and_runs_selected_session() {
+        let mut overlay = Overlay::resume_picker(vec![
+            ResumeSessionItem {
+                id: "first".into(),
+                modified: "newest".into(),
+            },
+            ResumeSessionItem {
+                id: "second".into(),
+                modified: "older".into(),
+            },
+        ]);
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Down),
+            OverlayAction::None
+        );
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::RunCommand("/resume second".into())
+        );
     }
 
     #[test]

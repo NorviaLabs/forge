@@ -17,6 +17,7 @@ pub enum CommandError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SlashCommand {
     Status,
+    ResumeList,
     Resume {
         session_id: Uuid,
     },
@@ -80,14 +81,14 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
     let cmd = parts.next().unwrap_or("").to_ascii_lowercase();
     match cmd.as_str() {
         "status" => Ok(SlashCommand::Status),
-        "resume" => {
-            let id = parts
-                .next()
-                .ok_or_else(|| CommandError::Usage("/resume <session_id>".into()))?;
-            let session_id = Uuid::parse_str(id)
-                .map_err(|_| CommandError::Usage("/resume <uuid session_id>".into()))?;
-            Ok(SlashCommand::Resume { session_id })
-        }
+        "resume" => match parts.next() {
+            None => Ok(SlashCommand::ResumeList),
+            Some(id) => {
+                let session_id = Uuid::parse_str(id)
+                    .map_err(|_| CommandError::Usage("/resume <uuid session_id>".into()))?;
+                Ok(SlashCommand::Resume { session_id })
+            }
+        },
         "model" => {
             let a = parts.next().map(|s| s.to_string());
             let b = parts.next().map(|s| s.to_string());
@@ -234,11 +235,11 @@ mod tests {
     }
 
     #[test]
-    fn resume_requires_uuid() {
-        assert!(matches!(
-            parse_slash("/resume").unwrap().unwrap_err(),
-            CommandError::Usage(_)
-        ));
+    fn bare_resume_lists_sessions() {
+        assert_eq!(
+            parse_slash("/resume").unwrap().unwrap(),
+            SlashCommand::ResumeList
+        );
     }
 
     #[test]

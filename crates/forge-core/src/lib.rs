@@ -316,6 +316,10 @@ impl AgentSession {
         self.governance = g;
     }
 
+    pub fn journal_dir(&self) -> &std::path::Path {
+        self.journal.directory()
+    }
+
     pub fn list_tools(&self) -> Vec<String> {
         let desc = self.tools.list_descriptors();
         if self.enable_gov {
