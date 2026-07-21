@@ -88,7 +88,7 @@ pub struct ConversationViewOpts {
     pub tool_expanded: bool,
     /// Compact density (fewer blank lines, tighter wrap).
     pub compact: bool,
-    /// Spinner + elapsed status while waiting or thinking (answer not started).
+    /// Busy detail consumed by the bottom status bar.
     pub stream_wait: Option<(StreamWaitPhase, f64)>,
     /// When thinking just finished (answer streaming), show its elapsed time.
     pub stream_thought_secs: Option<f64>,
@@ -104,48 +104,6 @@ impl Default for ConversationViewOpts {
             stream_thought_secs: None,
         }
     }
-}
-
-const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-
-fn spinner_frame() -> &'static str {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    SPINNER[((ms / 80) as usize) % SPINNER.len()]
-}
-
-fn processing_label_spans(label: &str, phase_offset: f64, speed_ms: f64) -> Vec<Span<'static>> {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    let t = (ms as f64 / speed_ms) + phase_offset;
-    let chars: Vec<char> = label.chars().collect();
-    if chars.is_empty() {
-        return vec![Span::styled(String::new(), theme::text())];
-    }
-
-    chars
-        .into_iter()
-        .enumerate()
-        .map(|(idx, ch)| {
-            let wave = ((idx as f64 * 0.75) + t).sin();
-            let style = if ch == ' ' {
-                theme::text()
-            } else if wave > 0.65 {
-                theme::text().add_modifier(Modifier::BOLD)
-            } else if wave > 0.0 {
-                theme::info()
-            } else {
-                theme::muted()
-            };
-            Span::styled(ch.to_string(), style)
-        })
-        .collect()
 }
 
 /// Format elapsed time in 0.1s increments through 5s, then whole seconds.
@@ -586,39 +544,6 @@ impl ConversationModel {
                     }
                 }
             }
-        }
-        // Live wait / think status: spinner + label + elapsed.
-        if let Some((phase, elapsed)) = self.opts.stream_wait {
-            let spin = spinner_frame();
-            let t = format_elapsed_tenths(elapsed);
-            let label = match phase {
-                StreamWaitPhase::Waiting => "Working...",
-                StreamWaitPhase::Thinking => "Thinking...",
-            };
-            let mut spans = vec![Span::styled(
-                format!("  {spin} "),
-                theme::info().add_modifier(Modifier::ITALIC),
-            )];
-            spans.extend(processing_label_spans(
-                label,
-                match phase {
-                    StreamWaitPhase::Waiting => 0.0,
-                    StreamWaitPhase::Thinking => 1.3,
-                },
-                match phase {
-                    StreamWaitPhase::Waiting => 140.0,
-                    StreamWaitPhase::Thinking => 175.0,
-                },
-            ));
-            spans.push(Span::styled(format!(" {t}"), theme::dim()));
-            lines.push(Line::from(spans).style(theme::thinking_message()));
-        } else if self.opts.busy {
-            let mut spans = vec![Span::styled(
-                format!("  {} ", spinner_frame()),
-                theme::info().add_modifier(Modifier::ITALIC),
-            )];
-            spans.extend(processing_label_spans("Working...", 2.1, 140.0));
-            lines.push(Line::from(spans).style(theme::thinking_message()));
         }
         lines
     }
@@ -1373,7 +1298,7 @@ mod tests {
     }
 
     #[test]
-    fn stream_wait_status_line() {
+    fn stream_wait_status_is_not_rendered_inline() {
         let mut m = ConversationModel::from_messages(
             &[],
             &[],
@@ -1396,8 +1321,8 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(text.contains("Thinking..."), "{text}");
-        assert!(text.contains("1.2s"), "{text}");
+        assert!(!text.contains("Thinking..."), "{text}");
+        assert!(!text.contains("1.2s"), "{text}");
 
         m.opts.stream_wait = Some((StreamWaitPhase::Waiting, 0.3));
         let text: String = m
@@ -1412,8 +1337,8 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(text.contains("Working..."), "{text}");
-        assert!(text.contains("0.3s"), "{text}");
+        assert!(!text.contains("Working..."), "{text}");
+        assert!(!text.contains("0.3s"), "{text}");
     }
 
     #[test]

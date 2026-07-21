@@ -119,7 +119,7 @@ mod tests {
     #[test]
     fn busy_phase_label_format() {
         use crate::widgets::BusyPhase;
-        assert_eq!(BusyPhase::Model.label(), "model");
+        assert_eq!(BusyPhase::Model.label(), "thinking");
         assert_eq!(
             BusyPhase::Tool {
                 name: "web_search".into()
