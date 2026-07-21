@@ -196,6 +196,7 @@ impl ContextEngine {
         &self,
         messages: &[Message],
         workspace_ref: &str,
+        system_prompt: &str,
     ) -> Result<(ProgressDocument, Vec<Message>), ContextError> {
         let mut doc = ProgressDocument::new(self.session_id, self.goal.clone());
         if doc.goal.is_empty() {
@@ -216,11 +217,10 @@ impl ContextEngine {
         doc.updated_at = Utc::now().to_rfc3339();
         self.write_progress(&doc)?;
 
-        let agents = self.load_agents_md();
         let mut new_msgs = vec![Message {
             role: MessageRole::System,
             content: format!(
-                "You are Forge. Context was reset (CTX-02). Project memory:\n{agents}\n\nProgress:\n{}",
+                "{system_prompt}\n\n# Context Handoff\n\nContext was reset (CTX-02). Continue from this progress document:\n{}",
                 serde_json::to_string_pretty(&doc).unwrap_or_default()
             ),
             tool_call_id: None,
@@ -326,12 +326,16 @@ mod tests {
                 tool_calls: vec![],
             },
         ];
-        let (doc, new_msgs) = eng.handoff_reset(&messages, "abc123").unwrap();
+        let system_prompt = "Forge system prompt\n\nAGENTS.md:\nBe careful";
+        let (doc, new_msgs) = eng
+            .handoff_reset(&messages, "abc123", system_prompt)
+            .unwrap();
         assert_eq!(doc.version, 1);
         assert_eq!(doc.goal, "ship feature");
         assert!(eng.progress_path().is_file());
         assert!(new_msgs[0].content.contains("Be careful"));
-        assert!(new_msgs[0].content.contains("Progress"));
+        assert!(new_msgs[0].content.contains("# Context Handoff"));
+        assert!(new_msgs[0].content.starts_with(system_prompt));
         // capacity default 200_000 tokens; fill past 80%
         assert!(eng.should_reset(
             &std::iter::repeat(Message {
