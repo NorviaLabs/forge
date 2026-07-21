@@ -20,6 +20,17 @@ use serde_json::json;
 use thiserror::Error;
 use tracing::warn;
 
+const SYSTEM_PROMPT: &str = include_str!("system_prompt.md");
+
+fn assemble_system_prompt(agents_md: &str) -> String {
+    let prompt = SYSTEM_PROMPT.trim_end();
+    if agents_md.trim().is_empty() {
+        prompt.to_owned()
+    } else {
+        format!("{prompt}\n\n# Project Instructions\n\nAGENTS.md:\n{agents_md}")
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum LoopError {
     #[error(transparent)]
@@ -183,11 +194,7 @@ impl AgentSession {
 
         let context = ContextEngine::new(loop_cfg.workspace.clone(), session_id);
         let agents = context.load_agents_md();
-        let system = if agents.is_empty() {
-            "You are Forge, a coding agent. Use tools when needed.".into()
-        } else {
-            format!("You are Forge, a coding agent.\n\nAGENTS.md:\n{agents}")
-        };
+        let system = assemble_system_prompt(&agents);
 
         Ok(Self {
             session_id,
@@ -231,9 +238,11 @@ impl AgentSession {
         }
         let journal = Journal::open(&loop_cfg.journal_dir, session_id).await?;
         let state = journal.replay(session_id).await?;
+        let context = ContextEngine::new(loop_cfg.workspace.clone(), session_id);
+        let system = assemble_system_prompt(&context.load_agents_md());
         let mut messages = vec![Message {
             role: MessageRole::System,
-            content: "You are Forge, a coding agent. Session resumed from journal.".into(),
+            content: system,
             tool_call_id: None,
             name: None,
             thinking: None,
@@ -294,7 +303,7 @@ impl AgentSession {
             tool_ctx: ToolContext::new(active_root),
             max_turns: loop_cfg.max_turns,
             governance: Governance::default(),
-            context: ContextEngine::new(loop_cfg.workspace.clone(), session_id),
+            context,
             worktree,
             enable_context: loop_cfg.enable_context_lifecycle,
             enable_gov: loop_cfg.enable_governance,
@@ -541,7 +550,10 @@ impl AgentSession {
                 .as_ref()
                 .map(|w| w.branch.clone())
                 .unwrap_or_default();
-            let (doc, msgs) = self.context.handoff_reset(&self.messages, &ws_ref)?;
+            let system = assemble_system_prompt(&self.context.load_agents_md());
+            let (doc, msgs) = self
+                .context
+                .handoff_reset(&self.messages, &ws_ref, &system)?;
             self.journal
                 .append_context_reset(self.session_id, json!({ "progress": doc }))
                 .await?;
@@ -925,7 +937,10 @@ impl AgentSession {
             .as_ref()
             .map(|w| w.branch.clone())
             .unwrap_or_default();
-        let (doc, msgs) = self.context.handoff_reset(&self.messages, &ws_ref)?;
+        let system = assemble_system_prompt(&self.context.load_agents_md());
+        let (doc, msgs) = self
+            .context
+            .handoff_reset(&self.messages, &ws_ref, &system)?;
         self.journal
             .append_context_reset(
                 self.session_id,
@@ -948,6 +963,21 @@ mod tests {
     use forge_model::MockModelClient;
     use forge_types::ToolCall;
     use tempfile::tempdir;
+
+    #[test]
+    fn system_prompt_uses_forge_policy() {
+        let prompt = assemble_system_prompt("");
+        assert!(prompt.starts_with("You are a coding agent running in the Forge"));
+        assert!(prompt.contains("Forge is an open source project led by NorviaLabs."));
+        assert!(!prompt.contains("# Project Instructions"));
+    }
+
+    #[test]
+    fn system_prompt_appends_project_instructions() {
+        let prompt = assemble_system_prompt("Run cargo test");
+        assert!(prompt.starts_with("You are a coding agent running in the Forge"));
+        assert!(prompt.ends_with("AGENTS.md:\nRun cargo test"));
+    }
 
     fn base_cfg(dir: &std::path::Path) -> LoopConfig {
         LoopConfig {
