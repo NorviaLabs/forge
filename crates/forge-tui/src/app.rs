@@ -2674,10 +2674,29 @@ Reply with ONLY the commit message line.\n\n\
                     }
                 }
                 Ok(SlashCommand::Resume { session_id }) => {
-                    let msg =
-                        format!("To resume {session_id}, restart: forge --resume {session_id}");
-                    self.status_message = "resume requires CLI restart".into();
-                    self.notices = vec![msg];
+                    match self.session.resume_session(session_id).await {
+                        Ok(()) => {
+                            self.overlay = None;
+                            self.notices = vec![format!("Resumed session {session_id}.")];
+                            self.status_message = "session resumed".into();
+                            self.ui_banners.clear();
+                            self.message_queue.clear();
+                            self.queue_selected = None;
+                            self.stream_preview.clear();
+                            self.stream_thinking.clear();
+                            self.chat_message_start = 0;
+                            self.chat_event_start = 0;
+                            self.chat_scroll = 0;
+                            self.chat_follow = true;
+                            self.hitl_session_allow.clear();
+                            self.maybe_open_hitl();
+                        }
+                        Err(error) => {
+                            self.report_error(&format!(
+                                "Could not resume session {session_id}: {error}"
+                            ));
+                        }
+                    }
                 }
                 Ok(SlashCommand::Diff) => {
                     let mut lines = vec!["Session tools & changes:".into()];
@@ -3392,6 +3411,53 @@ mod tests {
 
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].id, previous);
+    }
+
+    #[tokio::test]
+    async fn resume_command_replaces_active_conversation_in_app() {
+        let (dir, session) = test_session().await;
+        let model = Arc::new(MockModelClient::script(vec![]));
+        let mut previous = AgentSession::create(
+            LoopConfig {
+                max_turns: 4,
+                workspace: dir.path().to_path_buf(),
+                journal_dir: dir.path().join("j"),
+                isolation: IsolationMode::Off,
+                enable_context_lifecycle: true,
+                enable_governance: true,
+                ..Default::default()
+            },
+            model,
+            ToolRegistry::new(),
+        )
+        .await
+        .unwrap();
+        previous
+            .append_user_message("restored conversation")
+            .await
+            .unwrap();
+        let previous_id = previous.session_id;
+
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "mock".into(),
+                provider: "mock".into(),
+                cwd: dir.path().to_path_buf(),
+                version: "0.12.0".into(),
+            },
+        );
+        app.dispatch_line(&format!("/resume {previous_id}"))
+            .await
+            .unwrap();
+
+        assert_eq!(app.session.session_id, previous_id);
+        assert!(app
+            .session
+            .messages
+            .iter()
+            .any(|message| message.content == "restored conversation"));
+        assert_eq!(app.status_message, "session resumed");
     }
 
     #[tokio::test]
