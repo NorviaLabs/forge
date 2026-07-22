@@ -2123,9 +2123,9 @@ Reply with ONLY the commit message line.\n\n\
             )
         } else if self.busy {
             if qn > 0 {
-                format!("processing · queue {qn} · Ctrl+Up/Down select · Ctrl+Backspace cancel")
+                format!("queue {qn} · Ctrl+Up/Down select · Ctrl+Backspace cancel")
             } else {
-                "processing · type + Enter to queue · Esc interrupt".into()
+                "type + Enter to queue · Esc interrupt".into()
             }
         } else if self.session.pending_hitl.is_some() {
             "a approve · s session · d deny".into()
