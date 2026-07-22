@@ -5,6 +5,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 /// Minimum terminal size for a usable TUI.
 pub const MIN_WIDTH: u16 = 80;
 pub const MIN_HEIGHT: u16 = 18;
+const CONTENT_WIDTH_PERCENT: u32 = 95;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LayoutRegions {
@@ -35,6 +36,13 @@ pub fn split_areas_full(
     show_sidebar: bool,
     queue_h: u16,
 ) -> LayoutRegions {
+    let content_width = (u32::from(area.width) * CONTENT_WIDTH_PERCENT / 100) as u16;
+    let content_area = Rect {
+        x: area.x + area.width.saturating_sub(content_width) / 2,
+        y: area.y,
+        width: content_width,
+        height: area.height,
+    };
     let fb = feedback_h.min(2);
     let input_h = input_h.clamp(3, 8);
     let qh = queue_h.min(8);
@@ -47,7 +55,7 @@ pub fn split_areas_full(
             Constraint::Length(input_h), // input (multi-line)
             Constraint::Length(1),       // footer
         ])
-        .split(area);
+        .split(content_area);
 
     let main = rows[0];
     let feedback = rows[1];
@@ -76,16 +84,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn wide_layout_uses_full_width_for_chat() {
+    fn wide_layout_uses_95_percent_width_for_chat() {
         let area = Rect::new(0, 0, 120, 40);
         let r = split_areas(area);
         assert!(r.sidebar.is_none());
-        assert_eq!(r.chat.width, area.width);
+        assert_eq!(r.chat, Rect::new(3, 0, 114, 36));
         assert_eq!(r.footer.height, 1);
         assert_eq!(r.input.height, 3);
         assert_eq!(r.feedback.height, 0);
         assert_eq!(r.queue.height, 0);
         assert_eq!(r.footer.y + r.footer.height, area.height);
+    }
+
+    #[test]
+    fn very_wide_layout_centers_the_95_percent_content_column() {
+        let area = Rect::new(0, 0, 200, 40);
+        let r = split_areas(area);
+        assert_eq!(r.chat, Rect::new(5, 0, 190, 36));
+        assert_eq!(r.input.x, 5);
+        assert_eq!(r.input.width, 190);
+        assert_eq!(r.footer.x, 5);
+        assert_eq!(r.footer.width, 190);
     }
 
     #[test]
@@ -109,7 +128,7 @@ mod tests {
         let area = Rect::new(0, 0, 60, 24);
         let r = split_areas(area);
         assert!(r.sidebar.is_none());
-        assert_eq!(r.chat.width, 60);
+        assert_eq!(r.chat.width, 57);
     }
 
     #[test]
