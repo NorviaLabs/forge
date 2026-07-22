@@ -293,13 +293,9 @@ impl ConversationModel {
     }
 
     /// Build display lines for the actual conversation viewport. Paragraph does
-    /// not wrap unless explicitly configured, so pre-wrapping to a fixed 100
-    /// columns caused text (most noticeably streamed thinking) to be clipped in
-    /// narrower panes. In an 80-column terminal with the sidebar visible, that
-    /// made it look as if only one thought line was arriving at a time.
+    /// not wrap styled lines itself, so wrapping follows the full pane width.
     fn lines_for_width(&self, available_width: usize) -> Vec<Line<'static>> {
-        let preferred_width: usize = if self.opts.compact { 88 } else { 100 };
-        let width = available_width.min(preferred_width).max(4);
+        let width = available_width.max(4);
         let gap = !self.opts.compact;
         let mut lines = Vec::new();
         let tool_count = self
@@ -1043,6 +1039,40 @@ mod tests {
             !text.contains("long thinking"),
             "completed thinking body should be hidden, got:\n{text}"
         );
+    }
+
+    #[test]
+    fn wide_viewport_does_not_wrap_at_the_old_column_limit() {
+        let content = std::iter::repeat("word")
+            .take(24)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let msgs = vec![Message {
+            role: MessageRole::Assistant,
+            content,
+            tool_call_id: None,
+            name: None,
+            thinking: None,
+            thinking_duration_secs: None,
+            tool_calls: vec![],
+        }];
+        let model = ConversationModel::from_messages(
+            &msgs,
+            &[],
+            SessionStatus::Running,
+            ConversationViewOpts::default(),
+        );
+
+        let answer_lines = model
+            .lines_for_width(140)
+            .iter()
+            .filter(|line| {
+                line.spans
+                    .first()
+                    .is_some_and(|span| span.content.as_ref() == "  ")
+            })
+            .count();
+        assert_eq!(answer_lines, 1);
     }
 
     #[test]
