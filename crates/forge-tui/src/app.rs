@@ -42,7 +42,6 @@ use crate::overlays::{
     filter_palette, handle_overlay_key, models_from_catalog, ConnectProfileItem, Key as OverlayKey,
     Overlay, OverlayAction, OverlayWidget, PaletteItem, ResumeSessionItem,
 };
-use crate::sidebar::SidebarModel;
 use crate::stt::{
     is_ptt_key, resolve_stt_api_key, transcribe_wav_file, LiveRecorder, SttSettings, SttSpeed,
 };
@@ -176,8 +175,6 @@ pub struct TuiApp {
     reasoning_effort: ReasoningEffort,
     /// Expand last tool detail (Ctrl+O).
     tool_expanded: bool,
-    /// Show activity sidebar (Ctrl+B).
-    sidebar_visible: bool,
     /// Soft-cancel in-flight turn (Esc while busy).
     cancel_requested: bool,
     /// Tools allowed for the rest of this session (HITL "s").
@@ -239,7 +236,6 @@ impl TuiApp {
             thought_secs: None,
             reasoning_effort: ReasoningEffort::from_env(),
             tool_expanded: false,
-            sidebar_visible: true,
             cancel_requested: false,
             hitl_session_allow: HashSet::new(),
             toast: None,
@@ -634,26 +630,6 @@ impl TuiApp {
         summary: impl Into<String>,
     ) {
         self.activity.push(kind, severity, summary);
-    }
-
-    fn activity_lines_for_sidebar(&self) -> Vec<String> {
-        self.activity
-            .recent(12)
-            .iter()
-            .map(|i| {
-                let prefix = match i.kind {
-                    ActivityKind::Model => "model",
-                    ActivityKind::Tool => "tool",
-                    ActivityKind::Connect => "connect",
-                    ActivityKind::Slash => "slash",
-                    ActivityKind::System => "sys",
-                    ActivityKind::Error => "error",
-                    ActivityKind::Hitl => "hitl",
-                    ActivityKind::Context => "ctx",
-                };
-                format!("{prefix} {}", i.summary)
-            })
-            .collect()
     }
 
     fn apply_history_text(&mut self, text: String) {
@@ -1949,7 +1925,7 @@ Reply with ONLY the commit message line.\n\n\
         }
         let fb_h = if self.feedback.is_empty() { 0 } else { 1 };
         let input_h = (self.input.visual_lines() + 2).clamp(3, 8);
-        let regions = split_areas_full(area, fb_h, input_h, self.sidebar_visible, 0);
+        let regions = split_areas_full(area, fb_h, input_h, false, 0);
         let status = self.refresh_status_model();
 
         let stream_wait = if self.busy && self.pending_prompt.is_none() {
@@ -2010,12 +1986,6 @@ Reply with ONLY the commit message line.\n\n\
             crate::conversation::ConversationWidget { model: &conv },
             regions.chat,
         );
-
-        if let Some(sb_area) = regions.sidebar {
-            let act = self.activity_lines_for_sidebar();
-            let sb = SidebarModel::from_session_with_activity(&self.session, &act);
-            frame.render_widget(crate::sidebar::SidebarWidget { model: &sb }, sb_area);
-        }
 
         // Notices (help, connect list, multi-line status) just above input
         if !self.notices.is_empty() && self.overlay.is_none() {
@@ -2359,9 +2329,6 @@ Reply with ONLY the commit message line.\n\n\
             }
             KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.tool_expanded = !self.tool_expanded;
-            }
-            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.sidebar_visible = !self.sidebar_visible;
             }
             KeyCode::Esc => {
                 self.history.reset_browse();
@@ -4800,42 +4767,6 @@ mod tests {
                 .iter()
                 .any(|i| i.kind == ActivityKind::Model),
             "expected model activity"
-        );
-    }
-
-    #[tokio::test]
-    async fn tui10_sidebar_shows_activity_on_frame() {
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
-        let (_dir, session) = test_session().await;
-        let mut app = TuiApp::new(
-            session,
-            TuiRuntimeConfig {
-                model_label: "m".into(),
-                provider: "mock".into(),
-                cwd: PathBuf::from("."),
-                version: "0.10.0".into(),
-            },
-        );
-        app.push_activity(ActivityKind::Tool, FeedbackSeverity::Ok, "web_search done");
-        app.report_error("429 rate limit");
-        let backend = TestBackend::new(120, 30);
-        let mut term = Terminal::new(backend).unwrap();
-        term.draw(|f| app.draw(f)).unwrap();
-        let mut text = String::new();
-        let buf = term.backend().buffer();
-        for y in 0..buf.area().height {
-            for x in 0..buf.area().width {
-                text.push_str(buf.get(x, y).symbol());
-            }
-            text.push('\n');
-        }
-        assert!(
-            text.contains("ACTIVITY")
-                || text.contains("web_search")
-                || text.contains("error")
-                || text.contains("rate"),
-            "frame missing activity:\n{text}"
         );
     }
 

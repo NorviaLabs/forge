@@ -5,7 +5,6 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 /// Minimum terminal size for a usable TUI.
 pub const MIN_WIDTH: u16 = 80;
 pub const MIN_HEIGHT: u16 = 18;
-pub const SIDEBAR_WIDTH: u16 = 30;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LayoutRegions {
@@ -56,19 +55,11 @@ pub fn split_areas_full(
     let input = rows[3];
     let footer = rows[4];
 
-    let (chat, sidebar) = if show_sidebar && area.width >= MIN_WIDTH {
-        let cols = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Min(40), Constraint::Length(SIDEBAR_WIDTH)])
-            .split(main);
-        (cols[0], Some(cols[1]))
-    } else {
-        (main, None)
-    };
+    let _ = show_sidebar;
 
     LayoutRegions {
-        chat,
-        sidebar,
+        chat: main,
+        sidebar: None,
         feedback,
         queue,
         input,
@@ -85,17 +76,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn wide_layout_has_sidebar() {
+    fn wide_layout_uses_full_width_for_chat() {
         let area = Rect::new(0, 0, 120, 40);
         let r = split_areas(area);
-        assert!(r.sidebar.is_some());
+        assert!(r.sidebar.is_none());
+        assert_eq!(r.chat.width, area.width);
         assert_eq!(r.footer.height, 1);
         assert_eq!(r.input.height, 3);
         assert_eq!(r.feedback.height, 0);
         assert_eq!(r.queue.height, 0);
-        let sb = r.sidebar.unwrap();
-        assert_eq!(sb.width, SIDEBAR_WIDTH);
-        assert_eq!(r.chat.width + sb.width, area.width);
         assert_eq!(r.footer.y + r.footer.height, area.height);
     }
 
