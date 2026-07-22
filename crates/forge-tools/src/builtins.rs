@@ -104,10 +104,6 @@ async fn unified_diff(path: &str, old: Option<&str>, new: &str) -> Result<String
         .arg("--no-index")
         .arg("--no-color")
         .arg("--unified=999999")
-        .arg("--label")
-        .arg(format!("a/{path}"))
-        .arg("--label")
-        .arg(format!("b/{path}"))
         .arg(&old_path)
         .arg(&new_path)
         .stdout(Stdio::piped())
@@ -119,14 +115,22 @@ async fn unified_diff(path: &str, old: Option<&str>, new: &str) -> Result<String
     let _ = tokio::fs::remove_file(&old_path).await;
     let _ = tokio::fs::remove_file(&new_path).await;
 
-    let mut diff = String::from_utf8_lossy(&out.stdout).into_owned();
-    let err = String::from_utf8_lossy(&out.stderr);
-    if !err.trim().is_empty() {
-        if !diff.is_empty() {
-            diff.push('\n');
-        }
-        diff.push_str(&err);
+    if !matches!(out.status.code(), Some(0 | 1)) {
+        let error = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(ToolError::Execution(if error.is_empty() {
+            format!("git diff failed with {}", out.status)
+        } else {
+            error
+        }));
     }
+
+    let old_name = old_path.to_string_lossy();
+    let new_name = new_path.to_string_lossy();
+    let old_name = old_name.trim_start_matches('/');
+    let new_name = new_name.trim_start_matches('/');
+    let diff = String::from_utf8_lossy(&out.stdout)
+        .replace(&format!("a/{old_name}"), &format!("a/{path}"))
+        .replace(&format!("b/{new_name}"), &format!("b/{path}"));
     Ok(diff)
 }
 
@@ -448,6 +452,21 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(out.content, "xyz");
+    }
+
+    #[tokio::test]
+    async fn write_file_returns_diff_without_git_help() {
+        let dir = tempdir().unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let out = WriteFileTool
+            .call(&ctx, json!({"path": "sample.txt", "content": "hello\n"}))
+            .await
+            .unwrap();
+
+        assert!(!out.is_error);
+        assert!(out.content.contains("--- a/sample.txt"), "{}", out.content);
+        assert!(out.content.contains("+++ b/sample.txt"), "{}", out.content);
+        assert!(!out.content.contains("usage: git diff"), "{}", out.content);
     }
 
     #[test]
