@@ -408,6 +408,7 @@ pub fn default_builtins() -> Vec<std::sync::Arc<dyn Tool>> {
     vec![
         std::sync::Arc::new(ReadFileTool),
         std::sync::Arc::new(WriteFileTool),
+        std::sync::Arc::new(crate::ApplyPatchTool),
         std::sync::Arc::new(BashTool),
         std::sync::Arc::new(GrepTool),
         std::sync::Arc::new(GitTool),
@@ -491,7 +492,9 @@ mod tests {
 
     #[test]
     fn default_builtins_includes_git() {
-        assert!(default_builtins().iter().any(|t| t.name() == "git"));
+        let tools = default_builtins();
+        assert!(tools.iter().any(|t| t.name() == "git"));
+        assert!(tools.iter().any(|t| t.name() == "apply_patch"));
     }
 
     #[tokio::test]

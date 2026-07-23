@@ -1,11 +1,13 @@
 //! Tool protocol (tool-protocol.md) — CORE-01.
 //! Phase 9: `web_search` (WEB-01) — see `web_search` module.
 
+mod apply_patch;
 mod builtins;
 mod registry;
 mod validation;
 pub mod web_search;
 
+pub use apply_patch::{ApplyPatchArgs, ApplyPatchTool};
 pub use builtins::{
     default_builtins, default_builtins_with_web_search, BashTool, GitTool, GrepTool, ReadFileTool,
     WriteFileTool,
