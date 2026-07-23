@@ -146,9 +146,10 @@ forge
 
 3. Type a task and press **Enter**, e.g. `Explain the layout of this crate`.
 4. Try slash commands in the main textbox:
-   - `/status` — session, model, context  
-   - `/tools` — tools the model can see  
-   - `/help` — command list  
+   - `/status` — session, model, context
+   - `/diff` — tool activity and file changes
+   - `/effort high` — set reasoning effort (`auto|minimal|low|medium|high|xhigh|max`)
+   - `/model` — choose a connected model
 5. **Ctrl+K** opens the command palette; **/** + **Tab** completes slash suggestions; **↑/↓** recall prior lines when not in the suggest list.
 6. Select visible output with the mouse and use your terminal’s normal copy shortcut. Use **Page Up/Page Down** to scroll the conversation, or `/copy` to copy the last assistant answer.
 7. Quit with `/quit` or **Ctrl+C**.
@@ -218,10 +219,7 @@ git status
 # agent files live under .forge/worktrees/<session_id>/ on branch forge/<id>
 ```
 
-5. In the TUI (or a resumed session), finish deliberately:
-   - `/worktree status` — path and branch  
-   - `/worktree merge` — bring changes into the base  
-   - `/worktree discard --yes` — throw the experiment away  
+5. Review the isolated branch and worktree with TUI `/status` or `git worktree list`, then use normal Git commands to merge, cherry-pick, or remove it when finished.
 
 **Primary checkout stays clean until you merge.**
 
@@ -275,13 +273,19 @@ forge
 #   /model openai/gpt-4.1-mini
 #   /model ollama llama3.2
 
+# Reasoning effort (current TUI session):
+#   /effort             → show current level
+#   /effort high        → auto|minimal|low|medium|high|xhigh|max
+#   FORGE_REASONING_EFFORT=high forge   → set the startup level
+
 # Speech-to-text (mic → input bar; needs ffmpeg + OPENAI_API_KEY or local whisper):
 #   hold Ctrl+Space     → push-to-talk (release to stop & transcribe)
 #   /stt                → status · /stt speed fast|normal|slow
 
 # Message queue (TUI only — no slash commands):
 #   while processing → type + Enter enqueues (shows above input)
-#   click a queued row → cancel that message
+#   Ctrl+Up/Down → select a queued message
+#   Ctrl+Backspace → cancel the selected message
 #   when idle → empty Enter sends the next queued message
 ```
 
@@ -303,6 +307,7 @@ Optional. Defaults + env + flags are enough (see [Auth setup](#auth-setup)).
 |-----|--|
 | `FORGE_MODEL_ID` | LiteLLM model string |
 | `FORGE_MODEL_PROVIDER` | `litellm` |
+| `FORGE_REASONING_EFFORT` | Startup reasoning effort (`auto|minimal|low|medium|high|xhigh|max`) |
 | `OPENAI_API_KEY` / … | Provider keys for the worker |
 | `FORGE_WORKSPACE` | Project root (default: cwd) |
 
