@@ -18,10 +18,13 @@ impl ReasoningEffort {
     pub const USAGE: &'static str = "auto|minimal|low|medium|high|xhigh|max";
 
     pub fn from_env() -> Self {
+        Self::env_override().unwrap_or_default()
+    }
+
+    pub fn env_override() -> Option<Self> {
         std::env::var("FORGE_REASONING_EFFORT")
             .ok()
             .and_then(|value| value.parse().ok())
-            .unwrap_or_default()
     }
 
     /// Empty means providers should choose their own default.

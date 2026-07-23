@@ -28,11 +28,13 @@ struct CredentialsFile {
     /// profile_id → oauth tokens
     #[serde(default)]
     oauth: BTreeMap<String, OauthTokens>,
-    /// Last non-secret provider/model selection used by the interactive client.
+    /// Last non-secret provider/model/effort selection used by the interactive client.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     last_profile_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     last_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_effort: Option<String>,
 }
 
 /// File-backed credential store. Secrets are never returned in status Display APIs.
@@ -100,12 +102,14 @@ impl CredentialStore {
         let removed = !file.keys.is_empty()
             || !file.oauth.is_empty()
             || file.last_profile_id.is_some()
-            || file.last_model.is_some();
+            || file.last_model.is_some()
+            || file.last_effort.is_some();
         if removed {
             file.keys.clear();
             file.oauth.clear();
             file.last_profile_id = None;
             file.last_model = None;
+            file.last_effort = None;
             self.save(&file)?;
         }
         Ok(removed)
@@ -149,11 +153,25 @@ impl CredentialStore {
         self.save(&file)
     }
 
+    /// Return the last reasoning effort selected by the interactive client.
+    pub fn last_effort(&self) -> Result<Option<String>, StoreError> {
+        let file = self.load()?;
+        Ok(file.last_effort.filter(|effort| !effort.trim().is_empty()))
+    }
+
+    /// Persist the last reasoning effort. This contains no credentials.
+    pub fn set_last_effort(&self, effort: &str) -> Result<(), StoreError> {
+        let mut file = self.load()?;
+        file.last_effort = Some(effort.trim().to_string());
+        self.save(&file)
+    }
+
     pub fn clear_last_selection(&self, profile_id: Option<&str>) -> Result<(), StoreError> {
         let mut file = self.load()?;
         if profile_id.is_none() || file.last_profile_id.as_deref() == profile_id {
             file.last_profile_id = None;
             file.last_model = None;
+            file.last_effort = None;
             self.save(&file)?;
         }
         Ok(())
@@ -277,14 +295,17 @@ mod tests {
         store
             .set_last_selection("anthropic", "anthropic/claude-sonnet-4-5")
             .unwrap();
+        store.set_last_effort("high").unwrap();
         assert_eq!(
             store.last_selection().unwrap(),
             Some(("anthropic".into(), "anthropic/claude-sonnet-4-5".into()))
         );
+        assert_eq!(store.last_effort().unwrap().as_deref(), Some("high"));
         store.clear_last_selection(Some("openai")).unwrap();
         assert!(store.last_selection().unwrap().is_some());
         store.clear_last_selection(Some("anthropic")).unwrap();
         assert_eq!(store.last_selection().unwrap(), None);
+        assert_eq!(store.last_effort().unwrap(), None);
     }
 
     #[test]
@@ -305,10 +326,12 @@ mod tests {
         store
             .set_last_selection("openai", "openai/gpt-4.1-mini")
             .unwrap();
+        store.set_last_effort("medium").unwrap();
         assert!(store.clear_all().unwrap());
         assert!(store.get_api_key("xai").unwrap().is_none());
         assert!(store.get_oauth("openai_codex").unwrap().is_none());
         assert_eq!(store.last_selection().unwrap(), None);
+        assert_eq!(store.last_effort().unwrap(), None);
     }
 
     #[test]
