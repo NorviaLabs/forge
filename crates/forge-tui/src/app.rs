@@ -512,6 +512,21 @@ impl TuiApp {
         let mut connected = svc.connected_profiles().unwrap_or_default();
         connected.sort_by(|a, b| a.id.cmp(&b.id));
         let saved_selection = self.connect_store.last_selection().ok().flatten();
+        if ReasoningEffort::env_override().is_none() {
+            if let Some(effort) = self
+                .connect_store
+                .last_effort()
+                .ok()
+                .flatten()
+                .and_then(|effort| effort.parse().ok())
+            {
+                self.reasoning_effort = effort;
+                self.session.apply_provider_env(&[(
+                    "FORGE_REASONING_EFFORT".into(),
+                    effort.worker_value().into(),
+                )]);
+            }
+        }
         // Restore the last usable provider; otherwise fall back to a deterministic
         // connected profile instead of silently preferring one backend family.
         let chosen = connected
@@ -562,6 +577,17 @@ impl TuiApp {
             self.status_message = format!("restored {} · {}", profile.id, self.runtime.model_label);
         }
         self
+    }
+
+    fn persist_selection(&self) {
+        if let Some(profile_id) = self.connect_profile.as_deref() {
+            let _ = self
+                .connect_store
+                .set_last_selection(profile_id, &self.runtime.model_label);
+        }
+        let _ = self
+            .connect_store
+            .set_last_effort(&self.reasoning_effort.to_string());
     }
 
     /// Phase 10: set strip + keep `status_message` in sync for tests/compat.
@@ -1049,11 +1075,7 @@ impl TuiApp {
         if let Some(profile_id) = self.connect_profile.clone() {
             self.apply_connect_credentials(&profile_id);
         }
-        if let Some(profile_id) = self.connect_profile.as_deref() {
-            let _ = self
-                .connect_store
-                .set_last_selection(profile_id, &self.runtime.model_label);
-        }
+        self.persist_selection();
         self.feedback = FeedbackModel::default();
         self.status_message.clear();
         self.notices.clear();
@@ -2536,6 +2558,7 @@ Reply with ONLY the commit message line.\n\n\
         self.reasoning_effort = level;
         self.session
             .apply_provider_env(&[("FORGE_REASONING_EFFORT".into(), level.worker_value().into())]);
+        self.persist_selection();
         self.set_feedback(FeedbackSeverity::Ok, format!("reasoning effort: {level}"));
         self.status_message = format!("reasoning effort set to {level}");
     }
@@ -3262,6 +3285,7 @@ pub async fn run_tui(
 
     // Ensure mic capture is stopped if the user quits mid-record.
     app.ptt_recording = None;
+    app.persist_selection();
 
     disable_raw_mode()?;
     execute!(
@@ -3530,6 +3554,47 @@ mod tests {
             app.message_queue.iter().next().map(|s| s.as_str()),
             Some("a")
         );
+    }
+
+    #[tokio::test]
+    async fn effort_selection_persists_across_tui_instances() {
+        let (_dir, session) = test_session().await;
+        let credential_dir = tempfile::tempdir().unwrap();
+        let credential_path = credential_dir.path().join("credentials.toml");
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "mock".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "0.12.0".into(),
+            },
+        );
+        app.connect_store = CredentialStore::new(credential_path.clone());
+
+        app.dispatch_line("/effort high").await.unwrap();
+
+        assert_eq!(
+            app.connect_store.last_effort().unwrap().as_deref(),
+            Some("high")
+        );
+
+        if ReasoningEffort::env_override().is_none() {
+            let (_dir, session) = test_session().await;
+            let mut restarted = TuiApp::new(
+                session,
+                TuiRuntimeConfig {
+                    model_label: "mock".into(),
+                    provider: "mock".into(),
+                    cwd: PathBuf::from("."),
+                    version: "0.12.0".into(),
+                },
+            );
+            restarted.connect_store = CredentialStore::new(credential_path);
+            restarted = restarted.restore_saved_auth();
+
+            assert_eq!(restarted.reasoning_effort, ReasoningEffort::High);
+        }
     }
 
     #[tokio::test]
