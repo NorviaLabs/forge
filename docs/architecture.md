@@ -12,7 +12,7 @@
 
 ## 1. Purpose
 
-Forge is an open-source **AI coding agent harness**: loop control, context lifecycle, durable journal, tools (built-ins including **`git`** + MCP + `web_search`), governance hooks, and LiteLLM-backed models. **Product surfaces:** full-screen TUI (`forge`) and headless `forge run`. Library crates may expose ACP/channels/fleet/feedback/obs; those are **not** CLI products.
+Forge is an open-source **AI coding agent harness**: loop control, context lifecycle, durable journal, tools (built-ins including **`git`** + MCP + `web_search`), governance hooks, and native Rust model transports. **Product surfaces:** full-screen TUI (`forge`) and headless `forge run`. Library crates may expose ACP/channels/fleet/feedback/obs; those are **not** CLI products.
 
 ### How to read the diagrams
 
@@ -28,7 +28,7 @@ The product sits in the agentic stack as follows:
 
 | Layer | Role in Forge |
 |-------|----------------|
-| **Model** | External reasoning engine (Anthropic, OpenAI, xAI Grok, Google ADK, Ollama/vLLM, and LiteLLM’s long-tail catalog in Phase 5) via a unified client |
+| **Model** | External reasoning engine (Anthropic, OpenAI, xAI Grok, OpenCode, Ollama, and Codex subscriptions) via a unified native client |
 | **Harness** | Forge proper: plan–act–observe loop, tools, context, durability, security, feedback |
 | **Runtime** | Execution constraints: containers/microVMs, eBPF policy, git worktrees, host/CI process |
 | **Agent** | Complete system = model + Forge harness + runtime for end-to-end tasks |
@@ -42,7 +42,7 @@ The product sits in the agentic stack as follows:
 5. Optional git **worktree** isolation (`--worktree`)  
 6. Governance hooks: ACL filter, secret injection, audit, light sandbox  
 7. Surfaces: **TUI default** + **headless `run`**  
-8. Models: **LiteLLM SDK worker only** for live calls (not Proxy; not multi-native HTTP clients)  
+8. Models: **native Rust HTTP/SSE transports** for all built-in live providers
 9. **`/connect` / `forge connect`** for xAI Grok (OAuth) and OpenCode Go (API key)  
 10. TUI: history, inline slash + Tab, feedback strip, session chrome, activity feed  
 11. Built-in tools: `read_file`, `write_file`, `bash`, `grep`, **`git`** (allowlisted subcommands), **`web_search`** (mock fixture default; live backends with API keys)  
@@ -56,7 +56,7 @@ The product sits in the agentic stack as follows:
 | Heavy DAG / role DSLs as the primary API | Prefer flat, typed function contracts |
 | Always-on multi-channel gateway as product CLI | Channel crate is library-only |
 | `forge repl` / `forge tui` / `--mock` product flags | TUI is default; mock is test-only via config env |
-| Dual native+LiteLLM production clients | LiteLLM only |
+| Dual native+worker production clients | One native Rust client |
 | Opaque execution without audit hooks | Governance audit records |
 
 Design index & status: [designs/README.md](./designs/README.md).
@@ -285,7 +285,7 @@ Normalized events from any provider stream (provider-agnostic):
 
 Adapters map vendor streams → this envelope so `core` and `surfaces` never branch on provider.
 
-**Phase 5:** `LiteLlmModelClient` maps LiteLLM SDK results/streams into the same envelope. The agent loop never imports LiteLLM or branches on vendor strings.
+`NativeModelClient` routes provider/model ids into OpenAI-compatible, Anthropic Messages, or Codex Responses transports and maps their streams into this envelope. The agent loop never branches on vendor strings.
 
 ### 4.4 Agent events (UI / surface layer)
 
@@ -669,7 +669,7 @@ flowchart TB
   end
 
   subgraph shared["Shared backends"]
-    M[LiteLLM worker / mock tests]
+    M[Native model / mock tests]
     TOOLS[Built-ins + git + web_search + MCP]
     J[Journal SQLite]
     WS[Workspace / worktree]
@@ -830,7 +830,7 @@ Immutable audit log: tool invocations, arg payloads (redacted), model response m
 
 | Extension | Hook |
 |-----------|------|
-| New model provider | Prefer LiteLLM model id (Phase 5); Phase 6+ may add a **connect profile** + `/connect` entry without a new client |
+| New model provider | Add a native route/adapter and optional **connect profile** + `/connect` entry |
 | Connect profile | Register profile id, env key names, default models, optional base_url — [connect-command.md](./designs/connect-command.md) |
 | New MCP server | Declarative config; tools appear after ACL filter |
 | New built-in tool | serde/schemars types + handler; optional policy trait |
@@ -853,8 +853,8 @@ Illustrative Rust workspace layout (crate names align with §3 / decisions table
 | `forge-core` — tools registry | Tool registration, serde/schemars validation, dispatch |
 | `forge-tools` | Built-ins (`read_file`, `write_file`, `bash`, `grep`, **`git`**, **`web_search`**) + registry |
 | `forge-mcp` | MCP discovery/call (product path via config/static demo) |
-| `forge-model` | `ModelClient`; **LiteLLM** + test **mock** only |
-| `workers/forge-litellm-worker` | LiteLLM **SDK** process (not Proxy) |
+| `forge-model` | `ModelClient`; native HTTP/SSE transports + test mock |
+| `crates/forge-model/src/native` | Native Rust provider HTTP/SSE transports |
 | `forge-durable` | Journal + HITL wait records |
 | `forge-context` | Budget, offload, handoff, worktree |
 | `forge-governance` | ACL, secrets, audit, light sandbox |
@@ -898,7 +898,7 @@ Forge is the **harness** between models and the real world: a typed tool bus, an
 | 9 | Project memory file | **`AGENTS.md` primary**; optional aliases later |
 | 10 | Crate layout | **Workspace monorepo, many crates** aligned to modules in §3 |
 | 11 | Model providers (historical) | Native adapters **removed** |
-| 18 | Universal providers | **LiteLLM Python SDK only** for production (`stdio` worker). **Not** Proxy. **Mock** for unit/CI env only — **no** product `--mock` flag |
+| 18 | Universal providers | **Native Rust transports only** for production. **Mock** for unit/CI env only — **no** product `--mock` flag |
 | 19 | Connected providers (Phase 6) | **`/connect`** UX + profiles for **xAI Grok** and **OpenCode Go**. **No** second production `ModelClient`. **6.1:** Grok = **OAuth**; OpenCode Go = **API key with mandatory TUI prompt** |
 | 20 | TUI input history (Phase 7) | **Up/Down** navigate submitted command history in main input only; inactive under overlays; session memory required, disk optional |
 | 21 | Inline slash (Phase 8) | Main textbox owns `/command` entry + Enter; **do not** auto-open palette on `/`; palette via **Ctrl+K** (or equivalent) |
@@ -921,9 +921,9 @@ Forge is the **harness** between models and the real world: a typed tool bus, an
 | Schema-validated tool I/O | `serde::Serialize/Deserialize` + `schemars::JsonSchema` on tool input/output types |
 | Type-safe tool registry | Trait objects or enum dispatch + compile-time registered builtins; runtime MCP tools as schema-validated JSON |
 | Event journal | Append-only rows in **SQLite via sqlx**; typed event envelope (`serde_json`) with schema version field |
-| Unified model client | `async trait` `ModelClient`; Phase 5 production: `LiteLlmModelClient` → worker only; `MockModelClient` for tests |
-| LiteLLM (Phase 5) | **Required** for live model calls: **Python** + `litellm`; long-lived worker preferred; **no** proxy server; natives deleted |
-| Connect profiles (Phase 6) | Registry + `/connect`; still `LiteLlmModelClient` |
+| Unified model client | `async trait` `ModelClient`; production: `NativeModelClient`; `MockModelClient` for tests |
+| Native model runtime | Rust `reqwest` HTTP/SSE adapters; no Python runtime or model proxy required |
+| Connect profiles (Phase 6) | Registry + `/connect`; credentials injected into `NativeModelClient` |
 | Connect auth (6.1) | `AuthMode::Oauth` (xAI) vs `AuthMode::ApiKey` + TUI prompt (OpenCode Go); tokens/keys in 0600 store |
 | Surfaces | **Product:** `forge` TUI, `forge run`, `status`, `connect`. **Library:** ACP, channels, fleet, feedback, obs |
 | Web search | `WebSearchTool` + backends; default offline mock backend |

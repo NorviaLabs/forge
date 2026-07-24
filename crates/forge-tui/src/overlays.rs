@@ -161,7 +161,7 @@ pub fn default_models() -> Vec<ModelItem> {
         for m in &p.default_models {
             if seen.insert(m.clone()) {
                 items.push(ModelItem {
-                    provider: "litellm".into(),
+                    provider: "native".into(),
                     model: m.clone(),
                     profile_id: Some(p.id.clone()),
                 });
@@ -176,7 +176,7 @@ pub fn models_from_catalog(entries: &[forge_connect::CatalogEntry]) -> Vec<Model
     let mut items: Vec<ModelItem> = entries
         .iter()
         .map(|e| ModelItem {
-            provider: "litellm".into(),
+            provider: "native".into(),
             model: e.id.clone(),
             profile_id: Some(e.profile_id.clone()),
         })
@@ -1049,7 +1049,7 @@ mod tests {
         let a = handle_overlay_key(&mut o, Key::Enter);
         match a {
             OverlayAction::SelectModel { provider, model } => {
-                assert_eq!(provider, "litellm");
+                assert_eq!(provider, "native");
                 assert!(model.contains('/') || !model.is_empty());
             }
             _ => panic!("expected model select"),

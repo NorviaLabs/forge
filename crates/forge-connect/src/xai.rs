@@ -9,14 +9,14 @@ pub fn xai_grok_profile() -> ConnectProfile {
     ConnectProfile {
         id: PROFILE_ID.into(),
         title: "xAI Grok".into(),
-        description: "Grok via xAI OAuth (not API key); LiteLLM xai/* models".into(),
+        description: "Grok via xAI OAuth (not API key); xai/* models".into(),
         auth_mode: AuthMode::xai_oauth(),
         api_key_env: vec![], // OAuth primary — no API key env for connect UX
         default_base_url: Some("https://api.x.ai/v1".into()),
         default_models: vec!["xai/grok-3".into()],
         // Grok Build signs in via auth.x.ai OIDC; device verify page is accounts.x.ai/oauth2/device
         auth_url: Some("https://auth.x.ai".into()),
-        litellm_provider_prefix: "xai".into(),
+        model_provider_prefix: "xai".into(),
     }
 }
 
@@ -92,7 +92,7 @@ mod tests {
     }
 
     #[test]
-    fn worker_env_exports_bearer_from_oauth() {
+    fn provider_env_exports_bearer_from_oauth() {
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
         let mut reg = ConnectRegistry::new();
@@ -105,7 +105,7 @@ mod tests {
             active_model: None,
         };
         svc.connect("xai", None, true).unwrap();
-        let env = svc.worker_env_for_profile("xai").unwrap();
+        let env = svc.provider_env_for_profile("xai").unwrap();
         assert!(
             env.is_empty(),
             "fixture OAuth must not become XAI_API_KEY: {env:?}"
@@ -121,7 +121,7 @@ mod tests {
                 },
             )
             .unwrap();
-        let env = svc.worker_env_for_profile("xai").unwrap();
+        let env = svc.provider_env_for_profile("xai").unwrap();
         assert_eq!(env[0].0, "XAI_API_KEY");
         assert_eq!(env[0].1, "xai-real-token-for-test");
     }

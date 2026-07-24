@@ -1,4 +1,4 @@
-//! Ollama connect profile — local OpenAI-compatible LLM (LiteLLM `ollama/*`).
+//! Ollama connect profile — local OpenAI-compatible LLM (`ollama/*`).
 //!
 //! No cloud API key required. Connect checks that the Ollama daemon is reachable.
 
@@ -6,7 +6,7 @@ use crate::auth::AuthMode;
 use crate::profile::ConnectProfile;
 
 pub const PROFILE_ID: &str = "ollama";
-/// Default local Ollama OpenAI-compatible base used by LiteLLM.
+/// Default local Ollama OpenAI-compatible base.
 pub const DEFAULT_BASE_URL: &str = "http://localhost:11434";
 pub const API_BASE_ENV: &str = "OLLAMA_API_BASE";
 /// Stored / exported placeholder when no optional key is set (Ollama ignores it).
@@ -16,7 +16,7 @@ pub fn ollama_profile() -> ConnectProfile {
     ConnectProfile {
         id: PROFILE_ID.into(),
         title: "Ollama (local)".into(),
-        description: "Local Ollama models — no API key required (LiteLLM ollama/*)".into(),
+        description: "Local Ollama models — no API key required (ollama/*)".into(),
         // No mandatory TUI key prompt: local server auth is optional.
         auth_mode: AuthMode::ApiKey {
             tui_always_prompt: false,
@@ -25,7 +25,7 @@ pub fn ollama_profile() -> ConnectProfile {
         default_base_url: Some(DEFAULT_BASE_URL.into()),
         default_models: vec!["ollama/llama3.2".into()],
         auth_url: Some("https://ollama.com/download".into()),
-        litellm_provider_prefix: "ollama".into(),
+        model_provider_prefix: "ollama".into(),
     }
 }
 

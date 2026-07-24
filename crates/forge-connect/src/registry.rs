@@ -69,7 +69,7 @@ mod tests {
             default_base_url: None,
             default_models: vec!["demo/m".into()],
             auth_url: None,
-            litellm_provider_prefix: "demo".into(),
+            model_provider_prefix: "demo".into(),
         });
         assert_eq!(r.get("DEMO").unwrap().title, "Demo");
         assert_eq!(r.ids(), vec!["demo"]);

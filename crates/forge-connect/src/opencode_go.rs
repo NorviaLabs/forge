@@ -1,8 +1,7 @@
 //! OpenCode Go connect profile — API key + TUI always prompt (PROV-02 / Phase 6.1).
 //!
 //! OpenCode Go is OpenAI-compatible at `https://opencode.ai/zen/go/v1`.
-//! LiteLLM is driven with model strings `opencode-go/<id>` which the worker
-//! rewrites to `openai/<id>` + `api_base` + `OPENCODE_API_KEY`.
+//! Native routing maps `opencode-go/<id>` to this OpenAI-compatible endpoint.
 
 use crate::auth::AuthMode;
 use crate::profile::ConnectProfile;
@@ -23,11 +22,10 @@ pub fn opencode_go_profile() -> ConnectProfile {
         auth_mode: AuthMode::opencode_go_api_key(),
         api_key_env: vec!["OPENCODE_API_KEY".into(), "OPENCODE_GO_API_KEY".into()],
         default_base_url: Some(DEFAULT_BASE_URL.into()),
-        // Distinctive prefix so the LiteLLM worker can inject api_base/key without
-        // hijacking real OpenAI (`openai/gpt-*`) routes. See opencode.ai/docs/go.
+        // Distinctive prefix avoids hijacking real OpenAI (`openai/gpt-*`) routes.
         default_models: vec!["opencode-go/gpt-4.1-mini".into()],
         auth_url: Some("https://opencode.ai/auth".into()),
-        litellm_provider_prefix: "opencode-go".into(),
+        model_provider_prefix: "opencode-go".into(),
     }
 }
 
