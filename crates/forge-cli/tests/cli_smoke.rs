@@ -2,6 +2,14 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::tempdir;
 
+fn isolated_forge(home: &std::path::Path) -> Command {
+    let mut command = Command::cargo_bin("forge").unwrap();
+    command
+        .env("HOME", home)
+        .env("XDG_CONFIG_HOME", home.join(".config"));
+    command
+}
+
 #[test]
 fn status_exits_zero() {
     Command::cargo_bin("forge")
@@ -65,9 +73,7 @@ fn connect_opencode_zen_with_key_no_secret_leak() {
     let home = dir.path().join("home");
     std::fs::create_dir_all(home.join("Library/Application Support/forge")).unwrap();
     let secret = "sk-opencode-zen-test-key-xxxx";
-    Command::cargo_bin("forge")
-        .unwrap()
-        .env("HOME", &home)
+    isolated_forge(&home)
         .env("FORGE_CONNECT_SKIP_VERIFY", "1")
         .args(["connect", "opencode_zen", "--key", secret])
         .assert()
@@ -84,9 +90,7 @@ fn connect_openai_with_key_no_secret_leak() {
     std::fs::create_dir_all(home.join(".config/forge")).unwrap();
     std::fs::create_dir_all(home.join("Library/Application Support/forge")).unwrap();
     let secret = "sk-openai-test-key-not-real-xxxx";
-    Command::cargo_bin("forge")
-        .unwrap()
-        .env("HOME", &home)
+    isolated_forge(&home)
         .env("FORGE_CONNECT_SKIP_VERIFY", "1")
         .args(["connect", "openai", "--key", secret])
         .assert()
@@ -102,9 +106,7 @@ fn connect_anthropic_with_key_no_secret_leak() {
     let home = dir.path().join("home");
     std::fs::create_dir_all(home.join("Library/Application Support/forge")).unwrap();
     let secret = "sk-ant-test-key-not-real-yyyy";
-    Command::cargo_bin("forge")
-        .unwrap()
-        .env("HOME", &home)
+    isolated_forge(&home)
         .env("FORGE_CONNECT_SKIP_VERIFY", "1")
         .args(["connect", "anthropic", "--key", secret])
         .assert()
@@ -119,9 +121,7 @@ fn connect_ollama_without_key_when_verify_skipped() {
     let dir = tempdir().unwrap();
     let home = dir.path().join("home");
     std::fs::create_dir_all(home.join("Library/Application Support/forge")).unwrap();
-    Command::cargo_bin("forge")
-        .unwrap()
-        .env("HOME", &home)
+    isolated_forge(&home)
         .env("FORGE_CONNECT_SKIP_VERIFY", "1")
         .args(["connect", "ollama"])
         .assert()
@@ -135,9 +135,7 @@ fn connect_xai_rejects_api_key() {
     let dir = tempdir().unwrap();
     let home = dir.path().join("home");
     std::fs::create_dir_all(home.join(".config/forge")).unwrap();
-    Command::cargo_bin("forge")
-        .unwrap()
-        .env("HOME", &home)
+    isolated_forge(&home)
         .args(["connect", "xai", "--key", "super-secret-xai-key"])
         .assert()
         .failure()
@@ -150,9 +148,7 @@ fn connect_xai_oauth_fixture() {
     let dir = tempdir().unwrap();
     let home = dir.path().join("home");
     std::fs::create_dir_all(home.join(".config/forge")).unwrap();
-    Command::cargo_bin("forge")
-        .unwrap()
-        .env("HOME", &home)
+    isolated_forge(&home)
         .env("FORGE_CONNECT_OAUTH_FIXTURE", "1")
         .args(["connect", "xai"])
         .assert()
@@ -169,9 +165,7 @@ fn connect_opencode_go_with_key_no_secret_leak() {
     std::fs::create_dir_all(home.join(".config/forge")).unwrap();
     std::fs::create_dir_all(home.join("Library/Application Support/forge")).unwrap();
     let secret = "go-secret-key-for-cli-smoke-tests";
-    Command::cargo_bin("forge")
-        .unwrap()
-        .env("HOME", &home)
+    isolated_forge(&home)
         // Offline CI: do not hit opencode.ai for key verification.
         .env("FORGE_CONNECT_SKIP_VERIFY", "1")
         .args(["connect", "opencode_go", "--key", secret])
