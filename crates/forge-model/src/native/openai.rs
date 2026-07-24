@@ -293,8 +293,24 @@ async fn response_error(response: reqwest::Response) -> ModelError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::native::test_support::serve_once;
     use crate::ModelClient;
     use forge_config::Config;
+    use forge_types::{Message, MessageRole, ModelStreamEvent, SideEffectClass, ToolDescriptor};
+
+    fn request(model: &str) -> ModelRequest {
+        ModelRequest {
+            messages: vec![Message::new(MessageRole::User, "hello")],
+            tools: vec![ToolDescriptor {
+                name: "bash".into(),
+                description: "run command".into(),
+                input_schema: json!({"type":"object"}),
+                side_effect_class: SideEffectClass::Exec,
+                idempotent: false,
+            }],
+            model: model.into(),
+        }
+    }
 
     #[test]
     fn routes_built_in_openai_compatible_providers() {
@@ -341,5 +357,85 @@ mod tests {
         let calls = finalize_tool_calls(calls).unwrap();
         assert_eq!(calls[0].name, "bash");
         assert_eq!(calls[0].arguments["command"], "ls");
+    }
+
+    #[tokio::test]
+    async fn completes_openai_sse_and_emits_stream_events() {
+        let sse = concat!(
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"think \"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hello \"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"bash\",\"arguments\":\"{\\\"command\\\":\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"ls\\\"}\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"world\"}}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":4}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let (base_url, request_rx) = serve_once("200 OK", "text/event-stream", sse).await;
+        let mut config = Config::default();
+        config.model.base_url = Some(format!("{base_url}/v1"));
+        config.model.api_key = Some("secret".into());
+        let client = NativeModelClient::from_config(&config).unwrap();
+        client.apply_provider_env(&[("FORGE_REASONING_EFFORT".into(), "high".into())]);
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        let response = client
+            .complete_with_stream(request("openai/gpt-5-test"), Some(tx))
+            .await
+            .unwrap();
+
+        assert_eq!(response.text, "hello world");
+        assert_eq!(response.thinking.as_deref(), Some("think "));
+        assert_eq!(response.tool_calls[0].arguments["command"], "ls");
+        assert_eq!(response.usage.unwrap().completion_tokens, 4);
+        let events: Vec<_> = rx.try_iter().collect();
+        assert!(matches!(
+            events.first(),
+            Some(ModelStreamEvent::ThinkingDelta { .. })
+        ));
+        assert!(matches!(events.last(), Some(ModelStreamEvent::MessageEnd)));
+
+        let raw_request = request_rx.await.unwrap();
+        assert!(raw_request.starts_with("POST /v1/chat/completions HTTP/1.1"));
+        assert!(raw_request
+            .to_ascii_lowercase()
+            .contains("authorization: bearer secret"));
+        assert!(raw_request.contains("\"reasoning_effort\":\"high\""));
+        assert!(raw_request.contains("\"tools\""));
+    }
+
+    #[tokio::test]
+    async fn reports_provider_http_errors() {
+        let (base_url, _) =
+            serve_once("429 Too Many Requests", "application/json", "rate limited").await;
+        let mut config = Config::default();
+        config.model.base_url = Some(base_url);
+        config.model.api_key = Some("secret".into());
+        let client = NativeModelClient::from_config(&config).unwrap();
+
+        let error = client
+            .complete(request("openai/gpt-test"))
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("429"));
+        assert!(error.to_string().contains("rate limited"));
+    }
+
+    #[test]
+    fn rejects_missing_keys_unknown_prefixes_and_invalid_tool_json() {
+        let client = NativeModelClient::from_config(&Config::default()).unwrap();
+        assert!(matches!(
+            route(&client, "openai/gpt"),
+            Err(ModelError::MissingApiKey)
+        ));
+        assert!(route(&client, "unknown/model").is_err());
+        let calls = BTreeMap::from([(
+            0,
+            ToolCallAccumulator {
+                id: String::new(),
+                name: "bash".into(),
+                arguments: "not-json".into(),
+            },
+        )]);
+        assert!(finalize_tool_calls(calls).is_err());
     }
 }
