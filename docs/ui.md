@@ -400,9 +400,7 @@ Suggested ratatui split: top status (1–2 rows); horizontal chat | sidebar; not
 ## Out of scope for these mockups
 
 - Pixel-perfect final palette / typography tokens  
-- ACP IDE chrome (separate surface; same agent events)  
 - Headless CI (no interactive layout; logs + exit codes)  
-- Channel gateway surfaces (Phase 3)  
 
 ---
 

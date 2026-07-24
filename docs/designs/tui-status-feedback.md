@@ -169,7 +169,7 @@ Prefer appending via session `TurnEvent` with `kind = "ui_error"` or direct UI-o
 
 ## 7. Open questions
 
-1. Whether error banners should also append a system `Message` for ACP/headless parity (default: TUI-only).  
+1. Whether error banners should also append a system `Message` for headless parity (default: TUI-only).
 2. Auto-dismiss timer for info-level strip (default: no timer; Esc clears info).
 
 ---

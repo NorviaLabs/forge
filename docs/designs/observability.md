@@ -6,7 +6,6 @@
 **Phase:** **3 only** (exclusive)  
 **PRD:** OBS-01  
 **Architecture:** §11, Phase 3  
-**Related:** [fleet-plugins.md](./fleet-plugins.md)  
 
 Phase 1–2 may use local `tracing` logs without implementing this design.
 

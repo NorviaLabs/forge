@@ -12,7 +12,7 @@
 
 ## 1. Purpose
 
-Forge is an open-source **AI coding agent harness**: loop control, context lifecycle, durable journal, tools (built-ins including **`git`** + MCP + `web_search`), governance hooks, and native Rust model transports. **Product surfaces:** full-screen TUI (`forge`) and headless `forge run`. Library crates may expose ACP/channels/fleet/feedback/obs; those are **not** CLI products.
+Forge is an open-source **AI coding agent harness**: loop control, context lifecycle, durable journal, tools (built-ins including **`git`** + MCP + `web_search`), governance hooks, and native Rust model transports. **Product surfaces:** full-screen TUI (`forge`) and headless `forge run`.
 
 ### How to read the diagrams
 
@@ -20,7 +20,7 @@ High-level diagrams in this document use **Mermaid** (`flowchart`, `sequenceDiag
 
 | Convention | Meaning |
 |------------|---------|
-| Phase tags | e.g. “Phase 3” on channel gateway; path may not ship in Phase 1 |
+| Phase tags | Historical implementation phase labels |
 | Req IDs | e.g. `DUR-01`, `SEC-02` — map to [prd.md](./prd.md) |
 | No crate names in flow diagrams | Crate layout lives in §15 / architecture decisions |
 
@@ -36,7 +36,7 @@ The product sits in the agentic stack as follows:
 ### Goals (shipped)
 
 1. Schema-validated tools (serde/schemars); high AI-codability  
-2. **MCP** tools in product path; **ACP** as library crate only  
+2. **MCP** tools in product path
 3. Event-sourced durable execution (SQLite journal) + crash resume  
 4. Context lifecycle: budgets, offload, handoff artifacts  
 5. Optional git **worktree** isolation (`--worktree`)  
@@ -54,7 +54,7 @@ The product sits in the agentic stack as follows:
 |----------|-----------|
 | Training or replacing foundation models | Harness is scaffolding only |
 | Heavy DAG / role DSLs as the primary API | Prefer flat, typed function contracts |
-| Always-on multi-channel gateway as product CLI | Channel crate is library-only |
+| IDE or messaging adapters | Keep the product focused on terminal and headless workflows |
 | `forge repl` / `forge tui` / `--mock` product flags | TUI is default; mock is test-only via config env |
 | Dual native+worker production clients | One native Rust client |
 | Opaque execution without audit hooks | Governance audit records |
@@ -73,9 +73,7 @@ Surfaces are interchangeable clients over one harness core. Externals are models
 flowchart TB
   subgraph actors["Actors / surfaces"]
     OP["Operator — TUI / CLI"]
-    IDE["IDE client — ACP"]
     CI["CI / headless pipeline"]
-    CH["Channel user — Slack / TG / webhook<br/>(Phase 3)"]
   end
 
   subgraph forge["Forge harness"]
@@ -97,9 +95,7 @@ flowchart TB
   end
 
   OP --> CORE
-  IDE --> CORE
   CI --> CORE
-  CH -.->|"restricted ACL"| CORE
 
   CORE --> CTX
   CORE --> DUR
@@ -124,7 +120,7 @@ Zones and what may cross each edge. Rules table below is normative.
 ```mermaid
 flowchart LR
   subgraph surface_zone["Surface zone"]
-    S["TUI · Headless · ACP · Channels"]
+    S["TUI · Headless"]
   end
 
   subgraph control_plane["Harness control plane"]
@@ -147,7 +143,7 @@ flowchart LR
     V["Vault / IdP — inject at call time only"]
   end
 
-  S -->|"session / ACP<br/>no long-lived secrets in chat"| CP
+  S -->|"session requests<br/>no long-lived secrets in chat"| CP
   CP -->|"prompts + tool schemas<br/>no raw credentials"| M
   CP -->|"ACL-filtered tools<br/>schema-validated args"| T
   CP -->|"record before side effect<br/>DUR-01"| P
@@ -157,11 +153,10 @@ flowchart LR
 
 | Boundary | Rule |
 |----------|------|
-| Client surfaces → harness | Authenticated session; ACP or local process; no secrets stored via UI prompts |
+| Client surfaces → harness | Local process or CI session; no secrets stored via UI prompts |
 | Harness → model providers | TLS 1.3; credentials injected by gateway/proxy, **never** in model context |
 | Harness → MCP / tools | Dynamic ACL filter before tool listing; args schema-validated; audit logged |
 | Tool execution → host | Sandbox: non-root, restricted egress; worktree isolation for edits; stronger profiles Phase 2+ |
-| Multi-channel gateway → code tools | Least privilege; gateway must not hold broad repo ACLs by default |
 | Harness → journal / audit | Append-only intent and results; redaction for secrets in default exports |
 
 ### 2.3 Six harness primitives (mapped to modules)
@@ -183,13 +178,13 @@ Five core modules from the PRD, plus thin surface adapters.
 
 | Package / module | Owns | Does not own |
 |------------------|------|--------------|
-| **`core`** — Declarative core & universal protocol | Tool registration (serde + schemars schemas), MCP client/server bridge, ACP session transport, model client abstraction, agent loop driver | UI widgets, vault backends, eBPF probes |
+| **`core`** — Declarative core & universal protocol | Tool registration (serde + schemars schemas), MCP bridge, model client abstraction, agent loop driver | UI widgets, vault backends, eBPF probes |
 | **`durable`** — Native durable execution engine | Append-only event journal, step records, replay/recovery, durable HITL wait states, session resume IDs | Prompt text assembly, tool side effects themselves |
-| **`context`** — Context & workspace isolation | Token budgeting, payload offload URIs, compaction/reset policy, `progress.json` / `AGENTS.md` handoffs, worktree lifecycle | Long-term enterprise IdP, channel routing |
+| **`context`** — Context & workspace isolation | Token budgeting, payload offload URIs, compaction/reset policy, `progress.json` / `AGENTS.md` handoffs, worktree lifecycle | Long-term enterprise IdP |
 | **`governance`** — Zero-trust gateway & sandbox | OAuth2 scope evaluation, secret vault injection, tool ACL filter, audit log records, sandbox/eBPF policy hooks | Model selection UX, Evaluator prompts |
 | **`feedback`** — Dual-sensor feedback | Generator/Evaluator orchestration, deterministic sensor runners (lint/test), repair task routing | Durable journal storage schema |
-| **`surfaces`** — Multi-surface adapters | TUI, headless CLI, ACP IDE adapter, multi-channel gateway adapters, status rendering | Business logic of tools or durability |
-| **`obs`** — Observability | OTEL spans/metrics (model, tool, step), SIEM/OTLP export hooks | Business decisions |
+| **`surfaces`** — Product adapters | TUI, headless CLI, status rendering | Business logic of tools or durability |
+| **`obs`** — Observability | OTEL spans/metrics (model, tool, step), OTLP export hooks | Business decisions |
 
 ### Dependency direction
 
@@ -242,12 +237,12 @@ Solid edges are functional dependencies. Dotted edges into `obs` mean modules em
 
 ### 4.1 Session
 
-A **session** is a durable unit of agent work (one interactive chat, one CI job, one channel-originated task).
+A **session** is a durable unit of agent work (one interactive chat or one CI job).
 
 | Field / concern | Description |
 |-----------------|-------------|
 | `session_id` | Stable ID for resume across process restarts |
-| `surface` | `tui` \| `headless` \| `acp` \| `channel` |
+| `surface` | `tui` \| `headless` |
 | `model_config` | Provider + model id (single config switch) |
 | `workspace_root` | Primary repo / working directory; **defaults to process cwd** if unset |
 | `worktree_path` | Optional isolated git worktree path |
@@ -349,7 +344,7 @@ flowchart TD
   E --> F
   F --> G[Register built-ins · discover MCP · ACL filter]
   G --> H[Load AGENTS.md + progress.json]
-  H --> I[Bind surface: TUI / headless / ACP / channel]
+  H --> I[Bind surface: TUI / headless]
   I --> J[Accept loop or single-shot job]
 ```
 
@@ -359,7 +354,7 @@ flowchart TD
 4. Mount workspace; optionally create `isolation: worktree`.  
 5. Discover MCP tools; apply ACL filter; register built-ins.  
 6. Load `AGENTS.md` / last `progress.json` into context assembler.  
-7. Bind surface (TUI / headless / ACP / channel) and enter accept-loop or single-shot job.
+7. Bind surface (TUI / headless) and enter accept-loop or single-shot job.
 
 ### 5.2 One user message (happy path)
 
@@ -487,7 +482,7 @@ sequenceDiagram
 
 1. High-risk tool classified by policy → journal `hitl_wait` with approval payload (redacted).  
 2. Controller process may exit; no busy-wait compute.  
-3. Approval token arrives (TUI, ACP, channel, API) → journal `hitl_resume` → continue execution.
+3. Approval arrives from the TUI or headless API → journal `hitl_resume` → continue execution.
 
 ### 5.6 Headless CI job
 
@@ -509,28 +504,7 @@ sequenceDiagram
   Note over CI,D: Optional: later job resumes same session_id after crash
 ```
 
-### 5.7 ACP IDE session
-
-IDE is a transport/client only. Loop, journal, tools, and governance stay in the harness (`CORE-02`).
-
-```mermaid
-sequenceDiagram
-  participant IDE as IDE (ACP client)
-  participant ACP as ACP adapter
-  participant C as Core loop
-  participant D as Durable journal
-  participant M as Model / tools
-
-  IDE->>ACP: session prompt / updates
-  ACP->>C: same agent events as TUI
-  C->>D: journal steps
-  C->>M: model + tools
-  M-->>C: stream / results
-  C-->>ACP: agent events
-  ACP-->>IDE: present stream, HITL, status
-```
-
-### 5.8 Context reset and handoff
+### 5.7 Context reset and handoff
 
 Triggered when usage crosses the configured threshold (default ~80% of capacity) or via explicit `/compact` (`CTX-01`, `CTX-02`).
 
@@ -549,7 +523,7 @@ sequenceDiagram
   X-->>C: slim context for next model step
 ```
 
-### 5.9 Generator and Evaluator (opt-in)
+### 5.8 Generator and Evaluator (opt-in)
 
 Default is Generator-only. When enabled, Evaluator runs in an **isolated** session with a clean context (`EVAL-01`).
 
@@ -575,19 +549,7 @@ sequenceDiagram
   end
 ```
 
-### 5.10 Multi-channel ingress (Phase 3)
-
-Channels map to sessions with **restricted** tool ACLs by default. They must not become an unconstrained repo-execution path.
-
-```mermaid
-flowchart LR
-  CH[Slack / Telegram / webhook] --> GW[Channel gateway surface]
-  GW -->|"map to session · restricted principal"| CORE[Harness core]
-  CORE --> LOOP[Same durable loop]
-  CORE -.->|"deny broad repo tools by default"| ACL[ACL policy]
-```
-
-### 5.11 Slash commands / surface-local commands (non-LLM)
+### 5.9 Slash commands / surface-local commands (non-LLM)
 
 Surface-local commands do not hit the model.
 
@@ -603,7 +565,7 @@ Surface-local commands do not hit the model.
 | Role | Content |
 |------|---------|
 | `system` | Assembled: product policy + `AGENTS.md` + runtime constraints |
-| `user` | Operator or channel input; may include structured repair tasks |
+| `user` | Operator input; may include structured repair tasks |
 | `assistant` | Text + tool_call parts |
 | `tool` | Result body **or** offload reference URI + short summary |
 
@@ -640,7 +602,7 @@ Default path: **`.forge/progress.json`** under the workspace root (configurable)
 | `AGENTS.md` (repo root or configured path) | Session start; post-reset | Standing project memory / operator rules |
 | `progress.json` | Resume; post-reset | Task continuity across long horizons |
 | Git status / worktree | Each assemble (summarized) | Ground truth of files |
-| Surface system overlays | Per surface | TUI vs CI vs channel policy differences |
+| Surface system overlays | Per surface | TUI vs CI policy differences |
 
 Discovery order and override rules should be deterministic and documented in config (single root of truth for path globs).
 
@@ -653,11 +615,6 @@ flowchart TB
   subgraph product["Product surfaces"]
     TUI["TUI — forge"]
     HD["Headless — forge run"]
-  end
-
-  subgraph library["Library-only surfaces"]
-    ACP[ACP crate]
-    CH[Channels crate]
   end
 
   subgraph harness["Harness core — single implementation"]
@@ -677,9 +634,6 @@ flowchart TB
 
   TUI --> LOOP
   HD --> LOOP
-  ACP -.-> LOOP
-  CH -.-> LOOP
-
   LOOP --> CTX
   LOOP --> DUR
   LOOP --> GOV
@@ -696,9 +650,9 @@ flowchart TB
 | **TUI** | Default interactive product (`forge`) | Shipped |
 | **Headless** | `forge run`, exit codes, session id | Shipped |
 | **Connect** | `forge connect` + `/connect` | Shipped |
-| **ACP / channels / fleet / feedback / obs** | Crates for embedders | Library only |
+| **Feedback / obs** | Optional crates for embedders | Library only |
 
-**Principle:** One harness core; product surfaces are TUI + headless. Other adapters may call the same core without re-implementing the loop.
+**Principle:** One harness core shared by the TUI and headless product surfaces.
 
 Streaming display rules: tool names + redacted args; never paint secrets; large payloads show URI + summary.
 
@@ -782,7 +736,7 @@ sequenceDiagram
 
 Sandbox defaults (NFR): non-root, restricted egress, read-only root FS. Worktree isolation (CTX-03): file edits in temporary git worktree until merge/discard.
 
-Immutable audit log: tool invocations, arg payloads (redacted), model response metadata, policy decisions; export via OTLP to SIEM (Phase 3).
+Immutable audit log: tool invocations, arg payloads (redacted), model response metadata, and policy decisions; export via OTLP when configured.
 
 ---
 
@@ -803,7 +757,7 @@ Immutable audit log: tool invocations, arg payloads (redacted), model response m
 |-------|------|
 | **Unit** | Tool schema (serde/schemars) validation; ACL filter; context budget math; journal append/replay pure logic |
 | **Component** | Mock model + mock tools; full loop with journal; crash mid-tool recovery |
-| **Integration** | Real MCP server fixture; ACP client smoke; multi-provider smoke (config-only switch) |
+| **Integration** | Real MCP server fixture; multi-provider smoke (config-only switch) |
 | **Security** | Secret redaction tests; deny-list visibility; sandbox egress denial |
 | **Long-horizon** | 100+ turn handoff alignment; offload bloat reduction ≥ 80% |
 | **Eval quality** | Generator-only vs Generator+Evaluator first-pass quality (EVAL-01 target) |
@@ -818,7 +772,7 @@ Immutable audit log: tool invocations, arg payloads (redacted), model response m
 | Primary API style | Flat typed tools + thin loop, not graph DSL | Low abstraction tax; AI-codability; decaying scaffolding |
 | Durability | Embedded event journal (LLM-aware) | Temporal-like recovery without losing prompt/tool semantics |
 | Context strategy | Offload + hard reset with handoff (prefer over pure summary-only) | Reduce context rot on long tasks |
-| Protocols | MCP + ACP both native | Tools vs clients; avoid proprietary lock-in |
+| Protocols | MCP native | Standard tool interoperability |
 | Security | Gateway ACLs + vault inject + sandbox | Enterprise least privilege |
 | Surfaces | Adapters over core | One agent process, many UIs |
 | Generator/Evaluator | Optional dual session | Avoid self-grading bias; prunable as models improve |
@@ -835,7 +789,7 @@ Immutable audit log: tool invocations, arg payloads (redacted), model response m
 | New MCP server | Declarative config; tools appear after ACL filter |
 | New built-in tool | serde/schemars types + handler; optional policy trait |
 | Web search backend | Impl `SearchBackend` + config `provider` id — [web-search-tool.md](./designs/web-search-tool.md) |
-| New surface | ACP-compatible client or thin adapter on agent events |
+| New surface | Thin adapter on agent events |
 | Custom Evaluator sensors | Register deterministic runners + optional LLM judge profile |
 | Policy packs | ACL + HITL classification rules without core changes |
 | Journal backend | Storage interface (SQLite ↔ Postgres) |
@@ -861,11 +815,8 @@ Illustrative Rust workspace layout (crate names align with §3 / decisions table
 | `forge-connect` | Connect profiles + credential store |
 | `forge-tui` | Full-screen TUI |
 | `forge-cli` | **`forge`** binary: TUI / `run` / `status` / `connect` |
-| `forge-acp` | ACP library only |
-| `forge-channels` | Channel gateway library only |
 | `forge-feedback` | Feedback/evaluator library only |
 | `forge-obs` | OTEL helpers library only |
-| `forge-fleet` | SCIM/SIEM library only |
 
 ---
 
@@ -908,7 +859,7 @@ Forge is the **harness** between models and the real world: a typed tool bus, an
 | 25 | Session identity chrome (Phase 10 / TUI-09) | Status chrome shows **provider · model · ctx**; narrow layout keeps identity without sidebar |
 | 26 | Activity feed & progressive busy (Phase 10 / TUI-10) | In-session activity ring buffer; busy phases `running · model` / `running · tool:name` |
 | 12 | Config | **TOML file + env overrides** (e.g. `forge.toml` / `~/.config/forge/config.toml`; secrets/CI via env) |
-| 13 | Protocol phase ownership | **Phase 1 CORE-02 = MCP only.** **Phase 2 CORE-03 = ACP only.** Exclusive; no split ownership of one req ID. |
+| 13 | Protocol ownership | **CORE-02 = MCP tools.** |
 | 14 | License | **MIT** |
 | 15 | Workspace root | **Default to process cwd** when not specified (CLI flag / config optional override) |
 | 16 | Handoff progress file | **`.forge/progress.json`** under workspace (configurable) |
@@ -925,7 +876,7 @@ Forge is the **harness** between models and the real world: a typed tool bus, an
 | Native model runtime | Rust `reqwest` HTTP/SSE adapters; no Python runtime or model proxy required |
 | Connect profiles (Phase 6) | Registry + `/connect`; credentials injected into `NativeModelClient` |
 | Connect auth (6.1) | `AuthMode::Oauth` (xAI) vs `AuthMode::ApiKey` + TUI prompt (OpenCode Go); tokens/keys in 0600 store |
-| Surfaces | **Product:** `forge` TUI, `forge run`, `status`, `connect`. **Library:** ACP, channels, fleet, feedback, obs |
+| Surfaces | **Product:** `forge` TUI, `forge run`, `status`, `connect`. **Library:** feedback, obs |
 | Web search | `WebSearchTool` + backends; default offline mock backend |
 | TUI visibility | Feedback strip, session chrome, activity feed in `forge-tui` |
 | Config | **Optional** TOML + env + flags (no file required) |
@@ -937,7 +888,7 @@ Forge is the **harness** between models and the real world: a typed tool bus, an
 
 ## Open questions
 
-Resolved: `progress.json` path; sequential tools Phase 1; **CORE-02=MCP / CORE-03=ACP**; exclusive phase + design-doc ownership.
+Resolved: `progress.json` path; sequential tools Phase 1; **CORE-02=MCP**; exclusive phase + design-doc ownership.
 
 | # | Question | Options / notes | Decision |
 |---|----------|-----------------|----------|

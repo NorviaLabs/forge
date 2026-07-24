@@ -134,10 +134,6 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
             desc: "Commit + push (message from changeset)".into(),
         },
         PaletteItem {
-            cmd: "/stt".into(),
-            desc: "STT status / speed (Ctrl+Space PTT)".into(),
-        },
-        PaletteItem {
             cmd: "/copy".into(),
             desc: "Copy last answer".into(),
         },
@@ -539,7 +535,6 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                             | "/compact"
                             | "/diff"
                             | "/sync"
-                            | "/stt"
                             | "/copy"
                             | "/clear"
                     ) {
