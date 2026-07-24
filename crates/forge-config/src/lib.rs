@@ -1,4 +1,4 @@
-//! Configuration: TOML + env overrides (Phase 1 merge rules + Phase 5 LiteLLM).
+//! Configuration: TOML + env overrides.
 
 use std::env;
 use std::fs;
@@ -14,18 +14,18 @@ pub enum ConfigError {
     #[error("toml parse error: {0}")]
     Toml(#[from] toml::de::Error),
     #[error(
-        "invalid model provider `{0}` (expected litellm | mock; deprecated openai_compatible|anthropic|xai migrate to litellm)"
+        "invalid model provider `{0}` (expected native | mock; legacy litellm/openai_compatible/anthropic/xai migrate to native)"
     )]
     InvalidProvider(String),
     #[error("{0}")]
     Message(String),
 }
 
-/// Phase 5: sole production backend is LiteLLM; mock is offline CI only.
+/// Native Rust is the production backend; mock is offline CI only.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelProviderKind {
-    Litellm,
+    Native,
     Mock,
 }
 
@@ -44,11 +44,11 @@ impl ModelProviderKind {
         Ok(Self::parse_with_migration(s)?.kind)
     }
 
-    /// Accept Phase 5 kinds and migrate deprecated Phase 1 natives to LiteLLM.
+    /// Accept legacy names while routing live models through native Rust.
     pub fn parse_with_migration(s: &str) -> Result<ParsedProvider, ConfigError> {
         match s.trim().to_ascii_lowercase().as_str() {
-            "litellm" => Ok(ParsedProvider {
-                kind: Self::Litellm,
+            "native" | "litellm" => Ok(ParsedProvider {
+                kind: Self::Native,
                 model_prefix: None,
                 migrated_from_native: false,
             }),
@@ -58,17 +58,17 @@ impl ModelProviderKind {
                 migrated_from_native: false,
             }),
             "openai_compatible" | "openai" | "openai-compatible" => Ok(ParsedProvider {
-                kind: Self::Litellm,
+                kind: Self::Native,
                 model_prefix: Some("openai"),
                 migrated_from_native: true,
             }),
             "anthropic" => Ok(ParsedProvider {
-                kind: Self::Litellm,
+                kind: Self::Native,
                 model_prefix: Some("anthropic"),
                 migrated_from_native: true,
             }),
             "xai" | "grok" => Ok(ParsedProvider {
-                kind: Self::Litellm,
+                kind: Self::Native,
                 model_prefix: Some("xai"),
                 migrated_from_native: true,
             }),
@@ -78,13 +78,13 @@ impl ModelProviderKind {
 
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::Litellm => "litellm",
+            Self::Native => "native",
             Self::Mock => "mock",
         }
     }
 }
 
-/// Apply LiteLLM model-string migration for deprecated native providers.
+/// Apply provider-prefix migration for deprecated provider-specific config.
 pub fn migrate_model_id(model: &str, prefix: Option<&str>) -> String {
     let Some(prefix) = prefix else {
         return model.to_string();
@@ -93,73 +93,6 @@ pub fn migrate_model_id(model: &str, prefix: Option<&str>) -> String {
         model.to_string()
     } else {
         format!("{prefix}/{model}")
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum LitellmLifecycle {
-    LongLived,
-    PerCall,
-}
-
-impl Default for LitellmLifecycle {
-    fn default() -> Self {
-        Self::LongLived
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LitellmConfig {
-    #[serde(default = "default_litellm_python")]
-    pub python: String,
-    #[serde(default = "default_litellm_module")]
-    pub module: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worker_path: Option<String>,
-    #[serde(default = "default_request_timeout")]
-    pub request_timeout_secs: u64,
-    #[serde(default = "default_startup_timeout")]
-    pub startup_timeout_secs: u64,
-    #[serde(default)]
-    pub lifecycle: LitellmLifecycle,
-}
-
-fn default_litellm_python() -> String {
-    // Prefer project-local venv when present (pip install -e workers/forge-litellm-worker).
-    if let Ok(cwd) = std::env::current_dir() {
-        for candidate in [
-            cwd.join(".venv/bin/python"),
-            cwd.join(".venv/bin/python3"),
-            cwd.join("venv/bin/python"),
-        ] {
-            if candidate.is_file() {
-                return candidate.display().to_string();
-            }
-        }
-    }
-    "python3".into()
-}
-fn default_litellm_module() -> String {
-    "forge_litellm_worker".into()
-}
-fn default_request_timeout() -> u64 {
-    120
-}
-fn default_startup_timeout() -> u64 {
-    30
-}
-
-impl Default for LitellmConfig {
-    fn default() -> Self {
-        Self {
-            python: default_litellm_python(),
-            module: default_litellm_module(),
-            worker_path: None,
-            request_timeout_secs: default_request_timeout(),
-            startup_timeout_secs: default_startup_timeout(),
-            lifecycle: LitellmLifecycle::default(),
-        }
     }
 }
 
@@ -172,18 +105,22 @@ pub struct ModelConfig {
     /// Dev-only; prefer env. Never logged by callers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
-    #[serde(default)]
-    pub litellm: LitellmConfig,
+    #[serde(default = "default_request_timeout")]
+    pub request_timeout_secs: u64,
+}
+
+fn default_request_timeout() -> u64 {
+    300
 }
 
 impl Default for ModelConfig {
     fn default() -> Self {
         Self {
-            provider: ModelProviderKind::Litellm,
+            provider: ModelProviderKind::Native,
             model: String::new(),
             base_url: None,
             api_key: None,
-            litellm: LitellmConfig::default(),
+            request_timeout_secs: default_request_timeout(),
         }
     }
 }
@@ -515,17 +452,7 @@ struct ModelConfigFile {
     model: Option<String>,
     base_url: Option<String>,
     api_key: Option<String>,
-    litellm: Option<LitellmConfigFile>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct LitellmConfigFile {
-    python: Option<String>,
-    module: Option<String>,
-    worker_path: Option<String>,
     request_timeout_secs: Option<u64>,
-    startup_timeout_secs: Option<u64>,
-    lifecycle: Option<String>,
 }
 
 impl ConfigFile {
@@ -552,8 +479,8 @@ impl ConfigFile {
             if m.api_key.is_some() {
                 cfg.model.api_key = m.api_key;
             }
-            if let Some(l) = m.litellm {
-                apply_litellm_file(&mut cfg.model.litellm, l);
+            if let Some(timeout) = m.request_timeout_secs {
+                cfg.model.request_timeout_secs = timeout.max(1);
             }
         }
         if let Some(j) = self.journal {
@@ -599,30 +526,6 @@ fn apply_web_search_file(dst: &mut WebSearchConfig, src: WebSearchConfigFile) {
     }
 }
 
-fn apply_litellm_file(dst: &mut LitellmConfig, src: LitellmConfigFile) {
-    if let Some(p) = src.python {
-        dst.python = p;
-    }
-    if let Some(m) = src.module {
-        dst.module = m;
-    }
-    if src.worker_path.is_some() {
-        dst.worker_path = src.worker_path;
-    }
-    if let Some(t) = src.request_timeout_secs {
-        dst.request_timeout_secs = t;
-    }
-    if let Some(t) = src.startup_timeout_secs {
-        dst.startup_timeout_secs = t;
-    }
-    if let Some(life) = src.lifecycle {
-        dst.lifecycle = match life.to_ascii_lowercase().as_str() {
-            "per_call" | "per-call" => LitellmLifecycle::PerCall,
-            _ => LitellmLifecycle::LongLived,
-        };
-    }
-}
-
 fn apply_env(cfg: &mut Config) -> Result<(), ConfigError> {
     let mut prefix = None;
     if let Ok(p) = env::var("FORGE_MODEL_PROVIDER") {
@@ -644,26 +547,9 @@ fn apply_env(cfg: &mut Config) -> Result<(), ConfigError> {
     if let Ok(j) = env::var("FORGE_JOURNAL_PATH") {
         cfg.journal.path = j;
     }
-    if let Ok(p) = env::var("FORGE_LITELLM_PYTHON") {
-        cfg.model.litellm.python = p;
-    }
-    if let Ok(m) = env::var("FORGE_LITELLM_MODULE") {
-        cfg.model.litellm.module = m;
-    }
-    if let Ok(life) = env::var("FORGE_LITELLM_LIFECYCLE") {
-        cfg.model.litellm.lifecycle = match life.to_ascii_lowercase().as_str() {
-            "per_call" | "per-call" => LitellmLifecycle::PerCall,
-            _ => LitellmLifecycle::LongLived,
-        };
-    }
-    if let Ok(t) = env::var("FORGE_LITELLM_REQUEST_TIMEOUT_SECS") {
+    if let Ok(t) = env::var("FORGE_MODEL_REQUEST_TIMEOUT_SECS") {
         if let Ok(n) = t.parse() {
-            cfg.model.litellm.request_timeout_secs = n;
-        }
-    }
-    if let Ok(t) = env::var("FORGE_LITELLM_STARTUP_TIMEOUT_SECS") {
-        if let Ok(n) = t.parse() {
-            cfg.model.litellm.startup_timeout_secs = n;
+            cfg.model.request_timeout_secs = n;
         }
     }
     // Phase 9 — web_search
@@ -756,11 +642,7 @@ mod tests {
         "FORGE_WORKSPACE",
         "FORGE_JOURNAL_PATH",
         "FORGE_OTEL_ENDPOINT",
-        "FORGE_LITELLM_PYTHON",
-        "FORGE_LITELLM_MODULE",
-        "FORGE_LITELLM_LIFECYCLE",
-        "FORGE_LITELLM_REQUEST_TIMEOUT_SECS",
-        "FORGE_LITELLM_STARTUP_TIMEOUT_SECS",
+        "FORGE_MODEL_REQUEST_TIMEOUT_SECS",
         "FORGE_WEB_SEARCH_ENABLED",
         "FORGE_WEB_SEARCH_PROVIDER",
         "FORGE_WEB_SEARCH_API_KEY_ENV",
@@ -810,9 +692,9 @@ mod tests {
         let _g = EnvGuard::clear_forge_env();
         let cfg = Config::load(ConfigOverrides::default()).unwrap();
         assert!(cfg.workspace_root().is_absolute() || cfg.workspace_root() == Path::new("."));
-        assert_eq!(cfg.model.provider, ModelProviderKind::Litellm);
+        assert_eq!(cfg.model.provider, ModelProviderKind::Native);
         assert!(cfg.model.model.is_empty());
-        assert_eq!(cfg.model.litellm.python, "python3");
+        assert_eq!(cfg.model.request_timeout_secs, 300);
         assert_eq!(cfg.journal.backend, "sqlite");
     }
 
@@ -827,10 +709,8 @@ mod tests {
             r#"
 workspace_root = "{ws}"
 [model]
-provider = "litellm"
+provider = "native"
 model = "anthropic/claude-sonnet"
-[model.litellm]
-python = "python3.12"
 request_timeout_secs = 60
 [journal]
 path = "my-sessions"
@@ -850,10 +730,9 @@ args = ["hi"]
         })
         .unwrap();
 
-        assert_eq!(cfg.model.provider, ModelProviderKind::Litellm);
+        assert_eq!(cfg.model.provider, ModelProviderKind::Native);
         assert_eq!(cfg.model.model, "anthropic/claude-sonnet");
-        assert_eq!(cfg.model.litellm.python, "python3.12");
-        assert_eq!(cfg.model.litellm.request_timeout_secs, 60);
+        assert_eq!(cfg.model.request_timeout_secs, 60);
         assert_eq!(cfg.journal.path, "my-sessions");
         assert_eq!(cfg.mcp.servers.len(), 1);
         assert_eq!(cfg.mcp.servers[0].id, "demo");
@@ -879,7 +758,7 @@ model = "claude-sonnet"
             ..Default::default()
         })
         .unwrap();
-        assert_eq!(cfg.model.provider, ModelProviderKind::Litellm);
+        assert_eq!(cfg.model.provider, ModelProviderKind::Native);
         assert_eq!(cfg.model.model, "anthropic/claude-sonnet");
     }
 
@@ -918,7 +797,7 @@ model = "from-file"
         .unwrap();
 
         assert_eq!(cfg.model.model, "openai/from-env");
-        assert_eq!(cfg.model.provider, ModelProviderKind::Litellm);
+        assert_eq!(cfg.model.provider, ModelProviderKind::Native);
     }
 
     #[test]
@@ -937,13 +816,11 @@ model = "from-file"
     }
 
     #[test]
-    fn litellm_env_overrides() {
+    fn model_timeout_env_overrides() {
         let g = EnvGuard::clear_forge_env();
-        g.set("FORGE_LITELLM_PYTHON", "/usr/bin/python3");
-        g.set("FORGE_LITELLM_LIFECYCLE", "per_call");
+        g.set("FORGE_MODEL_REQUEST_TIMEOUT_SECS", "42");
         let cfg = Config::load(ConfigOverrides::default()).unwrap();
-        assert_eq!(cfg.model.litellm.python, "/usr/bin/python3");
-        assert_eq!(cfg.model.litellm.lifecycle, LitellmLifecycle::PerCall);
+        assert_eq!(cfg.model.request_timeout_secs, 42);
     }
 
     #[test]

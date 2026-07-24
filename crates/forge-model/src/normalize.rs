@@ -1,4 +1,4 @@
-//! LiteLLM / OpenAI-shaped JSON → Forge ModelResponse (litellm-normalization.md).
+//! OpenAI-shaped JSON → Forge ModelResponse.
 
 use forge_types::{Message, MessageRole, ModelResponse, ToolCall, ToolDescriptor, Usage};
 use serde_json::{json, Value};
@@ -29,7 +29,7 @@ pub fn complete_result_from_value(result: &Value) -> Result<ModelResponse, Model
         });
     }
 
-    // Raw LiteLLM / OpenAI chat completion shape:
+    // Raw OpenAI chat completion shape:
     let choice = result
         .pointer("/choices/0")
         .ok_or_else(|| ModelError::Protocol("missing choices[0]".into()))?;

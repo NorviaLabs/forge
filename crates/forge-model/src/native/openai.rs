@@ -1,0 +1,345 @@
+use std::collections::BTreeMap;
+
+use forge_types::{ModelResponse, ModelStreamEvent, ToolCall, Usage};
+use futures::StreamExt;
+use serde_json::{json, Value};
+
+use super::NativeModelClient;
+use crate::normalize::{forge_messages_to_wire, tools_to_openai_functions};
+use crate::{ModelError, ModelRequest, StreamEventTx};
+
+struct Route {
+    base_url: String,
+    api_key: Option<String>,
+    model: String,
+}
+
+#[derive(Default)]
+struct ToolCallAccumulator {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+pub(super) async fn complete(
+    client: &NativeModelClient,
+    req: ModelRequest,
+    model: &str,
+    tx: Option<StreamEventTx>,
+) -> Result<ModelResponse, ModelError> {
+    let route = route(client, model)?;
+    let mut body = json!({
+        "model": route.model,
+        "messages": forge_messages_to_wire(&req.messages),
+        "stream": true,
+        "stream_options": {"include_usage": true}
+    });
+    let tools = tools_to_openai_functions(&req.tools);
+    if !tools.is_empty() {
+        body["tools"] = Value::Array(tools);
+    }
+    apply_reasoning_effort(client, &mut body, model);
+
+    let url = format!("{}/chat/completions", route.base_url.trim_end_matches('/'));
+    let mut request = client.http.post(url).json(&body);
+    if let Some(api_key) = route.api_key {
+        request = request.bearer_auth(api_key);
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|error| ModelError::Transport(error.to_string()))?;
+    if !response.status().is_success() {
+        return Err(response_error(response).await);
+    }
+
+    let mut stream = response.bytes_stream();
+    let mut pending = String::new();
+    let mut text = String::new();
+    let mut thinking = String::new();
+    let mut tool_calls = BTreeMap::new();
+    let mut usage = None;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| ModelError::Transport(error.to_string()))?;
+        pending.push_str(&String::from_utf8_lossy(&chunk));
+        while let Some(newline) = pending.find('\n') {
+            let line = pending[..newline].trim().to_string();
+            pending.drain(..=newline);
+            let Some(data) = line.strip_prefix("data:").map(str::trim) else {
+                continue;
+            };
+            if data.is_empty() || data == "[DONE]" {
+                continue;
+            }
+            let event: Value = serde_json::from_str(data)
+                .map_err(|error| ModelError::Protocol(format!("invalid SSE JSON: {error}")))?;
+            consume_event(
+                &event,
+                &mut text,
+                &mut thinking,
+                &mut tool_calls,
+                &mut usage,
+                tx.as_ref(),
+            );
+        }
+    }
+
+    let tool_calls = finalize_tool_calls(tool_calls)?;
+    if let Some(tx) = tx {
+        if let Some(ref usage) = usage {
+            let _ = tx.send(ModelStreamEvent::Usage {
+                usage: usage.clone(),
+            });
+        }
+        let _ = tx.send(ModelStreamEvent::MessageEnd);
+    }
+    Ok(ModelResponse {
+        text,
+        tool_calls,
+        usage,
+        thinking: (!thinking.is_empty()).then_some(thinking),
+    })
+}
+
+fn route(client: &NativeModelClient, model: &str) -> Result<Route, ModelError> {
+    let (prefix, model_id) = model.split_once('/').unwrap_or(("openai", model));
+    let configured_base = client.configured_base_url.clone();
+    let route = match prefix {
+        "openai" => Route {
+            base_url: configured_base
+                .or_else(|| client.injected_or_env(&["OPENAI_API_BASE"]))
+                .unwrap_or_else(|| "https://api.openai.com/v1".into()),
+            api_key: client.credential(&["OPENAI_API_KEY"]),
+            model: model_id.into(),
+        },
+        "xai" | "grok" => Route {
+            base_url: configured_base
+                .or_else(|| client.injected_or_env(&["XAI_API_BASE"]))
+                .unwrap_or_else(|| "https://api.x.ai/v1".into()),
+            api_key: client.credential(&["XAI_API_KEY", "GROK_CODE_XAI_API_KEY"]),
+            model: model_id.into(),
+        },
+        "opencode-go" | "opencode" => Route {
+            base_url: client
+                .injected_or_env(&["OPENCODE_API_BASE", "OPENCODE_GO_API_BASE"])
+                .unwrap_or_else(|| "https://opencode.ai/zen/go/v1".into()),
+            api_key: client.credential(&["OPENCODE_API_KEY", "OPENCODE_GO_API_KEY"]),
+            model: model_id.into(),
+        },
+        "opencode-zen" => Route {
+            base_url: client
+                .injected_or_env(&["OPENCODE_ZEN_API_BASE"])
+                .unwrap_or_else(|| "https://opencode.ai/zen/v1".into()),
+            api_key: client.credential(&[
+                "OPENCODE_ZEN_API_KEY",
+                "OPENCODE_API_KEY",
+                "OPENCODE_GO_API_KEY",
+            ]),
+            model: model_id.into(),
+        },
+        "ollama" | "ollama_chat" => {
+            let base = client
+                .injected_or_env(&["OLLAMA_API_BASE"])
+                .or(configured_base)
+                .unwrap_or_else(|| "http://localhost:11434".into());
+            Route {
+                base_url: if base.trim_end_matches('/').ends_with("/v1") {
+                    base
+                } else {
+                    format!("{}/v1", base.trim_end_matches('/'))
+                },
+                api_key: client.credential(&["OLLAMA_API_KEY"]),
+                model: model_id.into(),
+            }
+        }
+        other => {
+            return Err(ModelError::Provider(format!(
+                "unsupported native model provider prefix `{other}`"
+            )))
+        }
+    };
+    if route.api_key.is_none() && !matches!(prefix, "ollama" | "ollama_chat") {
+        return Err(ModelError::MissingApiKey);
+    }
+    Ok(route)
+}
+
+fn consume_event(
+    event: &Value,
+    text: &mut String,
+    thinking: &mut String,
+    tool_calls: &mut BTreeMap<usize, ToolCallAccumulator>,
+    usage: &mut Option<Usage>,
+    tx: Option<&StreamEventTx>,
+) {
+    if let Some(raw_usage) = event.get("usage") {
+        *usage = Some(Usage {
+            prompt_tokens: raw_usage
+                .get("prompt_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as u32,
+            completion_tokens: raw_usage
+                .get("completion_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as u32,
+        });
+    }
+    let Some(delta) = event.pointer("/choices/0/delta") else {
+        return;
+    };
+    if let Some(piece) = delta.get("content").and_then(Value::as_str) {
+        text.push_str(piece);
+        if let Some(tx) = tx {
+            let _ = tx.send(ModelStreamEvent::TextDelta { text: piece.into() });
+        }
+    }
+    for key in [
+        "reasoning_content",
+        "reasoning",
+        "thinking",
+        "reasoning_text",
+    ] {
+        if let Some(piece) = delta.get(key).and_then(Value::as_str) {
+            thinking.push_str(piece);
+            if let Some(tx) = tx {
+                let _ = tx.send(ModelStreamEvent::ThinkingDelta { text: piece.into() });
+            }
+            break;
+        }
+    }
+    for raw_call in delta
+        .get("tool_calls")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let index = raw_call.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+        let call = tool_calls.entry(index).or_default();
+        if let Some(id) = raw_call.get("id").and_then(Value::as_str) {
+            call.id = id.into();
+        }
+        if let Some(name) = raw_call.pointer("/function/name").and_then(Value::as_str) {
+            call.name.push_str(name);
+        }
+        if let Some(arguments) = raw_call
+            .pointer("/function/arguments")
+            .and_then(Value::as_str)
+        {
+            call.arguments.push_str(arguments);
+        }
+    }
+}
+
+fn finalize_tool_calls(
+    tool_calls: BTreeMap<usize, ToolCallAccumulator>,
+) -> Result<Vec<ToolCall>, ModelError> {
+    tool_calls
+        .into_iter()
+        .map(|(index, call)| {
+            let arguments = if call.arguments.trim().is_empty() {
+                json!({})
+            } else {
+                serde_json::from_str(&call.arguments).map_err(|error| {
+                    ModelError::Protocol(format!("tool arguments are not valid JSON: {error}"))
+                })?
+            };
+            Ok(ToolCall {
+                id: if call.id.is_empty() {
+                    format!("call_{index}")
+                } else {
+                    call.id
+                },
+                name: call.name,
+                arguments,
+            })
+        })
+        .collect()
+}
+
+fn apply_reasoning_effort(client: &NativeModelClient, body: &mut Value, model: &str) {
+    let Some(raw_effort) = client.injected_or_env(&["FORGE_REASONING_EFFORT"]) else {
+        return;
+    };
+    let mut effort = raw_effort.trim().to_ascii_lowercase();
+    if effort.is_empty() || effort == "auto" {
+        return;
+    }
+    if effort == "minimal" {
+        effort = "low".into();
+    } else if effort == "max" {
+        effort = "xhigh".into();
+    }
+    let model_id = model.split_once('/').map(|(_, id)| id).unwrap_or(model);
+    let supported = model.starts_with("opencode-")
+        || (model.starts_with("openai/")
+            && ["gpt-5", "o1", "o3", "o4"]
+                .iter()
+                .any(|prefix| model_id.starts_with(prefix)))
+        || ((model.starts_with("xai/") || model.starts_with("grok/"))
+            && ["grok-4.3", "grok-4.5", "grok-4.20"]
+                .iter()
+                .any(|marker| model_id.contains(marker)));
+    if supported {
+        body["reasoning_effort"] = Value::String(effort);
+    }
+}
+
+async fn response_error(response: reqwest::Response) -> ModelError {
+    let status = response.status();
+    let detail = response.text().await.unwrap_or_default();
+    ModelError::Provider(format!("HTTP {status}: {detail}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ModelClient;
+    use forge_config::Config;
+
+    #[test]
+    fn routes_built_in_openai_compatible_providers() {
+        let client = NativeModelClient::from_config(&Config::default()).unwrap();
+        client.apply_provider_env(&[
+            ("OPENAI_API_KEY".into(), "openai-key".into()),
+            ("XAI_API_KEY".into(), "xai-key".into()),
+            ("OPENCODE_API_KEY".into(), "opencode-key".into()),
+        ]);
+        assert_eq!(route(&client, "openai/gpt-4.1").unwrap().model, "gpt-4.1");
+        assert_eq!(route(&client, "xai/grok-3").unwrap().model, "grok-3");
+        assert_eq!(
+            route(&client, "opencode-go/gpt-4.1-mini").unwrap().base_url,
+            "https://opencode.ai/zen/go/v1"
+        );
+        assert_eq!(
+            route(&client, "ollama/llama3.2").unwrap().base_url,
+            "http://localhost:11434/v1"
+        );
+    }
+
+    #[test]
+    fn accumulates_streamed_tool_calls() {
+        let mut text = String::new();
+        let mut thinking = String::new();
+        let mut calls = BTreeMap::new();
+        let mut usage = None;
+        consume_event(
+            &json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"bash","arguments":"{\"command\":"}}]}}]}),
+            &mut text,
+            &mut thinking,
+            &mut calls,
+            &mut usage,
+            None,
+        );
+        consume_event(
+            &json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"ls\"}"}}]}}]}),
+            &mut text,
+            &mut thinking,
+            &mut calls,
+            &mut usage,
+            None,
+        );
+        let calls = finalize_tool_calls(calls).unwrap();
+        assert_eq!(calls[0].name, "bash");
+        assert_eq!(calls[0].arguments["command"], "ls");
+    }
+}

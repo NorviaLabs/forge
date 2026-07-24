@@ -37,11 +37,7 @@
 | [tui-conversation.md](./tui-conversation.md) | TUI-02 | Chat + tool cards |
 | [tui-sidebar.md](./tui-sidebar.md) | TUI-03 | Session / budget / activity |
 | [tui-overlays.md](./tui-overlays.md) | TUI-04 | HITL, palette, model, connect |
-| [litellm-providers.md](./litellm-providers.md) | MDL-01 | Sole production model path |
-| [litellm-worker.md](./litellm-worker.md) | MDL-01 | Python SDK worker |
-| [litellm-wire.md](./litellm-wire.md) | MDL-01 | stdio JSON-RPC |
-| [litellm-normalization.md](./litellm-normalization.md) | MDL-01 | Envelope mapping |
-| [litellm-config.md](./litellm-config.md) | MDL-01 | `provider=litellm` |
+| [model-providers.md](./model-providers.md) | MDL-01 | Native Rust provider transports |
 | [connect-command.md](./connect-command.md) | CONN-01 | `/connect` + `forge connect` |
 | [connect-auth-modes.md](./connect-auth-modes.md) | CONN-01 | OAuth vs API key |
 | [provider-xai-grok.md](./provider-xai-grok.md) | PROV-01 | OAuth Grok |
@@ -65,12 +61,6 @@ These crates compile and have unit tests. They are **not** product entry points 
 | [observability.md](./observability.md) | OBS-01 | `forge-obs` |
 | [channels.md](./channels.md) | CH-01 | `forge-channels` |
 | [fleet-plugins.md](./fleet-plugins.md) | FLEET-01 | `forge-fleet` |
-
-### Superseded
-
-| Document | Note |
-|----------|------|
-| [model-providers.md](./model-providers.md) | Phase 1 **native** HTTP adapters **removed**. Production = LiteLLM only. `ModelClient` envelope still applies. |
 
 ## Product CLI surface (normative)
 

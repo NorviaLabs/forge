@@ -109,27 +109,8 @@ pub fn classify_operator_error(raw: &str) -> String {
 (not fixture), or set XAI_API_KEY."
             .into();
     }
-    if lower.contains("eof while parsing") || lower.contains("stdout polluted") {
-        return "Model error: worker protocol noise (update forge-litellm-worker). Restart forge."
-            .into();
-    }
     if lower.contains("timeout") || lower.contains("timed out") {
-        return "Model error: request timed out. Retry or check network/worker.".into();
-    }
-    if lower.contains("worker")
-        && (lower.contains("unavailable")
-            || lower.contains("failed")
-            || lower.contains("closed stdout")
-            || lower.contains("no module named"))
-    {
-        return "Model error: LiteLLM worker unavailable. Install with: \
-cd workers/forge-litellm-worker && pip install -e .  (then restart forge)"
-            .into();
-    }
-    if lower.contains("closed stdout") {
-        return "Model error: LiteLLM worker crashed. Install with: \
-cd workers/forge-litellm-worker && pip install -e .  (then restart forge)"
-            .into();
+        return "Model error: request timed out. Retry or check the provider endpoint.".into();
     }
     let trimmed: String = raw.chars().take(200).collect();
     if trimmed.is_empty() {
@@ -153,6 +134,13 @@ mod tests {
     #[test]
     fn classify_auth() {
         assert!(classify_operator_error("401 unauthorized").contains("authentication"));
+    }
+
+    #[test]
+    fn legacy_worker_errors_do_not_suggest_python_install() {
+        let message = classify_operator_error("worker unavailable: no module named litellm");
+        assert!(!message.contains("pip install"));
+        assert!(!message.contains("forge-litellm-worker"));
     }
 
     #[test]

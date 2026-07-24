@@ -120,7 +120,7 @@
 <body>
   <h1>Forge architecture</h1>
   <p class="sub">
-    One agent core for TUI and headless. Live models via LiteLLM SDK worker.
+    One agent core for TUI and headless. Live models via native Rust HTTP/SSE transports.
     SQLite journal for crash-safe resume. Optional session git worktrees so the primary tree stays clean.
   </p>
 
@@ -191,15 +191,15 @@
     <div class="row model">
       <div class="card brand">
         <div class="label">Sole live path</div>
-        <div class="title">LiteLLM worker · Python SDK (not Proxy)</div>
+        <div class="title">Native Rust model client</div>
         <div class="desc">
-          Forge spawns a worker over stdio JSON-RPC. One client covers OpenAI, Anthropic, xAI, and the long tail via LiteLLM model strings.
-          No separate native multi-provider HTTP stack. Connect profiles still use this path.
+          Direct HTTP/SSE transports cover OpenAI, Anthropic, xAI, OpenCode, Ollama, and OpenAI Codex subscriptions.
+          Connect profiles inject credentials into the same native client.
         </div>
         <div class="chips">
-          <span class="chip teal">workers/forge-litellm-worker</span>
+          <span class="chip teal">crates/forge-model/src/native</span>
           <span class="chip teal">FORGE_MODEL_ID</span>
-          <span class="chip teal">stdio JSON-RPC</span>
+          <span class="chip teal">HTTP · SSE</span>
         </div>
       </div>
     </div>
@@ -221,7 +221,7 @@
       <div class="card">
         <div class="label muted">LLM providers</div>
         <div class="title">Cloud / local</div>
-        <div class="desc">Via LiteLLM model ids only</div>
+        <div class="desc">Via native provider/model ids</div>
       </div>
       <div class="card">
         <div class="label muted">Secrets</div>

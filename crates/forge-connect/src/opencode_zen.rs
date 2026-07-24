@@ -2,7 +2,7 @@
 //!
 //! OpenCode Zen is OpenAI-compatible at `https://opencode.ai/zen/v1` (pay-per-use catalog).
 //! The same account API key works for Zen and Go; bases differ.
-//! LiteLLM model strings: `opencode-zen/<id>` → worker rewrites to `openai/<id>` + Zen base.
+//! Native routing maps `opencode-zen/<id>` to the Zen OpenAI-compatible endpoint.
 
 use crate::auth::AuthMode;
 use crate::profile::ConnectProfile;
@@ -33,7 +33,7 @@ pub fn opencode_zen_profile() -> ConnectProfile {
         // Fallbacks until live catalog refresh; /model pulls full Zen list after connect.
         default_models: vec!["opencode-zen/gpt-4.1-mini".into()],
         auth_url: Some("https://opencode.ai/auth".into()),
-        litellm_provider_prefix: "opencode-zen".into(),
+        model_provider_prefix: "opencode-zen".into(),
     }
 }
 
