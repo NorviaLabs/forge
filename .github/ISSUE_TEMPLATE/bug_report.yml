@@ -1,0 +1,60 @@
+name: Alpha bug report
+description: Report a crash, incorrect behavior, or failed agent task
+title: "[Bug]: "
+labels: [bug, alpha]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for testing Forge. Remove API keys, OAuth tokens, prompts, and proprietary code from logs before submitting.
+  - type: input
+    id: version
+    attributes:
+      label: Forge version
+      description: Output from `forge --version`.
+      placeholder: forge 0.1.0
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - macOS Apple Silicon
+        - macOS Intel
+        - Linux x86_64
+        - Other / source build
+    validations:
+      required: true
+  - type: input
+    id: provider
+    attributes:
+      label: Provider and model
+      placeholder: anthropic / claude-sonnet-4
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include the command or UI actions and a minimal test repository when possible.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and sanitized logs
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Sensitive information
+      options:
+        - label: I removed credentials and proprietary information from this report.
+          required: true

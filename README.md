@@ -3,7 +3,10 @@
 **Let the agent work hard — without wrecking your branch.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/rust-1.86%2B-orange.svg)](https://www.rust-lang.org/)
+[![CI](https://github.com/NorviaLabs/forge/actions/workflows/ci.yml/badge.svg)](https://github.com/NorviaLabs/forge/actions/workflows/ci.yml)
+
+> **Alpha:** Expect bugs and breaking changes. Test in a disposable repository with committed or backed-up work, and read the [alpha testing guide](docs/alpha-testing.md) first.
 
 ---
 
@@ -68,13 +71,42 @@ forge --resume <session-id>
 
 ## Install
 
-**Need:** Rust 1.80+.
+Download the archive for your platform from [GitHub Releases](https://github.com/NorviaLabs/forge/releases).
+
+| Platform | Architecture | Artifact target |
+|----------|--------------|-----------------|
+| macOS | Apple Silicon | `aarch64-apple-darwin` |
+| macOS | Intel | `x86_64-apple-darwin` |
+| Linux | x86_64 (glibc) | `x86_64-unknown-linux-gnu` |
+
+```bash
+tar -xzf forge-v0.1.0-alpha.1-<target>.tar.gz
+mkdir -p ~/.local/bin
+install -m 755 forge-v0.1.0-alpha.1-<target>/forge ~/.local/bin/forge
+forge --version
+```
+
+Replace the example version and `<target>` with the downloaded release. Ensure `~/.local/bin` is on `PATH`. Each release includes `SHA256SUMS` for archive verification.
+
+Alpha binaries are not yet code-signed or notarized. macOS may require you to approve Forge in **System Settings → Privacy & Security** after the first launch. Windows and Linux architectures other than x86_64 are not yet included.
+
+To build from source, install Rust 1.86 or newer and Git:
 
 ```bash
 git clone https://github.com/NorviaLabs/forge.git
 cd forge
-cargo build --release -p forge-cli
+cargo build --release --locked --package forge-cli
 export PATH="$PWD/target/release:$PATH"
+```
+
+For a first test, connect a provider and start Forge in a disposable Git repository with worktree isolation:
+
+```bash
+forge connect list
+export ANTHROPIC_API_KEY="your-key"
+forge connect anthropic
+cd /path/to/disposable-repository
+forge --worktree
 ```
 
 ---
@@ -122,11 +154,19 @@ forge
 # then: /connect  →  pick xAI Grok  →  complete OAuth
 ```
 
-Keys and tokens: `~/.config/forge/credentials.toml` (mode `0600`). Never commit them.
+Keys and tokens are stored in `forge/credentials.toml` under your operating system's user config directory with mode `0600` on Unix. For example, this is normally `~/.config/forge/credentials.toml` on Linux and `~/Library/Application Support/forge/credentials.toml` on macOS. Never commit them.
 
 ```bash
 forge status
 ```
+
+## Alpha safety and data
+
+- Commit or stash existing work and use a disposable repository. `--worktree` reduces accidental branch edits but is not a security boundary.
+- Repository-local sessions, context, progress, and worktrees are stored under `.forge/`.
+- Prompts and selected repository context are sent to your chosen model provider, whose privacy and retention policies apply.
+- Forge sends no separate product telemetry. Model providers and explicitly configured observability exporters can still receive network requests.
+- Reset, uninstall, testing, and feedback instructions are in the [alpha testing guide](docs/alpha-testing.md).
 
 ---
 
@@ -310,6 +350,20 @@ Optional. Defaults + env + flags are enough (see [Auth setup](#auth-setup)).
 **Flags:** `--config` · `--workspace` · `--model` · `--worktree` · `--resume` · `--max-turns`
 
 **CLI:** `forge` (TUI) · `run` · `status` · `connect`
+
+---
+
+## Maintainer alpha release
+
+GitHub Actions builds alpha binaries for the supported platforms. To publish an alpha:
+
+1. Ensure CI passes on `main` and update the workspace version if needed.
+2. Create an annotated tag matching `v<version>-alpha.<number>`: `git tag -a v0.1.0-alpha.1 -m "Forge 0.1.0 alpha 1"`.
+3. Push it: `git push origin v0.1.0-alpha.1`.
+4. The [Alpha Release workflow](.github/workflows/release.yml) builds archives, generates `SHA256SUMS`, and publishes a GitHub prerelease with generated notes.
+5. Download one archive, verify its checksum and `forge --version`, then complete a provider connection and small task in a disposable repository.
+
+Only tags matching `v*-alpha.*` trigger this workflow, and releases are always marked as prereleases.
 
 ---
 
