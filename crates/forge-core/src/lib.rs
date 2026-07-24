@@ -66,7 +66,7 @@ pub struct LoopConfig {
 impl Default for LoopConfig {
     fn default() -> Self {
         Self {
-            max_turns: 16,
+            max_turns: 128,
             workspace: PathBuf::from("."),
             journal_dir: PathBuf::from(".forge/sessions"),
             isolation: IsolationMode::Off,

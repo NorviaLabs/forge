@@ -44,7 +44,7 @@ struct Cli {
     #[arg(long, global = true)]
     resume: Option<Uuid>,
     /// Max agent turns per run/TUI session
-    #[arg(long, default_value_t = 32)]
+    #[arg(long, default_value_t = 128)]
     max_turns: u32,
     #[command(subcommand)]
     command: Option<Commands>,
