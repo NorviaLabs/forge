@@ -28,7 +28,7 @@ impl ReasoningEffort {
     }
 
     /// Empty means providers should choose their own default.
-    pub fn worker_value(self) -> &'static str {
+    pub fn transport_value(self) -> &'static str {
         match self {
             Self::Auto => "",
             Self::Minimal => "minimal",
@@ -81,6 +81,6 @@ mod tests {
         assert_eq!("light".parse(), Ok(ReasoningEffort::Low));
         assert_eq!("extra-high".parse(), Ok(ReasoningEffort::XHigh));
         assert_eq!(ReasoningEffort::XHigh.to_string(), "xhigh");
-        assert_eq!(ReasoningEffort::Auto.worker_value(), "");
+        assert_eq!(ReasoningEffort::Auto.transport_value(), "");
     }
 }

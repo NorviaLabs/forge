@@ -360,7 +360,7 @@ impl TuiApp {
                 svc.connected_profiles().unwrap_or_default()
             };
             for p in profiles {
-                if let Ok(pairs) = svc.worker_env_for_profile(&p.id) {
+                if let Ok(pairs) = svc.provider_env_for_profile(&p.id) {
                     env_keys.extend(pairs.into_iter().map(|(k, _)| k));
                 }
             }
@@ -500,7 +500,7 @@ impl TuiApp {
         }
     }
 
-    /// Reload credentials from disk: silent OAuth refresh, inject worker env, activate profile.
+    /// Reload credentials from disk: silent OAuth refresh, inject auth, activate profile.
     /// So a successful `/connect` continues to work in later Forge sessions.
     fn restore_saved_auth(mut self) -> Self {
         let svc = ConnectService {
@@ -523,7 +523,7 @@ impl TuiApp {
                 self.reasoning_effort = effort;
                 self.session.apply_provider_env(&[(
                     "FORGE_REASONING_EFFORT".into(),
-                    effort.worker_value().into(),
+                    effort.transport_value().into(),
                 )]);
             }
         }
@@ -535,9 +535,9 @@ impl TuiApp {
             .or_else(|| connected.first())
             .cloned();
         if let Some(profile) = chosen {
-            // Refresh + export env (worker inherits XAI_API_KEY etc.)
+            // Refresh and inject provider credentials.
             let _ = svc.ensure_oauth_fresh(&profile.id);
-            if let Ok(pairs) = svc.worker_env_for_profile(&profile.id) {
+            if let Ok(pairs) = svc.provider_env_for_profile(&profile.id) {
                 for (k, v) in &pairs {
                     std::env::set_var(k, v);
                 }
@@ -556,9 +556,9 @@ impl TuiApp {
                     .filter(|model| {
                         let prefix = Self::model_prefix(model);
                         let pid = profile.id.as_str();
-                        let litellm = profile.litellm_provider_prefix.as_str();
+                        let provider_prefix = profile.model_provider_prefix.as_str();
                         prefix == pid
-                            || prefix == litellm
+                            || prefix == provider_prefix
                             || (prefix == "openai" && pid == "openai_codex")
                             || (prefix == "openai-codex" && pid == "openai_codex")
                             || (prefix == "opencode-go" && pid == "opencode_go")
@@ -567,7 +567,7 @@ impl TuiApp {
                     });
                 if let Some(model) = saved_model.or_else(|| profile.default_model()) {
                     self.runtime.model_label = model.to_string();
-                    self.runtime.provider = "litellm".into();
+                    self.runtime.provider = "native".into();
                     self.session.set_active_model(model);
                 }
             } else if self.session.active_model.is_empty() {
@@ -838,7 +838,7 @@ impl TuiApp {
             Ok(msg) => {
                 if let Some(m) = model {
                     self.runtime.model_label = m.clone();
-                    self.runtime.provider = "litellm".into();
+                    self.runtime.provider = "native".into();
                     self.auth_suspended = false;
                     self.session.set_active_model(m);
                 }
@@ -890,11 +890,11 @@ impl TuiApp {
         }
     }
 
-    /// After a successful connect: update model, inject worker credentials, clear OAuth UI.
+    /// After a successful connect: update model, inject credentials, clear OAuth UI.
     fn on_connect_success(&mut self, out: &forge_connect::ConnectOutcome) {
         self.connect_profile = Some(out.profile_id.clone());
         self.runtime.model_label = out.model.clone();
-        self.runtime.provider = "litellm".into();
+        self.runtime.provider = "native".into();
         self.auth_suspended = false;
         self.session.set_active_model(out.model.clone());
         self.apply_connect_credentials(&out.profile_id);
@@ -904,7 +904,7 @@ impl TuiApp {
         self.open_model_picker_after_connect(&out.profile_id);
     }
 
-    /// Export stored OAuth / API key material into the model worker env (and process env).
+    /// Export stored OAuth / API key material into the native model client.
     fn apply_connect_credentials(&mut self, profile_id: &str) {
         let svc = ConnectService {
             registry: &self.connect_registry,
@@ -912,10 +912,10 @@ impl TuiApp {
             active_profile_id: self.connect_profile.clone(),
             active_model: Some(self.runtime.model_label.clone()),
         };
-        match svc.worker_env_for_profile(profile_id) {
+        match svc.provider_env_for_profile(profile_id) {
             Ok(pairs) if !pairs.is_empty() => {
                 for (k, v) in &pairs {
-                    // Child workers inherit process env; also push into LiteLLM client.
+                    // Keep process env and the active native client in sync.
                     std::env::set_var(k, v);
                 }
                 self.session.apply_provider_env(&pairs);
@@ -1012,7 +1012,7 @@ impl TuiApp {
             Ok(msg) => {
                 if let Some(m) = model {
                     self.runtime.model_label = m.clone();
-                    self.runtime.provider = "litellm".into();
+                    self.runtime.provider = "native".into();
                     self.auth_suspended = false;
                     self.session.set_active_model(m);
                 }
@@ -1039,14 +1039,14 @@ impl TuiApp {
         }
     }
 
-    /// Apply a LiteLLM model id to this session (no restart required).
+    /// Apply a provider/model id to this session (no restart required).
     fn apply_model_selection(&mut self, provider: &str, model: &str) {
         let model = model.trim();
         if model.is_empty() {
             return;
         }
         self.runtime.provider = if provider.trim().is_empty() {
-            "litellm".into()
+            "native".into()
         } else {
             provider.to_string()
         };
@@ -1064,7 +1064,7 @@ impl TuiApp {
         };
         if let Ok(connected) = svc.connected_profiles() {
             if let Some(profile) = connected.iter().find(|p| {
-                p.litellm_provider_prefix == prefix
+                p.model_provider_prefix == prefix
                     || p.id == prefix
                     || (prefix == "opencode-go" && p.id == "opencode_go")
                     || (prefix == "opencode-zen" && p.id == "opencode_zen")
@@ -1104,9 +1104,9 @@ impl TuiApp {
         let connected = svc.connected_profiles().ok()?;
         connected.iter().find_map(|profile| {
             let pid = profile.id.as_str();
-            let litellm = profile.litellm_provider_prefix.as_str();
+            let provider_prefix = profile.model_provider_prefix.as_str();
             let matches = prefix == pid
-                || prefix == litellm
+                || prefix == provider_prefix
                 || (prefix == "openai" && pid == "openai_codex")
                 || (prefix == "openai-codex" && pid == "openai_codex")
                 || (prefix == "opencode-go" && pid == "opencode_go")
@@ -1177,7 +1177,7 @@ impl TuiApp {
             );
             self.notices = vec![
                 "Connect a provider, then run /model refresh.".into(),
-                "Fallbacks: /model openai/gpt-4.1-mini (free-form LiteLLM id).".into(),
+                "Fallbacks: /model openai/gpt-4.1-mini (provider/model id).".into(),
             ];
             return;
         }
@@ -2515,13 +2515,13 @@ Reply with ONLY the commit message line.\n\n\
         let connected_prefix = self.connect_profile.as_deref().and_then(|id| {
             self.connect_registry
                 .get(id)
-                .map(|profile| profile.litellm_provider_prefix.as_str())
+                .map(|profile| profile.model_provider_prefix.as_str())
         });
         let model_id = normalize_model_id(provider.unwrap_or(""), model, connected_prefix);
         if model_id.trim().is_empty() {
             self.set_feedback(
                 FeedbackSeverity::Warn,
-                "usage: /model <litellm-id> | /model refresh",
+                "usage: /model <provider/model> | /model refresh",
             );
             return;
         }
@@ -2538,7 +2538,7 @@ Reply with ONLY the commit message line.\n\n\
             ];
             return;
         } else {
-            self.apply_model_selection("litellm", &model_id);
+            self.apply_model_selection("native", &model_id);
         }
     }
 
@@ -2556,8 +2556,10 @@ Reply with ONLY the commit message line.\n\n\
         };
 
         self.reasoning_effort = level;
-        self.session
-            .apply_provider_env(&[("FORGE_REASONING_EFFORT".into(), level.worker_value().into())]);
+        self.session.apply_provider_env(&[(
+            "FORGE_REASONING_EFFORT".into(),
+            level.transport_value().into(),
+        )]);
         self.persist_selection();
         self.set_feedback(FeedbackSeverity::Ok, format!("reasoning effort: {level}"));
         self.status_message = format!("reasoning effort set to {level}");
@@ -3598,7 +3600,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn model_command_applies_litellm_id_to_session() {
+    async fn model_command_applies_provider_id_to_session() {
         let (_dir, session) = test_session().await;
         let cred_dir = tempfile::tempdir().unwrap();
         let mut app = TuiApp::new(
@@ -3617,7 +3619,7 @@ mod tests {
         app.connect_profile = Some("openai".into());
         app.runtime.model_label = "openai/gpt-4.1-mini".into();
         app.session.set_active_model("openai/gpt-4.1-mini");
-        app.apply_model_selection("litellm", "openai/gpt-4.1-mini");
+        app.apply_model_selection("native", "openai/gpt-4.1-mini");
         assert_eq!(app.runtime.model_label, "openai/gpt-4.1-mini");
         assert_eq!(app.session.active_model, "openai/gpt-4.1-mini");
         assert!(app.pending_prompt.is_none());
@@ -3631,7 +3633,7 @@ mod tests {
             session,
             TuiRuntimeConfig {
                 model_label: "openai-codex/gpt-5.6-sol".into(),
-                provider: "litellm".into(),
+                provider: "native".into(),
                 cwd: PathBuf::from("."),
                 version: "0.12.0".into(),
             },
@@ -3852,7 +3854,7 @@ mod tests {
             session,
             TuiRuntimeConfig {
                 model_label: "m".into(),
-                provider: "litellm".into(),
+                provider: "native".into(),
                 cwd: PathBuf::from("."),
                 version: "0.6.1".into(),
             },
@@ -3877,7 +3879,7 @@ mod tests {
             session,
             TuiRuntimeConfig {
                 model_label: "openai/gpt-4.1-mini".into(),
-                provider: "litellm".into(),
+                provider: "native".into(),
                 cwd: PathBuf::from("."),
                 version: "0.6.1".into(),
             },
@@ -3911,7 +3913,7 @@ mod tests {
             session,
             TuiRuntimeConfig {
                 model_label: "openai/gpt-4.1-mini".into(),
-                provider: "litellm".into(),
+                provider: "native".into(),
                 cwd: PathBuf::from("."),
                 version: "0.6.1".into(),
             },
@@ -3941,7 +3943,7 @@ mod tests {
             session,
             TuiRuntimeConfig {
                 model_label: "openai/gpt-4.1-mini".into(),
-                provider: "litellm".into(),
+                provider: "native".into(),
                 cwd: PathBuf::from("."),
                 version: "0.6.1".into(),
             },
@@ -3978,7 +3980,7 @@ mod tests {
             session,
             TuiRuntimeConfig {
                 model_label: "openai/gpt-4.1-mini".into(),
-                provider: "litellm".into(),
+                provider: "native".into(),
                 cwd: PathBuf::from("."),
                 version: "0.6.1".into(),
             },
@@ -3992,7 +3994,7 @@ mod tests {
             .unwrap();
         app.connect_profile = Some("openai".into());
 
-        app.apply_model_selection("litellm", "anthropic/claude-sonnet-4-5");
+        app.apply_model_selection("native", "anthropic/claude-sonnet-4-5");
 
         assert_eq!(app.connect_profile.as_deref(), Some("anthropic"));
         assert_eq!(app.runtime.model_label, "anthropic/claude-sonnet-4-5");
@@ -4006,7 +4008,7 @@ mod tests {
             session,
             TuiRuntimeConfig {
                 model_label: "openai/gpt-4.1-mini".into(),
-                provider: "litellm".into(),
+                provider: "native".into(),
                 cwd: PathBuf::from("."),
                 version: "0.6.1".into(),
             },
@@ -4051,7 +4053,7 @@ mod tests {
             session,
             TuiRuntimeConfig {
                 model_label: "m".into(),
-                provider: "litellm".into(),
+                provider: "native".into(),
                 cwd: PathBuf::from("."),
                 version: "0.6.1".into(),
             },
@@ -4482,7 +4484,7 @@ mod tests {
             session,
             TuiRuntimeConfig {
                 model_label: "openai/gpt-4.1-mini".into(),
-                provider: "litellm".into(),
+                provider: "native".into(),
                 cwd: PathBuf::from("."),
                 version: "0.11.0".into(),
             },
@@ -4549,7 +4551,7 @@ mod tests {
             session,
             TuiRuntimeConfig {
                 model_label: "openai/gpt-test".into(),
-                provider: "litellm".into(),
+                provider: "native".into(),
                 cwd: PathBuf::from("."),
                 version: "0.11.0".into(),
             },
@@ -4588,13 +4590,13 @@ mod tests {
             session,
             TuiRuntimeConfig {
                 model_label: "openai/gpt-test".into(),
-                provider: "litellm".into(),
+                provider: "native".into(),
                 cwd: PathBuf::from("."),
                 version: "0.10.0".into(),
             },
         );
         let chrome = app.refresh_status_model();
-        assert_eq!(chrome.provider, "litellm");
+        assert_eq!(chrome.provider, "native");
         assert!(chrome.model.contains("gpt-test"));
         let backend = TestBackend::new(120, 30);
         let mut term = Terminal::new(backend).unwrap();
@@ -4608,7 +4610,7 @@ mod tests {
             text.push('\n');
         }
         assert!(
-            text.contains("litellm") && (text.contains("gpt") || text.contains("openai")),
+            text.contains("native") && (text.contains("gpt") || text.contains("openai")),
             "chrome missing provider/model:\n{text}"
         );
     }

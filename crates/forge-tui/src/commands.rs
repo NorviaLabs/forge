@@ -21,7 +21,7 @@ pub enum SlashCommand {
     Resume {
         session_id: Uuid,
     },
-    /// Switch model. `id` is a LiteLLM string (`openai/gpt-4.1`) or prefix+name.
+    /// Switch model. `id` is a provider/model string (`openai/gpt-4.1`) or prefix+name.
     /// `refresh` re-fetches remote catalogs for connected providers.
     Model {
         /// Full model id or provider prefix (when `model` is set).

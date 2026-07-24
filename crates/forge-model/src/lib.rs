@@ -1,16 +1,14 @@
-//! Model providers — Phase 5 LiteLLM SDK worker; mock for CI.
+//! Model providers — native Rust transports; mock for CI.
 
-mod litellm_client;
 mod mock;
+mod native;
 mod normalize;
-mod wire;
 
-pub use litellm_client::LiteLlmModelClient;
 pub use mock::MockModelClient;
+pub use native::NativeModelClient;
 pub use normalize::{
     complete_result_from_value, forge_messages_to_wire, tools_to_openai_functions,
 };
-pub use wire::{error_codes, CompleteParams, WireEnvelope, WireErrorBody, WireType, WIRE_VERSION};
 
 use async_trait::async_trait;
 use forge_config::{Config, ModelProviderKind};
@@ -26,14 +24,12 @@ pub enum ModelError {
     Http(String),
     #[error("provider error: {0}")]
     Provider(String),
-    #[error("missing API key (set provider env keys for LiteLLM or model.api_key)")]
+    #[error("missing API key (connect the provider, set its API key env var, or model.api_key)")]
     MissingApiKey,
     #[error("transport: {0}")]
     Transport(String),
     #[error("protocol: {0}")]
     Protocol(String),
-    #[error("worker: {0}")]
-    Worker(String),
     #[error("{0}")]
     Other(String),
 }
@@ -75,16 +71,16 @@ pub trait ModelClient: Send + Sync {
         Ok(resp)
     }
 
-    /// Inject provider credentials into the transport (e.g. OAuth → `XAI_API_KEY` for LiteLLM).
+    /// Inject provider credentials into the active transport.
     /// Default: no-op (mock).
     fn apply_provider_env(&self, _pairs: &[(String, String)]) {}
 
-    /// Clear provider credentials from the transport and recycle any long-lived worker.
+    /// Clear provider credentials from the transport.
     /// Default: no-op (mock).
     fn clear_provider_env(&self) {}
 }
 
-/// Phase 5: mock or LiteLLM worker only (native HTTP adapters removed).
+/// Build the native production client or the offline mock.
 pub fn client_from_config(cfg: &Config) -> Result<Box<dyn ModelClient>, ModelError> {
     match cfg.model.provider {
         ModelProviderKind::Mock => Ok(Box::new(MockModelClient::script(vec![ModelResponse {
@@ -93,8 +89,8 @@ pub fn client_from_config(cfg: &Config) -> Result<Box<dyn ModelClient>, ModelErr
             usage: None,
             thinking: None,
         }]))),
-        ModelProviderKind::Litellm => {
-            let client = LiteLlmModelClient::from_config(cfg)?;
+        ModelProviderKind::Native => {
+            let client = NativeModelClient::from_config(cfg)?;
             Ok(Box::new(client))
         }
     }

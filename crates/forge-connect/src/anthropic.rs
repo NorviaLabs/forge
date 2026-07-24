@@ -1,4 +1,4 @@
-//! Anthropic connect profile — API key (LiteLLM `anthropic/*`).
+//! Anthropic connect profile — API key (`anthropic/*`).
 
 use crate::auth::AuthMode;
 use crate::profile::ConnectProfile;
@@ -10,7 +10,7 @@ pub fn anthropic_profile() -> ConnectProfile {
     ConnectProfile {
         id: PROFILE_ID.into(),
         title: "Anthropic".into(),
-        description: "Anthropic API key — LiteLLM anthropic/* (Claude) models".into(),
+        description: "Anthropic API key — anthropic/* (Claude) models".into(),
         auth_mode: AuthMode::ApiKey {
             tui_always_prompt: true,
         },
@@ -18,7 +18,7 @@ pub fn anthropic_profile() -> ConnectProfile {
         default_base_url: Some(DEFAULT_BASE_URL.into()),
         default_models: vec!["anthropic/claude-sonnet-4-20250514".into()],
         auth_url: Some("https://console.anthropic.com/settings/keys".into()),
-        litellm_provider_prefix: "anthropic".into(),
+        model_provider_prefix: "anthropic".into(),
     }
 }
 

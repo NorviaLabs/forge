@@ -1,14 +1,14 @@
 # Model providers design
 
-**Status:** Superseded (production)  
+**Status:** Shipped (product)
 **Owner:** Mohit Ranka  
-**Last updated:** 23 Jul 2026  
-**Phase:** **1** (historical)  
-**PRD:** Multi-provider portability (historical)  
+**Last updated:** 24 Jul 2026
+**Phase:** **1 / native runtime**
+**PRD:** Multi-provider portability
 **Architecture:** §4.3, decision #11 / #18  
-**Related:** [litellm-providers.md](./litellm-providers.md) (current), [agent-loop.md](./agent-loop.md)  
+**Related:** [agent-loop.md](./agent-loop.md), [connect-command.md](./connect-command.md)
 
-**Do not implement native OpenAI/Anthropic/xAI HTTP adapters.** Production uses LiteLLM only ([litellm-providers.md](./litellm-providers.md)). This file is retained only for the historical `ModelClient` / stream-envelope contract that LiteLLM still satisfies.
+Production uses one native Rust `ModelClient`. Provider/model prefixes route to OpenAI-compatible, Anthropic Messages, or OpenAI Codex Responses transports. No Python process or external model gateway is required.
 
 ---
 
@@ -22,7 +22,7 @@ Providers differ in APIs, streaming shapes, and tool-call encodings. The harness
 
 - Unified `ModelClient` abstraction; switch via **config only**.  
 - Normalized stream events for core and surfaces.  
-- Phase 1 adapters: OpenAI-compatible, Anthropic, xAI.  
+- Native adapters: OpenAI-compatible, Anthropic, xAI, OpenCode, Ollama, and Codex subscription.
 - Credentials never appear in prompts, journal model-visible fields, or default OTEL attributes.
 
 **Non-goals**
@@ -118,7 +118,7 @@ Adapters map vendor SSE/JSON streams → this envelope.
 |------|-------|
 | This entire document (native adapters + early matrix) | **1** |
 | Exit (Phase 1) | Config switch among OpenAI-compatible, Anthropic, xAI without code changes |
-| Production path after Phase 5 | **LiteLLM only** — natives deleted; see [litellm-providers.md](./litellm-providers.md) |
+| Production path | **Native Rust only** — direct HTTP/SSE transports |
 | Vault-backed secrets | [governance.md](./governance.md) Phase 2 (Phase 1 uses env) |
 
 ## 7. Open questions

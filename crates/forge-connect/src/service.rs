@@ -522,7 +522,7 @@ impl<'a> ConnectService<'a> {
         }
     }
 
-    pub fn worker_env_for_profile(
+    pub fn provider_env_for_profile(
         &self,
         profile_id: &str,
     ) -> Result<Vec<(String, String)>, ConnectError> {
@@ -546,7 +546,7 @@ impl<'a> ConnectService<'a> {
                         out.push((crate::openai_codex::ACCESS_TOKEN_ENV.into(), at.to_string()));
                         out.push((crate::openai_codex::ACCOUNT_ID_ENV.into(), account_id));
                     } else {
-                        // LiteLLM xAI provider reads XAI_API_KEY as Bearer.
+                        // Native xAI transport uses the OAuth token as Bearer auth.
                         out.push(("XAI_API_KEY".into(), at.to_string()));
                     }
                 }
@@ -561,7 +561,7 @@ impl<'a> ConnectService<'a> {
                     for name in profile.api_key_env.iter().skip(1) {
                         out.push((name.clone(), key.clone()));
                     }
-                    // Provider-specific base URLs for LiteLLM / OpenAI-compatible routes.
+                    // Provider-specific base URLs for native HTTP routes.
                     if let Some(base) =
                         profile
                             .default_base_url
@@ -644,7 +644,7 @@ impl<'a> ConnectService<'a> {
             .into_iter()
             .next()
             .or_else(|| profile.default_model().map(str::to_string))
-            .unwrap_or_else(|| format!("{}/default", profile.litellm_provider_prefix));
+            .unwrap_or_else(|| format!("{}/default", profile.model_provider_prefix));
         self.active_profile_id = Some(profile.id.clone());
         self.active_model = Some(model.clone());
         // Selection persistence is convenience metadata; never make a successful
@@ -758,7 +758,7 @@ mod tests {
             default_base_url: None,
             default_models: vec!["demo/model-1".into()],
             auth_url: Some("https://example.com".into()),
-            litellm_provider_prefix: "demo".into(),
+            model_provider_prefix: "demo".into(),
         });
         r
     }
@@ -774,7 +774,7 @@ mod tests {
             default_base_url: None,
             default_models: vec!["xai/grok-3".into()],
             auth_url: Some("https://auth.x.ai".into()),
-            litellm_provider_prefix: "xai".into(),
+            model_provider_prefix: "xai".into(),
         });
         r
     }
@@ -896,7 +896,7 @@ mod tests {
                 default_base_url: None,
                 default_models: vec!["m".into()],
                 auth_url: None,
-                litellm_provider_prefix: "o".into(),
+                model_provider_prefix: "o".into(),
             });
             r.register(ConnectProfile {
                 id: "xai".into(),
@@ -907,7 +907,7 @@ mod tests {
                 default_base_url: None,
                 default_models: vec!["xai/m".into()],
                 auth_url: None,
-                litellm_provider_prefix: "xai".into(),
+                model_provider_prefix: "xai".into(),
             });
             r
         };

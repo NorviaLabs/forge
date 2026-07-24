@@ -34,7 +34,7 @@ struct Cli {
     /// Workspace root (default: cwd)
     #[arg(long, global = true)]
     workspace: Option<PathBuf>,
-    /// Model id (LiteLLM string), e.g. openai/gpt-4.1-mini
+    /// Model id, e.g. openai/gpt-4.1-mini
     #[arg(long, global = true)]
     model: Option<String>,
     /// Git worktree isolation for file edits
@@ -216,7 +216,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     }
 }
 
-/// Load OAuth / API keys from the connect store into the process env (for LiteLLM worker).
+/// Load OAuth / API keys from the connect store into the native model client environment.
 fn inject_connect_credentials_into_env() {
     let reg = builtin_registry();
     let store = CredentialStore::user_default();
@@ -227,7 +227,7 @@ fn inject_connect_credentials_into_env() {
         active_model: None,
     };
     for p in reg.profiles() {
-        if let Ok(pairs) = svc.worker_env_for_profile(&p.id) {
+        if let Ok(pairs) = svc.provider_env_for_profile(&p.id) {
             for (k, v) in pairs {
                 if std::env::var(&k).ok().filter(|s| !s.is_empty()).is_none() {
                     std::env::set_var(k, v);
@@ -269,7 +269,7 @@ async fn open_session(
     resume: Option<Uuid>,
     worktree: bool,
 ) -> anyhow::Result<AgentSession> {
-    // Inject any stored connect credentials so the LiteLLM worker inherits them.
+    // Inject stored connect credentials before constructing the native model client.
     inject_connect_credentials_into_env();
 
     let model: Arc<dyn ModelClient> =
