@@ -325,7 +325,9 @@ fn codex_effort(client: &NativeModelClient) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use forge_types::{SideEffectClass, ToolDescriptor};
+    use crate::ModelClient;
+    use forge_config::Config;
+    use forge_types::{Message, MessageRole, ModelStreamEvent, SideEffectClass, ToolDescriptor};
 
     fn request_with_tool(name: &str) -> ModelRequest {
         ModelRequest {
@@ -373,5 +375,99 @@ mod tests {
         )
         .unwrap();
         assert_eq!(calls[0].name, "mcp.server/read_file");
+    }
+
+    #[test]
+    fn builds_codex_request_from_full_conversation() {
+        let mut request = request_with_tool("read_file");
+        request.messages = vec![
+            Message::new(MessageRole::System, "system prompt"),
+            Message::new(MessageRole::User, "hello"),
+            Message {
+                role: MessageRole::Assistant,
+                content: "working".into(),
+                tool_call_id: None,
+                name: None,
+                thinking: None,
+                thinking_duration_secs: None,
+                tool_calls: vec![ToolCall {
+                    id: "c1".into(),
+                    name: "read_file".into(),
+                    arguments: json!({"path":"README.md"}),
+                }],
+            },
+            Message {
+                role: MessageRole::Tool,
+                content: "contents".into(),
+                tool_call_id: Some("c1".into()),
+                name: Some("read_file".into()),
+                thinking: None,
+                thinking_duration_secs: None,
+                tool_calls: vec![],
+            },
+        ];
+        let client = NativeModelClient::from_config(&Config::default()).unwrap();
+        client.apply_provider_env(&[("FORGE_REASONING_EFFORT".into(), "max".into())]);
+        let aliases = tool_aliases(&request);
+
+        let body = request_body(&client, &request, &request.model, &aliases);
+
+        assert_eq!(body["model"], "gpt-test");
+        assert_eq!(body["instructions"], "system prompt");
+        assert_eq!(body["reasoning"]["effort"], "xhigh");
+        assert!(body["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["type"] == "function_call_output"));
+        assert_eq!(body["tools"][0]["name"], "read_file");
+    }
+
+    #[test]
+    fn consumes_text_thinking_usage_raw_tools_and_errors() {
+        let reverse = BTreeMap::new();
+        let mut text = String::new();
+        let mut thinking = String::new();
+        let mut calls = Vec::new();
+        let mut usage = None;
+        let (tx, rx) = std::sync::mpsc::channel();
+        for event in [
+            json!({"type":"response.output_text.delta","delta":"hello"}),
+            json!({"type":"response.reasoning_text.delta","delta":"think"}),
+            json!({"type":"response.output_item.done","item":{"type":"function_call","id":"i1","name":"raw_tool","arguments":"not-json"}}),
+            json!({"type":"response.completed","response":{"usage":{"input_tokens":2,"output_tokens":3}}}),
+        ] {
+            consume_event(
+                &event,
+                &reverse,
+                &mut text,
+                &mut thinking,
+                &mut calls,
+                &mut usage,
+                Some(&tx),
+            )
+            .unwrap();
+        }
+        assert_eq!(text, "hello");
+        assert_eq!(thinking, "think");
+        assert_eq!(calls[0].id, "i1");
+        assert_eq!(calls[0].arguments["_raw"], "not-json");
+        assert_eq!(usage.unwrap().completion_tokens, 3);
+        let events: Vec<_> = rx.try_iter().collect();
+        assert!(matches!(events[0], ModelStreamEvent::TextDelta { .. }));
+        assert!(matches!(events[1], ModelStreamEvent::ThinkingDelta { .. }));
+
+        let mut error_usage = None;
+        let error = consume_event(
+            &json!({"type":"response.failed","error":"bad"}),
+            &reverse,
+            &mut text,
+            &mut thinking,
+            &mut calls,
+            &mut error_usage,
+            None,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("response.failed"));
     }
 }
