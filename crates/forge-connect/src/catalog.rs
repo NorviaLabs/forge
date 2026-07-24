@@ -447,17 +447,19 @@ fn http_get_ollama_names(url: &str, ua: &str) -> Result<Vec<String>, String> {
     let body: serde_json::Value = resp
         .into_json()
         .map_err(|e| format!("ollama tags JSON: {e}"))?;
+    Ok(parse_ollama_model_names(&body))
+}
+
+fn parse_ollama_model_names(body: &serde_json::Value) -> Vec<String> {
     let mut names = Vec::new();
     if let Some(arr) = body.get("models").and_then(|m| m.as_array()) {
         for m in arr {
             if let Some(n) = m.get("name").and_then(|v| v.as_str()) {
-                // Strip :latest for cleaner model ids.
-                let n = n.split(':').next().unwrap_or(n);
                 names.push(n.to_string());
             }
         }
     }
-    Ok(names)
+    names
 }
 
 /// Refresh one profile into the cache. On failure, keep old cache and return Err.
@@ -487,15 +489,16 @@ pub fn models_for_picker(
 
     for p in profiles {
         let mut ids = Vec::new();
-        if refresh_stale && !cache.is_fresh(&p.id) {
+        let is_ollama = p.id == crate::ollama::PROFILE_ID;
+        if refresh_stale && (is_ollama || !cache.is_fresh(&p.id)) {
             if let Ok(m) = refresh_profile_catalog(p, store, cache) {
                 ids = m;
             }
         }
-        if ids.is_empty() {
+        if ids.is_empty() && !(is_ollama && refresh_stale) {
             ids = cache.get_cached(&p.id);
         }
-        if ids.is_empty() {
+        if ids.is_empty() && !is_ollama {
             ids = p.default_models.clone();
         }
         for id in ids {
@@ -608,6 +611,30 @@ mod tests {
             parse_openai_style_model_ids(&value).unwrap(),
             vec!["gpt-5.6-sol", "gpt-5.6-terra"]
         );
+    }
+
+    #[test]
+    fn parse_ollama_names_preserves_installed_tags() {
+        let value = serde_json::json!({
+            "models": [
+                {"name": "qwen2.5-coder:latest"},
+                {"name": "qwen2.5-coder:3b"}
+            ]
+        });
+        assert_eq!(
+            parse_ollama_model_names(&value),
+            vec!["qwen2.5-coder:latest", "qwen2.5-coder:3b"]
+        );
+    }
+
+    #[test]
+    fn picker_does_not_invent_ollama_models() {
+        let dir = tempdir().unwrap();
+        let cache = ModelCatalogCache::new(dir.path().join("c.toml"));
+        let store = CredentialStore::new(dir.path().join("k.toml"));
+        let profile = crate::ollama::ollama_profile();
+        let entries = models_for_picker(&[profile], &store, &cache, false);
+        assert!(entries.is_empty());
     }
 
     #[test]
