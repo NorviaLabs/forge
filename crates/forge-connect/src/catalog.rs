@@ -18,14 +18,14 @@ pub const DEFAULT_TTL_SECS: u64 = 3600;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CatalogEntry {
-    /// LiteLLM-routable model string, e.g. `openai/gpt-4.1-mini`.
+    /// Native provider/model string, e.g. `openai/gpt-4.1-mini`.
     pub id: String,
     pub profile_id: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct CatalogFile {
-    /// profile_id → fetched model ids (LiteLLM form)
+    /// profile_id → fetched provider/model ids
     #[serde(default)]
     models: BTreeMap<String, Vec<String>>,
     /// profile_id → unix secs when last refreshed
@@ -140,7 +140,7 @@ pub fn credential_for_catalog(profile: &ConnectProfile, store: &CredentialStore)
         .map(|(k, _)| k)
 }
 
-/// Fetch remote model ids and rewrite to LiteLLM strings. Network call.
+/// Fetch remote model ids and rewrite to provider/model strings. Network call.
 pub fn fetch_remote_models(
     profile: &ConnectProfile,
     api_key: Option<&str>,
@@ -151,7 +151,7 @@ pub fn fetch_remote_models(
         .unwrap_or("")
         .trim()
         .trim_end_matches('/');
-    let prefix = profile.litellm_provider_prefix.as_str();
+    let prefix = profile.model_provider_prefix.as_str();
     let ua = format!("forge-connect/{}", env!("CARGO_PKG_VERSION"));
 
     match profile.id.as_str() {
@@ -451,7 +451,7 @@ fn http_get_ollama_names(url: &str, ua: &str) -> Result<Vec<String>, String> {
     if let Some(arr) = body.get("models").and_then(|m| m.as_array()) {
         for m in arr {
             if let Some(n) = m.get("name").and_then(|v| v.as_str()) {
-                // strip :latest for cleaner ids; LiteLLM accepts either
+                // Strip :latest for cleaner model ids.
                 let n = n.split(':').next().unwrap_or(n);
                 names.push(n.to_string());
             }
@@ -511,7 +511,7 @@ pub fn models_for_picker(
     out
 }
 
-/// Normalize a `/model` argument into a LiteLLM model string.
+/// Normalize a `/model` argument into a provider/model string.
 ///
 /// Accepts:
 /// - `openai/gpt-4.1-mini`

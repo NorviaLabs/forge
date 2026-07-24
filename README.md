@@ -9,7 +9,7 @@
 
 ## What is Forge
 
-Forge is an open-source **AI coding-agent harness**: application scaffolding around foundation models for real repository work. You provide the model (via LiteLLM); Forge owns the agent loop, tools, durable session state, optional git worktree isolation, and a full-screen terminal UI.
+Forge is an open-source **AI coding-agent harness**: application scaffolding around foundation models for real repository work. You provide the model; Forge owns the native Rust provider transport, agent loop, tools, durable session state, optional git worktree isolation, and a full-screen terminal UI.
 
 **Product surface**
 
@@ -22,10 +22,10 @@ Forge is an open-source **AI coding-agent harness**: application scaffolding aro
 
 **How it fits together**
 
-One agent core serves both interactive and headless use. Live inference goes through a Forge-managed **LiteLLM Python SDK worker** (not the LiteLLM Proxy). Sessions use an append-only **journal** so work can resume after a crash. Tools can run against a **session git worktree** so the primary checkout stays clean until you merge or discard.
+One agent core serves both interactive and headless use. Live inference uses native Rust HTTP/SSE transports for OpenAI, Anthropic, xAI, OpenCode, Ollama, and OpenAI Codex subscriptions. Sessions use an append-only **journal** so work can resume after a crash. Tools can run against a **session git worktree** so the primary checkout stays clean until you merge or discard.
 
 <p align="center">
-  <img src="docs/images/architecture.png" alt="Forge architecture: surfaces, agent session, journal, governance, LiteLLM worker, workspace and tools" width="880" />
+  <img src="docs/images/architecture.png" alt="Forge architecture: surfaces, agent session, journal, governance, model providers, workspace and tools" width="880" />
 </p>
 
 | Layer | Role |
@@ -33,7 +33,7 @@ One agent core serves both interactive and headless use. Live inference goes thr
 | **You** | TUI or headless CLI |
 | **Harness** | Plan–act–observe loop, tools, governance hooks, context lifecycle |
 | **Durability** | SQLite event journal — resume without redoing completed steps |
-| **Models** | LiteLLM worker for production; same tools and journal regardless of vendor |
+| **Models** | Native Rust provider transports; same tools and journal regardless of vendor |
 | **Workspace** | Your repo, optional `.forge/worktrees/<session>/` isolation |
 | **Tools** | `read_file` · `write_file` · `apply_patch` · `bash` · `grep` · **`git`** (allowlisted subcommands) · `web_search` · MCP |
 
@@ -52,7 +52,7 @@ Most coding agents edit **your current checkout** and treat chat history as “m
 | Broad rewrites obscure small edits | **`apply_patch`** validates the full patch, confines paths to the workspace, and applies targeted add/update/delete operations |
 | Agent pollutes your branch | Optional **git worktree isolation** — edits stay in a session worktree until `/worktree merge` or discard |
 | Automation needs a subprocess | **`forge run`** with exit codes (`0` ok · `1` failed · `2` HITL · `3` canceled · `4` config) |
-| Vendor lock-in | Open **MIT** harness; models via **LiteLLM** (config/env switch) |
+| Vendor lock-in | Open **MIT** harness; provider/model selection via config or environment |
 
 **Crash-safe sessions** — Resume the agent, not just the chat:
 
@@ -68,21 +68,20 @@ forge --resume <session-id>
 
 ## Install
 
-**Need:** Rust 1.80+, Python 3 (for live models).
+**Need:** Rust 1.80+.
 
 ```bash
 git clone https://github.com/NorviaLabs/forge.git
 cd forge
 cargo build --release -p forge-cli
 export PATH="$PWD/target/release:$PATH"
-pip install -e workers/forge-litellm-worker
 ```
 
 ---
 
 ## Auth setup
 
-Do this once before the tutorials. Live models use the LiteLLM worker (not the LiteLLM Proxy).
+Do this once before the tutorials. Live models connect directly from Forge's Rust client.
 
 ### Option A — API key + model env (most providers)
 
@@ -91,8 +90,8 @@ export OPENAI_API_KEY=…          # openai/…
 # export ANTHROPIC_API_KEY=…     # anthropic/…
 # export XAI_API_KEY=…           # if using key-based xAI routes
 
-export FORGE_MODEL_PROVIDER=litellm
-export FORGE_MODEL_ID=openai/gpt-4.1-mini   # any LiteLLM model string
+export FORGE_MODEL_PROVIDER=native
+export FORGE_MODEL_ID=openai/gpt-4.1-mini
 ```
 
 Optional project file (not required):
@@ -100,7 +99,7 @@ Optional project file (not required):
 ```toml
 # forge.toml
 [model]
-provider = "litellm"
+provider = "native"
 model = "openai/gpt-4.1-mini"
 ```
 
@@ -252,7 +251,7 @@ forge --resume <uuid> run "Continue from where you left off"
 
 ### Tutorial 5 — Connect a provider profile
 
-**Goal:** Attach credentials for a productized provider on the same LiteLLM path.
+**Goal:** Attach credentials for a productized provider on the native Rust path.
 
 | Profile | Auth | Example |
 |---------|------|---------|
@@ -306,10 +305,10 @@ Optional. Defaults + env + flags are enough (see [Auth setup](#auth-setup)).
 
 | Env | |
 |-----|--|
-| `FORGE_MODEL_ID` | LiteLLM model string |
-| `FORGE_MODEL_PROVIDER` | `litellm` |
+| `FORGE_MODEL_ID` | Provider/model id, e.g. `openai/gpt-4.1-mini` |
+| `FORGE_MODEL_PROVIDER` | `native` (`litellm` remains a legacy alias) |
 | `FORGE_REASONING_EFFORT` | Startup reasoning effort (`auto|minimal|low|medium|high|xhigh|max`) |
-| `OPENAI_API_KEY` / … | Provider keys for the worker |
+| `OPENAI_API_KEY` / … | Provider credentials for native transports |
 | `FORGE_WORKSPACE` | Project root (default: cwd) |
 
 **Flags:** `--config` · `--workspace` · `--model` · `--worktree` · `--resume` · `--max-turns`

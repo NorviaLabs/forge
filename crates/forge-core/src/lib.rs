@@ -153,7 +153,7 @@ pub struct AgentSession {
     pub messages: Vec<Message>,
     pub events: Vec<TurnEvent>,
     pub pending_hitl: Option<HitlPayload>,
-    /// LiteLLM model id for the next complete (empty → client default).
+    /// Provider/model id for the next completion (empty → client default).
     pub active_model: String,
     journal: Journal,
     tools: ToolRegistry,
@@ -968,7 +968,7 @@ impl AgentSession {
         Ok(())
     }
 
-    /// Use this LiteLLM model id on subsequent completes (e.g. after `/connect`).
+    /// Use this provider/model id on subsequent completions (e.g. after `/connect`).
     pub fn set_active_model(&mut self, model: impl Into<String>) {
         self.active_model = model.into();
     }

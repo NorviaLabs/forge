@@ -7,7 +7,7 @@
 **Revision:** **6.1** — TUI **always** prompts for API key  
 **PRD:** PROV-02  
 **Architecture:** Phase 6 / 6.1, decision #19  
-**Related:** [connect-command.md](./connect-command.md), [connect-auth-modes.md](./connect-auth-modes.md), [litellm-providers.md](./litellm-providers.md)
+**Related:** [connect-command.md](./connect-command.md), [connect-auth-modes.md](./connect-auth-modes.md), [model-providers.md](./model-providers.md)
 
 ---
 

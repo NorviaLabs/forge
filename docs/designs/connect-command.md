@@ -7,7 +7,7 @@
 **Revision:** **6.1** — OAuth vs API-key auth modes  
 **PRD:** CONN-01 (primary)  
 **Architecture:** Phase 6 / 6.1, decision #19  
-**Related:** [connect-auth-modes.md](./connect-auth-modes.md), [provider-xai-grok.md](./provider-xai-grok.md), [provider-opencode-go.md](./provider-opencode-go.md), [litellm-providers.md](./litellm-providers.md) (Phase 5), [tui-commands.md](./tui-commands.md), [tui-overlays.md](./tui-overlays.md)
+**Related:** [connect-auth-modes.md](./connect-auth-modes.md), [provider-xai-grok.md](./provider-xai-grok.md), [provider-opencode-go.md](./provider-opencode-go.md), [model-providers.md](./model-providers.md), [tui-commands.md](./tui-commands.md), [tui-overlays.md](./tui-overlays.md)
 
 ---
 
@@ -101,7 +101,7 @@ Built-in profiles registered at startup.
 
 **Never** commit credentials to project `forge.toml`.
 
-Wire to worker: parent injects env for `forge-litellm-worker` (keys/tokens in env, **not** NDJSON).
+Credentials are injected into the native model client and process environment; they are never model-visible payload fields.
 
 ### 3.5 Relationship to `/model`
 
@@ -187,5 +187,5 @@ async fn run_connect_flow(
 
 - [provider-xai-grok.md](./provider-xai-grok.md)  
 - [provider-opencode-go.md](./provider-opencode-go.md)  
-- [litellm-config.md](./litellm-config.md)  
+- [model-providers.md](./model-providers.md)
 - [tui-commands.md](./tui-commands.md)  

@@ -23,7 +23,7 @@ pub fn openai_codex_profile() -> ConnectProfile {
         default_base_url: Some("https://chatgpt.com/backend-api".into()),
         default_models: vec!["openai-codex/gpt-5.6-sol".into()],
         auth_url: Some("https://auth.openai.com/codex/device".into()),
-        litellm_provider_prefix: "openai-codex".into(),
+        model_provider_prefix: "openai-codex".into(),
     }
 }
 

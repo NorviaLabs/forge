@@ -17,7 +17,7 @@ pub struct ConnectProfile {
     pub default_models: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_url: Option<String>,
-    pub litellm_provider_prefix: String,
+    pub model_provider_prefix: String,
 }
 
 impl ConnectProfile {

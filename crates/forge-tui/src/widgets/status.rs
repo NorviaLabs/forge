@@ -224,7 +224,7 @@ mod tests {
             status: SessionStatus::Running,
             session_short: "x".into(),
             model: "m".into(),
-            provider: "litellm".into(),
+            provider: "native".into(),
             effort: "high".into(),
             ctx_pct: 0.0,
             worktree_on: true,
@@ -244,7 +244,7 @@ mod tests {
             status: SessionStatus::Running,
             session_short: "abc".into(),
             model: "openai/gpt".into(),
-            provider: "litellm".into(),
+            provider: "native".into(),
             effort: "medium".into(),
             ctx_pct: 0.34,
             worktree_on: false,
@@ -256,7 +256,7 @@ mod tests {
             tools_visible: 4,
         };
         let lines = session_chrome_lines(&m);
-        assert!(lines.iter().any(|l| l.contains("provider=litellm")));
+        assert!(lines.iter().any(|l| l.contains("provider=native")));
         assert!(lines.iter().any(|l| l.contains("model=openai/gpt")));
         assert!(lines.iter().any(|l| l.contains("effort=medium")));
         assert!(lines.iter().any(|l| l.contains("profile=xai")));

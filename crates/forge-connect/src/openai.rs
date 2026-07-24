@@ -1,4 +1,4 @@
-//! OpenAI connect profile — API key (LiteLLM `openai/*`).
+//! OpenAI connect profile — API key (`openai/*`).
 
 use crate::auth::AuthMode;
 use crate::profile::ConnectProfile;
@@ -10,7 +10,7 @@ pub fn openai_profile() -> ConnectProfile {
     ConnectProfile {
         id: PROFILE_ID.into(),
         title: "OpenAI".into(),
-        description: "OpenAI API key — LiteLLM openai/* models".into(),
+        description: "OpenAI API key — openai/* models".into(),
         auth_mode: AuthMode::ApiKey {
             tui_always_prompt: true,
         },
@@ -18,7 +18,7 @@ pub fn openai_profile() -> ConnectProfile {
         default_base_url: Some(DEFAULT_BASE_URL.into()),
         default_models: vec!["openai/gpt-4.1-mini".into()],
         auth_url: Some("https://platform.openai.com/api-keys".into()),
-        litellm_provider_prefix: "openai".into(),
+        model_provider_prefix: "openai".into(),
     }
 }
 
