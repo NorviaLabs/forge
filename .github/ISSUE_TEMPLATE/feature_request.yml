@@ -1,0 +1,22 @@
+name: Alpha feedback or feature request
+description: Suggest an improvement based on alpha testing
+title: "[Feedback]: "
+labels: [enhancement, alpha]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem did you encounter?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would improve the experience?
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Testing context
+      description: Optional platform, provider, model, and workflow details.
