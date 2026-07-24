@@ -42,6 +42,8 @@ One agent core serves both interactive and headless use. Live inference uses nat
 
 Full design notes: [docs/architecture.md](./docs/architecture.md).
 
+Want to help? See [CONTRIBUTING.md](./CONTRIBUTING.md) for setup, validation, and pull request guidance.
+
 ---
 
 ## Why Forge
