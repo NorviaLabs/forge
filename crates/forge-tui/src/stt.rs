@@ -466,4 +466,51 @@ mod tests {
         assert!(!is_ptt_key(KeyCode::Char(' '), KeyModifiers::NONE));
         assert!(!is_ptt_key(KeyCode::Char('a'), KeyModifiers::CONTROL));
     }
+
+    #[test]
+    fn speed_aliases_strings_and_defaults() {
+        assert_eq!(SttSpeed::parse(" S "), Some(SttSpeed::Slow));
+        assert_eq!(SttSpeed::parse("medium"), Some(SttSpeed::Normal));
+        assert_eq!(SttSpeed::parse("QUICK"), Some(SttSpeed::Fast));
+        assert_eq!(SttSpeed::parse("unknown"), None);
+        assert_eq!(SttSpeed::default(), SttSpeed::Normal);
+        assert_eq!(SttSpeed::Slow.as_str(), "slow");
+        assert_eq!(SttSpeed::Normal.as_str(), "normal");
+        assert_eq!(SttSpeed::Fast.as_str(), "fast");
+        assert_eq!(SttSpeed::Normal.whisper_cli_model(), "base");
+    }
+
+    #[test]
+    fn whisper_json_reports_provider_and_shape_errors() {
+        let provider = parse_whisper_json(r#"{"error":{"message":"denied"}}"#).unwrap_err();
+        assert!(provider.contains("whisper API"));
+        assert!(provider.contains("denied"));
+
+        let missing = parse_whisper_json(r#"{"language":"en"}"#).unwrap_err();
+        assert!(missing.contains("missing text"));
+
+        let invalid = parse_whisper_json("not json").unwrap_err();
+        assert!(invalid.contains("whisper JSON"));
+    }
+
+    #[test]
+    fn settings_mutates_speed() {
+        let mut settings = SttSettings {
+            speed: SttSpeed::Slow,
+            api_base: "http://localhost".into(),
+        };
+        settings.set_speed(SttSpeed::Fast);
+        assert_eq!(settings.speed, SttSpeed::Fast);
+    }
+
+    #[test]
+    fn temp_path_and_platform_input_are_usable() {
+        let path = temp_wav_path().unwrap();
+        assert!(path.starts_with(std::env::temp_dir()));
+        assert_eq!(
+            path.extension().and_then(|value| value.to_str()),
+            Some("wav")
+        );
+        assert!(!default_ffmpeg_input().is_empty());
+    }
 }
