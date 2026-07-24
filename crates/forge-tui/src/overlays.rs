@@ -175,20 +175,16 @@ pub fn default_models() -> Vec<ModelItem> {
     items
 }
 
-/// Build picker rows from catalog entries (live/cached) + optional fallbacks.
+/// Build picker rows from live or cached catalog entries.
 pub fn models_from_catalog(entries: &[forge_connect::CatalogEntry]) -> Vec<ModelItem> {
-    let mut items: Vec<ModelItem> = entries
+    entries
         .iter()
         .map(|e| ModelItem {
             provider: "native".into(),
             model: e.id.clone(),
             profile_id: Some(e.profile_id.clone()),
         })
-        .collect();
-    if items.is_empty() {
-        items = default_models();
-    }
-    items
+        .collect()
 }
 
 impl Overlay {
