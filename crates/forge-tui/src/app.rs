@@ -2418,6 +2418,25 @@ Reply with ONLY the commit message line.\n\n\
                     self.status_message = "status · context".into();
                     self.notices = lines;
                 }
+                Ok(SlashCommand::Cost) => {
+                    let profile_id = self.connect_profile.clone().or_else(|| {
+                        let prefix = Self::model_prefix(&self.runtime.model_label);
+                        self.connected_profile_for_model_prefix(prefix)
+                    });
+                    match profile_id {
+                        Some(profile_id) => match forge_connect::provider_cost_report(
+                            &profile_id,
+                            &self.connect_store,
+                        ) {
+                            Ok(report) => self.notices = report,
+                            Err(error) => self.set_feedback(FeedbackSeverity::Error, error),
+                        },
+                        None => self.set_feedback(
+                            FeedbackSeverity::Warn,
+                            "no connected provider; use /connect first",
+                        ),
+                    }
+                }
                 Ok(SlashCommand::Approve) => {
                     if self.session.pending_hitl.is_none() {
                         self.status_message = "no pending HITL to approve".into();

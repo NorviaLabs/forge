@@ -3,6 +3,7 @@
 mod anthropic;
 mod auth;
 mod catalog;
+mod cost;
 mod oauth_dispatch;
 mod oauth_openai_codex;
 mod oauth_xai;
@@ -23,6 +24,7 @@ pub use catalog::{
     credential_for_catalog, fetch_remote_models, models_for_picker, normalize_model_id,
     refresh_profile_catalog, CatalogEntry, ModelCatalogCache, DEFAULT_TTL_SECS,
 };
+pub use cost::provider_cost_report;
 pub use oauth_xai::{
     try_open_browser, XaiOauthClient, XaiOauthError, DEFAULT_CLIENT_ID, DEFAULT_ISSUER,
     DEFAULT_SCOPES,

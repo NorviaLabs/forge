@@ -94,6 +94,10 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
             desc: "Session status".into(),
         },
         PaletteItem {
+            cmd: "/cost".into(),
+            desc: "Provider limits, usage, and balance".into(),
+        },
+        PaletteItem {
             cmd: "/connect".into(),
             desc: "Connect provider (xAI, OpenCode Go/Zen, OpenAI, Anthropic, Ollama)".into(),
         },

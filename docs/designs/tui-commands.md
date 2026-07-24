@@ -33,6 +33,7 @@ Phase 1 operators need non-LLM session control. **This catalog is Phase 1 comman
 | Command | Args | Behavior | Req |
 |---------|------|----------|-----|
 | `/status` | — | Session, model, journal cursor, and context/token usage | DX |
+| `/cost` | — | Active provider limits, reset times, and available billing balance | DX |
 | `/resume` | `<session_id>` | Replay journal (DUR-02) | DUR-02 |
 | `/model` | `[provider] [model]` | Config-only model switch | Multi-provider |
 | `/journal` | `[tail n]` | Recent journal events (redacted) | DUR |
