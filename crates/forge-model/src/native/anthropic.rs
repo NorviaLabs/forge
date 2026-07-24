@@ -317,7 +317,10 @@ fn apply_reasoning_effort(client: &NativeModelClient, body: &mut Value, model: &
 #[cfg(test)]
 mod tests {
     use super::*;
-    use forge_types::{Message, ToolDescriptor};
+    use crate::native::test_support::serve_once;
+    use crate::ModelClient;
+    use forge_config::Config;
+    use forge_types::{Message, ModelStreamEvent, SideEffectClass, ToolDescriptor};
 
     #[test]
     fn maps_system_tools_and_tool_results() {
@@ -386,5 +389,129 @@ mod tests {
         .unwrap();
         let calls = finalize_tool_uses(tools).unwrap();
         assert_eq!(calls[0].arguments["command"], "ls");
+    }
+
+    #[tokio::test]
+    async fn completes_anthropic_sse_with_tools_thinking_and_usage() {
+        let sse = concat!(
+            "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":5}}}\n\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"think\"}}\n\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"answer\"}}\n\n",
+            "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"bash\"}}\n\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"command\\\":\\\"ls\\\"}\"}}\n\n",
+            "data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":7}}\n\n"
+        );
+        let (base_url, request_rx) = serve_once("200 OK", "text/event-stream", sse).await;
+        let mut config = Config::default();
+        config.model.base_url = Some(base_url);
+        config.model.api_key = Some("anthropic-secret".into());
+        let client = NativeModelClient::from_config(&config).unwrap();
+        client.apply_provider_env(&[("FORGE_REASONING_EFFORT".into(), "xhigh".into())]);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let request = ModelRequest {
+            model: "anthropic/claude-sonnet-4-6".into(),
+            messages: vec![
+                Message::new(MessageRole::System, "system"),
+                Message::new(MessageRole::User, "hello"),
+            ],
+            tools: vec![ToolDescriptor {
+                name: "bash".into(),
+                description: "run".into(),
+                input_schema: json!({"type":"object"}),
+                side_effect_class: SideEffectClass::Exec,
+                idempotent: false,
+            }],
+        };
+
+        let response = client
+            .complete_with_stream(request, Some(tx))
+            .await
+            .unwrap();
+
+        assert_eq!(response.text, "answer");
+        assert_eq!(response.thinking.as_deref(), Some("think"));
+        assert_eq!(response.tool_calls[0].arguments["command"], "ls");
+        assert_eq!(response.usage.unwrap().prompt_tokens, 5);
+        let events: Vec<_> = rx.try_iter().collect();
+        assert!(matches!(
+            events.first(),
+            Some(ModelStreamEvent::ThinkingDelta { .. })
+        ));
+        assert!(matches!(events.last(), Some(ModelStreamEvent::MessageEnd)));
+
+        let raw_request = request_rx.await.unwrap();
+        assert!(raw_request.starts_with("POST /v1/messages HTTP/1.1"));
+        assert!(raw_request
+            .to_ascii_lowercase()
+            .contains("x-api-key: anthropic-secret"));
+        assert!(raw_request.contains("\"system\":\"system\""));
+        assert!(raw_request.contains("\"output_config\":{\"effort\":\"high\"}"));
+    }
+
+    #[tokio::test]
+    async fn handles_missing_key_http_error_and_stream_error() {
+        let client = NativeModelClient::from_config(&Config::default()).unwrap();
+        let request = ModelRequest {
+            model: "anthropic/claude".into(),
+            messages: vec![],
+            tools: vec![],
+        };
+        assert!(matches!(
+            client.complete(request.clone()).await,
+            Err(ModelError::MissingApiKey)
+        ));
+
+        let (base_url, _) = serve_once("401 Unauthorized", "text/plain", "bad key").await;
+        let mut config = Config::default();
+        config.model.base_url = Some(format!("{base_url}/v1"));
+        config.model.api_key = Some("bad".into());
+        let client = NativeModelClient::from_config(&config).unwrap();
+        assert!(client
+            .complete(request)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("401"));
+
+        let mut text = String::new();
+        let mut thinking = String::new();
+        let mut tools = BTreeMap::new();
+        let mut input = 0;
+        let mut output = 0;
+        let error = consume_event(
+            &json!({"type":"error","error":{"message":"stream failed"}}),
+            &mut text,
+            &mut thinking,
+            &mut tools,
+            &mut input,
+            &mut output,
+            None,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("stream failed"));
+    }
+
+    #[test]
+    fn rejects_invalid_tool_input_and_assigns_fallback_id() {
+        let invalid = BTreeMap::from([(
+            1,
+            ToolUseAccumulator {
+                id: String::new(),
+                name: "bash".into(),
+                input: "invalid".into(),
+            },
+        )]);
+        assert!(finalize_tool_uses(invalid).is_err());
+        let empty = BTreeMap::from([(
+            2,
+            ToolUseAccumulator {
+                id: String::new(),
+                name: "bash".into(),
+                input: String::new(),
+            },
+        )]);
+        let calls = finalize_tool_uses(empty).unwrap();
+        assert_eq!(calls[0].id, "tool_2");
+        assert_eq!(calls[0].arguments, json!({}));
     }
 }
