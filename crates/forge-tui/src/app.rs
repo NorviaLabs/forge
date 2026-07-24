@@ -4440,7 +4440,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tui09_chrome_includes_provider_and_model_on_frame() {
+    async fn tui09_chrome_includes_model_on_frame() {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
         let (_dir, session) = test_session().await;
@@ -4468,9 +4468,10 @@ mod tests {
             text.push('\n');
         }
         assert!(
-            text.contains("native") && (text.contains("gpt") || text.contains("openai")),
-            "chrome missing provider/model:\n{text}"
+            text.contains("gpt-test"),
+            "chrome missing model:\n{text}"
         );
+        assert!(!text.contains("native"), "chrome shows provider:\n{text}");
     }
 
     #[tokio::test]
