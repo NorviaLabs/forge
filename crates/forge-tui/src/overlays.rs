@@ -25,6 +25,7 @@ pub enum Overlay {
     Model {
         provider_selected: usize,
         model_selected: usize,
+        model_input: String,
         /// Provider ids (connect profile ids) derived from `items`.
         providers: Vec<String>,
         items: Vec<ModelItem>,
@@ -230,6 +231,7 @@ impl Overlay {
         Self::Model {
             provider_selected: 0,
             model_selected: 0,
+            model_input: String::new(),
             providers,
             items,
         }
@@ -246,6 +248,7 @@ impl Overlay {
             model_selected,
             providers,
             items,
+            ..
         } = self
         else {
             return;
@@ -363,6 +366,7 @@ impl Overlay {
             Self::Model {
                 provider_selected,
                 model_selected,
+                model_input,
                 providers,
                 items,
             } => {
@@ -373,7 +377,7 @@ impl Overlay {
                     .get(*provider_selected)
                     .map(|s| s.as_str())
                     .unwrap_or("all");
-                let n = filtered_models_len(pid, items).max(1) as i32;
+                let n = filtered_models_len(pid, model_input, items).max(1) as i32;
                 *model_selected = ((*model_selected as i32 + delta).rem_euclid(n)) as usize;
             }
             Self::ConnectPicker {
@@ -412,10 +416,15 @@ fn model_matches_provider(provider_id: &str, m: &ModelItem) -> bool {
     pfx == provider_id
 }
 
-fn filtered_models_len(provider_id: &str, items: &[ModelItem]) -> usize {
+fn model_matches_input(model_input: &str, item: &ModelItem) -> bool {
+    let needle = model_input.trim().to_ascii_lowercase();
+    needle.is_empty() || item.model.to_ascii_lowercase().contains(&needle)
+}
+
+fn filtered_models_len(provider_id: &str, model_input: &str, items: &[ModelItem]) -> usize {
     items
         .iter()
-        .filter(|m| model_matches_provider(provider_id, m))
+        .filter(|m| model_matches_provider(provider_id, m) && model_matches_input(model_input, m))
         .count()
 }
 
@@ -556,6 +565,7 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             Overlay::Model {
                 provider_selected,
                 model_selected,
+                model_input,
                 providers,
                 items,
             } => {
@@ -565,9 +575,15 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                     .unwrap_or("all");
                 let chosen = items
                     .iter()
-                    .filter(|m| model_matches_provider(pid, m))
+                    .filter(|m| {
+                        model_matches_provider(pid, m) && model_matches_input(model_input, m)
+                    })
                     .nth(*model_selected);
-                if let Some(m) = chosen {
+                if !model_input.trim().is_empty()
+                    && !chosen.is_some_and(|m| m.model.eq_ignore_ascii_case(model_input.trim()))
+                {
+                    OverlayAction::RunCommand(format!("/model {}", model_input.trim()))
+                } else if let Some(m) = chosen {
                     OverlayAction::SelectModel {
                         provider: m.provider.clone(),
                         model: m.model.clone(),
@@ -651,6 +667,48 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                         key_input.push(c);
                     }
                 }
+            }
+            OverlayAction::None
+        }
+        Key::Char(c) if matches!(overlay, Overlay::Model { .. }) => {
+            if let Overlay::Model {
+                model_input,
+                model_selected,
+                ..
+            } = overlay
+            {
+                if !c.is_control() && !c.is_whitespace() {
+                    model_input.push(c);
+                    *model_selected = 0;
+                }
+            }
+            OverlayAction::None
+        }
+        Key::Paste(ref data) if matches!(overlay, Overlay::Model { .. }) => {
+            if let Overlay::Model {
+                model_input,
+                model_selected,
+                ..
+            } = overlay
+            {
+                for c in data.chars() {
+                    if !c.is_control() && !c.is_whitespace() {
+                        model_input.push(c);
+                    }
+                }
+                *model_selected = 0;
+            }
+            OverlayAction::None
+        }
+        Key::Backspace if matches!(overlay, Overlay::Model { .. }) => {
+            if let Overlay::Model {
+                model_input,
+                model_selected,
+                ..
+            } = overlay
+            {
+                model_input.pop();
+                *model_selected = 0;
             }
             OverlayAction::None
         }
@@ -828,6 +886,7 @@ impl Widget for OverlayWidget<'_> {
             Overlay::Model {
                 provider_selected,
                 model_selected,
+                model_input,
                 providers,
                 items,
             } => {
@@ -838,10 +897,12 @@ impl Widget for OverlayWidget<'_> {
                     .unwrap_or("all");
                 let filtered: Vec<&ModelItem> = items
                     .iter()
-                    .filter(|m| model_matches_provider(pid, m))
+                    .filter(|m| {
+                        model_matches_provider(pid, m) && model_matches_input(model_input, m)
+                    })
                     .collect();
                 let total = filtered.len();
-                let visible = r.height.saturating_sub(2).max(1) as usize;
+                let visible = r.height.saturating_sub(4).max(1) as usize;
                 let start = if *model_selected < visible {
                     0
                 } else if *model_selected + 1 > visible {
@@ -885,15 +946,21 @@ impl Widget for OverlayWidget<'_> {
                     format!("{}/{}", (*model_selected + 1).min(total), total)
                 };
                 let title = format!(" Choose a model · {pid} · {page}{prov_hint} · Enter use ");
-                List::new(list_items)
-                    .block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .border_style(theme::border())
-                            .style(theme::panel())
-                            .title(Span::styled(title, theme::brand())),
-                    )
-                    .render(r, buf);
+                let block = Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(theme::border())
+                    .style(theme::panel())
+                    .title(Span::styled(title, theme::brand()));
+                let inner = block.inner(r);
+                block.render(r, buf);
+                let regions = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Length(2), Constraint::Min(1)])
+                    .split(inner);
+                Paragraph::new(format!("Model: {model_input}█"))
+                    .style(theme::text())
+                    .render(regions[0], buf);
+                List::new(list_items).render(regions[1], buf);
             }
             Overlay::ConnectApiKey {
                 title,
@@ -1139,6 +1206,32 @@ mod tests {
             }
             _ => panic!("expected model select"),
         }
+    }
+
+    #[test]
+    fn model_accepts_typed_custom_model() {
+        let mut overlay = Overlay::model_open();
+        for c in "openai/custom-model".chars() {
+            assert_eq!(
+                handle_overlay_key(&mut overlay, Key::Char(c)),
+                OverlayAction::None
+            );
+        }
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::RunCommand("/model openai/custom-model".into())
+        );
+    }
+
+    #[test]
+    fn model_input_supports_paste_and_backspace() {
+        let mut overlay = Overlay::model_open();
+        handle_overlay_key(&mut overlay, Key::Paste("anthropic/custom-modelx\n".into()));
+        handle_overlay_key(&mut overlay, Key::Backspace);
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::RunCommand("/model anthropic/custom-model".into())
+        );
     }
 
     #[test]
