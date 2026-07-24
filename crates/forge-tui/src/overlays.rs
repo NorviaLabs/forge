@@ -10,6 +10,7 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Widget}
 
 #[derive(Debug, Clone)]
 pub enum Overlay {
+    Welcome,
     Hitl {
         payload: HitlPayload,
     },
@@ -191,6 +192,10 @@ pub fn models_from_catalog(entries: &[forge_connect::CatalogEntry]) -> Vec<Model
 }
 
 impl Overlay {
+    pub fn welcome() -> Self {
+        Self::Welcome
+    }
+
     pub fn slash_open(filter: impl Into<String>) -> Self {
         let filter = filter.into();
         let items = filter_palette(&filter);
@@ -436,6 +441,7 @@ pub fn filter_palette(filter: &str) -> Vec<PaletteItem> {
 pub enum OverlayAction {
     None,
     Close,
+    BeginOnboarding,
     /// Close HITL and approve/deny
     HitlApprove,
     /// Approve and allow this tool for the rest of the session
@@ -522,6 +528,7 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             OverlayAction::None
         }
         Key::Enter => match overlay {
+            Overlay::Welcome => OverlayAction::BeginOnboarding,
             Overlay::TurnLimit { .. } => OverlayAction::ContinueTurns,
             Overlay::Slash {
                 selected, items, ..
@@ -736,6 +743,21 @@ impl Widget for OverlayWidget<'_> {
         // dim full area
         Clear.render(area, buf);
         match self.overlay {
+            Overlay::Welcome => {
+                let r = centered_rect(64, 58, area);
+                Paragraph::new(
+                    "Your terminal-native coding agent. Let's get you ready in two quick steps.\n\n1  Connect a model provider\n   Sign in or add an API key using secure credential storage.\n\n2  Choose your model\n   Pick a default from the provider's available models.\n\nForge works in your current directory and asks before sensitive actions.\n\nPress Enter to get started  ·  Esc to explore without connecting",
+                )
+                .wrap(ratatui::widgets::Wrap { trim: true })
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(theme::brand())
+                        .style(theme::panel())
+                        .title(Span::styled(" Welcome to Forge ", theme::brand())),
+                )
+                .render(r, buf);
+            }
             Overlay::TurnLimit { turns } => {
                 let r = centered_rect(52, 24, area);
                 let body = format!(
@@ -1017,6 +1039,19 @@ mod tests {
     use crate::commands::{parse_slash, SlashCommand};
     use forge_types::HitlPayload;
     use serde_json::json;
+
+    #[test]
+    fn welcome_starts_onboarding() {
+        let mut overlay = Overlay::welcome();
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::BeginOnboarding
+        );
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Esc),
+            OverlayAction::Close
+        );
+    }
 
     #[test]
     fn filter_palette_narrows() {
