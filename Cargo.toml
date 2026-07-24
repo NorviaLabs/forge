@@ -23,7 +23,7 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/NorviaLabs/forge"
-rust-version = "1.80"
+rust-version = "1.86"
 
 [workspace.dependencies]
 async-trait = "0.1"
@@ -48,7 +48,7 @@ futures = "0.3"
 bytes = "1"
 jsonschema = "0.28"
 crossterm = "0.28"
-ratatui = "0.27"
+ratatui = { version = "=0.30.0", default-features = false, features = ["crossterm_0_28", "underline-color", "layout-cache"] }
 
 forge-types = { path = "crates/forge-types" }
 forge-config = { path = "crates/forge-config" }
