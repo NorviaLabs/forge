@@ -56,11 +56,8 @@ These crates compile and have unit tests. They are **not** product entry points 
 
 | Document | Req | Crate |
 |----------|-----|-------|
-| [protocol-acp.md](./protocol-acp.md) | CORE-03 | `forge-acp` |
 | [feedback-evaluator.md](./feedback-evaluator.md) | EVAL-01 | `forge-feedback` |
 | [observability.md](./observability.md) | OBS-01 | `forge-obs` |
-| [channels.md](./channels.md) | CH-01 | `forge-channels` |
-| [fleet-plugins.md](./fleet-plugins.md) | FLEET-01 | `forge-fleet` |
 
 ## Product CLI surface (normative)
 
@@ -73,7 +70,7 @@ forge connect …
 
 **Flags:** `--config` · `--workspace` · `--model` · `--worktree` · `--resume` · `--max-turns`  
 
-**Removed from CLI (do not document as product):** `repl`, `tui` subcommand, `--mock`, `approve`/`deny`, `feedback`, `channel`, `fleet`, `--provider`.
+**Removed from CLI (do not document as product):** `repl`, `tui` subcommand, `--mock`, `approve`/`deny`, `feedback`, `--provider`.
 
 ## Rules
 

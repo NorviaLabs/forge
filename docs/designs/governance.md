@@ -25,7 +25,7 @@ Enterprise agent harnesses fail when secrets leak into prompts, tools are over-p
 
 **Non-goals**
 
-- Full IdP/SCIM in Phase 2 core (Phase 3 plugins).  
+- Full identity-provider provisioning integrations.
 - Guaranteeing host security if operators disable sandbox.
 
 ## 3. Design
@@ -114,7 +114,7 @@ trait Sandbox {
 | Case | Behavior |
 |------|----------|
 | Vault unavailable | Fail closed for tools needing secrets; model tools without secrets may proceed |
-| ACL misconfig allows all on channel | Mitigate with secure defaults for channel principals |
+| ACL misconfig allows broad access | Mitigate with least-privilege defaults |
 | Sandbox escape | Defense in depth; audit; do not claim perfect isolation on `light` |
 
 ## 6. Phase ownership
@@ -123,7 +123,6 @@ trait Sandbox {
 |------|-------|
 | This entire document | **2** |
 | Exit | SEC-01/02/03 metrics met |
-| SCIM principals / SIEM stream | [fleet-plugins.md](./fleet-plugins.md) (Phase 3) |
 
 ## 7. Open questions
 
@@ -135,4 +134,4 @@ trait Sandbox {
 
 - [tool-protocol.md](./tool-protocol.md)  
 - [durable-execution.md](./durable-execution.md) HITL  
-- [surfaces.md](./surfaces.md) channel ACL  
+- [surfaces.md](./surfaces.md) product surfaces

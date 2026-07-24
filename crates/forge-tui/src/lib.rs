@@ -10,7 +10,6 @@ mod layout;
 mod msg_queue;
 mod overlays;
 mod sidebar;
-mod stt;
 mod theme;
 #[cfg(test)]
 mod visual_test;
@@ -18,7 +17,7 @@ mod widgets;
 
 pub use activity::{ActivityFeed, ActivityItem, ActivityKind};
 pub use app::{run_tui, TuiApp, TuiError, TuiRuntimeConfig};
-pub use commands::{parse_slash, CommandError, SlashCommand, SttAction};
+pub use commands::{parse_slash, CommandError, SlashCommand};
 pub use conversation::{
     BannerKind, ChatItem, ConversationModel, ConversationViewOpts, StreamWaitPhase, ToolCardState,
 };
