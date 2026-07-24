@@ -338,6 +338,37 @@ mod tests {
     use forge_tools::ValidationBudget;
     use serde_json::json;
 
+    #[cfg(unix)]
+    fn fixture_server() -> tempfile::TempDir {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("mcp-server.sh");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"capabilities":{}}}'
+      ;;
+    *'"method":"tools/list"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"echo","description":"Echo text","inputSchema":{"type":"object"}},{"name":"bad","inputSchema":"invalid"},{"description":"missing name"}]}}'
+      ;;
+    *'"method":"tools/call"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"hello"}],"isError":true}}'
+      ;;
+  esac
+done
+"#,
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(script, permissions).unwrap();
+        directory
+    }
+
     #[test]
     fn namespace_roundtrip() {
         let n = mcp_tool_name("demo", "echo");
@@ -410,5 +441,34 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ToolError::Validation(_)));
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn stdio_client_lists_filters_and_calls_tools() {
+        let directory = fixture_server();
+        let cfg = McpServerConfig {
+            id: "fixture".into(),
+            transport: "stdio".into(),
+            command: directory
+                .path()
+                .join("mcp-server.sh")
+                .to_string_lossy()
+                .into_owned(),
+            args: Vec::new(),
+        };
+        let client = McpStdioClient::spawn(&cfg).await.unwrap();
+
+        assert_eq!(client.server_id(), "fixture");
+        let tools = client.list_tools().await.unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "echo");
+        assert_eq!(tools[0].description, "Echo text");
+        let output = client
+            .call_tool("echo", json!({"text": "hello"}))
+            .await
+            .unwrap();
+        assert!(output.is_error);
+        assert!(output.content.contains("hello"));
     }
 }

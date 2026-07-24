@@ -123,6 +123,7 @@ impl SearchBackend for SerperBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::web_search::test_support::serve_once;
 
     #[test]
     fn parse_serper_sample() {
@@ -135,5 +136,37 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].url, "https://google.com");
         assert_eq!(hits[0].snippet, "Search engine");
+    }
+
+    #[tokio::test]
+    async fn search_sends_json_header_and_parses_response() {
+        let (base_url, request) = serve_once(
+            "200 OK",
+            r#"{"organic":[{"title":"Result","link":"https://example.com","snippet":"Found"}]}"#,
+        )
+        .await;
+        let backend = SerperBackend::with_base_url(Duration::from_secs(1), base_url);
+        let hits = backend
+            .search(
+                &SearchRequest {
+                    query: "forge".into(),
+                    num_results: 3,
+                    recency_days: None,
+                },
+                &SearchSecrets {
+                    api_key: Some("serper-secret".into()),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(hits[0].url, "https://example.com");
+        let request = request.await.unwrap();
+        assert!(request.starts_with("POST /search HTTP/1.1"));
+        assert!(request
+            .to_ascii_lowercase()
+            .contains("x-api-key: serper-secret"));
+        assert!(request.contains(r#""q":"forge""#));
+        assert!(request.contains(r#""num":3"#));
     }
 }
