@@ -22,11 +22,9 @@ Tool ecosystems standardize on **MCP**. Phase 1 product must call external tool 
 - Declarative MCP server config.  
 - Fail closed on missing schemas.
 
-**Non-goals (other phases / docs)**
+**Non-goals**
 
-- ACP clients → [protocol-acp.md](./protocol-acp.md) (Phase 2).  
-- Channel adapters → [channels.md](./channels.md) (Phase 3).  
-- Enterprise ACL/vault detail → [governance.md](./governance.md) (Phase 2); Phase 1 may use allow-all local principal.
+- Enterprise ACL/vault detail → [governance.md](./governance.md); local installs may use the local principal.
 
 ## 3. Design
 
@@ -91,4 +89,3 @@ trait McpManager {
 
 - [tool-protocol.md](./tool-protocol.md)  
 - [durable-execution.md](./durable-execution.md)  
-- [protocol-acp.md](./protocol-acp.md) (Phase 2 — do not implement here)  

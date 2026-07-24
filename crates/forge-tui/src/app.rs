@@ -28,7 +28,7 @@ use serde_json::json;
 use thiserror::Error;
 
 use crate::activity::{ActivityFeed, ActivityKind};
-use crate::commands::{parse_slash, SlashCommand, SttAction};
+use crate::commands::{parse_slash, SlashCommand};
 use crate::conversation::{
     format_elapsed_tenths, BannerKind, ChatItem, ConversationModel, ConversationViewOpts,
     StreamWaitPhase,
@@ -41,9 +41,6 @@ use crate::msg_queue::MessageQueue;
 use crate::overlays::{
     filter_palette, handle_overlay_key, models_from_catalog, ConnectProfileItem, Key as OverlayKey,
     Overlay, OverlayAction, OverlayWidget, PaletteItem, ResumeSessionItem,
-};
-use crate::stt::{
-    is_ptt_key, resolve_stt_api_key, transcribe_wav_file, LiveRecorder, SttSettings, SttSpeed,
 };
 use crate::theme;
 use crate::widgets::{
@@ -189,12 +186,6 @@ pub struct TuiApp {
     /// Conversation scroll offset (when not following).
     chat_scroll: u16,
     chat_follow: bool,
-    /// Speech-to-text capture settings (speed / duration).
-    stt: SttSettings,
-    /// Active push-to-talk recording (hold Ctrl+Space).
-    ptt_recording: Option<LiveRecorder>,
-    /// True after we observe a key Release (hold-to-talk works on this terminal).
-    ptt_release_seen: bool,
 }
 
 impl TuiApp {
@@ -246,9 +237,6 @@ impl TuiApp {
             chat_event_start: 0,
             chat_scroll: 0,
             chat_follow: true,
-            stt: SttSettings::default(),
-            ptt_recording: None,
-            ptt_release_seen: false,
         }
         .restore_saved_auth()
         .apply_connection_chrome()
@@ -1216,106 +1204,6 @@ impl TuiApp {
         self.overlay = Some(ov);
     }
 
-    fn ptt_start_recording(&mut self) {
-        if self.overlay.is_some() {
-            self.set_feedback(
-                FeedbackSeverity::Warn,
-                "close the overlay before dictating (Ctrl+Space)",
-            );
-            return;
-        }
-        match LiveRecorder::start() {
-            Ok(rec) => {
-                self.ptt_recording = Some(rec);
-                self.busy_phase = BusyPhase::Other("recording".into());
-                self.set_feedback(
-                    FeedbackSeverity::Info,
-                    "● recording — release Ctrl+Space to stop (Esc cancel)",
-                );
-                self.push_activity(
-                    ActivityKind::System,
-                    FeedbackSeverity::Info,
-                    "ptt recording start",
-                );
-            }
-            Err(e) => {
-                self.report_error(&e);
-            }
-        }
-    }
-
-    fn ptt_cancel(&mut self) {
-        self.ptt_recording = None; // Drop stops ffmpeg + deletes wav
-        self.busy_phase = BusyPhase::Idle;
-        self.set_feedback(FeedbackSeverity::Warn, "recording cancelled");
-        self.push_activity(
-            ActivityKind::System,
-            FeedbackSeverity::Warn,
-            "ptt cancelled",
-        );
-    }
-
-    async fn ptt_stop_and_transcribe(&mut self) {
-        let Some(rec) = self.ptt_recording.take() else {
-            return;
-        };
-        self.busy_phase = BusyPhase::Other("transcribing".into());
-        self.set_feedback(FeedbackSeverity::Info, "transcribing…");
-
-        let stop = rec.stop();
-        let settings = self.stt.clone();
-        let key = resolve_stt_api_key(&self.connect_store);
-
-        let result = match stop {
-            Ok((wav, secs)) => {
-                tokio::task::spawn_blocking(move || {
-                    transcribe_wav_file(wav, &settings, key.as_deref(), secs)
-                })
-                .await
-            }
-            Err(e) => {
-                self.busy_phase = BusyPhase::Idle;
-                self.report_error(&e);
-                return;
-            }
-        };
-
-        self.busy_phase = BusyPhase::Idle;
-        match result {
-            Ok(Ok(tr)) => {
-                let cur = self.input.text.trim_end();
-                let joined = if cur.is_empty() {
-                    tr.text.clone()
-                } else {
-                    format!("{cur} {}", tr.text)
-                };
-                self.input.set_text(joined);
-                self.push_toast("transcribed");
-                self.set_feedback(
-                    FeedbackSeverity::Ok,
-                    format!("STT · {}s · {}", tr.secs, tr.backend),
-                );
-                self.notices = vec![
-                    format!("Transcript ({}s via {}):", tr.secs, tr.backend),
-                    tr.text,
-                    "Inserted into the input bar — edit and Enter to send.".into(),
-                ];
-                self.push_activity(
-                    ActivityKind::System,
-                    FeedbackSeverity::Ok,
-                    "ptt transcript inserted",
-                );
-            }
-            Ok(Err(e)) => {
-                self.report_error(&e);
-                self.notices = e.lines().map(|s| s.to_string()).collect();
-            }
-            Err(e) => {
-                self.report_error(&format!("STT task failed: {e}"));
-            }
-        }
-    }
-
     /// Enqueue while a message is processing (TUI Enter path only).
     fn enqueue_user_message(&mut self, line: String) {
         let n = self.message_queue.enqueue(line);
@@ -1441,44 +1329,6 @@ impl TuiApp {
             return;
         };
         self.cancel_queued_at(idx);
-    }
-
-    fn slash_stt(&mut self, action: SttAction) {
-        match action {
-            SttAction::Status => {
-                let msg = format!(
-                    "STT speed={} · local model={} · PTT=Ctrl+Space",
-                    self.stt.speed.as_str(),
-                    self.stt.speed.whisper_cli_model()
-                );
-                self.set_feedback(FeedbackSeverity::Info, msg.clone());
-                self.notices = vec![
-                    msg,
-                    "Dictate:".into(),
-                    "  hold Ctrl+Space  — push-to-talk (release to stop)".into(),
-                    "  Esc              — cancel recording".into(),
-                    "  /stt speed fast|normal|slow  — local Whisper model size".into(),
-                    "Needs OPENAI_API_KEY (Whisper) or local whisper CLI + ffmpeg.".into(),
-                    "PTT needs key-release (Kitty/WezTerm/iTerm2); else press twice to toggle."
-                        .into(),
-                ];
-            }
-            SttAction::Speed(v) => match SttSpeed::parse(&v) {
-                Some(sp) => {
-                    self.stt.set_speed(sp);
-                    let msg = format!(
-                        "STT speed={} (local whisper={})",
-                        sp.as_str(),
-                        sp.whisper_cli_model()
-                    );
-                    self.push_toast(msg.clone());
-                    self.set_feedback(FeedbackSeverity::Ok, msg);
-                }
-                None => {
-                    self.set_feedback(FeedbackSeverity::Warn, "usage: /stt speed fast|normal|slow");
-                }
-            },
-        }
     }
 
     /// Run the built-in `git` tool in the session workspace. Never touches the model.
@@ -2138,15 +1988,7 @@ Reply with ONLY the commit message line.\n\n\
         let context = self.session.token_usage_report();
         let busy_detail = self.busy_status_detail();
         let (status_label, _) = status.status_label_with_busy_detail(busy_detail.as_deref());
-        let hints = if self.ptt_recording.is_some() {
-            format!(
-                "● REC {}s · release Ctrl+Space to stop",
-                self.ptt_recording
-                    .as_ref()
-                    .map(|r| r.elapsed_secs())
-                    .unwrap_or(0)
-            )
-        } else if self.busy {
+        let hints = if self.busy {
             if qn > 0 {
                 format!("queue {qn} · Ctrl+Up/Down select · Ctrl+Backspace cancel")
             } else {
@@ -2155,11 +1997,11 @@ Reply with ONLY the commit message line.\n\n\
         } else if self.session.pending_hitl.is_some() {
             "a approve · s session · d deny".into()
         } else if !self.is_provider_connected() {
-            "/connect to enable chat · hold Ctrl+Space to dictate".into()
+            "/connect to enable chat".into()
         } else if qn > 0 {
             format!("queue {qn} · Ctrl+Up/Down select · Ctrl+Backspace cancel")
         } else {
-            "Ctrl+K command palette · hold Ctrl+Space dictate".into()
+            "Ctrl+K command palette".into()
         };
         let footer = FooterModel {
             cwd: self.runtime.cwd.display().to_string(),
@@ -2185,32 +2027,6 @@ Reply with ONLY the commit message line.\n\n\
     }
 
     pub async fn handle_key(&mut self, key: event::KeyEvent) -> Result<(), TuiError> {
-        // Push-to-talk: hold Ctrl+Space to record, release to stop + transcribe.
-        // Needs keyboard enhancement (Release events). Without them, second press toggles stop.
-        if is_ptt_key(key.code, key.modifiers) {
-            match key.kind {
-                KeyEventKind::Press if self.ptt_recording.is_none() && !self.busy => {
-                    self.ptt_start_recording();
-                    return Ok(());
-                }
-                KeyEventKind::Release if self.ptt_recording.is_some() => {
-                    self.ptt_release_seen = true;
-                    self.ptt_stop_and_transcribe().await;
-                    return Ok(());
-                }
-                // Toggle fallback when the terminal never emits Release.
-                KeyEventKind::Press if self.ptt_recording.is_some() && !self.ptt_release_seen => {
-                    self.ptt_stop_and_transcribe().await;
-                    return Ok(());
-                }
-                KeyEventKind::Repeat => {
-                    // Ignore autorepeat while holding PTT.
-                    return Ok(());
-                }
-                _ => return Ok(()),
-            }
-        }
-
         // Allow arrow-key auto-repeat for overlays (and other selection UIs).
         if key.kind != KeyEventKind::Press {
             let allow_repeat = matches!(
@@ -2224,14 +2040,6 @@ Reply with ONLY the commit message line.\n\n\
             if !allow_repeat {
                 return Ok(());
             }
-        }
-
-        // While recording, don't type into the input (except Esc cancels).
-        if self.ptt_recording.is_some() {
-            if matches!(key.code, KeyCode::Esc) {
-                self.ptt_cancel();
-            }
-            return Ok(());
         }
 
         if let Some(ref mut ov) = self.overlay {
@@ -2804,9 +2612,6 @@ Reply with ONLY the commit message line.\n\n\
                         let _ = self.drain_pending_sync(None).await;
                     }
                 }
-                Ok(SlashCommand::Stt { action }) => {
-                    self.slash_stt(action);
-                }
                 Err(e) => {
                     let msg = e.to_string();
                     self.set_feedback(FeedbackSeverity::Warn, msg.clone());
@@ -3288,8 +3093,7 @@ pub async fn run_tui(
 ) -> Result<ExitCode, TuiError> {
     enable_raw_mode()?;
     let mut stdout = stdout();
-    // Bracketed paste + keyboard enhancement so Ctrl+Space push-to-talk gets Release events
-    // (Kitty keyboard protocol; ignored on terminals that do not support it).
+    // Bracketed paste plus keyboard enhancement for reliable key disambiguation.
     // Deliberately do not enable mouse capture: the terminal must retain mouse selection so
     // users can select and copy transcript text. Conversation scrolling remains on PageUp/Down.
     execute!(
@@ -3311,8 +3115,6 @@ pub async fn run_tui(
     }
     let result = run_loop(&mut terminal, &mut app).await;
 
-    // Ensure mic capture is stopped if the user quits mid-record.
-    app.ptt_recording = None;
     app.persist_selection();
 
     disable_raw_mode()?;

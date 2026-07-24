@@ -25,8 +25,7 @@ Operators need one agent core with two primary ways to use it: interactive termi
 **Non-goals (product CLI)**
 
 - Line-mode `repl` subcommand (removed; use TUI).  
-- Channel gateway as a CLI product (library crate only — [channels.md](./channels.md)).  
-- ACP IDE as a CLI product (library crate only — [protocol-acp.md](./protocol-acp.md)).
+- Additional IDE or messaging adapters.
 
 ## 3. Design
 
@@ -56,7 +55,7 @@ No config file required. Defaults + env (`FORGE_MODEL_ID`, provider keys) + flag
 | Item | |
 |------|--|
 | This document | Surfaces product contract |
-| ACP / channels | Library-only designs |
+| Additional adapters | Out of scope |
 
 ## Related docs
 
