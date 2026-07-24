@@ -1,0 +1,94 @@
+name: Alpha Release
+
+on:
+  push:
+    tags:
+      - "v*-alpha.*"
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify source
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.86.0
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo test --workspace --all-targets --locked
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - runner: macos-13
+            target: x86_64-apple-darwin
+          - runner: macos-14
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.86.0
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Build release binary
+        run: cargo build --release --locked --package forge-cli --target ${{ matrix.target }}
+      - name: Verify release binary
+        shell: bash
+        run: |
+          binary="target/${{ matrix.target }}/release/forge"
+          "$binary" --version
+          binary_version="$($binary --version | awk '{print $2}')"
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [[ "$binary_version" != "$tag_version" ]]; then
+            echo "Tag version $tag_version does not match binary version $binary_version" >&2
+            exit 1
+          fi
+      - name: Package binary
+        shell: bash
+        run: |
+          archive="forge-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          mkdir "$archive"
+          cp "target/${{ matrix.target }}/release/forge" "$archive/forge"
+          cp README.md LICENSE "$archive/"
+          tar -czf "$archive.tar.gz" "$archive"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: forge-${{ matrix.target }}
+          path: forge-*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub prerelease
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Generate checksums
+        working-directory: dist
+        run: sha256sum forge-*.tar.gz > SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          prerelease: true
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/forge-*.tar.gz
+            dist/SHA256SUMS
