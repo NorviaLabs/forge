@@ -2048,6 +2048,10 @@ Reply with ONLY the commit message line.\n\n\
             match action {
                 OverlayAction::None => {}
                 OverlayAction::Close => self.overlay = None,
+                OverlayAction::BeginOnboarding => {
+                    self.open_connect_picker();
+                    self.set_feedback(FeedbackSeverity::Info, "Step 1 of 2 · choose a provider");
+                }
                 OverlayAction::HitlApprove => {
                     self.session
                         .resolve_hitl(HitlDecision::Approve, "tui")
@@ -3129,8 +3133,11 @@ pub async fn run_tui(
 
     let mut app = TuiApp::new(session, runtime);
     if !app.is_provider_connected() {
-        app.open_connect_picker();
-        app.set_feedback(FeedbackSeverity::Info, "Choose a provider to get started");
+        app.overlay = Some(Overlay::welcome());
+        app.set_feedback(
+            FeedbackSeverity::Info,
+            "Welcome · connect a provider to start chatting",
+        );
     }
     let result = run_loop(&mut terminal, &mut app).await;
 
