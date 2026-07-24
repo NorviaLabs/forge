@@ -4467,10 +4467,7 @@ mod tests {
             }
             text.push('\n');
         }
-        assert!(
-            text.contains("gpt-test"),
-            "chrome missing model:\n{text}"
-        );
+        assert!(text.contains("gpt-test"), "chrome missing model:\n{text}");
         assert!(!text.contains("native"), "chrome shows provider:\n{text}");
     }
 
