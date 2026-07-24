@@ -145,6 +145,8 @@ pub struct TuiApp {
     pub busy_phase: BusyPhase,
     /// User prompt queued on Enter; drained by the event loop so the YOU bubble paints first.
     pending_prompt: Option<String>,
+    /// Resume the current agent loop after an interactive turn-limit checkpoint.
+    pending_turn_continue: bool,
     /// Long-running slash action queued to run on the event loop (so the command echo paints).
     pending_sync: bool,
     /// Catalog refresh queued to run on the event loop (can do network).
@@ -223,6 +225,7 @@ impl TuiApp {
             web_search_label: Some("mock".into()),
             activity: ActivityFeed::default(),
             pending_prompt: None,
+            pending_turn_continue: false,
             pending_sync: false,
             pending_model_refresh: false,
             pending_hitl_decision: None,
@@ -2259,6 +2262,17 @@ Reply with ONLY the commit message line.\n\n\
                     self.overlay = None;
                     self.push_toast("denied");
                 }
+                OverlayAction::ContinueTurns => {
+                    self.overlay = None;
+                    self.pending_turn_continue = true;
+                    self.busy = true;
+                    self.push_toast("continuing");
+                }
+                OverlayAction::StopTurns => {
+                    self.overlay = None;
+                    self.status_message = "agent stopped at turn limit".into();
+                    self.set_feedback(FeedbackSeverity::Info, "stopped at turn limit");
+                }
                 OverlayAction::RunCommand(cmd) => {
                     self.overlay = None;
                     self.dispatch_line(&cmd).await?;
@@ -2872,9 +2886,11 @@ Reply with ONLY the commit message line.\n\n\
         &mut self,
         mut terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
     ) -> Result<(), TuiError> {
-        let Some(line) = self.pending_prompt.take() else {
+        let continuing = std::mem::take(&mut self.pending_turn_continue);
+        let line = self.pending_prompt.take();
+        if line.is_none() && !continuing {
             return Ok(());
-        };
+        }
 
         // Refresh OAuth close to expiry and recycle the worker with the current token.
         if let Some(profile_id) = self.connect_profile.clone() {
@@ -2889,12 +2905,14 @@ Reply with ONLY the commit message line.\n\n\
         self.thinking_started = None;
         self.thought_secs = None;
 
-        if let Err(e) = self.session.append_user_message(&line).await {
-            self.busy = false;
-            self.busy_phase = BusyPhase::Idle;
-            self.report_error(&e.to_string());
-            self.last_exit = ExitCode::Failed;
-            return Ok(());
+        if let Some(ref line) = line {
+            if let Err(e) = self.session.append_user_message(line).await {
+                self.busy = false;
+                self.busy_phase = BusyPhase::Idle;
+                self.report_error(&e.to_string());
+                self.last_exit = ExitCode::Failed;
+                return Ok(());
+            }
         }
 
         // Paint YOU message immediately
@@ -3072,13 +3090,9 @@ Reply with ONLY the commit message line.\n\n\
             }
         }
 
-        if outcome_err.is_none()
+        let turn_limit_reached = outcome_err.is_none()
             && self.session.status != forge_types::SessionStatus::Completed
-            && self.session.status != forge_types::SessionStatus::AwaitingHitl
-        {
-            let _ = self.session.fail_max_turns().await;
-            outcome_err = Some("max_turns exceeded".into());
-        }
+            && self.session.status != forge_types::SessionStatus::AwaitingHitl;
 
         self.busy = false;
         self.busy_phase = BusyPhase::Idle;
@@ -3089,7 +3103,19 @@ Reply with ONLY the commit message line.\n\n\
         // Keep thought_secs on the message; clear live field
         self.thought_secs = None;
 
-        if let Some(e) = outcome_err {
+        if turn_limit_reached {
+            self.overlay = Some(Overlay::turn_limit(max_turns));
+            self.last_exit = ExitCode::Success;
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                format!("{max_turns} steps reached — continue?"),
+            );
+            self.push_activity(
+                ActivityKind::Model,
+                FeedbackSeverity::Warn,
+                "turn limit reached",
+            );
+        } else if let Some(e) = outcome_err {
             self.report_error(&e);
             self.last_exit = ExitCode::Failed;
             // Leave queue intact so the operator can fix and continue.
@@ -3315,6 +3341,10 @@ async fn run_loop(
 
         // Drain queued user prompt with streaming redraws (YOU paints before first token)
         if app.pending_prompt.is_some() {
+            app.drain_pending_prompt(Some(terminal)).await?;
+            continue;
+        }
+        if app.pending_turn_continue {
             app.drain_pending_prompt(Some(terminal)).await?;
             continue;
         }

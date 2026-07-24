@@ -127,7 +127,7 @@ impl AcpServer {
         if self.handle.is_none() {
             let session = AgentSession::create(
                 LoopConfig {
-                    max_turns: 16,
+                    max_turns: 128,
                     workspace: self.workspace.clone(),
                     journal_dir: self.journal_dir.clone(),
                     isolation: IsolationMode::Off,
