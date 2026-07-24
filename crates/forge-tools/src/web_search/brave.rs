@@ -129,6 +129,7 @@ impl SearchBackend for BraveBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::web_search::test_support::serve_once;
 
     #[test]
     fn parse_brave_sample() {
@@ -143,5 +144,37 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].title, "Brave");
         assert_eq!(hits[0].snippet, "Search");
+    }
+
+    #[tokio::test]
+    async fn search_sends_query_key_and_parses_response() {
+        let (base_url, request) = serve_once(
+            "200 OK",
+            r#"{"web":{"results":[{"title":"Rust","url":"https://rust-lang.org","description":"Language"}]}}"#,
+        )
+        .await;
+        let backend = BraveBackend::with_base_url(Duration::from_secs(1), base_url);
+        let hits = backend
+            .search(
+                &SearchRequest {
+                    query: "rust lang".into(),
+                    num_results: 2,
+                    recency_days: None,
+                },
+                &SearchSecrets {
+                    api_key: Some("brave-secret".into()),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(hits[0].title, "Rust");
+        let request = request.await.unwrap();
+        assert!(request.starts_with("GET /res/v1/web/search?"));
+        assert!(request.contains("q=rust+lang"));
+        assert!(request.contains("count=2"));
+        assert!(request
+            .to_ascii_lowercase()
+            .contains("x-subscription-token: brave-secret"));
     }
 }
