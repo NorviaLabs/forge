@@ -67,12 +67,15 @@ impl Widget for FooterBar<'_> {
         } else {
             "not connected".into()
         };
-        let model_disp = if self.model.provider.is_empty() {
-            self.model.model.clone()
-        } else if self.model.model.is_empty() {
+        let model_disp = if self.model.model.is_empty() {
             self.model.provider.clone()
         } else {
-            format!("{}/{}", self.model.provider, self.model.model)
+            self.model
+                .model
+                .rsplit('/')
+                .next()
+                .unwrap_or(&self.model.model)
+                .to_string()
         };
         let pct = (self.model.ctx_pct * 100.0).clamp(0.0, 100.0);
         if area.width < 80 {
@@ -197,5 +200,23 @@ mod tests {
 
         let rendered: String = (0..area.width).map(|x| buf.get(x, 0).symbol()).collect();
         assert!(rendered.ends_with("thinking "));
+    }
+
+    #[test]
+    fn renders_only_the_model_name() {
+        let model = FooterModel {
+            provider: "native".into(),
+            model: "openai-codex/gpt-5.6-sol".into(),
+            hints: String::new(),
+            ..FooterModel::default()
+        };
+        let area = Rect::new(0, 0, 79, 1);
+        let mut buf = Buffer::empty(area);
+
+        FooterBar { model: &model }.render(area, &mut buf);
+
+        let rendered: String = (0..area.width).map(|x| buf.get(x, 0).symbol()).collect();
+        assert!(rendered.starts_with("gpt-5.6-sol · ctx"));
+        assert!(!rendered.contains("native/openai-codex"));
     }
 }
