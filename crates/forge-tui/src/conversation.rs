@@ -1069,7 +1069,7 @@ mod tests {
             .filter(|line| {
                 line.spans
                     .first()
-                    .is_some_and(|span| span.content.as_ref() == "  ")
+                    .is_some_and(|span| span.content.as_ref() == "▍ ")
             })
             .count();
         assert_eq!(answer_lines, 1);

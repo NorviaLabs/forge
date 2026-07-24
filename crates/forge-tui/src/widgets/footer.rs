@@ -75,6 +75,15 @@ impl Widget for FooterBar<'_> {
             format!("{}/{}", self.model.provider, self.model.model)
         };
         let pct = (self.model.ctx_pct * 100.0).clamp(0.0, 100.0);
+        if area.width < 80 {
+            let line = Line::from(vec![
+                Span::styled(format!("{} ", model_disp), theme::text()),
+                Span::styled("· ", theme::dim()),
+                Span::styled(format!("ctx {pct:.1}% "), theme::info()),
+            ]);
+            render_line_with_status(area, buf, line, &self.model.status, self.model.status_busy);
+            return;
+        }
         let mut spans = vec![
             Span::styled(format!("{cwd} "), theme::dim()),
             Span::styled("· ", theme::dim()),
@@ -113,24 +122,39 @@ impl Widget for FooterBar<'_> {
             format!("{} ", self.model.hints),
             theme::muted(),
         ));
-        let line = Line::from(spans);
-        let status = format!("{} ", self.model.status);
-        let status_width = status.chars().count().min(area.width as usize) as u16;
-        let status_x = area.x + area.width.saturating_sub(status_width);
-        let left_width = status_x.saturating_sub(area.x + 1);
-
-        buf.set_line(area.x, area.y, &line, left_width);
-        buf.set_string(
-            status_x,
-            area.y,
-            status,
-            if self.model.status_busy {
-                theme::info()
-            } else {
-                theme::text()
-            },
+        render_line_with_status(
+            area,
+            buf,
+            Line::from(spans),
+            &self.model.status,
+            self.model.status_busy,
         );
     }
+}
+
+fn render_line_with_status(
+    area: Rect,
+    buf: &mut Buffer,
+    line: Line<'_>,
+    status_text: &str,
+    status_busy: bool,
+) {
+    let status = format!("{} ", status_text);
+    let status_width = status.chars().count().min(area.width as usize) as u16;
+    let status_x = area.x + area.width.saturating_sub(status_width);
+    let left_width = status_x.saturating_sub(area.x + 1);
+
+    buf.set_line(area.x, area.y, &line, left_width);
+    buf.set_string(
+        status_x,
+        area.y,
+        status,
+        if status_busy {
+            theme::info()
+        } else {
+            theme::text()
+        },
+    );
 }
 
 #[cfg(test)]
