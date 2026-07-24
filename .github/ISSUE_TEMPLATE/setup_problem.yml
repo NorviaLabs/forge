@@ -1,0 +1,42 @@
+name: Alpha setup problem
+description: Get help installing Forge or connecting a provider
+title: "[Setup]: "
+labels: [setup, alpha]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Forge version or release artifact
+      placeholder: v0.1.0-alpha.1 / forge-v0.1.0-alpha.1-aarch64-apple-darwin.tar.gz
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - macOS Apple Silicon
+        - macOS Intel
+        - Linux x86_64
+        - Other / source build
+    validations:
+      required: true
+  - type: textarea
+    id: attempted
+    attributes:
+      label: What did you try?
+      description: Include commands and the complete sanitized error output.
+    validations:
+      required: true
+  - type: textarea
+    id: status
+    attributes:
+      label: Diagnostics
+      description: Paste sanitized output from `forge status` and `forge connect status` when available.
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Sensitive information
+      options:
+        - label: I removed API keys, OAuth tokens, and proprietary information.
+          required: true
