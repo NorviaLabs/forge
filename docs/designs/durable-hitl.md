@@ -20,7 +20,7 @@ High-risk tools need human approval without holding compute and without losing s
 
 - `hitl_wait` / `hitl_resume` journal events.  
 - Status `awaiting_hitl`; process may exit.  
-- Approve/deny via TUI, ACP, or API; re-authorize before execute.
+- Approve/deny via TUI or API; re-authorize before execute.
 
 **Non-goals**
 
@@ -62,4 +62,3 @@ async fn resolve_hitl(session_id: &str, decision: HitlDecision) -> Result<(), Hi
 
 - [durable-execution.md](./durable-execution.md)  
 - [governance.md](./governance.md)  
-- [protocol-acp.md](./protocol-acp.md)  

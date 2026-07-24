@@ -278,10 +278,6 @@ forge
 #   /effort high        → auto|minimal|low|medium|high|xhigh|max
 #   FORGE_REASONING_EFFORT=high forge   → set the startup level
 
-# Speech-to-text (mic → input bar; needs ffmpeg + OPENAI_API_KEY or local whisper):
-#   hold Ctrl+Space     → push-to-talk (release to stop & transcribe)
-#   /stt                → status · /stt speed fast|normal|slow
-
 # Message queue (TUI only — no slash commands):
 #   while processing → type + Enter enqueues (shows above input)
 #   Ctrl+Up/Down → select a queued message

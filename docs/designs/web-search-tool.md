@@ -187,7 +187,7 @@ Env overrides (illustrative):
 
 | Surface | Behavior |
 |---------|----------|
-| Headless / REPL / TUI / ACP | Same tool registry; model decides when to call |
+| Headless / TUI | Same tool registry; model decides when to call |
 | TUI tool card | Name `web_search`, redacted args (show query; never key), status running/done/error |
 | `/tools` | Lists `web_search` when registered |
 | Slash commands | **None** required in Phase 9 |

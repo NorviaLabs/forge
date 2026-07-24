@@ -53,18 +53,6 @@ pub enum SlashCommand {
     },
     /// Stage all changes, generate a commit message from the changeset, commit, and push.
     Sync,
-    /// Configure STT: `/stt` status or `/stt speed fast|normal|slow`.
-    Stt {
-        action: SttAction,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SttAction {
-    /// Show current STT settings.
-    Status,
-    /// Set speed preset (affects local whisper model size for transcription).
-    Speed(String),
 }
 
 pub fn parse_slash(line: &str) -> Option<Result<SlashCommand, CommandError>> {
@@ -137,26 +125,6 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
         "copy" => Ok(SlashCommand::Copy),
         "clear" => Ok(SlashCommand::Clear),
         "sync" => Ok(SlashCommand::Sync),
-        "stt" => {
-            let sub = parts.next().unwrap_or("status").to_ascii_lowercase();
-            match sub.as_str() {
-                "status" | "show" => Ok(SlashCommand::Stt {
-                    action: SttAction::Status,
-                }),
-                "speed" => {
-                    let v = parts
-                        .next()
-                        .ok_or_else(|| CommandError::Usage("/stt speed fast|normal|slow".into()))?
-                        .to_string();
-                    Ok(SlashCommand::Stt {
-                        action: SttAction::Speed(v),
-                    })
-                }
-                other => Err(CommandError::Usage(format!(
-                    "/stt status|speed, got {other}"
-                ))),
-            }
-        }
         other => Err(CommandError::Unknown(other.to_string())),
     }
 }
@@ -246,23 +214,6 @@ mod tests {
     fn no_queue_slash_commands() {
         assert!(parse_slash("/queue").unwrap().is_err());
         assert!(parse_slash("/dequeue").unwrap().is_err());
-    }
-
-    #[test]
-    fn parses_stt() {
-        assert_eq!(
-            parse_slash("/stt").unwrap().unwrap(),
-            SlashCommand::Stt {
-                action: SttAction::Status
-            }
-        );
-        assert_eq!(
-            parse_slash("/stt speed fast").unwrap().unwrap(),
-            SlashCommand::Stt {
-                action: SttAction::Speed("fast".into())
-            }
-        );
-        assert!(parse_slash("/listen").unwrap().is_err());
     }
 
     #[test]
