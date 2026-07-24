@@ -17,6 +17,7 @@ pub enum CommandError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SlashCommand {
     Status,
+    Cost,
     ResumeList,
     Resume {
         session_id: Uuid,
@@ -69,6 +70,10 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
     let cmd = parts.next().unwrap_or("").to_ascii_lowercase();
     match cmd.as_str() {
         "status" => Ok(SlashCommand::Status),
+        "cost" => match parts.next() {
+            None => Ok(SlashCommand::Cost),
+            Some(_) => Err(CommandError::Usage("/cost".into())),
+        },
         "resume" => match parts.next() {
             None => Ok(SlashCommand::ResumeList),
             Some(id) => {
@@ -141,6 +146,15 @@ mod tests {
         );
         assert!(parse_slash("/tools").unwrap().is_err());
         assert!(parse_slash("/journal").unwrap().is_err());
+    }
+
+    #[test]
+    fn parses_cost_without_arguments() {
+        assert_eq!(parse_slash("/cost").unwrap().unwrap(), SlashCommand::Cost);
+        assert!(matches!(
+            parse_slash("/cost extra").unwrap().unwrap_err(),
+            CommandError::Usage(_)
+        ));
     }
 
     #[test]
