@@ -49,6 +49,7 @@ Most coding agents edit **your current checkout** and treat chat history as “m
 |---------|-----------------|
 | Process dies mid-task | **Event journal** records model/tool steps *before* side effects; **`--resume`** continues without blindly replaying completed work |
 | Bad tool args hit disk/shell | **Schema validation first** — invalid calls never execute |
+| Broad rewrites obscure small edits | **`apply_patch`** validates the full patch, confines paths to the workspace, and applies targeted add/update/delete operations |
 | Agent pollutes your branch | Optional **git worktree isolation** — edits stay in a session worktree until `/worktree merge` or discard |
 | Automation needs a subprocess | **`forge run`** with exit codes (`0` ok · `1` failed · `2` HITL · `3` canceled · `4` config) |
 | Vendor lock-in | Open **MIT** harness; models via **LiteLLM** (config/env switch) |
@@ -59,7 +60,7 @@ Most coding agents edit **your current checkout** and treat chat history as “m
 forge --resume <session-id>
 ```
 
-**Fail-closed tools** — Declared input schemas; failures go back to the model, not half-written files.
+**Fail-closed tools** — Declared input schemas; failures go back to the model, not half-written files. For precise edits, `apply_patch` validates every operation before writing and rejects paths outside the active workspace.
 
 **Disposable workspaces** — `forge --worktree` binds file tools to `.forge/worktrees/<session_id>/` on `forge/<id>`; your primary tree stays clean until you choose merge or discard.
 
