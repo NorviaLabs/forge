@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use forge_types::{MessageRole, ModelResponse, ModelStreamEvent, ToolCall, Usage};
 use futures::StreamExt;
@@ -120,14 +120,33 @@ fn request_body(
 ) -> Value {
     let mut instructions = Vec::new();
     let mut input = Vec::new();
+    let function_call_ids: HashSet<&str> = req
+        .messages
+        .iter()
+        .flat_map(|message| message.tool_calls.iter().map(|call| call.id.as_str()))
+        .collect();
+    let function_output_ids: HashSet<&str> = req
+        .messages
+        .iter()
+        .filter(|message| message.role == MessageRole::Tool)
+        .filter_map(|message| message.tool_call_id.as_deref())
+        .collect();
     for message in &req.messages {
         match message.role {
             MessageRole::System => instructions.push(message.content.clone()),
-            MessageRole::Tool => input.push(json!({
-                "type": "function_call_output",
-                "call_id": message.tool_call_id.clone().unwrap_or_default(),
-                "output": message.content
-            })),
+            MessageRole::Tool => {
+                if let Some(call_id) = message
+                    .tool_call_id
+                    .as_deref()
+                    .filter(|call_id| function_call_ids.contains(call_id))
+                {
+                    input.push(json!({
+                        "type": "function_call_output",
+                        "call_id": call_id,
+                        "output": message.content
+                    }));
+                }
+            }
             MessageRole::User => input.push(json!({
                 "type": "message",
                 "role": "user",
@@ -141,12 +160,14 @@ fn request_body(
                         "content": [{"type": "output_text", "text": message.content}]
                     }));
                 }
-                input.extend(message.tool_calls.iter().map(|call| {
-                    json!({
-                        "type": "function_call",
-                        "call_id": call.id,
-                        "name": aliases.get(&call.name).unwrap_or(&call.name),
-                        "arguments": call.arguments.to_string()
+                input.extend(message.tool_calls.iter().filter_map(|call| {
+                    function_output_ids.contains(call.id.as_str()).then(|| {
+                        json!({
+                            "type": "function_call",
+                            "call_id": call.id,
+                            "name": aliases.get(&call.name).unwrap_or(&call.name),
+                            "arguments": call.arguments.to_string()
+                        })
                     })
                 }));
             }
@@ -421,6 +442,47 @@ mod tests {
             .iter()
             .any(|item| item["type"] == "function_call_output"));
         assert_eq!(body["tools"][0]["name"], "read_file");
+    }
+
+    #[test]
+    fn omits_unpaired_tool_history_from_codex_request() {
+        let mut request = request_with_tool("read_file");
+        request.messages = vec![
+            Message::new(MessageRole::User, "hello"),
+            Message {
+                role: MessageRole::Assistant,
+                content: "working".into(),
+                tool_call_id: None,
+                name: None,
+                thinking: None,
+                thinking_duration_secs: None,
+                tool_calls: vec![ToolCall {
+                    id: "orphan-call".into(),
+                    name: "read_file".into(),
+                    arguments: json!({"path":"README.md"}),
+                }],
+            },
+            Message {
+                role: MessageRole::Tool,
+                content: "contents".into(),
+                tool_call_id: Some("orphan-output".into()),
+                name: Some("read_file".into()),
+                thinking: None,
+                thinking_duration_secs: None,
+                tool_calls: vec![],
+            },
+        ];
+        let client = NativeModelClient::from_config(&Config::default()).unwrap();
+        let aliases = tool_aliases(&request);
+
+        let body = request_body(&client, &request, &request.model, &aliases);
+        let input = body["input"].as_array().unwrap();
+
+        assert_eq!(input.len(), 2);
+        assert!(input.iter().all(|item| item["type"] != "function_call"));
+        assert!(input
+            .iter()
+            .all(|item| item["type"] != "function_call_output"));
     }
 
     #[test]
