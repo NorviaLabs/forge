@@ -13,6 +13,9 @@ pub enum Overlay {
     Hitl {
         payload: HitlPayload,
     },
+    TurnLimit {
+        turns: u32,
+    },
     Slash {
         filter: String,
         selected: usize,
@@ -285,6 +288,10 @@ impl Overlay {
         Self::Hitl { payload }
     }
 
+    pub fn turn_limit(turns: u32) -> Self {
+        Self::TurnLimit { turns }
+    }
+
     pub fn connect_api_key(
         profile_id: impl Into<String>,
         title: impl Into<String>,
@@ -434,6 +441,8 @@ pub enum OverlayAction {
     /// Approve and allow this tool for the rest of the session
     HitlApproveSession,
     HitlDeny,
+    ContinueTurns,
+    StopTurns,
     /// Execute slash command string e.g. "/status"
     RunCommand(String),
     /// Insert into input
@@ -464,6 +473,7 @@ pub enum OverlayAction {
 
 pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
     match key {
+        Key::Esc if matches!(overlay, Overlay::TurnLimit { .. }) => OverlayAction::StopTurns,
         Key::Esc => {
             // HITL: Esc dismisses focus but does not approve/deny (design recommendation)
             if matches!(overlay, Overlay::Hitl { .. }) {
@@ -512,6 +522,7 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             OverlayAction::None
         }
         Key::Enter => match overlay {
+            Overlay::TurnLimit { .. } => OverlayAction::ContinueTurns,
             Overlay::Slash {
                 selected, items, ..
             } => {
@@ -656,6 +667,12 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
         Key::Char('d') | Key::Char('D') if matches!(overlay, Overlay::Hitl { .. }) => {
             OverlayAction::HitlDeny
         }
+        Key::Char('y') | Key::Char('Y') if matches!(overlay, Overlay::TurnLimit { .. }) => {
+            OverlayAction::ContinueTurns
+        }
+        Key::Char('n') | Key::Char('N') if matches!(overlay, Overlay::TurnLimit { .. }) => {
+            OverlayAction::StopTurns
+        }
         Key::Char(c) => {
             if let Overlay::Slash { filter, .. } = overlay {
                 let mut f = filter.clone();
@@ -720,6 +737,23 @@ impl Widget for OverlayWidget<'_> {
         // dim full area
         Clear.render(area, buf);
         match self.overlay {
+            Overlay::TurnLimit { turns } => {
+                let r = centered_rect(52, 24, area);
+                let body = format!(
+                    "The agent used {turns} model steps and still has work to do.\n\nContinue for another {turns} steps?\n\n[y/Enter] Continue    [n/Esc] Stop"
+                );
+                Paragraph::new(body)
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_style(theme::warn())
+                            .title(Span::styled(
+                                " Turn limit reached ",
+                                theme::warn().add_modifier(Modifier::BOLD),
+                            )),
+                    )
+                    .render(r, buf);
+            }
             Overlay::Hitl { payload } => {
                 let r = centered_rect(60, 40, area);
                 let args = serde_json::to_string_pretty(&payload.args_redacted)
@@ -1027,6 +1061,27 @@ mod tests {
             OverlayAction::HitlDeny
         );
         assert_eq!(handle_overlay_key(&mut o, Key::Esc), OverlayAction::Close);
+    }
+
+    #[test]
+    fn turn_limit_keys_continue_or_stop() {
+        let mut overlay = Overlay::turn_limit(128);
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::ContinueTurns
+        );
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Char('y')),
+            OverlayAction::ContinueTurns
+        );
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Char('n')),
+            OverlayAction::StopTurns
+        );
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Esc),
+            OverlayAction::StopTurns
+        );
     }
 
     #[test]
