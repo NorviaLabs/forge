@@ -23,7 +23,7 @@ pub fn ollama_profile() -> ConnectProfile {
         },
         api_key_env: vec!["OLLAMA_API_KEY".into()],
         default_base_url: Some(DEFAULT_BASE_URL.into()),
-        default_models: vec!["ollama/llama3.2".into()],
+        default_models: vec![],
         auth_url: Some("https://ollama.com/download".into()),
         model_provider_prefix: "ollama".into(),
     }
@@ -80,7 +80,7 @@ mod tests {
         let p = ollama_profile();
         assert_eq!(p.id, "ollama");
         assert!(!p.needs_tui_api_key_prompt());
-        assert!(p.default_models.iter().all(|m| m.starts_with("ollama/")));
+        assert!(p.default_models.is_empty());
         assert!(p.default_base_url.as_deref().unwrap().contains("11434"));
     }
 }
