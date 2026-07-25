@@ -8,12 +8,14 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct QueueModel {
     pub items: Vec<String>,
     /// 0-based selected row.
     pub selected: Option<usize>,
 }
 
+#[allow(dead_code)]
 pub struct QueueBar<'a> {
     pub model: &'a QueueModel,
 }

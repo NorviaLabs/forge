@@ -146,20 +146,6 @@ pub fn refactor(lang: &str, code: &str, op: &RefactorOp) -> Result<RefactorResul
     Ok(RefactorResult { code: result, changes, captures })
 }
 
-pub fn extract_functions(lang: &str, code: &str) -> Result<Vec<Capture>, QueryError> {
-    let pattern = match lang.parse::<SyntaxLanguage>() {
-        Ok(SyntaxLanguage::Rust) => "(function_item name: (identifier) @name) @fn",
-        Ok(SyntaxLanguage::TypeScript | SyntaxLanguage::JavaScript) => {
-            "(function_declaration name: (identifier) @name) @fn"
-        }
-        Ok(SyntaxLanguage::Python) => "(function_definition name: (identifier) @name) @fn",
-        Ok(SyntaxLanguage::Go) => "(function_declaration name: (identifier) @name) @fn",
-        _ => "(function_declaration) @fn",
-    };
-    query_code(lang, code, pattern)
-}
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
