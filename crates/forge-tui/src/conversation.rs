@@ -892,7 +892,7 @@ impl Widget for ConversationWidget<'_> {
             .borders(Borders::ALL)
             .border_style(theme::border())
             .style(theme::panel_alt())
-            .title(Span::raw(""));
+            .title(Span::styled(" transcript ", theme::muted()));
         Paragraph::new(lines)
             .block(block)
             .scroll((scroll, 0))
