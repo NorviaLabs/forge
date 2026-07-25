@@ -96,6 +96,8 @@ pub struct SessionTokenUsage {
     pub model_steps: u32,
     /// Estimated thinking/reasoning tokens (from thinking text, ~4 chars/token).
     pub thinking_tokens_est: u64,
+    pub prompt_cache_hits: u64,
+    pub prompt_cache_writes: u64,
 }
 
 impl SessionTokenUsage {
@@ -515,6 +517,7 @@ impl AgentSession {
             messages: self.messages.clone(),
             tools,
             model: self.active_model.clone(),
+            prompt_cache: true,
         }
     }
 
