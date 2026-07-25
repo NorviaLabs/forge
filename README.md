@@ -12,20 +12,20 @@
 
 ## What is Forge
 
-Forge is an open-source **AI coding-agent harness**: application scaffolding around foundation models for real repository work. You provide the model; Forge owns the native Rust provider transport, agent loop, tools, durable session state, optional git worktree isolation, and a full-screen terminal UI.
+Forge is an open-source **AI coding-agent harness** written in Rust. It owns the agent loop, tools, durable session state, optional git worktree isolation, and a full-screen terminal UI, while you bring the model. Inference uses **native Rust HTTP/SSE transports** for OpenAI, Anthropic, xAI Grok, OpenCode (Go + Zen), OpenAI Codex, and local Ollama.
 
-**Product surface**
+**Product surfaces**
 
 | Command | Role |
 |---------|------|
-| `forge` | Full-screen TUI (default) |
-| `forge run "…"` | Headless agent (CI / scripts) |
-| `forge status` | Version, workspace, model |
-| `forge connect …` | Provider profiles (e.g. Grok, OpenCode Go) |
+| `forge` | Full-screen TUI (default when run with no subcommand) |
+| `forge run "…"` | Headless agent run — for CI and scripts, returns an exit code |
+| `forge status` | Print version, workspace, and active model |
+| `forge connect …` | Manage provider profiles (credentials, OAuth) |
 
 **How it fits together**
 
-One agent core serves both interactive and headless use. Live inference uses native Rust HTTP/SSE transports for OpenAI, Anthropic, xAI, OpenCode, Ollama, and OpenAI Codex subscriptions. Sessions use an append-only **journal** so work can resume after a crash. Tools can run against a **session git worktree** so the primary checkout stays clean until you merge or discard.
+One agent core (`forge-core`) serves both the interactive TUI and the headless CLI. Sessions append to a **SQLite event journal** so work can resume after a crash or restart. Tools can run against a **session git worktree** so the primary checkout stays clean until you merge or discard.
 
 <p align="center">
   <img src="docs/images/architecture.png" alt="Forge architecture: surfaces, agent session, journal, governance, model providers, workspace and tools" width="880" />
@@ -38,7 +38,7 @@ One agent core serves both interactive and headless use. Live inference uses nat
 | **Durability** | SQLite event journal — resume without redoing completed steps |
 | **Models** | Native Rust provider transports; same tools and journal regardless of vendor |
 | **Workspace** | Your repo, optional `.forge/worktrees/<session>/` isolation |
-| **Tools** | `read_file` · `write_file` · `apply_patch` · `bash` · `fffind` · `ffgrep` · **`git`** (allowlisted subcommands) · `web_search` · MCP |
+| **Tools** | `read_file` · `write_file` · `apply_patch` · `bash` · `fffind` · `ffgrep` · **`git`** (allowlisted subcommands) · `web_search` (optional) · MCP |
 | **Skills** | Optional `SKILL.md` packs from `~/.config/forge/skills/` or `.forge/skills/` injected into the system prompt |
 
 Full design notes: [docs/architecture.md](./docs/architecture.md).
@@ -49,11 +49,11 @@ Want to help? See [CONTRIBUTING.md](./CONTRIBUTING.md) for setup, validation, an
 
 ## Why Forge
 
-Most coding agents edit **your current checkout** and treat chat history as “memory.” That fails when the process dies, a tool call is invalid, or a runaway refactor hits the branch you care about.
+Most coding agents edit **your current checkout** and treat chat history as "memory." That fails when the process dies, a tool call is invalid, or a runaway refactor hits the branch you care about.
 
 | Problem | What Forge does |
 |---------|-----------------|
-| Process dies mid-task | **Event journal** records model/tool steps *before* side effects; **`--resume`** continues without blindly replaying completed work |
+| Process dies mid-task | **Event journal** records model/tool steps *before* side effects; `--resume` continues without blindly replaying completed work |
 | Bad tool args hit disk/shell | **Schema validation first** — invalid calls never execute |
 | Broad rewrites obscure small edits | **`apply_patch`** validates the full patch, confines paths to the workspace, and applies targeted add/update/delete operations |
 | Agent pollutes your branch | Optional **git worktree isolation** — edits stay in `.forge/worktrees/<session>/` until you merge or discard with normal Git |
@@ -68,7 +68,7 @@ forge --resume <session-id>
 
 **Fail-closed tools** — Declared input schemas; failures go back to the model, not half-written files. For precise edits, `apply_patch` validates every operation before writing and rejects paths outside the active workspace.
 
-**Disposable workspaces** — `forge --worktree` binds file tools to `.forge/worktrees/<session_id>/` on `forge/<id>`; your primary tree stays clean until you choose merge or discard.
+**Disposable workspaces** — `forge --worktree` binds file tools to `.forge/worktrees/<session_id>/` on branch `forge/<id>`; your primary tree stays clean until you choose merge or discard.
 
 ---
 
@@ -116,7 +116,7 @@ forge --worktree
 
 ## Auth setup
 
-Do this once before the tutorials. Live models connect directly from Forge's Rust client.
+Do this once before the tutorials. Live models connect directly from Forge's native Rust client — no proxy server required.
 
 ### Option A — API key + model env (most providers)
 
@@ -138,6 +138,8 @@ provider = "native"
 model = "openai/gpt-4.1-mini"
 ```
 
+Legacy provider names (`litellm`, `openai_compatible`, `anthropic`, `xai`, `grok`) are still accepted and migrate to `native`.
+
 ### Option B — Product profiles (`connect`)
 
 ```bash
@@ -157,7 +159,17 @@ forge
 # then: /connect  →  pick xAI Grok  →  complete OAuth
 ```
 
-Keys and tokens are stored in `forge/credentials.toml` under your operating system's user config directory with mode `0600` on Unix. For example, this is normally `~/.config/forge/credentials.toml` on Linux and `~/Library/Application Support/forge/credentials.toml` on macOS. Never commit them.
+| Profile | Auth | Notes |
+|---------|------|-------|
+| `openai` | API key | `openai/…` models |
+| `openai_codex` | OAuth | OpenAI Codex subscriptions |
+| `anthropic` | API key | `anthropic/…` models |
+| `xai` | OAuth (TUI) | xAI Grok; API-key paste is not the Grok path |
+| `opencode_go` | API key | OpenCode Go |
+| `opencode_zen` | API key | OpenCode Zen (pay-per-use catalog) |
+| `ollama` | Local (no key) | Requires `ollama serve` |
+
+Keys and tokens are stored in `forge/credentials.toml` under your operating system's user config directory with mode `0600` on Unix (for example `~/.config/forge/credentials.toml` on Linux, `~/Library/Application Support/forge/credentials.toml` on macOS). Never commit them.
 
 ```bash
 forge status
@@ -192,9 +204,10 @@ forge
    - `/status` — session, model, context
    - `/diff` — tool activity and file changes
    - `/effort high` — set reasoning effort (`auto|minimal|low|medium|high|xhigh|max`)
-   - `/model` — choose a connected model
+   - `/model` — choose a connected model (`/model refresh` re-fetches catalogs)
+   - `/file <path>` — browse and read a workspace file read-only
 5. **Ctrl+K** opens the command palette; **/** + **Tab** completes slash suggestions; **↑/↓** recall prior lines when not in the suggest list.
-6. Select visible output with the mouse and use your terminal’s normal copy shortcut. Use **Page Up/Page Down** to scroll the conversation, or `/copy` to copy the last assistant answer.
+6. Select visible output with the mouse and use your terminal's normal copy shortcut. Use **Page Up/Page Down** to scroll the conversation, or `/copy` to copy the last assistant answer.
 7. Quit with `/quit` or **Ctrl+C**.
 
 <p align="center">
@@ -296,15 +309,6 @@ forge --resume <uuid> run "Continue from where you left off"
 
 **Goal:** Attach credentials for a productized provider on the native Rust path.
 
-| Profile | Auth | Example |
-|---------|------|---------|
-| `openai` | API key | `forge connect openai --key "$OPENAI_API_KEY"` |
-| `anthropic` | API key | `forge connect anthropic --key "$ANTHROPIC_API_KEY"` |
-| `opencode_go` | API key | `forge connect opencode_go --key "$OPENCODE_API_KEY"` |
-| `opencode_zen` | API key | `forge connect opencode_zen --key "$OPENCODE_API_KEY"` (pay-per-use Zen catalog) |
-| `ollama` | Local (no key) | `forge connect ollama` then pull a model in Ollama |
-| `xai` | OAuth | TUI `/connect` → xAI Grok |
-
 ```bash
 forge connect list
 forge connect openai --key "$OPENAI_API_KEY"
@@ -344,10 +348,10 @@ Optional instruction packs the agent loads into its system prompt:
 
 | Location | Scope |
 |----------|-------|
+| `<workspace>/.forge/skills/<name>/SKILL.md` | Project only |
 | `~/.config/forge/skills/<name>/SKILL.md` | Global (all projects) |
-| `<workspace>/.forge/skills/<name>/SKILL.md` | Project only (overrides global with the same name) |
 
-Drop a `SKILL.md` in either path and start a new session. No extra config flag is required.
+Project skills override global skills with the same name. Drop a `SKILL.md` in either path and start a new session — no extra config flag is required.
 
 ---
 
@@ -358,14 +362,16 @@ Optional. Defaults + env + flags are enough (see [Auth setup](#auth-setup)).
 | Env | |
 |-----|--|
 | `FORGE_MODEL_ID` | Provider/model id, e.g. `openai/gpt-4.1-mini` |
-| `FORGE_MODEL_PROVIDER` | `native` (`litellm` remains a legacy alias) |
+| `FORGE_MODEL_PROVIDER` | `native` (production) or `mock` (offline CI). Legacy aliases migrate to `native` |
 | `FORGE_REASONING_EFFORT` | Startup reasoning effort (`auto|minimal|low|medium|high|xhigh|max`) |
-| `OPENAI_API_KEY` / … | Provider credentials for native transports |
 | `FORGE_WORKSPACE` | Project root (default: cwd) |
+| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `XAI_API_KEY` / … | Provider credentials for native transports |
 
-**Flags:** `--config` · `--workspace` · `--model` · `--worktree` · `--resume` · `--max-turns`
+**Flags:** `--config` · `--workspace` · `--model` · `--worktree` · `--resume` · `--max-turns` (default 128)
 
 **CLI:** `forge` (TUI) · `run` · `status` · `connect`
+
+`forge.toml` also supports `[mcp.servers]` entries for external MCP tool servers, and `[tools]`/`[model]`/`[journal]`/`[tui]` sections.
 
 ---
 
