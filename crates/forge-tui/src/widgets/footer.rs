@@ -55,8 +55,8 @@ impl Widget for FooterBar<'_> {
         if area.height == 0 {
             return;
         }
-        let cwd = if self.model.cwd.chars().count() > 28 {
-            let s: String = self.model.cwd.chars().rev().take(26).collect();
+        let cwd = if self.model.cwd.chars().count() > 24 {
+            let s: String = self.model.cwd.chars().rev().take(22).collect();
             format!("…{}", s.chars().rev().collect::<String>())
         } else {
             self.model.cwd.clone()
@@ -90,10 +90,7 @@ impl Widget for FooterBar<'_> {
         let mut spans = vec![
             Span::styled(format!("{cwd} "), theme::dim()),
             Span::styled("· ", theme::dim()),
-            Span::styled(
-                format!("session={} ", self.model.session_short),
-                theme::muted(),
-            ),
+            Span::styled(format!("sess={} ", self.model.session_short), theme::muted()),
             Span::styled("· ", theme::dim()),
             Span::styled(
                 format!("{} ", conn),
@@ -118,7 +115,7 @@ impl Widget for FooterBar<'_> {
         ];
         if self.model.worktree_on {
             spans.push(Span::styled("· ", theme::dim()));
-            spans.push(Span::styled("worktree ", theme::warn()));
+            spans.push(Span::styled("wt ", theme::warn()));
         }
         spans.push(Span::styled("· ", theme::dim()));
         spans.push(Span::styled(
