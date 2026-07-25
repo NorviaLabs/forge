@@ -248,6 +248,9 @@ pub struct InputBar<'a> {
 
 impl Widget for InputBar<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
         let base = if self.model.dimmed {
             theme::dim()
         } else if self.model.history_browse {
@@ -340,7 +343,11 @@ impl Widget for InputBar<'_> {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(border)
-            .style(theme::panel())
+            .style(if self.model.history_browse {
+                theme::panel_alt()
+            } else {
+                theme::panel()
+            })
             .title(Span::styled(title, theme::muted()));
         Paragraph::new(lines)
             .style(Style::default().add_modifier(if self.model.dimmed {
