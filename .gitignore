@@ -22,3 +22,6 @@ Thumbs.db
 __pycache__/
 coverage/
 lcov.info
+node_modules/
+package-lock.json
+package.json
