@@ -178,7 +178,7 @@ mod tests {
 
         FooterBar { model: &model }.render(area, &mut buf);
 
-        let rendered: String = (0..area.width).map(|x| buf.get(x, 0).symbol()).collect();
+        let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
         assert!(rendered.ends_with("thinking "));
     }
 
@@ -195,7 +195,7 @@ mod tests {
 
         FooterBar { model: &model }.render(area, &mut buf);
 
-        let rendered: String = (0..area.width).map(|x| buf.get(x, 0).symbol()).collect();
+        let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
         assert!(rendered.starts_with("gpt-5.6-sol · ctx"));
         assert!(!rendered.contains("native/openai-codex"));
     }
