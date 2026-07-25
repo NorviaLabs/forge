@@ -39,6 +39,7 @@ pub struct ModelRequest {
     pub messages: Vec<Message>,
     pub tools: Vec<ToolDescriptor>,
     pub model: String,
+    pub prompt_cache: bool,
 }
 
 #[async_trait]
@@ -122,6 +123,7 @@ mod tests {
                 }],
                 tools: vec![],
                 model: "mock".into(),
+                prompt_cache: true,
             })
             .await
             .unwrap();
@@ -145,6 +147,7 @@ mod tests {
                 messages: vec![],
                 tools: vec![],
                 model: "mock".into(),
+                prompt_cache: true,
             })
             .await
             .unwrap();
