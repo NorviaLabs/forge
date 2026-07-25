@@ -92,6 +92,16 @@ impl Widget for FeedbackBar<'_> {
 /// Map raw errors to operator-facing copy (TUI-08).
 pub fn classify_operator_error(raw: &str) -> String {
     let lower = raw.to_ascii_lowercase();
+    if lower.contains("validation")
+        || lower.contains("schema")
+        || lower.contains("invalid tool")
+        || lower.contains("invalid argument")
+    {
+        let trimmed: String = raw.chars().take(200).collect();
+        return format!(
+            "Tool validation failed before execution: {trimmed}. No side effects were applied."
+        );
+    }
     if lower.contains("429") || lower.contains("rate limit") || lower.contains("rate_limit") {
         return "Model error: rate limited (HTTP 429). Wait and retry, or /model.".into();
     }
@@ -134,6 +144,13 @@ mod tests {
     #[test]
     fn classify_auth() {
         assert!(classify_operator_error("401 unauthorized").contains("authentication"));
+    }
+
+    #[test]
+    fn classify_validation() {
+        let message = classify_operator_error("schema validation failed: path is required");
+        assert!(message.contains("before execution"));
+        assert!(message.contains("No side effects"));
     }
 
     #[test]
