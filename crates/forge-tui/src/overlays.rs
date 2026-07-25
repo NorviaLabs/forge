@@ -7,6 +7,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Modifier;
 use ratatui::text::Span;
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Widget};
+use std::path::Path;
 
 #[derive(Debug, Clone)]
 pub enum Overlay {
@@ -564,6 +565,13 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             OverlayAction::None
         }
         Key::Left => {
+            if let Some(path) = match overlay {
+                Overlay::FileExplorer { cwd, .. } => parent_dir(cwd),
+                Overlay::FileViewer { path, .. } => parent_dir(path),
+                _ => None,
+            } {
+                return OverlayAction::FilePick { path, is_dir: true };
+            }
             if let Overlay::Model {
                 provider_selected,
                 model_selected,
@@ -795,6 +803,20 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             }
             OverlayAction::None
         }
+        Key::Backspace
+            if matches!(
+                overlay,
+                Overlay::FileExplorer { .. } | Overlay::FileViewer { .. }
+            ) =>
+        {
+            match overlay {
+                Overlay::FileExplorer { cwd, .. } => parent_dir(cwd),
+                Overlay::FileViewer { path, .. } => parent_dir(path),
+                _ => None,
+            }
+            .map(|path| OverlayAction::FilePick { path, is_dir: true })
+            .unwrap_or(OverlayAction::None)
+        }
         Key::Char('a') | Key::Char('A') if matches!(overlay, Overlay::Hitl { .. }) => {
             OverlayAction::HitlApprove
         }
@@ -828,6 +850,12 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
         }
         _ => OverlayAction::None,
     }
+}
+
+fn parent_dir(path: &str) -> Option<String> {
+    Path::new(path)
+        .parent()
+        .map(|path| path.display().to_string())
 }
 
 /// Minimal key enum for testable overlay handling (mapped from crossterm in app).
@@ -1164,7 +1192,7 @@ impl Widget for OverlayWidget<'_> {
                     .border_style(theme::border())
                     .style(theme::panel())
                     .title(Span::styled(
-                        " File explorer · readonly · ↑↓ Enter · Esc close ",
+                        " File explorer · readonly · ↑↓ Enter · ←/Backspace up · Esc close ",
                         theme::brand(),
                     ));
                 let inner = block.inner(r);
@@ -1183,7 +1211,7 @@ impl Widget for OverlayWidget<'_> {
                 List::new(list_items).render(regions[1], buf);
                 let status = error
                     .as_deref()
-                    .unwrap_or("Enter opens directories or renders a file");
+                    .unwrap_or("Enter opens directories/files · ←/Backspace moves up");
                 Paragraph::new(status)
                     .style(theme::muted())
                     .render(regions[2], buf);
@@ -1209,7 +1237,7 @@ impl Widget for OverlayWidget<'_> {
                     .collect::<Vec<_>>()
                     .join("\n");
                 let title = format!(
-                    " {} · readonly · {}/{} · ↑↓ scroll · Esc close ",
+                    " {} · readonly · {}/{} · ↑↓ scroll · ←/Backspace back · Esc close ",
                     path,
                     (*scroll + 1).min(lines.len().max(1)),
                     lines.len().max(1)
@@ -1541,6 +1569,32 @@ mod tests {
             a,
             OverlayAction::ConnectCompleteOauth {
                 profile_id: "xai".into()
+            }
+        );
+    }
+
+    #[test]
+    fn file_explorer_left_moves_to_parent() {
+        let mut o = Overlay::file_explorer("/workspace/src", vec![], None);
+        let a = handle_overlay_key(&mut o, Key::Left);
+        assert_eq!(
+            a,
+            OverlayAction::FilePick {
+                path: "/workspace".into(),
+                is_dir: true,
+            }
+        );
+    }
+
+    #[test]
+    fn file_viewer_backspace_returns_to_containing_dir() {
+        let mut o = Overlay::file_viewer("/workspace/src/lib.rs", "contents");
+        let a = handle_overlay_key(&mut o, Key::Backspace);
+        assert_eq!(
+            a,
+            OverlayAction::FilePick {
+                path: "/workspace/src".into(),
+                is_dir: true,
             }
         );
     }
