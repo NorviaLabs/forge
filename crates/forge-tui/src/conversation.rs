@@ -891,7 +891,7 @@ impl Widget for ConversationWidget<'_> {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(theme::border())
-            .style(theme::panel())
+            .style(theme::panel_alt())
             .title(Span::raw(""));
         Paragraph::new(lines)
             .block(block)
