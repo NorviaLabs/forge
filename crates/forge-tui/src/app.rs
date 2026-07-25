@@ -43,7 +43,9 @@ use crate::overlays::{
     filter_palette, handle_overlay_key, models_from_catalog, ConnectProfileItem, FileExplorerItem,
     Key as OverlayKey, Overlay, OverlayAction, OverlayWidget, PaletteItem, ResumeSessionItem,
 };
+use crate::sidebar::{SidebarModel, SidebarWidget};
 use crate::theme;
+use crate::widgets::status::StatusBar;
 use crate::widgets::{
     classify_operator_error, session_chrome_lines, BusyPhase, FeedbackBar, FeedbackModel,
     FeedbackSeverity, FooterBar, FooterModel, InputBar, InputModel, StatusModel,
@@ -1894,8 +1896,9 @@ Reply with ONLY the commit message line.\n\n\
         }
         let fb_h = if self.feedback.is_empty() { 0 } else { 1 };
         let input_h = (self.input.visual_lines() + 2).clamp(3, 8);
-        let regions = split_areas_full(area, fb_h, input_h, false, 0);
+        let regions = split_areas_full(area, fb_h, input_h, true, 0);
         let status = self.refresh_status_model();
+        frame.render_widget(StatusBar { model: &status }, regions.status);
 
         let stream_wait = if self.busy && self.pending_prompt.is_none() {
             let elapsed = if !self.stream_thinking.is_empty() {
@@ -1955,6 +1958,10 @@ Reply with ONLY the commit message line.\n\n\
             crate::conversation::ConversationWidget { model: &conv },
             regions.chat,
         );
+        if let Some(sidebar_area) = regions.sidebar {
+            let sidebar = SidebarModel::from_session(&self.session);
+            frame.render_widget(SidebarWidget { model: &sidebar }, sidebar_area);
+        }
 
         // Notices (help, connect list, multi-line status) just above input
         if !self.notices.is_empty() && self.overlay.is_none() {
@@ -4567,7 +4574,7 @@ mod tests {
             text.push('\n');
         }
         assert!(text.contains("gpt-test"), "chrome missing model:\n{text}");
-        assert!(!text.contains("native"), "chrome shows provider:\n{text}");
+        assert!(text.contains("native"), "chrome missing provider:\n{text}");
     }
 
     #[tokio::test]

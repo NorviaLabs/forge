@@ -9,6 +9,7 @@ const CONTENT_WIDTH_PERCENT: u32 = 95;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LayoutRegions {
+    pub status: Rect,
     pub chat: Rect,
     pub sidebar: Option<Rect>,
     /// Phase 10 / TUI-08 — 0-height when empty.
@@ -49,6 +50,7 @@ pub fn split_areas_full(
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(1),       // status
             Constraint::Min(3),          // main
             Constraint::Length(fb),      // feedback
             Constraint::Length(qh),      // message queue
@@ -57,17 +59,30 @@ pub fn split_areas_full(
         ])
         .split(content_area);
 
-    let main = rows[0];
-    let feedback = rows[1];
-    let queue = rows[2];
-    let input = rows[3];
-    let footer = rows[4];
+    let status = rows[0];
+    let main = rows[1];
+    let feedback = rows[2];
+    let queue = rows[3];
+    let input = rows[4];
+    let footer = rows[5];
 
-    let _ = show_sidebar;
+    // Preserve a usable chat width on smaller terminals. The sidebar is a
+    // secondary surface and disappears below 100 columns.
+    let show_sidebar = show_sidebar && content_area.width >= 100;
+    let (chat, sidebar) = if show_sidebar {
+        let columns = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(40), Constraint::Length(28)])
+            .split(main);
+        (columns[0], Some(columns[1]))
+    } else {
+        (main, None)
+    };
 
     LayoutRegions {
-        chat: main,
-        sidebar: None,
+        status,
+        chat,
+        sidebar,
         feedback,
         queue,
         input,
@@ -87,8 +102,10 @@ mod tests {
     fn wide_layout_uses_95_percent_width_for_chat() {
         let area = Rect::new(0, 0, 120, 40);
         let r = split_areas(area);
-        assert!(r.sidebar.is_none());
-        assert_eq!(r.chat, Rect::new(3, 0, 114, 36));
+        assert!(r.sidebar.is_some());
+        assert_eq!(r.status, Rect::new(3, 0, 114, 1));
+        assert_eq!(r.chat, Rect::new(3, 1, 86, 35));
+        assert_eq!(r.sidebar, Some(Rect::new(89, 1, 28, 35)));
         assert_eq!(r.footer.height, 1);
         assert_eq!(r.input.height, 3);
         assert_eq!(r.feedback.height, 0);
@@ -100,7 +117,9 @@ mod tests {
     fn very_wide_layout_centers_the_95_percent_content_column() {
         let area = Rect::new(0, 0, 200, 40);
         let r = split_areas(area);
-        assert_eq!(r.chat, Rect::new(5, 0, 190, 36));
+        assert_eq!(r.status, Rect::new(5, 0, 190, 1));
+        assert_eq!(r.chat, Rect::new(5, 1, 162, 35));
+        assert_eq!(r.sidebar, Some(Rect::new(167, 1, 28, 35)));
         assert_eq!(r.input.x, 5);
         assert_eq!(r.input.width, 190);
         assert_eq!(r.footer.x, 5);
@@ -129,6 +148,7 @@ mod tests {
         let r = split_areas(area);
         assert!(r.sidebar.is_none());
         assert_eq!(r.chat.width, 57);
+        assert_eq!(r.status.width, 57);
     }
 
     #[test]
