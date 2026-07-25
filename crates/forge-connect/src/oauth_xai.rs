@@ -28,6 +28,14 @@ pub const DEFAULT_SCOPES: &str = "openid profile email offline_access api:access
 
 const GRANT_DEVICE_CODE: &str = "urn:ietf:params:oauth:grant-type:device_code";
 
+/// Look up `primary`, falling back to `fallback`, then `default`.
+/// ponytail: single-threaded init path, perf irrelevant.
+fn env_with_fallback(primary: &str, fallback: &str, default: &str) -> String {
+    std::env::var(primary)
+        .or_else(|_| std::env::var(fallback))
+        .unwrap_or_else(|_| default.into())
+}
+
 #[derive(Debug, Error)]
 pub enum XaiOauthError {
     #[error("HTTP: {0}")]
@@ -63,19 +71,12 @@ impl Default for XaiOauthClient {
 
 impl XaiOauthClient {
     pub fn from_env() -> Self {
-        let issuer = std::env::var("FORGE_XAI_OAUTH_ISSUER")
-            .or_else(|_| std::env::var("GROK_OAUTH2_ISSUER"))
-            .unwrap_or_else(|_| DEFAULT_ISSUER.into());
-        let client_id = std::env::var("FORGE_XAI_OAUTH_CLIENT_ID")
-            .or_else(|_| std::env::var("GROK_OAUTH2_CLIENT_ID"))
-            .unwrap_or_else(|_| DEFAULT_CLIENT_ID.into());
-        let scopes = std::env::var("FORGE_XAI_OAUTH_SCOPES")
-            .or_else(|_| std::env::var("GROK_OAUTH2_SCOPES"))
-            .unwrap_or_else(|_| DEFAULT_SCOPES.into());
         Self {
-            issuer: issuer.trim_end_matches('/').into(),
-            client_id,
-            scopes,
+            issuer: env_with_fallback("FORGE_XAI_OAUTH_ISSUER", "GROK_OAUTH2_ISSUER", DEFAULT_ISSUER)
+                .trim_end_matches('/')
+                .into(),
+            client_id: env_with_fallback("FORGE_XAI_OAUTH_CLIENT_ID", "GROK_OAUTH2_CLIENT_ID", DEFAULT_CLIENT_ID),
+            scopes: env_with_fallback("FORGE_XAI_OAUTH_SCOPES", "GROK_OAUTH2_SCOPES", DEFAULT_SCOPES),
         }
     }
 

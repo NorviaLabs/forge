@@ -39,14 +39,12 @@ pub use openai_codex::{
     ACCOUNT_ID_ENV as OPENAI_CODEX_ACCOUNT_ID_ENV, PROFILE_ID as OPENAI_CODEX_PROFILE_ID,
 };
 pub use opencode_go::{
-    opencode_go_profile, verify_api_key as verify_opencode_go_api_key,
-    API_BASE_ENV as OPENCODE_API_BASE_ENV, DEFAULT_BASE_URL as OPENCODE_GO_DEFAULT_BASE_URL,
-    PROFILE_ID as OPENCODE_GO_PROFILE_ID,
+    opencode_go_profile, API_BASE_ENV as OPENCODE_API_BASE_ENV,
+    DEFAULT_BASE_URL as OPENCODE_GO_DEFAULT_BASE_URL, PROFILE_ID as OPENCODE_GO_PROFILE_ID,
 };
 pub use opencode_zen::{
-    opencode_zen_profile, verify_api_key as verify_opencode_zen_api_key,
-    API_BASE_ENV as OPENCODE_ZEN_API_BASE_ENV, DEFAULT_BASE_URL as OPENCODE_ZEN_DEFAULT_BASE_URL,
-    PROFILE_ID as OPENCODE_ZEN_PROFILE_ID,
+    opencode_zen_profile, API_BASE_ENV as OPENCODE_ZEN_API_BASE_ENV,
+    DEFAULT_BASE_URL as OPENCODE_ZEN_DEFAULT_BASE_URL, PROFILE_ID as OPENCODE_ZEN_PROFILE_ID,
 };
 pub use profile::{ConnectOutcome, ConnectProfile, ConnectStatus, KeySource};
 pub use registry::{builtin_registry, ConnectRegistry};
