@@ -6,6 +6,7 @@ license.workspace = true
 description = "Schema-validated tool protocol (CORE-01)"
 
 [dependencies]
+forge-syntax = { workspace = true }
 forge-types = { workspace = true }
 forge-config = { workspace = true }
 async-trait = { workspace = true }
