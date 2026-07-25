@@ -128,12 +128,17 @@ impl Widget for StatusBar<'_> {
             return;
         }
         let (label, style) = self.model.status_label();
-        let model_disp = StatusModel::truncate_model(&self.model.model, 32);
+        let model_disp = StatusModel::truncate_model(&self.model.model, 24);
         let provider = if self.model.provider.is_empty() {
             "—"
         } else {
             self.model.provider.as_str()
         };
+        let ctx = format!("ctx {:.1}%", self.model.ctx_pct * 100.0);
+        let cache = format!(
+            "cache {} / {}",
+            self.model.prompt_cache_hits, self.model.prompt_cache_writes
+        );
 
         // Calm single line: connect · state · model · ctx · wt (no product title)
         let (conn_label, conn_style) = if self.model.provider_connected {
@@ -158,6 +163,10 @@ impl Widget for StatusBar<'_> {
             Span::styled(format!("{label} "), style),
             Span::styled("· ", theme::dim()),
             Span::styled(format!("{provider}/{model_disp} "), theme::text()),
+            Span::styled("· ", theme::dim()),
+            Span::styled(format!("{} ", ctx), theme::info()),
+            Span::styled("· ", theme::dim()),
+            Span::styled(format!("{} ", cache), theme::muted()),
             Span::styled("· ", theme::dim()),
             Span::styled(format!("effort={} ", self.model.effort), theme::text()),
         ];
