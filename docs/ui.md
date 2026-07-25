@@ -135,7 +135,7 @@ done
 
 - Modal: tool, redacted args, risk reason, Approve / Deny  
 - Status pill `awaiting_hitl`; “compute released”  
-- Also operable via `/approve` · `/deny` after process restart  
+- Operable through the modal after process restart; the pending request remains durable until resolved.  
 
 ---
 
@@ -185,7 +185,6 @@ done
 | `/compact` | Force handoff + clear context |
 | `/status` | Session, budget, journal cursor, and token usage |
 | `/model` | Switch provider/model (config only) |
-| `/approve` / `/deny` | HITL decision |
 | `/journal` `/quit` | Additional commands in design catalog |
 | `/connect` | Phase 6 provider connect |
 
