@@ -1959,7 +1959,13 @@ Reply with ONLY the commit message line.\n\n\
             regions.chat,
         );
         if let Some(sidebar_area) = regions.sidebar {
-            let sidebar = SidebarModel::from_session(&self.session);
+            let activity = self
+                .activity
+                .recent(8)
+                .iter()
+                .map(|item| item.summary.clone())
+                .collect::<Vec<_>>();
+            let sidebar = SidebarModel::from_session_with_activity(&self.session, &activity);
             frame.render_widget(SidebarWidget { model: &sidebar }, sidebar_area);
         }
 
