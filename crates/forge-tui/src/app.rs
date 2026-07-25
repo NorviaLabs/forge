@@ -2810,7 +2810,7 @@ Reply with ONLY the commit message line.\n\n\
             if let Some(pid) = self.connect_profile.clone() {
                 self.apply_connect_credentials(&pid);
             } else {
-                // Try restore mid-session if credentials appeared (e.g. forge connect in another terminal)
+                // Try restore mid-session if credentials appeared (e.g. /connect in another terminal)
                 let restored = {
                     let svc = ConnectService {
                         registry: &self.connect_registry,
