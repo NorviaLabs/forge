@@ -38,7 +38,7 @@ pub use widgets::{
     FooterModel, InputModel, StatusModel,
 };
 
-/// Headless / process exit codes.
+/// Process exit codes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
 pub enum ExitCode {
