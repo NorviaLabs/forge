@@ -8,4 +8,4 @@
 - [x] Refine conversation card spacing
 - [x] Polish sidebar panel styling
 - [x] Group `/status` diagnostics more clearly
-- [ ] Update screenshots and docs
+- [x] Update screenshots and docs
