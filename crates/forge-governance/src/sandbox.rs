@@ -5,8 +5,6 @@ use thiserror::Error;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SandboxProfile {
     Light,
-    Container,
-    Ebpf,
 }
 
 #[derive(Debug, Clone)]
@@ -68,35 +66,6 @@ impl Sandbox for LightSandbox {
             is_error: !out.status.success(),
         })
     }
-}
-
-/// Container profile: Phase 2 marks intent; without docker, returns Unavailable.
-pub struct ContainerSandbox;
-
-impl Sandbox for ContainerSandbox {
-    fn exec(&self, _req: ExecRequest) -> Result<ExecResult, SandboxError> {
-        // Detect docker; if missing, fail closed with clear error (not silent primary).
-        let docker = Command::new("docker").arg("version").output();
-        match docker {
-            Ok(o) if o.status.success() => Err(SandboxError::Other(
-                "container profile configured but full image policy not wired in this build; use light"
-                    .into(),
-            )),
-            _ => Err(SandboxError::Unavailable("container".into())),
-        }
-    }
-}
-
-pub fn sandbox_for(profile: SandboxProfile) -> Box<dyn Sandbox> {
-    match profile {
-        SandboxProfile::Light | SandboxProfile::Ebpf => Box::new(LightSandbox),
-        SandboxProfile::Container => Box::new(ContainerSandbox),
-    }
-}
-
-#[allow(dead_code)]
-fn _ensure_sandbox_for_linked() {
-    let _ = sandbox_for(SandboxProfile::Light);
 }
 
 #[cfg(test)]

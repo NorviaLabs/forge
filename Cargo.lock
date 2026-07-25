@@ -977,20 +977,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "forge-feedback"
-version = "0.1.0-alpha.5"
-dependencies = [
- "async-trait",
- "forge-types",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.19",
- "tokio",
- "uuid",
-]
-
-[[package]]
 name = "forge-governance"
 version = "0.1.0-alpha.5"
 dependencies = [
@@ -1048,7 +1034,6 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.19",
- "tracing",
  "uuid",
 ]
 
@@ -1108,7 +1093,6 @@ name = "forge-workspace"
 version = "0.1.0-alpha.5"
 dependencies = [
  "forge-types",
- "serde",
  "tempfile",
  "thiserror 2.0.19",
  "uuid",

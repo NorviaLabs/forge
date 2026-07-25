@@ -9,7 +9,6 @@ description = "Git worktree isolation (CTX-03)"
 forge-types = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
-serde = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
