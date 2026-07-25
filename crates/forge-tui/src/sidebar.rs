@@ -1,12 +1,12 @@
 //! Sidebar panels (TUI-03 / tui-sidebar.md).
 
 use crate::theme;
+use forge_core::AgentSession;
+use forge_types::SessionStatus;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
-use forge_core::AgentSession;
-use forge_types::SessionStatus;
 
 #[derive(Debug, Clone)]
 pub struct SidebarModel {

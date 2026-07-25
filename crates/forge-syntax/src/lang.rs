@@ -117,7 +117,9 @@ fn language_map() -> &'static HashMap<&'static str, SyntaxLanguage> {
 /// Get a parser for a syntax language.
 pub fn get_parser(lang: SyntaxLanguage) -> Parser {
     let mut parser = Parser::new();
-    parser.set_language(&lang.tree_sitter()).expect("language should be valid");
+    parser
+        .set_language(&lang.tree_sitter())
+        .expect("language should be valid");
     parser
 }
 
@@ -145,9 +147,7 @@ pub fn detect_language(input: &str) -> Result<SyntaxLanguage, &'static str> {
     }
 
     // Check for HTML
-    if trimmed.starts_with("<!DOCTYPE")
-        || trimmed.starts_with("<html")
-        || trimmed.contains("<html")
+    if trimmed.starts_with("<!DOCTYPE") || trimmed.starts_with("<html") || trimmed.contains("<html")
     {
         return Ok(SyntaxLanguage::Html);
     }
