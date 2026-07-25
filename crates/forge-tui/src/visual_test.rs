@@ -171,4 +171,28 @@ mod tests {
             app.status_message
         );
     }
+
+    #[tokio::test]
+    async fn visual_wide_shell_shows_sidebar_activity() {
+        let (_d, mut app) = app().await;
+        app.push_activity(
+            crate::activity::ActivityKind::Model,
+            crate::widgets::FeedbackSeverity::Info,
+            "model started",
+        );
+        let backend = TestBackend::new(120, 30);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| app.draw(f)).unwrap();
+        let text = buffer_text(&term);
+        assert!(text.contains("sess "), "missing session chrome:\n{text}");
+        assert!(text.contains("SESSION"), "missing sidebar:\n{text}");
+        assert!(
+            text.contains("ACTIVITY"),
+            "missing activity section:\n{text}"
+        );
+        assert!(
+            text.contains("model started"),
+            "missing activity item:\n{text}"
+        );
+    }
 }
