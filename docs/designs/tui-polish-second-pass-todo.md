@@ -3,7 +3,7 @@
 Goal: move the live TUI closer to the review screenshots while staying within terminal constraints.
 
 - [x] Add branded, chip-like status chrome
-- [ ] Make footer read like a quiet metadata strip
+- [x] Make footer read like a quiet metadata strip
 - [ ] Give the composer a stronger command-bar feel
 - [ ] Add clearer panel titles and surfaces
 - [ ] Make sidebar rows match screenshot key/value styling

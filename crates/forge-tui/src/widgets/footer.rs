@@ -90,10 +90,9 @@ impl Widget for FooterBar<'_> {
         let mut spans = vec![
             Span::styled(format!("{cwd} "), theme::dim()),
             Span::styled("· ", theme::dim()),
-            Span::styled(
-                format!("sess={} ", self.model.session_short),
-                theme::muted(),
-            ),
+            Span::styled(format!("{} ", model_disp), theme::muted()),
+            Span::styled("· ", theme::dim()),
+            Span::styled(format!("ctx {pct:.1}% "), theme::info()),
             Span::styled("· ", theme::dim()),
             Span::styled(
                 format!("{} ", conn),
@@ -102,18 +101,6 @@ impl Widget for FooterBar<'_> {
                 } else {
                     theme::warn()
                 },
-            ),
-            Span::styled("· ", theme::dim()),
-            Span::styled(format!("{} ", model_disp), theme::text()),
-            Span::styled("· ", theme::dim()),
-            Span::styled(format!("effort={} ", self.model.effort), theme::text()),
-            Span::styled("· ", theme::dim()),
-            Span::styled(
-                format!(
-                    "ctx {}/{} [{pct:.1}%] ",
-                    self.model.ctx_used, self.model.ctx_total
-                ),
-                theme::info(),
             ),
         ];
         if self.model.worktree_on {
