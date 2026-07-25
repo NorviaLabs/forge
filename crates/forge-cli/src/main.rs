@@ -26,7 +26,9 @@ async fn main() {
     let _cli = Cli::parse();
 
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("error")))
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("error")),
+        )
         .with_writer(std::io::stderr)
         .with_target(true)
         .with_ansi(false)
