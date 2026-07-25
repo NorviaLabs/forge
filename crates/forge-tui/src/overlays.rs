@@ -1,5 +1,6 @@
 //! Overlays: HITL, slash palette, model picker (TUI-04).
 
+use crate::skills::SkillInfo;
 use crate::theme;
 use forge_types::HitlPayload;
 use ratatui::buffer::Buffer;
@@ -71,15 +72,8 @@ pub enum Overlay {
     },
     SkillsList {
         selected: usize,
-        items: Vec<SkillItem>,
+        items: Vec<SkillInfo>,
     },
-}
-
-#[derive(Debug, Clone)]
-pub struct SkillItem {
-    pub name: String,
-    pub enabled: bool,
-    pub file_count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -377,7 +371,7 @@ impl Overlay {
         Self::ResumePicker { selected: 0, items }
     }
 
-    pub fn skills_list(items: Vec<SkillItem>) -> Self {
+    pub fn skills_list(items: Vec<SkillInfo>) -> Self {
         Self::SkillsList { selected: 0, items }
     }
 
