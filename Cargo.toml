@@ -13,7 +13,6 @@ members = [
     "crates/forge-cli",
     "crates/forge-governance",
     "crates/forge-context",
-    "crates/forge-workspace",
     "crates/forge-obs",
     "crates/forge-connect",
 ]
@@ -61,7 +60,6 @@ forge-mcp = { path = "crates/forge-mcp" }
 forge-tui = { path = "crates/forge-tui" }
 forge-governance = { path = "crates/forge-governance" }
 forge-context = { path = "crates/forge-context" }
-forge-workspace = { path = "crates/forge-workspace" }
 forge-obs = { path = "crates/forge-obs" }
 forge-connect = { path = "crates/forge-connect" }
 sha2 = "0.10"
