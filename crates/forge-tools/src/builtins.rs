@@ -11,7 +11,7 @@ use tokio::process::Command;
 use crate::registry::ToolContext;
 use crate::{Tool, ToolError};
 
-fn schema_for<T: JsonSchema>() -> Value {
+pub(crate) fn schema_for<T: JsonSchema>() -> Value {
     let s = schemars::schema_for!(T);
     serde_json::to_value(s).unwrap_or_else(|_| json!({"type": "object"}))
 }
@@ -405,14 +405,16 @@ impl Tool for GrepTool {
 /// Phase 1 workspace tools only (no web_search). Prefer
 /// [`default_builtins_with_web_search`] when config is available.
 pub fn default_builtins() -> Vec<std::sync::Arc<dyn Tool>> {
-    vec![
+    let mut tools: Vec<std::sync::Arc<dyn Tool>> = vec![
         std::sync::Arc::new(ReadFileTool),
         std::sync::Arc::new(WriteFileTool),
         std::sync::Arc::new(crate::ApplyPatchTool),
         std::sync::Arc::new(BashTool),
         std::sync::Arc::new(GrepTool),
         std::sync::Arc::new(GitTool),
-    ]
+    ];
+    tools.extend(crate::fff::fff_tools());
+    tools
 }
 
 /// Phase 1 built-ins plus optional Phase 9 `web_search` when config allows.
@@ -495,6 +497,8 @@ mod tests {
         let tools = default_builtins();
         assert!(tools.iter().any(|t| t.name() == "git"));
         assert!(tools.iter().any(|t| t.name() == "apply_patch"));
+        assert!(tools.iter().any(|t| t.name() == "fffind"));
+        assert!(tools.iter().any(|t| t.name() == "ffgrep"));
     }
 
     #[tokio::test]
@@ -588,5 +592,53 @@ mod tests {
             .await
             .unwrap();
         assert!(log.content.contains("add b"), "{}", log.content);
+    }
+
+    #[test]
+    fn fff_find_schema_rejects_empty_args() {
+        let t = crate::fff::FffFindTool::new(std::sync::Arc::new(crate::fff::FffState::new()));
+        let err = crate::validation::validate_args(
+            "fffind",
+            &t.input_schema(),
+            &json!({}),
+        )
+        .unwrap_err();
+        assert_eq!(err.tool, "fffind");
+    }
+
+    #[test]
+    fn fff_grep_schema_rejects_empty_args() {
+        let state = std::sync::Arc::new(crate::fff::FffState::new());
+        let t = crate::fff::FffGrepTool::new(state);
+        let err = crate::validation::validate_args(
+            "ffgrep",
+            &t.input_schema(),
+            &json!({}),
+        )
+        .unwrap_err();
+        assert_eq!(err.tool, "ffgrep");
+    }
+
+    #[test]
+    fn fff_find_schema_accepts_query() {
+        let t = crate::fff::FffFindTool::new(std::sync::Arc::new(crate::fff::FffState::new()));
+        crate::validation::validate_args(
+            "fffind",
+            &t.input_schema(),
+            &json!({"query": "main.rs"}),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn fff_grep_schema_accepts_pattern() {
+        let state = std::sync::Arc::new(crate::fff::FffState::new());
+        let t = crate::fff::FffGrepTool::new(state);
+        crate::validation::validate_args(
+            "ffgrep",
+            &t.input_schema(),
+            &json!({"pattern": "TODO"}),
+        )
+        .unwrap();
     }
 }
