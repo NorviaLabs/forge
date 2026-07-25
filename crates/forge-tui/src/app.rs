@@ -3346,7 +3346,7 @@ mod tests {
     use forge_model::MockModelClient;
     use forge_tools::ToolRegistry;
     use forge_types::ModelResponse;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
     use tempfile::TempDir;
 
     /// Returns (journal_workspace_guard, session). Keep the TempDir until the test ends.
@@ -4913,17 +4913,23 @@ mod tests {
 
     /// Save-and-restore env vars so dev machine credentials don't leak into tests.
     struct ScopedEnvGuard {
+        _lock: MutexGuard<'static, ()>,
         saved: Vec<(String, Option<String>)>,
     }
 
     impl ScopedEnvGuard {
         fn new(keys: &[&str]) -> Self {
+            static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+            let lock = ENV_LOCK
+                .get_or_init(|| Mutex::new(()))
+                .lock()
+                .expect("environment test lock poisoned");
             let mut saved = Vec::new();
             for key in keys {
                 saved.push((key.to_string(), std::env::var(key).ok()));
                 std::env::remove_var(key);
             }
-            Self { saved }
+            Self { _lock: lock, saved }
         }
     }
 
