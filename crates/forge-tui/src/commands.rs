@@ -58,6 +58,19 @@ pub enum SlashCommand {
     },
     /// Stage all changes, generate a commit message from the changeset, commit, and push.
     Sync,
+    /// Manage skills: install, uninstall, enable, disable, list.
+    Skill {
+        action: SkillAction,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SkillAction {
+    Install { url: String },
+    Uninstall { name: String },
+    Enable { name: String },
+    Disable { name: String },
+    List,
 }
 
 pub fn parse_slash(line: &str) -> Option<Result<SlashCommand, CommandError>> {
@@ -137,6 +150,39 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
             path: parts.next().map(|s| s.to_string()),
         }),
         "sync" => Ok(SlashCommand::Sync),
+        "skill" => {
+            let sub = parts.next().unwrap_or("list");
+            match sub {
+                "install" => {
+                    let url = parts.next().ok_or_else(|| CommandError::Usage("/skill install <url>".into()))?;
+                    Ok(SlashCommand::Skill {
+                        action: SkillAction::Install { url: url.to_string() },
+                    })
+                }
+                "uninstall" | "remove" => {
+                    let name = parts.next().ok_or_else(|| CommandError::Usage("/skill uninstall <name>".into()))?;
+                    Ok(SlashCommand::Skill {
+                        action: SkillAction::Uninstall { name: name.to_string() },
+                    })
+                }
+                "enable" => {
+                    let name = parts.next().ok_or_else(|| CommandError::Usage("/skill enable <name>".into()))?;
+                    Ok(SlashCommand::Skill {
+                        action: SkillAction::Enable { name: name.to_string() },
+                    })
+                }
+                "disable" => {
+                    let name = parts.next().ok_or_else(|| CommandError::Usage("/skill disable <name>".into()))?;
+                    Ok(SlashCommand::Skill {
+                        action: SkillAction::Disable { name: name.to_string() },
+                    })
+                }
+                "list" | "ls" => Ok(SlashCommand::Skill {
+                    action: SkillAction::List,
+                }),
+                other => Err(CommandError::Usage(format!("/skill install|uninstall|enable|disable|list, got '{other}'"))),
+            }
+        }
         other => Err(CommandError::Unknown(other.to_string())),
     }
 }
