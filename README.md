@@ -128,7 +128,11 @@ Type a task and press **Enter**, e.g. `Explain the layout of this crate`.
 
 ## TUI slash commands
 
-All interaction inside the TUI uses slash commands typed in the textbox:
+The full-screen TUI keeps session identity, provider/model, context usage, and connection state in the top status bar. On wide terminals, the sidebar also shows the active session, registered tools, and recent activity. Tool results render as compact cards with expandable detail; validation failures explicitly report that no side effects were applied.
+
+Context compaction and session resume report their before/after or recovery state in the transcript, feedback strip, notices, and activity feed. HITL decisions are made through the approval modal; they are not slash commands.
+
+Slash commands can be typed directly in the textbox or discovered with **Ctrl+K**:
 
 | Command | Description |
 |---------|-------------|
@@ -172,7 +176,7 @@ FORGE_REASONING_EFFORT=high forge
 
 **Resume after a crash or kill**
 
-Start Forge again and use `/resume`. The event journal replays completed tool work so the agent picks up where it left off — no redo.
+Start Forge again and use `/resume`. The event journal replays completed tool work so the agent picks up where it left off. Forge reports that replay completed and completed actions were not re-executed.
 
 ---
 
