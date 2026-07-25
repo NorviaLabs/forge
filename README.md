@@ -38,7 +38,8 @@ One agent core serves both interactive and headless use. Live inference uses nat
 | **Durability** | SQLite event journal — resume without redoing completed steps |
 | **Models** | Native Rust provider transports; same tools and journal regardless of vendor |
 | **Workspace** | Your repo, optional `.forge/worktrees/<session>/` isolation |
-| **Tools** | `read_file` · `write_file` · `apply_patch` · `bash` · `grep` · **`git`** (allowlisted subcommands) · `web_search` · MCP |
+| **Tools** | `read_file` · `write_file` · `apply_patch` · `bash` · `fffind` · `ffgrep` · **`git`** (allowlisted subcommands) · `web_search` · MCP |
+| **Skills** | Optional `SKILL.md` packs from `~/.config/forge/skills/` or `.forge/skills/` injected into the system prompt |
 
 Full design notes: [docs/architecture.md](./docs/architecture.md).
 
@@ -55,7 +56,7 @@ Most coding agents edit **your current checkout** and treat chat history as “m
 | Process dies mid-task | **Event journal** records model/tool steps *before* side effects; **`--resume`** continues without blindly replaying completed work |
 | Bad tool args hit disk/shell | **Schema validation first** — invalid calls never execute |
 | Broad rewrites obscure small edits | **`apply_patch`** validates the full patch, confines paths to the workspace, and applies targeted add/update/delete operations |
-| Agent pollutes your branch | Optional **git worktree isolation** — edits stay in a session worktree until `/worktree merge` or discard |
+| Agent pollutes your branch | Optional **git worktree isolation** — edits stay in `.forge/worktrees/<session>/` until you merge or discard with normal Git |
 | Automation needs a subprocess | **`forge run`** with exit codes (`0` ok · `1` failed · `2` HITL · `3` canceled · `4` config) |
 | Vendor lock-in | Open **MIT** harness; provider/model selection via config or environment |
 
@@ -334,6 +335,19 @@ forge
 # /connect → select xAI Grok → complete OAuth in the UI
 # (API-key paste is not the Grok path)
 ```
+
+---
+
+## Skills
+
+Optional instruction packs the agent loads into its system prompt:
+
+| Location | Scope |
+|----------|-------|
+| `~/.config/forge/skills/<name>/SKILL.md` | Global (all projects) |
+| `<workspace>/.forge/skills/<name>/SKILL.md` | Project only (overrides global with the same name) |
+
+Drop a `SKILL.md` in either path and start a new session. No extra config flag is required.
 
 ---
 
