@@ -1093,14 +1093,11 @@ dependencies = [
  "forge-tools",
  "forge-tui",
  "forge-types",
- "forge-workspace",
  "predicates",
  "serde_json",
  "tempfile",
  "tokio",
- "tracing",
  "tracing-subscriber",
- "uuid",
 ]
 
 [[package]]
@@ -1158,7 +1155,6 @@ dependencies = [
  "forge-model",
  "forge-tools",
  "forge-types",
- "forge-workspace",
  "serde",
  "serde_json",
  "tempfile",
@@ -1297,7 +1293,6 @@ dependencies = [
  "forge-syntax",
  "forge-tools",
  "forge-types",
- "forge-workspace",
  "ratatui",
  "serde",
  "serde_json",
@@ -1315,16 +1310,6 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
- "thiserror 2.0.19",
- "uuid",
-]
-
-[[package]]
-name = "forge-workspace"
-version = "0.1.0-alpha.5"
-dependencies = [
- "forge-types",
- "tempfile",
  "thiserror 2.0.19",
  "uuid",
 ]

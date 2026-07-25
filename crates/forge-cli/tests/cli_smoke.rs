@@ -1,36 +1,23 @@
 use assert_cmd::Command;
-use predicates::prelude::*;
-use tempfile::tempdir;
-
-fn isolated_forge(home: &std::path::Path) -> Command {
-    let mut command = Command::cargo_bin("forge").unwrap();
-    command
-        .env("HOME", home)
-        .env("XDG_CONFIG_HOME", home.join(".config"));
-    command
-}
 
 #[test]
-fn status_exits_zero() {
-    Command::cargo_bin("forge")
-        .unwrap()
-        .arg("status")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("forge "));
-}
-
-#[test]
-fn help_lists_only_core_commands() {
+fn help_lists_only_core_options() {
     let assert = Command::cargo_bin("forge")
         .unwrap()
         .arg("--help")
         .assert()
         .success();
     let out = String::from_utf8_lossy(&assert.get_output().stdout);
-    assert!(out.contains("run"));
-    assert!(out.contains("status"));
-    assert!(out.contains("connect"));
+    // The default command launches the TUI; help should not advertise subcommands.
+    assert!(!out.contains("run"));
+    assert!(!out.contains("status"));
+    assert!(!out.contains("connect"));
+    assert!(!out.contains("--worktree"));
+    assert!(!out.contains("--resume"));
+    assert!(!out.contains("--model"));
+    assert!(!out.contains("--workspace"));
+    assert!(!out.contains("--config"));
+    assert!(!out.contains("--max-turns"));
     assert!(!out.contains("repl"));
     assert!(!out.contains("feedback"));
     assert!(!out.contains("channel"));
@@ -41,137 +28,11 @@ fn help_lists_only_core_commands() {
 }
 
 #[test]
-fn run_with_provider_mock_via_env() {
-    let dir = tempdir().unwrap();
+fn version_prints_package_version() {
     Command::cargo_bin("forge")
         .unwrap()
-        .env("FORGE_MODEL_PROVIDER", "mock")
-        .args(["--workspace", dir.path().to_str().unwrap(), "run", "hello"])
+        .arg("--version")
         .assert()
-        .success()
-        .stdout(predicate::str::contains("session_id="));
+        .success();
 }
 
-#[test]
-fn connect_list_shows_profiles() {
-    Command::cargo_bin("forge")
-        .unwrap()
-        .args(["connect", "list"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("xai"))
-        .stdout(predicate::str::contains("opencode_go"))
-        .stdout(predicate::str::contains("opencode_zen"))
-        .stdout(predicate::str::contains("openai"))
-        .stdout(predicate::str::contains("anthropic"))
-        .stdout(predicate::str::contains("ollama"));
-}
-
-#[test]
-fn connect_opencode_zen_with_key_no_secret_leak() {
-    let dir = tempdir().unwrap();
-    let home = dir.path().join("home");
-    std::fs::create_dir_all(home.join("Library/Application Support/forge")).unwrap();
-    let secret = "sk-opencode-zen-test-key-xxxx";
-    isolated_forge(&home)
-        .env("FORGE_CONNECT_SKIP_VERIFY", "1")
-        .args(["connect", "opencode_zen", "--key", secret])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("OpenCode Zen"))
-        .stdout(predicate::str::contains(secret).not())
-        .stdout(predicate::str::contains("opencode-zen/"));
-}
-
-#[test]
-fn connect_openai_with_key_no_secret_leak() {
-    let dir = tempdir().unwrap();
-    let home = dir.path().join("home");
-    std::fs::create_dir_all(home.join(".config/forge")).unwrap();
-    std::fs::create_dir_all(home.join("Library/Application Support/forge")).unwrap();
-    let secret = "sk-openai-test-key-not-real-xxxx";
-    isolated_forge(&home)
-        .env("FORGE_CONNECT_SKIP_VERIFY", "1")
-        .args(["connect", "openai", "--key", secret])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("OpenAI"))
-        .stdout(predicate::str::contains(secret).not())
-        .stdout(predicate::str::contains("openai/"));
-}
-
-#[test]
-fn connect_anthropic_with_key_no_secret_leak() {
-    let dir = tempdir().unwrap();
-    let home = dir.path().join("home");
-    std::fs::create_dir_all(home.join("Library/Application Support/forge")).unwrap();
-    let secret = "sk-ant-test-key-not-real-yyyy";
-    isolated_forge(&home)
-        .env("FORGE_CONNECT_SKIP_VERIFY", "1")
-        .args(["connect", "anthropic", "--key", secret])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Anthropic"))
-        .stdout(predicate::str::contains(secret).not())
-        .stdout(predicate::str::contains("anthropic/"));
-}
-
-#[test]
-fn connect_ollama_without_key_when_verify_skipped() {
-    let dir = tempdir().unwrap();
-    let home = dir.path().join("home");
-    std::fs::create_dir_all(home.join("Library/Application Support/forge")).unwrap();
-    isolated_forge(&home)
-        .env("FORGE_CONNECT_SKIP_VERIFY", "1")
-        .args(["connect", "ollama"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Ollama"))
-        .stdout(predicate::str::contains("ollama/"));
-}
-
-#[test]
-fn connect_xai_rejects_api_key() {
-    let dir = tempdir().unwrap();
-    let home = dir.path().join("home");
-    std::fs::create_dir_all(home.join(".config/forge")).unwrap();
-    isolated_forge(&home)
-        .args(["connect", "xai", "--key", "super-secret-xai-key"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("OAuth"))
-        .stderr(predicate::str::contains("super-secret-xai-key").not());
-}
-
-#[test]
-fn connect_xai_oauth_fixture() {
-    let dir = tempdir().unwrap();
-    let home = dir.path().join("home");
-    std::fs::create_dir_all(home.join(".config/forge")).unwrap();
-    isolated_forge(&home)
-        .env("FORGE_CONNECT_OAUTH_FIXTURE", "1")
-        .args(["connect", "xai"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("xAI Grok"))
-        .stdout(predicate::str::contains("oauth"))
-        .stdout(predicate::str::contains("fixture-access-token").not());
-}
-
-#[test]
-fn connect_opencode_go_with_key_no_secret_leak() {
-    let dir = tempdir().unwrap();
-    let home = dir.path().join("home");
-    std::fs::create_dir_all(home.join(".config/forge")).unwrap();
-    std::fs::create_dir_all(home.join("Library/Application Support/forge")).unwrap();
-    let secret = "go-secret-key-for-cli-smoke-tests";
-    isolated_forge(&home)
-        // Offline CI: do not hit opencode.ai for key verification.
-        .env("FORGE_CONNECT_SKIP_VERIFY", "1")
-        .args(["connect", "opencode_go", "--key", secret])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("OpenCode Go"))
-        .stdout(predicate::str::contains(secret).not())
-        .stdout(predicate::str::contains("opencode-go/"));
-}

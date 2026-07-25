@@ -12,7 +12,7 @@
 
 ## 1. Purpose
 
-Forge is an open-source **AI coding agent harness**: loop control, context lifecycle, durable journal, tools (built-ins including **`git`**, `fffind`/`ffgrep`, `apply_patch`, MCP, `web_search`), governance hooks, and native Rust model transports. **Product surfaces:** full-screen TUI (`forge`) and headless `forge run`.
+Forge is an open-source **AI coding agent harness**: loop control, context lifecycle, durable journal, tools (built-ins including **`git`**, `fffind`/`ffgrep`, `apply_patch`, MCP, `web_search`), governance hooks, and native Rust model transports. **Product surface:** full-screen TUI (`forge`).
 
 ### How to read the diagrams
 
@@ -30,7 +30,7 @@ The product sits in the agentic stack as follows:
 |-------|----------------|
 | **Model** | External reasoning engine (Anthropic, OpenAI, xAI Grok, OpenCode, Ollama, and Codex subscriptions) via a unified native client |
 | **Harness** | Forge proper: plan–act–observe loop, tools, context, durability, security, feedback |
-| **Runtime** | Execution constraints: containers/microVMs, eBPF policy, git worktrees, host/CI process |
+| **Runtime** | Execution constraints: containers/microVMs, eBPF policy, host/CI process |
 | **Agent** | Complete system = model + Forge harness + runtime for end-to-end tasks |
 
 ### Goals (shipped)
@@ -39,11 +39,10 @@ The product sits in the agentic stack as follows:
 2. **MCP** tools in product path
 3. Event-sourced durable execution (SQLite journal) + crash resume  
 4. Context lifecycle: budgets, offload, handoff artifacts  
-5. Optional git **worktree** isolation (`--worktree`)  
 6. Governance hooks: ACL filter, secret injection, audit, light sandbox  
-7. Surfaces: **TUI default** + **headless `run`**  
+7. Surface: **TUI default**  
 8. Models: **native Rust HTTP/SSE transports** for all built-in live providers
-9. **`/connect` / `forge connect`** for xAI Grok (OAuth) and OpenCode Go (API key)  
+9. **`/connect`** for xAI Grok (OAuth) and OpenCode Go (API key)  
 10. TUI: history, inline slash + Tab, feedback strip, session chrome, activity feed  
 11. Built-in tools: `read_file`, `write_file`, `apply_patch`, `bash`, `fffind`, `ffgrep`, **`git`** (allowlisted subcommands), **`web_search`** (mock fixture default; live backends with API keys)
 12. **Skills**: optional `SKILL.md` packs from global/project skill dirs injected into the system prompt  
@@ -55,7 +54,7 @@ The product sits in the agentic stack as follows:
 |----------|-----------|
 | Training or replacing foundation models | Harness is scaffolding only |
 | Heavy DAG / role DSLs as the primary API | Prefer flat, typed function contracts |
-| IDE or messaging adapters | Keep the product focused on terminal and headless workflows |
+| IDE or messaging adapters | Keep the product focused on terminal workflows |
 | `forge repl` / `forge tui` / `--mock` product flags | TUI is default; mock is test-only via config env |
 | Dual native+worker production clients | One native Rust client |
 | Opaque execution without audit hooks | Governance audit records |
@@ -74,12 +73,12 @@ Surfaces are interchangeable clients over one harness core. Externals are models
 flowchart TB
   subgraph actors["Actors / surfaces"]
     OP["Operator — TUI / CLI"]
-    CI["CI / headless pipeline"]
+    CI["CI pipeline"]
   end
 
   subgraph forge["Forge harness"]
     CORE["Core loop · tools · protocols"]
-    CTX["Context · handoffs · worktrees"]
+    CTX["Context · handoffs"]
     DUR["Durable journal · resume · HITL"]
     GOV["Governance · ACL · vault inject"]
     FB["Feedback — Generator / Evaluator"]
@@ -90,7 +89,7 @@ flowchart TB
     MDL["Model providers"]
     MCP["MCP tool servers + built-ins"]
     VAULT["Vault / IdP"]
-    SBX["Sandbox runtime<br/>worktree / container / eBPF Phase 2+"]
+    SBX["Sandbox runtime<br/>container / eBPF Phase 2+"]
     WS["Workspace FS<br/>AGENTS.md · progress.json · offload"]
     JRN["Event journal store<br/>local or shared DB"]
   end
@@ -133,7 +132,7 @@ flowchart LR
   end
 
   subgraph tool_zone["Tool execution zone"]
-    T["Sandbox / worktree — least privilege"]
+    T["Sandbox — least privilege"]
   end
 
   subgraph persist_zone["Persistence zone"]
@@ -157,7 +156,7 @@ flowchart LR
 | Client surfaces → harness | Local process or CI session; no secrets stored via UI prompts |
 | Harness → model providers | TLS 1.3; credentials injected by gateway/proxy, **never** in model context |
 | Harness → MCP / tools | Dynamic ACL filter before tool listing; args schema-validated; audit logged |
-| Tool execution → host | Sandbox: non-root, restricted egress; worktree isolation for edits; stronger profiles Phase 2+ |
+| Tool execution → host | Sandbox: non-root, restricted egress; stronger profiles Phase 2+ |
 | Harness → journal / audit | Append-only intent and results; redaction for secrets in default exports |
 
 ### 2.3 Six harness primitives (mapped to modules)
@@ -181,10 +180,10 @@ Five core modules from the PRD, plus thin surface adapters.
 |------------------|------|--------------|
 | **`core`** — Declarative core & universal protocol | Tool registration (serde + schemars schemas), MCP bridge, model client abstraction, agent loop driver | UI widgets, vault backends, eBPF probes |
 | **`durable`** — Native durable execution engine | Append-only event journal, step records, replay/recovery, durable HITL wait states, session resume IDs | Prompt text assembly, tool side effects themselves |
-| **`context`** — Context & workspace isolation | Token budgeting, payload offload URIs, compaction/reset policy, `progress.json` / `AGENTS.md` handoffs, worktree lifecycle | Long-term enterprise IdP |
+| **`context`** — Context & workspace | Token budgeting, payload offload URIs, compaction/reset policy, `progress.json` / `AGENTS.md` handoffs | Long-term enterprise IdP |
 | **`governance`** — Zero-trust gateway & sandbox | OAuth2 scope evaluation, secret vault injection, tool ACL filter, audit log records, sandbox/eBPF policy hooks | Model selection UX, Evaluator prompts |
 | **`feedback`** — Dual-sensor feedback | Generator/Evaluator orchestration, deterministic sensor runners (lint/test), repair task routing | Durable journal storage schema |
-| **`surfaces`** — Product adapters | TUI, headless CLI, status rendering | Business logic of tools or durability |
+| **`surfaces`** — Product adapter | TUI, status rendering | Business logic of tools or durability |
 | **`obs`** — Observability | OTEL spans/metrics (model, tool, step), OTLP export hooks | Business decisions |
 
 ### Dependency direction
@@ -243,10 +242,10 @@ A **session** is a durable unit of agent work (one interactive chat or one CI jo
 | Field / concern | Description |
 |-----------------|-------------|
 | `session_id` | Stable ID for resume across process restarts |
-| `surface` | `tui` \| `headless` |
+| `surface` | `tui` |
 | `model_config` | Provider + model id (single config switch) |
 | `workspace_root` | Primary repo / working directory; **defaults to process cwd** if unset |
-| `worktree_path` | Optional isolated git worktree path |
+
 | `role` | Generator \| Evaluator \| (future specialized roles) |
 | `journal_cursor` | Last committed event sequence number |
 | `context_budget` | Token capacity and current usage estimate |
@@ -261,7 +260,7 @@ A **session** is a durable unit of agent work (one interactive chat or one CI jo
 |--------|--------|
 | **Contract** | Each tool: name, description, serde/schemars input type, typed output serialization (CORE-01) |
 | **Registry** | In-process built-ins + MCP-discovered tools, merged then ACL-filtered (SEC-02) |
-| **Built-ins (coding default)** | `read_file`, `write_file`, `apply_patch`, `bash`, `fffind`, `ffgrep`, **`git`** (allowlisted subcommands: status, diff, log, add, commit, push, …); subject to sandbox and worktree policy |
+| **Built-ins (coding default)** | `read_file`, `write_file`, `apply_patch`, `bash`, `fffind`, `ffgrep`, **`git`** (allowlisted subcommands: status, diff, log, add, commit, push, …); subject to sandbox policy |
 | **Built-ins (web)** | **`web_search`** — public web query via pluggable backends (`network` class); keys from env/vault only ([web-search-tool.md](./designs/web-search-tool.md)) |
 | **MCP** | Stdio/HTTP MCP servers for external integrations (CORE-02) |
 | **Validation** | Invalid args → structured error + automatic validation retry prompt to the model |
@@ -316,7 +315,7 @@ Envelope + Phase 1 replay: [designs/durable-execution.md](./designs/durable-exec
 |----------|------|
 | `progress.json` | Machine-readable goal, completed steps, blockers, next actions |
 | `AGENTS.md` | Project memory / operator instructions loaded into fresh context |
-| Git history / worktree | Authoritative workspace state across resets |
+| Git history | Authoritative workspace state across resets |
 
 At ~80% context capacity: write handoff → clear active window → re-init with progress + workspace only (CTX-02). Large tool payloads (> configurable token threshold) become file URIs (CTX-01).
 
@@ -341,21 +340,21 @@ flowchart TD
   B --> C{Resume session_id?}
   C -->|yes| D[Open journal + replay to cursor]
   C -->|no| E[Create journal + session]
-  D --> F[Mount workspace · optional worktree]
+  D --> F[Mount workspace]
   E --> F
   F --> G[Register built-ins · discover MCP · ACL filter]
   G --> H[Load AGENTS.md + progress.json]
-  H --> I[Bind surface: TUI / headless]
+  H --> I[Bind surface: TUI]
   I --> J[Accept loop or single-shot job]
 ```
 
 1. Load configuration (model provider switch, journal backend, ACL policy, surface mode).  
 2. Initialize OTEL (if enabled), governance clients (vault/IdP when configured).  
 3. Open or create event journal; if `session_id` resume → **replay** to restore state.  
-4. Mount workspace; optionally create `isolation: worktree`.  
+4. Mount workspace.  
 5. Discover MCP tools; apply ACL filter; register built-ins.  
 6. Load `AGENTS.md` / last `progress.json` into context assembler.  
-7. Bind surface (TUI / headless) and enter accept-loop or single-shot job.
+7. Bind surface (TUI) and enter accept-loop.
 
 ### 5.2 One user message (happy path)
 
@@ -396,7 +395,7 @@ sequenceDiagram
 4. On tool calls: for each tool  
    - journal `tool_intent`  
    - `governance` authorize + inject secrets  
-   - execute in sandbox/worktree  
+   - execute in sandbox  
    - journal `tool_result`  
    - `context` ingest or offload  
 5. Continue model turns until terminal assistant message or HITL pause.  
@@ -588,7 +587,7 @@ Default path: **`.forge/progress.json`** under the workspace root (configurable)
   "in_progress": "string",
   "blockers": ["..."],
   "next_actions": ["..."],
-  "workspace_ref": "git_sha_or_worktree_id",
+  "workspace_ref": "git_sha",
   "session_id": "…",
   "updated_at": "ISO-8601"
 }
@@ -603,7 +602,7 @@ Default path: **`.forge/progress.json`** under the workspace root (configurable)
 | `AGENTS.md` (repo root or configured path) | Session start; post-reset | Standing project memory / operator rules |
 | Skills (`SKILL.md`) | Session start; post-reset | Reusable instruction packs appended to the system prompt |
 | `progress.json` | Resume; post-reset | Task continuity across long horizons |
-| Git status / worktree | Each assemble (summarized) | Ground truth of files |
+| Git status | Each assemble (summarized) | Ground truth of files |
 | Surface system overlays | Per surface | TUI vs CI policy differences |
 
 **Skills discovery** (project overrides global on name collision):
@@ -623,7 +622,7 @@ Discovery order and override rules should be deterministic and documented in con
 flowchart TB
   subgraph product["Product surfaces"]
     TUI["TUI — forge"]
-    HD["Headless — forge run"]
+    HD["Headless (future)"]
   end
 
   subgraph harness["Harness core — single implementation"]
@@ -638,7 +637,7 @@ flowchart TB
     M[Native model / mock tests]
     TOOLS[Built-ins + fff + git + web_search + MCP]
     J[Journal SQLite]
-    WS[Workspace / worktree]
+    WS[Workspace]
   end
 
   TUI --> LOOP
@@ -657,11 +656,10 @@ flowchart TB
 | Surface | Role | Status |
 |---------|------|--------|
 | **TUI** | Default interactive product (`forge`) | Shipped |
-| **Headless** | `forge run`, exit codes, session id | Shipped |
-| **Connect** | `forge connect` + `/connect` | Shipped |
+| **Connect** | `/connect` (TUI) | Shipped |
 | **Feedback / obs** | Optional crates for embedders | Library only |
 
-**Principle:** One harness core shared by the TUI and headless product surfaces.
+**Principle:** One harness core powers the TUI product surface.
 
 Streaming display rules: tool names + redacted args; never paint secrets; large payloads show URI + summary.
 
@@ -709,7 +707,7 @@ flowchart TD
     C2 -->|deny| C2D[Reject + audit]
     C2 -->|HITL| C2H[Durable hitl_wait]
     C2 -->|allow| C3[Vault inject SEC-01]
-    C3 --> C4[Sandbox execute<br/>worktree / container / eBPF Phase 2+]
+    C3 --> C4[Sandbox execute<br/>container / eBPF Phase 2+]
     C4 --> C5[Audit log + OTEL redacted]
   end
 
@@ -743,7 +741,7 @@ sequenceDiagram
   end
 ```
 
-Sandbox defaults (NFR): non-root, restricted egress, read-only root FS. Worktree isolation (CTX-03): file edits in temporary git worktree until merge/discard.
+Sandbox defaults (NFR): non-root, restricted egress, read-only root FS.
 
 Immutable audit log: tool invocations, arg payloads (redacted), model response metadata, and policy decisions; export via OTLP when configured.
 
@@ -818,7 +816,7 @@ Illustrative Rust workspace layout (crate names align with §3 / decisions table
 | `forge-syntax` | Tree-sitter highlighting (diff/code views) and structural helpers |
 | `forge-types` | Shared session/tool/event types |
 | `forge-config` | `forge.toml` + env/flag config loading |
-| `forge-workspace` | Git worktree isolation lifecycle |
+
 | `forge-mcp` | MCP discovery/call (product path via config/static demo) |
 | `forge-model` | `ModelClient`; native HTTP/SSE transports + test mock |
 | `crates/forge-model/src/native` | Native Rust provider HTTP/SSE transports |
@@ -851,12 +849,12 @@ Forge is the **harness** between models and the real world: a typed tool bus, an
 | # | Topic | Decision |
 |---|-------|----------|
 | 1 | Implementation language | **Rust** |
-| 2 | Product shape | **CLI binary** default TUI + headless `run`; not an always-on service |
+| 2 | Product shape | **CLI binary** default TUI; not an always-on service |
 | 3 | Async runtime | **Tokio** + standard ecosystem (`tracing`, HTTP clients, etc.) |
 | 4 | Tool schemas / validation | **serde + schemars** JSON Schema (schema-validated tool I/O) |
 | 5 | TUI | **ratatui + crossterm** |
 | 6 | Event journal (Phase 1) | **SQLite via sqlx (async)** |
-| 7 | Local sandbox default | **Light isolation** (worktree + process/cwd limits); containers for CI/prod profiles |
+| 7 | Local sandbox default | **Light isolation** (process/cwd limits); containers for CI/prod profiles |
 | 8 | Generator / Evaluator | **Opt-in per task** (single Generator default) |
 | 9 | Project memory file | **`AGENTS.md` primary**; optional aliases later |
 | 10 | Crate layout | **Workspace monorepo, many crates** aligned to modules in §3 |
@@ -888,7 +886,7 @@ Forge is the **harness** between models and the real world: a typed tool bus, an
 | Native model runtime | Rust `reqwest` HTTP/SSE adapters; no Python runtime or model proxy required |
 | Connect profiles (Phase 6) | Registry + `/connect`; credentials injected into `NativeModelClient` |
 | Connect auth (6.1) | `AuthMode::Oauth` (xAI) vs `AuthMode::ApiKey` + TUI prompt (OpenCode Go); tokens/keys in 0600 store |
-| Surfaces | **Product:** `forge` TUI, `forge run`, `status`, `connect`. **Library:** feedback, obs |
+| Surfaces | **Product:** `forge` TUI. **Library:** feedback, obs |
 | Web search | `WebSearchTool` + backends; default offline mock backend |
 | TUI visibility | Feedback strip, session chrome, activity feed in `forge-tui` |
 | Config | **Optional** TOML + env + flags (no file required) |
