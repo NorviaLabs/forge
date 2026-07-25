@@ -57,6 +57,24 @@ pub enum Overlay {
         selected: usize,
         items: Vec<ResumeSessionItem>,
     },
+    FileExplorer {
+        cwd: String,
+        selected: usize,
+        items: Vec<FileExplorerItem>,
+        error: Option<String>,
+    },
+    FileViewer {
+        path: String,
+        lines: Vec<String>,
+        scroll: usize,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct FileExplorerItem {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -134,6 +152,10 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
         PaletteItem {
             cmd: "/diff".into(),
             desc: "Tools & file changes".into(),
+        },
+        PaletteItem {
+            cmd: "/file".into(),
+            desc: "Browse and read one file (readonly)".into(),
         },
         PaletteItem {
             cmd: "/sync".into(),
@@ -339,6 +361,27 @@ impl Overlay {
         Self::ResumePicker { selected: 0, items }
     }
 
+    pub fn file_explorer(
+        cwd: impl Into<String>,
+        items: Vec<FileExplorerItem>,
+        error: Option<String>,
+    ) -> Self {
+        Self::FileExplorer {
+            cwd: cwd.into(),
+            selected: 0,
+            items,
+            error,
+        }
+    }
+
+    pub fn file_viewer(path: impl Into<String>, contents: impl AsRef<str>) -> Self {
+        Self::FileViewer {
+            path: path.into(),
+            lines: contents.as_ref().lines().map(str::to_string).collect(),
+            scroll: 0,
+        }
+    }
+
     pub fn filter_slash(&mut self, f: &str) {
         if let Self::Slash {
             filter,
@@ -397,6 +440,22 @@ impl Overlay {
                 }
                 let n = items.len() as i32;
                 *selected = ((*selected as i32 + delta).rem_euclid(n)) as usize;
+            }
+            Self::FileExplorer {
+                selected, items, ..
+            } => {
+                if items.is_empty() {
+                    return;
+                }
+                let n = items.len() as i32;
+                *selected = ((*selected as i32 + delta).rem_euclid(n)) as usize;
+            }
+            Self::FileViewer { scroll, lines, .. } => {
+                if delta < 0 {
+                    *scroll = scroll.saturating_sub(delta.unsigned_abs() as usize);
+                } else {
+                    *scroll = (*scroll + delta as usize).min(lines.len().saturating_sub(1));
+                }
             }
             _ => {}
         }
@@ -480,6 +539,10 @@ pub enum OverlayAction {
     ConnectPickProfile {
         profile_id: String,
     },
+    FilePick {
+        path: String,
+        is_dir: bool,
+    },
 }
 
 pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
@@ -553,6 +616,7 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                             | "/sync"
                             | "/copy"
                             | "/clear"
+                            | "/file"
                     ) {
                         OverlayAction::RunCommand(cmd)
                     } else {
@@ -629,6 +693,19 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                     OverlayAction::None
                 }
             }
+            Overlay::FileExplorer {
+                selected, items, ..
+            } => {
+                if let Some(item) = items.get(*selected) {
+                    OverlayAction::FilePick {
+                        path: item.path.clone(),
+                        is_dir: item.is_dir,
+                    }
+                } else {
+                    OverlayAction::None
+                }
+            }
+            Overlay::FileViewer { .. } => OverlayAction::None,
             Overlay::Hitl { .. } => OverlayAction::None,
         },
         // Use-env must NOT steal literal e/E from pasted API keys (keys almost always
@@ -1051,6 +1128,100 @@ impl Widget for OverlayWidget<'_> {
                                 " Resume a session · ↑↓ Enter · Esc cancel ",
                                 theme::brand(),
                             )),
+                    )
+                    .render(r, buf);
+            }
+            Overlay::FileExplorer {
+                cwd,
+                selected,
+                items,
+                error,
+            } => {
+                let r = centered_rect(76, 64, area);
+                let visible = r.height.saturating_sub(4).max(1) as usize;
+                let start = selected
+                    .saturating_add(1)
+                    .saturating_sub(visible)
+                    .min(items.len().saturating_sub(visible));
+                let list_items: Vec<ListItem> = items
+                    .iter()
+                    .enumerate()
+                    .skip(start)
+                    .take(visible)
+                    .map(|(index, item)| {
+                        let marker = if index == *selected { "▶ " } else { "  " };
+                        let style = if index == *selected {
+                            theme::selected_row()
+                        } else {
+                            theme::text()
+                        };
+                        let kind = if item.is_dir { "📁" } else { "  " };
+                        ListItem::new(Span::styled(format!("{marker}{kind} {}", item.name), style))
+                    })
+                    .collect();
+                let block = Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(theme::border())
+                    .style(theme::panel())
+                    .title(Span::styled(
+                        " File explorer · readonly · ↑↓ Enter · Esc close ",
+                        theme::brand(),
+                    ));
+                let inner = block.inner(r);
+                block.render(r, buf);
+                let regions = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Length(1),
+                        Constraint::Min(1),
+                        Constraint::Length(1),
+                    ])
+                    .split(inner);
+                Paragraph::new(cwd.as_str())
+                    .style(theme::muted())
+                    .render(regions[0], buf);
+                List::new(list_items).render(regions[1], buf);
+                let status = error
+                    .as_deref()
+                    .unwrap_or("Enter opens directories or renders a file");
+                Paragraph::new(status)
+                    .style(theme::muted())
+                    .render(regions[2], buf);
+            }
+            Overlay::FileViewer {
+                path,
+                lines,
+                scroll,
+            } => {
+                let r = centered_rect(86, 78, area);
+                let visible = r.height.saturating_sub(2).max(1) as usize;
+                let width = r.width.saturating_sub(2) as usize;
+                let body = lines
+                    .iter()
+                    .enumerate()
+                    .skip(*scroll)
+                    .take(visible)
+                    .map(|(index, line)| {
+                        let mut row = format!("{:>4} │ {}", index + 1, line);
+                        row.truncate(width);
+                        row
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let title = format!(
+                    " {} · readonly · {}/{} · ↑↓ scroll · Esc close ",
+                    path,
+                    (*scroll + 1).min(lines.len().max(1)),
+                    lines.len().max(1)
+                );
+                Paragraph::new(body)
+                    .style(theme::text())
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_style(theme::border())
+                            .style(theme::panel())
+                            .title(Span::styled(title, theme::brand())),
                     )
                     .render(r, buf);
             }

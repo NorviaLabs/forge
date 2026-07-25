@@ -48,6 +48,10 @@ pub enum SlashCommand {
     Copy,
     /// Clear the visible transcript without deleting model context.
     Clear,
+    /// Browse and read a single workspace file in readonly mode.
+    File {
+        path: Option<String>,
+    },
     /// Disconnect from the current provider and clear stored credentials.
     Disconnect {
         profile_id: Option<String>,
@@ -129,6 +133,9 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
         "diff" => Ok(SlashCommand::Diff),
         "copy" => Ok(SlashCommand::Copy),
         "clear" => Ok(SlashCommand::Clear),
+        "file" | "files" | "open" => Ok(SlashCommand::File {
+            path: parts.next().map(|s| s.to_string()),
+        }),
         "sync" => Ok(SlashCommand::Sync),
         other => Err(CommandError::Unknown(other.to_string())),
     }
@@ -207,6 +214,12 @@ mod tests {
         );
         assert_eq!(parse_slash("/deny").unwrap().unwrap(), SlashCommand::Deny);
         assert_eq!(parse_slash("/clear").unwrap().unwrap(), SlashCommand::Clear);
+        assert_eq!(
+            parse_slash("/file README.md").unwrap().unwrap(),
+            SlashCommand::File {
+                path: Some("README.md".into())
+            }
+        );
         assert!(parse_slash("/reset").unwrap().is_err());
         assert!(parse_slash("/context").unwrap().is_err());
         assert!(parse_slash("/worktree merge").unwrap().is_err());
