@@ -3,6 +3,7 @@ pub mod footer;
 pub mod input;
 pub mod queue;
 pub mod status;
+pub mod code_block;
 
 pub use feedback::{classify_operator_error, FeedbackBar, FeedbackModel, FeedbackSeverity};
 pub use footer::{FooterBar, FooterModel};
