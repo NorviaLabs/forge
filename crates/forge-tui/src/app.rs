@@ -4608,7 +4608,7 @@ mod tests {
         let buf = term.backend().buffer();
         for y in 0..buf.area().height {
             for x in 0..buf.area().width {
-                text.push_str(buf.get(x, y).symbol());
+                text.push_str(buf[(x, y)].symbol());
             }
             text.push('\n');
         }
@@ -4642,7 +4642,7 @@ mod tests {
         let buf = term.backend().buffer();
         for y in 0..buf.area().height {
             for x in 0..buf.area().width {
-                text.push_str(buf.get(x, y).symbol());
+                text.push_str(buf[(x, y)].symbol());
             }
             text.push('\n');
         }
@@ -4672,7 +4672,7 @@ mod tests {
         let buf = term.backend().buffer();
         for y in 0..buf.area().height {
             for x in 0..buf.area().width {
-                text.push_str(buf.get(x, y).symbol());
+                text.push_str(buf[(x, y)].symbol());
             }
             text.push('\n');
         }
@@ -4775,7 +4775,7 @@ mod tests {
         let buf = term.backend().buffer();
         for y in 0..buf.area().height {
             for x in 0..buf.area().width {
-                text.push_str(buf.get(x, y).symbol());
+                text.push_str(buf[(x, y)].symbol());
             }
             text.push('\n');
         }
