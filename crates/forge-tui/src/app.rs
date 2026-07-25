@@ -2634,8 +2634,23 @@ Reply with ONLY the commit message line.\n\n\
                     match self.session.resume_session(session_id).await {
                         Ok(()) => {
                             self.overlay = None;
-                            self.notices = vec![format!("Resumed session {session_id}.")];
+                            self.notices = vec![
+                                format!("Resumed session {session_id}."),
+                                "Journal replay complete; completed actions were not re-executed."
+                                    .into(),
+                                "Ready for the next action.".into(),
+                            ];
                             self.status_message = "session resumed".into();
+                            self.set_feedback(
+                                FeedbackSeverity::Ok,
+                                "session restored · ready for the next action",
+                            );
+                            self.status_message = "session resumed".into();
+                            self.push_activity(
+                                ActivityKind::System,
+                                FeedbackSeverity::Ok,
+                                format!("session resumed · {session_id}"),
+                            );
                             self.ui_banners.clear();
                             self.message_queue.clear();
                             self.queue_selected = None;
@@ -3421,6 +3436,15 @@ mod tests {
             .iter()
             .any(|message| message.content == "restored conversation"));
         assert_eq!(app.status_message, "session resumed");
+        assert!(app
+            .notices
+            .iter()
+            .any(|line| line.contains("were not re-executed")));
+        assert!(app
+            .activity
+            .all()
+            .iter()
+            .any(|item| item.summary.contains("session resumed")));
     }
 
     #[tokio::test]
