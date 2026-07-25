@@ -16,6 +16,7 @@ pub struct SidebarModel {
     pub role: String,
     pub ctx_pct: f64,
     pub tools: Vec<String>,
+    pub activity: Vec<String>,
 }
 
 impl SidebarModel {
@@ -24,7 +25,6 @@ impl SidebarModel {
     }
 
     pub fn from_session_with_activity(session: &AgentSession, activity_lines: &[String]) -> Self {
-        let _ = activity_lines; // sidebar no longer renders activity, but keep API stable
         let id = session.session_id.to_string();
         let short = if id.len() > 8 { &id[..8] } else { &id };
         let status = match session.status {
@@ -42,6 +42,7 @@ impl SidebarModel {
             role: "generator".into(),
             ctx_pct: session.context_usage_ratio(),
             tools,
+            activity: activity_lines.to_vec(),
         }
     }
 }
@@ -63,7 +64,11 @@ impl Widget for SidebarWidget<'_> {
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(6), Constraint::Min(4)])
+            .constraints([
+                Constraint::Length(6),
+                Constraint::Length(8),
+                Constraint::Min(4),
+            ])
             .split(inner);
 
         // Session
@@ -88,7 +93,7 @@ impl Widget for SidebarWidget<'_> {
         ];
         Paragraph::new(sess_lines).render(chunks[0], buf);
 
-        // Tools list (fits remaining height)
+        // Tools list
         let mut tool_lines = vec![Line::from(Span::styled("TOOLS", theme::dim()))];
         if self.model.tools.is_empty() {
             tool_lines.push(Line::from(Span::styled("—", theme::dim())));
@@ -107,6 +112,22 @@ impl Widget for SidebarWidget<'_> {
         }
 
         Paragraph::new(tool_lines).render(chunks[1], buf);
+
+        // Activity is intentionally compact; detailed output belongs in chat.
+        let mut activity_lines = vec![Line::from(Span::styled("ACTIVITY", theme::dim()))];
+        if self.model.activity.is_empty() {
+            activity_lines.push(Line::from(Span::styled("—", theme::dim())));
+        } else {
+            let max = (chunks[2].height as usize).saturating_sub(1).max(1);
+            for summary in self.model.activity.iter().rev().take(max) {
+                let text: String = summary.chars().take(34).collect();
+                activity_lines.push(Line::from(Span::styled(
+                    format!("· {text}"),
+                    theme::muted(),
+                )));
+            }
+        }
+        Paragraph::new(activity_lines).render(chunks[2], buf);
     }
 }
 
@@ -159,5 +180,8 @@ mod tests {
         assert!(!m.session_id.is_empty());
         assert!(!m.tools.is_empty() || m.status == "completed");
         assert!(m.ctx_pct >= 0.0);
+
+        let m = SidebarModel::from_session_with_activity(&s, &["model started".into()]);
+        assert_eq!(m.activity, vec!["model started"]);
     }
 }
