@@ -37,7 +37,6 @@ pub fn opencode_zen_profile() -> ConnectProfile {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
