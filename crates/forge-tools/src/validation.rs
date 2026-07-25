@@ -3,13 +3,28 @@ use jsonschema::Validator;
 use serde_json::Value;
 use std::collections::HashMap;
 
+/// Extract the coercible type from a JSON Schema `"type"` value.
+/// Handles both `"type": "integer"` and `"type": ["integer", "null"]` (nullable).
+fn schema_type(type_value: &Value) -> Option<&str> {
+    if let Some(s) = type_value.as_str() {
+        return Some(s);
+    }
+    if let Some(arr) = type_value.as_array() {
+        return arr.iter().find_map(|v| {
+            let s = v.as_str()?;
+            if s == "null" { None } else { Some(s) }
+        });
+    }
+    None
+}
+
 /// Coerce string values to match schema types (handles LLMs that stringify numbers).
 fn coerce_args(schema: &Value, args: &mut Value) {
     if let (Some(schema_obj), Some(args_obj)) = (schema.as_object(), args.as_object_mut()) {
         if let Some(properties) = schema_obj.get("properties").and_then(|p| p.as_object()) {
             for (key, prop_schema) in properties {
                 if let Some(arg_value) = args_obj.get_mut(key) {
-                    if let Some(expected_type) = prop_schema.get("type").and_then(|t| t.as_str()) {
+                    if let Some(expected_type) = prop_schema.get("type").and_then(schema_type) {
                         if arg_value.is_string() {
                             let s = arg_value.as_str().unwrap();
                             match expected_type {
@@ -154,6 +169,33 @@ mod tests {
         let schema = json!({
             "type": "object",
             "properties": { "flag": { "type": "boolean" } }
+        });
+        validate_args("test", &schema, &json!({"flag": "true"})).unwrap();
+    }
+
+    #[test]
+    fn coerces_nullable_integer() {
+        let schema = json!({
+            "type": "object",
+            "properties": { "limit": { "type": ["integer", "null"] } }
+        });
+        validate_args("test", &schema, &json!({"limit": "500"})).unwrap();
+    }
+
+    #[test]
+    fn coerces_nullable_number() {
+        let schema = json!({
+            "type": "object",
+            "properties": { "weight": { "type": ["number", "null"] } }
+        });
+        validate_args("test", &schema, &json!({"weight": "1.5"})).unwrap();
+    }
+
+    #[test]
+    fn coerces_nullable_boolean() {
+        let schema = json!({
+            "type": "object",
+            "properties": { "flag": { "type": ["boolean", "null"] } }
         });
         validate_args("test", &schema, &json!({"flag": "true"})).unwrap();
     }
