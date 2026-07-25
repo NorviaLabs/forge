@@ -1,0 +1,1 @@
+source=https://github.com/DietrichGebert/ponytail/tree/main/.openclaw/skills/ponytail
