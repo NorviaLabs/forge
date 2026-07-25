@@ -53,6 +53,7 @@ pub enum FffModeArg {
 pub(crate) struct FffState {
     picker: fff_search::SharedFilePicker,
     inited: AtomicBool,
+    first_call: AtomicBool,
 }
 
 impl FffState {
@@ -60,7 +61,35 @@ impl FffState {
         Self {
             picker: fff_search::SharedFilePicker::default(),
             inited: AtomicBool::new(false),
+            first_call: AtomicBool::new(true),
         }
+    }
+
+    fn scan_status(&self) -> Option<String> {
+        if !self.inited.load(Ordering::Acquire) {
+            return None;
+        }
+        let guard = self.picker.read().ok()?;
+        let picker = guard.as_ref()?;
+        let progress = picker.get_scan_progress();
+        let mut parts = vec![format!("fff: {} files indexed", progress.scanned_files_count)];
+        if progress.is_scanning {
+            parts.push("scanning...".into());
+        }
+        if !progress.is_warmup_complete {
+            parts.push("building index...".into());
+        }
+        if progress.is_watcher_ready {
+            parts.push("watching for changes".into());
+        }
+        if !progress.is_scanning && progress.is_warmup_complete {
+            parts.push("ready".into());
+        }
+        Some(parts.join(", "))
+    }
+
+    fn mark_first_call(&self) -> bool {
+        self.first_call.swap(false, Ordering::Release)
     }
 
     async fn ensure_init(&self, base_path: &std::path::Path) -> Result<(), ToolError> {
@@ -76,6 +105,9 @@ impl FffState {
                 fff_search::file_picker::FilePickerOptions {
                     base_path: bp,
                     mode: fff_search::file_picker::FFFMode::Ai,
+                    watch: true,
+                    enable_content_indexing: true,
+                    enable_mmap_cache: true,
                     ..Default::default()
                 },
             )
@@ -164,6 +196,17 @@ impl Tool for FffFindTool {
                 .collect::<Vec<_>>()
                 .join("\n")
         };
+
+        let status = if self.state.mark_first_call() {
+            self.state.scan_status()
+        } else {
+            None
+        };
+        let content = match status {
+            Some(s) => format!("{s}\n{content}"),
+            None => content,
+        };
+
         Ok(ToolOutput {
             content,
             is_error: false,
@@ -247,6 +290,17 @@ impl Tool for FffGrepTool {
                 .collect::<Vec<_>>()
                 .join("\n")
         };
+
+        let status = if self.state.mark_first_call() {
+            self.state.scan_status()
+        } else {
+            None
+        };
+        let content = match status {
+            Some(s) => format!("{s}\n{content}"),
+            None => content,
+        };
+
         Ok(ToolOutput {
             content,
             is_error: false,
