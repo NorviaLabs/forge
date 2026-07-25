@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/forge-types",
     "crates/forge-config",
+    "crates/forge-syntax",
     "crates/forge-tools",
     "crates/forge-model",
     "crates/forge-durable",
@@ -51,6 +52,7 @@ ratatui = { version = "=0.30.0", default-features = false, features = ["crosster
 
 forge-types = { path = "crates/forge-types" }
 forge-config = { path = "crates/forge-config" }
+forge-syntax = { path = "crates/forge-syntax" }
 forge-tools = { path = "crates/forge-tools" }
 forge-model = { path = "crates/forge-model" }
 forge-durable = { path = "crates/forge-durable" }

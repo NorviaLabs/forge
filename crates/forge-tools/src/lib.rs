@@ -2,6 +2,7 @@
 //! Phase 9: `web_search` (WEB-01) — see `web_search` module.
 
 mod apply_patch;
+mod refactor;
 mod builtins;
 mod fff;
 mod registry;
@@ -13,6 +14,7 @@ pub use builtins::{
     default_builtins, default_builtins_with_web_search, BashTool, GitTool, ReadFileTool,
     WriteFileTool,
 };
+pub use refactor::RefactorTool;
 pub use registry::{ToolContext, ToolRegistry};
 pub use validation::{validate_args, ValidationBudget};
 pub use web_search::{should_register_web_search, web_search_tool, WebSearchArgs, WebSearchTool};
