@@ -135,24 +135,12 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
             desc: "Set model reasoning effort".into(),
         },
         PaletteItem {
-            cmd: "/approve".into(),
-            desc: "Approve pending HITL".into(),
-        },
-        PaletteItem {
-            cmd: "/deny".into(),
-            desc: "Deny pending HITL".into(),
-        },
-        PaletteItem {
             cmd: "/compact".into(),
             desc: "Force context handoff".into(),
         },
         PaletteItem {
             cmd: "/resume".into(),
             desc: "List recent sessions to resume".into(),
-        },
-        PaletteItem {
-            cmd: "/diff".into(),
-            desc: "Tools & file changes".into(),
         },
         PaletteItem {
             cmd: "/file".into(),
@@ -617,10 +605,7 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                         "/status"
                             | "/model refresh"
                             | "/quit"
-                            | "/approve"
-                            | "/deny"
                             | "/compact"
-                            | "/diff"
                             | "/sync"
                             | "/copy"
                             | "/clear"
@@ -1319,7 +1304,7 @@ mod tests {
     #[test]
     fn filter_palette_narrows() {
         let items = filter_palette("app");
-        assert!(items.iter().any(|i| i.cmd.contains("approve")));
+        assert!(items.is_empty());
         assert!(!items.iter().any(|i| i.cmd == "/quit"));
     }
 
@@ -1465,14 +1450,6 @@ mod tests {
             handle_overlay_key(&mut overlay, Key::Enter),
             OverlayAction::RunCommand("/resume second".into())
         );
-    }
-
-    #[test]
-    fn parse_slash_still_works() {
-        assert!(matches!(
-            parse_slash("/approve").unwrap().unwrap(),
-            SlashCommand::Approve
-        ));
     }
 
     #[test]
