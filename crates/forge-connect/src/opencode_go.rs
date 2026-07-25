@@ -112,6 +112,9 @@ mod tests {
         reg.register(opencode_go_profile());
         let mut ap = None;
         let mut am = None;
+        // Isolate from real env vars.
+        std::env::remove_var("OPENCODE_API_KEY");
+        std::env::remove_var("OPENCODE_GO_API_KEY");
         let err = handle_connect_action(
             ConnectAction::Connect {
                 profile_id: "opencode_go".into(),
