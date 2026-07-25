@@ -307,8 +307,16 @@ For casual greetings, acknowledgements, or other one-off conversational messages
 
 When using the shell, you must adhere to the following guidelines:
 
-- When searching for text or files, prefer using `rg` or `rg --files` respectively because `rg` is much faster than alternatives like `grep`. (If the `rg` command is not found, then use alternatives.)
 - Do not use python scripts to attempt to output larger chunks of a file.
+
+## File search with FFF
+
+Two dedicated tools use the FFF engine (frecency-ranked, typo-resistant, git-aware):
+
+- **`fffind`** — Find files by path/name pattern. Supports globs (`*.rs`, `src/**/*.ts`), git status filters (`git:modified`), and exclusions (`!test/`). Faster than shell-based discovery for repeated searches.
+- **`ffgrep`** — Search file contents. Modes: `plain` (default), `regex`, `fuzzy`. Auto-detects regex, falls back to fuzzy on zero matches.
+
+Prefer these over shell commands (`rg`, `find`, `grep`) for file discovery — they run in-process, keep a warm index, and return structured results with git status and frecency ranking.
 
 ## `update_plan`
 
