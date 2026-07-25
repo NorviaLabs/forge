@@ -3,8 +3,50 @@ use jsonschema::Validator;
 use serde_json::Value;
 use std::collections::HashMap;
 
+/// Coerce string values to match schema types (handles LLMs that stringify numbers).
+fn coerce_args(schema: &Value, args: &mut Value) {
+    if let (Some(schema_obj), Some(args_obj)) = (schema.as_object(), args.as_object_mut()) {
+        if let Some(properties) = schema_obj.get("properties").and_then(|p| p.as_object()) {
+            for (key, prop_schema) in properties {
+                if let Some(arg_value) = args_obj.get_mut(key) {
+                    if let Some(expected_type) = prop_schema.get("type").and_then(|t| t.as_str()) {
+                        if arg_value.is_string() {
+                            let s = arg_value.as_str().unwrap();
+                            match expected_type {
+                                "integer" => {
+                                    if let Ok(n) = s.parse::<i64>() {
+                                        *arg_value = Value::from(n);
+                                    }
+                                }
+                                "number" => {
+                                    if let Ok(n) = s.parse::<f64>() {
+                                        *arg_value = serde_json::Number::from_f64(n)
+                                            .map(Value::Number)
+                                            .unwrap_or_else(|| arg_value.clone());
+                                    }
+                                }
+                                "boolean" => {
+                                    match s.to_lowercase().as_str() {
+                                        "true" | "1" => *arg_value = Value::Bool(true),
+                                        "false" | "0" => *arg_value = Value::Bool(false),
+                                        _ => {}
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Validate `args` against a JSON Schema object. Fail closed.
 pub fn validate_args(tool: &str, schema: &Value, args: &Value) -> Result<(), ToolValidationError> {
+    let mut args = args.clone();
+    coerce_args(schema, &mut args);
+
     let validator = Validator::new(schema).map_err(|e| ToolValidationError {
         tool: tool.to_string(),
         path: "$".into(),
@@ -12,7 +54,7 @@ pub fn validate_args(tool: &str, schema: &Value, args: &Value) -> Result<(), Too
         schema_hint: None,
     })?;
 
-    if let Err(err) = validator.validate(args) {
+    if let Err(err) = validator.validate(&args) {
         let path = err.instance_path.to_string();
         return Err(ToolValidationError {
             tool: tool.to_string(),
@@ -96,5 +138,23 @@ mod tests {
         assert!(b.record_failure("t").is_ok());
         assert!(b.record_failure("t").is_ok());
         assert!(b.record_failure("t").is_err());
+    }
+
+    #[test]
+    fn coerces_string_integer() {
+        let schema = json!({
+            "type": "object",
+            "properties": { "offset": { "type": "integer" } }
+        });
+        validate_args("test", &schema, &json!({"offset": "500"})).unwrap();
+    }
+
+    #[test]
+    fn coerces_string_boolean() {
+        let schema = json!({
+            "type": "object",
+            "properties": { "flag": { "type": "boolean" } }
+        });
+        validate_args("test", &schema, &json!({"flag": "true"})).unwrap();
     }
 }
