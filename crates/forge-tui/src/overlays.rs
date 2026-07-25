@@ -920,16 +920,17 @@ impl Widget for OverlayWidget<'_> {
                     .render(r, buf);
             }
             Overlay::Hitl { payload } => {
-                let r = centered_rect(60, 40, area);
+                let r = centered_rect(72, 52, area);
                 let args = serde_json::to_string_pretty(&payload.args_redacted)
                     .unwrap_or_else(|_| "{}".into());
                 let args: String = args.chars().take(400).collect();
                 let body = format!(
                     "Tool:  {}\nCall:  {}\nWhy:   {}\n\nArgs (redacted):\n{args}\n\n\
-[a] Approve once    [s] Allow for session    [d] Deny    [Esc] dismiss",
+[a] Approve once    [s] Allow for session    [d] Deny\n[Esc] Dismiss (request remains pending)",
                     payload.tool, payload.call_id, payload.reason
                 );
                 Paragraph::new(body)
+                    .wrap(ratatui::widgets::Wrap { trim: true })
                     .block(
                         Block::default()
                             .borders(Borders::ALL)
