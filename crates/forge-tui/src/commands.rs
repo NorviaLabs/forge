@@ -36,14 +36,9 @@ pub enum SlashCommand {
         level: Option<ReasoningEffort>,
     },
     Quit,
-    // Phase 2
-    Approve,
-    Deny,
     Compact,
     /// Phase 6 — provider connect flow
     Connect(ConnectAction),
-    /// Session file/tool change summary
-    Diff,
     /// Copy last assistant message to clipboard (best-effort)
     Copy,
     /// Clear the visible transcript without deleting model context.
@@ -120,8 +115,6 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
         "disconnect" => Ok(SlashCommand::Disconnect {
             profile_id: parts.next().map(|s| s.to_string()),
         }),
-        "approve" => Ok(SlashCommand::Approve),
-        "deny" => Ok(SlashCommand::Deny),
         "compact" => Ok(SlashCommand::Compact),
         "connect" => {
             let rest: Vec<&str> = parts.collect();
@@ -130,7 +123,6 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
                 .map(SlashCommand::Connect)
                 .map_err(|e| CommandError::Usage(e.to_string()))
         }
-        "diff" => Ok(SlashCommand::Diff),
         "copy" => Ok(SlashCommand::Copy),
         "clear" => Ok(SlashCommand::Clear),
         "file" | "files" | "open" => Ok(SlashCommand::File {
@@ -208,11 +200,6 @@ mod tests {
 
     #[test]
     fn parses_phase2_commands() {
-        assert_eq!(
-            parse_slash("/approve").unwrap().unwrap(),
-            SlashCommand::Approve
-        );
-        assert_eq!(parse_slash("/deny").unwrap().unwrap(), SlashCommand::Deny);
         assert_eq!(parse_slash("/clear").unwrap().unwrap(), SlashCommand::Clear);
         assert_eq!(
             parse_slash("/file README.md").unwrap().unwrap(),
@@ -227,6 +214,16 @@ mod tests {
             parse_slash("/disconnect").unwrap().unwrap(),
             SlashCommand::Disconnect { profile_id: None }
         );
+    }
+
+    #[test]
+    fn removed_commands_are_unknown() {
+        for command in ["/diff", "/appove", "/approve", "/deny"] {
+            assert!(matches!(
+                parse_slash(command).unwrap().unwrap_err(),
+                CommandError::Unknown(_)
+            ));
+        }
     }
 
     #[test]
