@@ -58,7 +58,7 @@ impl Widget for SidebarWidget<'_> {
             .borders(Borders::ALL)
             .border_style(theme::border())
             .style(theme::panel_alt())
-            .title(Span::styled(" session ", theme::muted()));
+            .title(Span::styled(" session ", theme::brand()));
         let inner = block.inner(area);
         block.render(area, buf);
 
