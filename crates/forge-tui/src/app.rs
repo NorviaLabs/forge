@@ -1,8 +1,9 @@
 //! Full-screen TUI application (TUI-01 shell + TUI-02/03/04 wired).
 
 use std::collections::HashSet;
+use std::fs;
 use std::io::{self, stdout};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 use crossterm::event::{
@@ -39,8 +40,8 @@ use crate::layout::is_too_small;
 use crate::layout::split_areas_full;
 use crate::msg_queue::MessageQueue;
 use crate::overlays::{
-    filter_palette, handle_overlay_key, models_from_catalog, ConnectProfileItem, Key as OverlayKey,
-    Overlay, OverlayAction, OverlayWidget, PaletteItem, ResumeSessionItem,
+    filter_palette, handle_overlay_key, models_from_catalog, ConnectProfileItem, FileExplorerItem,
+    Key as OverlayKey, Overlay, OverlayAction, OverlayWidget, PaletteItem, ResumeSessionItem,
 };
 use crate::theme;
 use crate::widgets::{
@@ -721,6 +722,114 @@ impl TuiApp {
         self.overlay = Some(Overlay::connect_picker(items));
         self.status_message = "Choose a provider".into();
         self.notices.clear();
+    }
+
+    fn resolve_workspace_path(&self, path: impl AsRef<Path>) -> Result<PathBuf, TuiError> {
+        let input = path.as_ref();
+        let joined = if input.is_absolute() {
+            input.to_path_buf()
+        } else {
+            self.runtime.cwd.join(input)
+        };
+        let canonical = joined.canonicalize()?;
+        let root = self.runtime.cwd.canonicalize()?;
+        if !canonical.starts_with(&root) {
+            return Err(TuiError::Other(
+                "file explorer is limited to the workspace".into(),
+            ));
+        }
+        Ok(canonical)
+    }
+
+    fn open_file_explorer(&mut self, path: Option<&str>, error: Option<String>) {
+        let dir = match path {
+            Some(path) if !path.trim().is_empty() => self
+                .resolve_workspace_path(path.trim())
+                .unwrap_or_else(|_| self.runtime.cwd.clone()),
+            _ => self.runtime.cwd.clone(),
+        };
+        let dir = if dir.is_dir() {
+            dir
+        } else {
+            dir.parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| self.runtime.cwd.clone())
+        };
+        let root = self
+            .runtime
+            .cwd
+            .canonicalize()
+            .unwrap_or_else(|_| self.runtime.cwd.clone());
+        let current = dir.canonicalize().unwrap_or_else(|_| dir.clone());
+        let mut items = Vec::new();
+        if current != root {
+            if let Some(parent) = dir.parent() {
+                items.push(FileExplorerItem {
+                    name: "..".into(),
+                    path: parent.display().to_string(),
+                    is_dir: true,
+                });
+            }
+        }
+        match fs::read_dir(&dir) {
+            Ok(entries) => {
+                let mut children = entries
+                    .filter_map(Result::ok)
+                    .filter_map(|entry| {
+                        let path = entry.path();
+                        let file_type = entry.file_type().ok()?;
+                        let is_dir = file_type.is_dir();
+                        if !is_dir && !file_type.is_file() {
+                            return None;
+                        }
+                        Some(FileExplorerItem {
+                            name: entry.file_name().to_string_lossy().into_owned(),
+                            path: path.display().to_string(),
+                            is_dir,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                children.sort_by(|left, right| {
+                    right.is_dir.cmp(&left.is_dir).then_with(|| {
+                        left.name
+                            .to_ascii_lowercase()
+                            .cmp(&right.name.to_ascii_lowercase())
+                    })
+                });
+                items.extend(children);
+            }
+            Err(err) => {
+                self.overlay = Some(Overlay::file_explorer(
+                    dir.display().to_string(),
+                    items,
+                    Some(format!("Could not read directory: {err}")),
+                ));
+                return;
+            }
+        }
+        self.overlay = Some(Overlay::file_explorer(
+            dir.display().to_string(),
+            items,
+            error,
+        ));
+        self.status_message = "File explorer (readonly)".into();
+        self.notices.clear();
+    }
+
+    fn open_file_viewer(&mut self, path: &str) {
+        match self.resolve_workspace_path(path).and_then(|path| {
+            if !path.is_file() {
+                return Err(TuiError::Other("selected path is not a file".into()));
+            }
+            let contents = String::from_utf8_lossy(&fs::read(&path)?).into_owned();
+            Ok((path, contents))
+        }) {
+            Ok((path, contents)) => {
+                self.overlay = Some(Overlay::file_viewer(path.display().to_string(), contents));
+                self.status_message = "Viewing file (readonly)".into();
+            }
+            Err(err) => self.open_file_explorer(None, Some(format!("Could not open file: {err}"))),
+        }
     }
 
     fn open_api_key_prompt(&mut self, profile_id: &str, error: Option<String>) {
@@ -2141,6 +2250,13 @@ Reply with ONLY the commit message line.\n\n\
                     self.finish_connect(&profile_id, None, false);
                     self.busy_phase = BusyPhase::Idle;
                 }
+                OverlayAction::FilePick { path, is_dir } => {
+                    if is_dir {
+                        self.open_file_explorer(Some(&path), None);
+                    } else {
+                        self.open_file_viewer(&path);
+                    }
+                }
             }
             return Ok(());
         }
@@ -2640,6 +2756,31 @@ Reply with ONLY the commit message line.\n\n\
                     self.toast = None;
                     self.chat_scroll = 0;
                     self.chat_follow = true;
+                }
+                Ok(SlashCommand::File { path }) => {
+                    if let Some(path) = path.as_deref() {
+                        match self.resolve_workspace_path(path) {
+                            Ok(resolved) if resolved.is_file() => {
+                                self.open_file_viewer(&resolved.display().to_string());
+                            }
+                            Ok(resolved) if resolved.is_dir() => {
+                                self.open_file_explorer(
+                                    Some(&resolved.display().to_string()),
+                                    None,
+                                );
+                            }
+                            Ok(_) => self.open_file_explorer(
+                                None,
+                                Some("Path is not a regular file or directory".into()),
+                            ),
+                            Err(err) => self.open_file_explorer(
+                                None,
+                                Some(format!("Could not open path: {err}")),
+                            ),
+                        }
+                    } else {
+                        self.open_file_explorer(None, None);
+                    }
                 }
                 Ok(SlashCommand::Disconnect { profile_id }) => {
                     let msg = self.disconnect_auth(profile_id.as_deref())?;
