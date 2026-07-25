@@ -10,7 +10,6 @@ mod layout;
 mod msg_queue;
 mod overlays;
 mod sidebar;
-mod skills;
 mod theme;
 #[cfg(test)]
 mod visual_test;
