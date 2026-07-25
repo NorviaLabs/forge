@@ -451,14 +451,13 @@ impl AgentSession {
         }
     }
 
-    /// Human-readable multi-line report for the TUI notices panel.
     pub fn token_usage_lines(&self) -> Vec<String> {
         let r = self.token_usage_report();
         let api = &r.api;
         let mut lines = vec![
-            "Session token usage (not $)".into(),
+            "Session token usage (not $)".to_string(),
             String::new(),
-            "API-reported (cumulative)".into(),
+            "API-reported (cumulative)".to_string(),
             format!("  prompt/input tokens:      {}", api.prompt_tokens),
             format!("  completion/output tokens: {}", api.completion_tokens),
             format!("  total API tokens:         {}", api.total_api_tokens()),
@@ -468,7 +467,7 @@ impl AgentSession {
             ),
             format!("  thinking tokens (est.):   {}", api.thinking_tokens_est),
             String::new(),
-            "In-context estimate (~4 chars/token)".into(),
+            "In-context estimate (~4 chars/token)".to_string(),
             format!(
                 "  total: {} / {}  ({:.1}% of capacity)",
                 r.context_tokens_est, r.context_capacity, r.context_pct

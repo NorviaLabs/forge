@@ -29,36 +29,15 @@ pub enum VaultError {
     Missing(String, String),
 }
 
-pub trait SecretBroker: Send + Sync {
-    fn materialize(&self, keys: &[SecretRef]) -> Result<SecretMaterial, VaultError>;
-}
-
-/// Phase 2 vault stand-in: environment variables (SEC-01).
-pub struct EnvSecretBroker;
-
-impl EnvSecretBroker {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Default for EnvSecretBroker {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl SecretBroker for EnvSecretBroker {
-    fn materialize(&self, keys: &[SecretRef]) -> Result<SecretMaterial, VaultError> {
-        let mut m = SecretMaterial::default();
-        for k in keys {
-            match std::env::var(&k.env_key) {
-                Ok(v) => m.insert(k.name.clone(), v),
-                Err(_) => return Err(VaultError::Missing(k.name.clone(), k.env_key.clone())),
-            }
+pub fn materialize_secrets(keys: &[SecretRef]) -> Result<SecretMaterial, VaultError> {
+    let mut m = SecretMaterial::default();
+    for k in keys {
+        match std::env::var(&k.env_key) {
+            Ok(v) => m.insert(k.name.clone(), v),
+            Err(_) => return Err(VaultError::Missing(k.name.clone(), k.env_key.clone())),
         }
-        Ok(m)
     }
+    Ok(m)
 }
 
 const SECRET_KEYS: &[&str] = &[

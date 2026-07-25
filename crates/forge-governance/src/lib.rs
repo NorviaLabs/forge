@@ -7,11 +7,10 @@ mod secrets;
 
 pub use acl::{AclPolicy, AclRule};
 pub use audit::{AuditEvent, AuditLog};
-pub use sandbox::{ExecRequest, ExecResult, LightSandbox, Sandbox, SandboxProfile};
-pub use secrets::{EnvSecretBroker, SecretBroker, SecretMaterial, SecretRef};
+pub use sandbox::{light_sandbox_exec, ExecRequest, ExecResult};
+pub use secrets::{materialize_secrets, SecretMaterial, SecretRef};
 
 use forge_types::{PolicyDecision, Principal, SideEffectClass, ToolCall, ToolDescriptor};
-use serde::{Deserialize, Serialize};
 
 /// High-level governance facade for the tool path.
 #[derive(Debug, Clone)]
@@ -20,7 +19,6 @@ pub struct Governance {
     pub acl: AclPolicy,
     pub hitl_tools: Vec<String>,
     pub hitl_classes: Vec<SideEffectClass>,
-    pub sandbox_profile: SandboxProfile,
     pub audit: AuditLog,
 }
 
@@ -31,7 +29,6 @@ impl Default for Governance {
             acl: AclPolicy::allow_all(),
             hitl_tools: vec!["bash".into()], // narrow default: bash may need HITL when flagged
             hitl_classes: vec![],
-            sandbox_profile: SandboxProfile::Light,
             audit: AuditLog::default(),
         }
     }
@@ -110,73 +107,6 @@ fn glob_match(pattern: &str, name: &str) -> bool {
         return name.starts_with(prefix);
     }
     pattern == name
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GovernanceConfig {
-    #[serde(default = "default_principal")]
-    pub default_principal: String,
-    #[serde(default)]
-    pub allow: Vec<String>,
-    #[serde(default)]
-    pub deny: Vec<String>,
-    #[serde(default)]
-    pub hitl_tools: Vec<String>,
-    #[serde(default = "default_sandbox")]
-    pub sandbox: String,
-}
-
-fn default_principal() -> String {
-    "local-dev".into()
-}
-fn default_sandbox() -> String {
-    "light".into()
-}
-
-impl Default for GovernanceConfig {
-    fn default() -> Self {
-        Self {
-            default_principal: default_principal(),
-            allow: vec!["*".into()],
-            deny: vec![],
-            hitl_tools: vec![],
-            sandbox: default_sandbox(),
-        }
-    }
-}
-
-impl GovernanceConfig {
-    pub fn build(&self) -> Governance {
-        let principal = if self.default_principal == "local-dev" {
-            Principal::local_dev()
-        } else {
-            Principal {
-                id: self.default_principal.clone(),
-                roles: vec![],
-                scopes: vec![],
-                surface: "cli".into(),
-            }
-        };
-        let mut acl = AclPolicy::new();
-        for a in &self.allow {
-            acl.allow(a.clone());
-        }
-        for d in &self.deny {
-            acl.deny(d.clone());
-        }
-        if self.allow.is_empty() {
-            acl = AclPolicy::allow_all();
-        }
-        let profile = SandboxProfile::Light;
-        Governance {
-            principal,
-            acl,
-            hitl_tools: self.hitl_tools.clone(),
-            hitl_classes: vec![],
-            sandbox_profile: profile,
-            audit: AuditLog::default(),
-        }
-    }
 }
 
 #[cfg(test)]
@@ -260,27 +190,23 @@ mod tests {
     #[test]
     fn secret_broker_env() {
         std::env::set_var("FORGE_TEST_DEMO", "value123");
-        let b = EnvSecretBroker::new();
-        let m = b
-            .materialize(&[SecretRef {
-                name: "demo".into(),
-                env_key: "FORGE_TEST_DEMO".into(),
-            }])
-            .unwrap();
+        let m = materialize_secrets(&[SecretRef {
+            name: "demo".into(),
+            env_key: "FORGE_TEST_DEMO".into(),
+        }])
+        .unwrap();
         assert_eq!(m.get("demo"), Some("value123"));
         std::env::remove_var("FORGE_TEST_DEMO");
     }
 
     #[test]
     fn light_sandbox_runs() {
-        let sb = LightSandbox;
-        let r = sb
-            .exec(ExecRequest {
-                command: "echo hi".into(),
-                cwd: std::env::current_dir().unwrap(),
-                env: vec![],
-            })
-            .unwrap();
+        let r = light_sandbox_exec(&ExecRequest {
+            command: "echo hi".into(),
+            cwd: std::env::current_dir().unwrap(),
+            env: vec![],
+        })
+        .unwrap();
         assert!(r.stdout.contains("hi"));
         assert!(!r.is_error);
     }
