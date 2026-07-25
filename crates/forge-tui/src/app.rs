@@ -1574,14 +1574,24 @@ impl TuiApp {
         self.session.force_context_reset_async().await?;
         let after = self.session.token_usage_report().context_tokens_est;
         self.push_toast("context compacted");
+        let summary = format!("Context handoff complete · {before} → {after} estimated tokens.");
+        self.ui_banners.push(ChatItem::Banner {
+            text: summary.clone(),
+            kind: BannerKind::Ok,
+        });
+        self.push_activity(
+            ActivityKind::Context,
+            FeedbackSeverity::Ok,
+            format!("context handoff · {before} → {after} tokens"),
+        );
         self.set_feedback(
             FeedbackSeverity::Ok,
             format!("context compacted · {before} → {after} tokens"),
         );
         self.status_message = "context compacted".into();
         self.notices = vec![
-            format!("Context compacted: {before} → {after} estimated tokens."),
-            "Progress written to .forge/progress.json.".into(),
+            summary,
+            "Progress written to .forge/progress.json; context_reset journaled.".into(),
         ];
         self.busy_phase = BusyPhase::Idle;
         if let Some(term) = terminal.as_deref_mut() {
@@ -3411,6 +3421,39 @@ mod tests {
             .iter()
             .any(|message| message.content == "restored conversation"));
         assert_eq!(app.status_message, "session resumed");
+    }
+
+    #[tokio::test]
+    async fn compact_reports_context_handoff_in_chat_and_activity() {
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "mock".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "0.12.0".into(),
+            },
+        );
+
+        app.dispatch_line("/compact").await.unwrap();
+
+        assert!(app
+            .notices
+            .iter()
+            .any(|line| line.contains("context_reset journaled")));
+        assert!(app.ui_banners.iter().any(|item| matches!(
+            item,
+            ChatItem::Banner {
+                kind: BannerKind::Ok,
+                text,
+            } if text.contains("Context handoff complete")
+        )));
+        assert!(app
+            .activity
+            .all()
+            .iter()
+            .any(|item| item.kind == ActivityKind::Context));
     }
 
     #[tokio::test]
