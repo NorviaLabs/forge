@@ -191,6 +191,22 @@ impl ContextEngine {
         fs::read_to_string(p).unwrap_or_default()
     }
 
+    pub fn load_skills(&self) -> Vec<(String, String)> {
+        let skills_dir = self.workspace.join(".agents").join("skills");
+        let mut skills = fs::read_dir(skills_dir)
+            .ok()
+            .into_iter()
+            .flat_map(|entries| entries.filter_map(Result::ok))
+            .filter_map(|entry| {
+                let path = entry.path().join("SKILL.md");
+                let name = entry.file_name().to_string_lossy().into_owned();
+                fs::read_to_string(path).ok().map(|content| (name, content))
+            })
+            .collect::<Vec<_>>();
+        skills.sort_by(|a, b| a.0.cmp(&b.0));
+        skills
+    }
+
     /// CTX-02 hard reset: write progress, clear window, rehydrate slim messages.
     pub fn handoff_reset(
         &self,
