@@ -1497,23 +1497,6 @@ impl TuiApp {
         );
     }
 
-    fn queue_hitl(&mut self, decision: HitlDecision) {
-        if self.busy
-            || self.pending_prompt.is_some()
-            || self.pending_sync
-            || self.pending_model_refresh
-            || self.pending_hitl_decision.is_some()
-            || self.pending_context_reset
-        {
-            self.set_feedback(FeedbackSeverity::Warn, "busy — wait before HITL");
-            return;
-        }
-        self.pending_hitl_decision = Some(decision);
-        self.busy_phase = BusyPhase::Other("HITL".into());
-        self.status_message = "resolving approval…".into();
-        self.set_feedback(FeedbackSeverity::Info, "resolving approval…");
-    }
-
     fn queue_context_reset(&mut self) {
         if self.busy
             || self.pending_prompt.is_some()
@@ -2577,28 +2560,6 @@ Reply with ONLY the commit message line.\n\n\
                         ),
                     }
                 }
-                Ok(SlashCommand::Approve) => {
-                    if self.session.pending_hitl.is_none() {
-                        self.status_message = "no pending HITL to approve".into();
-                        self.notices = vec!["No human-in-the-loop request is waiting.".into()];
-                    } else {
-                        self.queue_hitl(HitlDecision::Approve);
-                        if cfg!(test) {
-                            let _ = self.drain_pending_hitl(None).await;
-                        }
-                    }
-                }
-                Ok(SlashCommand::Deny) => {
-                    if self.session.pending_hitl.is_none() {
-                        self.status_message = "no pending HITL to deny".into();
-                        self.notices = vec!["No human-in-the-loop request is waiting.".into()];
-                    } else {
-                        self.queue_hitl(HitlDecision::Deny);
-                        if cfg!(test) {
-                            let _ = self.drain_pending_hitl(None).await;
-                        }
-                    }
-                }
                 Ok(SlashCommand::Compact) => {
                     self.queue_context_reset();
                     if cfg!(test) {
@@ -2670,33 +2631,6 @@ Reply with ONLY the commit message line.\n\n\
                             ));
                         }
                     }
-                }
-                Ok(SlashCommand::Diff) => {
-                    let mut lines = vec!["Session tools & changes:".into()];
-                    let mut n_tools = 0usize;
-                    let mut n_write = 0usize;
-                    for m in &self.session.messages {
-                        if m.role == forge_types::MessageRole::Tool {
-                            n_tools += 1;
-                            let name = m.name.as_deref().unwrap_or("tool");
-                            if name.contains("write")
-                                || name.contains("search_replace")
-                                || name == "edit"
-                                || name == "git"
-                            {
-                                n_write += 1;
-                            }
-                            let preview: String = m.content.chars().take(80).collect();
-                            lines.push(format!("· {name}  {preview}"));
-                        }
-                    }
-                    if n_tools == 0 {
-                        lines.push("(no tool results yet)".into());
-                    } else {
-                        lines.insert(1, format!("{n_tools} tool results · {n_write} write-like"));
-                    }
-                    self.notices = lines;
-                    self.status_message = "diff".into();
                 }
                 Ok(SlashCommand::Copy) => {
                     let last = self
@@ -4425,30 +4359,13 @@ mod tests {
             suggestions.iter().map(|s| &s.cmd).collect::<Vec<_>>()
         );
         for cmd in [
-            "/status", "/connect", "/model", "/approve", "/deny", "/compact", "/resume", "/sync",
-            "/quit",
+            "/status", "/connect", "/model", "/compact", "/resume", "/sync", "/quit",
         ] {
             assert!(
                 suggestions.iter().any(|s| s.cmd == cmd),
                 "missing {cmd} in suggestions"
             );
         }
-    }
-
-    #[tokio::test]
-    async fn approve_without_hitl_is_graceful() {
-        let (_dir, session) = test_session().await;
-        let mut app = TuiApp::new(
-            session,
-            TuiRuntimeConfig {
-                model_label: "m".into(),
-                provider: "mock".into(),
-                cwd: PathBuf::from("."),
-                version: "0.8.0".into(),
-            },
-        );
-        app.dispatch_line("/approve").await.unwrap();
-        assert!(app.status_message.contains("no pending"));
     }
 
     #[tokio::test]

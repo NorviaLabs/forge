@@ -141,14 +141,11 @@ All interaction inside the TUI uses slash commands typed in the textbox:
 | `/disconnect` | Disconnect current provider and clear stored credentials |
 | `/resume` | Pick a previous session to resume |
 | `/resume <uuid>` | Resume a specific session by id |
-| `/diff` | Tool activity and file changes for the session |
 | `/file <path>` | Browse and read a workspace file read-only |
 | `/cost` | Token usage breakdown for the session |
 | `/compact` | Compact the conversation context |
 | `/copy` | Copy last assistant message to clipboard |
 | `/clear` | Clear the visible transcript (keeps model context) |
-| `/approve` | Approve a pending human-in-the-loop request |
-| `/deny` | Deny a pending human-in-the-loop request |
 | `/sync` | Stage all changes, commit with a generated message, and push |
 | `/quit` | Quit Forge |
 
