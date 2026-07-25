@@ -43,7 +43,6 @@ use crate::msg_queue::MessageQueue;
 use crate::overlays::{
     filter_palette, handle_overlay_key, models_from_catalog, ConnectProfileItem, FileExplorerItem,
     Key as OverlayKey, Overlay, OverlayAction, OverlayWidget, PaletteItem, ResumeSessionItem,
-    SkillItem,
 };
 use crate::theme;
 use crate::widgets::{
@@ -2505,16 +2504,9 @@ Reply with ONLY the commit message line.\n\n\
                     self.status_message = "no skills".into();
                     return;
                 }
-                let items: Vec<SkillItem> = skills
-                    .into_iter()
-                    .map(|s| SkillItem {
-                        name: s.name,
-                        enabled: s.enabled,
-                        file_count: s.file_count,
-                    })
-                    .collect();
-                self.overlay = Some(Overlay::skills_list(items));
-                self.status_message = format!("{} skills", self.skills.list_skills().len());
+                let n = skills.len();
+                self.overlay = Some(Overlay::skills_list(skills));
+                self.status_message = format!("{n} skills");
             }
             SkillAction::Install { url } => match self.skills.install_skill(&url) {
                 Ok(name) => {
