@@ -1,11 +1,11 @@
 # TUI polish todo
 
-- [ ] Tighten theme colors and surfaces
-- [ ] Refine status chrome layout
-- [ ] Improve footer spacing and alignment
-- [ ] Polish input composer framing
-- [ ] Improve overlay/palette selection contrast
-- [ ] Refine conversation card spacing
-- [ ] Polish sidebar panel styling
-- [ ] Group `/status` diagnostics more clearly
+- [x] Tighten theme colors and surfaces
+- [x] Refine status chrome layout
+- [x] Improve footer spacing and alignment
+- [x] Polish input composer framing
+- [x] Improve overlay/palette selection contrast
+- [x] Refine conversation card spacing
+- [x] Polish sidebar panel styling
+- [x] Group `/status` diagnostics more clearly
 - [ ] Update screenshots and docs
