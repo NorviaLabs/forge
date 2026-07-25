@@ -94,6 +94,7 @@ pub fn parse_markdown_code_block(markdown: &str) -> Vec<(String, String)> {
             if in_block {
                 blocks.push((current_fence.clone(), current_content.trim().to_string()));
                 current_content.clear();
+                in_block = false;
             } else {
                 current_fence = line.to_string();
                 in_block = true;
