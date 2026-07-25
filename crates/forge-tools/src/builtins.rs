@@ -333,75 +333,6 @@ impl Tool for GitTool {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
-pub struct GrepArgs {
-    pub pattern: String,
-    #[serde(default)]
-    pub path: Option<String>,
-}
-
-pub struct GrepTool;
-
-#[async_trait]
-impl Tool for GrepTool {
-    fn name(&self) -> &str {
-        "grep"
-    }
-    fn description(&self) -> &str {
-        "Search for a regex pattern in the workspace (ripgrep if available, else grep)"
-    }
-    fn input_schema(&self) -> Value {
-        schema_for::<GrepArgs>()
-    }
-    fn side_effect_class(&self) -> SideEffectClass {
-        SideEffectClass::Read
-    }
-    fn idempotent(&self) -> bool {
-        true
-    }
-
-    async fn call(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
-        let a: GrepArgs =
-            serde_json::from_value(args).map_err(|e| ToolError::Execution(e.to_string()))?;
-        let search_path = a
-            .path
-            .as_deref()
-            .map(|p| ctx.resolve_path(p))
-            .transpose()?
-            .unwrap_or_else(|| ctx.workspace_root.clone());
-
-        let mut cmd = Command::new("rg");
-        cmd.arg("-n")
-            .arg("--no-heading")
-            .arg(&a.pattern)
-            .arg(&search_path)
-            .current_dir(&ctx.workspace_root)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let out = match cmd.output().await {
-            Ok(o) => o,
-            Err(_) => {
-                // Fallback to grep -R
-                Command::new("grep")
-                    .arg("-Rn")
-                    .arg(&a.pattern)
-                    .arg(&search_path)
-                    .current_dir(&ctx.workspace_root)
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .output()
-                    .await
-                    .map_err(|e| ToolError::Execution(e.to_string()))?
-            }
-        };
-        let content = String::from_utf8_lossy(&out.stdout).into_owned();
-        Ok(ToolOutput {
-            content,
-            is_error: false,
-        })
-    }
-}
-
 /// Phase 1 workspace tools only (no web_search). Prefer
 /// [`default_builtins_with_web_search`] when config is available.
 pub fn default_builtins() -> Vec<std::sync::Arc<dyn Tool>> {
@@ -410,7 +341,6 @@ pub fn default_builtins() -> Vec<std::sync::Arc<dyn Tool>> {
         std::sync::Arc::new(WriteFileTool),
         std::sync::Arc::new(crate::ApplyPatchTool),
         std::sync::Arc::new(BashTool),
-        std::sync::Arc::new(GrepTool),
         std::sync::Arc::new(GitTool),
     ];
     tools.extend(crate::fff::fff_tools());
@@ -642,3 +572,4 @@ mod tests {
         .unwrap();
     }
 }
+
