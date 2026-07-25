@@ -4,11 +4,9 @@
 # Forge runtime
 # IDE / OS
 # Logs & coverage
-# Python (local tooling only, if any)
 # Rust / Cargo
 # Secrets & env
 **/*.rs.bk
-**/forge_litellm_worker.egg-info/
 *.log
 *.pem
 *.swo
@@ -18,11 +16,9 @@
 .env.*
 .forge/
 .idea/
-.venv/
 .vscode/
 /target/
 Thumbs.db
 __pycache__/
 coverage/
 lcov.info
-venv/
