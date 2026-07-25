@@ -35,4 +35,3 @@ fn version_prints_package_version() {
         .assert()
         .success();
 }
-
