@@ -45,6 +45,7 @@ fn spinner_frame() -> &'static str {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct StatusModel {
     pub status: SessionStatus,
     pub session_short: String,
@@ -96,7 +97,9 @@ impl StatusModel {
         }
     }
 
+    #[allow(dead_code)]
     fn truncate_model(model: &str, max: usize) -> String {
+        #[allow(dead_code)]
         let n = model.chars().count();
         if n <= max {
             return model.to_string();
@@ -118,6 +121,7 @@ impl StatusModel {
     }
 }
 
+#[allow(dead_code)]
 pub struct StatusBar<'a> {
     pub model: &'a StatusModel,
 }
