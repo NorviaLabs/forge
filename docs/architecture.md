@@ -3,7 +3,7 @@
 **Version:** 0.13.0  
 **Status:** Aligned with shipped product  
 **Owner:** Mohit Ranka  
-**Last updated:** 23 Jul 2026  
+**Last updated:** 25 Jul 2026  
 **Related PRD:** [prd.md](./prd.md)  
 **Related TUI UI:** [ui.md](./ui.md)  
 **Related designs:** [designs/README.md](./designs/README.md)  
@@ -12,7 +12,7 @@
 
 ## 1. Purpose
 
-Forge is an open-source **AI coding agent harness**: loop control, context lifecycle, durable journal, tools (built-ins including **`git`** + MCP + `web_search`), governance hooks, and native Rust model transports. **Product surfaces:** full-screen TUI (`forge`) and headless `forge run`.
+Forge is an open-source **AI coding agent harness**: loop control, context lifecycle, durable journal, tools (built-ins including **`git`**, `fffind`/`ffgrep`, `apply_patch`, MCP, `web_search`), governance hooks, and native Rust model transports. **Product surfaces:** full-screen TUI (`forge`) and headless `forge run`.
 
 ### How to read the diagrams
 
@@ -45,7 +45,8 @@ The product sits in the agentic stack as follows:
 8. Models: **native Rust HTTP/SSE transports** for all built-in live providers
 9. **`/connect` / `forge connect`** for xAI Grok (OAuth) and OpenCode Go (API key)  
 10. TUI: history, inline slash + Tab, feedback strip, session chrome, activity feed  
-11. Built-in tools: `read_file`, `write_file`, `bash`, `grep`, **`git`** (allowlisted subcommands), **`web_search`** (mock fixture default; live backends with API keys)  
+11. Built-in tools: `read_file`, `write_file`, `apply_patch`, `bash`, `fffind`, `ffgrep`, **`git`** (allowlisted subcommands), **`web_search`** (mock fixture default; live backends with API keys)
+12. **Skills**: optional `SKILL.md` packs from global/project skill dirs injected into the system prompt  
  
 
 ### Non-goals
@@ -260,7 +261,7 @@ A **session** is a durable unit of agent work (one interactive chat or one CI jo
 |--------|--------|
 | **Contract** | Each tool: name, description, serde/schemars input type, typed output serialization (CORE-01) |
 | **Registry** | In-process built-ins + MCP-discovered tools, merged then ACL-filtered (SEC-02) |
-| **Built-ins (coding default)** | `read_file`, `write_file`, `bash`, `grep`, **`git`** (allowlisted subcommands: status, diff, log, add, commit, push, …); subject to sandbox and worktree policy |
+| **Built-ins (coding default)** | `read_file`, `write_file`, `apply_patch`, `bash`, `fffind`, `ffgrep`, **`git`** (allowlisted subcommands: status, diff, log, add, commit, push, …); subject to sandbox and worktree policy |
 | **Built-ins (web)** | **`web_search`** — public web query via pluggable backends (`network` class); keys from env/vault only ([web-search-tool.md](./designs/web-search-tool.md)) |
 | **MCP** | Stdio/HTTP MCP servers for external integrations (CORE-02) |
 | **Validation** | Invalid args → structured error + automatic validation retry prompt to the model |
@@ -600,9 +601,17 @@ Default path: **`.forge/progress.json`** under the workspace root (configurable)
 | Source | When loaded | Use |
 |--------|-------------|-----|
 | `AGENTS.md` (repo root or configured path) | Session start; post-reset | Standing project memory / operator rules |
+| Skills (`SKILL.md`) | Session start; post-reset | Reusable instruction packs appended to the system prompt |
 | `progress.json` | Resume; post-reset | Task continuity across long horizons |
 | Git status / worktree | Each assemble (summarized) | Ground truth of files |
 | Surface system overlays | Per surface | TUI vs CI policy differences |
+
+**Skills discovery** (project overrides global on name collision):
+
+| Path | Scope |
+|------|-------|
+| `<workspace>/.forge/skills/<name>/SKILL.md` | Project |
+| `~/.config/forge/skills/<name>/SKILL.md` (or OS config dir equivalent) | Global |
 
 Discovery order and override rules should be deterministic and documented in config (single root of truth for path globs).
 
@@ -627,7 +636,7 @@ flowchart TB
 
   subgraph shared["Shared backends"]
     M[Native model / mock tests]
-    TOOLS[Built-ins + git + web_search + MCP]
+    TOOLS[Built-ins + fff + git + web_search + MCP]
     J[Journal SQLite]
     WS[Workspace / worktree]
   end
@@ -805,17 +814,20 @@ Illustrative Rust workspace layout (crate names align with §3 / decisions table
 |--------------|----------------|
 | `forge-core` — loop | Plan–act–observe driver, termination, turn limits |
 | `forge-core` — tools registry | Tool registration, serde/schemars validation, dispatch |
-| `forge-tools` | Built-ins (`read_file`, `write_file`, `bash`, `grep`, **`git`**, **`web_search`**) + registry |
+| `forge-tools` | Built-ins (`read_file`, `write_file`, `apply_patch`, `bash`, `fffind`, `ffgrep`, **`git`**, **`web_search`**) + registry |
+| `forge-syntax` | Tree-sitter highlighting (diff/code views) and structural helpers |
+| `forge-types` | Shared session/tool/event types |
+| `forge-config` | `forge.toml` + env/flag config loading |
+| `forge-workspace` | Git worktree isolation lifecycle |
 | `forge-mcp` | MCP discovery/call (product path via config/static demo) |
 | `forge-model` | `ModelClient`; native HTTP/SSE transports + test mock |
 | `crates/forge-model/src/native` | Native Rust provider HTTP/SSE transports |
 | `forge-durable` | Journal + HITL wait records |
-| `forge-context` | Budget, offload, handoff, worktree |
+| `forge-context` | Budget, offload, handoff, `AGENTS.md` / skills loading |
 | `forge-governance` | ACL, secrets, audit, light sandbox |
 | `forge-connect` | Connect profiles + credential store |
 | `forge-tui` | Full-screen TUI |
 | `forge-cli` | **`forge`** binary: TUI / `run` / `status` / `connect` |
-| `forge-feedback` | Feedback/evaluator library only |
 | `forge-obs` | OTEL helpers library only |
 
 ---
