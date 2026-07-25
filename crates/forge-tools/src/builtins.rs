@@ -527,12 +527,8 @@ mod tests {
     #[test]
     fn fff_find_schema_rejects_empty_args() {
         let t = crate::fff::FffFindTool::new(std::sync::Arc::new(crate::fff::FffState::new()));
-        let err = crate::validation::validate_args(
-            "fffind",
-            &t.input_schema(),
-            &json!({}),
-        )
-        .unwrap_err();
+        let err =
+            crate::validation::validate_args("fffind", &t.input_schema(), &json!({})).unwrap_err();
         assert_eq!(err.tool, "fffind");
     }
 
@@ -540,36 +536,23 @@ mod tests {
     fn fff_grep_schema_rejects_empty_args() {
         let state = std::sync::Arc::new(crate::fff::FffState::new());
         let t = crate::fff::FffGrepTool::new(state);
-        let err = crate::validation::validate_args(
-            "ffgrep",
-            &t.input_schema(),
-            &json!({}),
-        )
-        .unwrap_err();
+        let err =
+            crate::validation::validate_args("ffgrep", &t.input_schema(), &json!({})).unwrap_err();
         assert_eq!(err.tool, "ffgrep");
     }
 
     #[test]
     fn fff_find_schema_accepts_query() {
         let t = crate::fff::FffFindTool::new(std::sync::Arc::new(crate::fff::FffState::new()));
-        crate::validation::validate_args(
-            "fffind",
-            &t.input_schema(),
-            &json!({"query": "main.rs"}),
-        )
-        .unwrap();
+        crate::validation::validate_args("fffind", &t.input_schema(), &json!({"query": "main.rs"}))
+            .unwrap();
     }
 
     #[test]
     fn fff_grep_schema_accepts_pattern() {
         let state = std::sync::Arc::new(crate::fff::FffState::new());
         let t = crate::fff::FffGrepTool::new(state);
-        crate::validation::validate_args(
-            "ffgrep",
-            &t.input_schema(),
-            &json!({"pattern": "TODO"}),
-        )
-        .unwrap();
+        crate::validation::validate_args("ffgrep", &t.input_schema(), &json!({"pattern": "TODO"}))
+            .unwrap();
     }
 }
-

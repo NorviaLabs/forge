@@ -65,14 +65,12 @@ impl Tool for RefactorTool {
         let code = tokio::fs::read_to_string(&path).await?;
 
         // Detect language from file extension or override
-        let lang = a
-            .language
-            .unwrap_or_else(|| {
-                path.extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("")
-                    .to_string()
-            });
+        let lang = a.language.unwrap_or_else(|| {
+            path.extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_string()
+        });
 
         // For now, just do query extraction
         // Full refactoring would modify the file

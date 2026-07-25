@@ -12,7 +12,11 @@ fn schema_type(type_value: &Value) -> Option<&str> {
     if let Some(arr) = type_value.as_array() {
         return arr.iter().find_map(|v| {
             let s = v.as_str()?;
-            if s == "null" { None } else { Some(s) }
+            if s == "null" {
+                None
+            } else {
+                Some(s)
+            }
         });
     }
     None
@@ -40,13 +44,11 @@ fn coerce_args(schema: &Value, args: &mut Value) {
                                             .unwrap_or_else(|| arg_value.clone());
                                     }
                                 }
-                                "boolean" => {
-                                    match s.to_lowercase().as_str() {
-                                        "true" | "1" => *arg_value = Value::Bool(true),
-                                        "false" | "0" => *arg_value = Value::Bool(false),
-                                        _ => {}
-                                    }
-                                }
+                                "boolean" => match s.to_lowercase().as_str() {
+                                    "true" | "1" => *arg_value = Value::Bool(true),
+                                    "false" | "0" => *arg_value = Value::Bool(false),
+                                    _ => {}
+                                },
                                 _ => {}
                             }
                         }

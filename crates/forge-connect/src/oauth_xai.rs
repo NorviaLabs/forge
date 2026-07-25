@@ -72,11 +72,23 @@ impl Default for XaiOauthClient {
 impl XaiOauthClient {
     pub fn from_env() -> Self {
         Self {
-            issuer: env_with_fallback("FORGE_XAI_OAUTH_ISSUER", "GROK_OAUTH2_ISSUER", DEFAULT_ISSUER)
-                .trim_end_matches('/')
-                .into(),
-            client_id: env_with_fallback("FORGE_XAI_OAUTH_CLIENT_ID", "GROK_OAUTH2_CLIENT_ID", DEFAULT_CLIENT_ID),
-            scopes: env_with_fallback("FORGE_XAI_OAUTH_SCOPES", "GROK_OAUTH2_SCOPES", DEFAULT_SCOPES),
+            issuer: env_with_fallback(
+                "FORGE_XAI_OAUTH_ISSUER",
+                "GROK_OAUTH2_ISSUER",
+                DEFAULT_ISSUER,
+            )
+            .trim_end_matches('/')
+            .into(),
+            client_id: env_with_fallback(
+                "FORGE_XAI_OAUTH_CLIENT_ID",
+                "GROK_OAUTH2_CLIENT_ID",
+                DEFAULT_CLIENT_ID,
+            ),
+            scopes: env_with_fallback(
+                "FORGE_XAI_OAUTH_SCOPES",
+                "GROK_OAUTH2_SCOPES",
+                DEFAULT_SCOPES,
+            ),
         }
     }
 

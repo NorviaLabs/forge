@@ -2,9 +2,9 @@
 //! Phase 9: `web_search` (WEB-01) — see `web_search` module.
 
 mod apply_patch;
-mod refactor;
 mod builtins;
 mod fff;
+mod refactor;
 mod registry;
 mod validation;
 pub mod web_search;
