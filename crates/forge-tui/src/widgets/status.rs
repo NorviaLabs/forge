@@ -140,7 +140,7 @@ impl Widget for StatusBar<'_> {
             self.model.prompt_cache_hits, self.model.prompt_cache_writes
         );
 
-        // Calm single line: connect · state · model · ctx · wt (no product title)
+        // Branded, compact chrome: forge · state · model · ctx/cache · connection.
         let (conn_label, conn_style) = if self.model.provider_connected {
             let who = self.model.connect_profile.as_deref().unwrap_or(
                 if self.model.provider.eq_ignore_ascii_case("mock") {
@@ -149,26 +149,28 @@ impl Widget for StatusBar<'_> {
                     "ready"
                 },
             );
-            (format!(" ● connected:{who} "), theme::ok())
+            (format!(" connected:{who} "), theme::ok())
         } else {
             (
-                " ○ not connected ".into(),
+                " not connected ".into(),
                 theme::warn().add_modifier(Modifier::BOLD),
             )
         };
 
         let mut spans = vec![
-            Span::styled(conn_label, conn_style),
+            Span::styled(" forge ", theme::brand()),
             Span::styled("· ", theme::dim()),
-            Span::styled(format!("{label} "), style),
+            Span::styled(format!("[{label}] "), style),
             Span::styled("· ", theme::dim()),
             Span::styled(format!("{provider}/{model_disp} "), theme::text()),
             Span::styled("· ", theme::dim()),
-            Span::styled(format!("{} ", ctx), theme::info()),
+            Span::styled(format!("[{ctx}] "), theme::info()),
             Span::styled("· ", theme::dim()),
-            Span::styled(format!("{} ", cache), theme::muted()),
+            Span::styled(format!("[{cache}] "), theme::muted()),
             Span::styled("· ", theme::dim()),
             Span::styled(format!("effort={} ", self.model.effort), theme::text()),
+            Span::styled("· ", theme::dim()),
+            Span::styled(format!("[{conn_label}] "), conn_style),
         ];
 
         if self.model.worktree_on {
