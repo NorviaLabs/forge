@@ -83,9 +83,20 @@ Prefer a small semantic layer over ad hoc colors:
 
 - Updated TUI styling.
 - Updated `/status` presentation.
-- Design screenshots in `docs/ui/screens/`.
+- Neutral review screenshots in `docs/ui/screens/`.
 
-## 8. Review checklist
+## 8. Implemented
+
+- Theme color tightening.
+- Status chrome chips for context and cache.
+- Footer spacing cleanup.
+- Input composer framing and history surface.
+- Overlay palette/modal consistency.
+- Conversation card surface polish.
+- Sidebar surface and tool list polish.
+- `/status` diagnostics grouping.
+
+## 9. Review checklist
 
 - Still readable at 80 columns.
 - Still usable at 60 columns.
