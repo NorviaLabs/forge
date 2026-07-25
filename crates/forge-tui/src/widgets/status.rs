@@ -53,7 +53,6 @@ pub struct StatusModel {
     pub provider: String,
     pub effort: String,
     pub ctx_pct: f64,
-    pub worktree_on: bool,
     pub busy: bool,
     pub busy_phase: BusyPhase,
     pub connect_profile: Option<String>,
@@ -161,7 +160,7 @@ impl Widget for StatusBar<'_> {
             )
         };
 
-        let mut spans = vec![
+        let spans = vec![
             Span::styled(" forge ", theme::brand()),
             Span::styled("· ", theme::dim()),
             Span::styled(format!("[{label}] "), style),
@@ -176,11 +175,6 @@ impl Widget for StatusBar<'_> {
             Span::styled("· ", theme::dim()),
             Span::styled(format!("[{conn_label}] "), conn_style),
         ];
-
-        if self.model.worktree_on {
-            spans.push(Span::styled("· ", theme::dim()));
-            spans.push(Span::styled("worktree ", theme::warn()));
-        }
 
         let line = Line::from(spans);
         buf.set_line(area.x, area.y, &line, area.width);
@@ -197,7 +191,6 @@ pub fn session_chrome_lines(m: &StatusModel) -> Vec<String> {
         format!("model={}", m.model),
         format!("effort={}", m.effort),
         format!("ctx={:.1}%", m.ctx_pct * 100.0),
-        format!("worktree={}", if m.worktree_on { "on" } else { "off" }),
         format!("profile={}", m.connect_profile.as_deref().unwrap_or("—")),
         format!(
             "connected={}",
@@ -228,7 +221,6 @@ mod tests {
             provider: "mock".into(),
             effort: "auto".into(),
             ctx_pct: 0.1,
-            worktree_on: false,
             busy: false,
             busy_phase: BusyPhase::Idle,
             connect_profile: None,
@@ -250,7 +242,6 @@ mod tests {
             provider: "native".into(),
             effort: "high".into(),
             ctx_pct: 0.0,
-            worktree_on: true,
             busy: true,
             busy_phase: BusyPhase::Model,
             connect_profile: None,
@@ -272,7 +263,6 @@ mod tests {
             provider: "native".into(),
             effort: "medium".into(),
             ctx_pct: 0.34,
-            worktree_on: false,
             busy: false,
             busy_phase: BusyPhase::Idle,
             connect_profile: Some("xai".into()),

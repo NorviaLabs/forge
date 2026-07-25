@@ -1874,7 +1874,6 @@ Reply with ONLY the commit message line.\n\n\
             provider: self.runtime.provider.clone(),
             effort: self.reasoning_effort.to_string(),
             ctx_pct: self.session.context_usage_ratio(),
-            worktree_on: self.session.worktree_status().is_some(),
             busy: self.busy,
             busy_phase: self.busy_phase.clone(),
             connect_profile: self.connect_profile.clone(),
@@ -2128,7 +2127,6 @@ Reply with ONLY the commit message line.\n\n\
             ctx_pct: status.ctx_pct,
             connected: status.provider_connected,
             connect_profile: status.connect_profile,
-            worktree_on: status.worktree_on,
             hints,
         };
         frame.render_widget(FooterBar { model: &footer }, regions.footer);
@@ -2696,9 +2694,6 @@ Reply with ONLY the commit message line.\n\n\
                         lines.push("(no tool results yet)".into());
                     } else {
                         lines.insert(1, format!("{n_tools} tool results · {n_write} write-like"));
-                    }
-                    if let Some(wt) = self.session.worktree_status() {
-                        lines.push(format!("worktree: {wt}"));
                     }
                     self.notices = lines;
                     self.status_message = "diff".into();
@@ -3379,7 +3374,6 @@ mod tests {
     use forge_model::MockModelClient;
     use forge_tools::ToolRegistry;
     use forge_types::ModelResponse;
-    use forge_workspace::IsolationMode;
     use std::sync::Arc;
     use tempfile::TempDir;
 
@@ -3397,7 +3391,6 @@ mod tests {
                 max_turns: 4,
                 workspace: dir.path().to_path_buf(),
                 journal_dir: dir.path().join("j"),
-                isolation: IsolationMode::Off,
                 enable_context_lifecycle: true,
                 enable_governance: true,
 
@@ -3436,7 +3429,6 @@ mod tests {
                 max_turns: 4,
                 workspace: dir.path().to_path_buf(),
                 journal_dir: dir.path().join("j"),
-                isolation: IsolationMode::Off,
                 enable_context_lifecycle: true,
                 enable_governance: true,
                 ..Default::default()
@@ -4501,7 +4493,6 @@ mod tests {
             provider: "mock".into(),
             effort: "auto".into(),
             ctx_pct: 0.2,
-            worktree_on: false,
             busy: false,
             busy_phase: BusyPhase::Idle,
             connect_profile: None,

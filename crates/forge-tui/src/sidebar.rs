@@ -16,7 +16,6 @@ pub struct SidebarModel {
     pub role: String,
     pub ctx_pct: f64,
     pub tools: Vec<String>,
-    pub worktree: Option<String>,
 }
 
 impl SidebarModel {
@@ -43,7 +42,6 @@ impl SidebarModel {
             role: "generator".into(),
             ctx_pct: session.context_usage_ratio(),
             tools,
-            worktree: session.worktree_status(),
         }
     }
 }
@@ -95,11 +93,7 @@ impl Widget for SidebarWidget<'_> {
         if self.model.tools.is_empty() {
             tool_lines.push(Line::from(Span::styled("—", theme::dim())));
         } else {
-            // Reserve 2 lines for optional worktree.
-            let reserve = if self.model.worktree.is_some() { 2 } else { 0 };
-            let max = (chunks[1].height as usize)
-                .saturating_sub(1 + reserve)
-                .max(1);
+            let max = (chunks[1].height as usize).saturating_sub(1).max(1);
             for t in self.model.tools.iter().take(max) {
                 let s: String = t.chars().take(32).collect();
                 tool_lines.push(Line::from(Span::styled(format!("• {s}"), theme::muted())));
@@ -110,14 +104,6 @@ impl Widget for SidebarWidget<'_> {
                     theme::dim(),
                 )));
             }
-        }
-
-        if let Some(ref wt) = self.model.worktree {
-            tool_lines.push(Line::from(Span::styled("WORKTREE", theme::dim())));
-            tool_lines.push(Line::from(vec![
-                Span::styled("path    ", theme::dim()),
-                Span::styled(wt.chars().take(28).collect::<String>(), theme::muted()),
-            ]));
         }
 
         Paragraph::new(tool_lines).render(chunks[1], buf);
@@ -141,7 +127,6 @@ mod tests {
     use forge_model::MockModelClient;
     use forge_tools::ToolRegistry;
     use forge_types::ModelResponse;
-    use forge_workspace::IsolationMode;
     use std::sync::Arc;
     use tempfile::tempdir;
 
@@ -159,7 +144,6 @@ mod tests {
                 max_turns: 3,
                 workspace: dir.path().to_path_buf(),
                 journal_dir: dir.path().join("j"),
-                isolation: IsolationMode::Off,
                 enable_context_lifecycle: true,
                 enable_governance: true,
 
