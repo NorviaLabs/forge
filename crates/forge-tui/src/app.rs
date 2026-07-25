@@ -3880,6 +3880,21 @@ mod tests {
                 version: "0.6.1".into(),
             },
         );
+        let _key_guard = ScopedEnvGuard::new(&[
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "OPENCODE_API_KEY",
+            "OPENCODE_GO_API_KEY",
+            "OPENCODE_ZEN_API_KEY",
+            "OLLAMA_API_KEY",
+            "XAI_API_KEY",
+        ]);
+        app.connect_store = CredentialStore::new(
+            tempfile::TempDir::new()
+                .unwrap()
+                .path()
+                .join("empty-creds.toml"),
+        );
         app.dispatch_line("/connect opencode_go").await.unwrap();
         match &app.overlay {
             Some(Overlay::ConnectApiKey {
@@ -4502,6 +4517,7 @@ mod tests {
     #[tokio::test]
     async fn blocks_chat_when_not_connected() {
         use crossterm::event::{KeyCode, KeyModifiers};
+
         let (_dir, session) = test_session().await;
         let mut app = TuiApp::new(
             session,
@@ -4512,7 +4528,17 @@ mod tests {
                 version: "0.11.0".into(),
             },
         );
-        // Ensure no restored connect profile from developer machine credentials.
+        // Clear env vars so dev machine credentials don't leak into tests.
+        // Must be after TuiApp::new() — restore_saved_auth sets env from stored credentials.
+        let _key_guard = ScopedEnvGuard::new(&[
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "OPENCODE_API_KEY",
+            "OPENCODE_GO_API_KEY",
+            "OPENCODE_ZEN_API_KEY",
+            "OLLAMA_API_KEY",
+            "XAI_API_KEY",
+        ]);
         app.connect_profile = None;
         app.connect_store = CredentialStore::new(
             tempfile::TempDir::new()
@@ -4895,5 +4921,32 @@ mod tests {
             "notices should list token kinds: {:?}",
             app.notices
         );
+    }
+
+    /// Save-and-restore env vars so dev machine credentials don't leak into tests.
+    struct ScopedEnvGuard {
+        saved: Vec<(String, Option<String>)>,
+    }
+
+    impl ScopedEnvGuard {
+        fn new(keys: &[&str]) -> Self {
+            let mut saved = Vec::new();
+            for key in keys {
+                saved.push((key.to_string(), std::env::var(key).ok()));
+                std::env::remove_var(key);
+            }
+            Self { saved }
+        }
+    }
+
+    impl Drop for ScopedEnvGuard {
+        fn drop(&mut self) {
+            for (key, val) in &self.saved {
+                match val {
+                    Some(v) => std::env::set_var(key, v),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
     }
 }
