@@ -22,13 +22,25 @@ use tracing::warn;
 
 const SYSTEM_PROMPT: &str = include_str!("system_prompt.md");
 
-fn assemble_system_prompt(agents_md: &str) -> String {
-    let prompt = SYSTEM_PROMPT.trim_end();
-    if agents_md.trim().is_empty() {
-        prompt.to_owned()
-    } else {
-        format!("{prompt}\n\n# Project Instructions\n\nAGENTS.md:\n{agents_md}")
+fn assemble_system_prompt(agents_md: &str, skills: &[(String, String)]) -> String {
+    let mut prompt = SYSTEM_PROMPT.trim_end().to_owned();
+
+    if !agents_md.trim().is_empty() {
+        prompt.push_str("\n\n# Project Instructions\n\nAGENTS.md:\n");
+        prompt.push_str(agents_md);
     }
+
+    if !skills.is_empty() {
+        prompt.push_str("\n\n# Skills");
+        for (name, content) in skills {
+            prompt.push_str("\n\n## ");
+            prompt.push_str(name);
+            prompt.push_str("\n\n");
+            prompt.push_str(content.trim());
+        }
+    }
+
+    prompt
 }
 
 #[derive(Debug, Error)]
@@ -184,7 +196,7 @@ impl AgentSession {
         context.config = self.context.config.clone();
         let system_message = Message {
             role: MessageRole::System,
-            content: assemble_system_prompt(&context.load_agents_md()),
+            content: assemble_system_prompt(&context.load_agents_md(), &context.load_skills()),
             tool_call_id: None,
             name: None,
             thinking: None,
@@ -259,7 +271,8 @@ impl AgentSession {
 
         let context = ContextEngine::new(loop_cfg.workspace.clone(), session_id);
         let agents = context.load_agents_md();
-        let system = assemble_system_prompt(&agents);
+        let skills = context.load_skills();
+        let system = assemble_system_prompt(&agents, &skills);
 
         Ok(Self {
             session_id,
@@ -304,7 +317,7 @@ impl AgentSession {
         let journal = Journal::open(&loop_cfg.journal_dir, session_id).await?;
         let state = journal.replay(session_id).await?;
         let context = ContextEngine::new(loop_cfg.workspace.clone(), session_id);
-        let system = assemble_system_prompt(&context.load_agents_md());
+        let system = assemble_system_prompt(&context.load_agents_md(), &context.load_skills());
         let system_message = Message {
             role: MessageRole::System,
             content: system,
@@ -604,7 +617,8 @@ impl AgentSession {
                 .as_ref()
                 .map(|w| w.branch.clone())
                 .unwrap_or_default();
-            let system = assemble_system_prompt(&self.context.load_agents_md());
+            let system =
+                assemble_system_prompt(&self.context.load_agents_md(), &self.context.load_skills());
             let (doc, msgs) = self
                 .context
                 .handoff_reset(&self.messages, &ws_ref, &system)?;
@@ -994,7 +1008,8 @@ impl AgentSession {
             .as_ref()
             .map(|w| w.branch.clone())
             .unwrap_or_default();
-        let system = assemble_system_prompt(&self.context.load_agents_md());
+        let system =
+            assemble_system_prompt(&self.context.load_agents_md(), &self.context.load_skills());
         let (doc, msgs) = self
             .context
             .handoff_reset(&self.messages, &ws_ref, &system)?;
@@ -1023,7 +1038,7 @@ mod tests {
 
     #[test]
     fn system_prompt_uses_forge_policy() {
-        let prompt = assemble_system_prompt("");
+        let prompt = assemble_system_prompt("", &[]);
         assert!(prompt.starts_with("You are a coding agent running in the Forge"));
         assert!(prompt.contains("Forge is an open source project led by NorviaLabs."));
         assert!(!prompt.contains("# Project Instructions"));
@@ -1031,9 +1046,20 @@ mod tests {
 
     #[test]
     fn system_prompt_appends_project_instructions() {
-        let prompt = assemble_system_prompt("Run cargo test");
+        let prompt = assemble_system_prompt("Run cargo test", &[]);
         assert!(prompt.starts_with("You are a coding agent running in the Forge"));
         assert!(prompt.ends_with("AGENTS.md:\nRun cargo test"));
+    }
+
+    #[test]
+    fn system_prompt_appends_skills() {
+        let skills = vec![(
+            "ponytail".to_string(),
+            "# Ponytail\nUse less code.".to_string(),
+        )];
+        let prompt = assemble_system_prompt("", &skills);
+        assert!(prompt.contains("# Skills\n\n## ponytail"));
+        assert!(prompt.ends_with("# Ponytail\nUse less code."));
     }
 
     fn base_cfg(dir: &std::path::Path) -> LoopConfig {
