@@ -29,7 +29,8 @@ use serde_json::json;
 use thiserror::Error;
 
 use crate::activity::{ActivityFeed, ActivityKind};
-use crate::commands::{parse_slash, SlashCommand};
+use crate::commands::{parse_slash, SkillAction, SlashCommand};
+use crate::skills::SkillManager;
 use crate::conversation::{
     format_elapsed_tenths, BannerKind, ChatItem, ConversationModel, ConversationViewOpts,
     StreamWaitPhase,
@@ -42,6 +43,7 @@ use crate::msg_queue::MessageQueue;
 use crate::overlays::{
     filter_palette, handle_overlay_key, models_from_catalog, ConnectProfileItem, FileExplorerItem,
     Key as OverlayKey, Overlay, OverlayAction, OverlayWidget, PaletteItem, ResumeSessionItem,
+    SkillItem,
 };
 use crate::theme;
 use crate::widgets::{
@@ -187,12 +189,15 @@ pub struct TuiApp {
     /// Conversation scroll offset (when not following).
     chat_scroll: u16,
     chat_follow: bool,
+    /// Skill manager for install/uninstall/enable/disable/list.
+    skills: SkillManager,
 }
 
 impl TuiApp {
     pub fn new(session: AgentSession, runtime: TuiRuntimeConfig) -> Self {
         let mut input = InputModel::default();
         input.hint = String::new();
+        let cwd = runtime.cwd.clone();
         Self {
             session,
             input,
@@ -238,6 +243,7 @@ impl TuiApp {
             chat_event_start: 0,
             chat_scroll: 0,
             chat_follow: true,
+            skills: SkillManager::new(&cwd),
         }
         .restore_saved_auth()
         .apply_connection_chrome()
@@ -2487,6 +2493,68 @@ Reply with ONLY the commit message line.\n\n\
         }
     }
 
+    fn handle_skill_action(&mut self, action: SkillAction) {
+        match action {
+            SkillAction::List => {
+                let skills = self.skills.list_skills();
+                if skills.is_empty() {
+                    self.notices = vec![
+                        "No skills installed.".into(),
+                        "Usage: /skill install <github-url>".into(),
+                    ];
+                    self.status_message = "no skills".into();
+                    return;
+                }
+                let items: Vec<SkillItem> = skills
+                    .into_iter()
+                    .map(|s| SkillItem {
+                        name: s.name,
+                        enabled: s.enabled,
+                        file_count: s.file_count,
+                    })
+                    .collect();
+                self.overlay = Some(Overlay::skills_list(items));
+                self.status_message = format!("{} skills", self.skills.list_skills().len());
+            }
+            SkillAction::Install { url } => match self.skills.install_skill(&url) {
+                Ok(name) => {
+                    self.set_feedback(
+                        FeedbackSeverity::Ok,
+                        format!("installed skill '{name}'"),
+                    );
+                    self.status_message = format!("installed '{name}'");
+                    self.notices = vec![format!(
+                        "Installed skill '{name}' from {url}. Enabled by default."
+                    )];
+                }
+                Err(e) => {
+                    self.report_error(&e);
+                }
+            },
+            SkillAction::Uninstall { name } => match self.skills.uninstall_skill(&name) {
+                Ok(()) => {
+                    self.set_feedback(FeedbackSeverity::Ok, format!("uninstalled '{name}'"));
+                    self.status_message = format!("uninstalled '{name}'");
+                }
+                Err(e) => self.report_error(&e),
+            },
+            SkillAction::Enable { name } => match self.skills.enable_skill(&name) {
+                Ok(()) => {
+                    self.set_feedback(FeedbackSeverity::Ok, format!("enabled '{name}'"));
+                    self.status_message = format!("enabled '{name}'");
+                }
+                Err(e) => self.report_error(&e),
+            },
+            SkillAction::Disable { name } => match self.skills.disable_skill(&name) {
+                Ok(()) => {
+                    self.set_feedback(FeedbackSeverity::Warn, format!("disabled '{name}'"));
+                    self.status_message = format!("disabled '{name}'");
+                }
+                Err(e) => self.report_error(&e),
+            },
+        }
+    }
+
     fn handle_effort_command(&mut self, level: Option<ReasoningEffort>) {
         let Some(level) = level else {
             self.set_feedback(
@@ -2797,6 +2865,9 @@ Reply with ONLY the commit message line.\n\n\
                     if cfg!(test) {
                         let _ = self.drain_pending_sync(None).await;
                     }
+                }
+                Ok(SlashCommand::Skill { action }) => {
+                    self.handle_skill_action(action);
                 }
                 Err(e) => {
                     let msg = e.to_string();
