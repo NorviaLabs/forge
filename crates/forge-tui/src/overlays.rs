@@ -69,6 +69,17 @@ pub enum Overlay {
         lines: Vec<String>,
         scroll: usize,
     },
+    SkillsList {
+        selected: usize,
+        items: Vec<SkillItem>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct SkillItem {
+    pub name: String,
+    pub enabled: bool,
+    pub file_count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -177,6 +188,10 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
         PaletteItem {
             cmd: "/quit".into(),
             desc: "Exit TUI".into(),
+        },
+        PaletteItem {
+            cmd: "/skill list".into(),
+            desc: "List installed skills".into(),
         },
     ]
 }
@@ -362,6 +377,10 @@ impl Overlay {
         Self::ResumePicker { selected: 0, items }
     }
 
+    pub fn skills_list(items: Vec<SkillItem>) -> Self {
+        Self::SkillsList { selected: 0, items }
+    }
+
     pub fn file_explorer(
         cwd: impl Into<String>,
         items: Vec<FileExplorerItem>,
@@ -457,6 +476,15 @@ impl Overlay {
                 } else {
                     *scroll = (*scroll + delta as usize).min(lines.len().saturating_sub(1));
                 }
+            }
+            Self::SkillsList {
+                selected, items, ..
+            } => {
+                if items.is_empty() {
+                    return;
+                }
+                let n = items.len() as i32;
+                *selected = ((*selected as i32 + delta).rem_euclid(n)) as usize;
             }
             _ => {}
         }
@@ -715,6 +743,20 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             }
             Overlay::FileViewer { .. } => OverlayAction::None,
             Overlay::Hitl { .. } => OverlayAction::None,
+            Overlay::SkillsList {
+                selected, items, ..
+            } => {
+                if let Some(skill) = items.get(*selected) {
+                    let cmd = if skill.enabled {
+                        format!("/skill disable {}", skill.name)
+                    } else {
+                        format!("/skill enable {}", skill.name)
+                    };
+                    OverlayAction::InsertInput(cmd + " ")
+                } else {
+                    OverlayAction::None
+                }
+            }
         },
         // Use-env must NOT steal literal e/E from pasted API keys (keys almost always
         // contain those letters). Only when the field is still empty + env is available.
@@ -1287,6 +1329,39 @@ impl Widget for OverlayWidget<'_> {
                             .style(theme::panel())
                             .title(Span::styled(
                                 " Choose a provider · ↑↓ Enter ",
+                                theme::brand(),
+                            )),
+                    )
+                    .render(r, buf);
+            }
+            Overlay::SkillsList { selected, items } => {
+                let r = centered_rect(60, 48, area);
+                let list_items: Vec<ListItem> = items
+                    .iter()
+                    .enumerate()
+                    .map(|(i, it)| {
+                        let marker = if i == *selected { "▶ " } else { "  " };
+                        let style = if i == *selected {
+                            theme::selected_row()
+                        } else {
+                            theme::text()
+                        };
+                        let state = if it.enabled { "✓ enabled" } else { "disabled" };
+                        let mut row = format!("{marker}{:<24} {state}  {} files", it.name, it.file_count);
+                        while row.chars().count() < 48 {
+                            row.push(' ');
+                        }
+                        ListItem::new(Span::styled(row, style))
+                    })
+                    .collect();
+                List::new(list_items)
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_style(theme::border())
+                            .style(theme::panel())
+                            .title(Span::styled(
+                                " Skills · ↑↓ Enter toggle · Esc close ",
                                 theme::brand(),
                             )),
                     )
