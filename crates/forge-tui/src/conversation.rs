@@ -1,10 +1,9 @@
-
 //! Conversation view model (TUI-02) — polished chat, thinking, tools, diffs.
 
 use crate::theme;
 use forge_core::{AgentSession, TurnEvent};
-use forge_types::{Message, MessageRole, SessionStatus};
 use forge_syntax::highlight_to_lines;
+use forge_types::{Message, MessageRole, SessionStatus};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
@@ -525,18 +524,33 @@ impl ConversationModel {
                     }
                     if let Some(lang) = lang_from_path(path) {
                         let syntax_theme = forge_syntax::HighlightTheme::default();
-                        let code: String = dl.iter()
-                            .filter(|l| !l.starts_with("+++") && !l.starts_with("---") && !l.starts_with("diff "))
+                        let code: String = dl
+                            .iter()
+                            .filter(|l| {
+                                !l.starts_with("+++")
+                                    && !l.starts_with("---")
+                                    && !l.starts_with("diff ")
+                            })
                             .map(|s| s.as_str())
                             .collect::<Vec<_>>()
                             .join("\n");
                         let highlighted = highlight_to_lines(lang, &code, &syntax_theme);
                         let mut code_idx = 0;
                         for l in dl {
-                            if l.starts_with("+++") || l.starts_with("---") || l.starts_with("diff ") {
-                                lines.push(Line::from(Span::styled(format!("  {l}"), theme::dim())));
+                            if l.starts_with("+++")
+                                || l.starts_with("---")
+                                || l.starts_with("diff ")
+                            {
+                                lines
+                                    .push(Line::from(Span::styled(format!("  {l}"), theme::dim())));
                             } else {
-                                let prefix = if l.starts_with('+') { "+" } else if l.starts_with('-') { "-" } else { " " };
+                                let prefix = if l.starts_with('+') {
+                                    "+"
+                                } else if l.starts_with('-') {
+                                    "-"
+                                } else {
+                                    " "
+                                };
                                 let diff_style = if l.starts_with('+') {
                                     theme::ok()
                                 } else if l.starts_with('-') {
@@ -545,16 +559,25 @@ impl ConversationModel {
                                     theme::muted()
                                 };
                                 if code_idx < highlighted.len() {
-                                    let mut spans = vec![Span::styled(format!("  {prefix}"), diff_style)];
+                                    let mut spans =
+                                        vec![Span::styled(format!("  {prefix}"), diff_style)];
                                     for (text, rgb, bold, italic) in &highlighted[code_idx] {
-                                        let mut st = ratatui::style::Style::default().fg(ratatui::style::Color::Rgb(rgb.0, rgb.1, rgb.2));
-                                        if *bold { st = st.add_modifier(Modifier::BOLD); }
-                                        if *italic { st = st.add_modifier(Modifier::ITALIC); }
+                                        let mut st = ratatui::style::Style::default()
+                                            .fg(ratatui::style::Color::Rgb(rgb.0, rgb.1, rgb.2));
+                                        if *bold {
+                                            st = st.add_modifier(Modifier::BOLD);
+                                        }
+                                        if *italic {
+                                            st = st.add_modifier(Modifier::ITALIC);
+                                        }
                                         spans.push(Span::styled(text.clone(), st));
                                     }
                                     lines.push(Line::from(spans));
                                 } else {
-                                    lines.push(Line::from(Span::styled(format!("  {l}"), diff_style)));
+                                    lines.push(Line::from(Span::styled(
+                                        format!("  {l}"),
+                                        diff_style,
+                                    )));
                                 }
                                 code_idx += 1;
                             }
@@ -805,17 +828,20 @@ fn highlight_inline_code(line: &str) -> Vec<Span<'static>> {
 }
 
 fn render_highlighted_line(segments: &[(String, (u8, u8, u8), bool, bool)]) -> Vec<Span<'static>> {
-    segments.iter().map(|(text, rgb, bold, italic)| {
-        let mut style = ratatui::style::Style::default()
-            .fg(ratatui::style::Color::Rgb(rgb.0, rgb.1, rgb.2));
-        if *bold {
-            style = style.add_modifier(Modifier::BOLD);
-        }
-        if *italic {
-            style = style.add_modifier(Modifier::ITALIC);
-        }
-        Span::styled(text.clone(), style)
-    }).collect()
+    segments
+        .iter()
+        .map(|(text, rgb, bold, italic)| {
+            let mut style = ratatui::style::Style::default()
+                .fg(ratatui::style::Color::Rgb(rgb.0, rgb.1, rgb.2));
+            if *bold {
+                style = style.add_modifier(Modifier::BOLD);
+            }
+            if *italic {
+                style = style.add_modifier(Modifier::ITALIC);
+            }
+            Span::styled(text.clone(), style)
+        })
+        .collect()
 }
 
 pub struct ConversationWidget<'a> {

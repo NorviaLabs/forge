@@ -192,9 +192,7 @@ impl ContextEngine {
     }
 
     pub fn load_skills(&self) -> Vec<(String, String)> {
-        let mut skills = read_skills_dir(Some(
-            self.workspace.join(".forge").join("skills"),
-        ));
+        let mut skills = read_skills_dir(Some(self.workspace.join(".forge").join("skills")));
         skills.extend(read_skills_dir(global_skills_dir()));
         skills.sort_by(|a, b| a.0.cmp(&b.0));
         skills.dedup_by(|a, b| a.0 == b.0);

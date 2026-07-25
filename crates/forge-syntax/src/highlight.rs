@@ -1,7 +1,7 @@
 //! Tree-sitter based syntax highlighting.
 
-use std::ops::Range;
 use crate::lang::{get_parser, SyntaxLanguage};
+use std::ops::Range;
 
 #[derive(Debug, Clone)]
 pub struct HighlightSpan {
@@ -15,16 +15,26 @@ impl HighlightSpan {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-#[derive(PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HighlightStyle {
     pub class: HighlightClass,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HighlightClass {
-    Comment, Keyword, String, Number, Function, Type,
-    Variable, Operator, Punctuation, Property, Tag, Attribute, Default,
+    Comment,
+    Keyword,
+    String,
+    Number,
+    Function,
+    Type,
+    Variable,
+    Operator,
+    Punctuation,
+    Property,
+    Tag,
+    Attribute,
+    Default,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -64,7 +74,10 @@ impl HighlightStyle {
     }
 
     pub fn is_bold(self) -> bool {
-        matches!(self.class, HighlightClass::Keyword | HighlightClass::Number | HighlightClass::Type)
+        matches!(
+            self.class,
+            HighlightClass::Keyword | HighlightClass::Number | HighlightClass::Type
+        )
     }
 
     pub fn is_italic(self) -> bool {
@@ -101,17 +114,36 @@ impl HighlightTheme {
 pub fn highlight(lang: &str, code: &str, theme: &HighlightTheme) -> Vec<HighlightSpan> {
     let lang: SyntaxLanguage = match lang.parse() {
         Ok(l) => l,
-        Err(_) => return vec![HighlightSpan { range: 0..code.len(), style: HighlightStyle { class: HighlightClass::Default } }],
+        Err(_) => {
+            return vec![HighlightSpan {
+                range: 0..code.len(),
+                style: HighlightStyle {
+                    class: HighlightClass::Default,
+                },
+            }]
+        }
     };
 
     if lang == SyntaxLanguage::Unknown {
-        return vec![HighlightSpan { range: 0..code.len(), style: HighlightStyle { class: HighlightClass::Default } }];
+        return vec![HighlightSpan {
+            range: 0..code.len(),
+            style: HighlightStyle {
+                class: HighlightClass::Default,
+            },
+        }];
     }
 
     let mut parser = get_parser(lang);
     let tree = match parser.parse(code, None) {
         Some(t) => t,
-        None => return vec![HighlightSpan { range: 0..code.len(), style: HighlightStyle { class: HighlightClass::Default } }],
+        None => {
+            return vec![HighlightSpan {
+                range: 0..code.len(),
+                style: HighlightStyle {
+                    class: HighlightClass::Default,
+                },
+            }]
+        }
     };
 
     let mut spans = Vec::new();
@@ -119,14 +151,23 @@ pub fn highlight(lang: &str, code: &str, theme: &HighlightTheme) -> Vec<Highligh
     collect_highlights(&mut cursor, theme, &mut spans);
 
     if spans.is_empty() {
-        spans.push(HighlightSpan { range: 0..code.len(), style: HighlightStyle { class: HighlightClass::Default } });
+        spans.push(HighlightSpan {
+            range: 0..code.len(),
+            style: HighlightStyle {
+                class: HighlightClass::Default,
+            },
+        });
     }
 
     spans.sort_by_key(|s| s.range.start);
     merge_spans(spans)
 }
 
-fn collect_highlights(cursor: &mut tree_sitter::TreeCursor, theme: &HighlightTheme, spans: &mut Vec<HighlightSpan>) {
+fn collect_highlights(
+    cursor: &mut tree_sitter::TreeCursor,
+    theme: &HighlightTheme,
+    spans: &mut Vec<HighlightSpan>,
+) {
     let node = cursor.node();
     let kind = node.kind();
 
@@ -217,7 +258,10 @@ fn collect_highlights(cursor: &mut tree_sitter::TreeCursor, theme: &HighlightThe
         let start = node.start_byte();
         let end = node.end_byte();
         if end > start {
-            spans.push(HighlightSpan { range: start..end, style });
+            spans.push(HighlightSpan {
+                range: start..end,
+                style,
+            });
         }
     }
 
@@ -230,10 +274,14 @@ fn collect_highlights(cursor: &mut tree_sitter::TreeCursor, theme: &HighlightThe
     }
 }
 fn merge_spans(spans: Vec<HighlightSpan>) -> Vec<HighlightSpan> {
-    if spans.is_empty() { return spans; }
+    if spans.is_empty() {
+        return spans;
+    }
     // Find the maximum byte offset covered
     let max_end = spans.iter().map(|s| s.range.end).max().unwrap_or(0);
-    if max_end == 0 { return Vec::new(); }
+    if max_end == 0 {
+        return Vec::new();
+    }
     // Build a style-per-byte array; shorter (inner) spans override longer (outer) ones.
     let mut coverage: Vec<Option<HighlightStyle>> = vec![None; max_end];
     // Sort by length descending so outer spans lay down first, inner overwrite.
@@ -259,7 +307,10 @@ fn merge_spans(spans: Vec<HighlightSpan>) -> Vec<HighlightSpan> {
             while i < max_end && coverage[i] == Some(style) {
                 i += 1;
             }
-            merged.push(HighlightSpan { range: start..i, style });
+            merged.push(HighlightSpan {
+                range: start..i,
+                style,
+            });
         } else {
             i += 1;
         }
@@ -267,14 +318,26 @@ fn merge_spans(spans: Vec<HighlightSpan>) -> Vec<HighlightSpan> {
     merged
 }
 
-pub fn parse_and_capture(lang: &str, code: &str, _query: &str) -> Result<tree_sitter::Tree, String> {
+pub fn parse_and_capture(
+    lang: &str,
+    code: &str,
+    _query: &str,
+) -> Result<tree_sitter::Tree, String> {
     let lang: SyntaxLanguage = lang.parse::<SyntaxLanguage>().map_err(|e| e.to_string())?;
-    if lang == SyntaxLanguage::Unknown { return Err("unknown language".to_string()); }
+    if lang == SyntaxLanguage::Unknown {
+        return Err("unknown language".to_string());
+    }
     let mut parser = get_parser(lang);
-    parser.parse(code, None).ok_or_else(|| "parse failed".to_string())
+    parser
+        .parse(code, None)
+        .ok_or_else(|| "parse failed".to_string())
 }
 
-pub fn highlight_to_lines(lang: &str, code: &str, theme: &HighlightTheme) -> Vec<Vec<(String, (u8, u8, u8), bool, bool)>> {
+pub fn highlight_to_lines(
+    lang: &str,
+    code: &str,
+    theme: &HighlightTheme,
+) -> Vec<Vec<(String, (u8, u8, u8), bool, bool)>> {
     let spans = highlight(lang, code, theme);
     let line_offsets: Vec<usize> = std::iter::once(0)
         .chain(code.match_indices('\n').map(|(i, _)| i + 1))
@@ -295,13 +358,23 @@ pub fn highlight_to_lines(lang: &str, code: &str, theme: &HighlightTheme) -> Vec
                     if span_start > pos {
                         let (gap_start, gap_end) = (pos, span_start.min(line_end));
                         if gap_end > gap_start {
-                            segments.push((code[gap_start..gap_end].to_string(), theme.default, false, false));
+                            segments.push((
+                                code[gap_start..gap_end].to_string(),
+                                theme.default,
+                                false,
+                                false,
+                            ));
                         }
                     }
                     let (s_start, s_end) = (span_start, span_end);
                     if s_end > s_start {
                         let rgb = span.style.rgb();
-                        segments.push((code[s_start..s_end].to_string(), rgb, span.style.is_bold(), span.style.is_italic()));
+                        segments.push((
+                            code[s_start..s_end].to_string(),
+                            rgb,
+                            span.style.is_bold(),
+                            span.style.is_italic(),
+                        ));
                     }
                     pos = span_end;
                 }
@@ -310,7 +383,12 @@ pub fn highlight_to_lines(lang: &str, code: &str, theme: &HighlightTheme) -> Vec
                 segments.push((code[pos..line_end].to_string(), theme.default, false, false));
             }
             if segments.is_empty() {
-                segments.push((code[line_start..line_end].to_string(), theme.default, false, false));
+                segments.push((
+                    code[line_start..line_end].to_string(),
+                    theme.default,
+                    false,
+                    false,
+                ));
             }
             segments
         })
@@ -336,4 +414,3 @@ mod tests {
         assert!(!lines[0].is_empty());
     }
 }
-

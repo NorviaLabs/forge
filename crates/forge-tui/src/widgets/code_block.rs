@@ -21,7 +21,12 @@ pub struct CodeBlock<'a> {
 impl<'a> CodeBlock<'a> {
     #[allow(dead_code)]
     pub fn new(code: &'a str) -> Self {
-        Self { code, language: None, block_style: Style::default(), show_border: true }
+        Self {
+            code,
+            language: None,
+            block_style: Style::default(),
+            show_border: true,
+        }
     }
 
     #[allow(dead_code)]
@@ -48,14 +53,27 @@ impl Widget for CodeBlock<'_> {
         let lines = if let Some(lang) = self.language {
             let theme = forge_syntax::HighlightTheme::default();
             let highlighted = highlight_to_lines(lang, self.code, &theme);
-            highlighted.into_iter().map(|segments| {
-                Line::from(segments.into_iter().map(|(text, rgb, bold, italic)| {
-                    let mut style = Style::default().fg(ratatui::style::Color::Rgb(rgb.0, rgb.1, rgb.2));
-                    if bold { style = style.add_modifier(ratatui::style::Modifier::BOLD); }
-                    if italic { style = style.add_modifier(ratatui::style::Modifier::ITALIC); }
-                    ratatui::text::Span::styled(text, style)
-                }).collect::<Vec<_>>())
-            }).collect::<Vec<_>>()
+            highlighted
+                .into_iter()
+                .map(|segments| {
+                    Line::from(
+                        segments
+                            .into_iter()
+                            .map(|(text, rgb, bold, italic)| {
+                                let mut style = Style::default()
+                                    .fg(ratatui::style::Color::Rgb(rgb.0, rgb.1, rgb.2));
+                                if bold {
+                                    style = style.add_modifier(ratatui::style::Modifier::BOLD);
+                                }
+                                if italic {
+                                    style = style.add_modifier(ratatui::style::Modifier::ITALIC);
+                                }
+                                ratatui::text::Span::styled(text, style)
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<Vec<_>>()
         } else {
             self.code.lines().map(Line::raw).collect()
         };
@@ -68,14 +86,22 @@ impl Widget for CodeBlock<'_> {
         }
 
         let inner_area = if self.show_border {
-            Rect::new(area.x + 1, area.y, area.width.saturating_sub(2), area.height)
+            Rect::new(
+                area.x + 1,
+                area.y,
+                area.width.saturating_sub(2),
+                area.height,
+            )
         } else {
             area
         };
 
         for (i, line) in lines.iter().enumerate() {
             if i < inner_area.height as usize {
-                line.render(Rect::new(inner_area.x, inner_area.y + i as u16, inner_area.width, 1), buf);
+                line.render(
+                    Rect::new(inner_area.x, inner_area.y + i as u16, inner_area.width, 1),
+                    buf,
+                );
             }
         }
     }
@@ -85,7 +111,11 @@ impl Widget for CodeBlock<'_> {
 /// Extract language from a markdown code fence (e.g., ```rust).
 pub fn extract_lang_from_fence(fence: &str) -> Option<&str> {
     let trimmed = fence.trim_start_matches("```").trim();
-    if trimmed.is_empty() { None } else { Some(trimmed) }
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
 }
 
 #[allow(dead_code)]
@@ -129,7 +159,8 @@ mod tests {
 
     #[test]
     fn parse_markdown_blocks() {
-        let md = "Some text\n```rust\nfn main() {}\n```\nMiddle\n```python\ndef hi():\n    pass\n```";
+        let md =
+            "Some text\n```rust\nfn main() {}\n```\nMiddle\n```python\ndef hi():\n    pass\n```";
         let blocks = parse_markdown_code_block(md);
         assert_eq!(blocks.len(), 2);
         assert_eq!(blocks[0].0, "```rust");

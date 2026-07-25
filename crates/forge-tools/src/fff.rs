@@ -72,7 +72,10 @@ impl FffState {
         let guard = self.picker.read().ok()?;
         let picker = guard.as_ref()?;
         let progress = picker.get_scan_progress();
-        let mut parts = vec![format!("fff: {} files indexed", progress.scanned_files_count)];
+        let mut parts = vec![format!(
+            "fff: {} files indexed",
+            progress.scanned_files_count
+        )];
         if progress.is_scanning {
             parts.push("scanning...".into());
         }
@@ -121,9 +124,7 @@ impl FffState {
             .await
             .map_err(|e| ToolError::Execution(format!("fff wait: {e}")))?;
         if !ok {
-            return Err(ToolError::Execution(
-                "fff scan timed out after 30s".into(),
-            ));
+            return Err(ToolError::Execution("fff scan timed out after 30s".into()));
         }
         self.inited.store(true, Ordering::Release);
         Ok(())

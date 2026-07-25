@@ -1,10 +1,10 @@
 //! Structural refactoring via tree-sitter queries.
 
-use std::ops::Range;
 use serde::{Deserialize, Serialize};
+use std::ops::Range;
+use streaming_iterator::StreamingIterator;
 use thiserror::Error;
 use tree_sitter::{Query, QueryCursor};
-use streaming_iterator::StreamingIterator;
 
 use crate::lang::{get_parser, SyntaxLanguage};
 
@@ -52,8 +52,8 @@ pub fn query_code(lang: &str, code: &str, pattern: &str) -> Result<Vec<Capture>,
         .parse(code, None)
         .ok_or_else(|| QueryError::Parse("failed to parse".to_string()))?;
 
-    let ts_query = Query::new(&lang.tree_sitter(), pattern)
-        .map_err(|e| QueryError::Query(e.to_string()))?;
+    let ts_query =
+        Query::new(&lang.tree_sitter(), pattern).map_err(|e| QueryError::Query(e.to_string()))?;
 
     let mut cursor = QueryCursor::new();
     let mut captures = Vec::new();
@@ -64,7 +64,11 @@ pub fn query_code(lang: &str, code: &str, pattern: &str) -> Result<Vec<Capture>,
     while let Some((m, idx)) = query_captures.get() {
         let capture_name: &str = names[*idx];
         if let Some(capture_node) = m.captures.first() {
-            let text = capture_node.node.utf8_text(code.as_bytes()).unwrap_or_default().to_string();
+            let text = capture_node
+                .node
+                .utf8_text(code.as_bytes())
+                .unwrap_or_default()
+                .to_string();
             let start = capture_node.node.start_position();
             let end = capture_node.node.end_position();
 
@@ -72,8 +76,14 @@ pub fn query_code(lang: &str, code: &str, pattern: &str) -> Result<Vec<Capture>,
                 name: capture_name.to_string(),
                 text,
                 range: capture_node.node.start_byte()..capture_node.node.end_byte(),
-                start: Position { row: start.row, col: start.column },
-                end: Position { row: end.row, col: end.column },
+                start: Position {
+                    row: start.row,
+                    col: start.column,
+                },
+                end: Position {
+                    row: end.row,
+                    col: end.column,
+                },
             });
         }
         query_captures.advance();
@@ -143,7 +153,11 @@ pub fn refactor(lang: &str, code: &str, op: &RefactorOp) -> Result<RefactorResul
         }
     }
 
-    Ok(RefactorResult { code: result, changes, captures })
+    Ok(RefactorResult {
+        code: result,
+        changes,
+        captures,
+    })
 }
 
 #[cfg(test)]
