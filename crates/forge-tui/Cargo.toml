@@ -6,6 +6,7 @@ license.workspace = true
 description = "Full-screen Forge TUI (Phase 4) + slash commands"
 
 [dependencies]
+forge-syntax = { workspace = true }
 forge-types = { workspace = true }
 forge-core = { workspace = true }
 forge-tools = { workspace = true }
