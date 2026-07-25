@@ -2420,7 +2420,10 @@ Reply with ONLY the commit message line.\n\n\
                         format!("cache.hits={}", report.api.prompt_cache_hits),
                         format!("cache.writes={}", report.api.prompt_cache_writes),
                         format!("context.used={:.1}%", report.context_pct),
-                        format!("context.tokens={}/{}", report.context_tokens_est, report.context_capacity),
+                        format!(
+                            "context.tokens={}/{}",
+                            report.context_tokens_est, report.context_capacity
+                        ),
                     ]);
                     lines.extend(self.session.token_usage_lines());
                     let api = &report.api;

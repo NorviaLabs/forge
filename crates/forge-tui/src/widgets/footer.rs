@@ -90,7 +90,10 @@ impl Widget for FooterBar<'_> {
         let mut spans = vec![
             Span::styled(format!("{cwd} "), theme::dim()),
             Span::styled("· ", theme::dim()),
-            Span::styled(format!("sess={} ", self.model.session_short), theme::muted()),
+            Span::styled(
+                format!("sess={} ", self.model.session_short),
+                theme::muted(),
+            ),
             Span::styled("· ", theme::dim()),
             Span::styled(
                 format!("{} ", conn),
