@@ -198,7 +198,12 @@ impl<'a> ConnectService<'a> {
                         .default_base_url
                         .as_deref()
                         .unwrap_or(crate::opencode_zen::DEFAULT_BASE_URL);
-                    crate::opencode_zen::verify_api_key(&key, base)
+                    crate::opencode_go::verify_api_key(&key, base)
+                        .map_err(|e| {
+                            e.replace("OpenCode Go", "OpenCode Zen")
+                                .replace("/zen/go", "/zen")
+                                .replace("subscribe to Go", "Zen billing / API keys")
+                        })
                         .map_err(ConnectError::Message)?;
                 }
                 id if id == crate::openai::PROFILE_ID => {
