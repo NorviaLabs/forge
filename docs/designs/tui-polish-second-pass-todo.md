@@ -7,5 +7,5 @@ Goal: move the live TUI closer to the review screenshots while staying within te
 - [x] Give the composer a stronger command-bar feel
 - [x] Add clearer panel titles and surfaces
 - [x] Make sidebar rows match screenshot key/value styling
-- [ ] Improve conversation role headers and spacing
+- [x] Improve conversation role headers and spacing
 - [ ] Update screenshots to match implemented TUI
