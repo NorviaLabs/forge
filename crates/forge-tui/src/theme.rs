@@ -11,12 +11,13 @@ pub const TOOL: Color = Color::Rgb(210, 168, 255);
 pub const MUTED: Color = Color::Rgb(139, 155, 176);
 pub const DIM: Color = Color::Rgb(92, 107, 126);
 pub const TEXT: Color = Color::Rgb(230, 237, 243);
-pub const BORDER: Color = Color::Rgb(42, 53, 68);
-pub const PANEL: Color = Color::Rgb(18, 24, 32);
-pub const HISTORY_BG: Color = Color::Rgb(28, 40, 55);
-pub const USER_BG: Color = Color::Rgb(14, 20, 27);
-pub const RESPONSE_BG: Color = Color::Rgb(19, 26, 35);
-pub const THINKING_BG: Color = Color::Rgb(21, 30, 42);
+pub const BORDER: Color = Color::Rgb(38, 48, 62);
+pub const PANEL: Color = Color::Rgb(16, 22, 29);
+pub const PANEL_ALT: Color = Color::Rgb(20, 28, 37);
+pub const HISTORY_BG: Color = Color::Rgb(27, 38, 52);
+pub const USER_BG: Color = Color::Rgb(14, 19, 25);
+pub const RESPONSE_BG: Color = Color::Rgb(17, 24, 32);
+pub const THINKING_BG: Color = Color::Rgb(19, 28, 39);
 
 pub fn brand() -> Style {
     Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
@@ -80,6 +81,10 @@ pub fn border() -> Style {
 
 pub fn panel() -> Style {
     Style::default().bg(PANEL)
+}
+
+pub fn panel_alt() -> Style {
+    Style::default().bg(PANEL_ALT)
 }
 
 pub fn user_message() -> Style {
