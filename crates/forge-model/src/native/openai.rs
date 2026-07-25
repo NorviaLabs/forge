@@ -38,6 +38,9 @@ pub(super) async fn complete(
     if !tools.is_empty() {
         body["tools"] = Value::Array(tools);
     }
+    if req.prompt_cache {
+        apply_prompt_cache(&mut body);
+    }
     apply_reasoning_effort(client, &mut body, model);
 
     let url = format!("{}/chat/completions", route.base_url.trim_end_matches('/'));
@@ -162,6 +165,19 @@ fn route(client: &NativeModelClient, model: &str) -> Result<Route, ModelError> {
         return Err(ModelError::MissingApiKey);
     }
     Ok(route)
+}
+
+fn apply_prompt_cache(body: &mut Value) {
+    let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
+        return;
+    };
+    if let Some(first) = messages.first_mut() {
+        if first.get("role").and_then(Value::as_str) == Some("system") {
+            if let Some(obj) = first.as_object_mut() {
+                obj.insert("cache_control".into(), json!({"type": "ephemeral"}));
+            }
+        }
+    }
 }
 
 fn consume_event(
@@ -309,6 +325,7 @@ mod tests {
                 idempotent: false,
             }],
             model: model.into(),
+            prompt_cache: true,
         }
     }
 

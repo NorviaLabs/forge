@@ -43,6 +43,9 @@ pub(super) async fn complete(
     if !system.is_empty() {
         body["system"] = Value::String(system);
     }
+    if req.prompt_cache {
+        apply_prompt_cache(&mut body);
+    }
     if !req.tools.is_empty() {
         body["tools"] = Value::Array(
             req.tools
@@ -314,6 +317,19 @@ fn apply_reasoning_effort(client: &NativeModelClient, body: &mut Value, model: &
     }
 }
 
+fn apply_prompt_cache(body: &mut Value) {
+    let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
+        return;
+    };
+    if let Some(first) = messages.first_mut() {
+        if first.get("role").and_then(Value::as_str) == Some("user") {
+            if let Some(obj) = first.as_object_mut() {
+                obj.insert("cache_control".into(), json!({"type": "ephemeral"}));
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -326,6 +342,7 @@ mod tests {
     fn maps_system_tools_and_tool_results() {
         let req = ModelRequest {
             model: "anthropic/claude".into(),
+            prompt_cache: true,
             messages: vec![
                 Message::new(MessageRole::System, "system"),
                 Message::new(MessageRole::User, "hello"),
@@ -421,6 +438,7 @@ mod tests {
                 side_effect_class: SideEffectClass::Exec,
                 idempotent: false,
             }],
+            prompt_cache: true,
         };
 
         let response = client
@@ -455,6 +473,7 @@ mod tests {
             model: "anthropic/claude".into(),
             messages: vec![],
             tools: vec![],
+            prompt_cache: true,
         };
         assert!(matches!(
             client.complete(request.clone()).await,

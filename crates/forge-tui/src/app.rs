@@ -1717,6 +1717,7 @@ Reply with ONLY the commit message line.\n\n\
             ],
             tools: vec![],
             model: model_id,
+            prompt_cache: true,
         };
         match self.session.model_client().complete(req).await {
             Ok(resp) => {
@@ -1771,6 +1772,8 @@ Reply with ONLY the commit message line.\n\n\
             provider_connected: self.is_provider_connected(),
             web_search_label: self.web_search_label.clone(),
             tools_visible: self.session.list_tools().len(),
+            prompt_cache_hits: self.session.token_usage.prompt_cache_hits,
+            prompt_cache_writes: self.session.token_usage.prompt_cache_writes,
         }
     }
 
@@ -2410,13 +2413,15 @@ Reply with ONLY the commit message line.\n\n\
                     self.set_feedback(
                         FeedbackSeverity::Info,
                         format!(
-                            "{} · {} · ctx {:.0}% · tokens in {} · out {} · total {}",
+                            "{} · {} · ctx {:.0}% · tokens in {} · out {} · total {} · cache {} / {}",
                             chrome.provider,
                             chrome.model,
                             chrome.ctx_pct * 100.0,
                             api.prompt_tokens,
                             api.completion_tokens,
-                            api.total_api_tokens()
+                            api.total_api_tokens(),
+                            api.prompt_cache_hits,
+                            api.prompt_cache_writes,
                         ),
                     );
                     self.status_message = "status · context".into();
@@ -4330,6 +4335,8 @@ mod tests {
             provider_connected: true,
             web_search_label: None,
             tools_visible: 0,
+            prompt_cache_hits: 0,
+            prompt_cache_writes: 0,
         };
         assert_eq!(m.status_label().0, "idle");
     }

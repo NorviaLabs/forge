@@ -60,6 +60,8 @@ pub struct StatusModel {
     pub provider_connected: bool,
     pub web_search_label: Option<String>,
     pub tools_visible: usize,
+    pub prompt_cache_hits: u64,
+    pub prompt_cache_writes: u64,
 }
 
 impl StatusModel {
@@ -191,6 +193,10 @@ pub fn session_chrome_lines(m: &StatusModel) -> Vec<String> {
             m.web_search_label.as_deref().unwrap_or("off")
         ),
         format!("tools={}", m.tools_visible),
+        format!(
+            "prompt_cache=hits:{} writes:{}",
+            m.prompt_cache_hits, m.prompt_cache_writes
+        ),
     ]
 }
 
@@ -214,6 +220,8 @@ mod tests {
             provider_connected: true,
             web_search_label: None,
             tools_visible: 0,
+            prompt_cache_hits: 0,
+            prompt_cache_writes: 0,
         };
         assert_eq!(m.status_label().0, "awaiting");
     }
@@ -234,6 +242,8 @@ mod tests {
             provider_connected: false,
             web_search_label: Some("mock".into()),
             tools_visible: 5,
+            prompt_cache_hits: 0,
+            prompt_cache_writes: 0,
         };
         assert!(m.status_label().0.contains("thinking"));
     }
@@ -254,6 +264,8 @@ mod tests {
             provider_connected: true,
             web_search_label: Some("mock".into()),
             tools_visible: 4,
+            prompt_cache_hits: 2,
+            prompt_cache_writes: 1,
         };
         let lines = session_chrome_lines(&m);
         assert!(lines.iter().any(|l| l.contains("provider=native")));

@@ -361,6 +361,7 @@ mod tests {
                 idempotent: true,
             }],
             model: "openai-codex/gpt-test".into(),
+            prompt_cache: true,
         }
     }
 
