@@ -1,4 +1,4 @@
-//! Agent loop — Phase 1 base + Phase 2 hooks (context, HITL, governance, worktree).
+//! Agent loop — Phase 1 base + Phase 2 hooks (context, HITL, governance).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -15,7 +15,6 @@ use forge_types::{
     HitlDecision, HitlPayload, Message, MessageRole, ModelResponse, PolicyDecision, SessionId,
     SessionStatus, SideEffectClass, ToolCall, ToolOutput, Usage,
 };
-use forge_workspace::{IsolationMode, WorktreeManager};
 use serde_json::json;
 use thiserror::Error;
 use tracing::warn;
@@ -53,8 +52,6 @@ pub enum LoopError {
     Tool(#[from] ToolError),
     #[error(transparent)]
     Context(#[from] forge_context::ContextError),
-    #[error(transparent)]
-    Worktree(#[from] forge_workspace::WorktreeError),
     #[error("session awaiting HITL; call resolve_hitl first")]
     AwaitingHitl,
     #[error("no pending HITL")]
@@ -68,7 +65,6 @@ pub struct LoopConfig {
     pub max_turns: u32,
     pub workspace: PathBuf,
     pub journal_dir: PathBuf,
-    pub isolation: IsolationMode,
     pub enable_context_lifecycle: bool,
     pub enable_governance: bool,
     /// Phase 9 — controls registration of `web_search` (WEB-01).
@@ -81,7 +77,6 @@ impl Default for LoopConfig {
             max_turns: 128,
             workspace: PathBuf::from("."),
             journal_dir: PathBuf::from(".forge/sessions"),
-            isolation: IsolationMode::Off,
             enable_context_lifecycle: true,
             enable_governance: true,
             web_search: WebSearchConfig::default(),
@@ -176,7 +171,6 @@ pub struct AgentSession {
     max_turns: u32,
     governance: Governance,
     context: ContextEngine,
-    worktree: Option<WorktreeManager>,
     enable_context: bool,
     enable_gov: bool,
     /// Cumulative provider token usage for this session.
@@ -216,13 +210,7 @@ impl AgentSession {
             warn!(call_id = %incomplete, "incomplete tool intent on resume (fail-safe)");
         }
 
-        let mut worktree = None;
-        let mut active_root = context.workspace.clone();
-        if self.worktree.is_some() {
-            let mut manager = WorktreeManager::new(context.workspace.clone(), session_id);
-            active_root = manager.ensure()?;
-            worktree = Some(manager);
-        }
+        let active_root = context.workspace.clone();
         let pending_hitl = state
             .pending_hitl
             .and_then(|value| serde_json::from_value::<HitlPayload>(value).ok());
@@ -242,7 +230,6 @@ impl AgentSession {
         self.journal = journal;
         self.tool_ctx = ToolContext::new(active_root);
         self.context = context;
-        self.worktree = worktree;
         self.token_usage = token_usage;
         Ok(())
     }
@@ -261,14 +248,7 @@ impl AgentSession {
         let journal = Journal::open(&loop_cfg.journal_dir, session_id).await?;
         journal.append_session_created(session_id).await?;
 
-        let mut worktree = None;
-        let mut active_root = loop_cfg.workspace.clone();
-        if loop_cfg.isolation == IsolationMode::Worktree {
-            let mut wt = WorktreeManager::new(loop_cfg.workspace.clone(), session_id);
-            active_root = wt.ensure()?;
-            worktree = Some(wt);
-        }
-
+        let active_root = loop_cfg.workspace.clone();
         let context = ContextEngine::new(loop_cfg.workspace.clone(), session_id);
         let agents = context.load_agents_md();
         let skills = context.load_skills();
@@ -296,7 +276,6 @@ impl AgentSession {
             max_turns: loop_cfg.max_turns,
             governance: Governance::default(),
             context,
-            worktree,
             enable_context: loop_cfg.enable_context_lifecycle,
             enable_gov: loop_cfg.enable_governance,
             token_usage: SessionTokenUsage::default(),
@@ -340,13 +319,7 @@ impl AgentSession {
             warn!(call_id = %incomplete, "incomplete tool intent on resume (fail-safe)");
         }
 
-        let mut worktree = None;
-        let mut active_root = loop_cfg.workspace.clone();
-        if loop_cfg.isolation == IsolationMode::Worktree {
-            let mut wt = WorktreeManager::new(loop_cfg.workspace.clone(), session_id);
-            active_root = wt.ensure()?;
-            worktree = Some(wt);
-        }
+        let active_root = loop_cfg.workspace.clone();
 
         let pending_hitl = state
             .pending_hitl
@@ -374,7 +347,6 @@ impl AgentSession {
             max_turns: loop_cfg.max_turns,
             governance: Governance::default(),
             context,
-            worktree,
             enable_context: loop_cfg.enable_context_lifecycle,
             enable_gov: loop_cfg.enable_governance,
             token_usage,
@@ -611,11 +583,7 @@ impl AgentSession {
     /// Context-reset (if needed) + journal a model request; returns the request to send.
     pub async fn prepare_model_step(&mut self, turn: u32) -> Result<ModelRequest, LoopError> {
         if self.enable_context && self.context.should_reset(&self.messages) {
-            let ws_ref = self
-                .worktree
-                .as_ref()
-                .map(|w| w.branch.clone())
-                .unwrap_or_default();
+            let ws_ref = String::new();
             let system =
                 assemble_system_prompt(&self.context.load_agents_md(), &self.context.load_skills());
             let (doc, msgs) = self
@@ -959,29 +927,9 @@ impl AgentSession {
         Ok(())
     }
 
-    /// Active workspace root (primary checkout or session worktree).
+    /// Active workspace root.
     pub fn workspace_root(&self) -> &std::path::Path {
         &self.tool_ctx.workspace_root
-    }
-
-    pub fn worktree_status(&self) -> Option<String> {
-        self.worktree.as_ref().map(|w| w.status())
-    }
-
-    pub fn worktree_merge(&mut self) -> Result<(), LoopError> {
-        if let Some(ref mut w) = self.worktree {
-            w.merge()?;
-            self.tool_ctx = ToolContext::new(w.active_root());
-        }
-        Ok(())
-    }
-
-    pub fn worktree_discard(&mut self) -> Result<(), LoopError> {
-        if let Some(ref mut w) = self.worktree {
-            w.discard()?;
-            self.tool_ctx = ToolContext::new(self.context.workspace.clone());
-        }
-        Ok(())
     }
 
     /// Use this provider/model id on subsequent completions (e.g. after `/connect`).
@@ -1002,11 +950,7 @@ impl AgentSession {
 
 impl AgentSession {
     pub async fn force_context_reset_async(&mut self) -> Result<(), LoopError> {
-        let ws_ref = self
-            .worktree
-            .as_ref()
-            .map(|w| w.branch.clone())
-            .unwrap_or_default();
+        let ws_ref = String::new();
         let system =
             assemble_system_prompt(&self.context.load_agents_md(), &self.context.load_skills());
         let (doc, msgs) = self
@@ -1066,7 +1010,6 @@ mod tests {
             max_turns: 5,
             workspace: dir.to_path_buf(),
             journal_dir: dir.join("j"),
-            isolation: IsolationMode::Off,
             enable_context_lifecycle: true,
             enable_governance: true,
             ..Default::default()
