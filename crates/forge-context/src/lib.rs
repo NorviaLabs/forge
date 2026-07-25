@@ -192,18 +192,12 @@ impl ContextEngine {
     }
 
     pub fn load_skills(&self) -> Vec<(String, String)> {
-        let skills_dir = self.workspace.join(".forge").join("skills");
-        let mut skills = fs::read_dir(skills_dir)
-            .ok()
-            .into_iter()
-            .flat_map(|entries| entries.filter_map(Result::ok))
-            .filter_map(|entry| {
-                let path = entry.path().join("SKILL.md");
-                let name = entry.file_name().to_string_lossy().into_owned();
-                fs::read_to_string(path).ok().map(|content| (name, content))
-            })
-            .collect::<Vec<_>>();
+        let mut skills = read_skills_dir(Some(
+            self.workspace.join(".forge").join("skills"),
+        ));
+        skills.extend(read_skills_dir(global_skills_dir()));
         skills.sort_by(|a, b| a.0.cmp(&b.0));
+        skills.dedup_by(|a, b| a.0 == b.0);
         skills
     }
 
@@ -267,6 +261,24 @@ pub fn reduction_ratio(original_tokens: usize, in_context_tokens: usize) -> f64 
         return 0.0;
     }
     1.0 - (in_context_tokens as f64 / original_tokens as f64)
+}
+
+fn read_skills_dir(dir: Option<PathBuf>) -> Vec<(String, String)> {
+    let Some(dir) = dir else { return vec![] };
+    fs::read_dir(dir)
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.filter_map(Result::ok))
+        .filter_map(|entry| {
+            let path = entry.path().join("SKILL.md");
+            let name = entry.file_name().to_string_lossy().into_owned();
+            fs::read_to_string(path).ok().map(|content| (name, content))
+        })
+        .collect()
+}
+
+fn global_skills_dir() -> Option<PathBuf> {
+    dirs::config_dir().map(|d| d.join("forge").join("skills"))
 }
 
 #[cfg(test)]
@@ -384,6 +396,34 @@ mod tests {
             eng.load_skills(),
             vec![("ponytail".into(), "forge skill".into())]
         );
+    }
+
+    #[test]
+    fn read_skills_dir_returns_empty_for_missing() {
+        assert!(read_skills_dir(None).is_empty());
+        assert!(read_skills_dir(Some(PathBuf::from("/nonexistent"))).is_empty());
+    }
+
+    #[test]
+    fn read_skills_dir_reads_skill_files() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("myskill")).unwrap();
+        std::fs::write(dir.path().join("myskill/SKILL.md"), "content").unwrap();
+        let skills = read_skills_dir(Some(dir.path().to_path_buf()));
+        assert_eq!(skills, vec![("myskill".into(), "content".into())]);
+    }
+
+    #[test]
+    fn load_skills_project_overrides_global() {
+        let dir = tempdir().unwrap();
+        // project skill
+        std::fs::create_dir_all(dir.path().join(".forge/skills/mine")).unwrap();
+        std::fs::write(dir.path().join(".forge/skills/mine/SKILL.md"), "project").unwrap();
+
+        let eng = ContextEngine::new(dir.path().to_path_buf(), Uuid::new_v4());
+        // global dir doesn't exist; only project skill is loaded
+        let skills = eng.load_skills();
+        assert_eq!(skills, vec![("mine".into(), "project".into())]);
     }
 
     #[test]
