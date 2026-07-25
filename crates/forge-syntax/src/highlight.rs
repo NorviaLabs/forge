@@ -16,6 +16,7 @@ impl HighlightSpan {
 }
 
 #[derive(Debug, Clone, Copy)]
+#[derive(PartialEq)]
 pub struct HighlightStyle {
     pub class: HighlightClass,
 }
@@ -130,14 +131,85 @@ fn collect_highlights(cursor: &mut tree_sitter::TreeCursor, theme: &HighlightThe
     let kind = node.kind();
 
     let style = match kind {
-        "comment" | "line_comment" | "block_comment" | "documentation_comment" => Some(theme.style_for_class(HighlightClass::Comment)),
-        "attribute" | "decorator" => Some(theme.style_for_class(HighlightClass::Keyword)),
-        "string" | "string_literal" | "char_literal" | "interpreted_string_literal" => Some(theme.style_for_class(HighlightClass::String)),
-        "integer" | "float" | "hex_integer" | "octal_integer" | "binary_integer" => Some(theme.style_for_class(HighlightClass::Number)),
-        "function_declaration" | "function_item" | "method_declaration" | "method_definition" | "function_signature" => Some(theme.style_for_class(HighlightClass::Function)),
-        "type_identifier" | "primitive_type" | "builtin_type" => Some(theme.style_for_class(HighlightClass::Type)),
-        "binary_expression" | "unary_expression" => Some(theme.style_for_class(HighlightClass::Operator)),
-        "{" | "}" | "(" | ")" | "[" | "]" | "," | ";" | ":" => Some(theme.style_for_class(HighlightClass::Punctuation)),
+        // Comments
+        "comment" | "line_comment" | "block_comment" | "documentation_comment" => {
+            Some(theme.style_for_class(HighlightClass::Comment))
+        }
+        // Attributes
+        "attribute_item" | "attribute" | "decorator" => {
+            Some(theme.style_for_class(HighlightClass::Attribute))
+        }
+        // Strings
+        "string_literal" | "char_literal" | "interpreted_string_literal"
+        | "template_string" | "raw_string_literal" => {
+            Some(theme.style_for_class(HighlightClass::String))
+        }
+        // Numbers
+        "integer_literal" | "float_literal" | "integer" | "float"
+        | "hex_integer" | "octal_integer" | "binary_integer" => {
+            Some(theme.style_for_class(HighlightClass::Number))
+        }
+        // Function name: identifier inside a declaration or call
+        "identifier" => {
+            if let Some(parent) = node.parent() {
+                match parent.kind() {
+                    "function_item" | "function_declaration"
+                    | "method_declaration" | "method_definition"
+                    | "function_signature" => {
+                        Some(theme.style_for_class(HighlightClass::Function))
+                    }
+                    "call_expression" | "method_call" => {
+                        Some(theme.style_for_class(HighlightClass::Function))
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
+        // Types
+        "type_identifier" | "primitive_type" | "builtin_type"
+        | "scoped_type_identifier" => {
+            Some(theme.style_for_class(HighlightClass::Type))
+        }
+        // Punctuation
+        "{" | "}" | "(" | ")" | "[" | "]" | "," | ";"
+        | "::" | "." | "->" | "=>" => {
+            Some(theme.style_for_class(HighlightClass::Punctuation))
+        }
+        // Operators
+        "=" | "+" | "-" | "*" | "/" | "%" | "==" | "!="
+        | "<" | ">" | "<=" | ">=" | "&&" | "||" | "!"
+        | "&" | "|" | "^" | "<<" | ">>" | "+=" | "-="
+        | "*=" | "/=" | "?" | ".." | "..=" => {
+            Some(theme.style_for_class(HighlightClass::Operator))
+        }
+        // Keywords (tree-sitter uses literal token text as node kind)
+        "fn" | "let" | "mut" | "pub" | "use" | "mod"
+        | "struct" | "enum" | "impl" | "trait"
+        | "return" | "if" | "else" | "match" | "for"
+        | "while" | "loop" | "break" | "continue"
+        | "as" | "in" | "ref" | "self" | "super" | "crate"
+        | "const" | "static" | "type" | "where"
+        | "unsafe" | "extern" | "async" | "await"
+        | "dyn" | "move" | "macro_rules"
+        // Python keywords
+        | "def" | "class" | "import" | "from" | "with"
+        | "try" | "except" | "finally" | "raise"
+        | "yield" | "lambda" | "pass" | "global"
+        | "nonlocal" | "del" | "assert" | "elif"
+        // JS/TS keywords
+        | "function" | "var" | "new" | "delete" | "throw"
+        | "catch" | "typeof" | "instanceof" | "void"
+        | "switch" | "case" | "default" | "export" | "extends"
+        | "interface" | "package"
+        // Go keywords
+        | "func" | "go" | "defer" | "select" | "chan" | "map" | "range"
+        // Literals
+        | "true" | "false" | "nil" | "null" | "undefined"
+        | "True" | "False" | "None" => {
+            Some(theme.style_for_class(HighlightClass::Keyword))
+        }
         _ => None,
     };
 
@@ -157,22 +229,41 @@ fn collect_highlights(cursor: &mut tree_sitter::TreeCursor, theme: &HighlightThe
         cursor.goto_parent();
     }
 }
-
 fn merge_spans(spans: Vec<HighlightSpan>) -> Vec<HighlightSpan> {
     if spans.is_empty() { return spans; }
-    let mut merged = Vec::new();
-    let mut current = spans[0].clone();
-    for span in spans.into_iter().skip(1) {
-        if span.range.start <= current.range.end {
-            if span.range.end > current.range.end {
-                current.range.end = span.range.end;
+    // Find the maximum byte offset covered
+    let max_end = spans.iter().map(|s| s.range.end).max().unwrap_or(0);
+    if max_end == 0 { return Vec::new(); }
+    // Build a style-per-byte array; shorter (inner) spans override longer (outer) ones.
+    let mut coverage: Vec<Option<HighlightStyle>> = vec![None; max_end];
+    // Sort by length descending so outer spans lay down first, inner overwrite.
+    let mut sorted: Vec<_> = spans.into_iter().collect();
+    sorted.sort_by(|a, b| {
+        let la = a.range.end - a.range.start;
+        let lb = b.range.end - b.range.start;
+        lb.cmp(&la)
+    });
+    for span in sorted {
+        for i in span.range.clone() {
+            if i < max_end {
+                coverage[i] = Some(span.style);
             }
-        } else {
-            merged.push(current);
-            current = span;
         }
     }
-    merged.push(current);
+    // Reconstruct contiguous same-style spans.
+    let mut merged = Vec::new();
+    let mut i = 0;
+    while i < max_end {
+        if let Some(style) = coverage[i] {
+            let start = i;
+            while i < max_end && coverage[i] == Some(style) {
+                i += 1;
+            }
+            merged.push(HighlightSpan { range: start..i, style });
+        } else {
+            i += 1;
+        }
+    }
     merged
 }
 
@@ -245,3 +336,4 @@ mod tests {
         assert!(!lines[0].is_empty());
     }
 }
+
