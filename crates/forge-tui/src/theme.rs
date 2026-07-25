@@ -55,22 +55,6 @@ pub fn tool() -> Style {
     Style::default().fg(TOOL)
 }
 
-pub fn code_keyword() -> Style {
-    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
-}
-
-pub fn code_string() -> Style {
-    Style::default().fg(WARN)
-}
-
-pub fn code_number() -> Style {
-    Style::default().fg(ACCENT_2)
-}
-
-pub fn code_comment() -> Style {
-    Style::default().fg(OK).add_modifier(Modifier::ITALIC)
-}
-
 pub fn code_punctuation() -> Style {
     Style::default().fg(MUTED)
 }

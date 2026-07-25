@@ -10,6 +10,7 @@ use forge_syntax::highlight_to_lines;
 
 /// A code block widget with optional syntax highlighting.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct CodeBlock<'a> {
     code: &'a str,
     language: Option<&'a str>,
@@ -18,20 +19,24 @@ pub struct CodeBlock<'a> {
 }
 
 impl<'a> CodeBlock<'a> {
+    #[allow(dead_code)]
     pub fn new(code: &'a str) -> Self {
         Self { code, language: None, block_style: Style::default(), show_border: true }
     }
 
+    #[allow(dead_code)]
     pub fn language(mut self, lang: &'a str) -> Self {
         self.language = Some(lang);
         self
     }
 
+    #[allow(dead_code)]
     pub fn style(mut self, style: Style) -> Self {
         self.block_style = style;
         self
     }
 
+    #[allow(dead_code)]
     pub fn borderless(mut self) -> Self {
         self.show_border = false;
         self
@@ -76,12 +81,14 @@ impl Widget for CodeBlock<'_> {
     }
 }
 
+#[allow(dead_code)]
 /// Extract language from a markdown code fence (e.g., ```rust).
 pub fn extract_lang_from_fence(fence: &str) -> Option<&str> {
     let trimmed = fence.trim_start_matches("```").trim();
     if trimmed.is_empty() { None } else { Some(trimmed) }
 }
 
+#[allow(dead_code)]
 /// Parse a markdown code block into owned strings.
 pub fn parse_markdown_code_block(markdown: &str) -> Vec<(String, String)> {
     let mut blocks = Vec::new();

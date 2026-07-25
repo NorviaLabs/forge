@@ -1902,7 +1902,7 @@ Reply with ONLY the commit message line.\n\n\
     }
 
     pub fn draw(&mut self, frame: &mut ratatui::Frame) {
-        let area = frame.size();
+        let area = frame.area();
         if is_too_small(area) {
             frame.render_widget(
                 Paragraph::new("Terminal too small — resize to at least 40x18"),
