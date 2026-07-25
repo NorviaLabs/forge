@@ -1004,29 +1004,40 @@ impl Widget for OverlayWidget<'_> {
                 };
                 let end = (start + visible).min(filtered.len());
                 let window = &filtered[start..end];
-                let list_items: Vec<ListItem> = window
-                    .iter()
-                    .enumerate()
-                    .map(|(i, m)| {
-                        let idx = start + i;
-                        let marker = if idx == *model_selected { "▶ " } else { "  " };
-                        let style = if idx == *model_selected {
-                            theme::selected_row()
+                let list_items: Vec<ListItem> = if window.is_empty() {
+                    vec![ListItem::new(Span::styled(
+                        if items.is_empty() {
+                            "No connected provider models. Use /connect first."
                         } else {
-                            theme::text()
-                        };
-                        let tag = m
-                            .profile_id
-                            .as_deref()
-                            .map(|p| format!("  [{p}]"))
-                            .unwrap_or_default();
-                        let mut row = format!("{marker}{}{tag}", m.model);
-                        while row.chars().count() < 40 {
-                            row.push(' ');
-                        }
-                        ListItem::new(Span::styled(row, style))
-                    })
-                    .collect();
+                            "No models match this provider or filter."
+                        },
+                        theme::muted(),
+                    ))]
+                } else {
+                    window
+                        .iter()
+                        .enumerate()
+                        .map(|(i, m)| {
+                            let idx = start + i;
+                            let marker = if idx == *model_selected { "▶ " } else { "  " };
+                            let style = if idx == *model_selected {
+                                theme::selected_row()
+                            } else {
+                                theme::text()
+                            };
+                            let tag = m
+                                .profile_id
+                                .as_deref()
+                                .map(|p| format!("  [{p}]"))
+                                .unwrap_or_default();
+                            let mut row = format!("{marker}{}{tag}", m.model);
+                            while row.chars().count() < 40 {
+                                row.push(' ');
+                            }
+                            ListItem::new(Span::styled(row, style))
+                        })
+                        .collect()
+                };
                 let prov_hint = if providers.len() > 1 {
                     " · ←/→ provider"
                 } else {
