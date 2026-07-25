@@ -262,13 +262,13 @@ impl Widget for InputBar<'_> {
         // Block cursor: solid cell at caret (█ at EOL, inverted char mid-text).
         let lines: Vec<Line> = if self.model.text.is_empty() && !self.model.hint.is_empty() {
             vec![Line::from(vec![
-                Span::styled(" ❯ ", theme::brand()),
+                Span::styled(" › ", theme::brand()),
                 Span::styled(" ", theme::caret()), // block cell
                 Span::styled(self.model.hint.as_str(), theme::dim()),
             ])]
         } else if self.model.text.is_empty() {
             vec![Line::from(vec![
-                Span::styled(" ❯ ", theme::brand()),
+                Span::styled(" › ", theme::brand()),
                 Span::styled(" ", theme::caret()),
             ])]
         } else {
@@ -278,7 +278,7 @@ impl Widget for InputBar<'_> {
             let line_idx = before.matches('\n').count();
             let mut out = Vec::new();
             for (i, raw) in t.split('\n').enumerate() {
-                let prefix = if i == 0 { " ❯ " } else { "   " };
+                let prefix = if i == 0 { " › " } else { "   " };
                 if i == line_idx {
                     let line_start = if i == 0 {
                         0
@@ -338,7 +338,7 @@ impl Widget for InputBar<'_> {
         } else if self.model.text.contains('\n') {
             " multi-line · Shift+Enter newline "
         } else {
-            ""
+            " message "
         };
         let block = Block::default()
             .borders(Borders::ALL)
