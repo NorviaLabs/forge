@@ -860,6 +860,7 @@ impl Widget for OverlayWidget<'_> {
                 let block = Block::default()
                     .borders(Borders::ALL)
                     .border_style(theme::border())
+                    .style(theme::panel())
                     .title(Span::styled(format!(" / {filter} "), theme::brand()));
                 let inner = block.inner(r);
                 block.render(r, buf);
@@ -989,7 +990,7 @@ impl Widget for OverlayWidget<'_> {
                     .block(
                         Block::default()
                             .borders(Borders::ALL)
-                            .border_style(theme::brand())
+                            .border_style(theme::border())
                             .style(theme::panel())
                             .title(Span::styled(
                                 " Connect with API key ",
@@ -1011,9 +1012,9 @@ impl Widget for OverlayWidget<'_> {
                     .block(
                         Block::default()
                             .borders(Borders::ALL)
-                            .border_style(theme::info())
+                            .border_style(theme::border())
                             .style(theme::panel())
-                            .title(Span::styled(" Sign in ", theme::info())),
+                            .title(Span::styled(" Sign in ", theme::brand())),
                     )
                     .render(r, buf);
             }
@@ -1044,7 +1045,7 @@ impl Widget for OverlayWidget<'_> {
                     .block(
                         Block::default()
                             .borders(Borders::ALL)
-                            .border_style(theme::brand())
+                            .border_style(theme::border())
                             .style(theme::panel())
                             .title(Span::styled(
                                 " Resume a session · ↑↓ Enter · Esc cancel ",
@@ -1083,7 +1084,7 @@ impl Widget for OverlayWidget<'_> {
                     .block(
                         Block::default()
                             .borders(Borders::ALL)
-                            .border_style(theme::brand())
+                            .border_style(theme::border())
                             .style(theme::panel())
                             .title(Span::styled(
                                 " Choose a provider · ↑↓ Enter ",
