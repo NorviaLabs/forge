@@ -120,7 +120,7 @@ Zones and what may cross each edge. Rules table below is normative.
 ```mermaid
 flowchart LR
   subgraph surface_zone["Surface zone"]
-    S["TUI · Headless"]
+    S["TUI"]
   end
 
   subgraph control_plane["Harness control plane"]
@@ -482,27 +482,8 @@ sequenceDiagram
 
 1. High-risk tool classified by policy → journal `hitl_wait` with approval payload (redacted).  
 2. Controller process may exit; no busy-wait compute.  
-3. Approval arrives from the TUI or headless API → journal `hitl_resume` → continue execution.
+3. Approval arrives from the TUI → journal `hitl_resume` → continue execution.
 
-### 5.6 Headless CI job
-
-Same core loop; surface is non-interactive. Resume is by `session_id` (and journal path) for interrupted pipelines.
-
-```mermaid
-sequenceDiagram
-  participant CI as CI runner
-  participant H as Headless surface
-  participant C as Core loop
-  participant D as Durable journal
-
-  CI->>H: start job (prompt, workspace, config)
-  H->>C: create or resume session
-  C->>D: journal / replay as needed
-  C->>C: agent loop until terminal
-  C-->>H: status + logs / JSON sink
-  H-->>CI: exit code
-  Note over CI,D: Optional: later job resumes same session_id after crash
-```
 
 ### 5.7 Context reset and handoff
 
@@ -620,9 +601,8 @@ Discovery order and override rules should be deterministic and documented in con
 
 ```mermaid
 flowchart TB
-  subgraph product["Product surfaces"]
+  subgraph product["Product surface"]
     TUI["TUI — forge"]
-    HD["Headless (future)"]
   end
 
   subgraph harness["Harness core — single implementation"]
