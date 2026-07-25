@@ -192,7 +192,7 @@ impl ContextEngine {
     }
 
     pub fn load_skills(&self) -> Vec<(String, String)> {
-        let skills_dir = self.workspace.join(".agents").join("skills");
+        let skills_dir = self.workspace.join(".forge").join("skills");
         let mut skills = fs::read_dir(skills_dir)
             .ok()
             .into_iter()
@@ -366,6 +366,24 @@ mod tests {
             .take(200)
             .collect::<Vec<_>>()
         ));
+    }
+
+    #[test]
+    fn load_skills_reads_forge_skills() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".forge/skills/ponytail")).unwrap();
+        std::fs::write(
+            dir.path().join(".forge/skills/ponytail/SKILL.md"),
+            "forge skill",
+        )
+        .unwrap();
+
+        let eng = ContextEngine::new(dir.path().to_path_buf(), Uuid::new_v4());
+
+        assert_eq!(
+            eng.load_skills(),
+            vec![("ponytail".into(), "forge skill".into())]
+        );
     }
 
     #[test]
