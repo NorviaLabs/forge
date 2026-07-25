@@ -71,19 +71,19 @@ impl Widget for SidebarWidget<'_> {
         let sess_lines = vec![
             Line::from(Span::styled("SESSION", theme::dim())),
             Line::from(vec![
-                Span::styled("id ", theme::muted()),
+                Span::styled("id      ", theme::dim()),
                 Span::styled(self.model.session_id.clone(), theme::text()),
             ]),
             Line::from(vec![
-                Span::styled("status ", theme::muted()),
+                Span::styled("status  ", theme::dim()),
                 Span::styled(self.model.status.clone(), status_style(&self.model.status)),
             ]),
             Line::from(vec![
-                Span::styled("surface ", theme::muted()),
+                Span::styled("surface ", theme::dim()),
                 Span::styled(self.model.surface.clone(), theme::text()),
             ]),
             Line::from(vec![
-                Span::styled("role ", theme::muted()),
+                Span::styled("role    ", theme::dim()),
                 Span::styled(self.model.role.clone(), theme::text()),
             ]),
         ];
@@ -113,10 +113,10 @@ impl Widget for SidebarWidget<'_> {
 
         if let Some(ref wt) = self.model.worktree {
             tool_lines.push(Line::from(Span::styled("WORKTREE", theme::dim())));
-            tool_lines.push(Line::from(Span::styled(
-                wt.chars().take(32).collect::<String>(),
-                theme::muted(),
-            )));
+            tool_lines.push(Line::from(vec![
+                Span::styled("path    ", theme::dim()),
+                Span::styled(wt.chars().take(28).collect::<String>(), theme::muted()),
+            ]));
         }
 
         Paragraph::new(tool_lines).render(chunks[1], buf);
