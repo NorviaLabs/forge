@@ -127,7 +127,7 @@ fn route(client: &NativeModelClient, model: &str) -> Result<Route, ModelError> {
                 .injected_or_env(&["OPENCODE_API_BASE", "OPENCODE_GO_API_BASE"])
                 .unwrap_or_else(|| "https://opencode.ai/zen/go/v1".into()),
             api_key: client.credential(&["OPENCODE_API_KEY", "OPENCODE_GO_API_KEY"]),
-            model: model.into(),
+            model: model_id.into(),
         },
         "opencode-zen" => Route {
             base_url: client
@@ -138,7 +138,7 @@ fn route(client: &NativeModelClient, model: &str) -> Result<Route, ModelError> {
                 "OPENCODE_API_KEY",
                 "OPENCODE_GO_API_KEY",
             ]),
-            model: model.into(),
+            model: model_id.into(),
         },
         "ollama" | "ollama_chat" => {
             let base = client
