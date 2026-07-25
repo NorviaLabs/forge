@@ -65,7 +65,7 @@ mod tests {
         let mut out = String::new();
         for y in 0..area.height {
             for x in 0..area.width {
-                let cell = buf.get(x, y);
+                let cell = &buf[(x, y)];
                 out.push_str(cell.symbol());
             }
             out.push('\n');
@@ -107,7 +107,7 @@ mod tests {
         let mut found_caret_bg = false;
         for y in 0..area.height {
             for x in 0..area.width {
-                let cell = buf.get(x, y);
+                let cell = &buf[(x, y)];
                 if cell.style().bg == Some(crate::theme::ACCENT) {
                     found_sel_bg = true;
                 }
