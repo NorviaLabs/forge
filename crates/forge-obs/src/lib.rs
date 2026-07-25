@@ -5,12 +5,10 @@
 
 mod export;
 mod metrics;
-mod redact;
 mod span;
 
 pub use export::{export_jsonl, OtelConfig};
 pub use metrics::Metrics;
-pub use redact::Redactor;
 pub use span::{SpanKind, SpanRecord, SpanStatus, Tracer};
 
 use std::sync::Arc;
@@ -22,7 +20,6 @@ pub fn init(config: &OtelConfig) -> ObsHandle {
         config: config.clone(),
         tracer: Arc::new(Tracer::new(config.enabled)),
         metrics: Arc::new(Metrics::default()),
-        redactor: Redactor::default(),
     }
 }
 
@@ -32,7 +29,6 @@ pub struct ObsHandle {
     pub config: OtelConfig,
     pub tracer: Arc<Tracer>,
     pub metrics: Arc<Metrics>,
-    pub redactor: Redactor,
 }
 
 impl ObsHandle {
@@ -165,7 +161,6 @@ impl ObsHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
     use tempfile::tempdir;
 
     #[test]
@@ -201,18 +196,6 @@ mod tests {
         assert!(kinds.contains(&SpanKind::ContextReset));
         assert!(kinds.contains(&SpanKind::HitlWait));
         assert!(obs.metrics.snapshot().session_count >= 1);
-    }
-
-    #[test]
-    fn redactor_strips_secrets() {
-        let r = Redactor::default();
-        let v = r.redact_value(
-            "body",
-            &json!({"api_key": "sk-x", "path": "a", "authorization": "Bearer z"}),
-        );
-        assert_eq!(v["api_key"], "[REDACTED]");
-        assert_eq!(v["authorization"], "[REDACTED]");
-        assert_eq!(v["path"], "a");
     }
 
     #[test]

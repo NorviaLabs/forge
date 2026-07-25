@@ -167,11 +167,7 @@ impl GovernanceConfig {
         if self.allow.is_empty() {
             acl = AclPolicy::allow_all();
         }
-        let profile = match self.sandbox.as_str() {
-            "container" => SandboxProfile::Container,
-            "ebpf" => SandboxProfile::Ebpf,
-            _ => SandboxProfile::Light,
-        };
+        let profile = SandboxProfile::Light;
         Governance {
             principal,
             acl,
