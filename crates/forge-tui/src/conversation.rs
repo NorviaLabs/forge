@@ -726,11 +726,22 @@ fn assistant_lines(text: &str, width: usize) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     let mut language = String::new();
     let mut fenced = false;
+    let mut code_block_lines: Vec<String> = Vec::new();
 
     for raw in text.lines() {
         let trimmed = raw.trim_start();
         if let Some(fence) = trimmed.strip_prefix("```") {
             if fenced {
+                // Process accumulated code block with tree-sitter
+                if !code_block_lines.is_empty() {
+                    let code = code_block_lines.join("\n");
+                    let theme = forge_syntax::HighlightTheme::default();
+                    let highlighted = highlight_to_lines(&language, &code, &theme);
+                    for line_segments in highlighted {
+                        out.push(Line::from(render_highlighted_line(&line_segments)));
+                    }
+                    code_block_lines.clear();
+                }
                 out.push(Line::from(Span::styled(
                     "  ```".to_string(),
                     theme::code_punctuation(),
@@ -751,18 +762,7 @@ fn assistant_lines(text: &str, width: usize) -> Vec<Line<'static>> {
         }
 
         if fenced {
-            let chunks = if raw.is_empty() {
-                vec![String::new()]
-            } else {
-                raw.chars()
-                    .collect::<Vec<_>>()
-                    .chunks(width)
-                    .map(|chunk| chunk.iter().collect())
-                    .collect()
-            };
-            for chunk in chunks {
-                out.push(Line::from(highlight_code_line(&chunk, &language)));
-            }
+            code_block_lines.push(raw.to_string());
         } else {
             let wrapped = wrap(raw, width);
             for line in wrapped {
@@ -804,116 +804,18 @@ fn highlight_inline_code(line: &str) -> Vec<Span<'static>> {
     spans
 }
 
-fn highlight_code_line(line: &str, language: &str) -> Vec<Span<'static>> {
-    let keywords = match language {
-        "rust" | "rs" => &[
-            "as", "async", "await", "const", "crate", "else", "enum", "fn", "for", "if", "impl",
-            "in", "let", "match", "mod", "move", "pub", "ref", "return", "self", "Self", "struct",
-            "trait", "type", "use", "where", "while",
-        ][..],
-        "python" | "py" => &[
-            "and", "as", "assert", "class", "def", "elif", "else", "False", "for", "from", "if",
-            "import", "in", "is", "None", "not", "or", "pass", "return", "True", "while", "with",
-        ][..],
-        "javascript" | "js" | "typescript" | "ts" => &[
-            "async",
-            "await",
-            "class",
-            "const",
-            "else",
-            "export",
-            "false",
-            "for",
-            "from",
-            "function",
-            "if",
-            "import",
-            "interface",
-            "let",
-            "new",
-            "null",
-            "return",
-            "true",
-            "type",
-            "var",
-            "while",
-        ][..],
-        "json" | "yaml" | "yml" => &["true", "false", "null"][..],
-        "bash" | "sh" | "shell" => &[
-            "case", "do", "done", "elif", "else", "esac", "fi", "for", "function", "if", "in",
-            "then", "while",
-        ][..],
-        _ => &[
-            "fn", "function", "if", "else", "for", "while", "return", "class", "const", "let",
-            "true", "false", "null",
-        ][..],
-    };
-
-    let chars: Vec<char> = line.chars().collect();
-    let mut spans = Vec::new();
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        if (c == '/' && chars.get(i + 1) == Some(&'/'))
-            || (c == '#' && matches!(language, "python" | "py" | "bash" | "sh" | "shell"))
-            || (c == '-' && chars.get(i + 1) == Some(&'-'))
-        {
-            let comment: String = chars[i..].iter().collect();
-            spans.push(Span::styled(comment, theme::code_comment()));
-            break;
+fn render_highlighted_line(segments: &[(String, (u8, u8, u8), bool, bool)]) -> Vec<Span<'static>> {
+    segments.iter().map(|(text, rgb, bold, italic)| {
+        let mut style = ratatui::style::Style::default()
+            .fg(ratatui::style::Color::Rgb(rgb.0, rgb.1, rgb.2));
+        if *bold {
+            style = style.add_modifier(Modifier::BOLD);
         }
-        if c == '"' || c == '\'' || c == '`' {
-            let quote = c;
-            let start = i;
-            i += 1;
-            while i < chars.len() {
-                if chars[i] == '\\' {
-                    i += 2;
-                    continue;
-                }
-                let closed = chars[i] == quote;
-                i += 1;
-                if closed {
-                    break;
-                }
-            }
-            spans.push(Span::styled(
-                chars[start..i.min(chars.len())].iter().collect::<String>(),
-                theme::code_string(),
-            ));
-            continue;
+        if *italic {
+            style = style.add_modifier(Modifier::ITALIC);
         }
-        if c.is_ascii_digit() {
-            let start = i;
-            i += 1;
-            while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.') {
-                i += 1;
-            }
-            spans.push(Span::styled(
-                chars[start..i].iter().collect::<String>(),
-                theme::code_number(),
-            ));
-            continue;
-        }
-        if c.is_ascii_alphabetic() || c == '_' {
-            let start = i;
-            i += 1;
-            while i < chars.len() && (chars[i].is_ascii_alphanumeric() || chars[i] == '_') {
-                i += 1;
-            }
-            let word: String = chars[start..i].iter().collect();
-            let style = if keywords.contains(&word.as_str()) {
-                theme::code_keyword()
-            } else {
-                theme::text()
-            };
-            spans.push(Span::styled(word, style));
-            continue;
-        }
-        spans.push(Span::styled(c.to_string(), theme::code_punctuation()));
-        i += 1;
-    }
-    spans
+        Span::styled(text.clone(), style)
+    }).collect()
 }
 
 pub struct ConversationWidget<'a> {
