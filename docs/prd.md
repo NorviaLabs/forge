@@ -12,7 +12,7 @@
 
 ## 1. Executive summary
 
-Forge is an open-source **AI coding agent harness**: scaffolding around foundation models for reliable repo work. It ships a **full-screen TUI** (default `forge`), **headless** `forge run`, durable sessions, schema-validated tools (including `web_search`), LiteLLM-backed models, and `/connect` for Grok / OpenCode Go.
+Forge is an open-source **AI coding agent harness**: scaffolding around foundation models for reliable repo work. It ships a **full-screen TUI** (default `forge`), durable sessions, schema-validated tools (including `web_search`), native Rust model transports, and `/connect` for Grok / OpenCode Go.
 
 Product requirements live here. Stack and design contracts: [architecture.md](./architecture.md), [designs/README.md](./designs/README.md).
 
@@ -20,9 +20,6 @@ Product requirements live here. Stack and design contracts: [architecture.md](./
 
 ```text
 forge                 # full-screen TUI (default)
-forge run "<prompt>"  # headless
-forge status
-forge connect …
 ```
 
 **Not product CLI:** feedback gate CLI, line-mode `repl`, and `--mock` flag.
@@ -31,9 +28,9 @@ forge connect …
 
 | Proposition | Description |
 |-------------|-------------|
-| **Zero abstraction tax** | Flat, schema-validated tool contracts instead of heavy graph/role DSLs. One harness core for TUI and headless. |
+| **Zero abstraction tax** | Flat, schema-validated tool contracts instead of heavy graph/role DSLs. One harness core for the TUI. |
 | **Native durable execution** | Step-level event journals so crashed sessions resume without repeating completed tool/model steps. |
-| **Context lifecycle & worktree isolation** | Token budgeting, payload offload, handoff artifacts, optional git worktree isolation. |
+| **Context lifecycle** | Token budgeting, payload offload, handoff artifacts. |
 | **MCP tools + LiteLLM models** | MCP for tool servers; **LiteLLM Python SDK** as the sole production model path; optional connect profiles. |
 
 ---
@@ -48,7 +45,7 @@ A raw language model is a reasoning engine, not a reliable autonomous actor. Lon
 |-------|------|----------|
 | **Model** | Cognitive core / reasoning engine | Claude, GPT, Grok |
 | **Harness** | Application scaffolding: plan, memory, tools, session state, output parsing | LangGraph, Claude Code, Grok Build, OpenCode |
-| **Runtime** | Infrastructure execution environment and physical constraints | Containers, sandboxes, git worktrees, serverless environments |
+| **Runtime** | Infrastructure execution environment and physical constraints | Containers, sandboxes, serverless environments |
 | **Agent** | Full operational system = Model + Harness + Runtime | End-to-end autonomous task executor |
 
 ### 2.2 Six functional primitives of an enterprise harness
@@ -83,14 +80,14 @@ Harness design can materially affect coding-benchmark performance. Design must a
 | **DAG / graph orchestrators** | LangGraph | Explicit state machines, checkpointers, HITL interrupts | High boilerplate; single-process resiliency often needs external durable engines |
 | **Role-based multi-agent** | CrewAI | Intuitive org metaphors | Underspecified NL roles; weak low-level control |
 | **Code-first, schema-typed** | PydanticAI | Low abstraction tax, high AI-codability | Limited built-in multi-agent graphs or durable cross-session execution |
-| **Terminal coding harnesses** | Claude Code, Grok Build, OpenCode | Repo-native tools, memory files, worktrees/subagents | Sync task focus; limited multi-channel/background |
+| **Terminal coding harnesses** | Claude Code, Grok Build, OpenCode | Repo-native tools, memory files, subagents | Sync task focus; limited multi-channel/background |
 | **Always-on gateways** | OpenClaw | Multi-channel, cron, Markdown identity/memory | Security risk if used for unconstrained repo execution |
 | **Durable execution engines** | Temporal, Restate, Kitaru | Crash recovery via event log replay | Opaque to LLM context, compaction, token budgets |
 
 ### 3.2 Terminal harness notes
 
 - **Claude Code (Anthropic):** Closed-source reference; project memory files, loops, subagents; isolation and tool-deny configuration patterns.
-- **Grok Build (xAI):** Open-source terminal harness; TUI decoupled from runtime (terminal, IDE, headless CI); MCP; local-first inference options.
+ - **Grok Build (xAI):** Open-source terminal harness; TUI decoupled from runtime; MCP; local-first inference options.
 - **OpenCode (SST):** Open-source, model-agnostic; planning loops, subagents, `AGENTS.md`, plugin SDK, per-agent permission rulesets.
 
 ### 3.3 Comparative product matrix
@@ -98,12 +95,12 @@ Harness design can materially affect coding-benchmark performance. Design must a
 | Dimension | LangGraph / CrewAI | PydanticAI | Claude Code | Grok Build | OpenCode | OpenClaw | Durable engines |
 |-----------|--------------------|------------|-------------|------------|----------|----------|-----------------|
 | **Primary paradigm** | DAG / role multi-agent | Code-first typed schema | Closed terminal harness | Open terminal harness | Open coding harness | Multi-channel gateway | Event-sourced workflows |
-| **State & workspace** | Checkpoints / in-memory | Developer-managed | Memory files, worktrees, session logs | Host FS, VCS, session logs | `AGENTS.md`, session compaction | Markdown + session stores | Immutable event log replay |
+| **State & workspace** | Checkpoints / in-memory | Developer-managed | Memory files, session logs | Host FS, VCS, session logs | `AGENTS.md`, session compaction | Markdown + session stores | Immutable event log replay |
 | **Tool / client protocols** | Framework wrappers / MCP | Framework tools / MCP | MCP + built-ins | ACP + MCP | Plugin SDK + MCP | Channel adapters / plugins | Opaque activities |
 | **Abstraction tax & DX** | High | Minimal | Low | Low | Low | Moderate | High |
 | **AI-codability** | Moderate–low | High | High | High | High | Moderate | Low |
 | **Context lifecycle** | Manual | Manual | Isolation, compaction, offload | Budgeting / assembly | Summary compaction | Session compaction | None (opaque code) |
-| **Security & sandboxing** | Custom middleware | App-level checks | Tool denylist, worktrees | Workspace sandbox patterns | Per-agent path rules | Channel ACLs, containers | Infra policies |
+| **Security & sandboxing** | Custom middleware | App-level checks | Tool denylist | Workspace sandbox patterns | Per-agent path rules | Channel ACLs, containers | Infra policies |
 | **Fault recovery** | Checkpoint (manual re-entry) | In-process retry | Project files + git resume | Session resume | Session recovery | Transcripts & gateway retries | Transparent crash replay |
 
 ---
@@ -139,8 +136,8 @@ Every harness component encodes an assumption about what the model cannot yet do
 | Platform engineer | Deploy a reliable agent runtime with crash recovery and auditability | Production / enterprise |
 | Application developer | Define tools and agents with clear contracts, without graph boilerplate | Development |
 | SRE / security | Enforce least-privilege tools, vault credentials, sandbox policy | Governance |
-| Coding agent operator | Run long multi-step coding tasks in repo with worktree isolation | Development / CI |
-| CI / automation | Headless resume of interrupted agent jobs | Pipelines |
+| Coding agent operator | Run long multi-step coding tasks in repo | Development / CI |
+| CI / automation | Resume of interrupted agent jobs | Pipelines |
 | Team lead / reviewer | Approve high-risk tool calls; review evaluator failure reports | HITL |
 | Debugger | Trace model/tool steps; time-travel via event journal | Operations |
 
@@ -152,10 +149,10 @@ Every harness component encodes an assumption about what the model cannot yet do
 2. Provide native **MCP** support for tools.
 3. Embed **durable execution** with process-crash recovery and no duplicate side effects.
 4. Automate **context lifecycle**: payload offloading, token budgets, `progress.json` / `AGENTS.md` handoff resets.
-5. Support **git worktree isolation** for unapproved or experimental file mutations.
+5. Run in the active checkout with durable session state.
 6. Enforce **zero-trust governance**: vault credential injection, dynamic tool ACLs, progressive sandbox depth.
 7. Ship **dual-sensor feedback** (deterministic checks + independent Evaluator agent).
-8. Expose two focused interfaces: full-screen terminal TUI and headless CI.
+8. Expose one focused interface: a full-screen terminal TUI.
 9. Emit **standard distributed traces** across model, tool, and step boundaries (OpenTelemetry-compatible).
 10. Support **multi-provider models** via configuration only (no application rewrites).  
 11. (Phase 5) Reach the **broad provider catalog** via the **LiteLLM Python SDK (library)**, not the LiteLLM Proxy gateway.  
@@ -191,9 +188,9 @@ Product capabilities group into five areas (implementation detail in architectur
 |--------|----------------|
 | **Core & protocols** | Schema-validated tools and MCP tool servers |
 | **Durable execution** | Append-only step journal; record-before-side-effect; resume without re-execution |
-| **Context & workspace** | Token budgets; payload offload; handoff artifacts; worktree isolation |
+| **Context & workspace** | Token budgets; payload offload; handoff artifacts |
 | **Governance & sandbox** | Tool ACLs, secret injection, audit trail, light sandbox |
-| **Surfaces** | Product: full-screen TUI + headless `run`. Library-only: feedback and OTEL |
+| **Surfaces** | Product: full-screen TUI. Library-only: feedback and OTEL |
 
 ---
 
@@ -210,7 +207,7 @@ Product capabilities group into five areas (implementation detail in architectur
 | **DUR-03** | Durable human-in-the-loop | High-risk operations pause without holding active compute; resume when an approval is received, including across process restarts. | No active compute while waiting; seamless resume after restart | P1 (High) |
 | **CTX-01** | Dynamic payload offloading | Tool responses above a configurable size/token threshold are stored outside the active prompt and replaced with references. | ≥ 80% reduction in context bloat from large tool responses | P0 (Critical) |
 | **CTX-02** | Structured reset & handoff | When context usage crosses a configurable threshold (default 80% of capacity), write handoff state (`progress.json` / `AGENTS.md`), clear active context, and continue from handoff + workspace. | No context overflow failures; task alignment across 100+ turns | P0 (Critical) |
-| **CTX-03** | Git worktree workspace isolation | File-editing tools can run in an isolated temporary git worktree; results merge or discard on completion. | Working tree remains isolated during unapproved experimental executions | P1 (High) |
+| **CTX-03** | (removed) — Active checkout; no separate workspace isolation | File-editing tools run in the active checkout directly. | n/a | n/a |
 | **SEC-01** | Zero-trust credential broker | Credentials live in a vault (or equivalent); injected at call time by the gateway. Secrets never enter model prompts or ordinary traces. | Zero credentials in conversation histories or default trace attributes | P0 (Critical) |
 | **SEC-02** | Dynamic tool ACLs | Tools visible/callable depend on identity, role, and scopes; unauthorized tools are omitted from model tool listings. | Deny lists always enforced; restricted tools never offered to the model | P0 (Critical) |
 | **SEC-03** | Behavioral sandboxing | Local tool execution runs under isolation policy that can block unauthorized network egress, syscalls, or file access (depth increases by phase). | Policy breaches blocked; enforcement latency target &lt; 1 ms for kernel-backed profiles when enabled | P1 (High) |
@@ -225,7 +222,7 @@ Product capabilities group into five areas (implementation detail in architectur
 | **TUI-07** | Tab autocomplete + highlight | Tab completes the highlighted slash suggestion; caret/highlight shows selected suggestion and input/history position. | `/sta` + Tab → `/status`; ↑↓ move highlight; caret visible | P1 |
 | **WEB-01** | Built-in web search tool | First-class `web_search` tool: schema-validated query args; pluggable search backends (e.g. Tavily/Brave/Serper + mock); network side-effect class; keys via env/vault only; same journal + ACL path as other built-ins. | Model can search the public web when enabled; mock path works offline; no API keys in transcripts/traces | P1 |
 | **TUI-08** | Always-visible status feedback | Render latest feedback/status line every frame; dual-write model/tool/session errors into conversation error banners; severity styling; never leave operator-critical outcomes only in unrendered fields. | Failed model turn (e.g. rate limit) visible in frame buffer without reading internal state | P0 |
-| **TUI-09** | Session identity chrome | Status chrome shows provider · model · context · worktree (and profile/search when space); narrow terminals keep model/ctx without sidebar; `/status` mirrors chrome fields. | Wide and narrow TestBackend frames include model and context cues | P0 |
+| **TUI-09** | Session identity chrome | Status chrome shows provider · model · context (and profile/search when space); narrow terminals keep model/ctx without sidebar; `/status` mirrors chrome fields. | Wide and narrow TestBackend frames include model and context cues | P0 |
 | **TUI-10** | Activity feed & progressive busy | In-session activity ring buffer in sidebar (wide); progressive busy labels (`running · model` / `running · tool:name`); errors also create feed entries. | After a multi-step turn, activity list shows model/tool/error summaries | P1 |
 
 ### 9.2 Priority summary (product)
@@ -260,7 +257,7 @@ Product capabilities group into five areas (implementation detail in architectur
 - Switching providers requires **configuration only**—no changes to tool definitions, agent logic, or durable state schemas.
 - **Production models (MDL-01):** **LiteLLM Python SDK worker only** (not Proxy). No native multi-client HTTP stack.  
 - **`MockModelClient`:** unit tests / `FORGE_MODEL_PROVIDER=mock` for automated CI only — **not** a product `--mock` flag.  
-- **Connect (CONN/PROV):** `/connect` and `forge connect` for **xAI Grok (OAuth)** and **OpenCode Go (API key, TUI prompt)**.  
+ - **Connect (CONN/PROV):** `/connect` for **xAI Grok (OAuth)** and **OpenCode Go (API key, TUI prompt)**.  
 - **TUI product:** default `forge`; history ↑/↓; inline slash + Tab autocomplete; feedback strip, session chrome, activity feed.  
 - **Tools:** built-ins + MCP + **`web_search`** (WEB-01).
 
@@ -295,7 +292,7 @@ Product capabilities group into five areas (implementation detail in architectur
 
 ## 13. Strategic takeaways
 
-Forge ships a **terminal-first coding agent harness**: flat tools, durable journal, native model transports, full-screen TUI by default, and headless `run` for automation — without requiring a config file.
+Forge ships a **terminal-first coding agent harness**: flat tools, durable journal, native model transports, and a full-screen TUI by default — without requiring a config file.
 
 ---
 

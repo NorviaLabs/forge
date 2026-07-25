@@ -12,56 +12,28 @@
 
 ## What is Forge
 
-Forge is an open-source **AI coding-agent harness** written in Rust. It owns the agent loop, tools, durable session state, and a full-screen terminal UI, while you bring the model. Inference uses **native Rust HTTP/SSE transports** for OpenAI, Anthropic, xAI Grok, OpenCode (Go + Zen), OpenAI Codex, and local Ollama.
+Forge is an open-source **AI coding-agent harness** written in Rust. You run Forge in your terminal; it owns the agent loop, tools, durable session state, and a full-screen UI. You bring the model — Forge connects natively to OpenAI, Anthropic, xAI Grok, OpenCode (Go + Zen), OpenAI Codex, and local Ollama over Rust HTTP/SSE transports.
 
-**Product surfaces**
+```
+forge
+```
 
-| Command | Role |
-|---------|------|
-| `forge` | Full-screen TUI (default when run with no arguments) |
+That's it. `forge` launches the full-screen TUI. There are no subcommands — use `--help` or `--version` for CLI info.
 
-**How it fits together**
-
-One agent core (`forge-core`) powers the interactive TUI. Sessions append to a **SQLite event journal** so work can resume after a crash or restart. The TUI exposes provider connection, model selection, and session steering via slash commands.
-
-<p align="center">
-  <img src="docs/images/architecture.png" alt="Forge architecture: agent session, journal, governance, model providers, workspace and tools" width="880" />
-</p>
-
-| Layer | Role |
-|-------|------|
-| **You** | TUI |
-| **Harness** | Plan–act–observe loop, tools, governance hooks, context lifecycle |
-| **Durability** | SQLite event journal — resume without redoing completed steps |
-| **Models** | Native Rust provider transports; same tools and journal regardless of vendor |
-| **Workspace** | Your repo, the active checkout |
-| **Tools** | `read_file` · `write_file` · `apply_patch` · `bash` · `fffind` · `ffgrep` · **`git`** (allowlisted subcommands) · `web_search` (optional) · MCP |
-| **Skills** | Optional `SKILL.md` packs from `~/.config/forge/skills/` or `.forge/skills/` injected into the system prompt |
-
-Full design notes: [docs/architecture.md](./docs/architecture.md).
-
-Want to help? See [CONTRIBUTING.md](./CONTRIBUTING.md) for setup, validation, and pull request guidance.
-
----
-
-## Why Forge
-
-Most coding agents edit **your current checkout** and treat chat history as "memory." That fails when the process dies, a tool call is invalid, or a runaway refactor hits the branch you care about.
+**Why Forge**
 
 | Problem | What Forge does |
 |---------|-----------------|
-| Process dies mid-task | **Event journal** records model/tool steps *before* side effects; the durable journal replays completed work |
+| Process dies mid-task | **Event journal** records every model/tool step *before* side effects; `/resume` picks up where you left off |
 | Bad tool args hit disk/shell | **Schema validation first** — invalid calls never execute |
 | Broad rewrites obscure small edits | **`apply_patch`** validates the full patch, confines paths to the workspace, and applies targeted add/update/delete operations |
-| Vendor lock-in | Open **MIT** harness; provider/model selection via config or environment |
-
-**Crash-safe sessions** — Resume the agent, not just the chat:
-
-**Fail-closed tools** — Declared input schemas; failures go back to the model, not half-written files. For precise edits, `apply_patch` validates every operation before writing and rejects paths outside the active workspace.
+| Vendor lock-in | Open **MIT** harness; provider/model selection via env, `forge.toml`, or `/connect` in the TUI |
 
 ---
 
-## Install
+## Quick start
+
+### 1. Install
 
 Download the archive for your platform from [GitHub Releases](https://github.com/NorviaLabs/forge/releases).
 
@@ -91,44 +63,27 @@ cargo build --release --locked --package forge-cli
 export PATH="$PWD/target/release:$PATH"
 ```
 
----
+### 2. Connect a provider
 
-## Auth setup
+Live models connect directly from Forge's native Rust client — no proxy server required.
 
-Do this once before the tutorials. Live models connect directly from Forge's native Rust client — no proxy server required.
-
-### Option A — API key + model env (most providers)
+**Option A — API key + model env (fastest)**
 
 ```bash
-export OPENAI_API_KEY=…          # openai/…
-# export ANTHROPIC_API_KEY=…     # anthropic/…
-# export XAI_API_KEY=…           # if using key-based xAI routes
-
-export FORGE_MODEL_PROVIDER=native
+export OPENAI_API_KEY=…
 export FORGE_MODEL_ID=openai/gpt-4.1-mini
+forge
 ```
 
-Optional project file (not required):
-
-```toml
-# forge.toml
-[model]
-provider = "native"
-model = "openai/gpt-4.1-mini"
-```
-
-Legacy provider names (`litellm`, `openai_compatible`, `anthropic`, `xai`, `grok`) are still accepted and migrate to `native`.
-
-### Option B — Product profiles (TUI `/connect`)
+**Option B — `/connect` inside the TUI**
 
 ```bash
 forge
-# then in the TUI:
+# then type a slash command:
 #   /connect              → picker of all profiles
 #   /connect openai       → paste API key
 #   /connect anthropic    → paste API key
 #   /connect opencode_go  → paste API key
-#   /connect opencode_zen → paste API key (same key family; Zen base URL)
 #   /connect ollama       → local (no key; requires `ollama serve`)
 #   /connect xai          → OAuth flow for xAI Grok
 ```
@@ -143,42 +98,27 @@ forge
 | `opencode_zen` | API key | OpenCode Zen (pay-per-use catalog) |
 | `ollama` | Local (no key) | Requires `ollama serve` |
 
-Keys and tokens are stored in `forge/credentials.toml` under your operating system's user config directory with mode `0600` on Unix (for example `~/.config/forge/credentials.toml` on Linux, `~/Library/Application Support/forge/credentials.toml` on macOS). Never commit them.
+Credentials are stored in `forge/credentials.toml` under your OS user config directory (e.g. `~/.config/forge/credentials.toml` on Linux, `~/Library/Application Support/forge/credentials.toml` on macOS) with mode `0600` on Unix. Never commit them.
 
-## Alpha safety and data
+Optional project file (not required):
 
-- Commit or stash existing work and use a disposable repository. Forge edits the active checkout directly.
-- Repository-local sessions, context, and progress are stored under `.forge/`.
-- Prompts and selected repository context are sent to your chosen model provider, whose privacy and retention policies apply.
-- Forge sends no separate product telemetry. Model providers and explicitly configured observability exporters can still receive network requests.
-- Reset, uninstall, testing, and feedback instructions are in the [alpha testing guide](docs/alpha-testing.md).
+```toml
+# forge.toml
+[model]
+provider = "native"
+model = "openai/gpt-4.1-mini"
+```
 
----
+Legacy provider names (`litellm`, `openai_compatible`, `anthropic`, `xai`, `grok`) are still accepted and migrate to `native`.
 
-## Tutorials
-
-### Tutorial 1 — Interactive coding in the TUI
-
-**Goal:** Chat with the agent, run tools, and steer a session at the keyboard.
-
-1. Complete [Auth setup](#auth-setup).
-2. From a git project (or any workspace):
+### 3. Start coding
 
 ```bash
 cd /path/to/your/repo
 forge
 ```
 
-3. Type a task and press **Enter**, e.g. `Explain the layout of this crate`.
-4. Try slash commands in the main textbox:
-   - `/status` — session, model, context
-   - `/diff` — tool activity and file changes
-   - `/effort high` — set reasoning effort (`auto|minimal|low|medium|high|xhigh|max`)
-   - `/model` — choose a connected model (`/model refresh` re-fetches catalogs)
-   - `/file <path>` — browse and read a workspace file read-only
-5. **Ctrl+K** opens the command palette; **/** + **Tab** completes slash suggestions; **↑/↓** recall prior lines when not in the suggest list.
-6. Select visible output with the mouse and use your terminal's normal copy shortcut. Use **Page Up/Page Down** to scroll the conversation, or `/copy` to copy the last assistant answer.
-7. Quit with `/quit` or **Ctrl+C**.
+Type a task and press **Enter**, e.g. `Explain the layout of this crate`.
 
 <p align="center">
   <img src="docs/ui/images/01-home.png" alt="Forge TUI" width="880" />
@@ -186,56 +126,56 @@ forge
 
 ---
 
-### Tutorial 2 — Resume after a crash or kill
+## TUI slash commands
 
-**Goal:** Continue a session without redoing completed tool work.
+All interaction inside the TUI uses slash commands typed in the textbox:
 
-1. Start the TUI and run a task. The session id is shown in `/status`.
-2. Quit or interrupt the process (**Ctrl+C**).
-3. Start Forge again and use the `/resume` slash command to pick a previous session:
+| Command | Description |
+|---------|-------------|
+| `/status` | Session, model, context, and connection info |
+| `/model` | Pick a connected model (`/model refresh` re-fetches remote catalogs) |
+| `/model openai/gpt-4.1-mini` | Switch to a specific model |
+| `/effort high` | Set reasoning effort (`auto\|minimal\|low\|medium\|high\|xhigh\|max`) |
+| `/effort` | Show current reasoning level |
+| `/connect` | Open the provider connect picker |
+| `/disconnect` | Disconnect current provider and clear stored credentials |
+| `/resume` | Pick a previous session to resume |
+| `/resume <uuid>` | Resume a specific session by id |
+| `/diff` | Tool activity and file changes for the session |
+| `/file <path>` | Browse and read a workspace file read-only |
+| `/cost` | Token usage breakdown for the session |
+| `/compact` | Compact the conversation context |
+| `/copy` | Copy last assistant message to clipboard |
+| `/clear` | Clear the visible transcript (keeps model context) |
+| `/approve` | Approve a pending human-in-the-loop request |
+| `/deny` | Deny a pending human-in-the-loop request |
+| `/sync` | Stage all changes, commit with a generated message, and push |
+| `/quit` | Quit Forge |
 
-```bash
-forge
-# then in the TUI:
-#   /resume          → picker of recent sessions
-#   /resume <uuid>   → resume a specific session
-```
+**Keybindings**
 
-The durable event journal replays completed tool work so the agent picks up where it left off.
+| Key | Action |
+|-----|--------|
+| **Enter** | Send message (or enqueue while agent is busy) |
+| **Ctrl+K** | Open the command palette |
+| **/** + **Tab** | Complete slash command suggestions |
+| **↑ / ↓** | Recall prior input lines (when not in the suggest list) |
+| **Ctrl+Up / Ctrl+Down** | Select a queued message |
+| **Ctrl+Backspace** | Cancel the selected queued message |
+| **Page Up / Page Down** | Scroll the conversation |
+| **Ctrl+C** | Quit Forge |
 
----
+You can copy visible output with your terminal's normal mouse selection.
 
-### Tutorial 3 — Connect a provider profile
-
-**Goal:** Attach credentials for a productized provider on the native Rust path, all from inside the TUI.
-
-```bash
-forge
-# Live catalog after connect:
-#   /model              → picker (remote models + defaults)
-#   /model refresh      → re-fetch catalogs
-#   /model openai/gpt-4.1-mini
-#   /model ollama llama3.2
-
-# Reasoning effort (current TUI session):
-#   /effort             → show current level
-#   /effort high        → auto|minimal|low|medium|high|xhigh|max
-#   FORGE_REASONING_EFFORT=high forge   → set the startup level
-
-# Message queue (TUI only — no slash commands):
-#   while processing → type + Enter enqueues (shows above input)
-#   Ctrl+Up/Down → select a queued message
-#   Ctrl+Backspace → cancel the selected message
-#   when idle → empty Enter sends the next queued message
-```
-
-**xAI Grok (OAuth):**
+**Reasoning effort at startup**
 
 ```bash
-forge
-# /connect xai → complete OAuth in the TUI
-# (API-key paste is not the Grok path)
+FORGE_REASONING_EFFORT=high forge
 ```
+
+**Resume after a crash or kill**
+
+Start Forge again and use `/resume`. The event journal replays completed tool work so the agent picks up where it left off — no redo.
 
 ---
 
@@ -248,25 +188,54 @@ Optional instruction packs the agent loads into its system prompt:
 | `<workspace>/.forge/skills/<name>/SKILL.md` | Project only |
 | `~/.config/forge/skills/<name>/SKILL.md` | Global (all projects) |
 
-Project skills override global skills with the same name. Drop a `SKILL.md` in either path and start a new session — no extra config flag is required.
-
----
+Project skills override global skills with the same name. Drop a `SKILL.md` in either path and start a new session — no extra config required.
 
 ## Configuration
 
-Optional. Defaults + env + flags are enough (see [Auth setup](#auth-setup)).
+Optional — defaults + env are enough. See [Quick start](#quick-start).
 
 | Env | |
 |-----|--|
 | `FORGE_MODEL_ID` | Provider/model id, e.g. `openai/gpt-4.1-mini` |
 | `FORGE_MODEL_PROVIDER` | `native` (production) or `mock` (offline CI). Legacy aliases migrate to `native` |
-| `FORGE_REASONING_EFFORT` | Startup reasoning effort (`auto|minimal|low|medium|high|xhigh|max`) |
+| `FORGE_REASONING_EFFORT` | Startup reasoning effort (`auto\|minimal\|low\|medium\|high\|xhigh\|max`) |
 | `FORGE_WORKSPACE` | Project root (default: cwd) |
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `XAI_API_KEY` / … | Provider credentials for native transports |
 
-**CLI:** `forge` launches the full-screen TUI; use `--help` or `--version` for CLI info.
-
 `forge.toml` also supports `[mcp.servers]` entries for external MCP tool servers, and `[tools]`/`[model]`/`[journal]`/`[tui]` sections.
+
+---
+
+## How it works
+
+One agent core (`forge-core`) powers the TUI. Sessions append to a **SQLite event journal** so work can resume after a crash or restart. Tools run against your active checkout with schema-validated inputs.
+
+<p align="center">
+  <img src="docs/images/architecture.png" alt="Forge architecture: agent session, journal, governance, model providers, workspace and tools" width="880" />
+</p>
+
+| Layer | Role |
+|-------|------|
+| **You** | TUI |
+| **Harness** | Plan–act–observe loop, tools, governance hooks, context lifecycle |
+| **Durability** | SQLite event journal — resume without redoing completed steps |
+| **Models** | Native Rust provider transports; same tools and journal regardless of vendor |
+| **Workspace** | Your repo, the active checkout |
+| **Tools** | `read_file` · `write_file` · `apply_patch` · `bash` · `fffind` · `ffgrep` · **`git`** (allowlisted subcommands) · `web_search` (optional) · MCP |
+
+Full design notes: [docs/architecture.md](./docs/architecture.md).
+
+---
+
+## Alpha safety and data
+
+- Commit or stash existing work and use a disposable repository. Forge edits the active checkout directly.
+- Repository-local sessions, context, and progress are stored under `.forge/`.
+- Prompts and selected repository context are sent to your chosen model provider, whose privacy and retention policies apply.
+- Forge sends no separate product telemetry. Model providers and explicitly configured observability exporters can still receive network requests.
+- Reset, uninstall, testing, and feedback instructions are in the [alpha testing guide](docs/alpha-testing.md).
+
+Want to help? See [CONTRIBUTING.md](./CONTRIBUTING.md) for setup, validation, and pull request guidance.
 
 ---
 

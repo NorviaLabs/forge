@@ -68,7 +68,7 @@ Check network access to {base}."
         Ok(())
     } else if status == 401 || status == 403 {
         Err("OpenCode Go rejected the API key (unauthorized). \
-Get a key from https://opencode.ai/auth and run `forge connect opencode_go --key …`."
+Get a key from https://opencode.ai/auth and use `/connect opencode_go --key …` in the TUI."
             .into())
     } else {
         Err(format!(
