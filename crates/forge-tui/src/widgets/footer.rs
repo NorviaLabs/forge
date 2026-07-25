@@ -20,7 +20,6 @@ pub struct FooterModel {
     pub ctx_pct: f64,
     pub connected: bool,
     pub connect_profile: Option<String>,
-    pub worktree_on: bool,
     /// Extra shortcut strip (busy / idle).
     pub hints: String,
 }
@@ -40,7 +39,6 @@ impl Default for FooterModel {
             ctx_pct: 0.0,
             connected: false,
             connect_profile: None,
-            worktree_on: false,
             hints: "Enter send · ⇧Enter newline · Ctrl+K cmds · Esc clear".into(),
         }
     }
@@ -103,10 +101,6 @@ impl Widget for FooterBar<'_> {
                 },
             ),
         ];
-        if self.model.worktree_on {
-            spans.push(Span::styled("· ", theme::dim()));
-            spans.push(Span::styled("wt ", theme::warn()));
-        }
         spans.push(Span::styled("· ", theme::dim()));
         spans.push(Span::styled(
             format!("{} ", self.model.hints),
@@ -166,7 +160,6 @@ mod tests {
             ctx_pct: 0.1,
             connected: true,
             connect_profile: Some("xai".into()),
-            worktree_on: false,
             hints: "test".into(),
         };
         assert!(m.cwd.contains("tmp"));

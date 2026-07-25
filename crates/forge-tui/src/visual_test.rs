@@ -9,7 +9,6 @@ mod tests {
     use forge_model::MockModelClient;
     use forge_tools::ToolRegistry;
     use forge_types::ModelResponse;
-    use forge_workspace::IsolationMode;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
     use std::path::PathBuf;
@@ -29,7 +28,6 @@ mod tests {
                 max_turns: 4,
                 workspace: dir.path().to_path_buf(),
                 journal_dir: dir.path().join("j"),
-                isolation: IsolationMode::Off,
                 enable_context_lifecycle: true,
                 enable_governance: true,
 

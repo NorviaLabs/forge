@@ -39,7 +39,7 @@ done
 
 | Element | Intent |
 |---------|--------|
-| **Status bar** | Brand, status pill (incl. progressive busy), session id, **provider · model**, context % (threshold colors), worktree; optional profile/search (Phase 10) |
+| **Status bar** | Brand, status pill (incl. progressive busy), session id, **provider · model**, context % (threshold colors); optional profile/search (Phase 10) |
 | **Main chat** | User / assistant / system / tool cards; streaming cursor; **error banners** for model/system failures (Phase 10) |
 | **Sidebar** | Session metadata, context meter, ACL summary; **ACTIVITY feed** (Phase 10) |
 | **Feedback strip** | Always-visible latest status/error line between chat and input (Phase 10 / TUI-08) |
@@ -66,7 +66,6 @@ done
 | 06 | Session resume | Crash recovery | [06-session-resume](./ui/images/06-session-resume.png) |
 | 07 | Slash commands | Surface-local commands | [07-slash-commands](./ui/images/07-slash-commands.png) |
 | 08 | Model switch | Config-only provider change | [08-model-switch](./ui/images/08-model-switch.png) |
-| 09 | Worktree isolation | Isolated file edits | [09-worktree](./ui/images/09-worktree.png) |
 | 10 | Evaluator report | Generator / Evaluator gate | [10-evaluator-report](./ui/images/10-evaluator-report.png) |
 | 11 | Session status | `/status` | [11-session-status](./ui/images/11-session-status.png) |
 | 12 | Validation error | Schema reject + retry | [12-error-validation](./ui/images/12-error-validation.png) |
@@ -88,7 +87,7 @@ done
 
 **UI requirements**
 
-- Show workspace path, session id, model, context budget, worktree flag  
+ - Show workspace path, session id, model, context budget  
 - Sidebar: session, budget meter, ACL tool counts, journal tail  
 - Empty-state prompt; `/` discovers commands  
 
@@ -174,7 +173,7 @@ done
 
 **When:** **Ctrl+K** (Phase 8) opens the full discovery palette. Typing `/` in the main textbox does **not** force this modal (Phase 8).  
 **Architecture:** §5.11 · Phase 8 [tui-slash-inline](./designs/tui-slash-inline.md).  
-**Phase 1 catalog:** [designs/tui-commands.md](./designs/tui-commands.md). Phase 2+ commands live in their phase design docs (HITL, context, worktree).
+**Phase 1 catalog:** [designs/tui-commands.md](./designs/tui-commands.md). Phase 2+ commands live in their phase design docs (HITL, context).
 
 ![Slash commands](./ui/images/07-slash-commands.png)
 
@@ -312,21 +311,6 @@ The HTML palette mockup (`07-slash-commands`) may omit newer commands until re-r
 
 - List configured providers (cloud + local)  
 - Highlight current; no API keys collected in chat  
-
----
-
-### 9. Worktree isolation
-
-**When:** File edits run with `isolation: worktree`.  
-**Architecture:** §5 / CTX-03.
-
-![Worktree isolation](./ui/images/09-worktree.png)
-
-**UI requirements**
-
-- Show primary root vs worktree path and branch  
-- Badge that primary tree stays clean  
-- `/worktree merge` · `/worktree discard`  
 
 ---
 
