@@ -338,7 +338,13 @@ impl ConversationModel {
                 // User: plain text with no prompt marker or indent.
                 ChatItem::User { text } => {
                     let parts = wrap(text, width);
-                    for l in parts {
+                    for (i, l) in parts.into_iter().enumerate() {
+                        if i == 0 {
+                            lines.push(
+                                Line::from(Span::styled("user", theme::info()))
+                                    .style(theme::user_message()),
+                            );
+                        }
                         lines.push(
                             Line::from(vec![Span::styled(l, theme::text())])
                                 .style(theme::user_message()),
@@ -383,6 +389,10 @@ impl ConversationModel {
                     if long_response {
                         lines.push(horizontal_rule(width));
                     }
+                    lines.push(
+                        Line::from(Span::styled("assistant", theme::brand()))
+                            .style(theme::assistant_message()),
+                    );
                     for (i, line) in parts.into_iter().enumerate() {
                         let gutter = if i == 0 { "▍ " } else { "  " };
                         let mut spans = vec![Span::styled(
