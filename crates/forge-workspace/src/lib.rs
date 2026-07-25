@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use forge_types::SessionId;
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -19,33 +18,11 @@ pub enum WorktreeError {
     Other(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum IsolationMode {
     #[default]
     Off,
     Worktree,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WorkspaceConfig {
-    #[serde(default)]
-    pub isolation: IsolationMode,
-    #[serde(default = "default_wt_dir")]
-    pub worktree_dir: String,
-}
-
-fn default_wt_dir() -> String {
-    ".forge/worktrees".into()
-}
-
-impl Default for WorkspaceConfig {
-    fn default() -> Self {
-        Self {
-            isolation: IsolationMode::Off,
-            worktree_dir: default_wt_dir(),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
