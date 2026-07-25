@@ -10,7 +10,7 @@ pub mod web_search;
 
 pub use apply_patch::{ApplyPatchArgs, ApplyPatchTool};
 pub use builtins::{
-    default_builtins, default_builtins_with_web_search, BashTool, GitTool, GrepTool, ReadFileTool,
+    default_builtins, default_builtins_with_web_search, BashTool, GitTool, ReadFileTool,
     WriteFileTool,
 };
 pub use registry::{ToolContext, ToolRegistry};
