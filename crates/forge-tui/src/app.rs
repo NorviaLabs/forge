@@ -2405,9 +2405,23 @@ Reply with ONLY the commit message line.\n\n\
                 }
                 Ok(SlashCommand::Status) => {
                     let chrome = self.refresh_status_model();
-                    let mut lines = session_chrome_lines(&chrome);
-                    lines.insert(0, format!("session_id={}", self.session.session_id));
                     let report = self.session.token_usage_report();
+                    let mut lines = vec![
+                        format!("session_id={}", self.session.session_id),
+                        "status".into(),
+                    ];
+                    lines.extend(session_chrome_lines(&chrome));
+                    lines.push(String::new());
+                    lines.push("tokens".into());
+                    lines.extend([
+                        format!("api.prompt={}", report.api.prompt_tokens),
+                        format!("api.completion={}", report.api.completion_tokens),
+                        format!("api.total={}", report.api.total_api_tokens()),
+                        format!("cache.hits={}", report.api.prompt_cache_hits),
+                        format!("cache.writes={}", report.api.prompt_cache_writes),
+                        format!("context.used={:.1}%", report.context_pct),
+                        format!("context.tokens={}/{}", report.context_tokens_est, report.context_capacity),
+                    ]);
                     lines.extend(self.session.token_usage_lines());
                     let api = &report.api;
                     self.set_feedback(
