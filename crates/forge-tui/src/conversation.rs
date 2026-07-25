@@ -182,6 +182,15 @@ impl ConversationModel {
                             lines: m.content.lines().map(|s| s.to_string()).collect(),
                             rationale: change_rationale(latest_thinking.as_deref()),
                         });
+                    } else {
+                        let (state, summary, detail) = classify_tool_content(name, &m.content);
+                        items.push(ChatItem::ToolCard {
+                            name: name.to_string(),
+                            summary,
+                            detail,
+                            state,
+                            duration: None,
+                        });
                     }
                 }
             }
@@ -685,7 +694,8 @@ fn diff_preview_lines(content: &str, max: usize) -> Vec<String> {
 
 #[allow(dead_code)]
 fn classify_tool_content(name: &str, content: &str) -> (ToolCardState, String, String) {
-    let lower = content.to_ascii_lowercase();
+    let detail = redact_tool_output(content);
+    let lower = detail.to_ascii_lowercase();
     let state = if lower.contains("validation") || lower.contains("denied by acl") {
         ToolCardState::Error
     } else if lower.contains("hitl") || lower.contains("awaiting") {
@@ -693,20 +703,32 @@ fn classify_tool_content(name: &str, content: &str) -> (ToolCardState, String, S
     } else {
         ToolCardState::Done
     };
-    let detail = content.to_string();
     // One-line operator summary
-    let first = content.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+    let first = detail.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
     let summary = if name == "read_file" || name.contains("read") {
-        let n = content.lines().count();
+        let n = detail.lines().count();
         format!("{first} · {n} lines")
     } else if name.contains("write") || name.contains("search_replace") || name == "edit" {
         format!("wrote · {}", first.chars().take(80).collect::<String>())
     } else if name == "git" {
         format!("{}", first.chars().take(100).collect::<String>())
     } else {
-        content.chars().take(160).collect()
+        detail.chars().take(160).collect()
     };
     (state, summary, detail)
+}
+
+fn redact_tool_output(content: &str) -> String {
+    let lower = content.to_ascii_lowercase();
+    if lower.contains("api_key")
+        || lower.contains("bearer ")
+        || lower.contains("sk-")
+        || lower.contains("secret=")
+    {
+        "[redacted tool output]".into()
+    } else {
+        content.to_string()
+    }
 }
 
 fn wrap(s: &str, width: usize) -> Vec<String> {
@@ -958,16 +980,14 @@ mod tests {
             SessionStatus::Running,
             ConversationViewOpts::default(),
         );
-        // System + tool messages hidden; user/assistant/thinking only
+        // System prompts stay hidden while tool results become compact cards.
         assert!(matches!(m.items[0], ChatItem::User { .. }));
         assert!(matches!(m.items[1], ChatItem::Thinking { .. }));
         assert!(matches!(m.items[2], ChatItem::Assistant { .. }));
-        assert!(
-            !m.items
-                .iter()
-                .any(|i| matches!(i, ChatItem::ToolCard { .. })),
-            "tool cards should not appear in chat"
-        );
+        assert!(m
+            .items
+            .iter()
+            .any(|i| matches!(i, ChatItem::ToolCard { .. })));
         // Full system prompt must not appear in rendered lines
         let rendered: String = m
             .lines()
@@ -990,8 +1010,8 @@ mod tests {
             "brand splash removed from chat:\n{rendered}"
         );
         assert!(
-            !rendered.to_ascii_lowercase().contains("read_file"),
-            "tool call should not render:\n{rendered}"
+            rendered.to_ascii_lowercase().contains("read_file"),
+            "tool result card missing:\n{rendered}"
         );
         assert!(
             !rendered.contains("Thought for"),
@@ -1239,7 +1259,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_messages_are_hidden() {
+    fn tool_messages_render_as_cards() {
         let msgs = vec![Message {
             role: MessageRole::Tool,
             content: "Tool validation error: bad".into(),
@@ -1255,14 +1275,13 @@ mod tests {
             SessionStatus::Running,
             ConversationViewOpts::default(),
         );
-        assert!(
-            !m.items
-                .iter()
-                .any(|i| matches!(i, ChatItem::ToolCard { .. })),
-            "tool messages must not become chat cards"
-        );
-        // Empty chat stays empty; the pane no longer seeds a placeholder row.
-        assert!(m.items.is_empty());
+        assert!(matches!(
+            m.items.first(),
+            Some(ChatItem::ToolCard {
+                state: ToolCardState::Error,
+                ..
+            })
+        ));
     }
 
     #[test]
