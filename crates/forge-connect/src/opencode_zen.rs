@@ -37,15 +37,6 @@ pub fn opencode_zen_profile() -> ConnectProfile {
     }
 }
 
-/// Live-check an OpenCode Zen API key against `GET {base}/models`.
-pub fn verify_api_key(api_key: &str, base_url: &str) -> Result<(), String> {
-    // Same auth shape as Go (Bearer); reuse length gate + models probe.
-    crate::opencode_go::verify_api_key(api_key, base_url).map_err(|e| {
-        e.replace("OpenCode Go", "OpenCode Zen")
-            .replace("/zen/go", "/zen")
-            .replace("subscribe to Go", "Zen billing / API keys")
-    })
-}
 
 #[cfg(test)]
 mod tests {
