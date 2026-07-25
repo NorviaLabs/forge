@@ -1,8 +1,10 @@
+
 //! Conversation view model (TUI-02) — polished chat, thinking, tools, diffs.
 
 use crate::theme;
 use forge_core::{AgentSession, TurnEvent};
 use forge_types::{Message, MessageRole, SessionStatus};
+use forge_syntax::highlight_to_lines;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
@@ -521,15 +523,53 @@ impl ConversationModel {
                             ]));
                         }
                     }
-                    for l in dl {
-                        let style = if l.starts_with('+') && !l.starts_with("+++") {
-                            theme::ok()
-                        } else if l.starts_with('-') && !l.starts_with("---") {
-                            theme::danger()
-                        } else {
-                            theme::muted()
-                        };
-                        lines.push(Line::from(Span::styled(format!("  {l}"), style)));
+                    if let Some(lang) = lang_from_path(path) {
+                        let syntax_theme = forge_syntax::HighlightTheme::default();
+                        let code: String = dl.iter()
+                            .filter(|l| !l.starts_with("+++") && !l.starts_with("---") && !l.starts_with("diff "))
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        let highlighted = highlight_to_lines(lang, &code, &syntax_theme);
+                        let mut code_idx = 0;
+                        for l in dl {
+                            if l.starts_with("+++") || l.starts_with("---") || l.starts_with("diff ") {
+                                lines.push(Line::from(Span::styled(format!("  {l}"), theme::dim())));
+                            } else {
+                                let prefix = if l.starts_with('+') { "+" } else if l.starts_with('-') { "-" } else { " " };
+                                let diff_style = if l.starts_with('+') {
+                                    theme::ok()
+                                } else if l.starts_with('-') {
+                                    theme::danger()
+                                } else {
+                                    theme::muted()
+                                };
+                                if code_idx < highlighted.len() {
+                                    let mut spans = vec![Span::styled(format!("  {prefix}"), diff_style)];
+                                    for (text, rgb, bold, italic) in &highlighted[code_idx] {
+                                        let mut st = ratatui::style::Style::default().fg(ratatui::style::Color::Rgb(rgb.0, rgb.1, rgb.2));
+                                        if *bold { st = st.add_modifier(Modifier::BOLD); }
+                                        if *italic { st = st.add_modifier(Modifier::ITALIC); }
+                                        spans.push(Span::styled(text.clone(), st));
+                                    }
+                                    lines.push(Line::from(spans));
+                                } else {
+                                    lines.push(Line::from(Span::styled(format!("  {l}"), diff_style)));
+                                }
+                                code_idx += 1;
+                            }
+                        }
+                    } else {
+                        for l in dl {
+                            let style = if l.starts_with('+') && !l.starts_with("+++") {
+                                theme::ok()
+                            } else if l.starts_with('-') && !l.starts_with("---") {
+                                theme::danger()
+                            } else {
+                                theme::muted()
+                            };
+                            lines.push(Line::from(Span::styled(format!("  {l}"), style)));
+                        }
                     }
                     if gap {
                         lines.push(Line::from(""));
@@ -907,6 +947,35 @@ impl Widget for ConversationWidget<'_> {
             .block(block)
             .scroll((scroll, 0))
             .render(area, buf);
+    }
+}
+
+/// Detect language from file path, returning language name for syntax highlighting.
+fn lang_from_path(path: &str) -> Option<&'static str> {
+    let path_lower = path.to_lowercase();
+    let filename = path_lower
+        .rsplit('/')
+        .next()
+        .unwrap_or(&path_lower)
+        .rsplit('\\')
+        .next()
+        .unwrap_or(&path_lower);
+
+    let ext = filename.rsplit('.').next()?;
+    match ext {
+        "rs" => Some("rust"),
+        "ts" | "tsx" => Some("typescript"),
+        "js" | "jsx" | "mjs" => Some("javascript"),
+        "py" => Some("python"),
+        "go" => Some("go"),
+        "json" => Some("json"),
+        "html" | "htm" => Some("html"),
+        "css" => Some("css"),
+        "sh" | "bash" | "zsh" => Some("bash"),
+        "md" => Some("markdown"),
+        "toml" | "yaml" | "yml" => Some("yaml"),
+        "txt" | "log" => None,
+        _ => None,
     }
 }
 
