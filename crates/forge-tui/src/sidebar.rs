@@ -57,7 +57,7 @@ impl Widget for SidebarWidget<'_> {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(theme::border())
-            .style(theme::panel())
+            .style(theme::panel_alt())
             .title(Span::styled(" session ", theme::muted()));
         let inner = block.inner(area);
         block.render(area, buf);
@@ -101,7 +101,7 @@ impl Widget for SidebarWidget<'_> {
                 .max(1);
             for t in self.model.tools.iter().take(max) {
                 let s: String = t.chars().take(32).collect();
-                tool_lines.push(Line::from(Span::styled(s, theme::muted())));
+                tool_lines.push(Line::from(Span::styled(format!("• {s}"), theme::muted())));
             }
             if self.model.tools.len() > max {
                 tool_lines.push(Line::from(Span::styled(
