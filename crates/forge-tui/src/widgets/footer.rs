@@ -76,38 +76,49 @@ impl Widget for FooterBar<'_> {
                 .to_string()
         };
         let pct = (self.model.ctx_pct * 100.0).clamp(0.0, 100.0);
+        let metadata_y = area.y + area.height.saturating_sub(1);
+        if area.height > 1 {
+            buf.set_line(
+                area.x,
+                area.y,
+                &Line::from(Span::styled(self.model.hints.as_str(), theme::muted())),
+                area.width,
+            );
+        }
         if area.width < 80 {
             let line = Line::from(vec![
                 Span::styled(format!("{} ", model_disp), theme::text()),
                 Span::styled("· ", theme::dim()),
                 Span::styled(format!("ctx {pct:.1}% "), theme::info()),
             ]);
-            render_line_with_status(area, buf, line, &self.model.status, self.model.status_busy);
+            render_line_with_status(
+                Rect {
+                    y: metadata_y,
+                    height: 1,
+                    ..area
+                },
+                buf,
+                line,
+                &self.model.status,
+                self.model.status_busy,
+            );
             return;
         }
-        let mut spans = vec![
-            Span::styled(format!("{cwd} "), theme::dim()),
-            Span::styled("· ", theme::dim()),
-            Span::styled(format!("{} ", model_disp), theme::muted()),
-            Span::styled("· ", theme::dim()),
-            Span::styled(format!("ctx {pct:.1}% "), theme::info()),
-            Span::styled("· ", theme::dim()),
+        let spans = vec![
             Span::styled(
-                format!("{} ", conn),
-                if self.model.connected {
-                    theme::ok()
-                } else {
-                    theme::warn()
-                },
+                format!("forge {}  cwd {cwd} ", env!("CARGO_PKG_VERSION")),
+                theme::dim(),
             ),
+            Span::styled("· ", theme::dim()),
+            Span::styled(format!("provider {} ", self.model.provider), theme::muted()),
         ];
-        spans.push(Span::styled("· ", theme::dim()));
-        spans.push(Span::styled(
-            format!("{} ", self.model.hints),
-            theme::muted(),
-        ));
+        let _ = (model_disp, conn, pct);
         render_line_with_status(
-            area,
+            Rect {
+                y: metadata_y,
+                height: 1,
+                ..area
+            },
             buf,
             Line::from(spans),
             &self.model.status,

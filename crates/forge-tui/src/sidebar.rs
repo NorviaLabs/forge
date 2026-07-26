@@ -15,6 +15,8 @@ pub struct SidebarModel {
     pub surface: String,
     pub role: String,
     pub ctx_pct: f64,
+    pub ctx_used: usize,
+    pub ctx_total: usize,
     pub tools: Vec<String>,
     pub activity: Vec<String>,
 }
@@ -35,12 +37,15 @@ impl SidebarModel {
         };
         let mut tools = session.list_tools();
         tools.sort();
+        let context = session.token_usage_report();
         Self {
             session_id: short.to_string(),
             status: status.into(),
             surface: "tui".into(),
             role: "generator".into(),
             ctx_pct: session.context_usage_ratio(),
+            ctx_used: context.context_tokens_est,
+            ctx_total: context.context_capacity,
             tools,
             activity: activity_lines.to_vec(),
         }
@@ -65,8 +70,8 @@ impl Widget for SidebarWidget<'_> {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
+                Constraint::Length(7),
                 Constraint::Length(6),
-                Constraint::Length(8),
                 Constraint::Min(4),
             ])
             .split(inner);
@@ -93,28 +98,41 @@ impl Widget for SidebarWidget<'_> {
         ];
         Paragraph::new(sess_lines).render(chunks[0], buf);
 
-        // Tools list
-        let mut tool_lines = vec![Line::from(Span::styled("TOOLS", theme::dim()))];
-        if self.model.tools.is_empty() {
-            tool_lines.push(Line::from(Span::styled("—", theme::dim())));
-        } else {
-            let max = (chunks[1].height as usize).saturating_sub(1).max(1);
-            for t in self.model.tools.iter().take(max) {
-                let s: String = t.chars().take(32).collect();
-                tool_lines.push(Line::from(Span::styled(format!("• {s}"), theme::muted())));
-            }
-            if self.model.tools.len() > max {
-                tool_lines.push(Line::from(Span::styled(
-                    format!("+{} more", self.model.tools.len() - max),
-                    theme::dim(),
-                )));
-            }
-        }
+        let pct = (self.model.ctx_pct * 100.0).clamp(0.0, 100.0);
+        let tool_lines = vec![
+            Line::from(Span::styled("CONTEXT BUDGET", theme::dim())),
+            Line::from(vec![
+                Span::styled("used ", theme::dim()),
+                Span::styled(format!("{pct:.0}%"), theme::info()),
+            ]),
+            Line::from(Span::styled(
+                format!(
+                    "{}k / {}k tokens",
+                    self.model.ctx_used / 1000,
+                    self.model.ctx_total / 1000
+                ),
+                theme::muted(),
+            )),
+            Line::from(""),
+            Line::from(Span::styled("TOOLS (ACL)", theme::dim())),
+            Line::from(vec![
+                Span::styled("built-ins ", theme::dim()),
+                Span::styled(
+                    format!("{} allowed", self.model.tools.len()),
+                    theme::muted(),
+                ),
+            ]),
+        ];
 
         Paragraph::new(tool_lines).render(chunks[1], buf);
 
         // Activity is intentionally compact; detailed output belongs in chat.
-        let mut activity_lines = vec![Line::from(Span::styled("ACTIVITY", theme::dim()))];
+        let heading = if self.model.activity.is_empty() {
+            "RECENT JOURNAL"
+        } else {
+            "ACTIVITY"
+        };
+        let mut activity_lines = vec![Line::from(Span::styled(heading, theme::dim()))];
         if self.model.activity.is_empty() {
             activity_lines.push(Line::from(Span::styled("—", theme::dim())));
         } else {

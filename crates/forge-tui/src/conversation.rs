@@ -22,6 +22,10 @@ pub enum ToolCardState {
 pub enum ChatItem {
     /// Brand splash (replaces dumping system prompts into the chat).
     Brand,
+    Home {
+        workspace: String,
+        journal: String,
+    },
     System {
         text: String,
     },
@@ -257,6 +261,13 @@ impl ConversationModel {
         self.with_streaming_preview("", text)
     }
 
+    pub fn with_home(mut self, workspace: String, journal: String) -> Self {
+        if self.items.is_empty() {
+            self.items.push(ChatItem::Home { workspace, journal });
+        }
+        self
+    }
+
     pub fn with_queued_messages(
         mut self,
         items: impl IntoIterator<Item = String>,
@@ -325,6 +336,33 @@ impl ConversationModel {
                         Span::styled("FORGE", theme::brand().add_modifier(Modifier::BOLD)),
                         Span::styled("  ·  coding agent", theme::dim()),
                     ]));
+                    if gap {
+                        lines.push(Line::from(""));
+                    }
+                }
+                ChatItem::Home { workspace, journal } => {
+                    lines.push(Line::from(Span::styled("SYSTEM", theme::dim())));
+                    lines.push(Line::from(vec![
+                        Span::styled("Forge ready ", theme::text()),
+                        Span::styled("◆ ", theme::ok()),
+                        Span::styled("workspace ", theme::dim()),
+                        Span::styled(workspace.clone(), theme::muted()),
+                    ]));
+                    lines.push(Line::from(vec![
+                        Span::styled("Loaded AGENTS.md ", theme::muted()),
+                        Span::styled("· journal ", theme::dim()),
+                        Span::styled(journal.clone(), theme::muted()),
+                    ]));
+                    lines.push(Line::from(Span::styled(
+                        "Type a task, or / for commands.",
+                        theme::muted(),
+                    )));
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(Span::styled("ASSISTANT", theme::dim())));
+                    lines.push(Line::from(Span::styled(
+                        "Waiting for your first message.",
+                        theme::text(),
+                    )));
                     if gap {
                         lines.push(Line::from(""));
                     }
