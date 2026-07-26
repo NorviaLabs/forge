@@ -282,6 +282,21 @@ impl ConversationModel {
         self
     }
 
+    pub fn with_blocked_tool(
+        mut self,
+        name: impl Into<String>,
+        summary: impl Into<String>,
+    ) -> Self {
+        self.items.push(ChatItem::ToolCard {
+            name: name.into(),
+            summary: summary.into(),
+            detail: String::new(),
+            state: ToolCardState::Blocked,
+            duration: None,
+        });
+        self
+    }
+
     pub fn with_queued_messages(
         mut self,
         items: impl IntoIterator<Item = String>,
@@ -1516,6 +1531,25 @@ mod tests {
             .collect::<String>();
         assert!(text.contains("TOOL ● read_file"));
         assert!(text.contains("tool_intent committed · awaiting result"));
+    }
+
+    #[test]
+    fn blocked_tool_card_shows_redacted_summary() {
+        let m = ConversationModel::from_messages(
+            &[],
+            &[],
+            SessionStatus::AwaitingHitl,
+            ConversationViewOpts::default(),
+        )
+        .with_blocked_tool("bash", "git push -u origin feature");
+        let text = m
+            .lines()
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(text.contains("TOOL ⏸ bash"));
+        assert!(text.contains("git push -u origin feature"));
     }
 
     #[test]

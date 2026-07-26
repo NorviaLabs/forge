@@ -35,7 +35,7 @@ impl SidebarModel {
             SessionStatus::Running => "running",
             SessionStatus::Completed => "completed",
             SessionStatus::Failed => "failed",
-            SessionStatus::AwaitingHitl => "awaiting_hitl",
+            SessionStatus::AwaitingHitl => "awaiting hitl",
         };
         let mut tools = session.list_tools();
         tools.sort();
@@ -157,7 +157,7 @@ impl Widget for SidebarWidget<'_> {
 #[allow(dead_code)]
 fn status_style(s: &str) -> ratatui::style::Style {
     match s {
-        "awaiting_hitl" => theme::warn(),
+        "awaiting hitl" => theme::warn(),
         "failed" => theme::danger(),
         "completed" => theme::ok(),
         _ => theme::info(),
