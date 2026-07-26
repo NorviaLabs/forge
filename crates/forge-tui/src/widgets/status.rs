@@ -90,7 +90,7 @@ impl StatusModel {
             SessionStatus::Completed => ("done".into(), theme::ok()),
             SessionStatus::Failed => ("failed".into(), theme::danger()),
             SessionStatus::AwaitingHitl => (
-                "awaiting".into(),
+                "awaiting hitl".into(),
                 theme::warn().add_modifier(Modifier::BOLD),
             ),
         }
@@ -148,16 +148,25 @@ impl Widget for StatusBar<'_> {
         } else {
             theme::info()
         };
-        let spans = vec![
+        let mut spans = vec![
             Span::styled(" FORGE ", theme::brand()),
             Span::styled("│ ", theme::dim()),
             Span::styled(format!("{label} "), style),
             Span::styled("│ ", theme::dim()),
+        ];
+        if self.model.busy || self.model.status == SessionStatus::AwaitingHitl {
+            spans.extend([
+                Span::styled("session ", theme::dim()),
+                Span::styled(format!("{} ", self.model.session_short), theme::muted()),
+                Span::styled("│ ", theme::dim()),
+            ]);
+        }
+        spans.extend([
             Span::styled("model ", theme::dim()),
             Span::styled(format!("{provider}/{model_disp} "), theme::text()),
             Span::styled("│ ", theme::dim()),
             Span::styled(format!("{ctx} "), ctx_style),
-        ];
+        ]);
 
         let line = Line::from(spans);
         buf.set_line(area.x, area.y, &line, area.width);
@@ -213,7 +222,7 @@ mod tests {
             prompt_cache_hits: 0,
             prompt_cache_writes: 0,
         };
-        assert_eq!(m.status_label().0, "awaiting");
+        assert_eq!(m.status_label().0, "awaiting hitl");
     }
 
     #[test]

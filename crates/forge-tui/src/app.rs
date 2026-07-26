@@ -1964,6 +1964,15 @@ Reply with ONLY the commit message line.\n\n\
         if let BusyPhase::Tool { name } = &self.busy_phase {
             conv = conv.with_running_tool(name.clone());
         }
+        if let Some(payload) = &self.session.pending_hitl {
+            let args = payload
+                .args_redacted
+                .get("command")
+                .and_then(|value| value.as_str())
+                .map(str::to_owned)
+                .unwrap_or_else(|| payload.args_redacted.to_string());
+            conv = conv.with_blocked_tool(payload.tool.clone(), args);
+        }
         conv.follow = self.chat_follow;
         conv.scroll = self.chat_scroll;
         if self.busy && self.pending_prompt.is_none() {
