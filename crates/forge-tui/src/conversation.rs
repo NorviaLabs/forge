@@ -72,6 +72,13 @@ pub enum ChatItem {
     Assistant {
         text: String,
     },
+    RetryAssistant {
+        text: String,
+    },
+    ValidationFailure {
+        tool: String,
+        error: String,
+    },
     StreamingAssistant {
         text: String,
     },
@@ -181,6 +188,7 @@ impl ConversationModel {
         let mut items: Vec<ChatItem> = Vec::new();
         let mut latest_thinking: Option<String> = None;
         let mut repair_pending = false;
+        let mut validation_retry_pending = false;
         for m in messages {
             match m.role {
                 // System prompts are for the model, not the operator UI.
@@ -213,6 +221,11 @@ impl ConversationModel {
                                 text: m.content.clone(),
                             });
                             repair_pending = false;
+                        } else if validation_retry_pending {
+                            items.push(ChatItem::RetryAssistant {
+                                text: m.content.clone(),
+                            });
+                            validation_retry_pending = false;
                         } else {
                             items.push(ChatItem::Assistant {
                                 text: m.content.clone(),
@@ -223,7 +236,17 @@ impl ConversationModel {
                 // Tool results are not shown as chat messages (keeps the transcript clean).
                 MessageRole::Tool => {
                     let name = m.name.as_deref().unwrap_or("tool");
-                    if looks_like_diff(&m.content)
+                    if m.content.starts_with("Tool validation error:") {
+                        validation_retry_pending = true;
+                        items.push(ChatItem::ValidationFailure {
+                            tool: name.to_string(),
+                            error: m
+                                .content
+                                .trim_start_matches("Tool validation error: ")
+                                .trim_end_matches(" Please correct arguments.")
+                                .to_string(),
+                        });
+                    } else if looks_like_diff(&m.content)
                         || name.contains("write")
                         || name.contains("search_replace")
                         || name == "edit"
@@ -252,11 +275,6 @@ impl ConversationModel {
                 items.push(ChatItem::Banner {
                     text: format!("Approval needed · {}", e.detail),
                     kind: BannerKind::Warn,
-                });
-            } else if e.kind == "validation" {
-                items.push(ChatItem::Banner {
-                    text: e.detail.clone(),
-                    kind: BannerKind::Error,
                 });
             }
         }
@@ -715,6 +733,44 @@ impl ConversationModel {
                     if long_response {
                         lines.push(horizontal_rule(width));
                     }
+                    if gap {
+                        lines.push(Line::from(""));
+                    }
+                }
+                ChatItem::RetryAssistant { text } => {
+                    lines.push(Line::from(vec![
+                        Span::styled("ASSISTANT", theme::brand()),
+                        Span::styled(" · RETRY", theme::warn()),
+                    ]));
+                    for line in assistant_lines(text, width.saturating_sub(3)) {
+                        let mut spans = vec![Span::styled("▍ ", theme::brand())];
+                        spans.extend(line.spans);
+                        lines.push(Line::from(spans));
+                    }
+                    if gap {
+                        lines.push(Line::from(""));
+                    }
+                }
+                ChatItem::ValidationFailure { tool, error } => {
+                    lines.push(Line::from(vec![
+                        Span::styled("TOOL · REJECTED", theme::danger()),
+                        Span::styled("  TOOL CONTRACT", theme::dim()),
+                    ]));
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("{tool}  "), theme::text()),
+                        Span::styled("invalid arguments · schema enforced", theme::danger()),
+                    ]));
+                    for line in wrap(error, width.saturating_sub(2)) {
+                        lines.push(Line::from(Span::styled(line, theme::muted())));
+                    }
+                    lines.push(Line::from(Span::styled(
+                        "Side effects not executed · validation failure journaled",
+                        theme::ok(),
+                    )));
+                    lines.push(Line::from(Span::styled(
+                        "↻ automatic validation retry prompt sent to model",
+                        theme::warn(),
+                    )));
                     if gap {
                         lines.push(Line::from(""));
                     }
@@ -1656,11 +1712,61 @@ mod tests {
         );
         assert!(matches!(
             m.items.first(),
-            Some(ChatItem::ToolCard {
-                state: ToolCardState::Error,
-                ..
-            })
+            Some(ChatItem::ValidationFailure { tool, .. }) if tool == "read_file"
         ));
+    }
+
+    #[test]
+    fn validation_failure_is_deduplicated_and_labels_retry() {
+        let error = "Tool validation error: tool `read_file` validation failed at /path: 1 is not of type string. Please correct arguments.";
+        let msgs = vec![
+            Message {
+                role: MessageRole::Tool,
+                content: error.into(),
+                tool_call_id: Some("1".into()),
+                name: Some("read_file".into()),
+                thinking: None,
+                thinking_duration_secs: None,
+                tool_calls: vec![],
+            },
+            Message {
+                role: MessageRole::Assistant,
+                content: "Correcting the tool call.".into(),
+                tool_call_id: None,
+                name: None,
+                thinking: None,
+                thinking_duration_secs: None,
+                tool_calls: vec![],
+            },
+        ];
+        let events = vec![TurnEvent {
+            kind: "validation".into(),
+            detail: error.into(),
+        }];
+        let model = ConversationModel::from_messages(
+            &msgs,
+            &events,
+            SessionStatus::Running,
+            ConversationViewOpts::default(),
+        );
+        assert_eq!(model.items.len(), 2);
+        assert!(matches!(model.items[0], ChatItem::ValidationFailure { .. }));
+        assert!(matches!(model.items[1], ChatItem::RetryAssistant { .. }));
+        let rendered = model
+            .lines()
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
+            .collect::<String>();
+        for expected in [
+            "TOOL · REJECTED",
+            "Side effects not executed",
+            "ASSISTANT · RETRY",
+        ] {
+            assert!(
+                rendered.contains(expected),
+                "missing {expected}: {rendered}"
+            );
+        }
     }
 
     #[test]
