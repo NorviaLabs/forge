@@ -271,6 +271,17 @@ impl ConversationModel {
         self
     }
 
+    pub fn with_running_tool(mut self, name: impl Into<String>) -> Self {
+        self.items.push(ChatItem::ToolCard {
+            name: name.into(),
+            summary: "journal: tool_intent committed · awaiting result".into(),
+            detail: String::new(),
+            state: ToolCardState::Running,
+            duration: None,
+        });
+        self
+    }
+
     pub fn with_queued_messages(
         mut self,
         items: impl IntoIterator<Item = String>,
@@ -542,6 +553,7 @@ impl ConversationModel {
                         String::new()
                     };
                     lines.push(Line::from(vec![
+                        Span::styled("TOOL ", theme::dim()),
                         Span::styled(format!("{tag} "), st),
                         Span::styled(
                             format!("{name}{count}"),
@@ -570,7 +582,10 @@ impl ConversationModel {
                         for l in wrap(summary, width.saturating_sub(4)).into_iter().take(3) {
                             lines.push(Line::from(Span::styled(format!("  {l}"), theme::muted())));
                         }
-                        if is_last && detail.chars().count() > summary.chars().count() {
+                        if is_last
+                            && !detail.is_empty()
+                            && detail.chars().count() > summary.chars().count()
+                        {
                             lines.push(Line::from(Span::styled("  Ctrl+O expand", theme::dim())));
                         }
                     }
@@ -1482,6 +1497,25 @@ mod tests {
             .collect::<String>();
         assert!(text.contains("ASSISTANT · STREAMING"));
         assert!(text.contains("partial response▌"));
+    }
+
+    #[test]
+    fn running_tool_card_shows_intent_without_arguments() {
+        let m = ConversationModel::from_messages(
+            &[],
+            &[],
+            SessionStatus::Running,
+            ConversationViewOpts::default(),
+        )
+        .with_running_tool("read_file");
+        let text = m
+            .lines()
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(text.contains("TOOL ● read_file"));
+        assert!(text.contains("tool_intent committed · awaiting result"));
     }
 
     #[test]
