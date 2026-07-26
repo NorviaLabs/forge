@@ -17,7 +17,6 @@ pub const PANEL_ALT: Color = Color::Rgb(20, 28, 37);
 pub const HISTORY_BG: Color = Color::Rgb(27, 38, 52);
 pub const USER_BG: Color = Color::Rgb(14, 19, 25);
 pub const RESPONSE_BG: Color = Color::Rgb(17, 24, 32);
-pub const THINKING_BG: Color = Color::Rgb(19, 28, 39);
 
 pub fn brand() -> Style {
     Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
@@ -79,8 +78,38 @@ pub fn assistant_message() -> Style {
     Style::default().bg(RESPONSE_BG)
 }
 
-pub fn thinking_message() -> Style {
-    Style::default().bg(THINKING_BG)
+// Transcript roles. Keep these semantic so widgets do not need to know the
+// palette and basic ANSI terminals still get hierarchy from modifiers/symbols.
+pub fn user_message_style() -> Style {
+    user_message().fg(TEXT)
+}
+
+pub fn assistant_answer_style() -> Style {
+    assistant_message().fg(TEXT).add_modifier(Modifier::BOLD)
+}
+
+pub fn progress_style() -> Style {
+    muted().add_modifier(Modifier::ITALIC)
+}
+
+pub fn tool_running_style() -> Style {
+    info().add_modifier(Modifier::BOLD)
+}
+
+pub fn tool_success_style() -> Style {
+    ok().add_modifier(Modifier::BOLD)
+}
+
+pub fn tool_failure_style() -> Style {
+    danger().add_modifier(Modifier::BOLD)
+}
+
+pub fn metadata_style() -> Style {
+    muted()
+}
+
+pub fn focused_selection_style() -> Style {
+    selected_row()
 }
 
 /// Full-row selection (suggestion list, palette, connect picker).
@@ -124,8 +153,8 @@ mod tests {
     }
 
     #[test]
-    fn conversation_backgrounds_are_distinct() {
+    fn conversation_background_is_distinct_from_panel() {
         assert_ne!(user_message().bg, assistant_message().bg);
-        assert_ne!(assistant_message().bg, thinking_message().bg);
+        assert_ne!(assistant_message().bg, Some(PANEL));
     }
 }
