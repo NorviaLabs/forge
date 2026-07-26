@@ -22,7 +22,7 @@ use forge_connect::{
 };
 use forge_core::{AgentSession, ApplyOutcome, LoopError};
 use forge_tools::{GitTool, Tool, ToolContext};
-use forge_types::{HitlDecision, ModelStreamEvent};
+use forge_types::{HitlDecision, ModelStreamEvent, ProgressDocument};
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use serde_json::json;
@@ -189,6 +189,7 @@ pub struct TuiApp {
     /// Conversation scroll offset (when not following).
     chat_scroll: u16,
     chat_follow: bool,
+    context_reset_snapshot: Option<(f64, f64)>,
 }
 
 impl TuiApp {
@@ -240,6 +241,7 @@ impl TuiApp {
             chat_event_start: 0,
             chat_scroll: 0,
             chat_follow: true,
+            context_reset_snapshot: None,
         }
         .restore_saved_auth()
         .apply_connection_chrome()
@@ -1570,15 +1572,35 @@ impl TuiApp {
         if let Some(term) = terminal.as_deref_mut() {
             let _ = term.draw(|f| self.draw(f));
         }
-        let before = self.session.token_usage_report().context_tokens_est;
+        let before_report = self.session.token_usage_report();
+        let before = before_report.context_tokens_est;
         self.session.force_context_reset_async().await?;
-        let after = self.session.token_usage_report().context_tokens_est;
+        let after_report = self.session.token_usage_report();
+        let after = after_report.context_tokens_est;
+        let before_pct = before as f64 / before_report.context_capacity.max(1) as f64 * 100.0;
+        let after_pct = after as f64 / after_report.context_capacity.max(1) as f64 * 100.0;
+        self.context_reset_snapshot = Some((before_pct, after_pct));
+        self.chat_message_start = self.session.messages.len();
+        self.chat_event_start = self.session.events.len();
         self.push_toast("context compacted");
         let summary = format!("Context handoff complete · {before} → {after} estimated tokens.");
-        self.ui_banners.push(ChatItem::Banner {
-            text: summary.clone(),
-            kind: BannerKind::Ok,
-        });
+        let progress = fs::read_to_string(self.runtime.cwd.join(".forge/progress.json"))
+            .ok()
+            .and_then(|text| serde_json::from_str::<ProgressDocument>(&text).ok());
+        if let Some(progress) = progress {
+            self.ui_banners.push(ChatItem::ContextHandoff {
+                before_pct,
+                after_pct,
+                goal: progress.goal,
+                completed: progress.completed,
+                next_actions: progress.next_actions,
+            });
+        } else {
+            self.ui_banners.push(ChatItem::Banner {
+                text: summary.clone(),
+                kind: BannerKind::Ok,
+            });
+        }
         self.push_activity(
             ActivityKind::Context,
             FeedbackSeverity::Ok,
@@ -2001,6 +2023,7 @@ Reply with ONLY the commit message line.\n\n\
                 BusyPhase::Idle => "idle",
             }
             .into();
+            sidebar.context_reset = self.context_reset_snapshot;
             frame.render_widget(SidebarWidget { model: &sidebar }, sidebar_area);
         }
 
