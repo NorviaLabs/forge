@@ -112,7 +112,7 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
     vec![
         PaletteItem {
             cmd: "/status".into(),
-            desc: "Session status".into(),
+            desc: "Session, budget, journal cursor".into(),
         },
         PaletteItem {
             cmd: "/cost".into(),
@@ -124,7 +124,7 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
         },
         PaletteItem {
             cmd: "/model".into(),
-            desc: "Switch model (catalog)".into(),
+            desc: "Switch provider/model (config only)".into(),
         },
         PaletteItem {
             cmd: "/model refresh".into(),
@@ -136,11 +136,11 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
         },
         PaletteItem {
             cmd: "/compact".into(),
-            desc: "Force context handoff".into(),
+            desc: "Force handoff + clear context".into(),
         },
         PaletteItem {
             cmd: "/resume".into(),
-            desc: "List recent sessions to resume".into(),
+            desc: "Resume session by id".into(),
         },
         PaletteItem {
             cmd: "/file".into(),
@@ -478,7 +478,7 @@ fn filtered_models_len(provider_id: &str, model_input: &str, items: &[ModelItem]
 
 pub fn filter_palette(filter: &str) -> Vec<PaletteItem> {
     let f = filter.trim().trim_start_matches('/').to_ascii_lowercase();
-    default_palette_items()
+    let mut items = default_palette_items()
         .into_iter()
         .filter(|i| {
             if f.is_empty() {
@@ -486,7 +486,18 @@ pub fn filter_palette(filter: &str) -> Vec<PaletteItem> {
             }
             i.cmd.to_ascii_lowercase().contains(&f) || i.desc.to_ascii_lowercase().contains(&f)
         })
-        .collect()
+        .collect::<Vec<_>>();
+    items.sort_by_key(|item| {
+        let command = item.cmd.trim_start_matches('/').to_ascii_lowercase();
+        if command.starts_with(&f) {
+            0
+        } else if command.contains(&f) {
+            1
+        } else {
+            2
+        }
+    });
+    items
 }
 
 /// Result of handling a key inside an overlay.
