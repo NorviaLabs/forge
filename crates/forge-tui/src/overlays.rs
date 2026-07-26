@@ -837,6 +837,15 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
     }
 }
 
+fn hitl_args(args: &serde_json::Value) -> String {
+    let value = args
+        .get("command")
+        .and_then(|value| value.as_str())
+        .map(str::to_owned)
+        .unwrap_or_else(|| serde_json::to_string(args).unwrap_or_else(|_| "{}".into()));
+    value.chars().take(240).collect()
+}
+
 fn parent_dir(path: &str) -> Option<String> {
     Path::new(path)
         .parent()
@@ -884,8 +893,9 @@ pub struct OverlayWidget<'a> {
 
 impl Widget for OverlayWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        // dim full area
-        Clear.render(area, buf);
+        if !matches!(self.overlay, Overlay::Hitl { .. }) {
+            Clear.render(area, buf);
+        }
         match self.overlay {
             Overlay::Welcome => {
                 let r = centered_rect(64, 58, area);
@@ -920,14 +930,13 @@ impl Widget for OverlayWidget<'_> {
                     .render(r, buf);
             }
             Overlay::Hitl { payload } => {
-                let r = centered_rect(72, 52, area);
-                let args = serde_json::to_string_pretty(&payload.args_redacted)
-                    .unwrap_or_else(|_| "{}".into());
-                let args: String = args.chars().take(400).collect();
+                let r = centered_rect(56, 38, area);
+                let args = hitl_args(&payload.args_redacted);
                 let body = format!(
-                    "Tool:  {}\nCall:  {}\nWhy:   {}\n\nArgs (redacted):\n{args}\n\n\
-[a] Approve once    [s] Allow for session    [d] Deny\n[Esc] Dismiss (request remains pending)",
-                    payload.tool, payload.call_id, payload.reason
+                    "Human approval required\n\nTool:  {}\nArgs:  {args}\nWhy:   {}\n\n\
+Secrets are not shown. The process may exit; approve later with the same session id — the journal resumes without redoing completed steps.\n\n\
+[a] Approve once    [s] Allow for session\n[d] Deny            [Esc] Dismiss · remains pending",
+                    payload.tool, payload.reason
                 );
                 Paragraph::new(body)
                     .wrap(ratatui::widgets::Wrap { trim: true })
@@ -935,8 +944,9 @@ impl Widget for OverlayWidget<'_> {
                         Block::default()
                             .borders(Borders::ALL)
                             .border_style(theme::warn())
+                            .style(theme::panel())
                             .title(Span::styled(
-                                " Human approval required (HITL) ",
+                                format!(" HITL · high-risk · {} ", payload.tool),
                                 theme::warn().add_modifier(Modifier::BOLD),
                             )),
                     )
@@ -1355,6 +1365,18 @@ mod tests {
             OverlayAction::HitlDeny
         );
         assert_eq!(handle_overlay_key(&mut o, Key::Esc), OverlayAction::Close);
+    }
+
+    #[test]
+    fn hitl_args_prefers_redacted_command() {
+        assert_eq!(
+            hitl_args(&json!({"command": "git push -u origin feature"})),
+            "git push -u origin feature"
+        );
+        assert_eq!(
+            hitl_args(&json!({"path": "src/lib.rs"})),
+            r#"{"path":"src/lib.rs"}"#
+        );
     }
 
     #[test]
