@@ -130,7 +130,10 @@ impl Widget for StatusBar<'_> {
         if area.height == 0 || area.width == 0 {
             return;
         }
-        let (label, style) = self.model.status_label();
+        let (mut label, style) = self.model.status_label();
+        if self.model.busy {
+            label = "◐ running".into();
+        }
         let model_disp = StatusModel::truncate_model(&self.model.model, 24);
         let provider = if self.model.provider.is_empty() {
             "—"
