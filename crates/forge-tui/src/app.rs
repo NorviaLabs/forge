@@ -1961,6 +1961,9 @@ Reply with ONLY the commit message line.\n\n\
             self.message_queue.iter().cloned().collect::<Vec<_>>(),
             self.queue_selected,
         );
+        if let BusyPhase::Tool { name } = &self.busy_phase {
+            conv = conv.with_running_tool(name.clone());
+        }
         conv.follow = self.chat_follow;
         conv.scroll = self.chat_scroll;
         if self.busy && self.pending_prompt.is_none() {
@@ -3028,6 +3031,19 @@ Reply with ONLY the commit message line.\n\n\
             self.stream_preview.clear();
             self.stream_thinking.clear();
             // Keep turn_started until full agent turn ends (multi-tool steps).
+            if let Some(call) = last.tool_calls.first() {
+                self.busy_phase = BusyPhase::Tool {
+                    name: call.name.clone(),
+                };
+                self.push_activity(
+                    ActivityKind::Tool,
+                    FeedbackSeverity::Info,
+                    format!("tool_intent {}", call.name),
+                );
+                if let Some(term) = terminal.as_deref_mut() {
+                    term.draw(|f| self.draw(f))?;
+                }
+            }
             match self.session.apply_model_response(last).await {
                 Ok(out) => {
                     if let Some(secs) = thought {
@@ -3047,6 +3063,7 @@ Reply with ONLY the commit message line.\n\n\
                             break 'turns;
                         }
                         ApplyOutcome::Continue => {
+                            self.busy_phase = BusyPhase::Model;
                             if let Some(term) = terminal.as_deref_mut() {
                                 term.draw(|f| self.draw(f))?;
                             }
