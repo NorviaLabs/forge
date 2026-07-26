@@ -130,17 +130,15 @@ impl Widget for StatusBar<'_> {
         if area.height == 0 || area.width == 0 {
             return;
         }
-        let (mut label, style) = self.model.status_label();
-        if self.model.busy {
-            label = "◐ running".into();
-        }
-        let model_disp = StatusModel::truncate_model(&self.model.model, 24);
+        let (label, style) = self.model.status_label();
+        let model_disp =
+            StatusModel::truncate_model(&self.model.model, if area.width < 100 { 16 } else { 28 });
         let provider = if self.model.provider.is_empty() {
             "—"
         } else {
             self.model.provider.as_str()
         };
-        let ctx = format!("ctx {:.0}%", self.model.ctx_pct * 100.0);
+        let ctx = format!("{:.0}% context", self.model.ctx_pct * 100.0);
         let ctx_style = if self.model.ctx_pct >= 0.90 {
             theme::danger().add_modifier(Modifier::BOLD)
         } else if self.model.ctx_pct >= 0.70 {
@@ -149,24 +147,22 @@ impl Widget for StatusBar<'_> {
             theme::info()
         };
         let mut spans = vec![
-            Span::styled(" FORGE ", theme::brand()),
-            Span::styled("│ ", theme::dim()),
-            Span::styled(format!("{label} "), style),
-            Span::styled("│ ", theme::dim()),
+            Span::styled("Forge", theme::brand()),
+            Span::styled(" · ", theme::dim()),
+            Span::styled(model_disp, theme::text()),
+            Span::styled(" · ", theme::dim()),
+            Span::styled(provider, theme::metadata_style()),
+            Span::styled(" · ", theme::dim()),
+            Span::styled(ctx, ctx_style),
+            Span::styled(" · ", theme::dim()),
+            Span::styled(label, style),
         ];
-        if self.model.busy || self.model.status == SessionStatus::AwaitingHitl {
+        if area.width >= 110 && self.model.status == SessionStatus::AwaitingHitl {
             spans.extend([
-                Span::styled("session ", theme::dim()),
-                Span::styled(format!("{} ", self.model.session_short), theme::muted()),
-                Span::styled("│ ", theme::dim()),
+                Span::styled(" · session ", theme::dim()),
+                Span::styled(&self.model.session_short, theme::metadata_style()),
             ]);
         }
-        spans.extend([
-            Span::styled("model ", theme::dim()),
-            Span::styled(format!("{provider}/{model_disp} "), theme::text()),
-            Span::styled("│ ", theme::dim()),
-            Span::styled(format!("{ctx} "), ctx_style),
-        ]);
 
         let line = Line::from(spans);
         buf.set_line(area.x, area.y, &line, area.width);

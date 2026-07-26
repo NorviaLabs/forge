@@ -904,6 +904,19 @@ pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
         .split(popup[1])[1]
 }
 
+/// Centred panel that remains usable on small terminals without becoming a
+/// nearly full-width dashboard on large ones.
+fn centered_capped_rect(area: Rect, max_width: u16, max_height: u16) -> Rect {
+    let width = area.width.saturating_sub(4).min(max_width).max(1);
+    let height = area.height.saturating_sub(4).min(max_height).max(1);
+    Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    )
+}
+
 pub struct OverlayWidget<'a> {
     pub overlay: &'a Overlay,
 }
@@ -974,7 +987,7 @@ Secrets are not shown. The process may exit; approve later with the same session
                 selected,
                 items,
             } => {
-                let r = centered_rect(50, 50, area);
+                let r = centered_capped_rect(area, 72, 18);
                 let block = Block::default()
                     .borders(Borders::ALL)
                     .border_style(theme::border())
@@ -988,13 +1001,13 @@ Secrets are not shown. The process may exit; approve later with the same session
                     .map(|(i, it)| {
                         let marker = if i == *selected { "▶ " } else { "  " };
                         let style = if i == *selected {
-                            theme::selected_row()
+                            theme::focused_selection_style()
                         } else {
                             theme::text()
                         };
                         // Pad for full-width selection background
-                        let mut row = format!("{marker}{:<12} {}", it.cmd, it.desc);
-                        while row.chars().count() < 40 {
+                        let mut row = format!("{marker}{:<16} {}", it.cmd, it.desc);
+                        while row.chars().count() < inner.width.saturating_sub(1) as usize {
                             row.push(' ');
                         }
                         ListItem::new(Span::styled(row, style))
@@ -1010,7 +1023,7 @@ Secrets are not shown. The process may exit; approve later with the same session
                 providers,
                 items,
             } => {
-                let r = centered_rect(70, 55, area);
+                let r = centered_capped_rect(area, 88, 20);
                 let pid = providers
                     .get(*provider_selected)
                     .map(|s| s.as_str())
@@ -1049,7 +1062,7 @@ Secrets are not shown. The process may exit; approve later with the same session
                             let idx = start + i;
                             let marker = if idx == *model_selected { "▶ " } else { "  " };
                             let style = if idx == *model_selected {
-                                theme::selected_row()
+                                theme::focused_selection_style()
                             } else {
                                 theme::text()
                             };
@@ -1065,7 +1078,8 @@ Secrets are not shown. The process may exit; approve later with the same session
                                 "cloud"
                             };
                             let mut row = format!("{marker}{provider} / {model}");
-                            let target = 58usize.saturating_sub(state.chars().count());
+                            let target = (r.width.saturating_sub(5) as usize)
+                                .saturating_sub(state.chars().count());
                             while row.chars().count() < target {
                                 row.push(' ');
                             }
@@ -1084,7 +1098,7 @@ Secrets are not shown. The process may exit; approve later with the same session
                 } else {
                     format!("{}/{}", (*model_selected + 1).min(total), total)
                 };
-                let title = format!(" MODEL PICKER · {pid} · {page}{prov_hint} · Enter use ");
+                let title = format!(" Models · {pid} · {page}{prov_hint} · ↑↓ select · Enter use ");
                 let block = Block::default()
                     .borders(Borders::ALL)
                     .border_style(theme::border())
@@ -1101,14 +1115,14 @@ Secrets are not shown. The process may exit; approve later with the same session
                         Constraint::Length(1),
                     ])
                     .split(inner);
-                Paragraph::new(format!("current {current_model} · config-only switch"))
+                Paragraph::new(format!("Current: {current_model}"))
                     .style(theme::muted())
                     .render(regions[0], buf);
                 Paragraph::new(format!("/model {model_input}█"))
                     .style(theme::text())
                     .render(regions[1], buf);
                 List::new(list_items).render(regions[2], buf);
-                Paragraph::new("single config key · tools + durable state unchanged")
+                Paragraph::new("Esc close")
                     .style(theme::dim())
                     .render(regions[3], buf);
             }
