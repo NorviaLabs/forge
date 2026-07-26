@@ -41,6 +41,9 @@ pub enum ChatItem {
     Assistant {
         text: String,
     },
+    StreamingAssistant {
+        text: String,
+    },
     Queued {
         index: usize,
         text: String,
@@ -252,7 +255,7 @@ impl ConversationModel {
             if self.opts.busy && !body.ends_with('▌') {
                 body.push('▌');
             }
-            self.items.push(ChatItem::Assistant { text: body });
+            self.items.push(ChatItem::StreamingAssistant { text: body });
         }
         self
     }
@@ -452,6 +455,30 @@ impl ConversationModel {
                     }
                     if long_response {
                         lines.push(horizontal_rule(width));
+                    }
+                    if gap {
+                        lines.push(Line::from(""));
+                    }
+                }
+                ChatItem::StreamingAssistant { text } => {
+                    lines.push(
+                        Line::from(vec![
+                            Span::styled("ASSISTANT", theme::brand()),
+                            Span::styled(" · STREAMING", theme::info()),
+                        ])
+                        .style(theme::assistant_message()),
+                    );
+                    for (i, line) in assistant_lines(text, width.saturating_sub(3))
+                        .into_iter()
+                        .enumerate()
+                    {
+                        let gutter = if i == 0 { "▍ " } else { "  " };
+                        let mut spans = vec![Span::styled(
+                            gutter,
+                            theme::brand().add_modifier(Modifier::BOLD),
+                        )];
+                        spans.extend(line.spans);
+                        lines.push(Line::from(spans).style(theme::assistant_message()));
                     }
                     if gap {
                         lines.push(Line::from(""));
@@ -1433,6 +1460,28 @@ mod tests {
             .join("\n");
         assert!(!text.contains("Working..."), "{text}");
         assert!(!text.contains("0.3s"), "{text}");
+    }
+
+    #[test]
+    fn streaming_assistant_has_live_label_and_cursor() {
+        let m = ConversationModel::from_messages(
+            &[],
+            &[],
+            SessionStatus::Running,
+            ConversationViewOpts {
+                busy: true,
+                ..Default::default()
+            },
+        )
+        .with_streaming_assistant("partial response");
+        let text = m
+            .lines()
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(text.contains("ASSISTANT · STREAMING"));
+        assert!(text.contains("partial response▌"));
     }
 
     #[test]
