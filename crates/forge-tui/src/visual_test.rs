@@ -184,7 +184,7 @@ mod tests {
         let mut term = Terminal::new(backend).unwrap();
         term.draw(|f| app.draw(f)).unwrap();
         let text = buffer_text(&term);
-        assert!(text.contains("sess "), "missing session chrome:\n{text}");
+        assert!(text.contains("FORGE"), "missing session chrome:\n{text}");
         assert!(text.contains("SESSION"), "missing sidebar:\n{text}");
         assert!(
             text.contains("ACTIVITY"),
@@ -194,5 +194,27 @@ mod tests {
             text.contains("model started"),
             "missing activity item:\n{text}"
         );
+    }
+
+    #[tokio::test]
+    async fn visual_idle_home_matches_reference_structure() {
+        let (_d, mut app) = app().await;
+        let backend = TestBackend::new(120, 40);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| app.draw(f)).unwrap();
+        let text = buffer_text(&term);
+
+        for expected in [
+            "FORGE",
+            "SYSTEM",
+            "Forge ready",
+            "Waiting for your first message.",
+            "Describe a task or paste an error",
+            "CONTEXT BUDGET",
+            "TOOLS (ACL)",
+            "RECENT JOURNAL",
+        ] {
+            assert!(text.contains(expected), "missing {expected:?}:\n{text}");
+        }
     }
 }
