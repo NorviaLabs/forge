@@ -60,6 +60,12 @@ pub enum ChatItem {
     StreamingAssistant {
         text: String,
     },
+    EvaluatorReport {
+        text: String,
+    },
+    GeneratorRepair {
+        text: String,
+    },
     Queued {
         index: usize,
         text: String,
@@ -159,15 +165,16 @@ impl ConversationModel {
         // System prompts and tool call cards stay out of the operator chat.
         let mut items: Vec<ChatItem> = Vec::new();
         let mut latest_thinking: Option<String> = None;
+        let mut repair_pending = false;
         for m in messages {
             match m.role {
                 // System prompts are for the model, not the operator UI.
                 MessageRole::System => {}
                 MessageRole::User => {
                     if m.content.starts_with("[REPAIR TASK") {
-                        items.push(ChatItem::Banner {
+                        repair_pending = true;
+                        items.push(ChatItem::EvaluatorReport {
                             text: m.content.clone(),
-                            kind: BannerKind::Warn,
                         });
                     } else {
                         items.push(ChatItem::User {
@@ -186,9 +193,16 @@ impl ConversationModel {
                         }
                     }
                     if !m.content.is_empty() {
-                        items.push(ChatItem::Assistant {
-                            text: m.content.clone(),
-                        });
+                        if repair_pending {
+                            items.push(ChatItem::GeneratorRepair {
+                                text: m.content.clone(),
+                            });
+                            repair_pending = false;
+                        } else {
+                            items.push(ChatItem::Assistant {
+                                text: m.content.clone(),
+                            });
+                        }
                     }
                 }
                 // Tool results are not shown as chat messages (keeps the transcript clean).
@@ -631,6 +645,57 @@ impl ConversationModel {
                         )];
                         spans.extend(line.spans);
                         lines.push(Line::from(spans).style(theme::assistant_message()));
+                    }
+                    if gap {
+                        lines.push(Line::from(""));
+                    }
+                }
+                ChatItem::EvaluatorReport { text } => {
+                    let body = text
+                        .lines()
+                        .skip_while(|line| line.trim_start().starts_with("[REPAIR TASK"));
+                    lines.push(Line::from(vec![
+                        Span::styled("FEEDBACK", theme::warn()),
+                        Span::styled(" · EVAL-01", theme::dim()),
+                    ]));
+                    lines.push(Line::from(Span::styled(
+                        "Dual-sensor gate after implementation step.",
+                        theme::muted(),
+                    )));
+                    for line in body {
+                        let trimmed = line.trim();
+                        if trimmed.is_empty() {
+                            continue;
+                        }
+                        let style = if trimmed.starts_with("SENSOR")
+                            || trimmed.starts_with("EVALUATOR REPORT")
+                        {
+                            theme::tool().add_modifier(Modifier::BOLD)
+                        } else if trimmed.starts_with("Finding:") || trimmed.starts_with("Repair:")
+                        {
+                            theme::warn()
+                        } else {
+                            theme::text()
+                        };
+                        for wrapped in wrap(trimmed, width) {
+                            lines.push(Line::from(Span::styled(wrapped, style)));
+                        }
+                    }
+                    lines.push(Line::from(Span::styled(
+                        "+ enqueued repair task for Generator",
+                        theme::warn(),
+                    )));
+                    if gap {
+                        lines.push(Line::from(""));
+                    }
+                }
+                ChatItem::GeneratorRepair { text } => {
+                    lines.push(Line::from(vec![
+                        Span::styled("GENERATOR", theme::brand()),
+                        Span::styled(" · REPAIR", theme::warn()),
+                    ]));
+                    for line in assistant_lines(text, width) {
+                        lines.push(line.style(theme::assistant_message()));
                     }
                     if gap {
                         lines.push(Line::from(""));
@@ -1739,6 +1804,52 @@ mod tests {
             "1 incomplete tool intents",
             "ASSISTANT · RESTORED",
             "never re-run",
+        ] {
+            assert!(text.contains(expected), "missing {expected:?}: {text}");
+        }
+    }
+
+    #[test]
+    fn repair_task_renders_evaluator_report_and_generator_response() {
+        let messages = vec![
+            Message {
+                role: MessageRole::User,
+                content: "[REPAIR TASK EVAL-01]\nSENSOR · DETERMINISTIC\ncargo test · failed\nEVALUATOR REPORT\nCriteria: public API returns 429\nFinding: layer is registered too late\nRepair: attach layer to public router".into(),
+                tool_call_id: None,
+                name: None,
+                thinking: None,
+                thinking_duration_secs: None,
+                tool_calls: vec![],
+            },
+            Message {
+                role: MessageRole::Assistant,
+                content: "Moving the layer onto the public router.".into(),
+                tool_call_id: None,
+                name: None,
+                thinking: None,
+                thinking_duration_secs: None,
+                tool_calls: vec![],
+            },
+        ];
+        let model = ConversationModel::from_messages(
+            &messages,
+            &[],
+            SessionStatus::Running,
+            ConversationViewOpts::default(),
+        );
+        let text = model
+            .lines()
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        for expected in [
+            "FEEDBACK · EVAL-01",
+            "SENSOR · DETERMINISTIC",
+            "EVALUATOR REPORT",
+            "Finding:",
+            "enqueued repair task for Generator",
+            "GENERATOR · REPAIR",
         ] {
             assert!(text.contains(expected), "missing {expected:?}: {text}");
         }
