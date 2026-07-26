@@ -1979,7 +1979,16 @@ Reply with ONLY the commit message line.\n\n\
                 .iter()
                 .map(|item| item.summary.clone())
                 .collect::<Vec<_>>();
-            let sidebar = SidebarModel::from_session_with_activity(&self.session, &activity);
+            let mut sidebar = SidebarModel::from_session_with_activity(&self.session, &activity);
+            sidebar.busy = self.busy;
+            sidebar.step = match &self.busy_phase {
+                BusyPhase::Model => "model_stream",
+                BusyPhase::Tool { .. } => "tool_execution",
+                BusyPhase::Connect => "connect",
+                BusyPhase::Other(step) => step,
+                BusyPhase::Idle => "idle",
+            }
+            .into();
             frame.render_widget(SidebarWidget { model: &sidebar }, sidebar_area);
         }
 

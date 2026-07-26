@@ -186,10 +186,7 @@ mod tests {
         let text = buffer_text(&term);
         assert!(text.contains("FORGE"), "missing session chrome:\n{text}");
         assert!(text.contains("SESSION"), "missing sidebar:\n{text}");
-        assert!(
-            text.contains("ACTIVITY"),
-            "missing activity section:\n{text}"
-        );
+        assert!(text.contains("RECENT JOURNAL"), "missing journal:\n{text}");
         assert!(
             text.contains("model started"),
             "missing activity item:\n{text}"

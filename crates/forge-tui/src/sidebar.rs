@@ -17,6 +17,8 @@ pub struct SidebarModel {
     pub ctx_pct: f64,
     pub ctx_used: usize,
     pub ctx_total: usize,
+    pub busy: bool,
+    pub step: String,
     pub tools: Vec<String>,
     pub activity: Vec<String>,
 }
@@ -46,6 +48,8 @@ impl SidebarModel {
             ctx_pct: session.context_usage_ratio(),
             ctx_used: context.context_tokens_est,
             ctx_total: context.context_capacity,
+            busy: false,
+            step: String::new(),
             tools,
             activity: activity_lines.to_vec(),
         }
@@ -77,7 +81,7 @@ impl Widget for SidebarWidget<'_> {
             .split(inner);
 
         // Session
-        let sess_lines = vec![
+        let mut sess_lines = vec![
             Line::from(Span::styled("SESSION", theme::dim())),
             Line::from(vec![
                 Span::styled("id      ", theme::dim()),
@@ -96,6 +100,12 @@ impl Widget for SidebarWidget<'_> {
                 Span::styled(self.model.role.clone(), theme::text()),
             ]),
         ];
+        if self.model.busy {
+            sess_lines.push(Line::from(vec![
+                Span::styled("step    ", theme::dim()),
+                Span::styled(self.model.step.clone(), theme::info()),
+            ]));
+        }
         Paragraph::new(sess_lines).render(chunks[0], buf);
 
         let pct = (self.model.ctx_pct * 100.0).clamp(0.0, 100.0);
@@ -127,12 +137,7 @@ impl Widget for SidebarWidget<'_> {
         Paragraph::new(tool_lines).render(chunks[1], buf);
 
         // Activity is intentionally compact; detailed output belongs in chat.
-        let heading = if self.model.activity.is_empty() {
-            "RECENT JOURNAL"
-        } else {
-            "ACTIVITY"
-        };
-        let mut activity_lines = vec![Line::from(Span::styled(heading, theme::dim()))];
+        let mut activity_lines = vec![Line::from(Span::styled("RECENT JOURNAL", theme::dim()))];
         if self.model.activity.is_empty() {
             activity_lines.push(Line::from(Span::styled("—", theme::dim())));
         } else {
