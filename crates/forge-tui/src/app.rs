@@ -1928,7 +1928,8 @@ Reply with ONLY the commit message line.\n\n\
         }
         let fb_h = if self.feedback.is_empty() { 0 } else { 1 };
         let input_h = (self.input.visual_lines() + 2).clamp(3, 8);
-        let regions = split_areas_full(area, fb_h, input_h, true, 0);
+        let slash_mode = self.overlay.is_none() && self.input.text.starts_with('/');
+        let regions = split_areas_full(area, fb_h, input_h, !slash_mode, 0);
         let status = self.refresh_status_model();
         frame.render_widget(StatusBar { model: &status }, regions.status);
 
@@ -1974,15 +1975,23 @@ Reply with ONLY the commit message line.\n\n\
             self.session.status,
             opts,
         )
-        .with_extra_banners(self.ui_banners.iter().cloned())
-        .with_home(
-            self.runtime.cwd.display().to_string(),
-            self.session.journal_dir().display().to_string(),
-        );
+        .with_extra_banners(self.ui_banners.iter().cloned());
+        if !slash_mode {
+            conv = conv.with_home(
+                self.runtime.cwd.display().to_string(),
+                self.session.journal_dir().display().to_string(),
+            );
+        }
         conv = conv.with_queued_messages(
             self.message_queue.iter().cloned().collect::<Vec<_>>(),
             self.queue_selected,
         );
+        if slash_mode {
+            conv = conv.with_extra_banners([ChatItem::Banner {
+                text: "Surface-local commands do not call the model.".into(),
+                kind: BannerKind::Info,
+            }]);
+        }
         if let BusyPhase::Tool { name } = &self.busy_phase {
             conv = conv.with_running_tool(name.clone());
         }
@@ -2077,7 +2086,7 @@ Reply with ONLY the commit message line.\n\n\
                 } else {
                     idx - visible / 2
                 };
-                let h = (visible as u16).saturating_add(2); // +2 for borders
+                let h = (visible as u16).saturating_add(3); // borders + selected help
                 if input.y >= h {
                     let sug_area = ratatui::layout::Rect {
                         x: input.x,
@@ -2087,7 +2096,7 @@ Reply with ONLY the commit message line.\n\n\
                     };
                     // Pad rows so background fill spans the panel width (visible selection).
                     let inner_w = sug_area.width.saturating_sub(2) as usize;
-                    let lines: Vec<ratatui::text::Line> = suggestions
+                    let mut lines: Vec<ratatui::text::Line> = suggestions
                         .iter()
                         .enumerate()
                         .skip(start)
@@ -2110,6 +2119,10 @@ Reply with ONLY the commit message line.\n\n\
                             ratatui::text::Line::from(ratatui::text::Span::styled(row, style))
                         })
                         .collect();
+                    lines.push(ratatui::text::Line::from(ratatui::text::Span::styled(
+                        format!("  {}", suggestions[idx].desc),
+                        theme::dim(),
+                    )));
                     let title = if n > visible {
                         format!(
                             " commands {}–{}/{} · Tab · ↑↓ ",
@@ -2118,7 +2131,7 @@ Reply with ONLY the commit message line.\n\n\
                             n
                         )
                     } else {
-                        format!(" commands ({n}) · Tab complete · ↑↓ ")
+                        format!(" commands ({n}) · ↑↓ select · Tab complete · Enter run ")
                     };
                     frame.render_widget(
                         Paragraph::new(lines).block(
