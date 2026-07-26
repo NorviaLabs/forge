@@ -55,7 +55,7 @@ pub fn split_areas_full(
             Constraint::Length(fb),      // feedback
             Constraint::Length(qh),      // message queue
             Constraint::Length(input_h), // input (multi-line)
-            Constraint::Length(1),       // footer
+            Constraint::Length(2),       // hints + footer metadata
         ])
         .split(content_area);
 
@@ -104,9 +104,9 @@ mod tests {
         let r = split_areas(area);
         assert!(r.sidebar.is_some());
         assert_eq!(r.status, Rect::new(3, 0, 114, 1));
-        assert_eq!(r.chat, Rect::new(3, 1, 86, 35));
-        assert_eq!(r.sidebar, Some(Rect::new(89, 1, 28, 35)));
-        assert_eq!(r.footer.height, 1);
+        assert_eq!(r.chat, Rect::new(3, 1, 86, 34));
+        assert_eq!(r.sidebar, Some(Rect::new(89, 1, 28, 34)));
+        assert_eq!(r.footer.height, 2);
         assert_eq!(r.input.height, 3);
         assert_eq!(r.feedback.height, 0);
         assert_eq!(r.queue.height, 0);
@@ -118,8 +118,8 @@ mod tests {
         let area = Rect::new(0, 0, 200, 40);
         let r = split_areas(area);
         assert_eq!(r.status, Rect::new(5, 0, 190, 1));
-        assert_eq!(r.chat, Rect::new(5, 1, 162, 35));
-        assert_eq!(r.sidebar, Some(Rect::new(167, 1, 28, 35)));
+        assert_eq!(r.chat, Rect::new(5, 1, 162, 34));
+        assert_eq!(r.sidebar, Some(Rect::new(167, 1, 28, 34)));
         assert_eq!(r.input.x, 5);
         assert_eq!(r.input.width, 190);
         assert_eq!(r.footer.x, 5);

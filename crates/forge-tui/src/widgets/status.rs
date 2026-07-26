@@ -137,7 +137,7 @@ impl Widget for StatusBar<'_> {
         } else {
             self.model.provider.as_str()
         };
-        let ctx = format!("ctx {:.1}%", self.model.ctx_pct * 100.0);
+        let ctx = format!("ctx {:.0}%", self.model.ctx_pct * 100.0);
         let ctx_style = if self.model.ctx_pct >= 0.90 {
             theme::danger().add_modifier(Modifier::BOLD)
         } else if self.model.ctx_pct >= 0.70 {
@@ -145,45 +145,15 @@ impl Widget for StatusBar<'_> {
         } else {
             theme::info()
         };
-        let cache = format!(
-            "cache {} / {}",
-            self.model.prompt_cache_hits, self.model.prompt_cache_writes
-        );
-
-        // Branded, compact chrome: forge · state · session · provider · model · ctx.
-        let (conn_label, conn_style) = if self.model.provider_connected {
-            let who = self.model.connect_profile.as_deref().unwrap_or(
-                if self.model.provider.eq_ignore_ascii_case("mock") {
-                    "mock"
-                } else {
-                    "ready"
-                },
-            );
-            (format!(" connected:{who} "), theme::ok())
-        } else {
-            (
-                " not connected ".into(),
-                theme::warn().add_modifier(Modifier::BOLD),
-            )
-        };
-
         let spans = vec![
-            Span::styled(" forge ", theme::brand()),
-            Span::styled("· ", theme::dim()),
-            Span::styled(format!("[{label}] "), style),
-            Span::styled("· ", theme::dim()),
-            Span::styled(
-                format!("sess {} ", self.model.session_short),
-                theme::muted(),
-            ),
-            Span::styled("· ", theme::dim()),
-            Span::styled(format!("{provider} · {model_disp} "), theme::text()),
-            Span::styled("· ", theme::dim()),
-            Span::styled(format!("[{ctx}] "), ctx_style),
-            Span::styled("· ", theme::dim()),
-            Span::styled(format!("{cache} "), theme::muted()),
-            Span::styled("· ", theme::dim()),
-            Span::styled(format!("[{conn_label}] "), conn_style),
+            Span::styled(" FORGE ", theme::brand()),
+            Span::styled("│ ", theme::dim()),
+            Span::styled(format!("{label} "), style),
+            Span::styled("│ ", theme::dim()),
+            Span::styled("model ", theme::dim()),
+            Span::styled(format!("{provider}/{model_disp} "), theme::text()),
+            Span::styled("│ ", theme::dim()),
+            Span::styled(format!("{ctx} "), ctx_style),
         ];
 
         let line = Line::from(spans);

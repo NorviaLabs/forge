@@ -347,8 +347,12 @@ impl Widget for InputBar<'_> {
                 theme::panel_alt()
             } else {
                 theme::panel()
-            })
-            .title(Span::styled(title, theme::muted()));
+            });
+        let block = if title == " message " {
+            block
+        } else {
+            block.title(Span::styled(title, theme::muted()))
+        };
         Paragraph::new(lines)
             .style(Style::default().add_modifier(if self.model.dimmed {
                 Modifier::DIM
