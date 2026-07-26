@@ -47,8 +47,8 @@ use crate::sidebar::{SidebarModel, SidebarWidget};
 use crate::theme;
 use crate::widgets::status::StatusBar;
 use crate::widgets::{
-    classify_operator_error, session_chrome_lines, BusyPhase, FeedbackBar, FeedbackModel,
-    FeedbackSeverity, FooterBar, FooterModel, InputBar, InputModel, StatusModel,
+    classify_operator_error, BusyPhase, FeedbackBar, FeedbackModel, FeedbackSeverity, FooterBar,
+    FooterModel, InputBar, InputModel, StatusModel,
 };
 use crate::ExitCode;
 use ratatui::widgets::Paragraph;
@@ -2587,26 +2587,22 @@ Reply with ONLY the commit message line.\n\n\
                 Ok(SlashCommand::Status) => {
                     let chrome = self.refresh_status_model();
                     let report = self.session.token_usage_report();
-                    let mut lines = vec![
-                        format!("session_id={}", self.session.session_id),
-                        "status".into(),
-                    ];
-                    lines.extend(session_chrome_lines(&chrome));
-                    lines.push(String::new());
-                    lines.push("tokens".into());
-                    lines.extend([
-                        format!("api.prompt={}", report.api.prompt_tokens),
-                        format!("api.completion={}", report.api.completion_tokens),
-                        format!("api.total={}", report.api.total_api_tokens()),
-                        format!("cache.hits={}", report.api.prompt_cache_hits),
-                        format!("cache.writes={}", report.api.prompt_cache_writes),
-                        format!("context.used={:.1}%", report.context_pct),
-                        format!(
-                            "context.tokens={}/{}",
-                            report.context_tokens_est, report.context_capacity
-                        ),
-                    ]);
-                    lines.extend(self.session.token_usage_lines());
+                    let cursor = self.session.journal_cursor().await?;
+                    self.ui_banners.push(ChatItem::SessionStatus {
+                        session_id: self.session.session_id.to_string(),
+                        status: format!("{:?}", self.session.status).to_ascii_lowercase(),
+                        provider: chrome.provider.clone(),
+                        model: chrome.model.clone(),
+                        context_tokens: report.context_tokens_est,
+                        context_capacity: report.context_capacity,
+                        context_pct: report.context_pct,
+                        reset_pct: self.session.context_reset_ratio() * 100.0,
+                        workspace: self.session.workspace_root().display().to_string(),
+                        journal: self.session.journal_dir().display().to_string(),
+                        cursor,
+                        tools: self.session.list_tools().len(),
+                        hitl_pending: self.session.pending_hitl.is_some(),
+                    });
                     let api = &report.api;
                     self.set_feedback(
                         FeedbackSeverity::Info,
@@ -2623,7 +2619,7 @@ Reply with ONLY the commit message line.\n\n\
                         ),
                     );
                     self.status_message = "status · context".into();
-                    self.notices = lines;
+                    self.notices.clear();
                 }
                 Ok(SlashCommand::Cost) => {
                     let profile_id = self.connect_profile.clone().or_else(|| {
@@ -4779,7 +4775,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tui09_status_notices_mirror_chrome() {
+    async fn tui09_status_renders_structured_session_card() {
         use crossterm::event::{KeyCode, KeyModifiers};
         let (_dir, session) = test_session().await;
         let mut app = TuiApp::new(
@@ -4799,16 +4795,39 @@ mod tests {
         app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
             .await
             .unwrap();
-        assert!(
-            app.notices.iter().any(|l| l.contains("provider=")),
-            "notices={:?}",
-            app.notices
-        );
-        assert!(
-            app.notices.iter().any(|l| l.contains("model=")),
-            "notices={:?}",
-            app.notices
-        );
+        assert!(app.notices.is_empty());
+        assert!(app.ui_banners.iter().any(|item| matches!(
+            item,
+            ChatItem::SessionStatus {
+                provider,
+                model,
+                workspace,
+                ..
+            } if provider == "mock" && model == "m" && workspace == "."
+        )));
+
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        for expected in [
+            "STATUS",
+            "Session",
+            "Model",
+            "Context",
+            "Workspace",
+            "Governance",
+        ] {
+            assert!(text.contains(expected), "missing {expected}:\n{text}");
+        }
     }
 
     #[tokio::test]

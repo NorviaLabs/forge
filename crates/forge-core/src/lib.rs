@@ -404,6 +404,14 @@ impl AgentSession {
         self.context.usage_ratio(&self.messages)
     }
 
+    pub fn context_reset_ratio(&self) -> f64 {
+        self.context.config.reset_usage_ratio
+    }
+
+    pub async fn journal_cursor(&self) -> Result<u64, LoopError> {
+        Ok(self.journal.last_seq().await?)
+    }
+
     /// Full token-usage report for `/cost` (API totals + in-context estimates). No $.
     pub fn token_usage_report(&self) -> TokenUsageReport {
         let mut system_tokens_est = 0usize;
