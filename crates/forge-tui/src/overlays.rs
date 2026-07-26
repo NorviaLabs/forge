@@ -27,6 +27,7 @@ pub enum Overlay {
         provider_selected: usize,
         model_selected: usize,
         model_input: String,
+        current_model: String,
         /// Provider ids (connect profile ids) derived from `items`.
         providers: Vec<String>,
         items: Vec<ModelItem>,
@@ -243,6 +244,7 @@ impl Overlay {
             provider_selected: 0,
             model_selected: 0,
             model_input: String::new(),
+            current_model: String::new(),
             providers,
             items,
         }
@@ -257,6 +259,7 @@ impl Overlay {
         let Self::Model {
             provider_selected,
             model_selected,
+            current_model,
             providers,
             items,
             ..
@@ -264,6 +267,7 @@ impl Overlay {
         else {
             return;
         };
+        *current_model = needle.to_string();
 
         // Find exact model first.
         if let Some(found) = items.iter().find(|m| m.model == needle) {
@@ -401,6 +405,7 @@ impl Overlay {
                 model_input,
                 providers,
                 items,
+                ..
             } => {
                 if items.is_empty() {
                     return;
@@ -636,6 +641,7 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                 model_input,
                 providers,
                 items,
+                ..
             } => {
                 let pid = providers
                     .get(*provider_selected)
@@ -1000,6 +1006,7 @@ Secrets are not shown. The process may exit; approve later with the same session
                 provider_selected,
                 model_selected,
                 model_input,
+                current_model,
                 providers,
                 items,
             } => {
@@ -1015,7 +1022,7 @@ Secrets are not shown. The process may exit; approve later with the same session
                     })
                     .collect();
                 let total = filtered.len();
-                let visible = r.height.saturating_sub(4).max(1) as usize;
+                let visible = r.height.saturating_sub(6).max(1) as usize;
                 let start = if *model_selected < visible {
                     0
                 } else if *model_selected + 1 > visible {
@@ -1046,15 +1053,23 @@ Secrets are not shown. The process may exit; approve later with the same session
                             } else {
                                 theme::text()
                             };
-                            let tag = m
-                                .profile_id
-                                .as_deref()
-                                .map(|p| format!("  [{p}]"))
-                                .unwrap_or_default();
-                            let mut row = format!("{marker}{}{tag}", m.model);
-                            while row.chars().count() < 40 {
+                            let (provider, model) = m
+                                .model
+                                .split_once('/')
+                                .unwrap_or((m.profile_id.as_deref().unwrap_or("model"), &m.model));
+                            let state = if m.model == *current_model {
+                                "current"
+                            } else if provider == "ollama" || provider.contains("local") {
+                                "local"
+                            } else {
+                                "cloud"
+                            };
+                            let mut row = format!("{marker}{provider} / {model}");
+                            let target = 58usize.saturating_sub(state.chars().count());
+                            while row.chars().count() < target {
                                 row.push(' ');
                             }
+                            row.push_str(state);
                             ListItem::new(Span::styled(row, style))
                         })
                         .collect()
@@ -1069,7 +1084,7 @@ Secrets are not shown. The process may exit; approve later with the same session
                 } else {
                     format!("{}/{}", (*model_selected + 1).min(total), total)
                 };
-                let title = format!(" Choose a model · {pid} · {page}{prov_hint} · Enter use ");
+                let title = format!(" MODEL PICKER · {pid} · {page}{prov_hint} · Enter use ");
                 let block = Block::default()
                     .borders(Borders::ALL)
                     .border_style(theme::border())
@@ -1079,12 +1094,23 @@ Secrets are not shown. The process may exit; approve later with the same session
                 block.render(r, buf);
                 let regions = Layout::default()
                     .direction(Direction::Vertical)
-                    .constraints([Constraint::Length(2), Constraint::Min(1)])
+                    .constraints([
+                        Constraint::Length(1),
+                        Constraint::Length(2),
+                        Constraint::Min(1),
+                        Constraint::Length(1),
+                    ])
                     .split(inner);
-                Paragraph::new(format!("Model: {model_input}█"))
-                    .style(theme::text())
+                Paragraph::new(format!("current {current_model} · config-only switch"))
+                    .style(theme::muted())
                     .render(regions[0], buf);
-                List::new(list_items).render(regions[1], buf);
+                Paragraph::new(format!("/model {model_input}█"))
+                    .style(theme::text())
+                    .render(regions[1], buf);
+                List::new(list_items).render(regions[2], buf);
+                Paragraph::new("single config key · tools + durable state unchanged")
+                    .style(theme::dim())
+                    .render(regions[3], buf);
             }
             Overlay::ConnectApiKey {
                 title,
