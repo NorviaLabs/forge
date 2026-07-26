@@ -110,8 +110,12 @@ pub fn classify_operator_error(raw: &str) -> String {
         || lower.contains("unauthorized")
         || lower.contains("authentication")
         || lower.contains("api key")
+        || lower.contains("api_key")
         || lower.contains("unauthenticated")
         || lower.contains("no credentials")
+        || lower.contains("bearer ")
+        || lower.contains("sk-")
+        || lower.contains("secret=")
         || lower.contains("fixture token")
         || lower.contains("fixture-")
     {
@@ -144,6 +148,10 @@ mod tests {
     #[test]
     fn classify_auth() {
         assert!(classify_operator_error("401 unauthorized").contains("authentication"));
+        let message = classify_operator_error("failed api_key=secret sk-private");
+        assert!(message.contains("authentication"));
+        assert!(!message.contains("secret"));
+        assert!(!message.contains("sk-private"));
     }
 
     #[test]
