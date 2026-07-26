@@ -588,23 +588,15 @@ impl TuiApp {
 
     /// Phase 10: set strip + keep `status_message` in sync for tests/compat.
     pub fn set_feedback(&mut self, severity: FeedbackSeverity, text: impl Into<String>) {
-        // Errors are not sticky status chrome — use activity/chat only.
-        if severity == FeedbackSeverity::Error {
-            self.status_message.clear();
-            self.feedback = FeedbackModel::default();
-            return;
-        }
         let text = text.into();
         self.status_message = text.clone();
         self.feedback = FeedbackModel { text, severity };
     }
 
-    /// Operator errors go to activity (and a single chat banner), not a sticky red strip.
+    /// Operator errors remain visible in chat, feedback, and activity.
     pub fn report_error(&mut self, raw: &str) {
         let msg = classify_operator_error(raw);
-        // Clear any prior sticky strip (including leftover errors from older builds).
-        self.feedback = FeedbackModel::default();
-        self.status_message.clear();
+        self.set_feedback(FeedbackSeverity::Error, msg.clone());
         // Replace prior error banners — don't accumulate red clutter in the chat.
         self.ui_banners.retain(|b| {
             !matches!(
@@ -4831,7 +4823,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tui08_report_error_writes_banner_and_activity_not_sticky_strip() {
+    async fn tui08_report_error_writes_banner_feedback_and_activity() {
         let (_dir, session) = test_session().await;
         let mut app = TuiApp::new(
             session,
@@ -4843,12 +4835,9 @@ mod tests {
             },
         );
         app.report_error("upstream returned 429 rate limit exceeded");
-        // Sticky red status strip intentionally not used for errors.
-        assert!(
-            app.feedback.is_empty(),
-            "errors must not stick in feedback strip"
-        );
-        assert!(app.status_message.is_empty());
+        assert_eq!(app.feedback.severity, FeedbackSeverity::Error);
+        assert!(app.feedback.text.contains("429"));
+        assert!(app.status_message.contains("429"));
         assert!(
             app.ui_banners.iter().any(|b| matches!(
                 b,
@@ -5016,14 +5005,10 @@ mod tests {
             app.feedback.text,
             app.status_message
         );
-        assert!(
-            app.notices
-                .iter()
-                .any(|l| l.to_ascii_lowercase().contains("prompt")
-                    || l.to_ascii_lowercase().contains("token")),
-            "notices should list token kinds: {:?}",
-            app.notices
-        );
+        assert!(app
+            .ui_banners
+            .iter()
+            .any(|item| matches!(item, ChatItem::SessionStatus { .. })));
     }
 
     /// Save-and-restore env vars so dev machine credentials don't leak into tests.
