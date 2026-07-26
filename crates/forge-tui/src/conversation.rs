@@ -42,6 +42,21 @@ pub enum ChatItem {
         incomplete_intents: usize,
         last_assistant: Option<String>,
     },
+    SessionStatus {
+        session_id: String,
+        status: String,
+        provider: String,
+        model: String,
+        context_tokens: usize,
+        context_capacity: usize,
+        context_pct: f64,
+        reset_pct: f64,
+        workspace: String,
+        journal: String,
+        cursor: u64,
+        tools: usize,
+        hitl_pending: bool,
+    },
     System {
         text: String,
     },
@@ -530,6 +545,84 @@ impl ConversationModel {
                         ]));
                         for line in wrap(restored, width).into_iter().take(3) {
                             lines.push(Line::from(Span::styled(line, theme::text())));
+                        }
+                    }
+                    if gap {
+                        lines.push(Line::from(""));
+                    }
+                }
+                ChatItem::SessionStatus {
+                    session_id,
+                    status,
+                    provider,
+                    model,
+                    context_tokens,
+                    context_capacity,
+                    context_pct,
+                    reset_pct,
+                    workspace,
+                    journal,
+                    cursor,
+                    tools,
+                    hitl_pending,
+                } => {
+                    lines.push(Line::from(Span::styled("STATUS", theme::brand())));
+                    for (heading, rows) in [
+                        (
+                            "Session",
+                            vec![
+                                ("id", session_id.clone()),
+                                ("status", status.clone()),
+                                ("surface", "tui".into()),
+                                ("journal", format!("{journal} · cursor #{cursor}")),
+                            ],
+                        ),
+                        (
+                            "Model",
+                            vec![
+                                ("provider", provider.clone()),
+                                ("model", model.clone()),
+                                ("switch", "config-only (/model)".into()),
+                            ],
+                        ),
+                        (
+                            "Context",
+                            vec![
+                                (
+                                    "used",
+                                    format!(
+                                        "{context_tokens} / {context_capacity} ({context_pct:.0}%)"
+                                    ),
+                                ),
+                                ("threshold", format!("reset at {reset_pct:.0}%")),
+                            ],
+                        ),
+                        (
+                            "Workspace",
+                            vec![("root", workspace.clone()), ("worktree", "off".into())],
+                        ),
+                        (
+                            "Governance",
+                            vec![
+                                ("tools", format!("{tools} allowed")),
+                                (
+                                    "hitl",
+                                    if *hitl_pending {
+                                        "approval pending".into()
+                                    } else {
+                                        "none pending".into()
+                                    },
+                                ),
+                            ],
+                        ),
+                    ] {
+                        lines.push(Line::from(""));
+                        lines.push(Line::from(Span::styled(heading, theme::text())));
+                        for (label, value) in rows {
+                            lines.push(Line::from(vec![
+                                Span::styled(format!("{label:<12}"), theme::dim()),
+                                Span::styled(value, theme::muted()),
+                            ]));
                         }
                     }
                     if gap {
