@@ -76,7 +76,7 @@ mod tests {
     #[tokio::test]
     async fn visual_slash_autocomplete_shows_suggestions() {
         let (_d, mut app) = app().await;
-        for c in "/con".chars() {
+        for c in "/re".chars() {
             app.handle_key(press(KeyCode::Char(c))).await.unwrap();
         }
         let backend = TestBackend::new(100, 30);
@@ -86,19 +86,27 @@ mod tests {
         // Save for manual inspection
         let _ = std::fs::write("/tmp/forge_tui_visual_slash.txt", &text);
         assert!(
-            text.contains("connect")
-                || text.contains("/connect")
+            text.contains("resume")
+                || text.contains("/resume")
                 || text.contains("commands")
                 || text.contains("suggestions"),
             "frame missing autocomplete:\n{text}"
         );
         assert!(
-            text.contains("/con") || text.contains("con"),
+            text.contains("/re") || text.contains("re"),
             "input missing:\n{text}"
         );
         assert!(
-            text.contains('▶') || text.contains('█') || text.contains("/con"),
+            text.contains('▶') || text.contains('█') || text.contains("/re"),
             "expected selection marker or input:\n{text}"
+        );
+        assert!(
+            text.contains("Surface-local commands do not call the model"),
+            "missing command safety note:\n{text}"
+        );
+        assert!(
+            text.contains("Resume session by id"),
+            "missing selected command help:\n{text}"
         );
         // Selected row must use solid teal background (theme::ACCENT)
         let buf = term.backend().buffer();
