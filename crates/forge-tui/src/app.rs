@@ -194,7 +194,7 @@ pub struct TuiApp {
 impl TuiApp {
     pub fn new(session: AgentSession, runtime: TuiRuntimeConfig) -> Self {
         let mut input = InputModel::default();
-        input.hint = String::new();
+        input.hint = "Describe a task or paste an error…".into();
         Self {
             session,
             input,
@@ -1952,7 +1952,11 @@ Reply with ONLY the commit message line.\n\n\
             self.session.status,
             opts,
         )
-        .with_extra_banners(self.ui_banners.iter().cloned());
+        .with_extra_banners(self.ui_banners.iter().cloned())
+        .with_home(
+            self.runtime.cwd.display().to_string(),
+            self.session.journal_dir().display().to_string(),
+        );
         conv = conv.with_queued_messages(
             self.message_queue.iter().cloned().collect::<Vec<_>>(),
             self.queue_selected,
@@ -2118,7 +2122,7 @@ Reply with ONLY the commit message line.\n\n\
         } else if qn > 0 {
             format!("queue {qn} · Ctrl+Up/Down select · Ctrl+Backspace cancel")
         } else {
-            "Ctrl+K command palette".into()
+            "/ commands  ·  Esc cancel  ·  Ctrl+Q quit  ·  ? help".into()
         };
         let footer = FooterModel {
             cwd: self.runtime.cwd.display().to_string(),
