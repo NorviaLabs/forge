@@ -156,6 +156,14 @@ pub enum ApplyOutcome {
     Hitl(ModelResponse),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResumeReport {
+    pub last_seq: u64,
+    pub model_steps: usize,
+    pub tool_results: usize,
+    pub incomplete_intents: usize,
+}
+
 pub struct AgentSession {
     pub session_id: SessionId,
     pub status: SessionStatus,
@@ -179,9 +187,21 @@ pub struct AgentSession {
 
 impl AgentSession {
     /// Replace the active conversation by replaying another session journal.
-    pub async fn resume_session(&mut self, session_id: SessionId) -> Result<(), LoopError> {
+    pub async fn resume_session(
+        &mut self,
+        session_id: SessionId,
+    ) -> Result<ResumeReport, LoopError> {
         if session_id == self.session_id {
-            return Ok(());
+            return Ok(ResumeReport {
+                last_seq: self.events.len() as u64,
+                model_steps: self.token_usage.model_steps as usize,
+                tool_results: self
+                    .messages
+                    .iter()
+                    .filter(|message| message.role == MessageRole::Tool)
+                    .count(),
+                incomplete_intents: 0,
+            });
         }
 
         let journal = Journal::open(self.journal.directory(), session_id).await?;
@@ -219,6 +239,12 @@ impl AgentSession {
             token_usage.record_response(response.usage.as_ref(), response.thinking.as_deref());
         }
 
+        let report = ResumeReport {
+            last_seq: state.last_seq,
+            model_steps: state.model_responses.len(),
+            tool_results: state.tool_results.len(),
+            incomplete_intents: state.incomplete_intents.len(),
+        };
         self.session_id = session_id;
         self.status = state.status;
         self.messages = messages;
@@ -231,7 +257,7 @@ impl AgentSession {
         self.tool_ctx = ToolContext::new(active_root);
         self.context = context;
         self.token_usage = token_usage;
-        Ok(())
+        Ok(report)
     }
 
     pub async fn create(

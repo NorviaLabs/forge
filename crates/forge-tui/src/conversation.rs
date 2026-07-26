@@ -33,6 +33,15 @@ pub enum ChatItem {
         completed: Vec<String>,
         next_actions: Vec<String>,
     },
+    SessionRecovery {
+        session_id: String,
+        journal_path: String,
+        last_seq: u64,
+        model_steps: usize,
+        tool_results: usize,
+        incomplete_intents: usize,
+        last_assistant: Option<String>,
+    },
     System {
         text: String,
     },
@@ -452,6 +461,62 @@ impl ConversationModel {
                             Span::styled("next: ", theme::dim()),
                             Span::styled(next.clone(), theme::muted()),
                         ]));
+                    }
+                    if gap {
+                        lines.push(Line::from(""));
+                    }
+                }
+                ChatItem::SessionRecovery {
+                    session_id,
+                    journal_path,
+                    last_seq,
+                    model_steps,
+                    tool_results,
+                    incomplete_intents,
+                    last_assistant,
+                } => {
+                    lines.push(Line::from(Span::styled("RECOVERY", theme::brand())));
+                    lines.push(Line::from(Span::styled(
+                        format!("Resumed session {session_id} · journal replay"),
+                        theme::text(),
+                    )));
+                    lines.push(Line::from(vec![
+                        Span::styled("✓ opened ", theme::ok()),
+                        Span::styled(journal_path.clone(), theme::muted()),
+                    ]));
+                    lines.push(Line::from(Span::styled(
+                        format!("✓ replayed to cursor #{last_seq}"),
+                        theme::ok(),
+                    )));
+                    lines.push(Line::from(Span::styled(
+                        format!("✓ {model_steps} model steps restored from journal"),
+                        theme::ok(),
+                    )));
+                    lines.push(Line::from(Span::styled(
+                        format!("✓ {tool_results} tool results restored · no re-exec"),
+                        theme::ok(),
+                    )));
+                    if *incomplete_intents > 0 {
+                        lines.push(Line::from(Span::styled(
+                            format!(
+                                "⚠ {incomplete_intents} incomplete tool intents retained fail-safe"
+                            ),
+                            theme::warn(),
+                        )));
+                    }
+                    lines.push(Line::from(Span::styled(
+                        "Completed LLM and tool steps are never re-run.",
+                        theme::dim(),
+                    )));
+                    if let Some(restored) = last_assistant {
+                        lines.push(Line::from(""));
+                        lines.push(Line::from(vec![
+                            Span::styled("ASSISTANT", theme::brand()),
+                            Span::styled(" · RESTORED", theme::info()),
+                        ]));
+                        for line in wrap(restored, width).into_iter().take(3) {
+                            lines.push(Line::from(Span::styled(line, theme::text())));
+                        }
                     }
                     if gap {
                         lines.push(Line::from(""));
@@ -1639,6 +1704,41 @@ mod tests {
             "82% → 14%",
             "rate limiting middleware",
             "wire public router",
+        ] {
+            assert!(text.contains(expected), "missing {expected:?}: {text}");
+        }
+    }
+
+    #[test]
+    fn session_recovery_card_shows_replay_guarantees() {
+        let m = ConversationModel {
+            items: vec![ChatItem::SessionRecovery {
+                session_id: "a1b2c3d4".into(),
+                journal_path: ".forge/sessions/a1b2c3d4.db".into(),
+                last_seq: 1847,
+                model_steps: 62,
+                tool_results: 41,
+                incomplete_intents: 1,
+                last_assistant: Some("Continuing from the restored journal.".into()),
+            }],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+        let text = m
+            .lines()
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        for expected in [
+            "RECOVERY",
+            "cursor #1847",
+            "62 model steps",
+            "41 tool results",
+            "1 incomplete tool intents",
+            "ASSISTANT · RESTORED",
+            "never re-run",
         ] {
             assert!(text.contains(expected), "missing {expected:?}: {text}");
         }
