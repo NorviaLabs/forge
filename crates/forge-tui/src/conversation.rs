@@ -78,6 +78,7 @@ pub enum ChatItem {
     ValidationFailure {
         tool: String,
         error: String,
+        retry: usize,
     },
     StreamingAssistant {
         text: String,
@@ -189,6 +190,7 @@ impl ConversationModel {
         let mut latest_thinking: Option<String> = None;
         let mut repair_pending = false;
         let mut validation_retry_pending = false;
+        let mut validation_failures = std::collections::HashMap::<String, usize>::new();
         for m in messages {
             match m.role {
                 // System prompts are for the model, not the operator UI.
@@ -238,6 +240,8 @@ impl ConversationModel {
                     let name = m.name.as_deref().unwrap_or("tool");
                     if m.content.starts_with("Tool validation error:") {
                         validation_retry_pending = true;
+                        let retry = validation_failures.entry(name.to_string()).or_default();
+                        *retry += 1;
                         items.push(ChatItem::ValidationFailure {
                             tool: name.to_string(),
                             error: m
@@ -245,6 +249,7 @@ impl ConversationModel {
                                 .trim_start_matches("Tool validation error: ")
                                 .trim_end_matches(" Please correct arguments.")
                                 .to_string(),
+                            retry: *retry,
                         });
                     } else if looks_like_diff(&m.content)
                         || name.contains("write")
@@ -751,7 +756,7 @@ impl ConversationModel {
                         lines.push(Line::from(""));
                     }
                 }
-                ChatItem::ValidationFailure { tool, error } => {
+                ChatItem::ValidationFailure { tool, error, retry } => {
                     lines.push(Line::from(vec![
                         Span::styled("TOOL · REJECTED", theme::danger()),
                         Span::styled("  TOOL CONTRACT", theme::dim()),
@@ -768,7 +773,7 @@ impl ConversationModel {
                         theme::ok(),
                     )));
                     lines.push(Line::from(Span::styled(
-                        "↻ automatic validation retry prompt sent to model",
+                        format!("↻ automatic validation retry {retry}/3 sent to model"),
                         theme::warn(),
                     )));
                     if gap {
@@ -1730,6 +1735,15 @@ mod tests {
                 tool_calls: vec![],
             },
             Message {
+                role: MessageRole::Tool,
+                content: error.into(),
+                tool_call_id: Some("2".into()),
+                name: Some("read_file".into()),
+                thinking: None,
+                thinking_duration_secs: None,
+                tool_calls: vec![],
+            },
+            Message {
                 role: MessageRole::Assistant,
                 content: "Correcting the tool call.".into(),
                 tool_call_id: None,
@@ -1749,9 +1763,13 @@ mod tests {
             SessionStatus::Running,
             ConversationViewOpts::default(),
         );
-        assert_eq!(model.items.len(), 2);
+        assert_eq!(model.items.len(), 3);
         assert!(matches!(model.items[0], ChatItem::ValidationFailure { .. }));
-        assert!(matches!(model.items[1], ChatItem::RetryAssistant { .. }));
+        assert!(matches!(
+            model.items[1],
+            ChatItem::ValidationFailure { retry: 2, .. }
+        ));
+        assert!(matches!(model.items[2], ChatItem::RetryAssistant { .. }));
         let rendered = model
             .lines()
             .iter()
@@ -1760,6 +1778,7 @@ mod tests {
         for expected in [
             "TOOL · REJECTED",
             "Side effects not executed",
+            "retry 2/3",
             "ASSISTANT · RETRY",
         ] {
             assert!(
