@@ -159,6 +159,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn visual_model_picker_marks_current_config_only_switch() {
+        let (_d, mut app) = app().await;
+        app.overlay = Some(Overlay::model_open_with(vec![crate::overlays::ModelItem {
+            provider: "native".into(),
+            model: "mock".into(),
+            profile_id: Some("mock".into()),
+        }]));
+        if let Some(overlay) = &mut app.overlay {
+            overlay.focus_model("mock");
+        }
+        let backend = TestBackend::new(100, 30);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| app.draw(f)).unwrap();
+        let text = buffer_text(&term);
+        for expected in [
+            "MODEL PICKER",
+            "current mock",
+            "config-only switch",
+            "tools + durable state unchanged",
+        ] {
+            assert!(text.contains(expected), "missing {expected:?}:\n{text}");
+        }
+    }
+
+    #[tokio::test]
     async fn visual_status_command_in_textbox() {
         let (_d, mut app) = app().await;
         for c in "/status".chars() {
