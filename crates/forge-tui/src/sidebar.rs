@@ -19,6 +19,7 @@ pub struct SidebarModel {
     pub ctx_total: usize,
     pub busy: bool,
     pub step: String,
+    pub context_reset: Option<(f64, f64)>,
     pub tools: Vec<String>,
     pub activity: Vec<String>,
 }
@@ -50,6 +51,7 @@ impl SidebarModel {
             ctx_total: context.context_capacity,
             busy: false,
             step: String::new(),
+            context_reset: None,
             tools,
             activity: activity_lines.to_vec(),
         }
@@ -109,7 +111,7 @@ impl Widget for SidebarWidget<'_> {
         Paragraph::new(sess_lines).render(chunks[0], buf);
 
         let pct = (self.model.ctx_pct * 100.0).clamp(0.0, 100.0);
-        let tool_lines = vec![
+        let mut tool_lines = vec![
             Line::from(Span::styled("CONTEXT BUDGET", theme::dim())),
             Line::from(vec![
                 Span::styled("used ", theme::dim()),
@@ -133,6 +135,21 @@ impl Widget for SidebarWidget<'_> {
                 ),
             ]),
         ];
+        if let Some((before, after)) = self.model.context_reset {
+            tool_lines.splice(
+                1..3,
+                [
+                    Line::from(vec![
+                        Span::styled("before ", theme::dim()),
+                        Span::styled(format!("{before:.0}%"), theme::warn()),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("after  ", theme::dim()),
+                        Span::styled(format!("{after:.0}%"), theme::ok()),
+                    ]),
+                ],
+            );
+        }
 
         Paragraph::new(tool_lines).render(chunks[1], buf);
 

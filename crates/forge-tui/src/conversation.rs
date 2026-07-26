@@ -26,6 +26,13 @@ pub enum ChatItem {
         workspace: String,
         journal: String,
     },
+    ContextHandoff {
+        before_pct: f64,
+        after_pct: f64,
+        goal: String,
+        completed: Vec<String>,
+        next_actions: Vec<String>,
+    },
     System {
         text: String,
     },
@@ -392,6 +399,60 @@ impl ConversationModel {
                         "Waiting for your first message.",
                         theme::text(),
                     )));
+                    if gap {
+                        lines.push(Line::from(""));
+                    }
+                }
+                ChatItem::ContextHandoff {
+                    before_pct,
+                    after_pct,
+                    goal,
+                    completed,
+                    next_actions,
+                } => {
+                    lines.push(Line::from(vec![
+                        Span::styled("CONTEXT LIFECYCLE", theme::brand()),
+                        Span::styled(" · hard reset + handoff", theme::muted()),
+                    ]));
+                    for step in [
+                        "✓ wrote .forge/progress.json",
+                        "✓ journaled context_reset",
+                        "✓ cleared active window",
+                        "✓ rehydrated from progress + workspace",
+                    ] {
+                        lines.push(Line::from(Span::styled(step, theme::ok())));
+                    }
+                    lines.push(Line::from(Span::styled(
+                        "Large tool payloads remain as offload URIs (CTX-01).",
+                        theme::dim(),
+                    )));
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(vec![
+                        Span::styled("ASSISTANT", theme::brand()),
+                        Span::styled(" · POST-RESET", theme::info()),
+                    ]));
+                    lines.push(Line::from(Span::styled(
+                        format!(
+                            "Continuing from handoff · context {before_pct:.0}% → {after_pct:.0}%"
+                        ),
+                        theme::text(),
+                    )));
+                    lines.push(Line::from(vec![
+                        Span::styled("goal: ", theme::dim()),
+                        Span::styled(goal.clone(), theme::text()),
+                    ]));
+                    if let Some(done) = completed.last() {
+                        lines.push(Line::from(vec![
+                            Span::styled("done: ", theme::dim()),
+                            Span::styled(done.clone(), theme::muted()),
+                        ]));
+                    }
+                    if let Some(next) = next_actions.first() {
+                        lines.push(Line::from(vec![
+                            Span::styled("next: ", theme::dim()),
+                            Span::styled(next.clone(), theme::muted()),
+                        ]));
+                    }
                     if gap {
                         lines.push(Line::from(""));
                     }
@@ -1550,6 +1611,37 @@ mod tests {
             .collect::<String>();
         assert!(text.contains("TOOL ⏸ bash"));
         assert!(text.contains("git push -u origin feature"));
+    }
+
+    #[test]
+    fn context_handoff_card_shows_lifecycle_and_progress() {
+        let m = ConversationModel {
+            items: vec![ChatItem::ContextHandoff {
+                before_pct: 82.0,
+                after_pct: 14.0,
+                goal: "rate limiting middleware".into(),
+                completed: vec!["middleware scaffold".into()],
+                next_actions: vec!["wire public router".into()],
+            }],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+        let text = m
+            .lines()
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        for expected in [
+            "CONTEXT LIFECYCLE",
+            "POST-RESET",
+            "82% → 14%",
+            "rate limiting middleware",
+            "wire public router",
+        ] {
+            assert!(text.contains(expected), "missing {expected:?}: {text}");
+        }
     }
 
     #[test]
