@@ -8,7 +8,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Widget};
+use ratatui::widgets::{Paragraph, Widget};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolCardState {
@@ -668,20 +668,16 @@ impl ConversationModel {
                         lines.push(Line::from(""));
                     }
                 }
-                // User: plain text with no prompt marker or indent.
+                // User turns are easy to scan, but deliberately not boxed in.
                 ChatItem::User { text } => {
-                    let parts = wrap(text, width);
+                    let parts = wrap(text, width.saturating_sub(2));
+                    lines.push(Line::from(Span::styled("You", theme::metadata_style())));
                     for (i, l) in parts.into_iter().enumerate() {
-                        if i == 0 {
-                            lines.push(
-                                Line::from(Span::styled("user", theme::info()))
-                                    .style(theme::user_message()),
-                            );
-                        }
-                        lines.push(
-                            Line::from(vec![Span::styled(l, theme::text())])
-                                .style(theme::user_message()),
-                        );
+                        let indent = if i == 0 { "› " } else { "  " };
+                        lines.push(Line::from(vec![
+                            Span::styled(indent, theme::metadata_style()),
+                            Span::styled(l, theme::user_message_style()),
+                        ]));
                     }
                     if gap {
                         lines.push(Line::from(""));
@@ -703,40 +699,27 @@ impl ConversationModel {
                     // visual treatment, so do not expose those delimiters.
                     let text = text.replace("**", "");
                     for l in wrap(&text, width.saturating_sub(3)) {
-                        lines.push(
-                            Line::from(vec![
-                                Span::styled("⋯ ", theme::info().add_modifier(Modifier::BOLD)),
-                                Span::styled(l, theme::muted().add_modifier(Modifier::ITALIC)),
-                            ])
-                            .style(theme::thinking_message()),
-                        );
+                        lines.push(Line::from(vec![
+                            Span::styled("⋯ ", theme::metadata_style()),
+                            Span::styled(l, theme::progress_style()),
+                        ]));
                     }
                     if gap {
                         lines.push(Line::from(""));
                     }
                 }
-                // Response: teal left bar — no "Forge"
+                // Final answers are primary transcript content.
                 ChatItem::Assistant { text } => {
                     let parts = assistant_lines(text, width.saturating_sub(3));
-                    let long_response = parts.len() > 3;
-                    if long_response {
-                        lines.push(horizontal_rule(width));
-                    }
-                    lines.push(
-                        Line::from(Span::styled("assistant", theme::brand()))
-                            .style(theme::assistant_message()),
-                    );
+                    lines.push(Line::from(Span::styled("Forge", theme::brand())));
                     for (i, line) in parts.into_iter().enumerate() {
                         let gutter = if i == 0 { "▍ " } else { "  " };
                         let mut spans = vec![Span::styled(
                             gutter,
-                            theme::brand().add_modifier(Modifier::BOLD),
+                            theme::metadata_style().add_modifier(Modifier::BOLD),
                         )];
                         spans.extend(line.spans);
-                        lines.push(Line::from(spans).style(theme::assistant_message()));
-                    }
-                    if long_response {
-                        lines.push(horizontal_rule(width));
+                        lines.push(Line::from(spans).style(theme::assistant_answer_style()));
                     }
                     if gap {
                         lines.push(Line::from(""));
@@ -781,13 +764,10 @@ impl ConversationModel {
                     }
                 }
                 ChatItem::StreamingAssistant { text } => {
-                    lines.push(
-                        Line::from(vec![
-                            Span::styled("ASSISTANT", theme::brand()),
-                            Span::styled(" · STREAMING", theme::info()),
-                        ])
-                        .style(theme::assistant_message()),
-                    );
+                    lines.push(Line::from(vec![
+                        Span::styled("Forge", theme::brand()),
+                        Span::styled(" · responding", theme::metadata_style()),
+                    ]));
                     for (i, line) in assistant_lines(text, width.saturating_sub(3))
                         .into_iter()
                         .enumerate()
@@ -795,10 +775,10 @@ impl ConversationModel {
                         let gutter = if i == 0 { "▍ " } else { "  " };
                         let mut spans = vec![Span::styled(
                             gutter,
-                            theme::brand().add_modifier(Modifier::BOLD),
+                            theme::metadata_style().add_modifier(Modifier::BOLD),
                         )];
                         spans.extend(line.spans);
-                        lines.push(Line::from(spans).style(theme::assistant_message()));
+                        lines.push(Line::from(spans).style(theme::assistant_answer_style()));
                     }
                     if gap {
                         lines.push(Line::from(""));
@@ -898,10 +878,10 @@ impl ConversationModel {
                 } => {
                     tool_i += 1;
                     let (tag, st) = match state {
-                        ToolCardState::Running => ("●", theme::info()),
-                        ToolCardState::Done => ("✓", theme::ok()),
+                        ToolCardState::Running => ("◐", theme::tool_running_style()),
+                        ToolCardState::Done => ("✓", theme::tool_success_style()),
                         ToolCardState::Blocked => ("⏸", theme::warn()),
-                        ToolCardState::Error => ("✗", theme::danger()),
+                        ToolCardState::Error => ("✗", theme::tool_failure_style()),
                     };
                     let dur = duration
                         .as_ref()
@@ -912,17 +892,28 @@ impl ConversationModel {
                     } else {
                         String::new()
                     };
+                    let is_last = Some(idx) == last_tool;
+                    let expand = self.opts.tool_expanded && is_last;
+                    let has_more =
+                        !detail.is_empty() && detail.chars().count() > summary.chars().count();
                     lines.push(Line::from(vec![
-                        Span::styled("TOOL ", theme::dim()),
                         Span::styled(format!("{tag} "), st),
                         Span::styled(
                             format!("{name}{count}"),
-                            theme::tool().add_modifier(Modifier::BOLD),
+                            theme::text().add_modifier(Modifier::BOLD),
                         ),
+                        Span::styled("  ", theme::metadata_style()),
+                        Span::styled(compact_summary(summary), theme::metadata_style()),
                         Span::styled(dur, theme::dim()),
+                        Span::styled(
+                            if has_more && !expand {
+                                "  · Ctrl+O more"
+                            } else {
+                                ""
+                            },
+                            theme::metadata_style(),
+                        ),
                     ]));
-                    let is_last = Some(idx) == last_tool;
-                    let expand = self.opts.tool_expanded && is_last;
                     if expand {
                         for l in detail.lines().take(40) {
                             lines.push(Line::from(Span::styled(format!("  {l}"), theme::muted())));
@@ -937,16 +928,6 @@ impl ConversationModel {
                                 "  (Ctrl+O collapse)",
                                 theme::dim(),
                             )));
-                        }
-                    } else {
-                        for l in wrap(summary, width.saturating_sub(4)).into_iter().take(3) {
-                            lines.push(Line::from(Span::styled(format!("  {l}"), theme::muted())));
-                        }
-                        if is_last
-                            && !detail.is_empty()
-                            && detail.chars().count() > summary.chars().count()
-                        {
-                            lines.push(Line::from(Span::styled("  Ctrl+O expand", theme::dim())));
                         }
                     }
                     if gap {
@@ -1086,8 +1067,25 @@ fn change_rationale(thinking: Option<&str>) -> String {
     }
 }
 
-fn horizontal_rule(width: usize) -> Line<'static> {
-    Line::from(Span::styled("─".repeat(width), theme::dim()))
+/// Keep the default tool row useful without surfacing internal storage and
+/// bookkeeping details. The complete, copyable output remains behind Ctrl+O.
+fn compact_summary(summary: &str) -> String {
+    let useful = summary
+        .lines()
+        .map(str::trim)
+        .find(|line| {
+            !line.is_empty()
+                && !line.contains("offload")
+                && !line.contains("sha256")
+                && !line.contains("://")
+                && !line.contains("token_storage")
+        })
+        .unwrap_or("completed");
+    let mut result: String = useful.chars().take(96).collect();
+    if useful.chars().count() > result.chars().count() {
+        result.push('…');
+    }
+    result
 }
 
 #[allow(dead_code)] // kept for optional tool/diff UI later
@@ -1312,14 +1310,11 @@ pub struct ConversationWidget<'a> {
 
 impl Widget for ConversationWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        // Account for the left and right borders. The model performs its own
-        // styled wrapping, so it must use the viewport width rather than the
-        // historical 100-column default.
-        let lines = self
-            .model
-            .lines_for_width(area.width.saturating_sub(2) as usize);
+        // The transcript owns the main area; hierarchy comes from spacing and
+        // semantic markers rather than a permanent frame.
+        let lines = self.model.lines_for_width(area.width as usize);
         let total = lines.len() as u16;
-        let height = area.height.saturating_sub(2);
+        let height = area.height;
         let max_scroll = total.saturating_sub(height);
         let scroll = if self.model.follow {
             max_scroll
@@ -1328,15 +1323,7 @@ impl Widget for ConversationWidget<'_> {
             // moves the viewport back from the live tail of the conversation.
             max_scroll.saturating_sub(self.model.scroll.min(max_scroll))
         };
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(theme::border())
-            .style(theme::panel_alt())
-            .title(Span::styled(" transcript ", theme::muted()));
-        Paragraph::new(lines)
-            .block(block)
-            .scroll((scroll, 0))
-            .render(area, buf);
+        Paragraph::new(lines).scroll((scroll, 0)).render(area, buf);
     }
 }
 
@@ -1640,7 +1627,7 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(!rendered.contains('›'), "{rendered}");
+        assert!(rendered.contains("You\n› hello world"), "{rendered}");
         assert!(!rendered.contains("❯"), "{rendered}");
         assert!(rendered.contains("hello world"), "{rendered}");
     }
@@ -1669,7 +1656,7 @@ mod tests {
     }
 
     #[test]
-    fn long_assistant_responses_get_horizontal_rules() {
+    fn long_assistant_responses_use_a_single_semantic_heading() {
         let msgs = vec![Message {
             role: MessageRole::Assistant,
             content: "line one\nline two\nline three\nline four".into(),
@@ -1695,7 +1682,14 @@ mod tests {
                     .collect::<String>()
             })
             .collect::<Vec<_>>();
-        assert_eq!(rendered.iter().filter(|line| line.contains('─')).count(), 2);
+        assert_eq!(
+            rendered
+                .iter()
+                .filter(|line| line.as_str() == "Forge")
+                .count(),
+            1
+        );
+        assert_eq!(rendered.iter().filter(|line| line.contains('─')).count(), 0);
     }
 
     #[test]
@@ -1919,7 +1913,7 @@ mod tests {
             .flat_map(|line| line.spans.iter())
             .map(|span| span.content.as_ref())
             .collect::<String>();
-        assert!(text.contains("ASSISTANT · STREAMING"));
+        assert!(text.contains("Forge · responding"));
         assert!(text.contains("partial response▌"));
     }
 
@@ -1938,7 +1932,7 @@ mod tests {
             .flat_map(|line| line.spans.iter())
             .map(|span| span.content.as_ref())
             .collect::<String>();
-        assert!(text.contains("TOOL ● read_file"));
+        assert!(text.contains("◐ read_file"));
         assert!(text.contains("tool_intent committed · awaiting result"));
     }
 
@@ -1957,7 +1951,7 @@ mod tests {
             .flat_map(|line| line.spans.iter())
             .map(|span| span.content.as_ref())
             .collect::<String>();
-        assert!(text.contains("TOOL ⏸ bash"));
+        assert!(text.contains("⏸ bash"));
         assert!(text.contains("git push -u origin feature"));
     }
 

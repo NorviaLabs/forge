@@ -177,6 +177,8 @@ pub struct TuiApp {
     reasoning_effort: ReasoningEffort,
     /// Expand last tool detail (Ctrl+O).
     tool_expanded: bool,
+    /// User preference; narrow terminals still hide the sidebar responsively.
+    sidebar_visible: bool,
     /// Soft-cancel in-flight turn (Esc while busy).
     cancel_requested: bool,
     /// Tools allowed for the rest of this session (HITL "s").
@@ -195,7 +197,7 @@ pub struct TuiApp {
 impl TuiApp {
     pub fn new(session: AgentSession, runtime: TuiRuntimeConfig) -> Self {
         let mut input = InputModel::default();
-        input.hint = "Describe a task or paste an error…".into();
+        input.hint = "Describe a task…".into();
         Self {
             session,
             input,
@@ -234,6 +236,7 @@ impl TuiApp {
             thought_secs: None,
             reasoning_effort: ReasoningEffort::from_env(),
             tool_expanded: false,
+            sidebar_visible: true,
             cancel_requested: false,
             hitl_session_allow: HashSet::new(),
             toast: None,
@@ -1921,7 +1924,7 @@ Reply with ONLY the commit message line.\n\n\
         let fb_h = if self.feedback.is_empty() { 0 } else { 1 };
         let input_h = (self.input.visual_lines() + 2).clamp(3, 8);
         let slash_mode = self.overlay.is_none() && self.input.text.starts_with('/');
-        let regions = split_areas_full(area, fb_h, input_h, !slash_mode, 0);
+        let regions = split_areas_full(area, fb_h, input_h, !slash_mode && self.sidebar_visible, 0);
         let status = self.refresh_status_model();
         frame.render_widget(StatusBar { model: &status }, regions.status);
 
@@ -2171,7 +2174,7 @@ Reply with ONLY the commit message line.\n\n\
         } else if qn > 0 {
             format!("queue {qn} · Ctrl+Up/Down select · Ctrl+Backspace cancel")
         } else {
-            "/ commands  ·  Esc cancel  ·  Ctrl+Q quit  ·  ? help".into()
+            "/ commands  ·  Ctrl+B sidebar  ·  Esc cancel  ·  ? help".into()
         };
         let footer = FooterModel {
             cwd: self.runtime.cwd.display().to_string(),
@@ -2353,6 +2356,9 @@ Reply with ONLY the commit message line.\n\n\
             }
             KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.tool_expanded = !self.tool_expanded;
+            }
+            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.sidebar_visible = !self.sidebar_visible;
             }
             KeyCode::Esc => {
                 self.history.reset_browse();
@@ -4360,6 +4366,39 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(app.overlay, Some(Overlay::Slash { .. })));
+    }
+
+    #[tokio::test]
+    async fn ctrl_b_toggles_sidebar_preference_without_affecting_narrow_layout() {
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "mock".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "test".into(),
+            },
+        );
+        assert!(app.sidebar_visible);
+        app.handle_key(press(KeyCode::Char('b'), KeyModifiers::CONTROL))
+            .await
+            .unwrap();
+        assert!(!app.sidebar_visible);
+        assert!(split_areas_full(
+            ratatui::layout::Rect::new(0, 0, 120, 30),
+            0,
+            3,
+            app.sidebar_visible,
+            0
+        )
+        .sidebar
+        .is_none());
+        assert!(
+            split_areas_full(ratatui::layout::Rect::new(0, 0, 80, 24), 0, 3, true, 0)
+                .sidebar
+                .is_none()
+        );
     }
 
     #[tokio::test]

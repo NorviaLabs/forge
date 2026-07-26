@@ -173,12 +173,7 @@ mod tests {
         let mut term = Terminal::new(backend).unwrap();
         term.draw(|f| app.draw(f)).unwrap();
         let text = buffer_text(&term);
-        for expected in [
-            "MODEL PICKER",
-            "current mock",
-            "config-only switch",
-            "tools + durable state unchanged",
-        ] {
+        for expected in ["Models", "Current: mock", "current", "Esc close"] {
             assert!(text.contains(expected), "missing {expected:?}:\n{text}");
         }
     }
@@ -217,9 +212,9 @@ mod tests {
         let mut term = Terminal::new(backend).unwrap();
         term.draw(|f| app.draw(f)).unwrap();
         let text = buffer_text(&term);
-        assert!(text.contains("FORGE"), "missing session chrome:\n{text}");
-        assert!(text.contains("SESSION"), "missing sidebar:\n{text}");
-        assert!(text.contains("RECENT JOURNAL"), "missing journal:\n{text}");
+        assert!(text.contains("Forge"), "missing session chrome:\n{text}");
+        assert!(text.contains("Now"), "missing sidebar:\n{text}");
+        assert!(text.contains("Recent"), "missing recent activity:\n{text}");
         assert!(
             text.contains("model started"),
             "missing activity item:\n{text}"
@@ -235,14 +230,12 @@ mod tests {
         let text = buffer_text(&term);
 
         for expected in [
-            "FORGE",
+            "Forge",
             "SYSTEM",
             "Forge ready",
             "Waiting for your first message.",
-            "Describe a task or paste an error",
-            "CONTEXT BUDGET",
-            "TOOLS (ACL)",
-            "RECENT JOURNAL",
+            "Describe a task…",
+            "Context",
         ] {
             assert!(text.contains(expected), "missing {expected:?}:\n{text}");
         }
