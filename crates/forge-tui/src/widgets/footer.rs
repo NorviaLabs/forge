@@ -53,29 +53,6 @@ impl Widget for FooterBar<'_> {
         if area.height == 0 {
             return;
         }
-        let cwd = if self.model.cwd.chars().count() > 24 {
-            let s: String = self.model.cwd.chars().rev().take(22).collect();
-            format!("…{}", s.chars().rev().collect::<String>())
-        } else {
-            self.model.cwd.clone()
-        };
-        let conn = if self.model.connected {
-            let who = self.model.connect_profile.as_deref().unwrap_or("live");
-            format!("connected:{who}")
-        } else {
-            "not connected".into()
-        };
-        let model_disp = if self.model.model.is_empty() {
-            self.model.provider.clone()
-        } else {
-            self.model
-                .model
-                .rsplit('/')
-                .next()
-                .unwrap_or(&self.model.model)
-                .to_string()
-        };
-        let pct = (self.model.ctx_pct * 100.0).clamp(0.0, 100.0);
         let metadata_y = area.y + area.height.saturating_sub(1);
         if area.height > 1 {
             buf.set_line(
@@ -85,71 +62,13 @@ impl Widget for FooterBar<'_> {
                 area.width,
             );
         }
-        if area.width < 80 {
-            let line = Line::from(vec![
-                Span::styled(format!("{} ", model_disp), theme::text()),
-                Span::styled("· ", theme::dim()),
-                Span::styled(format!("ctx {pct:.1}% "), theme::info()),
-            ]);
-            render_line_with_status(
-                Rect {
-                    y: metadata_y,
-                    height: 1,
-                    ..area
-                },
-                buf,
-                line,
-                &self.model.status,
-                self.model.status_busy,
-            );
-            return;
-        }
-        let spans = vec![
-            Span::styled(
-                format!("forge {}  cwd {cwd} ", env!("CARGO_PKG_VERSION")),
-                theme::dim(),
-            ),
-            Span::styled("· ", theme::dim()),
-            Span::styled(format!("provider {} ", self.model.provider), theme::muted()),
-        ];
-        let _ = (model_disp, conn, pct);
-        render_line_with_status(
-            Rect {
-                y: metadata_y,
-                height: 1,
-                ..area
-            },
-            buf,
-            Line::from(spans),
-            &self.model.status,
-            self.model.status_busy,
+        buf.set_line(
+            area.x,
+            metadata_y,
+            &Line::from(Span::styled("Forge", theme::dim())),
+            area.width,
         );
     }
-}
-
-fn render_line_with_status(
-    area: Rect,
-    buf: &mut Buffer,
-    line: Line<'_>,
-    status_text: &str,
-    status_busy: bool,
-) {
-    let status = format!("{} ", status_text);
-    let status_width = status.chars().count().min(area.width as usize) as u16;
-    let status_x = area.x + area.width.saturating_sub(status_width);
-    let left_width = status_x.saturating_sub(area.x + 1);
-
-    buf.set_line(area.x, area.y, &line, left_width);
-    buf.set_string(
-        status_x,
-        area.y,
-        status,
-        if status_busy {
-            theme::info()
-        } else {
-            theme::text()
-        },
-    );
 }
 
 #[cfg(test)]
@@ -177,7 +96,7 @@ mod tests {
     }
 
     #[test]
-    fn renders_status_at_bottom_right() {
+    fn renders_quiet_footer_identity() {
         let model = FooterModel {
             status: "thinking".into(),
             status_busy: true,
@@ -190,11 +109,11 @@ mod tests {
         FooterBar { model: &model }.render(area, &mut buf);
 
         let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
-        assert!(rendered.ends_with("thinking "));
+        assert!(rendered.starts_with("Forge"));
     }
 
     #[test]
-    fn renders_only_the_model_name() {
+    fn does_not_repeat_status_metadata() {
         let model = FooterModel {
             provider: "native".into(),
             model: "openai-codex/gpt-5.6-sol".into(),
@@ -207,7 +126,6 @@ mod tests {
         FooterBar { model: &model }.render(area, &mut buf);
 
         let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
-        assert!(rendered.starts_with("gpt-5.6-sol · ctx"));
-        assert!(!rendered.contains("native/openai-codex"));
+        assert_eq!(rendered.trim(), "Forge");
     }
 }

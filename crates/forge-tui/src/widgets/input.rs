@@ -262,13 +262,13 @@ impl Widget for InputBar<'_> {
         // Block cursor: solid cell at caret (█ at EOL, inverted char mid-text).
         let lines: Vec<Line> = if self.model.text.is_empty() && !self.model.hint.is_empty() {
             vec![Line::from(vec![
-                Span::styled(" › ", theme::brand()),
+                Span::styled("› ", theme::brand()),
                 Span::styled(" ", theme::caret()), // block cell
                 Span::styled(self.model.hint.as_str(), theme::dim()),
             ])]
         } else if self.model.text.is_empty() {
             vec![Line::from(vec![
-                Span::styled(" › ", theme::brand()),
+                Span::styled("› ", theme::brand()),
                 Span::styled(" ", theme::caret()),
             ])]
         } else {
@@ -278,7 +278,7 @@ impl Widget for InputBar<'_> {
             let line_idx = before.matches('\n').count();
             let mut out = Vec::new();
             for (i, raw) in t.split('\n').enumerate() {
-                let prefix = if i == 0 { " › " } else { "   " };
+                let prefix = if i == 0 { "› " } else { "  " };
                 if i == line_idx {
                     let line_start = if i == 0 {
                         0
@@ -317,7 +317,7 @@ impl Widget for InputBar<'_> {
             }
             if t.ends_with('\n') && cur == t.len() {
                 out.push(Line::from(vec![
-                    Span::styled("   ", theme::brand()),
+                    Span::styled("  ", theme::brand()),
                     Span::styled(" ", theme::caret()),
                 ]));
             }
@@ -326,8 +326,6 @@ impl Widget for InputBar<'_> {
 
         let border = if self.model.not_connected {
             theme::warn()
-        } else if self.model.history_browse {
-            theme::brand()
         } else {
             theme::border()
         };
@@ -338,21 +336,17 @@ impl Widget for InputBar<'_> {
         } else if self.model.text.contains('\n') {
             " multi-line · Shift+Enter newline "
         } else {
-            " message "
+            " Describe a task… "
         };
         let block = Block::default()
-            .borders(Borders::ALL)
+            .borders(Borders::TOP)
             .border_style(border)
             .style(if self.model.history_browse {
                 theme::panel_alt()
             } else {
                 theme::panel()
             });
-        let block = if title == " message " {
-            block
-        } else {
-            block.title(Span::styled(title, theme::muted()))
-        };
+        let block = block.title(Span::styled(title, theme::muted()));
         Paragraph::new(lines)
             .style(Style::default().add_modifier(if self.model.dimmed {
                 Modifier::DIM
@@ -509,7 +503,7 @@ mod tests {
         .unwrap();
         let buf = term.backend().buffer();
         // Empty input renders prompt first, then the caret cell.
-        let cell = &buf[(4, 1)];
+        let cell = &buf[(2, 1)];
         assert_eq!(cell.symbol(), " ");
         assert_eq!(cell.style().bg, Some(theme::TEXT));
     }

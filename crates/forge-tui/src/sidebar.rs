@@ -66,45 +66,32 @@ pub struct SidebarWidget<'a> {
 impl Widget for SidebarWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let block = Block::default()
-            .borders(Borders::ALL)
+            .borders(Borders::LEFT)
             .border_style(theme::border())
-            .style(theme::panel_alt())
-            .title(Span::styled(" session ", theme::brand()));
+            .style(theme::panel_alt());
         let inner = block.inner(area);
         block.render(area, buf);
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(7),
-                Constraint::Length(6),
+                Constraint::Length(4),
+                Constraint::Length(4),
                 Constraint::Min(4),
             ])
             .split(inner);
 
         // Session
         let mut sess_lines = vec![
-            Line::from(Span::styled("SESSION", theme::dim())),
+            Line::from(Span::styled("Now", theme::brand())),
             Line::from(vec![
-                Span::styled("id      ", theme::dim()),
-                Span::styled(self.model.session_id.clone(), theme::text()),
-            ]),
-            Line::from(vec![
-                Span::styled("status  ", theme::dim()),
+                Span::styled("state ", theme::dim()),
                 Span::styled(self.model.status.clone(), status_style(&self.model.status)),
-            ]),
-            Line::from(vec![
-                Span::styled("surface ", theme::dim()),
-                Span::styled(self.model.surface.clone(), theme::text()),
-            ]),
-            Line::from(vec![
-                Span::styled("role    ", theme::dim()),
-                Span::styled(self.model.role.clone(), theme::text()),
             ]),
         ];
         if self.model.busy {
             sess_lines.push(Line::from(vec![
-                Span::styled("step    ", theme::dim()),
+                Span::styled("active ", theme::dim()),
                 Span::styled(self.model.step.clone(), theme::info()),
             ]));
         }
@@ -112,7 +99,7 @@ impl Widget for SidebarWidget<'_> {
 
         let pct = (self.model.ctx_pct * 100.0).clamp(0.0, 100.0);
         let mut tool_lines = vec![
-            Line::from(Span::styled("CONTEXT BUDGET", theme::dim())),
+            Line::from(Span::styled("Context", theme::metadata_style())),
             Line::from(vec![
                 Span::styled("used ", theme::dim()),
                 Span::styled(format!("{pct:.0}%"), theme::info()),
@@ -125,15 +112,6 @@ impl Widget for SidebarWidget<'_> {
                 ),
                 theme::muted(),
             )),
-            Line::from(""),
-            Line::from(Span::styled("TOOLS (ACL)", theme::dim())),
-            Line::from(vec![
-                Span::styled("built-ins ", theme::dim()),
-                Span::styled(
-                    format!("{} allowed", self.model.tools.len()),
-                    theme::muted(),
-                ),
-            ]),
         ];
         if let Some((before, after)) = self.model.context_reset {
             tool_lines.splice(
@@ -154,10 +132,9 @@ impl Widget for SidebarWidget<'_> {
         Paragraph::new(tool_lines).render(chunks[1], buf);
 
         // Activity is intentionally compact; detailed output belongs in chat.
-        let mut activity_lines = vec![Line::from(Span::styled("RECENT JOURNAL", theme::dim()))];
-        if self.model.activity.is_empty() {
-            activity_lines.push(Line::from(Span::styled("—", theme::dim())));
-        } else {
+        let mut activity_lines = Vec::new();
+        if !self.model.activity.is_empty() {
+            activity_lines.push(Line::from(Span::styled("Recent", theme::metadata_style())));
             let max = (chunks[2].height as usize).saturating_sub(1).max(1);
             for summary in self.model.activity.iter().rev().take(max) {
                 let text: String = summary.chars().take(34).collect();
