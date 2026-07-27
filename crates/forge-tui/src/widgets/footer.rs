@@ -76,6 +76,16 @@ fn relative_workspace_label(path: &str) -> String {
     if path.as_os_str().is_empty() {
         return ".".into();
     }
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = Path::new(&home);
+        if let Ok(rel) = path.strip_prefix(home) {
+            let rendered = rel.display().to_string();
+            return match rendered.as_str() {
+                "" => "~".into(),
+                _ => format!("~/{rendered}"),
+            };
+        }
+    }
     if let Ok(current) = std::env::current_dir() {
         if let Ok(rel) = path.strip_prefix(&current) {
             let rendered = rel.display().to_string();
