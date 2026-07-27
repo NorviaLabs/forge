@@ -273,7 +273,14 @@ pub fn fetch_remote_models(
                     ("chatgpt-account-id", &account_id),
                     ("User-Agent", &ua),
                 ],
-            )?;
+            );
+            let raw = match raw {
+                Ok(models) if !models.is_empty() => models,
+                // Codex's endpoint can temporarily return an empty response for a
+                // non-Codex client version. Its own account-scoped cache remains a
+                // useful, conservative fallback when the CLI is installed.
+                Ok(_) | Err(_) => codex_cli_cached_model_ids(),
+            };
             Ok(map_prefix(prefix, raw, |id| {
                 !id.eq_ignore_ascii_case("codex-auto-review")
             }))
@@ -533,6 +540,53 @@ fn parse_openai_style_model_ids(body: &serde_json::Value) -> Result<Vec<String>,
     Err("catalog response missing data[] models".into())
 }
 
+/// Read the account-scoped model list cached by the official Codex CLI.
+///
+/// This is deliberately only a fallback for the OpenAI Codex subscription
+/// profile. Unlike models.dev, it reflects the models offered to the signed-in
+/// ChatGPT account and preserves the server's ordering through `priority`.
+fn codex_cli_cached_model_ids() -> Vec<String> {
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+    let path = home.join(".codex").join("models_cache.json");
+    codex_cli_cached_model_ids_at(&path)
+}
+
+fn codex_cli_cached_model_ids_at(path: &Path) -> Vec<String> {
+    let Ok(text) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return Vec::new();
+    };
+    parse_codex_cli_cached_model_ids(&value)
+}
+
+fn parse_codex_cli_cached_model_ids(body: &serde_json::Value) -> Vec<String> {
+    let Some(models) = body.get("models").and_then(serde_json::Value::as_array) else {
+        return Vec::new();
+    };
+    let mut rows: Vec<(u64, String)> = models
+        .iter()
+        .filter(|model| model.get("visibility").and_then(|v| v.as_str()) == Some("list"))
+        .filter_map(|model| {
+            let slug = model.get("slug")?.as_str()?.trim();
+            (!slug.is_empty()).then(|| {
+                (
+                    model
+                        .get("priority")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(u64::MAX),
+                    slug.to_string(),
+                )
+            })
+        })
+        .collect();
+    rows.sort();
+    rows.into_iter().map(|(_, slug)| slug).collect()
+}
+
 fn http_get_ollama_names(url: &str, ua: &str) -> Result<Vec<String>, String> {
     let resp = ureq::get(url)
         .set("User-Agent", ua)
@@ -608,10 +662,24 @@ pub fn models_for_picker(
                     .map(|id| (id, CatalogSource::Cached)),
             );
         }
-        if !is_ollama {
-            // A provider catalog verifies some models for this account, but it is
-            // often incomplete (notably the Codex subscription endpoint). Keep
-            // those rows first and append registry rows as explicitly-unverified.
+        if p.id == crate::openai_codex::PROFILE_ID {
+            // Keep a previously refreshed Forge cache useful, but supplement it
+            // with the official CLI's current account-scoped cache. This avoids
+            // waiting for the Forge cache TTL after a temporary empty endpoint
+            // response.
+            entries.extend(
+                map_prefix(
+                    &p.model_provider_prefix,
+                    codex_cli_cached_model_ids(),
+                    |id| !id.eq_ignore_ascii_case("codex-auto-review"),
+                )
+                .into_iter()
+                .map(|id| (id, CatalogSource::Cached)),
+            );
+        }
+        if !is_ollama && !p.models_dev_providers.is_empty() {
+            // Provider catalog rows come first; append the opted-in public
+            // registry only as explicitly-unverified supplemental metadata.
             entries.extend(
                 cache
                     .get_registry_cached(&p.id)
@@ -719,16 +787,13 @@ mod tests {
         let dir = tempdir().unwrap();
         let cache = ModelCatalogCache::new(dir.path().join("c.toml"));
         let store = CredentialStore::new(dir.path().join("k.toml"));
-        let profile = crate::openai_codex::openai_codex_profile();
+        let profile = openai_profile();
         let mut registry = BTreeMap::new();
-        registry.insert(
-            profile.id.clone(),
-            vec!["openai-codex/gpt-5.6-terra".into()],
-        );
+        registry.insert(profile.id.clone(), vec!["openai/gpt-5.6-terra".into()]);
         cache.put_registry(registry).unwrap();
 
         let entries = models_for_picker(&[profile], &store, &cache, false);
-        assert_eq!(entries[0].id, "openai-codex/gpt-5.6-terra");
+        assert_eq!(entries[0].id, "openai/gpt-5.6-terra");
         assert_eq!(entries[0].source, CatalogSource::Registry);
     }
 
@@ -737,25 +802,66 @@ mod tests {
         let dir = tempdir().unwrap();
         let cache = ModelCatalogCache::new(dir.path().join("c.toml"));
         let store = CredentialStore::new(dir.path().join("k.toml"));
-        let profile = crate::openai_codex::openai_codex_profile();
+        let profile = openai_profile();
         cache
-            .put(&profile.id, vec!["openai-codex/gpt-5.6-sol".into()])
+            .put(&profile.id, vec!["openai/gpt-5.6-sol".into()])
             .unwrap();
         let mut registry = BTreeMap::new();
         registry.insert(
             profile.id.clone(),
-            vec![
-                "openai-codex/gpt-5.6-sol".into(),
-                "openai-codex/gpt-5.6-terra".into(),
-            ],
+            vec!["openai/gpt-5.6-sol".into(), "openai/gpt-5.6-terra".into()],
         );
         cache.put_registry(registry).unwrap();
 
         let entries = models_for_picker(&[profile], &store, &cache, false);
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].source, CatalogSource::Cached);
-        assert_eq!(entries[1].id, "openai-codex/gpt-5.6-terra");
+        assert_eq!(entries[1].id, "openai/gpt-5.6-terra");
         assert_eq!(entries[1].source, CatalogSource::Registry);
+    }
+
+    #[test]
+    fn codex_does_not_use_public_registry_rows() {
+        let dir = tempdir().unwrap();
+        let cache = ModelCatalogCache::new(dir.path().join("c.toml"));
+        let store = CredentialStore::new(dir.path().join("k.toml"));
+        let profile = crate::openai_codex::openai_codex_profile();
+        let mut registry = BTreeMap::new();
+        registry.insert(profile.id.clone(), vec!["openai-codex/not-entitled".into()]);
+        cache.put_registry(registry).unwrap();
+
+        let entries = models_for_picker(&[profile], &store, &cache, false);
+        assert!(entries
+            .iter()
+            .all(|entry| entry.id != "openai-codex/not-entitled"));
+    }
+
+    #[test]
+    fn parses_visible_codex_cli_cache_rows_in_priority_order() {
+        let body = serde_json::json!({
+            "models": [
+                {"slug": "hidden", "visibility": "hide", "priority": 1},
+                {"slug": "gpt-5.4", "visibility": "list", "priority": 3},
+                {"slug": "gpt-5.6-sol", "visibility": "list", "priority": 1},
+                {"slug": "gpt-5.5", "visibility": "list", "priority": 2}
+            ]
+        });
+        assert_eq!(
+            parse_codex_cli_cached_model_ids(&body),
+            vec!["gpt-5.6-sol", "gpt-5.5", "gpt-5.4"]
+        );
+    }
+
+    #[test]
+    fn reads_codex_cli_cache_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("models_cache.json");
+        fs::write(
+            &path,
+            r#"{"models":[{"slug":"gpt-5.6-sol","visibility":"list","priority":1}]}"#,
+        )
+        .unwrap();
+        assert_eq!(codex_cli_cached_model_ids_at(&path), vec!["gpt-5.6-sol"]);
     }
 
     #[test]
