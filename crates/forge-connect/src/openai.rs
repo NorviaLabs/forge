@@ -17,6 +17,7 @@ pub fn openai_profile() -> ConnectProfile {
         api_key_env: vec!["OPENAI_API_KEY".into()],
         default_base_url: Some(DEFAULT_BASE_URL.into()),
         default_models: vec!["openai/gpt-4.1-mini".into()],
+        models_dev_providers: vec!["openai".into()],
         auth_url: Some("https://platform.openai.com/api-keys".into()),
         model_provider_prefix: "openai".into(),
     }

@@ -15,6 +15,12 @@ pub struct ConnectProfile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_base_url: Option<String>,
     pub default_models: Vec<String>,
+    /// models.dev provider ids used for public model metadata and fallbacks.
+    ///
+    /// A Forge transport may have a distinct id: the ChatGPT Codex subscription
+    /// transport, for example, uses the public OpenAI model registry.
+    #[serde(default)]
+    pub models_dev_providers: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_url: Option<String>,
     pub model_provider_prefix: String,

@@ -17,8 +17,9 @@ use crossterm::terminal::{
 };
 use forge_connect::{
     builtin_registry, handle_connect_action, models_for_picker, needs_tui_api_key_prompt,
-    needs_tui_oauth, normalize_model_id, refresh_profile_catalog, ConnectAction, ConnectError,
-    ConnectRegistry, ConnectService, CredentialStore, ModelCatalogCache, OauthPending,
+    needs_tui_oauth, normalize_model_id, refresh_models_dev_registry, refresh_profile_catalog,
+    ConnectAction, ConnectError, ConnectRegistry, ConnectService, CredentialStore,
+    ModelCatalogCache, OauthPending,
 };
 use forge_core::{AgentSession, ApplyOutcome, LoopError};
 use forge_tools::{GitTool, Tool, ToolContext};
@@ -1285,6 +1286,10 @@ impl TuiApp {
         let cache = ModelCatalogCache::user_default();
         let mut lines = Vec::new();
         let mut ok_n = 0usize;
+        match refresh_models_dev_registry(&profiles, &cache) {
+            Ok(models) => lines.push(format!("models.dev: {models} known compatible models")),
+            Err(e) => lines.push(format!("models.dev: refresh failed — {e}")),
+        }
         for p in &profiles {
             match refresh_profile_catalog(p, &self.connect_store, &cache) {
                 Ok(models) => {
