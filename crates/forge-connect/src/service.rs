@@ -762,6 +762,7 @@ mod tests {
             api_key_env: vec!["DEMO_API_KEY".into()],
             default_base_url: None,
             default_models: vec!["demo/model-1".into()],
+            models_dev_providers: vec![],
             auth_url: Some("https://example.com".into()),
             model_provider_prefix: "demo".into(),
         });
@@ -778,6 +779,7 @@ mod tests {
             api_key_env: vec![],
             default_base_url: None,
             default_models: vec!["xai/grok-3".into()],
+            models_dev_providers: vec![],
             auth_url: Some("https://auth.x.ai".into()),
             model_provider_prefix: "xai".into(),
         });
@@ -900,6 +902,7 @@ mod tests {
                 api_key_env: vec![],
                 default_base_url: None,
                 default_models: vec!["m".into()],
+                models_dev_providers: vec![],
                 auth_url: None,
                 model_provider_prefix: "o".into(),
             });
@@ -911,6 +914,7 @@ mod tests {
                 api_key_env: vec![],
                 default_base_url: None,
                 default_models: vec!["xai/m".into()],
+                models_dev_providers: vec![],
                 auth_url: None,
                 model_provider_prefix: "xai".into(),
             });
