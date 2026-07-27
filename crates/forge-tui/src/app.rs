@@ -166,6 +166,39 @@ fn footer_usage_summary_with_cost(
     )
 }
 
+fn footer_usage_summary(
+    report: &forge_core::TokenUsageReport,
+    cost: Option<forge_connect::CatalogCost>,
+    provider: &str,
+    model: &str,
+) -> crate::widgets::FooterModel {
+    let lines = forge_connect::provider_cost_report(
+        provider,
+        model,
+        report.api.prompt_tokens,
+        report.api.completion_tokens,
+        &CredentialStore::user_default(),
+    )
+    .unwrap_or_default();
+    if lines.is_empty() {
+        let usage_summary = footer_usage_summary_with_cost(report, cost);
+        return crate::widgets::FooterModel {
+            usage_summary,
+            ..Default::default()
+        };
+    }
+    let usage = lines.iter().find(|line| line.starts_with("Session limit:")).cloned().unwrap_or_default();
+    let weekly_limit = lines.iter().find(|line| line.starts_with("Weekly limit:")).cloned().unwrap_or_default();
+    let credits = lines.iter().find(|line| line.starts_with("Credits:") || line.starts_with("Credit balance:")).cloned().unwrap_or_default();
+    crate::widgets::FooterModel {
+        usage,
+        weekly_limit,
+        credits,
+        usage_summary: footer_usage_summary_with_cost(report, cost),
+        ..Default::default()
+    }
+}
+
 pub struct TuiApp {
     pub session: AgentSession,
     pub input: InputModel,
@@ -2156,7 +2189,12 @@ Reply with ONLY the commit message line.\n\n\
             connected: status.provider_connected,
             connect_profile: status.connect_profile,
             hints,
-            usage_summary: footer_usage_summary_with_cost(&context, self.active_model_cost()),
+            ..footer_usage_summary(
+                &context,
+                self.active_model_cost(),
+                self.runtime.provider.as_str(),
+                self.runtime.model_label.as_str(),
+            )
         };
         frame.render_widget(FooterBar { model: &footer }, regions.footer);
 

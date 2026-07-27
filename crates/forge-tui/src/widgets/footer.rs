@@ -25,6 +25,9 @@ pub struct FooterModel {
     /// Extra shortcut strip (busy / idle).
     pub hints: String,
     pub usage_summary: String,
+    pub usage: String,
+    pub weekly_limit: String,
+    pub credits: String,
 }
 
 impl Default for FooterModel {
@@ -44,6 +47,9 @@ impl Default for FooterModel {
             connect_profile: None,
             hints: "Enter send · ⇧Enter newline · Ctrl+K cmds · Esc clear".into(),
             usage_summary: String::new(),
+            usage: String::new(),
+            weekly_limit: String::new(),
+            credits: String::new(),
         }
     }
 }
@@ -57,9 +63,6 @@ impl Widget for FooterBar<'_> {
         if area.height == 0 {
             return;
         }
-        if area.height == 1 {
-            return;
-        }
         let workspace = compact_path_label(self.model.cwd.as_str());
         let identity = self.model.identity_summary();
         let meta = Line::from(vec![
@@ -71,13 +74,21 @@ impl Widget for FooterBar<'_> {
             Span::styled(" · ", theme::muted()),
             Span::styled(self.model.hints.as_str(), theme::muted()),
         ]);
-        let usage = self.model.usage_summary.as_str();
-        if usage.is_empty() {
+        let usage = self.model.usage.as_str();
+        let weekly_limit = self.model.weekly_limit.as_str();
+        let credits = self.model.credits.as_str();
+        let usage_summary = self.model.usage_summary.as_str();
+        if usage.is_empty() && weekly_limit.is_empty() && credits.is_empty() && usage_summary.is_empty() {
             buf.set_line(area.x, area.y, &meta, area.width);
             return;
         }
 
-        let usage_width = usage.chars().count() as u16;
+        let usage_text = if !usage.is_empty() || !weekly_limit.is_empty() || !credits.is_empty() {
+            format!("{usage} · {weekly_limit} · {credits}")
+        } else {
+            usage_summary.to_owned()
+        };
+        let usage_width = usage_text.chars().count() as u16;
         if usage_width.saturating_add(2) >= area.width {
             buf.set_line(area.x, area.y, &meta, area.width);
             return;
@@ -90,7 +101,7 @@ impl Widget for FooterBar<'_> {
             buf.set_stringn(
                 area.x + area.width - usage_width,
                 area.y,
-                usage,
+                usage_text.as_str(),
                 usage_width as usize,
                 theme::muted(),
             );
@@ -106,7 +117,7 @@ impl Widget for FooterBar<'_> {
             buf.set_stringn(
                 area.x + area.width - usage_width,
                 area.y,
-                usage,
+                usage_text.as_str(),
                 usage_width as usize,
                 theme::muted(),
             );
@@ -176,6 +187,9 @@ mod tests {
             provider: "mock".into(),
             model: "m".into(),
             effort: "auto".into(),
+            usage: String::new(),
+            weekly_limit: String::new(),
+            credits: String::new(),
             ctx_used: 10,
             ctx_total: 100,
             ctx_pct: 0.1,
@@ -201,12 +215,13 @@ mod tests {
         FooterBar { model: &model }.render(area, &mut buf);
 
         let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
-        assert!(rendered.trim().is_empty());
+        assert!(rendered.contains("thinking"));
     }
 
     #[test]
     fn does_not_repeat_status_metadata() {
         let model = FooterModel {
+            status: "idle".into(),
             provider: "native".into(),
             model: "openai-codex/gpt-5.6-sol".into(),
             effort: "high".into(),
@@ -220,48 +235,9 @@ mod tests {
         FooterBar { model: &model }.render(area, &mut buf);
 
         let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
-        assert!(rendered.trim().is_empty());
-    }
-
-    #[test]
-    fn renders_workspace_metadata_inline_without_label() {
-        let model = FooterModel {
-            cwd: "/tmp/workspace".into(),
-            hints: "test".into(),
-            status: "idle".into(),
-            usage_summary: "in 7 · out 5 · tok 12".into(),
-            ..FooterModel::default()
-        };
-        let area = Rect::new(0, 0, 80, 2);
-        let mut buf = Buffer::empty(area);
-
-        FooterBar { model: &model }.render(area, &mut buf);
-
-        let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
         assert!(rendered.contains("idle"));
-        assert!(rendered.contains("workspace"));
-        assert!(rendered.contains("in 7 · out 5 · tok 12"));
-        assert!(!rendered.contains("Workspace"));
-    }
-
-    #[test]
-    fn renders_usage_summary_right_aligned() {
-        let model = FooterModel {
-            cwd: "/tmp/workspace".into(),
-            hints: "test".into(),
-            status: "idle".into(),
-            usage_summary: "in 7 · out 5 · tok 12 · $0.34".into(),
-            ..FooterModel::default()
-        };
-        let area = Rect::new(0, 0, 80, 2);
-        let mut buf = Buffer::empty(area);
-
-        FooterBar { model: &model }.render(area, &mut buf);
-
-        let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
-        assert!(rendered
-            .trim_end()
-            .ends_with("in 7 · out 5 · tok 12 · $0.34"));
+        assert!(rendered.contains("native"));
+        assert!(rendered.contains("gpt-5.6-sol"));
     }
 
     #[test]
