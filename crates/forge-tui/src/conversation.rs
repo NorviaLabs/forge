@@ -994,7 +994,7 @@ impl ConversationModel {
                             ]));
                         }
                     }
-                    lines.extend(render_numbered_diff(path, dl));
+                    lines.extend(render_numbered_diff(path, dl, width));
                     if gap {
                         lines.push(Line::from(""));
                     }
@@ -1207,7 +1207,7 @@ fn number_diff_lines(lines: &[String]) -> Vec<NumberedDiffLine> {
     numbered
 }
 
-fn render_numbered_diff(path: &str, diff: &[String]) -> Vec<Line<'static>> {
+fn render_numbered_diff(path: &str, diff: &[String], width: usize) -> Vec<Line<'static>> {
     let numbered = number_diff_lines(diff);
     let number_width = numbered
         .iter()
@@ -1230,32 +1230,38 @@ fn render_numbered_diff(path: &str, diff: &[String]) -> Vec<Line<'static>> {
     for line in numbered {
         if line.header {
             let gutter_width = number_width * 2 + 7;
-            rendered.push(Line::from(vec![
-                Span::styled(" ".repeat(gutter_width), theme::dim()),
-                Span::styled(line.content, theme::dim()),
-            ]));
+            let text = format!(
+                "{}{content}",
+                " ".repeat(gutter_width),
+                content = line.content
+            );
+            let padding = " ".repeat(width.saturating_sub(text.chars().count()));
+            rendered.push(Line::from(Span::styled(
+                format!("{text}{padding}"),
+                theme::diff_hunk(),
+            )));
             continue;
         }
 
         let old = line.old.map(|line| line.to_string()).unwrap_or_default();
         let new = line.new.map(|line| line.to_string()).unwrap_or_default();
         let line_style = match line.marker {
-            '+' => theme::ok(),
-            '-' => theme::danger(),
-            _ => theme::muted(),
+            '+' => theme::diff_add(),
+            '-' => theme::diff_remove(),
+            _ => theme::diff_context(),
         };
-        let mut spans = vec![Span::styled(
-            format!(
-                "  {old:>number_width$} {new:>number_width$} │ {} ",
-                line.marker
-            ),
-            line_style,
-        )];
+        let gutter = format!(
+            "  {old:>number_width$} {new:>number_width$} │ {} ",
+            line.marker
+        );
+        let row_width = gutter.chars().count() + line.content.chars().count();
+        let mut spans = vec![Span::styled(gutter, line_style)];
 
         if let Some(Some(parts)) = highlighted.as_ref().map(|lines| lines.get(code_index)) {
             for (text, rgb, bold, italic) in parts {
                 let mut style = ratatui::style::Style::default()
-                    .fg(ratatui::style::Color::Rgb(rgb.0, rgb.1, rgb.2));
+                    .fg(ratatui::style::Color::Rgb(rgb.0, rgb.1, rgb.2))
+                    .bg(line_style.bg.unwrap_or(theme::PANEL_ALT));
                 if *bold {
                     style = style.add_modifier(Modifier::BOLD);
                 }
@@ -1267,9 +1273,14 @@ fn render_numbered_diff(path: &str, diff: &[String]) -> Vec<Line<'static>> {
         } else {
             spans.push(Span::styled(line.content, line_style));
         }
+        spans.push(Span::styled(
+            " ".repeat(width.saturating_sub(row_width)),
+            line_style,
+        ));
         rendered.push(Line::from(spans));
         code_index += 1;
     }
+
     rendered
 }
 
@@ -2308,6 +2319,32 @@ mod tests {
                 (None, Some(22), '+'),
                 (Some(12), Some(23), ' '),
             ]
+        );
+    }
+
+    #[test]
+    fn diff_rows_have_backgrounds_and_syntax_highlighting() {
+        let diff = ["@@ -1 +1 @@", "-fn old() {}", "+fn new() {}"].map(str::to_string);
+
+        let rendered = render_numbered_diff("src/lib.rs", &diff, 40);
+        let removed = &rendered[1];
+        let added = &rendered[2];
+
+        assert!(removed
+            .spans
+            .iter()
+            .all(|span| span.style.bg == Some(theme::DIFF_REMOVE_BG)));
+        assert!(added
+            .spans
+            .iter()
+            .all(|span| span.style.bg == Some(theme::DIFF_ADD_BG)));
+        assert!(
+            added.spans.len() > 3,
+            "Rust tokens should be separate spans"
+        );
+        assert_eq!(
+            added.spans.iter().map(|span| span.width()).sum::<usize>(),
+            40
         );
     }
 
