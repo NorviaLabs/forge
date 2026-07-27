@@ -155,13 +155,6 @@ impl Widget for StatusBar<'_> {
             Span::styled(" · ", theme::dim()),
             Span::styled(label, style),
         ];
-        if area.width >= 110 && self.model.status == SessionStatus::AwaitingHitl {
-            spans.extend([
-                Span::styled(" · session ", theme::dim()),
-                Span::styled(&self.model.session_short, theme::metadata_style()),
-            ]);
-        }
-
         let line = Line::from(spans);
         buf.set_line(area.x, area.y, &line, area.width);
     }
@@ -172,7 +165,6 @@ pub fn session_chrome_lines(m: &StatusModel) -> Vec<String> {
     let (label, _) = m.status_label();
     vec![
         format!("status={label}"),
-        format!("session={}", m.session_short),
         format!("provider={}", m.provider),
         format!("model={}", m.model),
         format!("effort={}", m.effort),
