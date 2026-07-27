@@ -1080,7 +1080,7 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "forge-cli"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -1102,7 +1102,7 @@ dependencies = [
 
 [[package]]
 name = "forge-config"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "dirs 6.0.0",
  "forge-types",
@@ -1115,7 +1115,7 @@ dependencies = [
 
 [[package]]
 name = "forge-connect"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "base64",
  "dirs 6.0.0",
@@ -1129,7 +1129,7 @@ dependencies = [
 
 [[package]]
 name = "forge-context"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "chrono",
  "dirs 6.0.0",
@@ -1145,7 +1145,7 @@ dependencies = [
 
 [[package]]
 name = "forge-core"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "async-trait",
  "forge-config",
@@ -1166,7 +1166,7 @@ dependencies = [
 
 [[package]]
 name = "forge-durable"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "chrono",
  "forge-types",
@@ -1182,7 +1182,7 @@ dependencies = [
 
 [[package]]
 name = "forge-governance"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "chrono",
  "forge-types",
@@ -1196,7 +1196,7 @@ dependencies = [
 
 [[package]]
 name = "forge-mcp"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "async-trait",
  "forge-config",
@@ -1212,7 +1212,7 @@ dependencies = [
 
 [[package]]
 name = "forge-model"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "async-trait",
  "forge-config",
@@ -1230,7 +1230,7 @@ dependencies = [
 
 [[package]]
 name = "forge-obs"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "chrono",
  "forge-types",
@@ -1243,7 +1243,7 @@ dependencies = [
 
 [[package]]
 name = "forge-syntax"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "serde",
  "serde_json",
@@ -1263,7 +1263,7 @@ dependencies = [
 
 [[package]]
 name = "forge-tools"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "async-trait",
  "fff-search",
@@ -1282,7 +1282,7 @@ dependencies = [
 
 [[package]]
 name = "forge-tui"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "chrono",
  "crossterm 0.28.1",
@@ -1306,7 +1306,7 @@ dependencies = [
 
 [[package]]
 name = "forge-types"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "chrono",
  "schemars",
@@ -3251,7 +3251,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4925,15 +4925,6 @@ name = "windows-sys"
 version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d"
-dependencies = [
- "windows-targets 0.52.6",
-]
-
-[[package]]
-name = "windows-sys"
-version = "0.59.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b"
 dependencies = [
  "windows-targets 0.52.6",
 ]
