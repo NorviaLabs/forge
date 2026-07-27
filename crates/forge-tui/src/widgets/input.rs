@@ -330,13 +330,13 @@ impl Widget for InputBar<'_> {
             theme::border()
         };
         let title = if self.model.not_connected {
-            " not connected · /connect required "
+            Some(" not connected · /connect required ")
         } else if self.model.history_browse {
-            " history "
+            Some(" history ")
         } else if self.model.text.contains('\n') {
-            " multi-line · Shift+Enter newline "
+            Some(" multi-line · Shift+Enter newline ")
         } else {
-            " Describe a task… "
+            None
         };
         let block = Block::default()
             .borders(Borders::TOP)
@@ -346,7 +346,10 @@ impl Widget for InputBar<'_> {
             } else {
                 theme::panel()
             });
-        let block = block.title(Span::styled(title, theme::muted()));
+        let block = match title {
+            Some(title) => block.title(Span::styled(title, theme::muted())),
+            None => block,
+        };
         Paragraph::new(lines)
             .style(Style::default().add_modifier(if self.model.dimmed {
                 Modifier::DIM

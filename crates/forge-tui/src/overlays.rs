@@ -930,7 +930,7 @@ impl Widget for OverlayWidget<'_> {
             Overlay::Welcome => {
                 let r = centered_rect(64, 58, area);
                 Paragraph::new(
-                    "Your terminal-native coding agent. Let's get you ready in two quick steps.\n\n1  Connect a model provider\n   Sign in or add an API key using secure credential storage.\n\n2  Choose your model\n   Pick a default from the provider's available models.\n\nForge works in your current directory and asks before sensitive actions.\n\nPress Enter to get started  ·  Esc to explore without connecting",
+                    "Your terminal-native coding agent. Let's get you ready in two quick steps.\n\n1  Connect a model provider\n   Sign in or add an API key using secure credential storage.\n\n2  Choose your model\n   Pick a default from the provider's available models.\n\nIt works in your current directory and asks before sensitive actions.\n\nPress Enter to get started  ·  Esc to explore without connecting",
                 )
                 .wrap(ratatui::widgets::Wrap { trim: true })
                 .block(
@@ -938,7 +938,7 @@ impl Widget for OverlayWidget<'_> {
                         .borders(Borders::ALL)
                         .border_style(theme::brand())
                         .style(theme::panel())
-                        .title(Span::styled(" Welcome to Forge ", theme::brand())),
+                        .title(Span::styled(" Welcome ", theme::brand())),
                 )
                 .render(r, buf);
             }
