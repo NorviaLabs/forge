@@ -53,16 +53,23 @@ impl Widget for FooterBar<'_> {
         if area.height == 0 {
             return;
         }
-        let metadata_y = area.y + area.height.saturating_sub(1);
         if area.height > 1 {
             buf.set_line(
                 area.x,
                 area.y,
+                &Line::from(vec![
+                    Span::styled("Workspace ", theme::dim()),
+                    Span::styled(self.model.cwd.as_str(), theme::text()),
+                ]),
+                area.width,
+            );
+            buf.set_line(
+                area.x,
+                area.y + 1,
                 &Line::from(Span::styled(self.model.hints.as_str(), theme::muted())),
                 area.width,
             );
         }
-        let _ = (buf, metadata_y);
     }
 }
 
@@ -113,6 +120,7 @@ mod tests {
             provider: "native".into(),
             model: "openai-codex/gpt-5.6-sol".into(),
             hints: String::new(),
+            cwd: "/tmp/workspace".into(),
             ..FooterModel::default()
         };
         let area = Rect::new(0, 0, 79, 1);
@@ -122,5 +130,30 @@ mod tests {
 
         let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
         assert!(rendered.trim().is_empty());
+    }
+
+    #[test]
+    fn renders_workspace_metadata_when_space_allows() {
+        let model = FooterModel {
+            cwd: "/tmp/workspace".into(),
+            hints: "test".into(),
+            ..FooterModel::default()
+        };
+        let area = Rect::new(0, 0, 80, 2);
+        let mut buf = Buffer::empty(area);
+
+        FooterBar { model: &model }.render(area, &mut buf);
+
+        let rendered: String = (0..area.width)
+            .map(|x| buf[(x, 0)].symbol())
+            .collect::<String>()
+            + &format!(
+                "\n{}",
+                (0..area.width)
+                    .map(|x| buf[(x, 1)].symbol())
+                    .collect::<String>()
+            );
+        assert!(rendered.contains("Workspace"));
+        assert!(rendered.contains("/tmp/workspace"));
     }
 }
