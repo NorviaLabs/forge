@@ -183,6 +183,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "bindet"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5afee99ef5f7527f3944f2bf4f5d443749fa47d43eb1d4f83a36e839be7900a3"
+
+[[package]]
 name = "bit-set"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -765,9 +771,9 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
 name = "fff-grep"
-version = "0.8.4"
+version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "68286213d07412846c0010a0b227b79c08fbc214cf7822f85cabd9e3f36606ae"
+checksum = "91f8a3c5ab1dd235917166d71e0907a52877b63cc290f3d84d048e69b6bd2e93"
 dependencies = [
  "bstr",
  "memchr",
@@ -789,19 +795,21 @@ dependencies = [
 
 [[package]]
 name = "fff-query-parser"
-version = "0.8.4"
+version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f5eb0a0363657b57a3a60d12a76a41f799406514b238123487e54290a6f1a62f"
+checksum = "5721bd8a66ad53cb10c9fce8780a81945f3abfc051c6e3e46323bb1ae2501f68"
 
 [[package]]
 name = "fff-search"
-version = "0.8.4"
+version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b6b4517eb8a9b87a46d09e9958f2ddbc036440a9fb5d5ddfc05e6dcf4655ce2"
+checksum = "60f7b3e414d1625f7aeb5faf15171bd536351da500743484a714bfbffc76a65e"
 dependencies = [
  "ahash",
  "aho-corasick",
+ "bindet",
  "blake3",
+ "chrono",
  "dirs 5.0.1",
  "dunce",
  "fff-grep",
@@ -817,14 +825,18 @@ dependencies = [
  "memmap2",
  "neo_frizbee",
  "notify",
+ "once_cell",
  "parking_lot",
  "pathdiff",
  "rayon",
  "regex",
  "regex-syntax",
  "serde",
+ "serde_json",
  "smallvec",
+ "smartstring",
  "thiserror 2.0.19",
+ "toml",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
@@ -3082,6 +3094,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "smartstring"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3fb72c633efbaa2dd666986505016c32c3044395ceaf881518399d2f4127ee29"
+dependencies = [
+ "autocfg",
+ "serde",
+ "static_assertions",
+ "version_check",
 ]
 
 [[package]]
