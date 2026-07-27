@@ -440,16 +440,7 @@ impl ConversationModel {
                         lines.push(Line::from(""));
                     }
                 }
-                ChatItem::Home {
-                    workspace,
-                    skills_loaded,
-                } => {
-                    lines.push(Line::from(vec![
-                        Span::styled("Workspace ", theme::text()),
-                        Span::styled("◆ ", theme::ok()),
-                        Span::styled("workspace ", theme::dim()),
-                        Span::styled(workspace.clone(), theme::muted()),
-                    ]));
+                ChatItem::Home { skills_loaded, .. } => {
                     lines.push(Line::from(vec![
                         Span::styled("Loaded AGENTS.md ", theme::muted()),
                         Span::styled(format!("· {skills_loaded} skills"), theme::dim()),
