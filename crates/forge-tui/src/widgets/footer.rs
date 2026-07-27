@@ -275,7 +275,7 @@ mod tests {
 
         FooterBar { model: &model }.render(area, &mut buf);
 
-        let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
+        let rendered: String = (0..area.width).map(|x| buf.get(x, 0).symbol()).collect();
         assert!(rendered.contains("thinking"));
     }
 
@@ -295,7 +295,7 @@ mod tests {
 
         FooterBar { model: &model }.render(area, &mut buf);
 
-        let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
+        let rendered: String = (0..area.width).map(|x| buf.get(x, 0).symbol()).collect();
         assert!(rendered.contains("idle"));
         assert!(rendered.contains("native"));
         assert!(rendered.contains("gpt-5.6-sol"));
@@ -321,7 +321,7 @@ mod tests {
 
         FooterBar { model: &model }.render(area, &mut buf);
 
-        let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
+        let rendered: String = (0..area.width).map(|x| buf.get(x, 0).symbol()).collect();
         assert!(rendered.contains("in 7 · out 5 · total 12"));
         assert!(rendered.contains("session 75% (2h)"));
         assert!(rendered.contains("weekly 59.5% (5d)"));
@@ -340,7 +340,7 @@ mod tests {
 
         FooterBar { model: &model }.render(area, &mut buf);
 
-        let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
+        let rendered: String = (0..area.width).map(|x| buf.get(x, 0).symbol()).collect();
         assert!(rendered.contains("in 7 · out 5 · total 12"));
     }
 
