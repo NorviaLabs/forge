@@ -2199,7 +2199,7 @@ Reply with ONLY the commit message line.\n\n\
         } else if qn > 0 {
             format!("queue {qn} · Ctrl+Up/Down select · Ctrl+Backspace cancel")
         } else {
-            "/ commands  ·  Ctrl+B sidebar  ·  F1 help  ·  Esc cancel".into()
+            "/ commands  ·  F1 help  ·  Esc cancel".into()
         };
         let footer = FooterModel {
             cwd: self.runtime.cwd.display().to_string(),
