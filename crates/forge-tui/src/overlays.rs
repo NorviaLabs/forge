@@ -12,6 +12,10 @@ use std::path::Path;
 #[derive(Debug, Clone)]
 pub enum Overlay {
     Welcome,
+    StatusReport {
+        title: String,
+        lines: Vec<String>,
+    },
     Hitl {
         payload: HitlPayload,
     },
@@ -609,6 +613,7 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
         }
         Key::Enter => match overlay {
             Overlay::Welcome => OverlayAction::BeginOnboarding,
+            Overlay::StatusReport { .. } => OverlayAction::Close,
             Overlay::TurnLimit { .. } => OverlayAction::ContinueTurns,
             Overlay::Slash {
                 selected, items, ..
@@ -941,6 +946,19 @@ impl Widget for OverlayWidget<'_> {
                         .title(Span::styled(" Welcome ", theme::brand())),
                 )
                 .render(r, buf);
+            }
+            Overlay::StatusReport { title, lines } => {
+                let r = centered_capped_rect(area, 74, 30);
+                Paragraph::new(lines.join("\n"))
+                    .wrap(ratatui::widgets::Wrap { trim: true })
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_style(theme::warn())
+                            .style(theme::panel())
+                            .title(Span::styled(format!(" {title} "), theme::warn())),
+                    )
+                    .render(r, buf);
             }
             Overlay::TurnLimit { turns } => {
                 let r = centered_rect(52, 24, area);
@@ -1370,6 +1388,18 @@ mod tests {
         );
         assert_eq!(
             handle_overlay_key(&mut overlay, Key::Esc),
+            OverlayAction::Close
+        );
+    }
+
+    #[test]
+    fn status_report_closes_on_enter() {
+        let mut overlay = Overlay::StatusReport {
+            title: "Status".into(),
+            lines: vec!["status=idle".into()],
+        };
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
             OverlayAction::Close
         );
     }
