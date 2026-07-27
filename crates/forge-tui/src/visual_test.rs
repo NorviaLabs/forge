@@ -230,14 +230,17 @@ mod tests {
         let text = buffer_text(&term);
 
         for expected in [
-            "SYSTEM",
             "Workspace",
             "skills",
-            "Waiting for your first message.",
             "Describe a task…",
             "Context",
+            "Workspace /tmp",
         ] {
             assert!(text.contains(expected), "missing {expected:?}:\n{text}");
         }
+        assert!(
+            !text.contains("Waiting for your first message."),
+            "stale copy:\n{text}"
+        );
     }
 }

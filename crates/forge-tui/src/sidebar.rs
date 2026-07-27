@@ -20,6 +20,7 @@ pub struct SidebarModel {
     pub busy: bool,
     pub step: String,
     pub context_reset: Option<(f64, f64)>,
+    pub skills: Vec<String>,
     pub tools: Vec<String>,
     pub activity: Vec<String>,
 }
@@ -52,6 +53,7 @@ impl SidebarModel {
             busy: false,
             step: String::new(),
             context_reset: None,
+            skills: session.loaded_skill_names(),
             tools,
             activity: activity_lines.to_vec(),
         }
@@ -131,20 +133,31 @@ impl Widget for SidebarWidget<'_> {
 
         Paragraph::new(tool_lines).render(chunks[1], buf);
 
-        // Activity is intentionally compact; detailed output belongs in chat.
-        let mut activity_lines = Vec::new();
+        let mut lower = Vec::new();
+        if !self.model.skills.is_empty() {
+            lower.push(Line::from(Span::styled("Skills", theme::metadata_style())));
+            let max = (chunks[2].height as usize / 2).max(1);
+            for name in self.model.skills.iter().take(max) {
+                lower.push(Line::from(Span::styled(format!("· {name}"), theme::text())));
+            }
+        }
         if !self.model.activity.is_empty() {
-            activity_lines.push(Line::from(Span::styled("Recent", theme::metadata_style())));
-            let max = (chunks[2].height as usize).saturating_sub(1).max(1);
+            if !lower.is_empty() {
+                lower.push(Line::from(""));
+            }
+            lower.push(Line::from(Span::styled("Recent", theme::metadata_style())));
+            let max = (chunks[2].height as usize)
+                .saturating_sub(lower.len() + 1)
+                .max(1);
             for summary in self.model.activity.iter().rev().take(max) {
                 let text: String = summary.chars().take(34).collect();
-                activity_lines.push(Line::from(Span::styled(
+                lower.push(Line::from(Span::styled(
                     format!("· {text}"),
                     theme::muted(),
                 )));
             }
         }
-        Paragraph::new(activity_lines).render(chunks[2], buf);
+        Paragraph::new(lower).render(chunks[2], buf);
     }
 }
 
@@ -171,6 +184,8 @@ mod tests {
     #[tokio::test]
     async fn sidebar_from_session() {
         let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".forge/skills/inspect")).unwrap();
+        std::fs::write(dir.path().join(".forge/skills/inspect/SKILL.md"), "inspect").unwrap();
         let model = Arc::new(MockModelClient::script(vec![ModelResponse {
             text: "ok".into(),
             tool_calls: vec![],
@@ -197,6 +212,7 @@ mod tests {
         assert!(!m.session_id.is_empty());
         assert!(!m.tools.is_empty() || m.status == "completed");
         assert!(m.ctx_pct >= 0.0);
+        assert!(m.skills.iter().any(|s| s == "inspect"));
 
         let m = SidebarModel::from_session_with_activity(&s, &["model started".into()]);
         assert_eq!(m.activity, vec!["model started"]);
