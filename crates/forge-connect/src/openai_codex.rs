@@ -22,7 +22,7 @@ pub fn openai_codex_profile() -> ConnectProfile {
         api_key_env: vec![],
         default_base_url: Some("https://chatgpt.com/backend-api".into()),
         default_models: vec!["openai-codex/gpt-5.6-sol".into()],
-        models_dev_providers: vec!["openai".into()],
+        models_dev_providers: vec![],
         auth_url: Some("https://auth.openai.com/codex/device".into()),
         model_provider_prefix: "openai-codex".into(),
     }
