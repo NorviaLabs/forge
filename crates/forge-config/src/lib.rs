@@ -172,20 +172,14 @@ pub struct TuiConfig {}
 pub enum WebSearchProvider {
     #[default]
     Mock,
-    Tavily,
-    Brave,
-    Serper,
 }
 
 impl WebSearchProvider {
     pub fn parse(s: &str) -> Result<Self, ConfigError> {
         match s.trim().to_ascii_lowercase().as_str() {
             "mock" => Ok(Self::Mock),
-            "tavily" => Ok(Self::Tavily),
-            "brave" => Ok(Self::Brave),
-            "serper" => Ok(Self::Serper),
             other => Err(ConfigError::Message(format!(
-                "invalid web_search provider `{other}` (expected mock|tavily|brave|serper)"
+                "invalid web_search provider `{other}` (expected mock)"
             ))),
         }
     }
@@ -193,9 +187,6 @@ impl WebSearchProvider {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Mock => "mock",
-            Self::Tavily => "tavily",
-            Self::Brave => "brave",
-            Self::Serper => "serper",
         }
     }
 
@@ -203,9 +194,6 @@ impl WebSearchProvider {
     pub fn default_api_key_env(self) -> Option<&'static str> {
         match self {
             Self::Mock => None,
-            Self::Tavily => Some("TAVILY_API_KEY"),
-            Self::Brave => Some("BRAVE_API_KEY"),
-            Self::Serper => Some("SERPER_API_KEY"),
         }
     }
 
@@ -869,7 +857,7 @@ model = "from-file"
             r#"
 [tools.web_search]
 enabled = true
-provider = "tavily"
+provider = "mock"
 api_key_env = "MY_TAVILY"
 max_results = 3
 timeout_ms = 9000
@@ -885,7 +873,7 @@ max_query_chars = 200
         .unwrap();
         let ws = &cfg.tools.web_search;
         assert!(ws.enabled);
-        assert_eq!(ws.provider, WebSearchProvider::Tavily);
+        assert_eq!(ws.provider, WebSearchProvider::Mock);
         assert_eq!(ws.api_key_env.as_deref(), Some("MY_TAVILY"));
         assert_eq!(ws.max_results, 3);
         assert_eq!(ws.timeout_ms, 9000);
@@ -898,25 +886,25 @@ max_query_chars = 200
     fn web_search_env_overrides() {
         let g = EnvGuard::clear_forge_env();
         g.set("FORGE_WEB_SEARCH_ENABLED", "false");
-        g.set("FORGE_WEB_SEARCH_PROVIDER", "brave");
+        g.set("FORGE_WEB_SEARCH_PROVIDER", "mock");
         g.set("FORGE_WEB_SEARCH_MAX_RESULTS", "2");
         let cfg = Config::load(ConfigOverrides::default()).unwrap();
         assert!(!cfg.tools.web_search.enabled);
-        assert_eq!(cfg.tools.web_search.provider, WebSearchProvider::Brave);
+        assert_eq!(cfg.tools.web_search.provider, WebSearchProvider::Mock);
         assert_eq!(cfg.tools.web_search.max_results, 2);
         assert!(!cfg.tools.web_search.should_register());
     }
 
     #[test]
-    fn web_search_require_key_gates_live_provider() {
+    fn web_search_mock_does_not_require_key() {
         let g = EnvGuard::clear_forge_env();
         let mut ws = WebSearchConfig {
             enabled: true,
-            provider: WebSearchProvider::Tavily,
+            provider: WebSearchProvider::Mock,
             require_key: true,
             ..Default::default()
         };
-        assert!(!ws.should_register());
+        assert!(ws.should_register());
         g.set("TAVILY_API_KEY", "secret-test-key");
         assert!(ws.should_register());
         ws.require_key = false;
@@ -927,8 +915,8 @@ max_query_chars = 200
     #[test]
     fn web_search_provider_parse() {
         assert_eq!(
-            WebSearchProvider::parse("TAVILY").unwrap(),
-            WebSearchProvider::Tavily
+            WebSearchProvider::parse("MOCK").unwrap(),
+            WebSearchProvider::Mock
         );
         assert!(WebSearchProvider::parse("bing").is_err());
     }

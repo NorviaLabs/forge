@@ -1,14 +1,10 @@
-//! Governance & sandbox (governance.md) — SEC-01, SEC-02, SEC-03. Phase 2 only.
+//! Minimal tool governance: ACL filtering, HITL policy, and redacted audit events.
 
 mod acl;
 mod audit;
-mod sandbox;
-mod secrets;
 
 pub use acl::{AclPolicy, AclRule};
 pub use audit::{AuditEvent, AuditLog};
-pub use sandbox::{light_sandbox_exec, ExecRequest, ExecResult};
-pub use secrets::{materialize_secrets, SecretMaterial, SecretRef};
 
 use forge_types::{PolicyDecision, Principal, SideEffectClass, ToolCall, ToolDescriptor};
 
@@ -91,11 +87,32 @@ impl Governance {
     }
 
     pub fn redact_args(&self, args: &serde_json::Value) -> serde_json::Value {
-        secrets::redact_value(args)
+        redact_value(args)
     }
 
     pub fn record_audit(&self, event: AuditEvent) {
         self.audit.push(event);
+    }
+}
+
+fn redact_value(v: &serde_json::Value) -> serde_json::Value {
+    match v {
+        serde_json::Value::Object(map) => {
+            let mut out = serde_json::Map::new();
+            for (k, val) in map {
+                let lk = k.to_ascii_lowercase();
+                if lk.contains("key") || lk.contains("token") || lk.contains("secret") {
+                    out.insert(k.clone(), serde_json::Value::String("[REDACTED]".into()));
+                } else {
+                    out.insert(k.clone(), redact_value(val));
+                }
+            }
+            serde_json::Value::Object(out)
+        }
+        serde_json::Value::Array(xs) => {
+            serde_json::Value::Array(xs.iter().map(redact_value).collect())
+        }
+        _ => v.clone(),
     }
 }
 
@@ -185,30 +202,6 @@ mod tests {
         let red = g.redact_args(&json!({"token": "sk-secret", "path": "a"}));
         assert_eq!(red["token"], "[REDACTED]");
         assert_eq!(red["path"], "a");
-    }
-
-    #[test]
-    fn secret_broker_env() {
-        std::env::set_var("FORGE_TEST_DEMO", "value123");
-        let m = materialize_secrets(&[SecretRef {
-            name: "demo".into(),
-            env_key: "FORGE_TEST_DEMO".into(),
-        }])
-        .unwrap();
-        assert_eq!(m.get("demo"), Some("value123"));
-        std::env::remove_var("FORGE_TEST_DEMO");
-    }
-
-    #[test]
-    fn light_sandbox_runs() {
-        let r = light_sandbox_exec(&ExecRequest {
-            command: "echo hi".into(),
-            cwd: std::env::current_dir().unwrap(),
-            env: vec![],
-        })
-        .unwrap();
-        assert!(r.stdout.contains("hi"));
-        assert!(!r.is_error);
     }
 
     #[test]

@@ -1,14 +1,9 @@
-use std::sync::Arc;
-use std::time::Duration;
-
 use async_trait::async_trait;
 use forge_config::{WebSearchConfig, WebSearchProvider};
+use std::sync::Arc;
 use thiserror::Error;
 
-use super::brave::BraveBackend;
 use super::mock::MockSearchBackend;
-use super::serper::SerperBackend;
-use super::tavily::TavilyBackend;
 
 #[derive(Debug, Clone)]
 pub struct SearchRequest {
@@ -66,13 +61,9 @@ pub trait SearchBackend: Send + Sync {
     ) -> Result<Vec<SearchHit>, SearchError>;
 }
 
-pub fn build_backend(provider: WebSearchProvider, timeout_ms: u64) -> Arc<dyn SearchBackend> {
-    let timeout = Duration::from_millis(timeout_ms.max(1));
+pub fn build_backend(provider: WebSearchProvider, _timeout_ms: u64) -> Arc<dyn SearchBackend> {
     match provider {
         WebSearchProvider::Mock => Arc::new(MockSearchBackend),
-        WebSearchProvider::Tavily => Arc::new(TavilyBackend::new(timeout)),
-        WebSearchProvider::Brave => Arc::new(BraveBackend::new(timeout)),
-        WebSearchProvider::Serper => Arc::new(SerperBackend::new(timeout)),
     }
 }
 

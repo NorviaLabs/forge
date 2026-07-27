@@ -3,21 +3,12 @@
 //! See docs/designs/web-search-tool.md.
 
 mod backend;
-mod brave;
 mod mock;
-mod serper;
-mod tavily;
 
 pub use backend::{
     format_search_results, SearchBackend, SearchError, SearchHit, SearchRequest, SearchSecrets,
 };
-pub use brave::BraveBackend;
 pub use mock::MockSearchBackend;
-pub use serper::SerperBackend;
-pub use tavily::TavilyBackend;
-
-use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use forge_config::WebSearchConfig;
@@ -25,6 +16,7 @@ use forge_types::{SideEffectClass, ToolOutput};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::sync::Arc;
 
 use crate::registry::ToolContext;
 use crate::{Tool, ToolError};
@@ -184,74 +176,13 @@ pub fn web_search_tool(cfg: &WebSearchConfig) -> Option<Arc<dyn Tool>> {
     WebSearchTool::try_new(cfg).map(|t| Arc::new(t) as Arc<dyn Tool>)
 }
 
-/// Default HTTP client timeout from config.
-pub fn timeout_from_cfg(cfg: &WebSearchConfig) -> Duration {
-    Duration::from_millis(cfg.timeout_ms.max(1))
-}
-
-#[cfg(test)]
-mod test_support {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
-    use tokio::sync::oneshot;
-
-    pub async fn serve_once(status: &str, body: &str) -> (String, oneshot::Receiver<String>) {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let status = status.to_string();
-        let body = body.to_string();
-        let (request_tx, request_rx) = oneshot::channel();
-        tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut bytes = Vec::new();
-            let mut chunk = [0_u8; 4096];
-            let header_end = loop {
-                let count = socket.read(&mut chunk).await.unwrap();
-                bytes.extend_from_slice(&chunk[..count]);
-                if let Some(position) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
-                    break position + 4;
-                }
-            };
-            let headers = String::from_utf8_lossy(&bytes[..header_end]);
-            let content_length = headers
-                .lines()
-                .find_map(|line| {
-                    let (name, value) = line.split_once(':')?;
-                    name.eq_ignore_ascii_case("content-length")
-                        .then(|| value.trim().parse::<usize>().ok())
-                        .flatten()
-                })
-                .unwrap_or(0);
-            while bytes.len() < header_end + content_length {
-                let count = socket.read(&mut chunk).await.unwrap();
-                if count == 0 {
-                    break;
-                }
-                bytes.extend_from_slice(&chunk[..count]);
-            }
-            let _ = request_tx.send(String::from_utf8_lossy(&bytes).into_owned());
-            let response = format!(
-                "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            socket.write_all(response.as_bytes()).await.unwrap();
-        });
-        (format!("http://{address}"), request_rx)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::validation::validate_args;
     use crate::ToolRegistry;
     use crate::ValidationBudget;
-    use forge_config::WebSearchProvider;
     use serde_json::json;
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
     #[test]
     fn schema_rejects_missing_query() {
         let cfg = WebSearchConfig::default();
@@ -276,19 +207,6 @@ mod tests {
     fn try_new_none_when_disabled() {
         let cfg = WebSearchConfig {
             enabled: false,
-            ..Default::default()
-        };
-        assert!(WebSearchTool::try_new(&cfg).is_none());
-    }
-
-    #[test]
-    fn try_new_none_when_live_missing_key() {
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        std::env::remove_var("TAVILY_API_KEY");
-        let cfg = WebSearchConfig {
-            enabled: true,
-            provider: WebSearchProvider::Tavily,
-            require_key: true,
             ..Default::default()
         };
         assert!(WebSearchTool::try_new(&cfg).is_none());

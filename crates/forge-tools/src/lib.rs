@@ -4,7 +4,6 @@
 mod apply_patch;
 mod builtins;
 mod fff;
-mod refactor;
 mod registry;
 mod validation;
 pub mod web_search;
@@ -14,7 +13,6 @@ pub use builtins::{
     default_builtins, default_builtins_with_web_search, BashTool, GitTool, ReadFileTool,
     WriteFileTool,
 };
-pub use refactor::RefactorTool;
 pub use registry::{ToolContext, ToolRegistry};
 pub use validation::{validate_args, ValidationBudget};
 pub use web_search::{should_register_web_search, web_search_tool, WebSearchArgs, WebSearchTool};
