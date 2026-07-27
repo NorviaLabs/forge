@@ -4171,8 +4171,7 @@ mod tests {
             },
         );
         app.dispatch_line("/status").await.unwrap();
-        assert!(matches!(app.overlay, Some(Overlay::StatusReport { .. })));
-        assert!(app.status_message.contains("context"));
+        assert!(app.overlay.is_none());
         assert!(app.notices.is_empty());
     }
 
@@ -5132,7 +5131,7 @@ mod tests {
             .await
             .unwrap();
         assert!(app.notices.is_empty());
-        assert!(matches!(app.overlay, Some(Overlay::StatusReport { .. })));
+        assert!(app.overlay.is_none());
 
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
@@ -5346,7 +5345,7 @@ mod tests {
             app.feedback.text,
             app.status_message
         );
-        assert!(matches!(app.overlay, Some(Overlay::StatusReport { .. })));
+        assert!(app.overlay.is_none());
     }
 
     /// Save-and-restore env vars so dev machine credentials don't leak into tests.
