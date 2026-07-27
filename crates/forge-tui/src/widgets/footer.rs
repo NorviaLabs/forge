@@ -125,7 +125,7 @@ impl FooterModel {
         };
         let model = self.model.rsplit('/').next().unwrap_or(self.model.as_str());
         let ctx = format!("{:.0}% ctx", self.ctx_pct * 100.0);
-        format!("{provider}/{model} · {ctx}")
+        format!("{provider} · {model} · {} · {ctx}", self.effort)
     }
 }
 
@@ -209,6 +209,7 @@ mod tests {
         let model = FooterModel {
             provider: "native".into(),
             model: "openai-codex/gpt-5.6-sol".into(),
+            effort: "high".into(),
             hints: String::new(),
             cwd: "/tmp/workspace".into(),
             ..FooterModel::default()
@@ -219,7 +220,7 @@ mod tests {
         FooterBar { model: &model }.render(area, &mut buf);
 
         let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
-        assert!(rendered.trim().is_empty());
+        assert!(rendered.contains("native . openai-codex/gpt-5.6-sol . high"));
     }
 
     #[test]
