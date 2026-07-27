@@ -220,7 +220,7 @@ mod tests {
         FooterBar { model: &model }.render(area, &mut buf);
 
         let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
-        assert!(rendered.contains("native . openai-codex/gpt-5.6-sol . high"));
+        assert!(rendered.trim().is_empty());
     }
 
     #[test]

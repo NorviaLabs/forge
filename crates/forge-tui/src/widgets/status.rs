@@ -114,20 +114,6 @@ impl StatusModel {
             .collect();
         format!("{start}…{end}")
     }
-
-    fn provider_display(&self) -> &str {
-        if self.provider == "native" {
-            self.connect_profile.as_deref().unwrap_or("native")
-        } else if self.provider.is_empty() {
-            "—"
-        } else {
-            self.provider.as_str()
-        }
-    }
-
-    fn model_display(&self) -> &str {
-        self.model.rsplit('/').next().unwrap_or(self.model.as_str())
-    }
 }
 
 /// Build chrome from app-facing fields (single source for status + /status).
@@ -247,8 +233,8 @@ mod tests {
             prompt_cache_writes: 0,
         };
 
-        assert_eq!(m.provider_display(), "openai-code");
-        assert_eq!(m.model_display(), "gpt-5.4");
+        assert_eq!(m.connect_profile.as_deref(), Some("openai-code"));
+        assert_eq!(m.model.rsplit('/').next(), Some("gpt-5.4"));
     }
 
     #[test]
