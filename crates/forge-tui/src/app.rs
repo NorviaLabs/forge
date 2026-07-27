@@ -41,11 +41,11 @@ use crate::layout::split_areas_full;
 use crate::msg_queue::MessageQueue;
 use crate::overlays::{
     filter_palette, handle_overlay_key, models_from_catalog, ConnectProfileItem, FileExplorerItem,
-    Key as OverlayKey, Overlay, OverlayAction, OverlayWidget, PaletteItem, ResumeSessionItem,
+    Key, Key as OverlayKey, Overlay, OverlayAction, OverlayWidget, PaletteItem, ResumeSessionItem,
 };
 use crate::sidebar::{SidebarModel, SidebarWidget};
 use crate::theme;
-use crate::widgets::status::StatusBar;
+use crate::widgets::status::{session_chrome_lines, StatusBar};
 use crate::widgets::{
     classify_operator_error, BusyPhase, FeedbackBar, FeedbackModel, FeedbackSeverity, FooterBar,
     FooterModel, InputBar, InputModel, StatusModel,
@@ -2220,6 +2220,28 @@ Reply with ONLY the commit message line.\n\n\
             }
         }
 
+        if matches!(self.overlay, Some(Overlay::StatusReport { .. })) {
+            let ok = map_key(key);
+            match ok {
+                Key::Enter => {
+                    self.overlay = None;
+                    if self.input.text.trim().is_empty() {
+                        return Ok(());
+                    }
+                }
+                Key::Char(c) => {
+                    self.overlay = None;
+                    if !c.is_control() && !c.is_whitespace() {
+                        self.input.history_browse = false;
+                        self.input.insert(c);
+                        self.clamp_slash_suggest();
+                        return Ok(());
+                    }
+                }
+                _ => {}
+            }
+        }
+
         if let Some(ref mut ov) = self.overlay {
             let ok = map_key(key);
             let action = handle_overlay_key(ov, ok);
@@ -2604,20 +2626,29 @@ Reply with ONLY the commit message line.\n\n\
                     let chrome = self.refresh_status_model();
                     let report = self.session.token_usage_report();
                     let cursor = self.session.journal_cursor().await?;
-                    self.ui_banners.push(ChatItem::SessionStatus {
-                        session_id: self.session.session_id.to_string(),
-                        status: format!("{:?}", self.session.status).to_ascii_lowercase(),
-                        provider: chrome.provider.clone(),
-                        model: chrome.model.clone(),
-                        context_tokens: report.context_tokens_est,
-                        context_capacity: report.context_capacity,
-                        context_pct: report.context_pct,
-                        reset_pct: self.session.context_reset_ratio() * 100.0,
-                        workspace: self.session.workspace_root().display().to_string(),
-                        journal: self.session.journal_dir().display().to_string(),
-                        cursor,
-                        tools: self.session.list_tools().len(),
-                        hitl_pending: self.session.pending_hitl.is_some(),
+                    let mut lines = session_chrome_lines(&chrome);
+                    lines.push(format!("session={}", self.session.session_id));
+                    lines.push(format!("context_tokens={}", report.context_tokens_est));
+                    lines.push(format!("context_capacity={}", report.context_capacity));
+                    lines.push(format!("context_pct={:.1}%", report.context_pct * 100.0));
+                    lines.push(format!(
+                        "reset_pct={:.1}%",
+                        self.session.context_reset_ratio() * 100.0
+                    ));
+                    lines.push(format!(
+                        "workspace={}",
+                        self.session.workspace_root().display()
+                    ));
+                    lines.push(format!("journal={}", self.session.journal_dir().display()));
+                    lines.push(format!("cursor={cursor}"));
+                    lines.push(format!("tools={}", self.session.list_tools().len()));
+                    lines.push(format!(
+                        "hitl_pending={}",
+                        self.session.pending_hitl.is_some()
+                    ));
+                    self.overlay = Some(Overlay::StatusReport {
+                        title: "Status".into(),
+                        lines,
                     });
                     let api = &report.api;
                     self.set_feedback(
@@ -3945,16 +3976,9 @@ mod tests {
             },
         );
         app.dispatch_line("/status").await.unwrap();
-        assert!(
-            app.status_message.contains("context")
-                || app
-                    .notices
-                    .iter()
-                    .any(|l| l.contains("session") || l.contains("model=")),
-            "status={} notices={:?}",
-            app.status_message,
-            app.notices
-        );
+        assert!(matches!(app.overlay, Some(Overlay::StatusReport { .. })));
+        assert!(app.status_message.contains("context"));
+        assert!(app.notices.is_empty());
     }
 
     #[tokio::test]
@@ -4866,10 +4890,7 @@ mod tests {
             .await
             .unwrap();
         assert!(app.notices.is_empty());
-        assert!(app
-            .ui_banners
-            .iter()
-            .any(|item| matches!(item, ChatItem::SessionStatus { .. })));
+        assert!(matches!(app.overlay, Some(Overlay::StatusReport { .. })));
 
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
@@ -4884,12 +4905,11 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         for expected in [
-            "STATUS",
-            "Session",
-            "Model",
-            "Context",
-            "Workspace",
-            "Governance",
+            "Status",
+            "session=",
+            "model=",
+            "context_tokens=",
+            "workspace=",
         ] {
             assert!(text.contains(expected), "missing {expected}:\n{text}");
         }
@@ -5078,10 +5098,7 @@ mod tests {
             app.feedback.text,
             app.status_message
         );
-        assert!(app
-            .ui_banners
-            .iter()
-            .any(|item| matches!(item, ChatItem::SessionStatus { .. })));
+        assert!(matches!(app.overlay, Some(Overlay::StatusReport { .. })));
     }
 
     /// Save-and-restore env vars so dev machine credentials don't leak into tests.
