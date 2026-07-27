@@ -14,6 +14,7 @@ pub fn xai_grok_profile() -> ConnectProfile {
         api_key_env: vec![], // OAuth primary — no API key env for connect UX
         default_base_url: Some("https://api.x.ai/v1".into()),
         default_models: vec!["xai/grok-3".into()],
+        models_dev_providers: vec!["xai".into()],
         // Grok Build signs in via auth.x.ai OIDC; device verify page is accounts.x.ai/oauth2/device
         auth_url: Some("https://auth.x.ai".into()),
         model_provider_prefix: "xai".into(),

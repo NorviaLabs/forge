@@ -68,6 +68,7 @@ mod tests {
             api_key_env: vec!["DEMO_KEY".into()],
             default_base_url: None,
             default_models: vec!["demo/m".into()],
+            models_dev_providers: vec![],
             auth_url: None,
             model_provider_prefix: "demo".into(),
         });

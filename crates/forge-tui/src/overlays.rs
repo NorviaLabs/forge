@@ -110,6 +110,8 @@ pub struct ModelItem {
     pub model: String,
     /// Optional connect profile that sourced this row (catalog).
     pub profile_id: Option<String>,
+    /// Whether this is account-verified or public registry metadata.
+    pub source: forge_connect::CatalogSource,
 }
 
 pub fn default_palette_items() -> Vec<PaletteItem> {
@@ -185,6 +187,7 @@ pub fn default_models() -> Vec<ModelItem> {
                     provider: "native".into(),
                     model: m.clone(),
                     profile_id: Some(p.id.clone()),
+                    source: forge_connect::CatalogSource::Default,
                 });
             }
         }
@@ -200,6 +203,7 @@ pub fn models_from_catalog(entries: &[forge_connect::CatalogEntry]) -> Vec<Model
             provider: "native".into(),
             model: e.id.clone(),
             profile_id: Some(e.profile_id.clone()),
+            source: e.source,
         })
         .collect()
 }
@@ -1090,6 +1094,8 @@ Secrets are not shown. The process may exit; approve later with the same session
                                 .unwrap_or((m.profile_id.as_deref().unwrap_or("model"), &m.model));
                             let state = if m.model == *current_model {
                                 "current"
+                            } else if m.source == forge_connect::CatalogSource::Registry {
+                                "known"
                             } else if provider == "ollama" || provider.contains("local") {
                                 "local"
                             } else {
@@ -1140,7 +1146,7 @@ Secrets are not shown. The process may exit; approve later with the same session
                     .style(theme::text())
                     .render(regions[1], buf);
                 List::new(list_items).render(regions[2], buf);
-                Paragraph::new("Esc close")
+                Paragraph::new("known = public registry · Esc close")
                     .style(theme::dim())
                     .render(regions[3], buf);
             }
