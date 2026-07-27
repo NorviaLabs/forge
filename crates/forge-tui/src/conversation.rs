@@ -1351,6 +1351,14 @@ impl Widget for ConversationWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         // The transcript owns the main area; hierarchy comes from spacing and
         // semantic markers rather than a permanent frame.
+        let inset_x = 2.min(area.width);
+        let inset_y = 1.min(area.height);
+        let area = Rect {
+            x: area.x.saturating_add(inset_x),
+            y: area.y.saturating_add(inset_y),
+            width: area.width.saturating_sub(inset_x),
+            height: area.height.saturating_sub(inset_y),
+        };
         let lines = self.model.lines_for_width(area.width as usize);
         let total = lines.len() as u16;
         let height = area.height;
@@ -1399,6 +1407,8 @@ fn lang_from_path(path: &str) -> Option<&'static str> {
 mod tests {
     use super::*;
     use forge_types::Message;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
 
     #[test]
     fn roles_map_to_items() {
@@ -1878,6 +1888,29 @@ mod tests {
         );
         assert!(m.items.is_empty());
         assert!(m.lines().is_empty());
+    }
+
+    #[test]
+    fn conversation_widget_applies_padding_offsets() {
+        let m = ConversationModel::from_messages(
+            &[],
+            &[],
+            SessionStatus::Running,
+            ConversationViewOpts::default(),
+        )
+        .with_brand("forge 0.8.0")
+        .with_home("workspace".into(), 2);
+        let area = Rect::new(0, 0, 40, 8);
+        let backend = TestBackend::new(area.width, area.height);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|frame| {
+            frame.render_widget(ConversationWidget { model: &m }, area);
+        })
+        .unwrap();
+        let buf = term.backend().buffer();
+        assert_eq!(buf[(0, 0)].symbol(), " ");
+        assert_eq!(buf[(1, 0)].symbol(), " ");
+        assert_ne!(buf[(0, 1)].symbol(), "F");
     }
 
     #[test]
