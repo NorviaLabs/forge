@@ -60,8 +60,6 @@ impl Widget for FooterBar<'_> {
         }
         let workspace = compact_path_label(self.model.cwd.as_str());
         let meta = Line::from(vec![
-            Span::styled(self.model.session_short.as_str(), theme::dim()),
-            Span::styled(" · ", theme::muted()),
             Span::styled(self.model.status.as_str(), theme::text()),
             Span::styled(" · ", theme::muted()),
             Span::styled(workspace, theme::text()),
@@ -169,7 +167,6 @@ mod tests {
         let model = FooterModel {
             cwd: "/tmp/workspace".into(),
             hints: "test".into(),
-            session_short: "abcd".into(),
             status: "idle".into(),
             ..FooterModel::default()
         };
@@ -179,7 +176,6 @@ mod tests {
         FooterBar { model: &model }.render(area, &mut buf);
 
         let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
-        assert!(rendered.contains("abcd"));
         assert!(rendered.contains("idle"));
         assert!(rendered.contains("workspace"));
         assert!(!rendered.contains("Workspace"));
