@@ -14,7 +14,6 @@ pub enum CommandError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SlashCommand {
-    Status,
     ResumeList,
     Resume {
         session_id: Uuid,
@@ -58,7 +57,6 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
     let mut parts = rest.split_whitespace();
     let cmd = parts.next().unwrap_or("").to_ascii_lowercase();
     match cmd.as_str() {
-        "status" => Ok(SlashCommand::Status),
         "resume" => match parts.next() {
             None => Ok(SlashCommand::ResumeList),
             Some(id) => {
@@ -103,10 +101,6 @@ mod tests {
 
     #[test]
     fn parses_phase1_commands() {
-        assert_eq!(
-            parse_slash("/status").unwrap().unwrap(),
-            SlashCommand::Status
-        );
         assert!(parse_slash("/tools").unwrap().is_err());
         assert!(parse_slash("/journal").unwrap().is_err());
     }
