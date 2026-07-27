@@ -214,7 +214,10 @@ mod tests {
         let mut term = Terminal::new(backend).unwrap();
         term.draw(|f| app.draw(f)).unwrap();
         let text = buffer_text(&term);
-        assert!(text.contains("in 0 · out 0 · total 0"), "missing footer usage:\n{text}");
+        assert!(
+            text.contains("in 0 · out 0 · total 0"),
+            "missing footer usage:\n{text}"
+        );
         assert!(text.contains("Now"), "missing sidebar:\n{text}");
         assert!(text.contains("Recent"), "missing recent activity:\n{text}");
         assert!(

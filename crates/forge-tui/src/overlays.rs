@@ -129,10 +129,6 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
             desc: "Session, budget, journal cursor".into(),
         },
         PaletteItem {
-            cmd: "/cost".into(),
-            desc: "Provider limits, usage, and balance".into(),
-        },
-        PaletteItem {
             cmd: "/connect".into(),
             desc: "Connect provider (xAI, OpenCode Go/Zen, OpenAI, Anthropic, Ollama)".into(),
         },
@@ -664,13 +660,7 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                     // no-arg commands execute; others insert
                     if matches!(
                         cmd.as_str(),
-                        "/status"
-                            | "/quit"
-                            | "/compact"
-                            | "/sync"
-                            | "/copy"
-                            | "/clear"
-                            | "/file"
+                        "/status" | "/quit" | "/compact" | "/sync" | "/copy" | "/clear" | "/file"
                     ) {
                         OverlayAction::RunCommand(cmd)
                     } else {
@@ -1521,7 +1511,7 @@ mod tests {
             }
         }
         assert!(
-            items.len() >= 12,
+            items.len() >= 11,
             "expected full command list, got {}",
             items.len()
         );
