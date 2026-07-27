@@ -1286,6 +1286,7 @@ version = "0.1.0-alpha.5"
 dependencies = [
  "chrono",
  "crossterm 0.28.1",
+ "dirs 6.0.0",
  "forge-config",
  "forge-connect",
  "forge-core",
@@ -1293,6 +1294,7 @@ dependencies = [
  "forge-syntax",
  "forge-tools",
  "forge-types",
+ "pathdiff",
  "ratatui",
  "serde",
  "serde_json",
