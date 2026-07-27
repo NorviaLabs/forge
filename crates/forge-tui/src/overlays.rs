@@ -16,6 +16,7 @@ pub enum Overlay {
         model: String,
         selected: usize,
         current: ReasoningEffort,
+        default: ReasoningEffort,
         items: Vec<ReasoningEffort>,
     },
     StatusReport {
@@ -267,11 +268,17 @@ impl Overlay {
     pub fn effort_open(model: impl Into<String>, current: ReasoningEffort) -> Self {
         let model = model.into();
         let items = effort_options(&model);
-        let selected = items.iter().position(|item| *item == current).unwrap_or(0);
+        let default = ReasoningEffort::default_for_model(&model);
+        let selected = items
+            .iter()
+            .position(|item| *item == current)
+            .or_else(|| items.iter().position(|item| *item == default))
+            .unwrap_or(0);
         Self::Effort {
             model,
             selected,
             current,
+            default,
             items,
         }
     }
@@ -989,6 +996,7 @@ impl Widget for OverlayWidget<'_> {
                 model,
                 selected,
                 current,
+                default,
                 items,
             } => {
                 let r = centered_capped_rect(area, 54, 14);
@@ -998,12 +1006,16 @@ impl Widget for OverlayWidget<'_> {
                     .map(|(index, effort)| {
                         let marker = if index == *selected { "▶ " } else { "  " };
                         let current = if effort == current { " current" } else { "" };
+                        let default_label = if effort == default { " (provider default)" } else { "" };
                         let style = if index == *selected {
                             theme::focused_selection_style()
                         } else {
                             theme::text()
                         };
-                        ListItem::new(Span::styled(format!("{marker}{effort}{current}"), style))
+                        ListItem::new(Span::styled(
+                            format!("{marker}{effort}{current}{default_label}"),
+                            style,
+                        ))
                     })
                     .collect();
                 let block = Block::default()

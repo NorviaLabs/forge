@@ -60,7 +60,8 @@ pub(super) async fn complete(
                 .collect(),
         );
     }
-    apply_reasoning_effort(client, &mut body, model);
+    let reasoning_effort = req.reasoning_effort.as_deref();
+    apply_reasoning_effort(&mut body, model, reasoning_effort);
 
     let response = client
         .http
@@ -287,8 +288,8 @@ fn finalize_tool_uses(
         .collect()
 }
 
-fn apply_reasoning_effort(client: &NativeModelClient, body: &mut Value, model: &str) {
-    let Some(raw_effort) = client.injected_or_env(&["FORGE_REASONING_EFFORT"]) else {
+fn apply_reasoning_effort(body: &mut Value, model: &str, reasoning_effort: Option<&str>) {
+    let Some(raw_effort) = reasoning_effort else {
         return;
     };
     let mut effort = raw_effort.trim().to_ascii_lowercase();
@@ -343,6 +344,7 @@ mod tests {
         let req = ModelRequest {
             model: "anthropic/claude".into(),
             prompt_cache: true,
+            reasoning_effort: None,
             messages: vec![
                 Message::new(MessageRole::System, "system"),
                 Message::new(MessageRole::User, "hello"),
@@ -423,10 +425,11 @@ mod tests {
         config.model.base_url = Some(base_url);
         config.model.api_key = Some("anthropic-secret".into());
         let client = NativeModelClient::from_config(&config).unwrap();
-        client.apply_provider_env(&[("FORGE_REASONING_EFFORT".into(), "xhigh".into())]);
+        let _ = client;
         let (tx, rx) = std::sync::mpsc::channel();
         let request = ModelRequest {
             model: "anthropic/claude-sonnet-4-6".into(),
+            reasoning_effort: Some("high".into()),
             messages: vec![
                 Message::new(MessageRole::System, "system"),
                 Message::new(MessageRole::User, "hello"),
@@ -471,6 +474,7 @@ mod tests {
         let client = NativeModelClient::from_config(&Config::default()).unwrap();
         let request = ModelRequest {
             model: "anthropic/claude".into(),
+            reasoning_effort: None,
             messages: vec![],
             tools: vec![],
             prompt_cache: true,
