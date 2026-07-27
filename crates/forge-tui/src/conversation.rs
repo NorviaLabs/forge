@@ -183,7 +183,7 @@ pub struct ConversationModel {
 impl ConversationModel {
     pub fn from_messages(
         messages: &[Message],
-        events: &[TurnEvent],
+        _events: &[TurnEvent],
         status: SessionStatus,
         opts: ConversationViewOpts,
     ) -> Self {
@@ -496,11 +496,11 @@ impl ConversationModel {
                     }
                 }
                 ChatItem::ContextHandoff {
-                    before_pct,
-                    after_pct,
-                    goal,
-                    completed,
-                    next_actions,
+                    before_pct: _,
+                    after_pct: _,
+                    goal: _,
+                    completed: _,
+                    next_actions: _,
                 } => {}
                 ChatItem::SessionRecovery { last_assistant, .. } => {
                     let _ = last_assistant;
@@ -1464,6 +1464,7 @@ fn render_highlighted_line(segments: &[(String, (u8, u8, u8), bool, bool)]) -> V
         .collect()
 }
 
+#[cfg(test)]
 pub struct ConversationWidget<'a> {
     pub model: &'a ConversationModel,
 }
@@ -1516,6 +1517,7 @@ impl Widget for ConversationLinesWidget<'_> {
     }
 }
 
+#[cfg(test)]
 impl Widget for ConversationWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         // The transcript owns the main area; hierarchy comes from spacing and
