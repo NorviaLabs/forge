@@ -44,9 +44,9 @@ Download the archive for your platform from [GitHub Releases](https://github.com
 | Linux | x86_64 (glibc) | `x86_64-unknown-linux-gnu` |
 
 ```bash
-tar -xzf forge-v0.1.0-alpha.5-<target>.tar.gz
+tar -xzf forge-v0.1.0-alpha.6-<target>.tar.gz
 mkdir -p ~/.local/bin
-install -m 755 forge-v0.1.0-alpha.5-<target>/forge ~/.local/bin/forge
+install -m 755 forge-v0.1.0-alpha.6-<target>/forge ~/.local/bin/forge
 forge --version
 ```
 
@@ -240,8 +240,8 @@ Want to help? See [CONTRIBUTING.md](./CONTRIBUTING.md) for setup, validation, an
 GitHub Actions builds alpha binaries for the supported platforms. To publish an alpha:
 
 1. Ensure CI passes on `main` and update the workspace version if needed.
-2. Create an annotated tag matching `v<version>-alpha.<number>`: `git tag -a v0.1.0-alpha.5 -m "Forge 0.1.0 alpha 5"`.
-3. Push it: `git push origin v0.1.0-alpha.5`.
+2. Create an annotated tag matching `v<version>-alpha.<number>`: `git tag -a v0.1.0-alpha.6 -m "Forge 0.1.0 alpha 6"`.
+3. Push it: `git push origin v0.1.0-alpha.6`.
 4. The [Alpha Release workflow](.github/workflows/release.yml) builds archives, generates `SHA256SUMS`, and publishes a GitHub prerelease with generated notes.
 5. Download one archive, verify its checksum and `forge --version`, then complete a provider connection and small task in a disposable repository.
 
