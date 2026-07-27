@@ -3764,7 +3764,7 @@ mod tests {
             .activity
             .all()
             .iter()
-            .any(|item| item.summary.contains("session restored")));
+            .any(|item| item.summary.contains("session resumed")));
     }
 
     #[tokio::test]
@@ -5122,7 +5122,10 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(text.contains("model=") || text.contains("context_tokens="), "missing session card:\n{text}");
+        assert!(
+            text.contains("unknown command `/status`"),
+            "missing status command feedback:\n{text}"
+        );
     }
 
     #[tokio::test]
