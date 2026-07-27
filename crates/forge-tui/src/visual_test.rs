@@ -229,9 +229,14 @@ mod tests {
         term.draw(|f| app.draw(f)).unwrap();
         let text = buffer_text(&term);
 
-        for expected in ["skills", "Describe a task…", "Context", "Loaded AGENTS.md"] {
+        for expected in ["Describe a task…", "Context", "Loaded AGENTS.md"] {
             assert!(text.contains(expected), "missing {expected:?}:\n{text}");
         }
+        assert!(text.contains("forge 0.8.0"), "missing version:\n{text}");
+        assert!(
+            text.contains("██████"),
+            "missing yellow banner art:\n{text}"
+        );
         assert!(
             !text.contains("Waiting for your first message."),
             "stale copy:\n{text}"
