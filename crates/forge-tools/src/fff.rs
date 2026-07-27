@@ -51,7 +51,7 @@ pub enum FffModeArg {
 }
 
 pub(crate) struct FffState {
-    picker: fff_search::SharedFilePicker,
+    picker: fff_search::SharedPicker,
     inited: AtomicBool,
     first_call: AtomicBool,
 }
@@ -59,7 +59,7 @@ pub(crate) struct FffState {
 impl FffState {
     pub(crate) fn new() -> Self {
         Self {
-            picker: fff_search::SharedFilePicker::default(),
+            picker: fff_search::SharedPicker::default(),
             inited: AtomicBool::new(false),
             first_call: AtomicBool::new(true),
         }
@@ -109,8 +109,7 @@ impl FffState {
                     base_path: bp,
                     mode: fff_search::file_picker::FFFMode::Ai,
                     watch: true,
-                    enable_content_indexing: true,
-                    enable_mmap_cache: true,
+                    warmup_mmap_cache: true,
                     ..Default::default()
                 },
             )
@@ -174,9 +173,10 @@ impl Tool for FffFindTool {
             .as_ref()
             .ok_or_else(|| ToolError::Execution("fff not initialized".into()))?;
 
-        let results = picker.fuzzy_search(
+        let results = fff_search::file_picker::FilePicker::fuzzy_search(
+            picker.get_files(),
             &query,
-            None::<&fff_search::dbs::query_tracker::QueryTracker>,
+            None::<&fff_search::query_tracker::QueryTracker>,
             fff_search::file_picker::FuzzySearchOptions {
                 pagination: fff_search::types::PaginationArgs {
                     offset: 0,
@@ -193,7 +193,7 @@ impl Tool for FffFindTool {
             results
                 .items
                 .iter()
-                .map(|item| item.relative_path(picker))
+                .map(|item| item.relative_path.clone())
                 .collect::<Vec<_>>()
                 .join("\n")
         };
@@ -254,12 +254,16 @@ impl Tool for FffGrepTool {
             Some(FffModeArg::Fuzzy) => fff_search::grep::GrepMode::Fuzzy,
         };
         let grep_opts = fff_search::grep::GrepSearchOptions {
+            max_file_size: 10 * 1024 * 1024,
+            max_matches_per_file: 0,
             mode: grep_mode,
+            file_offset: 0,
             page_limit: a.max_results as usize,
             smart_case: true,
             time_budget_ms: 5000,
-            trim_whitespace: true,
-            ..Default::default()
+            before_context: 0,
+            after_context: 0,
+            classify_definitions: false,
         };
 
         let picker_guard = self
@@ -284,7 +288,7 @@ impl Tool for FffGrepTool {
                     let path = results
                         .files
                         .get(m.file_index)
-                        .map(|f| f.relative_path(picker))
+                        .map(|f| f.relative_path.clone())
                         .unwrap_or_default();
                     format!("{}:{}:{}", path, m.line_number, m.line_content)
                 })
