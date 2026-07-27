@@ -118,6 +118,20 @@ impl StatusModel {
             .collect();
         format!("{start}…{end}")
     }
+
+    fn provider_display(&self) -> &str {
+        if self.provider == "native" {
+            self.connect_profile.as_deref().unwrap_or("native")
+        } else if self.provider.is_empty() {
+            "—"
+        } else {
+            self.provider.as_str()
+        }
+    }
+
+    fn model_display(&self) -> &str {
+        self.model.rsplit('/').next().unwrap_or(self.model.as_str())
+    }
 }
 
 #[allow(dead_code)]
@@ -131,13 +145,11 @@ impl Widget for StatusBar<'_> {
             return;
         }
         let (label, style) = self.model.status_label();
-        let model_disp =
-            StatusModel::truncate_model(&self.model.model, if area.width < 100 { 16 } else { 28 });
-        let provider = if self.model.provider.is_empty() {
-            "—"
-        } else {
-            self.model.provider.as_str()
-        };
+        let model_disp = StatusModel::truncate_model(
+            self.model.model_display(),
+            if area.width < 100 { 16 } else { 28 },
+        );
+        let provider = self.model.provider_display();
         let ctx = format!("{:.0}% context", self.model.ctx_pct * 100.0);
         let ctx_style = if self.model.ctx_pct >= 0.90 {
             theme::danger().add_modifier(Modifier::BOLD)
@@ -146,7 +158,7 @@ impl Widget for StatusBar<'_> {
         } else {
             theme::info()
         };
-        let mut spans = vec![
+        let spans = vec![
             Span::styled(model_disp, theme::text()),
             Span::styled(" · ", theme::dim()),
             Span::styled(provider, theme::metadata_style()),
@@ -256,6 +268,29 @@ mod tests {
         assert!(lines.iter().any(|l| l.contains("effort=medium")));
         assert!(lines.iter().any(|l| l.contains("profile=xai")));
         assert!(lines.iter().any(|l| l.contains("connected=yes")));
+    }
+
+    #[test]
+    fn status_bar_uses_connect_profile_and_model_name() {
+        let m = StatusModel {
+            status: SessionStatus::Running,
+            session_short: "abc".into(),
+            model: "openai-code/gpt-5.4".into(),
+            provider: "native".into(),
+            effort: "medium".into(),
+            ctx_pct: 0.34,
+            busy: false,
+            busy_phase: BusyPhase::Idle,
+            connect_profile: Some("openai-code".into()),
+            provider_connected: true,
+            web_search_label: None,
+            tools_visible: 0,
+            prompt_cache_hits: 0,
+            prompt_cache_writes: 0,
+        };
+
+        assert_eq!(m.provider_display(), "openai-code");
+        assert_eq!(m.model_display(), "gpt-5.4");
     }
 
     #[test]
