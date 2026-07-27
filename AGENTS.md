@@ -23,13 +23,17 @@ Key crates:
 - Keep changes focused; avoid unrelated refactors, dependency updates, or formatting churn.
 - Prefer small root-cause fixes over call-site patches.
 - Match existing Rust style and crate-local patterns.
-- Add or update tests for behavior changes.
+- Always run relevant tests for the code you change before handoff.
+- Add or update tests for behavior changes, and implement new test cases when changes are significant.
 - Update docs when commands, configuration, provider behavior, architecture, or safety behavior changes.
 - Never commit API keys, OAuth tokens, credentials, `.forge/` runtime data, or proprietary fixtures.
 
 ## Validation
 
 Use focused checks first, then broader checks before handoff:
+
+- For any non-trivial code change, run at least the most relevant crate-level tests.
+- For significant changes, add or expand targeted test coverage and run the broader validation commands before handoff.
 
 ```sh
 cargo fmt --all -- --check
