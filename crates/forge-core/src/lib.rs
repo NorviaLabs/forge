@@ -129,7 +129,7 @@ impl SessionTokenUsage {
     }
 }
 
-/// Snapshot of session token metrics for `/cost` and status UIs.
+/// Snapshot of session token metrics for status UIs.
 #[derive(Debug, Clone)]
 pub struct TokenUsageReport {
     pub api: SessionTokenUsage,
@@ -427,7 +427,7 @@ impl AgentSession {
         Ok(self.journal.last_seq().await?)
     }
 
-    /// Full token-usage report for `/cost` (API totals + in-context estimates). No $.
+    /// Full token-usage report for status UIs (API totals + in-context estimates). No $.
     pub fn token_usage_report(&self) -> TokenUsageReport {
         let mut system_tokens_est = 0usize;
         let mut user_tokens_est = 0usize;

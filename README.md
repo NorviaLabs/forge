@@ -144,7 +144,6 @@ Slash commands can be typed directly in the textbox or discovered with **Ctrl+K*
 | `/resume` | Pick a previous session to resume |
 | `/resume <uuid>` | Resume a specific session by id |
 | `/file <path>` | Browse and read a workspace file read-only |
-| `/cost` | Token usage breakdown for the session |
 | `/compact` | Compact the conversation context |
 | `/copy` | Copy last assistant message to clipboard |
 | `/clear` | Clear the visible transcript (keeps model context) |
