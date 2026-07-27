@@ -256,11 +256,14 @@ impl ConversationModel {
                     } else if looks_like_diff(&m.content)
                         || looks_like_code_change(name, &m.content)
                     {
-                        items.push(ChatItem::DiffCard {
-                            path: extract_path_hint(name, &m.content),
-                            lines: m.content.lines().map(|s| s.to_string()).collect(),
-                            rationale: change_rationale(latest_thinking.as_deref()),
-                        });
+                        let rationale = change_rationale(latest_thinking.as_deref());
+                        for (path, lines) in split_diff_sections(name, &m.content) {
+                            items.push(ChatItem::DiffCard {
+                                path,
+                                lines,
+                                rationale: rationale.clone(),
+                            });
+                        }
                     } else {
                         let (state, summary, detail) = classify_tool_content(name, &m.content);
                         items.push(ChatItem::ToolCard {
@@ -443,7 +446,7 @@ impl ConversationModel {
 
     /// Build display lines for the actual conversation viewport. Paragraph does
     /// not wrap styled lines itself, so wrapping follows the full pane width.
-    fn lines_for_width(&self, available_width: usize) -> Vec<Line<'static>> {
+    pub(crate) fn lines_for_width(&self, available_width: usize) -> Vec<Line<'static>> {
         let width = available_width.max(4);
         let gap = !self.opts.compact;
         let mut lines = Vec::new();
@@ -982,78 +985,7 @@ impl ConversationModel {
                             ]));
                         }
                     }
-                    if let Some(lang) = lang_from_path(path) {
-                        let syntax_theme = forge_syntax::HighlightTheme::default();
-                        let code: String = dl
-                            .iter()
-                            .filter(|l| {
-                                !l.starts_with("+++")
-                                    && !l.starts_with("---")
-                                    && !l.starts_with("diff ")
-                            })
-                            .map(|s| s.as_str())
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        let highlighted = highlight_to_lines(lang, &code, &syntax_theme);
-                        let mut code_idx = 0;
-                        for l in dl {
-                            if l.starts_with("+++")
-                                || l.starts_with("---")
-                                || l.starts_with("diff ")
-                            {
-                                lines
-                                    .push(Line::from(Span::styled(format!("  {l}"), theme::dim())));
-                            } else {
-                                let prefix = if l.starts_with('+') {
-                                    "+"
-                                } else if l.starts_with('-') {
-                                    "-"
-                                } else {
-                                    " "
-                                };
-                                let diff_style = if l.starts_with('+') {
-                                    theme::ok()
-                                } else if l.starts_with('-') {
-                                    theme::danger()
-                                } else {
-                                    theme::muted()
-                                };
-                                if code_idx < highlighted.len() {
-                                    let mut spans =
-                                        vec![Span::styled(format!("  {prefix}"), diff_style)];
-                                    for (text, rgb, bold, italic) in &highlighted[code_idx] {
-                                        let mut st = ratatui::style::Style::default()
-                                            .fg(ratatui::style::Color::Rgb(rgb.0, rgb.1, rgb.2));
-                                        if *bold {
-                                            st = st.add_modifier(Modifier::BOLD);
-                                        }
-                                        if *italic {
-                                            st = st.add_modifier(Modifier::ITALIC);
-                                        }
-                                        spans.push(Span::styled(text.clone(), st));
-                                    }
-                                    lines.push(Line::from(spans));
-                                } else {
-                                    lines.push(Line::from(Span::styled(
-                                        format!("  {l}"),
-                                        diff_style,
-                                    )));
-                                }
-                                code_idx += 1;
-                            }
-                        }
-                    } else {
-                        for l in dl {
-                            let style = if l.starts_with('+') && !l.starts_with("+++") {
-                                theme::ok()
-                            } else if l.starts_with('-') && !l.starts_with("---") {
-                                theme::danger()
-                            } else {
-                                theme::muted()
-                            };
-                            lines.push(Line::from(Span::styled(format!("  {l}"), style)));
-                        }
-                    }
+                    lines.extend(render_numbered_diff(path, dl));
                     if gap {
                         lines.push(Line::from(""));
                     }
@@ -1135,16 +1067,15 @@ fn looks_like_code_change(name: &str, content: &str) -> bool {
     let name = name.to_ascii_lowercase();
     let content = content.to_ascii_lowercase();
     name.contains("write")
+        || name == "apply_patch"
         || name.contains("search_replace")
         || name == "edit"
-        || name == "git"
         || content.contains("```")
         || content.contains("diff --git")
         || content.contains("@@ ")
         || (content.contains('\n') && (content.contains("+") || content.contains("-")))
 }
 
-#[allow(dead_code)]
 fn extract_path_hint(name: &str, content: &str) -> String {
     for line in content.lines().take(8) {
         if let Some(rest) = line.strip_prefix("+++ b/") {
@@ -1162,6 +1093,175 @@ fn extract_path_hint(name: &str, content: &str) -> String {
         }
     }
     name.to_string()
+}
+
+fn split_diff_sections(name: &str, content: &str) -> Vec<(String, Vec<String>)> {
+    let mut sections = Vec::new();
+    let mut current = Vec::new();
+
+    for line in content.lines() {
+        if line.starts_with("diff --git ") && !current.is_empty() {
+            while current.last().is_some_and(String::is_empty) {
+                current.pop();
+            }
+            let body = current.join("\n");
+            sections.push((extract_path_hint(name, &body), std::mem::take(&mut current)));
+        }
+        current.push(line.to_string());
+    }
+
+    if !current.is_empty() {
+        let body = current.join("\n");
+        sections.push((extract_path_hint(name, &body), current));
+    }
+    sections
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct NumberedDiffLine {
+    old: Option<usize>,
+    new: Option<usize>,
+    marker: char,
+    content: String,
+    header: bool,
+}
+
+fn parse_hunk_start(value: &str, marker: char) -> Option<usize> {
+    value.strip_prefix(marker)?.split(',').next()?.parse().ok()
+}
+
+fn number_diff_lines(lines: &[String]) -> Vec<NumberedDiffLine> {
+    let mut numbered = Vec::new();
+    let mut old_line = None;
+    let mut new_line = None;
+
+    for line in lines {
+        if line.starts_with("diff --git ") || line.starts_with("--- ") || line.starts_with("+++ ") {
+            continue;
+        }
+        if line.starts_with("@@") {
+            let mut fields = line.split_whitespace();
+            let _ = fields.next();
+            old_line = fields.next().and_then(|field| parse_hunk_start(field, '-'));
+            new_line = fields.next().and_then(|field| parse_hunk_start(field, '+'));
+            numbered.push(NumberedDiffLine {
+                old: None,
+                new: None,
+                marker: ' ',
+                content: line.clone(),
+                header: true,
+            });
+            continue;
+        }
+        if line.starts_with("\\ No newline") {
+            numbered.push(NumberedDiffLine {
+                old: None,
+                new: None,
+                marker: ' ',
+                content: line.clone(),
+                header: true,
+            });
+            continue;
+        }
+
+        let (marker, content) = match line.chars().next() {
+            Some(marker @ ('+' | '-' | ' ')) => (marker, line[marker.len_utf8()..].to_string()),
+            _ => (' ', line.clone()),
+        };
+        let (old, new) = match marker {
+            '-' => {
+                let old = old_line;
+                old_line = old_line.map(|line| line + 1);
+                (old, None)
+            }
+            '+' => {
+                let new = new_line;
+                new_line = new_line.map(|line| line + 1);
+                (None, new)
+            }
+            _ => {
+                let old = old_line;
+                let new = new_line;
+                old_line = old_line.map(|line| line + 1);
+                new_line = new_line.map(|line| line + 1);
+                (old, new)
+            }
+        };
+        numbered.push(NumberedDiffLine {
+            old,
+            new,
+            marker,
+            content,
+            header: false,
+        });
+    }
+    numbered
+}
+
+fn render_numbered_diff(path: &str, diff: &[String]) -> Vec<Line<'static>> {
+    let numbered = number_diff_lines(diff);
+    let number_width = numbered
+        .iter()
+        .flat_map(|line| [line.old, line.new])
+        .flatten()
+        .max()
+        .map(|line| line.to_string().len())
+        .unwrap_or(1);
+    let code = numbered
+        .iter()
+        .filter(|line| !line.header)
+        .map(|line| line.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let highlighted = lang_from_path(path)
+        .map(|lang| highlight_to_lines(lang, &code, &forge_syntax::HighlightTheme::default()));
+    let mut code_index = 0;
+    let mut rendered = Vec::with_capacity(numbered.len());
+
+    for line in numbered {
+        if line.header {
+            let gutter_width = number_width * 2 + 7;
+            rendered.push(Line::from(vec![
+                Span::styled(" ".repeat(gutter_width), theme::dim()),
+                Span::styled(line.content, theme::dim()),
+            ]));
+            continue;
+        }
+
+        let old = line.old.map(|line| line.to_string()).unwrap_or_default();
+        let new = line.new.map(|line| line.to_string()).unwrap_or_default();
+        let line_style = match line.marker {
+            '+' => theme::ok(),
+            '-' => theme::danger(),
+            _ => theme::muted(),
+        };
+        let mut spans = vec![Span::styled(
+            format!(
+                "  {old:>number_width$} {new:>number_width$} │ {} ",
+                line.marker
+            ),
+            line_style,
+        )];
+
+        if let Some(Some(parts)) = highlighted.as_ref().map(|lines| lines.get(code_index)) {
+            for (text, rgb, bold, italic) in parts {
+                let mut style = ratatui::style::Style::default()
+                    .fg(ratatui::style::Color::Rgb(rgb.0, rgb.1, rgb.2));
+                if *bold {
+                    style = style.add_modifier(Modifier::BOLD);
+                }
+                if *italic {
+                    style = style.add_modifier(Modifier::ITALIC);
+                }
+                spans.push(Span::styled(text.clone(), style));
+            }
+        } else {
+            spans.push(Span::styled(line.content, line_style));
+        }
+        rendered.push(Line::from(spans));
+        code_index += 1;
+    }
+    rendered
 }
 
 #[allow(dead_code)]
@@ -1357,6 +1457,37 @@ pub struct ConversationWidget<'a> {
     pub model: &'a ConversationModel,
 }
 
+pub struct ConversationLinesWidget<'a> {
+    pub lines: &'a [Line<'static>],
+    pub scroll: u16,
+    pub follow: bool,
+}
+
+fn render_conversation_lines(
+    lines: &[Line<'static>],
+    scroll_from_bottom: u16,
+    follow: bool,
+    area: Rect,
+    buf: &mut Buffer,
+) {
+    let total = lines.len() as u16;
+    let max_scroll = total.saturating_sub(area.height);
+    let scroll = if follow {
+        max_scroll
+    } else {
+        max_scroll.saturating_sub(scroll_from_bottom.min(max_scroll))
+    };
+    let start = scroll as usize;
+    let end = (start + area.height as usize).min(lines.len());
+    Paragraph::new(lines[start..end].to_vec()).render(area, buf);
+}
+
+impl Widget for ConversationLinesWidget<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        render_conversation_lines(self.lines, self.scroll, self.follow, area, buf);
+    }
+}
+
 impl Widget for ConversationWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         // The transcript owns the main area; hierarchy comes from spacing and
@@ -1370,17 +1501,7 @@ impl Widget for ConversationWidget<'_> {
             height: area.height.saturating_sub(inset_y),
         };
         let lines = self.model.lines_for_width(area.width as usize);
-        let total = lines.len() as u16;
-        let height = area.height;
-        let max_scroll = total.saturating_sub(height);
-        let scroll = if self.model.follow {
-            max_scroll
-        } else {
-            // `model.scroll` is the distance from the bottom, so scrolling up
-            // moves the viewport back from the live tail of the conversation.
-            max_scroll.saturating_sub(self.model.scroll.min(max_scroll))
-        };
-        Paragraph::new(lines).scroll((scroll, 0)).render(area, buf);
+        render_conversation_lines(&lines, self.model.scroll, self.model.follow, area, buf);
     }
 }
 
@@ -1874,10 +1995,11 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(
-            rendered.contains("diff --git a/src/lib.rs b/src/lib.rs"),
-            "{rendered}"
+            rendered.contains("src/lib.rs  diff"),
+            "file path should be shown in the diff card: {rendered}"
         );
-        assert!(rendered.contains("+new"), "{rendered}");
+        assert!(rendered.contains("1   │ - old"), "{rendered}");
+        assert!(rendered.contains("  1 │ + new"), "{rendered}");
         assert!(
             !rendered.contains("Applied by"),
             "code changes without reasoning should not show a generated rationale: {rendered}"
@@ -1885,6 +2007,74 @@ mod tests {
         assert!(
             !rendered.contains("why:"),
             "the rationale should not have a why prefix: {rendered}"
+        );
+    }
+
+    #[test]
+    fn multi_file_diff_results_become_separate_cards() {
+        let msgs = vec![Message {
+            role: MessageRole::Tool,
+            content: concat!(
+                "diff --git a/src/a.rs b/src/a.rs\n",
+                "--- a/src/a.rs\n+++ b/src/a.rs\n@@ -2 +2 @@\n-old_a\n+new_a\n",
+                "\n",
+                "diff --git a/src/b.rs b/src/b.rs\n",
+                "--- a/src/b.rs\n+++ b/src/b.rs\n@@ -7 +7 @@\n-old_b\n+new_b\n"
+            )
+            .into(),
+            tool_call_id: Some("1".into()),
+            name: Some("apply_patch".into()),
+            thinking: None,
+            thinking_duration_secs: None,
+            tool_calls: vec![],
+        }];
+
+        let model = ConversationModel::from_messages(
+            &msgs,
+            &[],
+            SessionStatus::Running,
+            ConversationViewOpts::default(),
+        );
+
+        assert_eq!(model.items.len(), 2);
+        assert!(matches!(
+            &model.items[0],
+            ChatItem::DiffCard { path, lines, .. }
+                if path == "src/a.rs" && lines.last().is_some_and(|line| line == "+new_a")
+        ));
+        assert!(matches!(
+            &model.items[1],
+            ChatItem::DiffCard { path, .. } if path == "src/b.rs"
+        ));
+    }
+
+    #[test]
+    fn diff_line_numbers_track_additions_removals_and_context() {
+        let diff = [
+            "@@ -10,3 +20,4 @@",
+            " context",
+            "-removed",
+            "+added",
+            "+extra",
+            " tail",
+        ]
+        .map(str::to_string);
+
+        let numbered = number_diff_lines(&diff);
+
+        assert_eq!(
+            numbered
+                .iter()
+                .map(|line| (line.old, line.new, line.marker))
+                .collect::<Vec<_>>(),
+            vec![
+                (None, None, ' '),
+                (Some(10), Some(20), ' '),
+                (Some(11), None, '-'),
+                (None, Some(21), '+'),
+                (None, Some(22), '+'),
+                (Some(12), Some(23), ' '),
+            ]
         );
     }
 

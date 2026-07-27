@@ -6,6 +6,7 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 
+use crate::builtins::unified_diff;
 use crate::registry::ToolContext;
 use crate::{Tool, ToolError};
 
@@ -32,8 +33,17 @@ struct Hunk {
 
 #[derive(Debug)]
 enum PreparedChange {
-    Write { path: PathBuf, content: String },
-    Delete { path: PathBuf },
+    Write {
+        path: PathBuf,
+        display_path: String,
+        original: Option<String>,
+        content: String,
+    },
+    Delete {
+        path: PathBuf,
+        display_path: String,
+        original: String,
+    },
 }
 
 #[async_trait]
@@ -60,21 +70,41 @@ impl Tool for ApplyPatchTool {
             .map_err(|error| ToolError::Execution(error.to_string()))?;
         let actions = parse_patch(&args.patch)?;
         let changes = prepare_changes(ctx, actions).await?;
+        let mut diffs = Vec::with_capacity(changes.len());
+
+        for change in &changes {
+            let diff = match change {
+                PreparedChange::Write {
+                    display_path,
+                    original,
+                    content,
+                    ..
+                } => unified_diff(display_path, original.as_deref(), content).await?,
+                PreparedChange::Delete {
+                    display_path,
+                    original,
+                    ..
+                } => unified_diff(display_path, Some(original), "").await?,
+            };
+            if !diff.trim().is_empty() {
+                diffs.push(diff);
+            }
+        }
 
         for change in &changes {
             match change {
-                PreparedChange::Write { path, content } => {
+                PreparedChange::Write { path, content, .. } => {
                     if let Some(parent) = path.parent() {
                         tokio::fs::create_dir_all(parent).await?;
                     }
                     tokio::fs::write(path, content).await?;
                 }
-                PreparedChange::Delete { path } => tokio::fs::remove_file(path).await?,
+                PreparedChange::Delete { path, .. } => tokio::fs::remove_file(path).await?,
             }
         }
 
         Ok(ToolOutput {
-            content: format!("Done! Applied {} file change(s).", changes.len()),
+            content: diffs.join("\n"),
             is_error: false,
         })
     }
@@ -193,20 +223,34 @@ async fn prepare_changes(
                 if tokio::fs::try_exists(&path).await? {
                     return execution_error(format!("cannot add existing file `{path_text}`"));
                 }
-                changes.push(PreparedChange::Write { path, content });
+                changes.push(PreparedChange::Write {
+                    path,
+                    display_path: path_text,
+                    original: None,
+                    content,
+                });
             }
             PatchAction::Update { hunks, .. } => {
                 let original = tokio::fs::read_to_string(&path).await.map_err(|error| {
                     ToolError::Execution(format!("cannot update `{path_text}`: {error}"))
                 })?;
                 let content = apply_hunks(&original, &hunks, &path_text)?;
-                changes.push(PreparedChange::Write { path, content });
+                changes.push(PreparedChange::Write {
+                    path,
+                    display_path: path_text,
+                    original: Some(original),
+                    content,
+                });
             }
             PatchAction::Delete { .. } => {
-                if !tokio::fs::try_exists(&path).await? {
-                    return execution_error(format!("cannot delete missing file `{path_text}`"));
-                }
-                changes.push(PreparedChange::Delete { path });
+                let original = tokio::fs::read_to_string(&path).await.map_err(|error| {
+                    ToolError::Execution(format!("cannot delete `{path_text}`: {error}"))
+                })?;
+                changes.push(PreparedChange::Delete {
+                    path,
+                    display_path: path_text,
+                    original,
+                });
             }
         }
     }
@@ -306,6 +350,19 @@ mod tests {
             .unwrap();
 
         assert!(!output.is_error);
+        for expected in [
+            "diff --git a/nested/new.txt b/nested/new.txt",
+            "diff --git a/update.txt b/update.txt",
+            "diff --git a/delete.txt b/delete.txt",
+            "+second",
+            "-gone",
+        ] {
+            assert!(
+                output.content.contains(expected),
+                "missing {expected} in:\n{}",
+                output.content
+            );
+        }
         assert_eq!(
             std::fs::read_to_string(dir.path().join("nested/new.txt")).unwrap(),
             "new\nfile\n"
