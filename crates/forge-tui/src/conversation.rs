@@ -931,8 +931,9 @@ impl ConversationModel {
                     lines: dl,
                     rationale,
                 } => {
+                    let (tag, st) = ("✓", theme::tool_success_style());
                     lines.push(Line::from(vec![
-                        Span::styled("Δ ", theme::brand()),
+                        Span::styled(format!("{tag} "), st),
                         Span::styled(path.clone(), theme::text().add_modifier(Modifier::BOLD)),
                         Span::styled("  diff", theme::dim()),
                     ]));
