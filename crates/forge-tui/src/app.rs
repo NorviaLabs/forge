@@ -146,11 +146,27 @@ fn recent_resume_sessions(
 }
 
 fn footer_usage_summary(report: &forge_core::TokenUsageReport) -> String {
+    footer_usage_summary_with_cost(report, None)
+}
+
+fn footer_usage_summary_with_cost(
+    report: &forge_core::TokenUsageReport,
+    cost: Option<forge_connect::CatalogCost>,
+) -> String {
+    let cost = cost
+        .filter(|_| report.api.prompt_tokens > 0 || report.api.completion_tokens > 0)
+        .map(|cost| {
+            let input = report.api.prompt_tokens as f64 * cost.input / 1_000_000.0;
+            let output = report.api.completion_tokens as f64 * cost.output / 1_000_000.0;
+            format!(" · ${:.4}", input + output)
+        })
+        .unwrap_or_default();
     format!(
-        "in {} · out {} · total {}",
+        "in {} · out {} · total {}{}",
         format_with_commas(report.api.prompt_tokens),
         format_with_commas(report.api.completion_tokens),
-        format_with_commas(report.api.total_api_tokens())
+        format_with_commas(report.api.total_api_tokens()),
+        cost,
     )
 }
 
@@ -1300,6 +1316,10 @@ impl TuiApp {
         models_from_catalog(&entries)
     }
 
+    fn active_model_cost(&self) -> Option<forge_connect::CatalogCost> {
+        ModelCatalogCache::user_default().get_registry_cost(&self.runtime.model_label)
+    }
+
     /// Enqueue while a message is processing (TUI Enter path only).
     fn enqueue_user_message(&mut self, line: String) {
         let n = self.message_queue.enqueue(line);
@@ -2141,7 +2161,7 @@ Reply with ONLY the commit message line.\n\n\
             connected: status.provider_connected,
             connect_profile: status.connect_profile,
             hints,
-            usage_summary: footer_usage_summary(&context),
+            usage_summary: footer_usage_summary_with_cost(&context, self.active_model_cost()),
         };
         frame.render_widget(FooterBar { model: &footer }, regions.footer);
 
@@ -5150,6 +5170,42 @@ mod tests {
         assert_eq!(
             footer_usage_summary(&report),
             "in 6,094 · out 36 · total 6,130"
+        );
+    }
+
+    #[test]
+    fn footer_usage_includes_cached_cost() {
+        let report = forge_core::TokenUsageReport {
+            api: forge_core::SessionTokenUsage {
+                prompt_tokens: 1_000_000,
+                completion_tokens: 500_000,
+                model_calls_with_usage: 1,
+                model_steps: 1,
+                thinking_tokens_est: 0,
+                prompt_cache_hits: 0,
+                prompt_cache_writes: 0,
+            },
+            context_tokens_est: 0,
+            context_capacity: 1,
+            context_pct: 0.0,
+            system_tokens_est: 0,
+            user_tokens_est: 0,
+            assistant_tokens_est: 0,
+            tool_tokens_est: 0,
+            thinking_in_context_est: 0,
+            message_count: 0,
+            tool_message_count: 0,
+        };
+
+        assert_eq!(
+            footer_usage_summary_with_cost(
+                &report,
+                Some(forge_connect::CatalogCost {
+                    input: 3.0,
+                    output: 15.0,
+                })
+            ),
+            "in 1,000,000 · out 500,000 · total 1,500,000 · $10.5000"
         );
     }
 }
