@@ -5,6 +5,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Widget;
+use std::path::Path;
 
 #[derive(Debug, Clone)]
 pub struct FooterModel {
@@ -53,24 +54,42 @@ impl Widget for FooterBar<'_> {
         if area.height == 0 {
             return;
         }
-        if area.height > 1 {
-            buf.set_line(
-                area.x,
-                area.y,
-                &Line::from(vec![
-                    Span::styled("Workspace ", theme::dim()),
-                    Span::styled(self.model.cwd.as_str(), theme::text()),
-                ]),
-                area.width,
-            );
-            buf.set_line(
-                area.x,
-                area.y + 1,
-                &Line::from(Span::styled(self.model.hints.as_str(), theme::muted())),
-                area.width,
-            );
+        if area.height == 1 {
+            return;
+        }
+        let workspace = relative_workspace_label(self.model.cwd.as_str());
+        let meta = Line::from(vec![
+            Span::styled(self.model.session_short.as_str(), theme::dim()),
+            Span::styled(" · ", theme::muted()),
+            Span::styled(self.model.status.as_str(), theme::text()),
+            Span::styled(" · ", theme::muted()),
+            Span::styled(workspace, theme::text()),
+            Span::styled(" · ", theme::muted()),
+            Span::styled(self.model.hints.as_str(), theme::muted()),
+        ]);
+        buf.set_line(area.x, area.y, &meta, area.width);
+    }
+}
+
+fn relative_workspace_label(path: &str) -> String {
+    let path = Path::new(path);
+    if path.as_os_str().is_empty() {
+        return ".".into();
+    }
+    if let Ok(current) = std::env::current_dir() {
+        if let Ok(rel) = path.strip_prefix(&current) {
+            let rendered = rel.display().to_string();
+            return if rendered.is_empty() {
+                ".".into()
+            } else {
+                rendered
+            };
         }
     }
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| ".".into())
 }
 
 #[cfg(test)]
@@ -133,10 +152,12 @@ mod tests {
     }
 
     #[test]
-    fn renders_workspace_metadata_when_space_allows() {
+    fn renders_workspace_metadata_inline_without_label() {
         let model = FooterModel {
             cwd: "/tmp/workspace".into(),
             hints: "test".into(),
+            session_short: "abcd".into(),
+            status: "idle".into(),
             ..FooterModel::default()
         };
         let area = Rect::new(0, 0, 80, 2);
@@ -144,16 +165,10 @@ mod tests {
 
         FooterBar { model: &model }.render(area, &mut buf);
 
-        let rendered: String = (0..area.width)
-            .map(|x| buf[(x, 0)].symbol())
-            .collect::<String>()
-            + &format!(
-                "\n{}",
-                (0..area.width)
-                    .map(|x| buf[(x, 1)].symbol())
-                    .collect::<String>()
-            );
-        assert!(rendered.contains("Workspace"));
-        assert!(rendered.contains("/tmp/workspace"));
+        let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
+        assert!(rendered.contains("abcd"));
+        assert!(rendered.contains("idle"));
+        assert!(rendered.contains("workspace"));
+        assert!(!rendered.contains("Workspace"));
     }
 }
