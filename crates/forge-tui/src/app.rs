@@ -46,7 +46,6 @@ use crate::overlays::{
 };
 use crate::sidebar::{SidebarModel, SidebarWidget};
 use crate::theme;
-use crate::widgets::status::session_chrome_lines;
 use crate::widgets::{
     classify_operator_error, BusyPhase, FeedbackBar, FeedbackModel, FeedbackSeverity, FooterBar,
     FooterModel, InputBar, InputModel, StatusModel,
@@ -2832,7 +2831,7 @@ Reply with ONLY the commit message line.\n\n\
                 }
                 Ok(SlashCommand::Resume { session_id }) => {
                     match self.session.resume_session(session_id).await {
-                        Ok(report) => {
+                        Ok(_report) => {
                             self.overlay = None;
                             self.notices.clear();
                             self.status_message = "session resumed".into();
