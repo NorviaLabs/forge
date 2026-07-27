@@ -41,7 +41,7 @@ pub(super) async fn complete(
     if req.prompt_cache {
         apply_prompt_cache(&mut body);
     }
-    apply_reasoning_effort(client, &mut body, model);
+    apply_reasoning_effort(&mut body, model, req.reasoning_effort.as_deref());
 
     let url = format!("{}/chat/completions", route.base_url.trim_end_matches('/'));
     let mut request = client.http.post(url).json(&body);
@@ -272,8 +272,8 @@ fn finalize_tool_calls(
         .collect()
 }
 
-fn apply_reasoning_effort(client: &NativeModelClient, body: &mut Value, model: &str) {
-    let Some(raw_effort) = client.injected_or_env(&["FORGE_REASONING_EFFORT"]) else {
+fn apply_reasoning_effort(body: &mut Value, model: &str, reasoning_effort: Option<&str>) {
+    let Some(raw_effort) = reasoning_effort else {
         return;
     };
     let mut effort = raw_effort.trim().to_ascii_lowercase();
@@ -325,6 +325,7 @@ mod tests {
                 idempotent: false,
             }],
             model: model.into(),
+            reasoning_effort: None,
             prompt_cache: true,
         }
     }
@@ -391,11 +392,13 @@ mod tests {
         config.model.base_url = Some(format!("{base_url}/v1"));
         config.model.api_key = Some("secret".into());
         let client = NativeModelClient::from_config(&config).unwrap();
-        client.apply_provider_env(&[("FORGE_REASONING_EFFORT".into(), "high".into())]);
         let (tx, rx) = std::sync::mpsc::channel();
 
+        let mut request = request("openai/gpt-5-test");
+        request.reasoning_effort = Some("high".into());
+
         let response = client
-            .complete_with_stream(request("openai/gpt-5-test"), Some(tx))
+            .complete_with_stream(request, Some(tx))
             .await
             .unwrap();
 
