@@ -17,14 +17,24 @@ pub enum ReasoningEffort {
 impl ReasoningEffort {
     pub const USAGE: &'static str = "auto|minimal|low|medium|high|xhigh|max";
 
-    pub fn from_env() -> Self {
-        Self::env_override().unwrap_or_default()
-    }
-
-    pub fn env_override() -> Option<Self> {
-        std::env::var("FORGE_REASONING_EFFORT")
-            .ok()
-            .and_then(|value| value.parse().ok())
+    pub fn default_for_model(model: &str) -> Self {
+        let model = model.to_ascii_lowercase();
+        if model.starts_with("openai-codex/") {
+            return Self::Auto;
+        }
+        if model.starts_with("anthropic/") {
+            return Self::Low;
+        }
+        if model.starts_with("openai/") {
+            return Self::Auto;
+        }
+        if model.starts_with("xai/") || model.starts_with("grok/") {
+            return Self::Medium;
+        }
+        if model.starts_with("opencode-") {
+            return Self::Medium;
+        }
+        Self::Auto
     }
 
     /// Empty means providers should choose their own default.
@@ -45,7 +55,7 @@ impl ReasoningEffort {
     pub fn options_for_model(model: &str) -> Vec<Self> {
         use ReasoningEffort::*;
         if !Self::model_supports_effort(model) {
-            return vec![Auto];
+            return vec![Self::default_for_model(model)];
         }
         let model = model.to_ascii_lowercase();
         if model.starts_with("openai-codex/") {
@@ -53,7 +63,7 @@ impl ReasoningEffort {
         }
         if model.starts_with("anthropic/") {
             let model_id = model.trim_start_matches("anthropic/");
-            let mut options = vec![Auto, Low, Medium, High];
+            let mut options = vec![Low, Medium, High];
             // Transport remaps xhigh → high for these ids.
             if !(model_id.contains("4-6") || model_id.contains("opus-4-5")) {
                 options.push(XHigh);
@@ -61,7 +71,7 @@ impl ReasoningEffort {
             return options;
         }
         // OpenAI-compatible reasoning_effort path (OpenAI, OpenCode, xAI).
-        vec![Auto, Minimal, Low, Medium, High, XHigh]
+        vec![Minimal, Low, Medium, High, XHigh]
     }
 
     pub fn model_supports_effort(model: &str) -> bool {
@@ -154,10 +164,17 @@ mod tests {
     }
 
     #[test]
+    fn default_matches_provider_family() {
+        assert_eq!(ReasoningEffort::default_for_model("openai/gpt-4.1-mini"), ReasoningEffort::Auto);
+        assert_eq!(ReasoningEffort::default_for_model("anthropic/claude-sonnet-4"), ReasoningEffort::Low);
+        assert_eq!(ReasoningEffort::default_for_model("opencode-go/deepseek-v4-flash"), ReasoningEffort::Medium);
+    }
+
+    #[test]
     fn options_match_transport_support() {
         assert_eq!(
-            ReasoningEffort::options_for_model("openai/gpt-4.1-mini"),
-            vec![ReasoningEffort::Auto]
+            ReasoningEffort::options_for_model("openai/gpt-5.2"),
+            vec![ReasoningEffort::Minimal, ReasoningEffort::Low, ReasoningEffort::Medium, ReasoningEffort::High, ReasoningEffort::XHigh]
         );
         assert!(
             ReasoningEffort::options_for_model("openai/gpt-5.2").contains(&ReasoningEffort::High)

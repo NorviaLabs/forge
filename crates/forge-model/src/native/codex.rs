@@ -204,7 +204,7 @@ fn request_body(
     if !tools.is_empty() {
         body["tools"] = Value::Array(tools);
     }
-    if let Some(effort) = codex_effort(client) {
+    if let Some(effort) = codex_effort(&req) {
         body["reasoning"]["effort"] = Value::String(effort);
     }
     body
@@ -331,8 +331,8 @@ fn digest(value: &str, length: usize) -> String {
     encoded[..length].to_string()
 }
 
-fn codex_effort(client: &NativeModelClient) -> Option<String> {
-    let effort = client.injected_or_env(&["FORGE_REASONING_EFFORT"])?;
+fn codex_effort(req: &ModelRequest) -> Option<String> {
+    let effort = req.reasoning_effort.as_deref()?;
     let effort = effort.trim().to_ascii_lowercase();
     if effort.is_empty() || effort == "auto" {
         None
@@ -361,6 +361,7 @@ mod tests {
                 idempotent: true,
             }],
             model: "openai-codex/gpt-test".into(),
+            reasoning_effort: None,
             prompt_cache: true,
         }
     }
@@ -402,6 +403,7 @@ mod tests {
     #[test]
     fn builds_codex_request_from_full_conversation() {
         let mut request = request_with_tool("read_file");
+        request.reasoning_effort = Some("max".into());
         request.messages = vec![
             Message::new(MessageRole::System, "system prompt"),
             Message::new(MessageRole::User, "hello"),
@@ -429,7 +431,7 @@ mod tests {
             },
         ];
         let client = NativeModelClient::from_config(&Config::default()).unwrap();
-        client.apply_provider_env(&[("FORGE_REASONING_EFFORT".into(), "max".into())]);
+        let _ = client;
         let aliases = tool_aliases(&request);
 
         let body = request_body(&client, &request, &request.model, &aliases);
