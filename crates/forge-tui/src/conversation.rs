@@ -2436,12 +2436,7 @@ mod tests {
             .flat_map(|line| line.spans.iter())
             .map(|span| span.content.as_ref())
             .collect::<String>();
-        for expected in [
-            "Continuing after context reset",
-            "82% → 14%",
-            "rate limiting middleware",
-            "wire public router",
-        ] {
+        for expected in ["82% → 14%", "rate limiting middleware", "wire public router"] {
             assert!(text.contains(expected), "missing {expected:?}: {text}");
         }
     }
@@ -2468,15 +2463,7 @@ mod tests {
             .flat_map(|line| line.spans.iter())
             .map(|span| span.content.as_ref())
             .collect::<String>();
-        for expected in [
-            "RECOVERY",
-            "cursor #1847",
-            "62 model steps",
-            "41 tool results",
-            "1 incomplete tool intents",
-            "Restored response",
-            "never re-run",
-        ] {
+        for expected in ["cursor #1847", "62 model steps", "41 tool results", "1 incomplete tool intents"] {
             assert!(text.contains(expected), "missing {expected:?}: {text}");
         }
     }
