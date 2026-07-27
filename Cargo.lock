@@ -835,19 +835,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "forge-obs"
-version = "0.1.0-alpha.10"
-dependencies = [
- "chrono",
- "forge-types",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
- "uuid",
-]
-
-[[package]]
 name = "forge-syntax"
 version = "0.1.0-alpha.10"
 dependencies = [
