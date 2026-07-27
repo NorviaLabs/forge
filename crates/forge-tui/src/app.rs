@@ -433,7 +433,10 @@ impl TuiApp {
     }
 
     fn tick_notices(&mut self) {
-        if self.notices_until.is_some_and(|until| Instant::now() >= until) {
+        if self
+            .notices_until
+            .is_some_and(|until| Instant::now() >= until)
+        {
             self.notices.clear();
             self.notices_until = None;
         }
@@ -1789,13 +1792,14 @@ impl TuiApp {
             Ok(o) if o.is_error => {
                 self.busy_phase = BusyPhase::Idle;
                 self.report_error(&format!("git commit failed: {}", o.content.trim()));
-                self.push_notice(o
-                    .content
-                    .lines()
-                    .map(|s| s.to_string())
-                    .filter(|s| !s.is_empty())
-                    .take(16)
-                    .collect());
+                self.push_notice(
+                    o.content
+                        .lines()
+                        .map(|s| s.to_string())
+                        .filter(|s| !s.is_empty())
+                        .take(16)
+                        .collect(),
+                );
                 return;
             }
             Err(e) => {
@@ -1835,7 +1839,10 @@ impl TuiApp {
             }
             Err(e) => {
                 self.report_error(&format!("committed but push failed: {e}"));
-                self.push_notice(vec![format!("Committed: {message}"), format!("Push error: {e}")]);
+                self.push_notice(vec![
+                    format!("Committed: {message}"),
+                    format!("Push error: {e}"),
+                ]);
             }
             Ok(o) => {
                 self.push_toast("synced");
@@ -2798,9 +2805,9 @@ Reply with ONLY the commit message line.\n\n\
                     ) {
                         Ok(sessions) if sessions.is_empty() => {
                             self.status_message = "no previous sessions".into();
-                            self.push_notice(
-                                vec!["No previous sessions found for this workspace.".into()],
-                            );
+                            self.push_notice(vec![
+                                "No previous sessions found for this workspace.".into(),
+                            ]);
                         }
                         Ok(sessions) => {
                             self.status_message = format!("{} resumable sessions", sessions.len());
