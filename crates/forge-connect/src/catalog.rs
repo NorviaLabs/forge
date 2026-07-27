@@ -40,6 +40,12 @@ pub struct CatalogEntry {
     pub source: CatalogSource,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct CatalogCost {
+    pub input: f64,
+    pub output: f64,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct CatalogFile {
     /// profile_id → fetched provider/model ids
@@ -51,6 +57,9 @@ struct CatalogFile {
     /// profile_id → public models.dev model ids, namespaced for Forge routing.
     #[serde(default)]
     registry_models: BTreeMap<String, Vec<String>>,
+    /// provider/model id → dollars per million tokens.
+    #[serde(default)]
+    registry_costs: BTreeMap<String, CatalogCost>,
     /// Unix seconds when the public registry was refreshed.
     #[serde(default)]
     registry_fetched_at: Option<u64>,
@@ -157,9 +166,18 @@ impl ModelCatalogCache {
             .unwrap_or_default()
     }
 
-    fn put_registry(&self, models: BTreeMap<String, Vec<String>>) -> Result<(), String> {
+    pub fn get_registry_cost(&self, model_id: &str) -> Option<CatalogCost> {
+        self.load().registry_costs.get(model_id).copied()
+    }
+
+    fn put_registry(
+        &self,
+        models: BTreeMap<String, Vec<String>>,
+        costs: BTreeMap<String, CatalogCost>,
+    ) -> Result<(), String> {
         let mut file = self.load();
         file.registry_models = models;
+        file.registry_costs = costs;
         file.registry_fetched_at = Some(Self::now_secs());
         self.save(&file)
     }
@@ -182,6 +200,7 @@ pub fn refresh_models_dev_registry(
         .map_err(|e| format!("models.dev registry JSON: {e}"))?;
 
     let mut by_profile = BTreeMap::new();
+    let mut costs = BTreeMap::new();
     let mut total = 0usize;
     for profile in profiles {
         let mut ids = std::collections::BTreeSet::new();
@@ -195,15 +214,27 @@ pub fn refresh_models_dev_registry(
             };
             for (model_id, model) in models {
                 if models_dev_model_is_agent_compatible(model) {
-                    ids.insert(format!("{}/{}", profile.model_provider_prefix, model_id));
+                    let id = format!("{}/{}", profile.model_provider_prefix, model_id);
+                    if let Some(cost) = models_dev_cost(model) {
+                        costs.insert(id.clone(), cost);
+                    }
+                    ids.insert(id);
                 }
             }
         }
         total += ids.len();
         by_profile.insert(profile.id.clone(), ids.into_iter().collect());
     }
-    cache.put_registry(by_profile)?;
+    cache.put_registry(by_profile, costs)?;
     Ok(total)
+}
+
+fn models_dev_cost(model: &serde_json::Value) -> Option<CatalogCost> {
+    let cost = model.get("cost")?;
+    Some(CatalogCost {
+        input: cost.get("input").and_then(serde_json::Value::as_f64)?,
+        output: cost.get("output").and_then(serde_json::Value::as_f64)?,
+    })
 }
 
 fn models_dev_model_is_agent_compatible(model: &serde_json::Value) -> bool {
@@ -772,6 +803,32 @@ mod tests {
     }
 
     #[test]
+    fn registry_cost_roundtrip() {
+        let dir = tempdir().unwrap();
+        let cache = ModelCatalogCache::new(dir.path().join("c.toml"));
+        cache
+            .put_registry(
+                BTreeMap::from([("openai".into(), vec!["openai/gpt-test".into()])]),
+                BTreeMap::from([(
+                    "openai/gpt-test".into(),
+                    CatalogCost {
+                        input: 2.0,
+                        output: 8.0,
+                    },
+                )]),
+            )
+            .unwrap();
+
+        assert_eq!(
+            cache.get_registry_cost("openai/gpt-test"),
+            Some(CatalogCost {
+                input: 2.0,
+                output: 8.0,
+            })
+        );
+    }
+
+    #[test]
     fn picker_falls_back_to_defaults() {
         let dir = tempdir().unwrap();
         let cache = ModelCatalogCache::new(dir.path().join("c.toml"));
@@ -790,7 +847,7 @@ mod tests {
         let profile = openai_profile();
         let mut registry = BTreeMap::new();
         registry.insert(profile.id.clone(), vec!["openai/gpt-5.6-terra".into()]);
-        cache.put_registry(registry).unwrap();
+        cache.put_registry(registry, BTreeMap::new()).unwrap();
 
         let entries = models_for_picker(&[profile], &store, &cache, false);
         assert_eq!(entries[0].id, "openai/gpt-5.6-terra");
@@ -811,7 +868,7 @@ mod tests {
             profile.id.clone(),
             vec!["openai/gpt-5.6-sol".into(), "openai/gpt-5.6-terra".into()],
         );
-        cache.put_registry(registry).unwrap();
+        cache.put_registry(registry, BTreeMap::new()).unwrap();
 
         let entries = models_for_picker(&[profile], &store, &cache, false);
         assert_eq!(entries.len(), 2);
@@ -828,7 +885,7 @@ mod tests {
         let profile = crate::openai_codex::openai_codex_profile();
         let mut registry = BTreeMap::new();
         registry.insert(profile.id.clone(), vec!["openai-codex/not-entitled".into()]);
-        cache.put_registry(registry).unwrap();
+        cache.put_registry(registry, BTreeMap::new()).unwrap();
 
         let entries = models_for_picker(&[profile], &store, &cache, false);
         assert!(entries
