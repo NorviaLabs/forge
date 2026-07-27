@@ -145,16 +145,17 @@ fn recent_resume_sessions(
     Ok(sessions)
 }
 
-fn footer_usage_summary(cost_notice: Option<&String>, report: &forge_core::TokenUsageReport) -> String {
+fn footer_usage_summary(cost_notices: &[String], report: &forge_core::TokenUsageReport) -> String {
     let usage = format!(
         "in {} · out {} · total {}",
         format_with_commas(report.api.prompt_tokens),
         format_with_commas(report.api.completion_tokens),
         format_with_commas(report.api.total_api_tokens())
     );
-    match cost_notice
-        .and_then(|line| line.split_once(": ").map(|(_, value)| value.trim()))
-        .filter(|value| value.starts_with("$") || value.contains("remaining") || value.contains("used"))
+    match cost_notices
+        .iter()
+        .filter_map(|line| line.split_once(": ").map(|(_, value)| value.trim()))
+        .find(|value| value.starts_with("$") || value.contains("remaining") || value.contains("used"))
     {
         Some(cost) if !cost.is_empty() => format!("{usage} · {cost}"),
         _ => usage,
@@ -2152,7 +2153,7 @@ Reply with ONLY the commit message line.\n\n\
             connected: status.provider_connected,
             connect_profile: status.connect_profile,
             hints,
-            usage_summary: footer_usage_summary(self.notices.first(), &context),
+            usage_summary: footer_usage_summary(&self.notices, &context),
         };
         frame.render_widget(FooterBar { model: &footer }, regions.footer);
 
@@ -2632,7 +2633,7 @@ Reply with ONLY the commit message line.\n\n\
                                     FeedbackSeverity::Info,
                                     report.join(" · "),
                                 );
-                                self.notices.clear();
+                                self.notices = report.clone();
                                 if let Some(line) = report.first() {
                                     self.push_toast(line.clone());
                                 }
@@ -5203,8 +5204,19 @@ mod tests {
         };
 
         assert_eq!(
-            footer_usage_summary(None, &report),
+            footer_usage_summary(&[], &report),
             "in 6,094 · out 36 · total 6,130"
+        );
+        assert_eq!(
+            footer_usage_summary(
+                &[
+                    "Provider: OpenCode Zen".into(),
+                    "Estimated session cost: $0.001234 (input $0.000100 + output $0.001134)"
+                        .into(),
+                ],
+                &report,
+            ),
+            "in 6,094 · out 36 · total 6,130 · $0.001234 (input $0.000100 + output $0.001134)"
         );
     }
 }
