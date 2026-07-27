@@ -21,13 +21,10 @@ pub enum SlashCommand {
         session_id: Uuid,
     },
     /// Switch model. `id` is a provider/model string (`openai/gpt-4.1`) or prefix+name.
-    /// `refresh` re-fetches remote catalogs for connected providers.
     Model {
         /// Full model id or provider prefix (when `model` is set).
         provider: Option<String>,
         model: Option<String>,
-        /// `/model refresh` — re-pull live catalogs.
-        refresh: bool,
     },
     Quit,
     Compact,
@@ -78,21 +75,10 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
         "model" => {
             let a = parts.next().map(|s| s.to_string());
             let b = parts.next().map(|s| s.to_string());
-            if a.as_deref()
-                .is_some_and(|s| s.eq_ignore_ascii_case("refresh"))
-            {
-                Ok(SlashCommand::Model {
-                    provider: None,
-                    model: None,
-                    refresh: true,
-                })
-            } else {
-                Ok(SlashCommand::Model {
-                    provider: a,
-                    model: b,
-                    refresh: false,
-                })
-            }
+            Ok(SlashCommand::Model {
+                provider: a,
+                model: b,
+            })
         }
         "quit" | "exit" => Ok(SlashCommand::Quit),
         "disconnect" => Ok(SlashCommand::Disconnect {
@@ -140,21 +126,12 @@ mod tests {
     }
 
     #[test]
-    fn parses_model_refresh_and_id() {
-        assert_eq!(
-            parse_slash("/model refresh").unwrap().unwrap(),
-            SlashCommand::Model {
-                provider: None,
-                model: None,
-                refresh: true,
-            }
-        );
+    fn parses_model_id() {
         assert_eq!(
             parse_slash("/model openai/gpt-4.1-mini").unwrap().unwrap(),
             SlashCommand::Model {
                 provider: Some("openai/gpt-4.1-mini".into()),
                 model: None,
-                refresh: false,
             }
         );
         assert_eq!(
@@ -162,7 +139,6 @@ mod tests {
             SlashCommand::Model {
                 provider: Some("openai".into()),
                 model: Some("gpt-4.1".into()),
-                refresh: false,
             }
         );
     }
