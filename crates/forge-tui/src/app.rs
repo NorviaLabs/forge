@@ -2474,7 +2474,10 @@ Reply with ONLY the commit message line.\n\n\
             }
             KeyCode::Up => {
                 let suggestions = self.slash_suggestions();
-                if self.input.text.starts_with('/') && !suggestions.is_empty() {
+                if self.input.text.starts_with('/')
+                    && !suggestions.is_empty()
+                    && !self.history.browsing()
+                {
                     let n = suggestions.len();
                     self.slash_suggest_idx = (self.slash_suggest_idx + n - 1) % n;
                 } else if let Some(text) = self.history.up(&self.input.text) {
@@ -2483,7 +2486,10 @@ Reply with ONLY the commit message line.\n\n\
             }
             KeyCode::Down => {
                 let suggestions = self.slash_suggestions();
-                if self.input.text.starts_with('/') && !suggestions.is_empty() {
+                if self.input.text.starts_with('/')
+                    && !suggestions.is_empty()
+                    && !self.history.browsing()
+                {
                     let n = suggestions.len();
                     self.slash_suggest_idx = (self.slash_suggest_idx + 1) % n;
                 } else if let Some(text) = self.history.down() {
