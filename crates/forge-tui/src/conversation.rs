@@ -557,54 +557,10 @@ impl ConversationModel {
                         lines.push(Line::from(""));
                     }
                 }
-                ChatItem::SessionRecovery {
-                    session_id,
-                    journal_path,
-                    last_seq,
-                    model_steps,
-                    tool_results,
-                    incomplete_intents,
-                    last_assistant,
-                } => {
-                    lines.push(Line::from(Span::styled("RECOVERY", theme::brand())));
-                    lines.push(Line::from(Span::styled(
-                        format!("Resumed session {session_id} · journal replay"),
-                        theme::text(),
-                    )));
-                    lines.push(Line::from(vec![
-                        Span::styled("✓ opened ", theme::ok()),
-                        Span::styled(journal_path.clone(), theme::muted()),
-                    ]));
-                    lines.push(Line::from(Span::styled(
-                        format!("✓ replayed to cursor #{last_seq}"),
-                        theme::ok(),
-                    )));
-                    lines.push(Line::from(Span::styled(
-                        format!("✓ {model_steps} model steps restored from journal"),
-                        theme::ok(),
-                    )));
-                    lines.push(Line::from(Span::styled(
-                        format!("✓ {tool_results} tool results restored · no re-exec"),
-                        theme::ok(),
-                    )));
-                    if *incomplete_intents > 0 {
-                        lines.push(Line::from(Span::styled(
-                            format!(
-                                "⚠ {incomplete_intents} incomplete tool intents retained fail-safe"
-                            ),
-                            theme::warn(),
-                        )));
-                    }
-                    lines.push(Line::from(Span::styled(
-                        "Completed LLM and tool steps are never re-run.",
-                        theme::dim(),
-                    )));
+                ChatItem::SessionRecovery { last_assistant, .. } => {
+                    let _ = last_assistant;
                     if let Some(restored) = last_assistant {
                         lines.push(Line::from(""));
-                        lines.push(Line::from(Span::styled(
-                            "▍ Restored response",
-                            theme::metadata_style(),
-                        )));
                         for line in wrap(restored, width).into_iter().take(3) {
                             lines.push(Line::from(Span::styled(line, theme::text())));
                         }
