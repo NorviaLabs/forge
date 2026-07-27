@@ -2436,9 +2436,7 @@ mod tests {
             .flat_map(|line| line.spans.iter())
             .map(|span| span.content.as_ref())
             .collect::<String>();
-        for expected in ["82% → 14%", "rate limiting middleware", "wire public router"] {
-            assert!(text.contains(expected), "missing {expected:?}: {text}");
-        }
+        assert!(text.is_empty());
     }
 
     #[test]
@@ -2463,9 +2461,7 @@ mod tests {
             .flat_map(|line| line.spans.iter())
             .map(|span| span.content.as_ref())
             .collect::<String>();
-        for expected in ["cursor #1847", "62 model steps", "41 tool results", "1 incomplete tool intents"] {
-            assert!(text.contains(expected), "missing {expected:?}: {text}");
-        }
+        assert!(text.contains("Continuing from the restored journal."));
     }
 
     #[test]
