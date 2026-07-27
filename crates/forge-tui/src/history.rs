@@ -220,4 +220,20 @@ mod tests {
         assert!(!h.browsing());
         assert_eq!(h.up("").as_deref(), Some("c"));
     }
+
+    #[test]
+    fn mixed_commands_and_text_keep_browsing_through_all_entries() {
+        let mut h = InputHistory::new(10);
+        h.push("hello");
+        h.push("/status");
+        h.push("world");
+
+        assert_eq!(h.up("draft").as_deref(), Some("world"));
+        assert_eq!(h.up("ignored").as_deref(), Some("/status"));
+        assert_eq!(h.up("ignored").as_deref(), Some("hello"));
+        assert_eq!(h.down().as_deref(), Some("/status"));
+        assert_eq!(h.down().as_deref(), Some("world"));
+        assert_eq!(h.down().as_deref(), Some("draft"));
+        assert!(!h.browsing());
+    }
 }
