@@ -5,11 +5,19 @@ use serde_json::Value;
 use crate::{CredentialStore, OPENAI_CODEX_PROFILE_ID};
 
 const CODEX_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
+const MODELS_DEV_URL: &str = "https://models.dev/api.json";
 
 pub fn provider_cost_report(
     profile_id: &str,
+    model: &str,
+    prompt_tokens: u64,
+    completion_tokens: u64,
     store: &CredentialStore,
 ) -> Result<Vec<String>, String> {
+    if let Some(report) = model_cost_report(profile_id, model, prompt_tokens, completion_tokens) {
+        return Ok(report);
+    }
+
     match profile_id {
         OPENAI_CODEX_PROFILE_ID => codex_cost_report(store),
         "openai" => Ok(unavailable_report(
@@ -41,6 +49,85 @@ pub fn provider_cost_report(
             "Limits and billing information are not available for this provider.".into(),
         ]),
     }
+}
+
+fn model_cost_report(
+    profile_id: &str,
+    model: &str,
+    prompt_tokens: u64,
+    completion_tokens: u64,
+) -> Option<Vec<String>> {
+    if prompt_tokens == 0 && completion_tokens == 0 {
+        return None;
+    }
+    let provider = models_dev_provider(profile_id)?;
+    let model_id = model.split_once('/').map_or(model, |(_, id)| id);
+    let cost = fetch_models_dev_cost(provider, model_id).ok().flatten()?;
+    let input = token_cost(prompt_tokens, cost.input);
+    let output = token_cost(completion_tokens, cost.output);
+    let total = input + output;
+    Some(vec![
+        format!("Provider: {}", provider_title(profile_id)),
+        format!("Estimated session cost: ${total:.6} (input ${input:.6} + output ${output:.6})"),
+        format!(
+            "Rates: ${:.2}/M input · ${:.2}/M output · source: models.dev",
+            cost.input, cost.output
+        ),
+    ])
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ModelCost {
+    input: f64,
+    output: f64,
+}
+
+fn models_dev_provider(profile_id: &str) -> Option<&'static str> {
+    match profile_id {
+        "openai" => Some("openai"),
+        "anthropic" => Some("anthropic"),
+        "xai" => Some("xai"),
+        "opencode_go" => Some("opencode-go"),
+        "opencode_zen" => Some("opencode"),
+        _ => None,
+    }
+}
+
+fn provider_title(profile_id: &str) -> &'static str {
+    match profile_id {
+        "openai" => "OpenAI API",
+        "anthropic" => "Anthropic API",
+        "xai" => "xAI API",
+        "opencode_go" => "OpenCode Go",
+        "opencode_zen" => "OpenCode Zen",
+        _ => "Provider",
+    }
+}
+
+fn token_cost(tokens: u64, dollars_per_million: f64) -> f64 {
+    tokens as f64 * dollars_per_million / 1_000_000.0
+}
+
+fn fetch_models_dev_cost(provider: &str, model: &str) -> Result<Option<ModelCost>, String> {
+    let body: Value = ureq::get(MODELS_DEV_URL)
+        .set(
+            "User-Agent",
+            &format!("forge-connect/{}", env!("CARGO_PKG_VERSION")),
+        )
+        .timeout(std::time::Duration::from_secs(10))
+        .call()
+        .map_err(|error| format!("models.dev pricing: {error}"))?
+        .into_json()
+        .map_err(|error| format!("models.dev pricing JSON: {error}"))?;
+    Ok(models_dev_cost_from_value(&body, provider, model))
+}
+
+fn models_dev_cost_from_value(body: &Value, provider: &str, model: &str) -> Option<ModelCost> {
+    let costs = body.get(provider)?.get("models")?.get(model)?.get("cost")?;
+    Some(ModelCost {
+        input: costs.get("input").and_then(Value::as_f64).unwrap_or(0.0),
+        output: costs.get("output").and_then(Value::as_f64).unwrap_or(0.0),
+    })
 }
 
 fn unavailable_report(title: &str, reason: &str, link: &str) -> Vec<String> {
@@ -194,10 +281,33 @@ mod tests {
 
     #[test]
     fn api_key_provider_explains_balance_limitation() {
-        let report = provider_cost_report("openai", &CredentialStore::user_default()).unwrap();
+        let report = provider_cost_report(
+            "openai",
+            "openai/unknown",
+            0,
+            0,
+            &CredentialStore::user_default(),
+        )
+        .unwrap();
         assert!(report.iter().any(|line| line.contains("unavailable")));
         assert!(report
             .iter()
             .any(|line| line.contains("platform.openai.com/usage")));
+    }
+
+    #[test]
+    fn estimates_model_cost_from_models_dev_shape() {
+        let body = serde_json::json!({
+            "opencode": {
+                "models": {
+                    "claude-sonnet-4-5": {
+                        "cost": { "input": 3.0, "output": 15.0, "cache_read": 0.3 }
+                    }
+                }
+            }
+        });
+        let cost = models_dev_cost_from_value(&body, "opencode", "claude-sonnet-4-5").unwrap();
+        assert_eq!(token_cost(1_000_000, cost.input), 3.0);
+        assert_eq!(token_cost(2_000_000, cost.output), 30.0);
     }
 }
