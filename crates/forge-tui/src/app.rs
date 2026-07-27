@@ -7,8 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 use crossterm::event::{
-    self, DisableBracketedPaste, EnableBracketedPaste, EnableMouseCapture, Event, KeyCode,
-    KeyEventKind, KeyModifiers,
+    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers,
     KeyboardEnhancementFlags, MouseEventKind, PopKeyboardEnhancementFlags,
     PushKeyboardEnhancementFlags,
 };
@@ -3451,10 +3450,11 @@ pub async fn run_tui(
     enable_raw_mode()?;
     let mut stdout = stdout();
     // Bracketed paste plus keyboard enhancement for reliable key disambiguation.
+    // Deliberately do not enable mouse capture: the terminal must retain mouse selection so
+    // users can select and copy transcript text. Conversation scrolling remains on PageUp/Down.
     execute!(
         stdout,
         EnterAlternateScreen,
-        EnableMouseCapture,
         EnableBracketedPaste,
         PushKeyboardEnhancementFlags(
             KeyboardEnhancementFlags::REPORT_EVENT_TYPES
@@ -3481,7 +3481,6 @@ pub async fn run_tui(
         terminal.backend_mut(),
         PopKeyboardEnhancementFlags,
         DisableBracketedPaste,
-        crossterm::event::DisableMouseCapture,
         LeaveAlternateScreen
     )?;
     terminal.show_cursor()?;
