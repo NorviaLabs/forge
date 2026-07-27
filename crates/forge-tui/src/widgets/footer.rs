@@ -61,10 +61,13 @@ impl Widget for FooterBar<'_> {
             return;
         }
         let workspace = compact_path_label(self.model.cwd.as_str());
+        let identity = self.model.identity_summary();
         let meta = Line::from(vec![
             Span::styled(self.model.status.as_str(), theme::text()),
             Span::styled(" · ", theme::muted()),
-            Span::styled(workspace, theme::text()),
+            Span::styled(identity, theme::metadata_style()),
+            Span::styled(" · ", theme::muted()),
+            Span::styled(workspace.as_str(), theme::text()),
             Span::styled(" · ", theme::muted()),
             Span::styled(self.model.hints.as_str(), theme::muted()),
         ]);
@@ -92,8 +95,37 @@ impl Widget for FooterBar<'_> {
                 theme::muted(),
             );
         } else {
-            buf.set_line(area.x, area.y, &meta, area.width);
+            let compact_meta = Line::from(vec![
+                Span::styled(self.model.status.as_str(), theme::text()),
+                Span::styled(" · ", theme::muted()),
+                Span::styled(self.model.identity_summary(), theme::metadata_style()),
+                Span::styled(" · ", theme::muted()),
+                Span::styled(workspace, theme::text()),
+            ]);
+            buf.set_line(area.x, area.y, &compact_meta, max_left);
+            buf.set_stringn(
+                area.x + area.width - usage_width,
+                area.y,
+                usage,
+                usage_width as usize,
+                theme::muted(),
+            );
         }
+    }
+}
+
+impl FooterModel {
+    fn identity_summary(&self) -> String {
+        let provider = if self.provider == "native" {
+            self.connect_profile.as_deref().unwrap_or("native")
+        } else if self.provider.is_empty() {
+            "—"
+        } else {
+            self.provider.as_str()
+        };
+        let model = self.model.rsplit('/').next().unwrap_or(self.model.as_str());
+        let ctx = format!("{:.0}% ctx", self.ctx_pct * 100.0);
+        format!("{provider}/{model} · {ctx}")
     }
 }
 
@@ -226,7 +258,9 @@ mod tests {
         FooterBar { model: &model }.render(area, &mut buf);
 
         let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
-        assert!(rendered.trim_end().ends_with("in 7 · out 5 · tok 12 · $0.34"));
+        assert!(rendered
+            .trim_end()
+            .ends_with("in 7 · out 5 · tok 12 · $0.34"));
     }
 
     #[test]
