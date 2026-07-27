@@ -165,6 +165,7 @@ mod tests {
             provider: "native".into(),
             model: "mock".into(),
             profile_id: Some("mock".into()),
+            source: forge_connect::CatalogSource::Default,
         }]));
         if let Some(overlay) = &mut app.overlay {
             overlay.focus_model("mock");

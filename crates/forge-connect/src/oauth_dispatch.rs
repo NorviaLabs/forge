@@ -89,6 +89,7 @@ mod tests {
             api_key_env: vec![],
             default_base_url: None,
             default_models: vec![],
+            models_dev_providers: vec![],
             auth_url: None,
             model_provider_prefix: id.into(),
         }

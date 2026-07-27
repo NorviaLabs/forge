@@ -17,6 +17,7 @@ pub fn anthropic_profile() -> ConnectProfile {
         api_key_env: vec!["ANTHROPIC_API_KEY".into()],
         default_base_url: Some(DEFAULT_BASE_URL.into()),
         default_models: vec!["anthropic/claude-sonnet-4-20250514".into()],
+        models_dev_providers: vec!["anthropic".into()],
         auth_url: Some("https://console.anthropic.com/settings/keys".into()),
         model_provider_prefix: "anthropic".into(),
     }
