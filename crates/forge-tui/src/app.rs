@@ -3697,7 +3697,7 @@ mod tests {
         app.handle_key(press(KeyCode::F(1), KeyModifiers::NONE))
             .await
             .unwrap();
-        assert!(matches!(app.overlay, Some(Overlay::Welcome)));
+        assert!(matches!(app.overlay, Some(Overlay::Help)));
         assert!(app.input.text.is_empty());
         assert!(app.feedback.text.contains("Help"));
     }
