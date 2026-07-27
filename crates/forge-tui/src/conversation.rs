@@ -444,7 +444,6 @@ impl ConversationModel {
                     workspace,
                     skills_loaded,
                 } => {
-                    lines.push(Line::from(Span::styled("SYSTEM", theme::dim())));
                     lines.push(Line::from(vec![
                         Span::styled("Workspace ", theme::text()),
                         Span::styled("◆ ", theme::ok()),
@@ -458,12 +457,6 @@ impl ConversationModel {
                     lines.push(Line::from(Span::styled(
                         "Type a task, or / for commands.",
                         theme::muted(),
-                    )));
-                    lines.push(Line::from(""));
-                    lines.push(Line::from(Span::styled("ASSISTANT", theme::dim())));
-                    lines.push(Line::from(Span::styled(
-                        "Waiting for your first message.",
-                        theme::text(),
                     )));
                     if gap {
                         lines.push(Line::from(""));
@@ -493,10 +486,10 @@ impl ConversationModel {
                         theme::dim(),
                     )));
                     lines.push(Line::from(""));
-                    lines.push(Line::from(vec![
-                        Span::styled("ASSISTANT", theme::brand()),
-                        Span::styled(" · POST-RESET", theme::info()),
-                    ]));
+                    lines.push(Line::from(Span::styled(
+                        "▍ Continuing after context reset",
+                        theme::metadata_style(),
+                    )));
                     lines.push(Line::from(Span::styled(
                         format!(
                             "Continuing from handoff · context {before_pct:.0}% → {after_pct:.0}%"
@@ -567,10 +560,10 @@ impl ConversationModel {
                     )));
                     if let Some(restored) = last_assistant {
                         lines.push(Line::from(""));
-                        lines.push(Line::from(vec![
-                            Span::styled("ASSISTANT", theme::brand()),
-                            Span::styled(" · RESTORED", theme::info()),
-                        ]));
+                        lines.push(Line::from(Span::styled(
+                            "▍ Restored response",
+                            theme::metadata_style(),
+                        )));
                         for line in wrap(restored, width).into_iter().take(3) {
                             lines.push(Line::from(Span::styled(line, theme::text())));
                         }
@@ -676,13 +669,15 @@ impl ConversationModel {
                 // User turns are easy to scan, but deliberately not boxed in.
                 ChatItem::User { text } => {
                     let parts = wrap(text, width.saturating_sub(2));
-                    lines.push(Line::from(Span::styled("You", theme::metadata_style())));
                     for (i, l) in parts.into_iter().enumerate() {
                         let indent = if i == 0 { "› " } else { "  " };
-                        lines.push(Line::from(vec![
-                            Span::styled(indent, theme::metadata_style()),
-                            Span::styled(l, theme::user_message_style()),
-                        ]));
+                        lines.push(
+                            Line::from(vec![
+                                Span::styled(indent, theme::metadata_style()),
+                                Span::styled(l, theme::user_message_style()),
+                            ])
+                            .style(theme::user_message()),
+                        );
                     }
                     if gap {
                         lines.push(Line::from(""));
@@ -730,14 +725,14 @@ impl ConversationModel {
                     }
                 }
                 ChatItem::RetryAssistant { text } => {
-                    lines.push(Line::from(vec![
-                        Span::styled("ASSISTANT", theme::brand()),
-                        Span::styled(" · RETRY", theme::warn()),
-                    ]));
+                    lines.push(Line::from(Span::styled(
+                        "Retrying",
+                        theme::progress_style(),
+                    )));
                     for line in assistant_lines(text, width.saturating_sub(3)) {
-                        let mut spans = vec![Span::styled("▍ ", theme::brand())];
+                        let mut spans = vec![Span::styled("▍ ", theme::metadata_style())];
                         spans.extend(line.spans);
-                        lines.push(Line::from(spans));
+                        lines.push(Line::from(spans).style(theme::assistant_answer_style()));
                     }
                     if gap {
                         lines.push(Line::from(""));
@@ -792,13 +787,13 @@ impl ConversationModel {
                     let body = text
                         .lines()
                         .skip_while(|line| line.trim_start().starts_with("[REPAIR TASK"));
-                    lines.push(Line::from(vec![
-                        Span::styled("FEEDBACK", theme::warn()),
-                        Span::styled(" · EVAL-01", theme::dim()),
-                    ]));
+                    lines.push(Line::from(Span::styled(
+                        "Evaluation",
+                        theme::progress_style(),
+                    )));
                     lines.push(Line::from(Span::styled(
                         "Dual-sensor gate after implementation step.",
-                        theme::muted(),
+                        theme::progress_style(),
                     )));
                     for line in body {
                         let trimmed = line.trim();
@@ -808,12 +803,14 @@ impl ConversationModel {
                         let style = if trimmed.starts_with("SENSOR")
                             || trimmed.starts_with("EVALUATOR REPORT")
                         {
-                            theme::tool().add_modifier(Modifier::BOLD)
+                            theme::tool()
+                                .add_modifier(Modifier::BOLD)
+                                .add_modifier(Modifier::ITALIC)
                         } else if trimmed.starts_with("Finding:") || trimmed.starts_with("Repair:")
                         {
-                            theme::warn()
+                            theme::warn().add_modifier(Modifier::ITALIC)
                         } else {
-                            theme::text()
+                            theme::progress_style()
                         };
                         for wrapped in wrap(trimmed, width) {
                             lines.push(Line::from(Span::styled(wrapped, style)));
@@ -821,19 +818,19 @@ impl ConversationModel {
                     }
                     lines.push(Line::from(Span::styled(
                         "+ enqueued repair task for Generator",
-                        theme::warn(),
+                        theme::warn().add_modifier(Modifier::ITALIC),
                     )));
                     if gap {
                         lines.push(Line::from(""));
                     }
                 }
                 ChatItem::GeneratorRepair { text } => {
-                    lines.push(Line::from(vec![
-                        Span::styled("GENERATOR", theme::brand()),
-                        Span::styled(" · REPAIR", theme::warn()),
-                    ]));
+                    lines.push(Line::from(Span::styled(
+                        "Repairing",
+                        theme::progress_style(),
+                    )));
                     for line in assistant_lines(text, width) {
-                        lines.push(line.style(theme::assistant_message()));
+                        lines.push(line.style(theme::assistant_answer_style()));
                     }
                     if gap {
                         lines.push(Line::from(""));
@@ -1563,6 +1560,11 @@ mod tests {
             })
             .count();
         assert_eq!(thought_lines, 4, "thinking must wrap at the pane width");
+        assert!(model.lines_for_width(24).iter().any(|line| {
+            line.spans.iter().any(|span| {
+                span.content.as_ref() != "⋯ " && span.style.add_modifier.contains(Modifier::ITALIC)
+            })
+        }));
     }
 
     #[test]
@@ -1631,7 +1633,9 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(rendered.contains("You\n› hello world"), "{rendered}");
+        assert!(rendered.starts_with("› hello world"), "{rendered}");
+        let first = m.lines().into_iter().next().expect("operator turn");
+        assert_eq!(first.style.bg, Some(theme::USER_BG));
         assert!(!rendered.contains("❯"), "{rendered}");
         assert!(rendered.contains("hello world"), "{rendered}");
     }
@@ -1771,7 +1775,7 @@ mod tests {
             "TOOL · REJECTED",
             "Side effects not executed",
             "retry 2/3",
-            "ASSISTANT · RETRY",
+            "Retrying",
         ] {
             assert!(
                 rendered.contains(expected),
@@ -1975,7 +1979,7 @@ mod tests {
             .collect::<String>();
         for expected in [
             "CONTEXT LIFECYCLE",
-            "POST-RESET",
+            "Continuing after context reset",
             "82% → 14%",
             "rate limiting middleware",
             "wire public router",
@@ -2012,7 +2016,7 @@ mod tests {
             "62 model steps",
             "41 tool results",
             "1 incomplete tool intents",
-            "ASSISTANT · RESTORED",
+            "Restored response",
             "never re-run",
         ] {
             assert!(text.contains(expected), "missing {expected:?}: {text}");
@@ -2054,12 +2058,12 @@ mod tests {
             .map(|span| span.content.as_ref())
             .collect::<String>();
         for expected in [
-            "FEEDBACK · EVAL-01",
+            "Evaluation",
             "SENSOR · DETERMINISTIC",
             "EVALUATOR REPORT",
             "Finding:",
             "enqueued repair task for Generator",
-            "GENERATOR · REPAIR",
+            "Repairing",
         ] {
             assert!(text.contains(expected), "missing {expected:?}: {text}");
         }
