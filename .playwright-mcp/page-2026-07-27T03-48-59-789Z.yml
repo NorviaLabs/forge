@@ -1,0 +1,355 @@
+- generic [active] [ref=f3e1]:
+  - generic [ref=f3e2]:
+    - generic [ref=f3e3]:
+      - link "Skip to content" [ref=f3e4] [cursor=pointer]:
+        - /url: "#start-of-content"
+      - banner [ref=f3e6]:
+        - heading "Navigation Menu" [level=2] [ref=f3e7]
+        - generic [ref=f3e8]:
+          - link "Homepage" [ref=f3e10] [cursor=pointer]:
+            - /url: /
+          - generic [ref=f3e13]:
+            - navigation "Global" [ref=f3e16]:
+              - list [ref=f3e17]:
+                - listitem [ref=f3e18]:
+                  - button "Platform" [ref=f3e20] [cursor=pointer]
+                - listitem [ref=f3e23]:
+                  - button "Solutions" [ref=f3e25] [cursor=pointer]
+                - listitem [ref=f3e28]:
+                  - button "Resources" [ref=f3e30] [cursor=pointer]
+                - listitem [ref=f3e33]:
+                  - button "Open Source" [ref=f3e35] [cursor=pointer]
+                - listitem [ref=f3e38]:
+                  - button "Enterprise" [ref=f3e40] [cursor=pointer]
+                - listitem [ref=f3e43]:
+                  - link "Pricing" [ref=f3e44] [cursor=pointer]:
+                    - /url: https://github.com/pricing
+            - generic [ref=f3e46]:
+              - button "Search or jump to…" [ref=f3e49] [cursor=pointer]
+              - link "Sign in" [ref=f3e54] [cursor=pointer]:
+                - /url: /login?return_to=https%3A%2F%2Fgithub.com%2Fanomalyco%2Fopencode%2Ftree%2Fdev%2Fpackages%2Fopencode%2Fsrc%2Fprovider
+              - link "Sign up" [ref=f3e55] [cursor=pointer]:
+                - /url: /signup?ref_cta=Sign+up&ref_loc=header+logged+out&ref_page=%2F%3Cuser-name%3E%2F%3Crepo-name%3E%2Ffiles%2Fdisambiguate&source=header-repo&source_repo=anomalyco%2Fopencode
+              - button "Appearance settings" [ref=f3e58] [cursor=pointer]
+    - main [ref=f3e62]:
+      - generic [ref=f3e63]:
+        - generic [ref=f3e64]:
+          - generic [ref=f3e66]:
+            - link "anomalyco" [ref=f3e70] [cursor=pointer]:
+              - /url: /anomalyco
+            - generic [ref=f3e71]: /
+            - strong [ref=f3e72]:
+              - link "opencode" [ref=f3e73] [cursor=pointer]:
+                - /url: /anomalyco/opencode
+            - generic [ref=f3e74]: Public
+          - generic [ref=f3e75]:
+            - list:
+              - listitem [ref=f3e76]:
+                - link "You must be signed in to change notification settings" [ref=f3e77] [cursor=pointer]:
+                  - /url: /login?return_to=%2Fanomalyco%2Fopencode
+                  - text: Notifications
+              - listitem [ref=f3e80]:
+                - link "Fork 24.1k" [ref=f3e81] [cursor=pointer]:
+                  - /url: /login?return_to=%2Fanomalyco%2Fopencode
+                  - text: Fork
+                  - generic "24,090" [ref=f3e84]: 24.1k
+              - listitem [ref=f3e85]:
+                - link "You must be signed in to star a repository" [ref=f3e87] [cursor=pointer]:
+                  - /url: /login?return_to=%2Fanomalyco%2Fopencode
+                  - text: Star
+                  - generic "189989 users starred this repository" [ref=f3e90]: 190k
+        - navigation "Repository" [ref=f3e91]:
+          - list [ref=f3e92]:
+            - listitem [ref=f3e93]:
+              - link "Code" [ref=f3e94] [cursor=pointer]:
+                - /url: /anomalyco/opencode
+            - listitem [ref=f3e98]:
+              - link "Issues 3.7k" [ref=f3e99] [cursor=pointer]:
+                - /url: /anomalyco/opencode/issues
+                - generic [ref=f3e103]: Issues
+                - generic "3,655" [ref=f3e104]: 3.7k
+            - listitem [ref=f3e105]:
+              - link "Pull requests 1.1k" [ref=f3e106] [cursor=pointer]:
+                - /url: /anomalyco/opencode/pulls
+                - generic [ref=f3e109]: Pull requests
+                - generic "1,096" [ref=f3e110]: 1.1k
+            - listitem [ref=f3e111]:
+              - link "Actions" [ref=f3e112] [cursor=pointer]:
+                - /url: /anomalyco/opencode/actions
+            - listitem [ref=f3e116]:
+              - link "Projects" [ref=f3e117] [cursor=pointer]:
+                - /url: /anomalyco/opencode/projects
+            - listitem [ref=f3e121]:
+              - link "Security and quality 2" [ref=f3e122] [cursor=pointer]:
+                - /url: /anomalyco/opencode/security
+                - generic [ref=f3e125]: Security and quality
+                - generic "2" [ref=f3e126]
+            - listitem [ref=f3e127]:
+              - link "Insights" [ref=f3e128] [cursor=pointer]:
+                - /url: /anomalyco/opencode/pulse
+      - generic [ref=f3e139]:
+        - generic [ref=f3e141]:
+          - generic [ref=f3e144]:
+            - generic [ref=f3e145]:
+              - generic [ref=f3e146]:
+                - heading "Collapse file tree" [level=2] [ref=f3e147]:
+                  - button "Collapse file tree" [expanded] [ref=f3e148] [cursor=pointer]
+                - heading "Files" [level=2] [ref=f3e152]
+              - generic [ref=f3e153]:
+                - button "dev branch" [ref=f3e155] [cursor=pointer]:
+                  - generic [ref=f3e156]: dev
+                - button "Search this repository (forward slash)" [ref=f3e161] [cursor=pointer]
+            - combobox "Go to file" [ref=f3e169]
+            - navigation "File Tree Navigation" [ref=f3e175]:
+              - tree "Files" [ref=f3e177]:
+                - treeitem ".github" [level=1] [ref=f3e178]
+                - treeitem ".husky" [level=1] [ref=f3e190]
+                - treeitem ".opencode" [level=1] [ref=f3e202]
+                - treeitem ".vscode" [level=1] [ref=f3e214]
+                - treeitem ".zed" [level=1] [ref=f3e226]
+                - treeitem "artifacts" [level=1] [ref=f3e238]
+                - treeitem "github" [level=1] [ref=f3e250]
+                - treeitem "infra" [level=1] [ref=f3e262]
+                - treeitem "nix" [level=1] [ref=f3e274]
+                - treeitem "packages" [expanded] [level=1] [ref=f3e286]:
+                  - group "packages" [ref=f3e298]:
+                    - treeitem "app" [level=2] [ref=f3e299]
+                    - treeitem "cli" [level=2] [ref=f3e314]
+                    - treeitem "client" [level=2] [ref=f3e329]
+                    - treeitem "codemode" [level=2] [ref=f3e344]
+                    - treeitem "console" [level=2] [ref=f3e359]
+                    - treeitem "containers" [level=2] [ref=f3e374]
+                    - treeitem "core" [level=2] [ref=f3e389]
+                    - treeitem "desktop" [level=2] [ref=f3e404]
+                    - treeitem "docs" [level=2] [ref=f3e419]
+                    - treeitem "effect-drizzle-sqlite" [level=2] [ref=f3e434]
+                    - treeitem "effect-sqlite-node" [level=2] [ref=f3e449]
+                    - treeitem "enterprise" [level=2] [ref=f3e464]
+                    - treeitem "function" [level=2] [ref=f3e479]
+                    - treeitem "http-recorder" [level=2] [ref=f3e494]
+                    - treeitem "httpapi-codegen" [level=2] [ref=f3e509]
+                    - treeitem "identity" [level=2] [ref=f3e524]
+                    - treeitem "llm" [level=2] [ref=f3e539]
+                    - treeitem "opencode" [expanded] [level=2] [ref=f3e554]:
+                      - group "opencode" [ref=f3e569]:
+                        - treeitem "bin" [level=3] [ref=f3e570]
+                        - treeitem "migration" [level=3] [ref=f3e586]
+                        - treeitem "script" [level=3] [ref=f3e602]
+                        - treeitem "specs" [level=3] [ref=f3e618]
+                        - treeitem "src" [expanded] [level=3] [ref=f3e634]:
+                          - group "src" [ref=f3e650]:
+                            - treeitem "account" [level=4] [ref=f3e651]
+                            - treeitem "acp" [level=4] [ref=f3e668]
+                            - treeitem "agent" [level=4] [ref=f3e685]
+                            - treeitem "auth" [level=4] [ref=f3e702]
+                            - treeitem "background" [level=4] [ref=f3e719]
+                            - treeitem "bus" [level=4] [ref=f3e736]
+                            - treeitem "cli" [level=4] [ref=f3e753]
+                            - treeitem "command" [level=4] [ref=f3e770]
+                            - treeitem "config" [level=4] [ref=f3e787]
+                            - treeitem "control-plane" [level=4] [ref=f3e804]
+                            - treeitem "effect" [level=4] [ref=f3e821]
+                            - treeitem "env" [level=4] [ref=f3e838]
+                            - treeitem "format" [level=4] [ref=f3e855]
+                            - treeitem "git" [level=4] [ref=f3e872]
+                            - treeitem "id" [level=4] [ref=f3e889]
+                            - treeitem "ide" [level=4] [ref=f3e906]
+                            - treeitem "image" [level=4] [ref=f3e923]
+                            - treeitem "installation" [level=4] [ref=f3e940]
+                            - treeitem "lsp" [level=4] [ref=f3e957]
+                            - treeitem "mcp" [level=4] [ref=f3e974]
+                            - treeitem "patch" [level=4] [ref=f3e991]
+                            - treeitem "permission" [level=4] [ref=f3e1008]
+                            - treeitem "plugin" [level=4] [ref=f3e1025]
+                            - treeitem "project" [level=4] [ref=f3e1042]
+                            - treeitem "provider" [expanded] [level=4] [ref=f3e1059]:
+                              - group "provider" [ref=f3e1076]:
+                                - treeitem "auth.ts" [level=5] [ref=f3e1077]
+                                - treeitem "error.ts" [level=5] [ref=f3e1091]
+                                - treeitem "model-status.ts" [level=5] [ref=f3e1105]
+                                - treeitem "provider.ts" [level=5] [ref=f3e1119]
+                                - treeitem "transform.ts" [level=5] [ref=f3e1133]
+                            - treeitem "question" [level=4] [ref=f3e1147]
+                            - treeitem "server" [level=4] [ref=f3e1164]
+                            - treeitem "session" [level=4] [ref=f3e1181]
+                            - treeitem "share" [level=4] [ref=f3e1198]
+                            - treeitem "skill" [level=4] [ref=f3e1215]
+                            - treeitem "snapshot" [level=4] [ref=f3e1232]
+                            - treeitem "storage" [level=4] [ref=f3e1249]
+                            - treeitem "sync" [level=4] [ref=f3e1266]
+                            - treeitem "tool" [level=4] [ref=f3e1283]
+                            - treeitem "util" [level=4] [ref=f3e1300]
+                            - treeitem "worktree" [level=4] [ref=f3e1317]
+                            - treeitem "audio.d.ts" [level=4] [ref=f3e1334]
+                            - treeitem "event-manifest.ts" [level=4] [ref=f3e1347]
+                            - treeitem "event-v2-bridge.ts" [level=4] [ref=f3e1360]
+                            - treeitem "index.ts" [level=4] [ref=f3e1373]
+                            - treeitem "markdown.d.ts" [level=4] [ref=f3e1386]
+                            - treeitem "node.ts" [level=4] [ref=f3e1399]
+                            - treeitem "sql.d.ts" [level=4] [ref=f3e1412]
+                            - treeitem "temporary.ts" [level=4] [ref=f3e1425]
+                        - treeitem "test" [level=3] [ref=f3e1438]
+                        - treeitem ".gitignore" [level=3] [ref=f3e1454]
+                        - treeitem "AGENTS.md" [level=3] [ref=f3e1466]
+                        - treeitem "Dockerfile" [level=3] [ref=f3e1478]
+                        - treeitem "README.md" [level=3] [ref=f3e1490]
+                        - treeitem "bunfig.toml" [level=3] [ref=f3e1502]
+                        - treeitem "git" [level=3] [ref=f3e1514]
+                        - treeitem "package.json" [level=3] [ref=f3e1526]
+                        - treeitem "parsers-config.ts" [level=3] [ref=f3e1538]
+                        - treeitem "sst-env.d.ts" [level=3] [ref=f3e1550]
+                        - treeitem "tsconfig.json" [level=3] [ref=f3e1562]
+                    - treeitem "plugin" [level=2] [ref=f3e1574]
+                    - treeitem "protocol" [level=2] [ref=f3e1589]
+                    - treeitem "schema" [level=2] [ref=f3e1604]
+                    - treeitem "script" [level=2] [ref=f3e1619]
+                    - treeitem "sdk-next" [level=2] [ref=f3e1634]
+                    - treeitem "sdk" [level=2] [ref=f3e1649]
+                    - treeitem "server" [level=2] [ref=f3e1664]
+                    - treeitem "session-ui" [level=2] [ref=f3e1679]
+                    - treeitem "slack" [level=2] [ref=f3e1694]
+                    - treeitem "stats" [level=2] [ref=f3e1709]
+                    - treeitem "storybook" [level=2] [ref=f3e1724]
+                    - treeitem "tui" [level=2] [ref=f3e1739]
+                    - treeitem "ui" [level=2] [ref=f3e1754]
+                    - treeitem "web" [level=2] [ref=f3e1769]
+                - treeitem "patches" [level=1] [ref=f3e1784]
+                - treeitem "perf" [level=1] [ref=f3e1796]
+                - treeitem "script" [level=1] [ref=f3e1808]
+                - treeitem "sdks" [level=1] [ref=f3e1820]
+                - treeitem "specs" [level=1] [ref=f3e1832]
+                - treeitem ".dockerignore" [level=1] [ref=f3e1844]
+                - treeitem ".editorconfig" [level=1] [ref=f3e1852]
+                - treeitem ".gitattributes" [level=1] [ref=f3e1860]
+                - treeitem ".gitignore" [level=1] [ref=f3e1868]
+                - treeitem ".gitleaksignore" [level=1] [ref=f3e1876]
+                - treeitem ".oxlintrc.json" [level=1] [ref=f3e1884]
+                - treeitem ".prettierignore" [level=1] [ref=f3e1892]
+                - treeitem "AGENTS.md" [level=1] [ref=f3e1900]
+                - treeitem "CONTEXT.md" [level=1] [ref=f3e1908]
+                - treeitem "CONTRIBUTING.md" [level=1] [ref=f3e1916]
+                - treeitem "LICENSE" [level=1] [ref=f3e1924]
+                - treeitem "README.ar.md" [level=1] [ref=f3e1932]
+                - treeitem "README.bn.md" [level=1] [ref=f3e1940]
+                - treeitem "README.br.md" [level=1] [ref=f3e1948]
+                - treeitem "README.bs.md" [level=1] [ref=f3e1956]
+                - treeitem "README.da.md" [level=1] [ref=f3e1964]
+                - treeitem "README.de.md" [level=1] [ref=f3e1972]
+                - treeitem "README.es.md" [level=1] [ref=f3e1980]
+                - treeitem "README.fr.md" [level=1] [ref=f3e1988]
+                - treeitem "README.gr.md" [level=1] [ref=f3e1996]
+                - treeitem "README.it.md" [level=1] [ref=f3e2004]
+                - treeitem "README.ja.md" [level=1] [ref=f3e2012]
+                - treeitem "README.ko.md" [level=1] [ref=f3e2020]
+                - treeitem "README.md" [level=1] [ref=f3e2028]
+                - treeitem "README.no.md" [level=1] [ref=f3e2036]
+                - treeitem "README.pl.md" [level=1] [ref=f3e2044]
+                - treeitem "README.ru.md" [level=1] [ref=f3e2052]
+                - treeitem "README.th.md" [level=1] [ref=f3e2060]
+                - treeitem "README.tr.md" [level=1] [ref=f3e2068]
+                - treeitem "README.uk.md" [level=1] [ref=f3e2076]
+                - treeitem "README.vi.md" [level=1] [ref=f3e2084]
+                - treeitem "README.zh.md" [level=1] [ref=f3e2092]
+                - treeitem "README.zht.md" [level=1] [ref=f3e2100]
+                - treeitem "SECURITY.md" [level=1] [ref=f3e2108]
+                - treeitem "STATS.md" [level=1] [ref=f3e2116]
+                - treeitem "bun.lock" [level=1] [ref=f3e2124]
+                - treeitem "bunfig.toml" [level=1] [ref=f3e2132]
+                - treeitem "flake.lock" [level=1] [ref=f3e2140]
+                - treeitem "flake.nix" [level=1] [ref=f3e2148]
+                - treeitem "install" [level=1] [ref=f3e2156]
+                - treeitem "package.json" [level=1] [ref=f3e2164]
+                - treeitem "screenshot-uk.png" [level=1] [ref=f3e2172]
+                - treeitem "sst-env.d.ts" [level=1] [ref=f3e2180]
+                - treeitem "sst.config.ts" [level=1] [ref=f3e2188]
+                - treeitem "tsconfig.json" [level=1] [ref=f3e2196]
+                - treeitem "turbo.json" [level=1] [ref=f3e2204]
+          - slider "Draggable pane splitter" [ref=f3e2213]
+        - generic [ref=f3e2216]:
+          - generic [ref=f3e2220]:
+            - generic [ref=f3e2222]:
+              - navigation [ref=f3e2223]:
+                - heading "Breadcrumbs" [level=2] [ref=f3e2224]
+                - list [ref=f3e2225]:
+                  - listitem [ref=f3e2226]:
+                    - link "opencode" [ref=f3e2227] [cursor=pointer]:
+                      - /url: /anomalyco/opencode/tree/dev
+                  - listitem [ref=f3e2228]:
+                    - text: /
+                    - link "packages" [ref=f3e2229] [cursor=pointer]:
+                      - /url: /anomalyco/opencode/tree/dev/packages
+                  - listitem [ref=f3e2230]:
+                    - text: /
+                    - link "opencode" [ref=f3e2231] [cursor=pointer]:
+                      - /url: /anomalyco/opencode/tree/dev/packages/opencode
+                  - listitem [ref=f3e2232]:
+                    - text: /
+                    - link "src" [ref=f3e2233] [cursor=pointer]:
+                      - /url: /anomalyco/opencode/tree/dev/packages/opencode/src
+              - generic [ref=f3e2234]:
+                - text: /
+                - heading "provider" [level=1] [ref=f3e2235]
+                - text: /
+              - button "Copy path" [ref=f3e2236] [cursor=pointer]
+            - generic [ref=f3e2242]:
+              - heading "Directory actions" [level=2] [ref=f3e2243]
+              - heading "More options" [level=2] [ref=f3e2244]
+              - button "More options" [ref=f3e2245] [cursor=pointer]
+          - generic [ref=f3e2248]:
+            - generic [ref=f3e2250]:
+              - heading "Latest commit" [level=2] [ref=f3e2251]
+              - generic [ref=f3e2254]:
+                - heading "History" [level=2] [ref=f3e2255]
+                - link "History" [ref=f3e2256] [cursor=pointer]:
+                  - /url: /anomalyco/opencode/commits/dev/packages/opencode/src/provider
+            - generic [ref=f3e2260]:
+              - heading "Folders and files" [level=2] [ref=f3e2261]
+              - table "Folders and files" [ref=f3e2262]:
+                - rowgroup [ref=f3e2263]:
+                  - row [ref=f3e2264]:
+                    - columnheader "Name" [ref=f3e2265]
+                    - columnheader "Last commit message" [ref=f3e2266]
+                    - columnheader "Last commit date" [ref=f3e2268]
+                - rowgroup [ref=f3e2270]:
+                  - row [ref=f3e2271]:
+                    - cell [ref=f3e2272]:
+                      - heading "parent directory" [level=3] [ref=f3e2273]
+                      - link "Parent directory" [ref=f3e2274] [cursor=pointer]:
+                        - /url: /anomalyco/opencode/tree/dev/packages/opencode/src
+                        - generic [ref=f3e2275]: ..
+                  - row "auth.ts, (File)" [ref=f3e2278]:
+                    - cell [ref=f3e2279]:
+                      - link "auth.ts, (File)" [ref=f3e2286] [cursor=pointer]:
+                        - /url: /anomalyco/opencode/blob/dev/packages/opencode/src/provider/auth.ts
+                        - text: auth.ts
+                    - cell [ref=f3e2287]
+                    - cell [ref=f3e2289]
+                  - row "error.ts, (File)" [ref=f3e2292]:
+                    - cell [ref=f3e2293]:
+                      - link "error.ts, (File)" [ref=f3e2300] [cursor=pointer]:
+                        - /url: /anomalyco/opencode/blob/dev/packages/opencode/src/provider/error.ts
+                        - text: error.ts
+                    - cell [ref=f3e2301]
+                    - cell [ref=f3e2303]
+                  - row "model-status.ts, (File)" [ref=f3e2306]:
+                    - cell [ref=f3e2307]:
+                      - link "model-status.ts, (File)" [ref=f3e2314] [cursor=pointer]:
+                        - /url: /anomalyco/opencode/blob/dev/packages/opencode/src/provider/model-status.ts
+                        - text: model-status.ts
+                    - cell [ref=f3e2315]
+                    - cell [ref=f3e2317]
+                  - row "provider.ts, (File)" [ref=f3e2320]:
+                    - cell [ref=f3e2321]:
+                      - link "provider.ts, (File)" [ref=f3e2328] [cursor=pointer]:
+                        - /url: /anomalyco/opencode/blob/dev/packages/opencode/src/provider/provider.ts
+                        - text: provider.ts
+                    - cell [ref=f3e2329]
+                    - cell [ref=f3e2331]
+                  - row "transform.ts, (File)" [ref=f3e2334]:
+                    - cell [ref=f3e2335]:
+                      - link "transform.ts, (File)" [ref=f3e2342] [cursor=pointer]:
+                        - /url: /anomalyco/opencode/blob/dev/packages/opencode/src/provider/transform.ts
+                        - text: transform.ts
+                    - cell [ref=f3e2343]
+                    - cell [ref=f3e2345]
+  - alert [ref=f3e2351]

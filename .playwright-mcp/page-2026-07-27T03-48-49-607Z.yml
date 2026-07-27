@@ -1,0 +1,189 @@
+- generic [ref=f1e2]:
+  - generic [ref=f1e3]:
+    - link "Skip to content" [ref=f1e4] [cursor=pointer]:
+      - /url: "#start-of-content"
+    - banner [ref=f1e6]:
+      - heading "Navigation Menu" [level=2] [ref=f1e7]
+      - generic [ref=f1e8]:
+        - link "Homepage" [ref=f1e10] [cursor=pointer]:
+          - /url: /
+        - generic [ref=f1e13]:
+          - navigation "Global" [ref=f1e16]:
+            - list [ref=f1e17]:
+              - listitem [ref=f1e18]:
+                - button "Platform" [ref=f1e20] [cursor=pointer]
+              - listitem [ref=f1e23]:
+                - button "Solutions" [ref=f1e25] [cursor=pointer]
+              - listitem [ref=f1e28]:
+                - button "Resources" [ref=f1e30] [cursor=pointer]
+              - listitem [ref=f1e33]:
+                - button "Open Source" [ref=f1e35] [cursor=pointer]
+              - listitem [ref=f1e38]:
+                - button "Enterprise" [ref=f1e40] [cursor=pointer]
+              - listitem [ref=f1e43]:
+                - link "Pricing" [ref=f1e44] [cursor=pointer]:
+                  - /url: https://github.com/pricing
+          - generic [ref=f1e46]:
+            - button "Search or jump to…" [ref=f1e49] [cursor=pointer]
+            - generic [ref=f1e53]:
+              - link "Sign in" [ref=f1e54] [cursor=pointer]:
+                - /url: /login?return_to=https%3A%2F%2Fgithub.com%2Fanomalyco%2Fopencode%2Fblob%2Fdev%2Fpackages%2Fopencode%2Fsrc%2Fprovider%2Fdeepseek.ts
+              - generic [ref=f1e56]:
+                - heading "Sign in to GitHub" [level=4] [ref=f1e57]
+                - generic [ref=f1e58]:
+                  - text: Username or email address
+                  - textbox "Username or email address" [active] [ref=f1e59]
+                  - generic [ref=f1e60]:
+                    - text: Password
+                    - textbox "Password" [ref=f1e61]
+                    - link "Forgot password?" [ref=f1e62] [cursor=pointer]:
+                      - /url: /password_reset
+                    - button "Sign in" [ref=f1e63] [cursor=pointer]
+                - link "or continue with other methods" [ref=f1e66] [cursor=pointer]:
+                  - /url: /login?return_to=https%3A%2F%2Fgithub.com%2Fanomalyco%2Fopencode%2Fblob%2Fdev%2Fpackages%2Fopencode%2Fsrc%2Fprovider%2Fdeepseek.ts
+            - link "Sign up" [ref=f1e69] [cursor=pointer]:
+              - /url: /signup?ref_cta=Sign+up&ref_loc=header+logged+out&ref_page=%2F%3Cuser-name%3E%2F%3Crepo-name%3E%2Fblob%2Fshow&source=header-repo&source_repo=anomalyco%2Fopencode
+            - button "Appearance settings" [ref=f1e72] [cursor=pointer]
+  - main [ref=f1e76]:
+    - generic [ref=f1e77]:
+      - generic [ref=f1e78]:
+        - generic [ref=f1e80]:
+          - link "anomalyco" [ref=f1e84] [cursor=pointer]:
+            - /url: /anomalyco
+          - generic [ref=f1e85]: /
+          - strong [ref=f1e86]:
+            - link "opencode" [ref=f1e87] [cursor=pointer]:
+              - /url: /anomalyco/opencode
+          - generic [ref=f1e88]: Public
+        - generic [ref=f1e89]:
+          - list:
+            - listitem [ref=f1e90]:
+              - link "You must be signed in to change notification settings" [ref=f1e91] [cursor=pointer]:
+                - /url: /login?return_to=%2Fanomalyco%2Fopencode
+                - text: Notifications
+            - listitem [ref=f1e94]:
+              - link "Fork 24.1k" [ref=f1e95] [cursor=pointer]:
+                - /url: /login?return_to=%2Fanomalyco%2Fopencode
+                - text: Fork
+                - generic "24,090" [ref=f1e98]: 24.1k
+            - listitem [ref=f1e99]:
+              - link "You must be signed in to star a repository" [ref=f1e101] [cursor=pointer]:
+                - /url: /login?return_to=%2Fanomalyco%2Fopencode
+                - text: Star
+                - generic "189989 users starred this repository" [ref=f1e104]: 190k
+      - navigation "Repository" [ref=f1e105]:
+        - list [ref=f1e106]:
+          - listitem [ref=f1e107]:
+            - link "Code" [ref=f1e108] [cursor=pointer]:
+              - /url: /anomalyco/opencode
+          - listitem [ref=f1e112]:
+            - link "Issues 3.7k" [ref=f1e113] [cursor=pointer]:
+              - /url: /anomalyco/opencode/issues
+              - generic [ref=f1e117]: Issues
+              - generic "3,655" [ref=f1e118]: 3.7k
+          - listitem [ref=f1e119]:
+            - link "Pull requests 1.1k" [ref=f1e120] [cursor=pointer]:
+              - /url: /anomalyco/opencode/pulls
+              - generic [ref=f1e123]: Pull requests
+              - generic "1,096" [ref=f1e124]: 1.1k
+          - listitem [ref=f1e125]:
+            - link "Actions" [ref=f1e126] [cursor=pointer]:
+              - /url: /anomalyco/opencode/actions
+          - listitem [ref=f1e130]:
+            - link "Projects" [ref=f1e131] [cursor=pointer]:
+              - /url: /anomalyco/opencode/projects
+          - listitem [ref=f1e135]:
+            - link "Security and quality 2" [ref=f1e136] [cursor=pointer]:
+              - /url: /anomalyco/opencode/security
+              - generic [ref=f1e139]: Security and quality
+              - generic "2" [ref=f1e140]
+          - listitem [ref=f1e141]:
+            - link "Insights" [ref=f1e142] [cursor=pointer]:
+              - /url: /anomalyco/opencode/pulse
+    - generic [ref=f1e153]:
+      - generic [ref=f1e155]:
+        - generic [ref=f1e158]:
+          - generic [ref=f1e159]:
+            - generic [ref=f1e160]:
+              - heading "Collapse file tree" [level=2] [ref=f1e161]:
+                - button "Collapse file tree" [expanded] [ref=f1e162] [cursor=pointer]
+              - heading "Files" [level=2] [ref=f1e166]
+            - generic [ref=f1e167]:
+              - button "dev branch" [ref=f1e169] [cursor=pointer]:
+                - generic [ref=f1e170]: dev
+              - button "Search this repository (forward slash)" [ref=f1e175] [cursor=pointer]
+          - combobox "Go to file" [ref=f1e183]
+          - navigation "File Tree Navigation" [ref=f1e189]:
+            - tree "Files" [ref=f1e191]:
+              - treeitem ".github" [level=1] [ref=f1e192]
+              - treeitem ".husky" [level=1] [ref=f1e204]
+              - treeitem ".opencode" [level=1] [ref=f1e216]
+              - treeitem ".vscode" [level=1] [ref=f1e228]
+              - treeitem ".zed" [level=1] [ref=f1e240]
+              - treeitem "artifacts" [level=1] [ref=f1e252]
+              - treeitem "github" [level=1] [ref=f1e264]
+              - treeitem "infra" [level=1] [ref=f1e276]
+              - treeitem "nix" [level=1] [ref=f1e288]
+              - treeitem "packages" [level=1] [ref=f1e300]
+              - treeitem "patches" [level=1] [ref=f1e312]
+              - treeitem "perf" [level=1] [ref=f1e324]
+              - treeitem "script" [level=1] [ref=f1e336]
+              - treeitem "sdks" [level=1] [ref=f1e348]
+              - treeitem "specs" [level=1] [ref=f1e360]
+              - treeitem ".dockerignore" [level=1] [ref=f1e372]
+              - treeitem ".editorconfig" [level=1] [ref=f1e380]
+              - treeitem ".gitattributes" [level=1] [ref=f1e388]
+              - treeitem ".gitignore" [level=1] [ref=f1e396]
+              - treeitem ".gitleaksignore" [level=1] [ref=f1e404]
+              - treeitem ".oxlintrc.json" [level=1] [ref=f1e412]
+              - treeitem ".prettierignore" [level=1] [ref=f1e420]
+              - treeitem "AGENTS.md" [level=1] [ref=f1e428]
+              - treeitem "CONTEXT.md" [level=1] [ref=f1e436]
+              - treeitem "CONTRIBUTING.md" [level=1] [ref=f1e444]
+              - treeitem "LICENSE" [level=1] [ref=f1e452]
+              - treeitem "README.ar.md" [level=1] [ref=f1e460]
+              - treeitem "README.bn.md" [level=1] [ref=f1e468]
+              - treeitem "README.br.md" [level=1] [ref=f1e476]
+              - treeitem "README.bs.md" [level=1] [ref=f1e484]
+              - treeitem "README.da.md" [level=1] [ref=f1e492]
+              - treeitem "README.de.md" [level=1] [ref=f1e500]
+              - treeitem "README.es.md" [level=1] [ref=f1e508]
+              - treeitem "README.fr.md" [level=1] [ref=f1e516]
+              - treeitem "README.gr.md" [level=1] [ref=f1e524]
+              - treeitem "README.it.md" [level=1] [ref=f1e532]
+              - treeitem "README.ja.md" [level=1] [ref=f1e540]
+              - treeitem "README.ko.md" [level=1] [ref=f1e548]
+              - treeitem "README.md" [level=1] [ref=f1e556]
+              - treeitem "README.no.md" [level=1] [ref=f1e564]
+              - treeitem "README.pl.md" [level=1] [ref=f1e572]
+              - treeitem "README.ru.md" [level=1] [ref=f1e580]
+              - treeitem "README.th.md" [level=1] [ref=f1e588]
+              - treeitem "README.tr.md" [level=1] [ref=f1e596]
+              - treeitem "README.uk.md" [level=1] [ref=f1e604]
+              - treeitem "README.vi.md" [level=1] [ref=f1e612]
+              - treeitem "README.zh.md" [level=1] [ref=f1e620]
+              - treeitem "README.zht.md" [level=1] [ref=f1e628]
+              - treeitem "SECURITY.md" [level=1] [ref=f1e636]
+              - treeitem "STATS.md" [level=1] [ref=f1e644]
+              - treeitem "bun.lock" [level=1] [ref=f1e652]
+              - treeitem "bunfig.toml" [level=1] [ref=f1e660]
+              - treeitem "flake.lock" [level=1] [ref=f1e668]
+              - treeitem "flake.nix" [level=1] [ref=f1e676]
+              - treeitem "install" [level=1] [ref=f1e684]
+              - treeitem "package.json" [level=1] [ref=f1e692]
+              - treeitem "screenshot-uk.png" [level=1] [ref=f1e700]
+              - treeitem "sst-env.d.ts" [level=1] [ref=f1e708]
+              - treeitem "sst.config.ts" [level=1] [ref=f1e716]
+              - treeitem "tsconfig.json" [level=1] [ref=f1e724]
+              - treeitem "turbo.json" [level=1] [ref=f1e732]
+        - slider "Draggable pane splitter" [ref=f1e741]
+      - generic [ref=f1e747]:
+        - heading "404 - page not found" [level=2] [ref=f1e752]
+        - paragraph [ref=f1e753]:
+          - generic [ref=f1e754]:
+            - text: The
+            - generic [ref=f1e755]: dev
+            - text: branch of opencode does not contain the path
+            - generic [ref=f1e756]: packages/opencode/src/provider/deepseek.ts.
+        - link "Return to the repository overview" [ref=f1e758] [cursor=pointer]:
+          - /url: /anomalyco/opencode

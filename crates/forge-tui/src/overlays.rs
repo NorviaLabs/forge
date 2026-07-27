@@ -1,6 +1,6 @@
 //! Overlays: HITL, slash palette, model picker (TUI-04).
 
-use crate::theme;
+use crate::{effort::ReasoningEffort, theme};
 use forge_types::HitlPayload;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -12,6 +12,12 @@ use std::path::Path;
 #[derive(Debug, Clone)]
 pub enum Overlay {
     Welcome,
+    Effort {
+        model: String,
+        selected: usize,
+        current: ReasoningEffort,
+        items: Vec<ReasoningEffort>,
+    },
     StatusReport {
         title: String,
         lines: Vec<String>,
@@ -138,10 +144,6 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
             desc: "Refresh model catalogs".into(),
         },
         PaletteItem {
-            cmd: "/effort".into(),
-            desc: "Set model reasoning effort".into(),
-        },
-        PaletteItem {
             cmd: "/compact".into(),
             desc: "Force handoff + clear context".into(),
         },
@@ -208,6 +210,10 @@ pub fn models_from_catalog(entries: &[forge_connect::CatalogEntry]) -> Vec<Model
         .collect()
 }
 
+fn effort_options(model: &str) -> Vec<ReasoningEffort> {
+    ReasoningEffort::options_for_model(model)
+}
+
 impl Overlay {
     pub fn welcome() -> Self {
         Self::Welcome
@@ -254,6 +260,18 @@ impl Overlay {
             model_input: String::new(),
             current_model: String::new(),
             providers,
+            items,
+        }
+    }
+
+    pub fn effort_open(model: impl Into<String>, current: ReasoningEffort) -> Self {
+        let model = model.into();
+        let items = effort_options(&model);
+        let selected = items.iter().position(|item| *item == current).unwrap_or(0);
+        Self::Effort {
+            model,
+            selected,
+            current,
             items,
         }
     }
@@ -398,6 +416,14 @@ impl Overlay {
 
     pub fn move_sel(&mut self, delta: i32) {
         match self {
+            Self::Effort {
+                selected, items, ..
+            } => {
+                if !items.is_empty() {
+                    let n = items.len() as i32;
+                    *selected = ((*selected as i32 + delta).rem_euclid(n)) as usize;
+                }
+            }
             Self::Slash {
                 selected, items, ..
             } => {
@@ -535,6 +561,7 @@ pub enum OverlayAction {
         provider: String,
         model: String,
     },
+    SelectEffort(ReasoningEffort),
     /// Submit API key from ConnectApiKey overlay
     ConnectSubmitKey {
         profile_id: String,
@@ -617,6 +644,13 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
         }
         Key::Enter => match overlay {
             Overlay::Welcome => OverlayAction::BeginOnboarding,
+            Overlay::Effort {
+                selected, items, ..
+            } => items
+                .get(*selected)
+                .copied()
+                .map(OverlayAction::SelectEffort)
+                .unwrap_or(OverlayAction::None),
             Overlay::StatusReport { .. } => OverlayAction::Close,
             Overlay::TurnLimit { .. } => OverlayAction::ContinueTurns,
             Overlay::Slash {
@@ -950,6 +984,53 @@ impl Widget for OverlayWidget<'_> {
                         .title(Span::styled(" Welcome ", theme::brand())),
                 )
                 .render(r, buf);
+            }
+            Overlay::Effort {
+                model,
+                selected,
+                current,
+                items,
+            } => {
+                let r = centered_capped_rect(area, 54, 14);
+                let list_items: Vec<ListItem> = items
+                    .iter()
+                    .enumerate()
+                    .map(|(index, effort)| {
+                        let marker = if index == *selected { "▶ " } else { "  " };
+                        let current = if effort == current { " current" } else { "" };
+                        let style = if index == *selected {
+                            theme::focused_selection_style()
+                        } else {
+                            theme::text()
+                        };
+                        ListItem::new(Span::styled(format!("{marker}{effort}{current}"), style))
+                    })
+                    .collect();
+                let block = Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(theme::border())
+                    .style(theme::panel())
+                    .title(Span::styled(
+                        " Reasoning effort · ↑↓ select · Enter use ",
+                        theme::brand(),
+                    ));
+                let inner = block.inner(r);
+                block.render(r, buf);
+                let regions = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Length(1),
+                        Constraint::Min(1),
+                        Constraint::Length(1),
+                    ])
+                    .split(inner);
+                Paragraph::new(format!("Model: {model}"))
+                    .style(theme::muted())
+                    .render(regions[0], buf);
+                List::new(list_items).render(regions[1], buf);
+                Paragraph::new("Esc close")
+                    .style(theme::dim())
+                    .render(regions[2], buf);
             }
             Overlay::StatusReport { title, lines } => {
                 let r = centered_capped_rect(area, 74, 30);
@@ -1429,7 +1510,7 @@ mod tests {
             }
         }
         assert!(
-            items.len() >= 14,
+            items.len() >= 13,
             "expected full command list, got {}",
             items.len()
         );

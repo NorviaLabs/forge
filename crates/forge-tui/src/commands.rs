@@ -4,8 +4,6 @@ use forge_connect::ConnectAction;
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::effort::ReasoningEffort;
-
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum CommandError {
     #[error("unknown command `/{0}`")]
@@ -30,10 +28,6 @@ pub enum SlashCommand {
         model: Option<String>,
         /// `/model refresh` — re-pull live catalogs.
         refresh: bool,
-    },
-    /// Set model reasoning effort for subsequent calls.
-    Effort {
-        level: Option<ReasoningEffort>,
     },
     Quit,
     Compact,
@@ -99,17 +93,6 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
                     refresh: false,
                 })
             }
-        }
-        "effort" => {
-            let level = parts
-                .next()
-                .map(|value| {
-                    value.parse().map_err(|_| {
-                        CommandError::Usage(format!("/effort {}", ReasoningEffort::USAGE))
-                    })
-                })
-                .transpose()?;
-            Ok(SlashCommand::Effort { level })
         }
         "quit" | "exit" => Ok(SlashCommand::Quit),
         "disconnect" => Ok(SlashCommand::Disconnect {
@@ -185,20 +168,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_effort_level_and_query() {
-        assert_eq!(
-            parse_slash("/effort high").unwrap().unwrap(),
-            SlashCommand::Effort {
-                level: Some(ReasoningEffort::High)
-            }
-        );
-        assert_eq!(
-            parse_slash("/effort").unwrap().unwrap(),
-            SlashCommand::Effort { level: None }
-        );
-    }
-
-    #[test]
     fn parses_phase2_commands() {
         assert_eq!(parse_slash("/clear").unwrap().unwrap(), SlashCommand::Clear);
         assert_eq!(
@@ -218,7 +187,7 @@ mod tests {
 
     #[test]
     fn removed_commands_are_unknown() {
-        for command in ["/diff", "/appove", "/approve", "/deny"] {
+        for command in ["/diff", "/appove", "/approve", "/deny", "/effort"] {
             assert!(matches!(
                 parse_slash(command).unwrap().unwrap_err(),
                 CommandError::Unknown(_)
