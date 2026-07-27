@@ -1644,38 +1644,29 @@ impl TuiApp {
         self.session.force_context_reset_async().await?;
         let after_report = self.session.token_usage_report();
         let after = after_report.context_tokens_est;
-        let before_pct = before as f64 / before_report.context_capacity.max(1) as f64 * 100.0;
-        let after_pct = after as f64 / after_report.context_capacity.max(1) as f64 * 100.0;
-        self.context_reset_snapshot = Some((before_pct, after_pct));
+        self.context_reset_snapshot = Some((
+            before as f64 / before_report.context_capacity.max(1) as f64 * 100.0,
+            after as f64 / after_report.context_capacity.max(1) as f64 * 100.0,
+        ));
         self.chat_message_start = self.session.messages.len();
         self.chat_event_start = self.session.events.len();
         self.push_toast("context compacted");
-        let summary = format!("Context handoff complete · {before} → {after} estimated tokens.");
         let progress = fs::read_to_string(self.runtime.cwd.join(".forge/progress.json"))
             .ok()
             .and_then(|text| serde_json::from_str::<ProgressDocument>(&text).ok());
         if let Some(progress) = progress {
             self.ui_banners.push(ChatItem::ContextHandoff {
-                before_pct,
-                after_pct,
+                before_pct: self.context_reset_snapshot.unwrap().0,
+                after_pct: self.context_reset_snapshot.unwrap().1,
                 goal: progress.goal,
                 completed: progress.completed,
                 next_actions: progress.next_actions,
-            });
-        } else {
-            self.ui_banners.push(ChatItem::Banner {
-                text: summary.clone(),
-                kind: BannerKind::Ok,
             });
         }
         self.push_activity(
             ActivityKind::Context,
             FeedbackSeverity::Ok,
             format!("context handoff · {before} → {after} tokens"),
-        );
-        self.set_feedback(
-            FeedbackSeverity::Ok,
-            format!("context compacted · {before} → {after} tokens"),
         );
         self.status_message = "context compacted".into();
         self.notices.clear();
@@ -3805,6 +3796,10 @@ mod tests {
             .iter()
             .any(|item| item.kind == ActivityKind::Context));
         assert_eq!(app.status_message, "context compacted");
+        assert!(app
+            .ui_banners
+            .iter()
+            .all(|item| !matches!(item, ChatItem::Banner { .. })));
     }
 
     #[tokio::test]
