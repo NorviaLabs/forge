@@ -8,8 +8,8 @@ use forge_core::{AgentSession, LoopConfig};
 use forge_mcp::{register_static_mcp, McpManager, StaticMcpTool};
 use forge_model::{client_from_config, ModelClient};
 use forge_tools::ToolRegistry;
-use forge_types::SessionId;
 use forge_tui::{run_tui, ExitCode, TuiRuntimeConfig};
+use forge_types::SessionId;
 use serde_json::json;
 use tracing_subscriber::EnvFilter;
 

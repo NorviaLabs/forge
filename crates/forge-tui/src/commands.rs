@@ -15,7 +15,6 @@ pub enum CommandError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SlashCommand {
     Status,
-    Cost,
     ResumeList,
     Resume {
         session_id: Uuid,
@@ -60,10 +59,6 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
     let cmd = parts.next().unwrap_or("").to_ascii_lowercase();
     match cmd.as_str() {
         "status" => Ok(SlashCommand::Status),
-        "cost" => match parts.next() {
-            None => Ok(SlashCommand::Cost),
-            Some(_) => Err(CommandError::Usage("/cost".into())),
-        },
         "resume" => match parts.next() {
             None => Ok(SlashCommand::ResumeList),
             Some(id) => {
@@ -117,15 +112,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_cost_without_arguments() {
-        assert_eq!(parse_slash("/cost").unwrap().unwrap(), SlashCommand::Cost);
-        assert!(matches!(
-            parse_slash("/cost extra").unwrap().unwrap_err(),
-            CommandError::Usage(_)
-        ));
-    }
-
-    #[test]
     fn parses_model_id() {
         assert_eq!(
             parse_slash("/model openai/gpt-4.1-mini").unwrap().unwrap(),
@@ -163,7 +149,7 @@ mod tests {
 
     #[test]
     fn removed_commands_are_unknown() {
-        for command in ["/diff", "/appove", "/approve", "/deny", "/effort"] {
+        for command in ["/cost", "/diff", "/appove", "/approve", "/deny", "/effort"] {
             assert!(matches!(
                 parse_slash(command).unwrap().unwrap_err(),
                 CommandError::Unknown(_)
