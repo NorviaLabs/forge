@@ -387,6 +387,12 @@ impl AgentSession {
         self.journal.directory()
     }
 
+    /// Number of project/global skills available to the current session.
+    /// This is intentionally a count only: skill contents remain model context.
+    pub fn loaded_skills_count(&self) -> usize {
+        self.context.load_skills().len()
+    }
+
     pub fn list_tools(&self) -> Vec<String> {
         let desc = self.tools.list_descriptors();
         if self.enable_gov {

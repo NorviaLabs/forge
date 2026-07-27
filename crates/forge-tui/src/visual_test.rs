@@ -232,6 +232,7 @@ mod tests {
         for expected in [
             "SYSTEM",
             "Workspace",
+            "skills",
             "Waiting for your first message.",
             "Describe a task…",
             "Context",
