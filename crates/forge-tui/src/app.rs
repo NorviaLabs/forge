@@ -2179,7 +2179,7 @@ Reply with ONLY the commit message line.\n\n\
         } else if qn > 0 {
             format!("queue {qn} · Ctrl+Up/Down select · Ctrl+Backspace cancel")
         } else {
-            "/ commands  ·  Ctrl+B sidebar  ·  Esc cancel  ·  ? help".into()
+            "/ commands  ·  Ctrl+B sidebar  ·  F1 help  ·  Esc cancel".into()
         };
         let footer = FooterModel {
             cwd: self.runtime.cwd.display().to_string(),
@@ -2365,6 +2365,15 @@ Reply with ONLY the commit message line.\n\n\
             }
             KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.sidebar_visible = !self.sidebar_visible;
+            }
+            KeyCode::F(1) => {
+                if self.overlay.is_none() {
+                    self.overlay = Some(Overlay::welcome());
+                    self.set_feedback(
+                        FeedbackSeverity::Info,
+                        "Help · press Enter to get started or Esc to dismiss",
+                    );
+                }
             }
             KeyCode::Esc => {
                 self.history.reset_browse();
@@ -3630,6 +3639,27 @@ mod tests {
         }
         assert_eq!(app.input.text, "next");
         assert_eq!(app.message_queue.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn question_mark_opens_help_overlay() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "mock".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "0.12.0".into(),
+            },
+        );
+        app.handle_key(press(KeyCode::F(1), KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert!(matches!(app.overlay, Some(Overlay::Welcome)));
+        assert!(app.input.text.is_empty());
+        assert!(app.feedback.text.contains("Help"));
     }
 
     #[tokio::test]
