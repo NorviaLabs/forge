@@ -254,10 +254,7 @@ impl ConversationModel {
                             retry: *retry,
                         });
                     } else if looks_like_diff(&m.content)
-                        || name.contains("write")
-                        || name.contains("search_replace")
-                        || name == "edit"
-                        || name == "git"
+                        || looks_like_code_change(name, &m.content)
                     {
                         items.push(ChatItem::DiffCard {
                             path: extract_path_hint(name, &m.content),
@@ -1132,6 +1129,14 @@ fn looks_like_diff(content: &str) -> bool {
     content.contains("\n+") && content.contains("\n-")
         || content.lines().any(|l| l.starts_with("@@ "))
         || content.starts_with("diff --git")
+}
+
+fn looks_like_code_change(name: &str, content: &str) -> bool {
+    name.contains("write")
+        || name.contains("search_replace")
+        || name == "edit"
+        || name == "git"
+        || content.contains("```")
 }
 
 #[allow(dead_code)]
