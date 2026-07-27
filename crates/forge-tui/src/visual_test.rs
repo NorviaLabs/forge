@@ -45,6 +45,7 @@ mod tests {
                 provider: "mock".into(),
                 cwd: PathBuf::from("/tmp"),
                 version: "forge 0.8.0".into(),
+                startup_notices: Vec::new(),
             },
         );
         (dir, app)

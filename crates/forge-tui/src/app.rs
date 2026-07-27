@@ -70,6 +70,7 @@ pub struct TuiRuntimeConfig {
     pub provider: String,
     pub cwd: PathBuf,
     pub version: String,
+    pub startup_notices: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -216,6 +217,7 @@ impl TuiApp {
     pub fn new(session: AgentSession, runtime: TuiRuntimeConfig) -> Self {
         let mut input = InputModel::default();
         input.hint = "Describe a task…".into();
+        let startup_notices = runtime.startup_notices.clone();
         Self {
             session,
             input,
@@ -233,7 +235,7 @@ impl TuiApp {
             oauth_last_poll: None,
             history: InputHistory::default(),
             slash_suggest_idx: 0,
-            notices: Vec::new(),
+            notices: startup_notices,
             feedback: FeedbackModel::default(),
             ui_banners: Vec::new(),
             busy_phase: BusyPhase::Idle,
@@ -978,7 +980,15 @@ impl TuiApp {
                 }
                 let lines: Vec<String> = msg.lines().map(|s| s.to_string()).collect();
                 self.status_message = lines.first().cloned().unwrap_or_default();
-                self.notices = lines;
+                self.notices.clear();
+                self.push_activity(
+                    ActivityKind::Connect,
+                    FeedbackSeverity::Ok,
+                    self.status_message.clone(),
+                );
+                if let Some(line) = lines.first() {
+                    self.push_toast(line.clone());
+                }
                 self.refresh_connection_ui();
                 if let Some(profile_id) = connect_target {
                     self.open_model_picker_after_connect(&profile_id);
@@ -1340,7 +1350,13 @@ impl TuiApp {
             FeedbackSeverity::Info,
             format!("catalogs refreshed ({ok_n}/{})", profiles.len()),
         );
-        self.notices = lines;
+        self.notices.clear();
+        self.push_activity(
+            ActivityKind::System,
+            FeedbackSeverity::Info,
+            lines.join(" · "),
+        );
+        self.push_toast(self.status_message.clone());
         // Open picker with fresh data
         let items = self.model_picker_items(true);
         let mut ov = Overlay::model_open_with(items);
@@ -1642,10 +1658,7 @@ impl TuiApp {
             format!("context compacted · {before} → {after} tokens"),
         );
         self.status_message = "context compacted".into();
-        self.notices = vec![
-            summary,
-            "Progress written to .forge/progress.json; context_reset journaled.".into(),
-        ];
+        self.notices.clear();
         self.busy_phase = BusyPhase::Idle;
         if let Some(term) = terminal.as_deref_mut() {
             let _ = term.draw(|f| self.draw(f));
@@ -1701,10 +1714,13 @@ impl TuiApp {
         if status.trim().is_empty() {
             self.busy_phase = BusyPhase::Idle;
             self.set_feedback(FeedbackSeverity::Info, "nothing to sync (clean tree)");
-            self.notices = vec![
-                "Working tree clean — no changes to commit or push.".into(),
-                "Make edits, then run /sync again.".into(),
-            ];
+            self.notices.clear();
+            self.push_toast("working tree clean");
+            self.push_activity(
+                ActivityKind::Tool,
+                FeedbackSeverity::Info,
+                "git sync skipped · clean tree",
+            );
             if let Some(term) = terminal.as_deref_mut() {
                 let _ = term.draw(|f| self.draw(f));
             }
@@ -1831,7 +1847,12 @@ impl TuiApp {
                         lines.push(l.to_string());
                     }
                 }
-                self.notices = lines;
+                self.notices.clear();
+                self.push_activity(
+                    ActivityKind::Tool,
+                    FeedbackSeverity::Ok,
+                    lines.join(" · "),
+                );
                 self.push_activity(ActivityKind::Tool, FeedbackSeverity::Ok, "git push");
             }
         }
@@ -2706,7 +2727,19 @@ Reply with ONLY the commit message line.\n\n\
                             &profile_id,
                             &self.connect_store,
                         ) {
-                            Ok(report) => self.notices = report,
+                            Ok(report) => {
+                                self.status_message = "cost report".into();
+                                self.set_feedback(FeedbackSeverity::Info, "cost report ready");
+                                self.push_activity(
+                                    ActivityKind::System,
+                                    FeedbackSeverity::Info,
+                                    report.join(" · "),
+                                );
+                                self.notices.clear();
+                                if let Some(line) = report.first() {
+                                    self.push_toast(line.clone());
+                                }
+                            },
                             Err(error) => self.set_feedback(FeedbackSeverity::Error, error),
                         },
                         None => self.set_feedback(
@@ -2765,17 +2798,13 @@ Reply with ONLY the commit message line.\n\n\
                     match self.session.resume_session(session_id).await {
                         Ok(report) => {
                             self.overlay = None;
-                            self.notices = vec![
-                                format!("Resumed session {session_id}."),
-                                "Journal replay complete; completed actions were not re-executed."
-                                    .into(),
-                                "Ready for the next action.".into(),
-                            ];
+                            self.notices.clear();
                             self.status_message = "session resumed".into();
                             self.set_feedback(
                                 FeedbackSeverity::Ok,
                                 "session restored · ready for the next action",
                             );
+                            self.push_toast(format!("resumed {session_id}"));
                             self.status_message = "session resumed".into();
                             self.push_activity(
                                 ActivityKind::System,
@@ -2920,7 +2949,8 @@ Reply with ONLY the commit message line.\n\n\
                 Err(e) => {
                     let msg = e.to_string();
                     self.set_feedback(FeedbackSeverity::Warn, msg.clone());
-                    self.notices = vec![msg];
+                    self.notices.clear();
+                    self.push_toast(msg);
                 }
             }
             return Ok(());
@@ -3589,6 +3619,7 @@ mod tests {
                 provider: "mock".into(),
                 cwd: dir.path().to_path_buf(),
                 version: "0.12.0".into(),
+                startup_notices: Vec::new(),
             },
         );
         app.dispatch_line(&format!("/resume {previous_id}"))
@@ -3604,8 +3635,7 @@ mod tests {
         assert_eq!(app.status_message, "session resumed");
         assert!(app
             .notices
-            .iter()
-            .any(|line| line.contains("were not re-executed")));
+            .is_empty());
         assert!(app
             .activity
             .all()
@@ -3623,15 +3653,13 @@ mod tests {
                 provider: "mock".into(),
                 cwd: PathBuf::from("."),
                 version: "0.12.0".into(),
+                startup_notices: Vec::new(),
             },
         );
 
         app.dispatch_line("/compact").await.unwrap();
 
-        assert!(app
-            .notices
-            .iter()
-            .any(|line| line.contains("context_reset journaled")));
+        assert!(app.notices.is_empty());
         assert!(app.ui_banners.iter().any(|item| matches!(
             item,
             ChatItem::Banner {
@@ -3644,6 +3672,7 @@ mod tests {
             .all()
             .iter()
             .any(|item| item.kind == ActivityKind::Context));
+        assert_eq!(app.status_message, "context compacted");
     }
 
     #[tokio::test]
@@ -3657,6 +3686,7 @@ mod tests {
                 provider: "mock".into(),
                 cwd: PathBuf::from("."),
                 version: "0.12.0".into(),
+                startup_notices: Vec::new(),
             },
         );
         app.busy = true;
@@ -3687,6 +3717,7 @@ mod tests {
                 provider: "mock".into(),
                 cwd: PathBuf::from("."),
                 version: "0.12.0".into(),
+                startup_notices: Vec::new(),
             },
         );
         app.busy = true;
@@ -3710,6 +3741,7 @@ mod tests {
                 provider: "mock".into(),
                 cwd: PathBuf::from("."),
                 version: "0.12.0".into(),
+                startup_notices: Vec::new(),
             },
         );
         app.handle_key(press(KeyCode::F(1), KeyModifiers::NONE))
@@ -3731,6 +3763,7 @@ mod tests {
                 provider: "mock".into(),
                 cwd: PathBuf::from("."),
                 version: "0.12.0".into(),
+        startup_notices: Vec::new(),
             },
         );
         // Simulate messages enqueued while processing.
@@ -3757,6 +3790,7 @@ mod tests {
                 provider: "mock".into(),
                 cwd: PathBuf::from("."),
                 version: "0.12.0".into(),
+        startup_notices: Vec::new(),
             },
         );
         app.enqueue_user_message("a".into());
@@ -3784,6 +3818,7 @@ mod tests {
                 provider: "mock".into(),
                 cwd: PathBuf::from("."),
                 version: "0.12.0".into(),
+        startup_notices: Vec::new(),
             },
         );
         app.connect_store = CredentialStore::new(credential_path.clone());
@@ -3804,6 +3839,7 @@ mod tests {
                 provider: "mock".into(),
                 cwd: PathBuf::from("."),
                 version: "0.12.0".into(),
+        startup_notices: Vec::new(),
             },
         );
         restarted.connect_store = CredentialStore::new(credential_path);
@@ -3823,6 +3859,7 @@ mod tests {
                 provider: "mock".into(),
                 cwd: PathBuf::from("."),
                 version: "0.12.0".into(),
+        startup_notices: Vec::new(),
             },
         );
         app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
@@ -3849,6 +3886,7 @@ mod tests {
                 provider: "native".into(),
                 cwd: PathBuf::from("."),
                 version: "0.12.0".into(),
+        startup_notices: Vec::new(),
             },
         );
         app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
@@ -3937,6 +3975,7 @@ mod tests {
                 provider: "mock".into(),
                 cwd: dir.path().to_path_buf(),
                 version: "0.12.0".into(),
+        startup_notices: Vec::new(),
             },
         );
         app.dispatch_line("/sync").await.unwrap();
@@ -3971,6 +4010,7 @@ mod tests {
                 provider: "mock".into(),
                 cwd: PathBuf::from("/tmp"),
                 version: "0.4.0".into(),
+        startup_notices: Vec::new(),
             },
         );
         app.dispatch_line("hi").await.unwrap();
@@ -3999,6 +4039,7 @@ mod tests {
                 provider: "mock".into(),
                 cwd: PathBuf::from("."),
                 version: "0.4.0".into(),
+                startup_notices: Vec::new(),
             },
         );
         app.dispatch_line("/status").await.unwrap();
@@ -4017,6 +4058,7 @@ mod tests {
                 provider: "mock".into(),
                 cwd: PathBuf::from("."),
                 version: "0.4.0".into(),
+                startup_notices: Vec::new(),
             },
         );
         app.dispatch_line("hi").await.unwrap();
@@ -4047,6 +4089,7 @@ mod tests {
                 provider: "p".into(),
                 cwd: PathBuf::from("."),
                 version: "0.4.0".into(),
+                startup_notices: Vec::new(),
             },
         );
         app.dispatch_line("/quit").await.unwrap();
@@ -4063,6 +4106,7 @@ mod tests {
                 provider: "native".into(),
                 cwd: PathBuf::from("."),
                 version: "0.6.1".into(),
+        startup_notices: Vec::new(),
             },
         );
         let _key_guard = ScopedEnvGuard::new(&[
@@ -4103,6 +4147,7 @@ mod tests {
                 provider: "native".into(),
                 cwd: PathBuf::from("."),
                 version: "0.6.1".into(),
+        startup_notices: Vec::new(),
             },
         );
         app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
@@ -4137,6 +4182,7 @@ mod tests {
                 provider: "native".into(),
                 cwd: PathBuf::from("."),
                 version: "0.6.1".into(),
+        startup_notices: Vec::new(),
             },
         );
         app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
@@ -4167,6 +4213,7 @@ mod tests {
                 provider: "native".into(),
                 cwd: PathBuf::from("."),
                 version: "0.6.1".into(),
+        startup_notices: Vec::new(),
             },
         );
         app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
@@ -4204,6 +4251,7 @@ mod tests {
                 provider: "native".into(),
                 cwd: PathBuf::from("."),
                 version: "0.6.1".into(),
+        startup_notices: Vec::new(),
             },
         );
         app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
@@ -4232,6 +4280,7 @@ mod tests {
                 provider: "native".into(),
                 cwd: PathBuf::from("."),
                 version: "0.6.1".into(),
+        startup_notices: Vec::new(),
             },
         );
         app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
@@ -4277,6 +4326,7 @@ mod tests {
                 provider: "native".into(),
                 cwd: PathBuf::from("."),
                 version: "0.6.1".into(),
+        startup_notices: Vec::new(),
             },
         );
         app.connect_store = CredentialStore::new(cred_dir.path().join("c.toml"));
@@ -4305,6 +4355,7 @@ mod tests {
                 provider: "mock".into(),
                 cwd: PathBuf::from("."),
                 version: "0.7.0".into(),
+        startup_notices: Vec::new(),
             },
         );
         let enter = KeyEvent {
@@ -4340,6 +4391,7 @@ mod tests {
                 provider: "mock".into(),
                 cwd: PathBuf::from("."),
                 version: "0.7.0".into(),
+        startup_notices: Vec::new(),
             },
         );
         app.history.push("alpha");
@@ -4385,6 +4437,7 @@ mod tests {
                 provider: "mock".into(),
                 cwd: PathBuf::from("."),
                 version: "0.8.0".into(),
+                startup_notices: Vec::new(),
             },
         );
         app.handle_key(press(KeyCode::Char('/'), KeyModifiers::NONE))
@@ -4413,6 +4466,7 @@ mod tests {
                 provider: "mock".into(),
                 cwd: PathBuf::from("."),
                 version: "0.8.0".into(),
+                startup_notices: Vec::new(),
             },
         );
         for c in "/status".chars() {
@@ -4449,6 +4503,7 @@ mod tests {
                 provider: "mock".into(),
                 cwd: PathBuf::from("."),
                 version: "0.8.0".into(),
+                startup_notices: Vec::new(),
             },
         );
         app.handle_key(press(KeyCode::Char('k'), KeyModifiers::CONTROL))
@@ -4467,6 +4522,7 @@ mod tests {
                 provider: "mock".into(),
                 cwd: PathBuf::from("."),
                 version: "test".into(),
+                startup_notices: Vec::new(),
             },
         );
         assert!(app.sidebar_visible);
@@ -4501,6 +4557,7 @@ mod tests {
                 provider: "mock".into(),
                 cwd: PathBuf::from("."),
                 version: "0.8.0".into(),
+                startup_notices: Vec::new(),
             },
         );
         for c in "/connect list".chars() {
@@ -4531,6 +4588,7 @@ mod tests {
                 provider: "mock".into(),
                 cwd: PathBuf::from("."),
                 version: "0.8.0".into(),
+        startup_notices: Vec::new(),
             },
         );
         for c in "/sta".chars() {
@@ -4560,6 +4618,7 @@ mod tests {
                 provider: "mock".into(),
                 cwd: PathBuf::from("."),
                 version: "0.8.0".into(),
+        startup_notices: Vec::new(),
             },
         );
         for c in "/connect".chars() {
@@ -4574,6 +4633,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn startup_notices_seed_notice_panel() {
+        let (_dir, session) = test_session().await;
+        let app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "m".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "0.8.0".into(),
+                startup_notices: vec!["mcp: failed".into()],
+            },
+        );
+
+        assert_eq!(app.notices, vec!["mcp: failed"]);
+    }
+
+    #[tokio::test]
     async fn enter_on_highlighted_suggestion_runs_command() {
         use crossterm::event::{KeyCode, KeyModifiers};
         let (_dir, session) = test_session().await;
@@ -4584,6 +4660,7 @@ mod tests {
                 provider: "mock".into(),
                 cwd: PathBuf::from("."),
                 version: "0.8.0".into(),
+        startup_notices: Vec::new(),
             },
         );
         // Partial type; suggestions include /connect and /status.
@@ -4637,6 +4714,7 @@ mod tests {
                 provider: "mock".into(),
                 cwd: PathBuf::from("."),
                 version: "0.8.0".into(),
+        startup_notices: Vec::new(),
             },
         );
         app.handle_key(press(KeyCode::Char('/'), KeyModifiers::NONE))
@@ -4671,6 +4749,7 @@ mod tests {
                 provider: "mock".into(),
                 cwd: PathBuf::from("."),
                 version: "0.8.0".into(),
+        startup_notices: Vec::new(),
             },
         );
         for c in "/sta".chars() {
@@ -4726,6 +4805,7 @@ mod tests {
                 provider: "native".into(),
                 cwd: PathBuf::from("."),
                 version: "0.11.0".into(),
+        startup_notices: Vec::new(),
             },
         );
         // Clear env vars so dev machine credentials don't leak into tests.
@@ -4784,6 +4864,7 @@ mod tests {
                 provider: "mock".into(),
                 cwd: PathBuf::from("."),
                 version: "0.11.0".into(),
+        startup_notices: Vec::new(),
             },
         );
         assert!(app.is_provider_connected());
@@ -4803,6 +4884,7 @@ mod tests {
                 provider: "native".into(),
                 cwd: PathBuf::from("."),
                 version: "0.11.0".into(),
+        startup_notices: Vec::new(),
             },
         );
         app.connect_profile = None;
@@ -4842,6 +4924,7 @@ mod tests {
                 provider: "native".into(),
                 cwd: PathBuf::from("."),
                 version: "0.10.0".into(),
+        startup_notices: Vec::new(),
             },
         );
         let chrome = app.refresh_status_model();
@@ -4874,6 +4957,7 @@ mod tests {
                 provider: "mock".into(),
                 cwd: PathBuf::from("."),
                 version: "0.10.0".into(),
+        startup_notices: Vec::new(),
             },
         );
         // Width 60: no sidebar per layout MIN_WIDTH 80
@@ -4905,6 +4989,7 @@ mod tests {
                 provider: "mock".into(),
                 cwd: PathBuf::from("."),
                 version: "0.10.0".into(),
+        startup_notices: Vec::new(),
             },
         );
         for c in "/status".chars() {
@@ -4951,6 +5036,7 @@ mod tests {
                 provider: "mock".into(),
                 cwd: PathBuf::from("."),
                 version: "0.10.0".into(),
+        startup_notices: Vec::new(),
             },
         );
         app.report_error("upstream returned 429 rate limit exceeded");
@@ -4988,6 +5074,7 @@ mod tests {
                 provider: "mock".into(),
                 cwd: PathBuf::from("."),
                 version: "0.10.0".into(),
+        startup_notices: Vec::new(),
             },
         );
         app.report_error("429 rate limit");
@@ -5018,6 +5105,7 @@ mod tests {
                 provider: "mock".into(),
                 cwd: PathBuf::from("."),
                 version: "0.10.0".into(),
+        startup_notices: Vec::new(),
             },
         );
         app.push_activity(
@@ -5052,6 +5140,7 @@ mod tests {
                 provider: "mock".into(),
                 cwd: PathBuf::from("."),
                 version: "0.10.0".into(),
+        startup_notices: Vec::new(),
             },
         );
         app.busy = true;
@@ -5079,6 +5168,7 @@ mod tests {
                 provider: "mock".into(),
                 cwd: PathBuf::from("."),
                 version: "0.10.0".into(),
+        startup_notices: Vec::new(),
             },
         );
         app.dispatch_line("hello").await.unwrap();
@@ -5106,6 +5196,7 @@ mod tests {
                 provider: "mock".into(),
                 cwd: PathBuf::from("."),
                 version: "0.10.0".into(),
+        startup_notices: Vec::new(),
             },
         );
         for c in "/status".chars() {
