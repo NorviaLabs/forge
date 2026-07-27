@@ -980,7 +980,7 @@ impl Widget for OverlayWidget<'_> {
             Overlay::Help => {
                 let r = centered_rect(64, 58, area);
                 Paragraph::new(
-                    "Forge is a terminal coding agent. Type a request and press Enter to run it in the current folder. Use / for commands, Ctrl+B to toggle the sidebar, and F1 to reopen this help. Forge asks before sensitive actions and keeps your session history.\n\nKeys: Enter send · ↑↓ navigate lists · Tab complete/select · Esc close/cancel\n\nPress Enter to get started · Esc to close",
+                    "Forge is a terminal coding agent.\nType a request and press Enter.\nForge runs it in the current folder.\nUse / for commands.\nPress Ctrl+B to toggle the sidebar.\nPress F1 to reopen this help.\nForge asks before sensitive actions.\nForge keeps your session history.\n\nPress Enter to send.\nUse ↑↓ to move in lists.\nPress Tab to complete or select.\nPress Esc to close or cancel.\n\nPress Enter to get started.\nPress Esc to close.",
                 )
                 .wrap(ratatui::widgets::Wrap { trim: true })
                 .block(
