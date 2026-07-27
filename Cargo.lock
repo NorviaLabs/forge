@@ -894,7 +894,7 @@ checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
 
 [[package]]
 name = "forge-cli"
-version = "0.1.0-alpha.9"
+version = "0.1.0-alpha.10"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -916,7 +916,7 @@ dependencies = [
 
 [[package]]
 name = "forge-config"
-version = "0.1.0-alpha.9"
+version = "0.1.0-alpha.10"
 dependencies = [
  "dirs 6.0.0",
  "forge-types",
@@ -929,7 +929,7 @@ dependencies = [
 
 [[package]]
 name = "forge-connect"
-version = "0.1.0-alpha.9"
+version = "0.1.0-alpha.10"
 dependencies = [
  "base64",
  "dirs 6.0.0",
@@ -943,7 +943,7 @@ dependencies = [
 
 [[package]]
 name = "forge-context"
-version = "0.1.0-alpha.9"
+version = "0.1.0-alpha.10"
 dependencies = [
  "chrono",
  "dirs 6.0.0",
@@ -959,7 +959,7 @@ dependencies = [
 
 [[package]]
 name = "forge-core"
-version = "0.1.0-alpha.9"
+version = "0.1.0-alpha.10"
 dependencies = [
  "async-trait",
  "forge-config",
@@ -980,7 +980,7 @@ dependencies = [
 
 [[package]]
 name = "forge-durable"
-version = "0.1.0-alpha.9"
+version = "0.1.0-alpha.10"
 dependencies = [
  "chrono",
  "forge-types",
@@ -996,7 +996,7 @@ dependencies = [
 
 [[package]]
 name = "forge-governance"
-version = "0.1.0-alpha.9"
+version = "0.1.0-alpha.10"
 dependencies = [
  "chrono",
  "forge-types",
@@ -1010,7 +1010,7 @@ dependencies = [
 
 [[package]]
 name = "forge-mcp"
-version = "0.1.0-alpha.9"
+version = "0.1.0-alpha.10"
 dependencies = [
  "async-trait",
  "forge-config",
@@ -1026,7 +1026,7 @@ dependencies = [
 
 [[package]]
 name = "forge-model"
-version = "0.1.0-alpha.9"
+version = "0.1.0-alpha.10"
 dependencies = [
  "async-trait",
  "forge-config",
@@ -1044,7 +1044,7 @@ dependencies = [
 
 [[package]]
 name = "forge-obs"
-version = "0.1.0-alpha.9"
+version = "0.1.0-alpha.10"
 dependencies = [
  "chrono",
  "forge-types",
@@ -1057,7 +1057,7 @@ dependencies = [
 
 [[package]]
 name = "forge-syntax"
-version = "0.1.0-alpha.9"
+version = "0.1.0-alpha.10"
 dependencies = [
  "serde",
  "serde_json",
@@ -1077,7 +1077,7 @@ dependencies = [
 
 [[package]]
 name = "forge-tools"
-version = "0.1.0-alpha.9"
+version = "0.1.0-alpha.10"
 dependencies = [
  "async-trait",
  "fff-search",
@@ -1096,7 +1096,7 @@ dependencies = [
 
 [[package]]
 name = "forge-tui"
-version = "0.1.0-alpha.9"
+version = "0.1.0-alpha.10"
 dependencies = [
  "chrono",
  "crossterm",
@@ -1120,7 +1120,7 @@ dependencies = [
 
 [[package]]
 name = "forge-types"
-version = "0.1.0-alpha.9"
+version = "0.1.0-alpha.10"
 dependencies = [
  "chrono",
  "schemars",
