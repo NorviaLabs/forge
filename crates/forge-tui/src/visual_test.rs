@@ -229,13 +229,7 @@ mod tests {
         term.draw(|f| app.draw(f)).unwrap();
         let text = buffer_text(&term);
 
-        for expected in [
-            "Workspace",
-            "skills",
-            "Describe a task…",
-            "Context",
-            "Workspace /tmp",
-        ] {
+        for expected in ["skills", "Describe a task…", "Context", "Loaded AGENTS.md"] {
             assert!(text.contains(expected), "missing {expected:?}:\n{text}");
         }
         assert!(
