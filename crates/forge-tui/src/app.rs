@@ -2849,34 +2849,12 @@ Reply with ONLY the commit message line.\n\n\
                                 "session restored · ready for the next action",
                             );
                             self.push_toast(format!("resumed {session_id}"));
-                            self.status_message = "session resumed".into();
                             self.push_activity(
                                 ActivityKind::System,
                                 FeedbackSeverity::Ok,
                                 format!("session resumed · {session_id}"),
                             );
-                            let last_assistant = self
-                                .session
-                                .messages
-                                .iter()
-                                .rev()
-                                .find(|message| message.role == forge_types::MessageRole::Assistant)
-                                .map(|message| message.content.clone())
-                                .filter(|text| !text.trim().is_empty());
-                            self.ui_banners = vec![ChatItem::SessionRecovery {
-                                session_id: session_id.to_string(),
-                                journal_path: self
-                                    .session
-                                    .journal_dir()
-                                    .join(format!("{session_id}.db"))
-                                    .display()
-                                    .to_string(),
-                                last_seq: report.last_seq,
-                                model_steps: report.model_steps,
-                                tool_results: report.tool_results,
-                                incomplete_intents: report.incomplete_intents,
-                                last_assistant,
-                            }];
+                            self.ui_banners.clear();
                             self.message_queue.clear();
                             self.queue_selected = None;
                             self.stream_preview.clear();
@@ -3794,7 +3772,7 @@ mod tests {
             .activity
             .all()
             .iter()
-            .any(|item| item.summary.contains("session resumed")));
+            .any(|item| item.summary.contains("session restored")));
     }
 
     #[tokio::test]
