@@ -169,7 +169,6 @@ You can copy visible output with your terminal's normal mouse selection.
 **Reasoning effort at startup**
 
 ```bash
-FORGE_REASONING_EFFORT=high forge
 ```
 
 **Resume after a crash or kill**
@@ -197,7 +196,6 @@ Optional — defaults + env are enough. See [Quick start](#quick-start).
 |-----|--|
 | `FORGE_MODEL_ID` | Provider/model id, e.g. `openai/gpt-4.1-mini` |
 | `FORGE_MODEL_PROVIDER` | `native` (production) or `mock` (offline CI). Legacy aliases migrate to `native` |
-| `FORGE_REASONING_EFFORT` | Startup reasoning effort (`auto\|minimal\|low\|medium\|high\|xhigh\|max`) |
 | `FORGE_WORKSPACE` | Project root (default: cwd) |
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `XAI_API_KEY` / … | Provider credentials for native transports |
 

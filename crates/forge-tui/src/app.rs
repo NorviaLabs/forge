@@ -236,7 +236,7 @@ impl TuiApp {
             turn_started: None,
             thinking_started: None,
             thought_secs: None,
-            reasoning_effort: ReasoningEffort::from_env(),
+            reasoning_effort: ReasoningEffort::Auto,
             tool_expanded: false,
             sidebar_visible: true,
             cancel_requested: false,
@@ -514,20 +514,14 @@ impl TuiApp {
         let mut connected = svc.connected_profiles().unwrap_or_default();
         connected.sort_by(|a, b| a.id.cmp(&b.id));
         let saved_selection = self.connect_store.last_selection().ok().flatten();
-        if ReasoningEffort::env_override().is_none() {
-            if let Some(effort) = self
-                .connect_store
-                .last_effort()
-                .ok()
-                .flatten()
-                .and_then(|effort| effort.parse().ok())
-            {
-                self.reasoning_effort = effort;
-                self.session.apply_provider_env(&[(
-                    "FORGE_REASONING_EFFORT".into(),
-                    effort.transport_value().into(),
-                )]);
-            }
+        if let Some(effort) = self
+            .connect_store
+            .last_effort()
+            .ok()
+            .flatten()
+            .and_then(|effort| effort.parse().ok())
+        {
+            self.reasoning_effort = effort;
         }
         // Restore the last usable provider; otherwise fall back to a deterministic
         // connected profile instead of silently preferring one backend family.
@@ -583,21 +577,18 @@ impl TuiApp {
 
     fn open_effort_picker_for_model(&mut self, model: &str) {
         let options = ReasoningEffort::options_for_model(model);
+        let default = ReasoningEffort::default_for_model(model);
         if options.len() <= 1 {
-            // Nothing useful to choose; keep current if still valid, else Auto.
+            // Nothing useful to choose; keep current if still valid, else provider default.
             if !options.contains(&self.reasoning_effort) {
-                self.reasoning_effort = ReasoningEffort::Auto;
-                self.session.apply_provider_env(&[(
-                    "FORGE_REASONING_EFFORT".into(),
-                    self.reasoning_effort.transport_value().into(),
-                )]);
+                self.reasoning_effort = default;
                 self.persist_selection();
             }
             self.overlay = None;
             return;
         }
         if !options.contains(&self.reasoning_effort) {
-            self.reasoning_effort = options[0];
+            self.reasoning_effort = default;
         }
         self.overlay = Some(Overlay::effort_open(model, self.reasoning_effort));
         self.set_feedback(FeedbackSeverity::Info, "choose reasoning effort");
@@ -1867,6 +1858,7 @@ Reply with ONLY the commit message line.\n\n\
             ],
             tools: vec![],
             model: model_id,
+            reasoning_effort: Some(self.reasoning_effort.to_string()).filter(|value| value != "auto"),
             prompt_cache: true,
         };
         match self.session.model_client().complete(req).await {
@@ -2328,10 +2320,6 @@ Reply with ONLY the commit message line.\n\n\
                 OverlayAction::SelectEffort(level) => {
                     self.overlay = None;
                     self.reasoning_effort = level;
-                    self.session.apply_provider_env(&[(
-                        "FORGE_REASONING_EFFORT".into(),
-                        level.transport_value().into(),
-                    )]);
                     self.persist_selection();
                     self.set_feedback(FeedbackSeverity::Ok, format!("reasoning effort: {level}"));
                 }
@@ -3789,22 +3777,20 @@ mod tests {
             Some("high")
         );
 
-        if ReasoningEffort::env_override().is_none() {
-            let (_dir, session) = test_session().await;
-            let mut restarted = TuiApp::new(
-                session,
-                TuiRuntimeConfig {
-                    model_label: "mock".into(),
-                    provider: "mock".into(),
-                    cwd: PathBuf::from("."),
-                    version: "0.12.0".into(),
-                },
-            );
-            restarted.connect_store = CredentialStore::new(credential_path);
-            restarted = restarted.restore_saved_auth();
+        let (_dir, session) = test_session().await;
+        let mut restarted = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "mock".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "0.12.0".into(),
+            },
+        );
+        restarted.connect_store = CredentialStore::new(credential_path);
+        restarted = restarted.restore_saved_auth();
 
-            assert_eq!(restarted.reasoning_effort, ReasoningEffort::High);
-        }
+        assert_eq!(restarted.reasoning_effort, ReasoningEffort::High);
     }
 
     #[tokio::test]
