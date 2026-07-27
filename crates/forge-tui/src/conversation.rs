@@ -287,14 +287,6 @@ impl ConversationModel {
                 }
             }
         }
-        for e in events {
-            if e.kind == "hitl_wait" {
-                items.push(ChatItem::Banner {
-                    text: format!("Approval needed · {}", e.detail),
-                    kind: BannerKind::Warn,
-                });
-            }
-        }
         if status == SessionStatus::AwaitingHitl {
             items.push(ChatItem::Banner {
                 text: "Awaiting approval · a approve · s allow session · d deny · Esc dismiss"
