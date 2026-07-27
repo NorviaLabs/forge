@@ -188,6 +188,15 @@ pub fn forge_messages_to_wire(messages: &[Message]) -> Vec<Value> {
             if let Some(ref name) = m.name {
                 obj["name"] = json!(name);
             }
+            // DeepSeek (and OpenCode Go's DeepSeek route) require `reasoning_content`
+            // on assistant turns that include tool_calls. OpenCode CLI always keeps
+            // the interleaved reasoning field; omitting it yields HTTP 400
+            // "Upstream request failed".
+            if let Some(ref thinking) = m.thinking {
+                obj["reasoning_content"] = json!(thinking);
+            } else if !m.tool_calls.is_empty() {
+                obj["reasoning_content"] = json!("");
+            }
             if !m.tool_calls.is_empty() {
                 obj["tool_calls"] = json!(m
                     .tool_calls
@@ -337,5 +346,52 @@ mod tests {
             idempotent: true,
         }]);
         assert_eq!(tools[0]["function"]["name"], "read_file");
+    }
+
+    #[test]
+    fn wire_includes_reasoning_content_for_tool_calls() {
+        let with_thinking = forge_messages_to_wire(&[Message {
+            role: MessageRole::Assistant,
+            content: "".into(),
+            tool_call_id: None,
+            name: None,
+            thinking: Some("need the file".into()),
+            thinking_duration_secs: None,
+            tool_calls: vec![ToolCall {
+                id: "call_0".into(),
+                name: "read_file".into(),
+                arguments: json!({"path": "main.rs"}),
+            }],
+        }]);
+        assert_eq!(with_thinking[0]["reasoning_content"], "need the file");
+        assert_eq!(with_thinking[0]["tool_calls"][0]["id"], "call_0");
+
+        let without_thinking = forge_messages_to_wire(&[Message {
+            role: MessageRole::Assistant,
+            content: "".into(),
+            tool_call_id: None,
+            name: None,
+            thinking: None,
+            thinking_duration_secs: None,
+            tool_calls: vec![ToolCall {
+                id: "call_1".into(),
+                name: "bash".into(),
+                arguments: json!({"command": "ls"}),
+            }],
+        }]);
+        // Empty string is enough for DeepSeek; the field must be present.
+        assert_eq!(without_thinking[0]["reasoning_content"], "");
+        assert!(without_thinking[0].get("tool_calls").is_some());
+
+        let plain = forge_messages_to_wire(&[Message {
+            role: MessageRole::Assistant,
+            content: "hi".into(),
+            tool_call_id: None,
+            name: None,
+            thinking: None,
+            thinking_duration_secs: None,
+            tool_calls: vec![],
+        }]);
+        assert!(plain[0].get("reasoning_content").is_none());
     }
 }
