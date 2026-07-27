@@ -16,7 +16,7 @@ mod visual_test;
 mod widgets;
 
 pub use activity::{ActivityFeed, ActivityItem, ActivityKind};
-pub use app::{run_tui, TuiApp, TuiError, TuiRuntimeConfig};
+pub use app::{run_tui, ExitSummary, TuiApp, TuiError, TuiRuntimeConfig};
 pub use commands::{parse_slash, CommandError, SlashCommand};
 pub use conversation::{
     BannerKind, ChatItem, ConversationModel, ConversationViewOpts, StreamWaitPhase, ToolCardState,
