@@ -18,7 +18,7 @@ use crossterm::terminal::{
 use forge_connect::{
     builtin_registry, handle_connect_action, models_for_picker, needs_tui_api_key_prompt,
     needs_tui_oauth, normalize_model_id, ConnectAction, ConnectError, ConnectRegistry,
-    ConnectService, CredentialStore, ModelCatalogCache, OauthPending,
+    ConnectService, CredentialStore, ModelCatalogCache, OauthPending, OPENAI_CODEX_PROFILE_ID,
 };
 use forge_core::{AgentSession, ApplyOutcome, LoopError};
 use forge_tools::{GitTool, Tool, ToolContext};
@@ -167,46 +167,42 @@ fn footer_usage_summary_with_cost(
     )
 }
 
+#[derive(Debug, Clone, Default)]
+struct FooterLimits {
+    usage: String,
+    weekly_limit: String,
+    credits: String,
+}
+
+fn footer_limits_from_report(lines: &[String]) -> FooterLimits {
+    FooterLimits {
+        usage: lines
+            .iter()
+            .find(|line| line.starts_with("Session limit:"))
+            .cloned()
+            .unwrap_or_default(),
+        weekly_limit: lines
+            .iter()
+            .find(|line| line.starts_with("Weekly limit:"))
+            .cloned()
+            .unwrap_or_default(),
+        credits: lines
+            .iter()
+            .find(|line| line.starts_with("Credits:") || line.starts_with("Credit balance:"))
+            .cloned()
+            .unwrap_or_default(),
+    }
+}
+
 fn footer_usage_summary(
     report: &forge_core::TokenUsageReport,
     cost: Option<forge_connect::CatalogCost>,
-    provider: &str,
-    model: &str,
+    limits: &FooterLimits,
 ) -> crate::widgets::FooterModel {
-    let lines = forge_connect::provider_cost_report(
-        provider,
-        model,
-        report.api.prompt_tokens,
-        report.api.completion_tokens,
-        &CredentialStore::user_default(),
-    )
-    .unwrap_or_default();
-    if lines.is_empty() {
-        let usage_summary = footer_usage_summary_with_cost(report, cost);
-        return crate::widgets::FooterModel {
-            usage_summary,
-            ..Default::default()
-        };
-    }
-    let usage = lines
-        .iter()
-        .find(|line| line.starts_with("Session limit:"))
-        .cloned()
-        .unwrap_or_default();
-    let weekly_limit = lines
-        .iter()
-        .find(|line| line.starts_with("Weekly limit:"))
-        .cloned()
-        .unwrap_or_default();
-    let credits = lines
-        .iter()
-        .find(|line| line.starts_with("Credits:") || line.starts_with("Credit balance:"))
-        .cloned()
-        .unwrap_or_default();
     crate::widgets::FooterModel {
-        usage,
-        weekly_limit,
-        credits,
+        usage: limits.usage.clone(),
+        weekly_limit: limits.weekly_limit.clone(),
+        credits: limits.credits.clone(),
         usage_summary: footer_usage_summary_with_cost(report, cost),
         ..Default::default()
     }
@@ -233,8 +229,6 @@ struct ConversationRenderKey {
     busy: bool,
     busy_phase: String,
     tool_expanded: bool,
-    stream_preview: usize,
-    stream_thinking: usize,
     splash_dismissed: bool,
     slash_mode: bool,
     status: forge_types::SessionStatus,
@@ -243,6 +237,12 @@ struct ConversationRenderKey {
 struct ConversationRenderCache {
     key: ConversationRenderKey,
     lines: Vec<Line<'static>>,
+}
+
+struct FooterLimitsCache {
+    provider: String,
+    fetched_at: Instant,
+    limits: FooterLimits,
 }
 
 pub struct TuiApp {
@@ -325,6 +325,8 @@ pub struct TuiApp {
     splash_dismissed: bool,
     conversation_cache: Option<ConversationRenderCache>,
     model_cost_cache: Option<(String, Option<forge_connect::CatalogCost>)>,
+    footer_limits_cache: Option<FooterLimitsCache>,
+    footer_limits_rx: Option<std::sync::mpsc::Receiver<(String, FooterLimits)>>,
 }
 
 impl TuiApp {
@@ -381,6 +383,8 @@ impl TuiApp {
             splash_dismissed: false,
             conversation_cache: None,
             model_cost_cache: None,
+            footer_limits_cache: None,
+            footer_limits_rx: None,
         }
         .restore_saved_auth()
         .apply_connection_chrome()
@@ -1970,6 +1974,60 @@ Reply with ONLY the commit message line.\n\n\
         })
     }
 
+    fn footer_limits(&mut self, provider: &str) -> FooterLimits {
+        if let Some(rx) = &self.footer_limits_rx {
+            match rx.try_recv() {
+                Ok((provider, limits)) => {
+                    self.footer_limits_cache = Some(FooterLimitsCache {
+                        provider,
+                        fetched_at: Instant::now(),
+                        limits,
+                    });
+                    self.footer_limits_rx = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.footer_limits_rx = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+
+        if provider != OPENAI_CODEX_PROFILE_ID {
+            return FooterLimits::default();
+        }
+
+        let (cached_limits, needs_refresh) = match self
+            .footer_limits_cache
+            .as_ref()
+            .filter(|cache| cache.provider == provider)
+        {
+            Some(cache) => (
+                Some(cache.limits.clone()),
+                cache.fetched_at.elapsed() >= Duration::from_secs(60),
+            ),
+            None => (None, true),
+        };
+        if needs_refresh && self.footer_limits_rx.is_none() {
+            let provider = provider.to_string();
+            let request_provider = provider.clone();
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let report = forge_connect::provider_cost_report(
+                    &request_provider,
+                    "",
+                    0,
+                    0,
+                    &CredentialStore::user_default(),
+                )
+                .unwrap_or_default();
+                let _ = tx.send((request_provider, footer_limits_from_report(&report)));
+            });
+            self.footer_limits_rx = Some(rx);
+        }
+
+        cached_limits.unwrap_or_default()
+    }
+
     pub fn draw(&mut self, frame: &mut ratatui::Frame) {
         let area = frame.area();
         if is_too_small(area) {
@@ -2043,8 +2101,6 @@ Reply with ONLY the commit message line.\n\n\
             busy: self.busy,
             busy_phase: self.busy_phase.label(),
             tool_expanded: self.tool_expanded,
-            stream_preview: self.stream_preview.len(),
-            stream_thinking: self.stream_thinking.len(),
             splash_dismissed: self.splash_dismissed,
             slash_mode,
             status: self.session.status,
@@ -2054,7 +2110,12 @@ Reply with ONLY the commit message line.\n\n\
                 visible_messages,
                 visible_events,
                 self.session.status,
-                opts,
+                ConversationViewOpts {
+                    busy: false,
+                    stream_wait: None,
+                    stream_thought_secs: None,
+                    ..opts.clone()
+                },
             )
             .with_extra_banners(self.ui_banners.iter().cloned());
             if !self.splash_dismissed {
@@ -2088,18 +2149,25 @@ Reply with ONLY the commit message line.\n\n\
                     .unwrap_or_else(|| payload.args_redacted.to_string());
                 conv = conv.with_blocked_tool(payload.tool.clone(), args);
             }
-            if self.busy && self.pending_prompt.is_none() {
-                conv = conv.with_streaming_preview(
-                    self.stream_thinking.clone(),
-                    self.stream_preview.clone(),
-                );
-            }
             let width = regions.chat.width.saturating_sub(2) as usize;
             self.conversation_cache = Some(ConversationRenderCache {
                 key,
                 lines: conv.lines_for_width(width),
             });
         }
+        let width = regions.chat.width.saturating_sub(2) as usize;
+        let live_lines = if self.busy && self.pending_prompt.is_none() {
+            ConversationModel::from_messages(
+                &[],
+                &[],
+                self.session.status,
+                ConversationViewOpts { busy: true, ..opts },
+            )
+            .with_streaming_preview(self.stream_thinking.clone(), self.stream_preview.clone())
+            .lines_for_width(width)
+        } else {
+            Vec::new()
+        };
         let cached = self
             .conversation_cache
             .as_ref()
@@ -2107,6 +2175,7 @@ Reply with ONLY the commit message line.\n\n\
         frame.render_widget(
             crate::conversation::ConversationLinesWidget {
                 lines: &cached.lines,
+                tail_lines: &live_lines,
                 scroll: self.chat_scroll,
                 follow: self.chat_follow,
             },
@@ -2291,6 +2360,7 @@ Reply with ONLY the commit message line.\n\n\
             status.connect_profile.as_deref(),
         );
         let model_cost = self.active_model_cost();
+        let footer_limits = self.footer_limits(footer_provider.as_str());
         let footer = FooterModel {
             cwd: self.runtime.cwd.display().to_string(),
             session_short: status.session_short,
@@ -2305,12 +2375,7 @@ Reply with ONLY the commit message line.\n\n\
             connected: status.provider_connected,
             connect_profile: status.connect_profile,
             hints,
-            ..footer_usage_summary(
-                &context,
-                model_cost,
-                footer_provider.as_str(),
-                self.runtime.model_label.as_str(),
-            )
+            ..footer_usage_summary(&context, model_cost, &footer_limits)
         };
         frame.render_widget(FooterBar { model: &footer }, regions.footer);
 
@@ -3551,7 +3616,7 @@ mod tests {
     use forge_core::LoopConfig;
     use forge_model::MockModelClient;
     use forge_tools::ToolRegistry;
-    use forge_types::ModelResponse;
+    use forge_types::{Message, MessageRole, ModelResponse};
     use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
     use tempfile::TempDir;
 
@@ -3614,6 +3679,79 @@ mod tests {
             app.conversation_cache.as_ref().unwrap().lines.capacity(),
             cached_capacity
         );
+    }
+
+    #[tokio::test]
+    async fn streaming_updates_reuse_cached_transcript_lines() {
+        use ratatui::backend::TestBackend;
+
+        let (dir, mut session) = test_session().await;
+        session.messages.push(Message {
+            role: MessageRole::Assistant,
+            content: "historical answer".into(),
+            tool_call_id: None,
+            name: None,
+            thinking: Some("historical completed thinking".into()),
+            thinking_duration_secs: Some(1.0),
+            tool_calls: vec![],
+        });
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "mock".into(),
+                provider: "mock".into(),
+                cwd: dir.path().to_path_buf(),
+                version: "test".into(),
+                startup_notices: Vec::new(),
+            },
+        );
+        app.splash_dismissed = true;
+        app.busy = true;
+        app.busy_phase = BusyPhase::Model;
+        app.stream_preview = "first chunk".into();
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        app.conversation_cache
+            .as_mut()
+            .unwrap()
+            .lines
+            .reserve(1_000);
+        let cached_capacity = app.conversation_cache.as_ref().unwrap().lines.capacity();
+
+        app.stream_preview.push_str(" and updated tail");
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+
+        assert_eq!(
+            app.conversation_cache.as_ref().unwrap().lines.capacity(),
+            cached_capacity,
+            "stream deltas must not rebuild historical transcript lines"
+        );
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("updated tail"), "{rendered}");
+        assert!(
+            !rendered.contains("historical completed thinking"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn footer_limits_parser_keeps_only_inline_limit_fields() {
+        let limits = footer_limits_from_report(&[
+            "Provider: OpenAI Codex".into(),
+            "Session limit: 75% remaining".into(),
+            "Weekly limit: 50% remaining".into(),
+            "Credits: unlimited".into(),
+        ]);
+
+        assert_eq!(limits.usage, "Session limit: 75% remaining");
+        assert_eq!(limits.weekly_limit, "Weekly limit: 50% remaining");
+        assert_eq!(limits.credits, "Credits: unlimited");
     }
 
     #[test]
