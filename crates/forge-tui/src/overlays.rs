@@ -1006,7 +1006,11 @@ impl Widget for OverlayWidget<'_> {
                     .map(|(index, effort)| {
                         let marker = if index == *selected { "▶ " } else { "  " };
                         let current = if effort == current { " current" } else { "" };
-                        let default_label = if effort == default { " (provider default)" } else { "" };
+                        let default_label = if effort == default {
+                            " (provider default)"
+                        } else {
+                            ""
+                        };
                         let style = if index == *selected {
                             theme::focused_selection_style()
                         } else {
