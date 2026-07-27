@@ -1858,7 +1858,8 @@ Reply with ONLY the commit message line.\n\n\
             ],
             tools: vec![],
             model: model_id,
-            reasoning_effort: Some(self.reasoning_effort.to_string()).filter(|value| value != "auto"),
+            reasoning_effort: Some(self.reasoning_effort.to_string())
+                .filter(|value| value != "auto"),
             prompt_cache: true,
         };
         match self.session.model_client().complete(req).await {
