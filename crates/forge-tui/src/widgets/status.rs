@@ -147,8 +147,6 @@ impl Widget for StatusBar<'_> {
             theme::info()
         };
         let mut spans = vec![
-            Span::styled("Forge", theme::brand()),
-            Span::styled(" · ", theme::dim()),
             Span::styled(model_disp, theme::text()),
             Span::styled(" · ", theme::dim()),
             Span::styled(provider, theme::metadata_style()),

@@ -62,12 +62,7 @@ impl Widget for FooterBar<'_> {
                 area.width,
             );
         }
-        buf.set_line(
-            area.x,
-            metadata_y,
-            &Line::from(Span::styled("Forge", theme::dim())),
-            area.width,
-        );
+        let _ = (buf, metadata_y);
     }
 }
 
@@ -96,7 +91,7 @@ mod tests {
     }
 
     #[test]
-    fn renders_quiet_footer_identity() {
+    fn does_not_repeat_product_identity() {
         let model = FooterModel {
             status: "thinking".into(),
             status_busy: true,
@@ -109,7 +104,7 @@ mod tests {
         FooterBar { model: &model }.render(area, &mut buf);
 
         let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
-        assert!(rendered.starts_with("Forge"));
+        assert!(rendered.trim().is_empty());
     }
 
     #[test]
@@ -126,6 +121,6 @@ mod tests {
         FooterBar { model: &model }.render(area, &mut buf);
 
         let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
-        assert_eq!(rendered.trim(), "Forge");
+        assert!(rendered.trim().is_empty());
     }
 }

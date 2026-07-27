@@ -430,7 +430,7 @@ impl ConversationModel {
                     // Compact brand splash (not the model system prompt)
                     lines.push(Line::from(vec![
                         Span::styled("  ⬡  ", theme::brand()),
-                        Span::styled("FORGE", theme::brand().add_modifier(Modifier::BOLD)),
+                        Span::styled("Ready", theme::brand().add_modifier(Modifier::BOLD)),
                         Span::styled("  ·  coding agent", theme::dim()),
                     ]));
                     if gap {
@@ -440,7 +440,7 @@ impl ConversationModel {
                 ChatItem::Home { workspace, journal } => {
                     lines.push(Line::from(Span::styled("SYSTEM", theme::dim())));
                     lines.push(Line::from(vec![
-                        Span::styled("Forge ready ", theme::text()),
+                        Span::styled("Workspace ", theme::text()),
                         Span::styled("◆ ", theme::ok()),
                         Span::styled("workspace ", theme::dim()),
                         Span::styled(workspace.clone(), theme::muted()),
@@ -711,7 +711,6 @@ impl ConversationModel {
                 // Final answers are primary transcript content.
                 ChatItem::Assistant { text } => {
                     let parts = assistant_lines(text, width.saturating_sub(3));
-                    lines.push(Line::from(Span::styled("Forge", theme::brand())));
                     for (i, line) in parts.into_iter().enumerate() {
                         let gutter = if i == 0 { "▍ " } else { "  " };
                         let mut spans = vec![Span::styled(
@@ -764,10 +763,10 @@ impl ConversationModel {
                     }
                 }
                 ChatItem::StreamingAssistant { text } => {
-                    lines.push(Line::from(vec![
-                        Span::styled("Forge", theme::brand()),
-                        Span::styled(" · responding", theme::metadata_style()),
-                    ]));
+                    lines.push(Line::from(Span::styled(
+                        "Responding",
+                        theme::metadata_style(),
+                    )));
                     for (i, line) in assistant_lines(text, width.saturating_sub(3))
                         .into_iter()
                         .enumerate()
@@ -1656,7 +1655,7 @@ mod tests {
     }
 
     #[test]
-    fn long_assistant_responses_use_a_single_semantic_heading() {
+    fn long_assistant_responses_use_no_repeated_product_heading() {
         let msgs = vec![Message {
             role: MessageRole::Assistant,
             content: "line one\nline two\nline three\nline four".into(),
@@ -1682,13 +1681,7 @@ mod tests {
                     .collect::<String>()
             })
             .collect::<Vec<_>>();
-        assert_eq!(
-            rendered
-                .iter()
-                .filter(|line| line.as_str() == "Forge")
-                .count(),
-            1
-        );
+        assert!(!rendered.iter().any(|line| line.as_str() == "Forge"));
         assert_eq!(rendered.iter().filter(|line| line.contains('─')).count(), 0);
     }
 
@@ -1913,7 +1906,7 @@ mod tests {
             .flat_map(|line| line.spans.iter())
             .map(|span| span.content.as_ref())
             .collect::<String>();
-        assert!(text.contains("Forge · responding"));
+        assert!(text.contains("Responding"));
         assert!(text.contains("partial response▌"));
     }
 

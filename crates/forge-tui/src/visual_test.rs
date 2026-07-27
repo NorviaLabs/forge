@@ -212,7 +212,7 @@ mod tests {
         let mut term = Terminal::new(backend).unwrap();
         term.draw(|f| app.draw(f)).unwrap();
         let text = buffer_text(&term);
-        assert!(text.contains("Forge"), "missing session chrome:\n{text}");
+        assert!(text.contains("native"), "missing session chrome:\n{text}");
         assert!(text.contains("Now"), "missing sidebar:\n{text}");
         assert!(text.contains("Recent"), "missing recent activity:\n{text}");
         assert!(
@@ -230,9 +230,8 @@ mod tests {
         let text = buffer_text(&term);
 
         for expected in [
-            "Forge",
             "SYSTEM",
-            "Forge ready",
+            "Workspace",
             "Waiting for your first message.",
             "Describe a task…",
             "Context",
