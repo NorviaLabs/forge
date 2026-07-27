@@ -1971,6 +1971,7 @@ Reply with ONLY the commit message line.\n\n\
             opts,
         )
         .with_extra_banners(self.ui_banners.iter().cloned());
+        conv = conv.with_brand(self.runtime.version.clone());
         if !slash_mode {
             conv = conv.with_home(
                 self.runtime.cwd.display().to_string(),
