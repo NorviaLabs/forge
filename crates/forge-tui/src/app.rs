@@ -192,6 +192,7 @@ pub struct TuiApp {
     chat_scroll: u16,
     chat_follow: bool,
     context_reset_snapshot: Option<(f64, f64)>,
+    splash_dismissed: bool,
 }
 
 impl TuiApp {
@@ -245,6 +246,7 @@ impl TuiApp {
             chat_scroll: 0,
             chat_follow: true,
             context_reset_snapshot: None,
+            splash_dismissed: false,
         }
         .restore_saved_auth()
         .apply_connection_chrome()
@@ -1971,8 +1973,10 @@ Reply with ONLY the commit message line.\n\n\
             opts,
         )
         .with_extra_banners(self.ui_banners.iter().cloned());
-        conv = conv.with_brand(self.runtime.version.clone());
-        if !slash_mode {
+        if !self.splash_dismissed {
+            conv = conv.with_brand(self.runtime.version.clone());
+        }
+        if !slash_mode && !self.splash_dismissed {
             conv = conv.with_home(
                 self.runtime.cwd.display().to_string(),
                 self.session.loaded_skills_count(),
@@ -2200,6 +2204,7 @@ Reply with ONLY the commit message line.\n\n\
     }
 
     pub async fn handle_key(&mut self, key: event::KeyEvent) -> Result<(), TuiError> {
+        let input_was_empty = self.input.text.is_empty();
         // Allow arrow-key auto-repeat for overlays (and other selection UIs).
         if key.kind != KeyEventKind::Press {
             let allow_repeat = matches!(
@@ -2474,6 +2479,9 @@ Reply with ONLY the commit message line.\n\n\
             KeyCode::PageUp => self.scroll_conversation_up(5),
             KeyCode::PageDown => self.scroll_conversation_down(5),
             _ => {}
+        }
+        if input_was_empty && !self.input.text.is_empty() {
+            self.splash_dismissed = true;
         }
         Ok(())
     }
