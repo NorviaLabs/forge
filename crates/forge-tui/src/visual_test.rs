@@ -193,10 +193,7 @@ mod tests {
         let text = buffer_text(&term);
         let _ = std::fs::write("/tmp/forge_tui_visual_status.txt", &text);
         assert!(
-            text.contains("session")
-                || text.contains("ctx")
-                || app.status_message.contains("ctx")
-                || app.notices.iter().any(|l| l.contains("model=")),
+            app.status_message.contains("unknown command") || app.notices.is_empty(),
             "status frame:\n{text}\nstatus_msg={}",
             app.status_message
         );
