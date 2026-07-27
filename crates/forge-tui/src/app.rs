@@ -581,6 +581,28 @@ impl TuiApp {
         self
     }
 
+    fn open_effort_picker_for_model(&mut self, model: &str) {
+        let options = ReasoningEffort::options_for_model(model);
+        if options.len() <= 1 {
+            // Nothing useful to choose; keep current if still valid, else Auto.
+            if !options.contains(&self.reasoning_effort) {
+                self.reasoning_effort = ReasoningEffort::Auto;
+                self.session.apply_provider_env(&[(
+                    "FORGE_REASONING_EFFORT".into(),
+                    self.reasoning_effort.transport_value().into(),
+                )]);
+                self.persist_selection();
+            }
+            self.overlay = None;
+            return;
+        }
+        if !options.contains(&self.reasoning_effort) {
+            self.reasoning_effort = options[0];
+        }
+        self.overlay = Some(Overlay::effort_open(model, self.reasoning_effort));
+        self.set_feedback(FeedbackSeverity::Info, "choose reasoning effort");
+    }
+
     fn persist_selection(&self) {
         if let Some(profile_id) = self.connect_profile.as_deref() {
             let _ = self
@@ -2300,8 +2322,18 @@ Reply with ONLY the commit message line.\n\n\
                     self.input.cursor = self.input.text.len();
                 }
                 OverlayAction::SelectModel { provider, model } => {
-                    self.overlay = None;
                     self.apply_model_selection(&provider, &model);
+                    self.open_effort_picker_for_model(&model);
+                }
+                OverlayAction::SelectEffort(level) => {
+                    self.overlay = None;
+                    self.reasoning_effort = level;
+                    self.session.apply_provider_env(&[(
+                        "FORGE_REASONING_EFFORT".into(),
+                        level.transport_value().into(),
+                    )]);
+                    self.persist_selection();
+                    self.set_feedback(FeedbackSeverity::Ok, format!("reasoning effort: {level}"));
                 }
                 OverlayAction::ConnectSubmitKey {
                     profile_id,
@@ -2598,30 +2630,8 @@ Reply with ONLY the commit message line.\n\n\
             return;
         } else {
             self.apply_model_selection("native", &model_id);
+            self.open_effort_picker_for_model(&model_id);
         }
-    }
-
-    fn handle_effort_command(&mut self, level: Option<ReasoningEffort>) {
-        let Some(level) = level else {
-            self.set_feedback(
-                FeedbackSeverity::Info,
-                format!("reasoning effort: {}", self.reasoning_effort),
-            );
-            self.notices = vec![
-                format!("Current reasoning effort: {}", self.reasoning_effort),
-                format!("Usage: /effort {}", ReasoningEffort::USAGE),
-            ];
-            return;
-        };
-
-        self.reasoning_effort = level;
-        self.session.apply_provider_env(&[(
-            "FORGE_REASONING_EFFORT".into(),
-            level.transport_value().into(),
-        )]);
-        self.persist_selection();
-        self.set_feedback(FeedbackSeverity::Ok, format!("reasoning effort: {level}"));
-        self.status_message = format!("reasoning effort set to {level}");
     }
 
     pub async fn dispatch_line(&mut self, line: &str) -> Result<(), TuiError> {
@@ -2712,7 +2722,6 @@ Reply with ONLY the commit message line.\n\n\
                     self.handle_model_command(provider.as_deref(), model.as_deref(), refresh)
                         .await
                 }
-                Ok(SlashCommand::Effort { level }) => self.handle_effort_command(level),
                 Ok(SlashCommand::ResumeList) => {
                     match recent_resume_sessions(
                         self.session.journal_dir(),
@@ -3772,7 +3781,8 @@ mod tests {
         );
         app.connect_store = CredentialStore::new(credential_path.clone());
 
-        app.dispatch_line("/effort high").await.unwrap();
+        app.reasoning_effort = ReasoningEffort::High;
+        app.persist_selection();
 
         assert_eq!(
             app.connect_store.last_effort().unwrap().as_deref(),

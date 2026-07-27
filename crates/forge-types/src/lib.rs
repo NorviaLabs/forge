@@ -43,7 +43,7 @@ pub struct Message {
     pub tool_call_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// Model "thinking" / reasoning text (UI + journal only; not re-sent as content).
+    /// Model "thinking" / reasoning text. Re-sent as `reasoning_content` on OpenAI-compatible wire.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<String>,
     /// How long the model spent thinking (seconds), for "Thought for Xs" UI.
