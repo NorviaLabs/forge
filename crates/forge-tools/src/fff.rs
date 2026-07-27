@@ -187,7 +187,9 @@ fn collect_files(root: &Path) -> Result<Vec<PathBuf>, ToolError> {
 }
 
 fn collect_files_inner(root: &Path, dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), ToolError> {
-    for entry in std::fs::read_dir(dir).map_err(|e| ToolError::Execution(format!("fff read: {e}")))? {
+    for entry in
+        std::fs::read_dir(dir).map_err(|e| ToolError::Execution(format!("fff read: {e}")))?
+    {
         let entry = entry.map_err(|e| ToolError::Execution(format!("fff read: {e}")))?;
         let path = entry.path();
         let name = entry.file_name();
