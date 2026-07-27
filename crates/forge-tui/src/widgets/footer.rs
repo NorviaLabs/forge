@@ -24,6 +24,7 @@ pub struct FooterModel {
     pub connect_profile: Option<String>,
     /// Extra shortcut strip (busy / idle).
     pub hints: String,
+    pub usage_summary: String,
 }
 
 impl Default for FooterModel {
@@ -42,6 +43,7 @@ impl Default for FooterModel {
             connected: false,
             connect_profile: None,
             hints: "Enter send · ⇧Enter newline · Ctrl+K cmds · Esc clear".into(),
+            usage_summary: String::new(),
         }
     }
 }
@@ -66,7 +68,32 @@ impl Widget for FooterBar<'_> {
             Span::styled(" · ", theme::muted()),
             Span::styled(self.model.hints.as_str(), theme::muted()),
         ]);
-        buf.set_line(area.x, area.y, &meta, area.width);
+        let usage = self.model.usage_summary.as_str();
+        if usage.is_empty() {
+            buf.set_line(area.x, area.y, &meta, area.width);
+            return;
+        }
+
+        let usage_width = usage.chars().count() as u16;
+        if usage_width.saturating_add(2) >= area.width {
+            buf.set_line(area.x, area.y, &meta, area.width);
+            return;
+        }
+
+        let left_width = meta.width() as u16;
+        let max_left = area.width.saturating_sub(usage_width + 2);
+        if left_width <= max_left {
+            buf.set_line(area.x, area.y, &meta, max_left);
+            buf.set_stringn(
+                area.x + area.width - usage_width,
+                area.y,
+                usage,
+                usage_width as usize,
+                theme::muted(),
+            );
+        } else {
+            buf.set_line(area.x, area.y, &meta, area.width);
+        }
     }
 }
 
@@ -123,6 +150,7 @@ mod tests {
             connected: true,
             connect_profile: Some("xai".into()),
             hints: "test".into(),
+            usage_summary: "in 7 · out 5 · tok 12".into(),
         };
         assert!(m.cwd.contains("tmp"));
     }
@@ -168,6 +196,7 @@ mod tests {
             cwd: "/tmp/workspace".into(),
             hints: "test".into(),
             status: "idle".into(),
+            usage_summary: "in 7 · out 5 · tok 12".into(),
             ..FooterModel::default()
         };
         let area = Rect::new(0, 0, 80, 2);
@@ -178,7 +207,26 @@ mod tests {
         let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
         assert!(rendered.contains("idle"));
         assert!(rendered.contains("workspace"));
+        assert!(rendered.contains("in 7 · out 5 · tok 12"));
         assert!(!rendered.contains("Workspace"));
+    }
+
+    #[test]
+    fn renders_usage_summary_right_aligned() {
+        let model = FooterModel {
+            cwd: "/tmp/workspace".into(),
+            hints: "test".into(),
+            status: "idle".into(),
+            usage_summary: "in 7 · out 5 · tok 12 · $0.34".into(),
+            ..FooterModel::default()
+        };
+        let area = Rect::new(0, 0, 80, 2);
+        let mut buf = Buffer::empty(area);
+
+        FooterBar { model: &model }.render(area, &mut buf);
+
+        let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
+        assert!(rendered.trim_end().ends_with("in 7 · out 5 · tok 12 · $0.34"));
     }
 
     #[test]

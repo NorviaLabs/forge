@@ -114,6 +114,22 @@ fn recent_resume_sessions(
     Ok(sessions)
 }
 
+fn footer_usage_summary(cost_notice: Option<&String>, report: &forge_core::TokenUsageReport) -> String {
+    let usage = format!(
+        "in {} · out {} · tok {}",
+        report.api.prompt_tokens,
+        report.api.completion_tokens,
+        report.api.total_api_tokens()
+    );
+    match cost_notice
+        .and_then(|line| line.split_once(": ").map(|(_, value)| value.trim()))
+        .filter(|value| value.starts_with("$") || value.contains("remaining") || value.contains("used"))
+    {
+        Some(cost) if !cost.is_empty() => format!("{usage} · {cost}"),
+        _ => usage,
+    }
+}
+
 pub struct TuiApp {
     pub session: AgentSession,
     pub input: InputModel,
@@ -2215,8 +2231,10 @@ Reply with ONLY the commit message line.\n\n\
             connected: status.provider_connected,
             connect_profile: status.connect_profile,
             hints,
+            usage_summary: footer_usage_summary(self.notices.first(), &context),
         };
         frame.render_widget(FooterBar { model: &footer }, regions.footer);
+
 
         if let Some(ref ov) = self.overlay {
             frame.render_widget(OverlayWidget { overlay: ov }, area);
@@ -4841,7 +4859,7 @@ mod tests {
             text.push('\n');
         }
         assert!(text.contains("gpt-test"), "chrome missing model:\n{text}");
-        assert!(text.contains("native"), "chrome missing provider:\n{text}");
+        assert!(text.contains("in 0 · out 0 · tok 0"), "footer missing usage:\n{text}");
     }
 
     #[tokio::test]
