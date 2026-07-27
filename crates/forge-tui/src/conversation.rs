@@ -3,7 +3,7 @@
 use crate::theme;
 use forge_core::{AgentSession, TurnEvent};
 use forge_syntax::highlight_to_lines;
-use forge_types::{Message, MessageRole, SessionStatus};
+use forge_types::{Message, MessageRole, SessionStatus, ToolCall};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
@@ -189,6 +189,11 @@ impl ConversationModel {
     ) -> Self {
         // System prompts and tool call cards stay out of the operator chat.
         let mut items: Vec<ChatItem> = Vec::new();
+        let tool_calls = messages
+            .iter()
+            .flat_map(|message| message.tool_calls.iter())
+            .map(|call| (call.id.as_str(), call))
+            .collect::<std::collections::HashMap<_, _>>();
         let mut latest_thinking: Option<String> = None;
         let mut repair_pending = false;
         let mut validation_retry_pending = false;
@@ -265,7 +270,12 @@ impl ConversationModel {
                             });
                         }
                     } else {
-                        let (state, summary, detail) = classify_tool_content(name, &m.content);
+                        let call = m
+                            .tool_call_id
+                            .as_deref()
+                            .and_then(|id| tool_calls.get(id).copied());
+                        let (state, summary, detail) =
+                            classify_tool_content(name, &m.content, call);
                         items.push(ChatItem::ToolCard {
                             name: name.to_string(),
                             summary,
@@ -926,8 +936,7 @@ impl ConversationModel {
                     };
                     let is_last = Some(idx) == last_tool;
                     let expand = self.opts.tool_expanded && is_last;
-                    let has_more =
-                        !detail.is_empty() && detail.chars().count() > summary.chars().count();
+                    let has_more = !detail.is_empty() && detail.trim() != summary.trim();
                     lines.push(Line::from(vec![
                         Span::styled(format!("{tag} "), st),
                         Span::styled(
@@ -1056,24 +1065,24 @@ fn centered_span(text: &str, width: usize, style: ratatui::style::Style) -> Span
     Span::styled(format!("{:pad$}{text}", "", pad = pad), style)
 }
 
-#[allow(dead_code)] // kept for optional tool/diff UI later
 fn looks_like_diff(content: &str) -> bool {
-    content.contains("\n+") && content.contains("\n-")
-        || content.lines().any(|l| l.starts_with("@@ "))
-        || content.starts_with("diff --git")
+    let has_hunk = content.lines().any(|line| {
+        line.strip_prefix("@@ -")
+            .and_then(|line| line.split_once(" +"))
+            .is_some()
+    });
+    has_hunk
+        && (content.starts_with("diff --git")
+            || (content.lines().any(|line| line.starts_with("--- "))
+                && content.lines().any(|line| line.starts_with("+++ "))))
 }
 
 fn looks_like_code_change(name: &str, content: &str) -> bool {
     let name = name.to_ascii_lowercase();
-    let content = content.to_ascii_lowercase();
-    name.contains("write")
-        || name == "apply_patch"
-        || name.contains("search_replace")
-        || name == "edit"
-        || content.contains("```")
-        || content.contains("diff --git")
-        || content.contains("@@ ")
-        || (content.contains('\n') && (content.contains("+") || content.contains("-")))
+    matches!(
+        name.as_str(),
+        "write_file" | "apply_patch" | "search_replace" | "edit"
+    ) && looks_like_diff(content)
 }
 
 fn extract_path_hint(name: &str, content: &str) -> String {
@@ -1279,8 +1288,33 @@ fn diff_preview_lines(content: &str, max: usize) -> Vec<String> {
         .collect()
 }
 
-#[allow(dead_code)]
-fn classify_tool_content(name: &str, content: &str) -> (ToolCardState, String, String) {
+fn tool_argument<'a>(call: Option<&'a ToolCall>, name: &str) -> Option<&'a str> {
+    call?.arguments.get(name)?.as_str().map(str::trim)
+}
+
+fn visible_result_count(detail: &str) -> usize {
+    detail
+        .lines()
+        .filter(|line| {
+            let line = line.trim();
+            !line.is_empty() && !line.starts_with("fff:")
+        })
+        .count()
+}
+
+fn result_count_label(count: usize, singular: &str, plural: &str) -> String {
+    if count == 1 {
+        format!("1 {singular}")
+    } else {
+        format!("{count} {plural}")
+    }
+}
+
+fn classify_tool_content(
+    name: &str,
+    content: &str,
+    call: Option<&ToolCall>,
+) -> (ToolCardState, String, String) {
     let detail = redact_tool_output(content);
     let lower = detail.to_ascii_lowercase();
     let state = if lower.contains("validation") || lower.contains("denied by acl") {
@@ -1290,17 +1324,82 @@ fn classify_tool_content(name: &str, content: &str) -> (ToolCardState, String, S
     } else {
         ToolCardState::Done
     };
-    // One-line operator summary
     let first = detail.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
-    let summary = if name == "read_file" || name.contains("read") {
-        let n = detail.lines().count();
-        format!("{first} · {n} lines")
-    } else if name.contains("write") || name.contains("search_replace") || name == "edit" {
-        format!("wrote · {}", first.chars().take(80).collect::<String>())
-    } else if name == "git" {
-        format!("{}", first.chars().take(100).collect::<String>())
-    } else {
-        detail.chars().take(160).collect()
+    let count = visible_result_count(&detail);
+    let summary = match name {
+        "read_file" => {
+            let label = result_count_label(count, "line", "lines");
+            tool_argument(call, "path")
+                .map(|path| format!("{path} · {label}"))
+                .unwrap_or(label)
+        }
+        "bash" => {
+            let label = if detail.trim().is_empty() {
+                "completed".to_string()
+            } else {
+                result_count_label(count, "output line", "output lines")
+            };
+            tool_argument(call, "command")
+                .map(redact_tool_output)
+                .filter(|command| command != "[redacted tool output]")
+                .map(|command| format!("$ {command} · {label}"))
+                .unwrap_or(label)
+        }
+        "git" => {
+            let command = tool_argument(call, "subcommand")
+                .map(|subcommand| format!("git {subcommand}"))
+                .unwrap_or_else(|| "git".to_string());
+            if detail.trim().is_empty() {
+                command
+            } else {
+                format!(
+                    "{command} · {}",
+                    result_count_label(count, "output line", "output lines")
+                )
+            }
+        }
+        "fffind" => {
+            let label = if lower.contains("no matches found") {
+                "no matches".to_string()
+            } else {
+                result_count_label(count, "file", "files")
+            };
+            tool_argument(call, "query")
+                .map(|query| format!("{query} · {label}"))
+                .unwrap_or(label)
+        }
+        "ffgrep" => {
+            let label = if lower.contains("no matches found") {
+                "no matches".to_string()
+            } else {
+                result_count_label(count, "match", "matches")
+            };
+            tool_argument(call, "pattern")
+                .map(|pattern| format!("{pattern} · {label}"))
+                .unwrap_or(label)
+        }
+        "web_search" => {
+            let results = detail
+                .lines()
+                .filter(|line| {
+                    let line = line.trim_start();
+                    line.split_once(". **")
+                        .is_some_and(|(index, _)| index.parse::<usize>().is_ok())
+                })
+                .count();
+            let label = if lower.contains("no results") {
+                "no results".to_string()
+            } else {
+                result_count_label(results, "result", "results")
+            };
+            tool_argument(call, "query")
+                .map(|query| format!("{query} · {label}"))
+                .unwrap_or(label)
+        }
+        _ if name.contains("write") || name.contains("search_replace") || name == "edit" => {
+            format!("wrote · {}", first.chars().take(80).collect::<String>())
+        }
+        _ => detail.chars().take(160).collect(),
     };
     (state, summary, detail)
 }
@@ -1894,6 +1993,140 @@ mod tests {
             m.items.first(),
             Some(ChatItem::ValidationFailure { tool, .. }) if tool == "read_file"
         ));
+    }
+
+    #[test]
+    fn builtin_tool_outputs_are_compact_until_expanded() {
+        let calls = [
+            (
+                "read",
+                "read_file",
+                serde_json::json!({"path": "src/lib.rs"}),
+            ),
+            (
+                "bash",
+                "bash",
+                serde_json::json!({"command": "cargo test --quiet"}),
+            ),
+            ("find", "fffind", serde_json::json!({"query": "*.rs"})),
+            ("grep", "ffgrep", serde_json::json!({"pattern": "ToolCard"})),
+            (
+                "git",
+                "git",
+                serde_json::json!({"subcommand": "status", "args": ["--short"]}),
+            ),
+            (
+                "web",
+                "web_search",
+                serde_json::json!({"query": "ratatui diff rendering"}),
+            ),
+        ]
+        .map(|(id, name, arguments)| ToolCall {
+            id: id.into(),
+            name: name.into(),
+            arguments,
+        });
+        let mut messages = vec![Message {
+            role: MessageRole::Assistant,
+            content: String::new(),
+            tool_call_id: None,
+            name: None,
+            thinking: None,
+            thinking_duration_secs: None,
+            tool_calls: calls.to_vec(),
+        }];
+        let outputs = [
+            ("read", "read_file", "pub fn noisy() {\n- old\n+ new\n}"),
+            ("bash", "bash", "running tests\nfeature-a\n+ experimental"),
+            ("find", "fffind", "src/lib.rs\nsrc/main.rs"),
+            (
+                "grep",
+                "ffgrep",
+                "src/lib.rs:10:ToolCard\nsrc/app.rs:20:ToolCard",
+            ),
+            ("git", "git", " M src/lib.rs\n M src/app.rs"),
+            (
+                "web",
+                "web_search",
+                "## Web search: ratatui diff rendering\n\n1. **Ratatui**\n   - URL: https://ratatui.rs\n   - Snippet: Widgets\n\n```json\n[]\n```",
+            ),
+        ];
+        let output_count = outputs.len();
+        messages.extend(outputs.map(|(id, name, content)| Message {
+            role: MessageRole::Tool,
+            content: content.into(),
+            tool_call_id: Some(id.into()),
+            name: Some(name.into()),
+            thinking: None,
+            thinking_duration_secs: None,
+            tool_calls: vec![],
+        }));
+
+        let model = ConversationModel::from_messages(
+            &messages,
+            &[],
+            SessionStatus::Running,
+            ConversationViewOpts::default(),
+        );
+        assert_eq!(
+            model
+                .items
+                .iter()
+                .filter(|item| matches!(item, ChatItem::ToolCard { .. }))
+                .count(),
+            output_count
+        );
+        assert!(
+            !model
+                .items
+                .iter()
+                .any(|item| matches!(item, ChatItem::DiffCard { .. })),
+            "ordinary multiline output must not be classified as a diff"
+        );
+
+        let rendered = model
+            .lines()
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        for summary in [
+            "src/lib.rs · 4 lines",
+            "$ cargo test --quiet · 3 output lines",
+            "*.rs · 2 files",
+            "ToolCard · 2 matches",
+            "git status · 2 output lines",
+            "ratatui diff rendering · 1 result",
+        ] {
+            assert!(rendered.contains(summary), "missing {summary}:\n{rendered}");
+        }
+        for hidden in ["pub fn noisy", "feature-a", "https://ratatui.rs"] {
+            assert!(
+                !rendered.contains(hidden),
+                "tool detail leaked into the compact card: {hidden}\n{rendered}"
+            );
+        }
+
+        let expanded = ConversationModel::from_messages(
+            &messages,
+            &[],
+            SessionStatus::Running,
+            ConversationViewOpts {
+                tool_expanded: true,
+                ..ConversationViewOpts::default()
+            },
+        )
+        .lines()
+        .iter()
+        .flat_map(|line| line.spans.iter())
+        .map(|span| span.content.as_ref())
+        .collect::<String>();
+        assert!(expanded.contains("https://ratatui.rs"), "{expanded}");
     }
 
     #[test]
