@@ -2614,10 +2614,16 @@ Reply with ONLY the commit message line.\n\n\
                         self.connected_profile_for_model_prefix(prefix)
                     });
                     match profile_id {
-                        Some(profile_id) => match forge_connect::provider_cost_report(
-                            &profile_id,
-                            &self.connect_store,
-                        ) {
+                        Some(profile_id) => match {
+                            let usage = &self.session.token_usage_report().api;
+                            forge_connect::provider_cost_report(
+                                &profile_id,
+                                &self.runtime.model_label,
+                                usage.prompt_tokens,
+                                usage.completion_tokens,
+                                &self.connect_store,
+                            )
+                        } {
                             Ok(report) => {
                                 self.status_message = "cost report".into();
                                 self.set_feedback(FeedbackSeverity::Info, "cost report ready");
