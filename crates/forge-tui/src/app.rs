@@ -2140,12 +2140,6 @@ Reply with ONLY the commit message line.\n\n\
                 self.message_queue.iter().cloned().collect::<Vec<_>>(),
                 self.queue_selected,
             );
-            if slash_mode {
-                conv = conv.with_extra_banners([ChatItem::Banner {
-                    text: "Surface-local commands do not call the model.".into(),
-                    kind: BannerKind::Info,
-                }]);
-            }
             if let BusyPhase::Tool { name } = &self.busy_phase {
                 conv = conv.with_running_tool(name.clone());
             }
