@@ -509,50 +509,7 @@ impl ConversationModel {
                     goal,
                     completed,
                     next_actions,
-                } => {
-                    for step in [
-                        "✓ wrote .forge/progress.json",
-                        "✓ journaled context_reset",
-                        "✓ cleared active window",
-                        "✓ rehydrated from progress + workspace",
-                    ] {
-                        lines.push(Line::from(Span::styled(step, theme::ok())));
-                    }
-                    lines.push(Line::from(Span::styled(
-                        "Large tool payloads remain as offload URIs (CTX-01).",
-                        theme::dim(),
-                    )));
-                    lines.push(Line::from(""));
-                    lines.push(Line::from(Span::styled(
-                        "▍ Continuing after context reset",
-                        theme::metadata_style(),
-                    )));
-                    lines.push(Line::from(Span::styled(
-                        format!(
-                            "Continuing from handoff · context {before_pct:.0}% → {after_pct:.0}%"
-                        ),
-                        theme::text(),
-                    )));
-                    lines.push(Line::from(vec![
-                        Span::styled("goal: ", theme::dim()),
-                        Span::styled(goal.clone(), theme::text()),
-                    ]));
-                    if let Some(done) = completed.last() {
-                        lines.push(Line::from(vec![
-                            Span::styled("done: ", theme::dim()),
-                            Span::styled(done.clone(), theme::muted()),
-                        ]));
-                    }
-                    if let Some(next) = next_actions.first() {
-                        lines.push(Line::from(vec![
-                            Span::styled("next: ", theme::dim()),
-                            Span::styled(next.clone(), theme::muted()),
-                        ]));
-                    }
-                    if gap {
-                        lines.push(Line::from(""));
-                    }
-                }
+                } => {}
                 ChatItem::SessionRecovery { last_assistant, .. } => {
                     let _ = last_assistant;
                     if let Some(restored) = last_assistant {
