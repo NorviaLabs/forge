@@ -21,6 +21,8 @@ tokio = { workspace = true }
 crossterm = { workspace = true }
 ratatui = { workspace = true }
 chrono = { workspace = true }
+dirs = { workspace = true }
+pathdiff = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -1,6 +1,7 @@
 //! Footer bar — keyboard hints (mode-aware).
 
 use crate::theme;
+use pathdiff::diff_paths;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
@@ -57,7 +58,7 @@ impl Widget for FooterBar<'_> {
         if area.height == 1 {
             return;
         }
-        let workspace = relative_workspace_label(self.model.cwd.as_str());
+        let workspace = compact_path_label(self.model.cwd.as_str());
         let meta = Line::from(vec![
             Span::styled(self.model.session_short.as_str(), theme::dim()),
             Span::styled(" · ", theme::muted()),
@@ -71,35 +72,37 @@ impl Widget for FooterBar<'_> {
     }
 }
 
-fn relative_workspace_label(path: &str) -> String {
-    let path = Path::new(path);
+fn compact_path_label(path: &str) -> String {
+    let home = dirs::home_dir();
+    let cwd = std::env::current_dir().ok();
+    compact_path_label_with_anchors(Path::new(path), home.as_deref(), cwd.as_deref())
+}
+
+fn compact_path_label_with_anchors(path: &Path, home: Option<&Path>, cwd: Option<&Path>) -> String {
     if path.as_os_str().is_empty() {
         return ".".into();
     }
-    if let Some(home) = std::env::var_os("HOME") {
-        let home = Path::new(&home);
-        if let Ok(rel) = path.strip_prefix(home) {
+    if let Some(home) = home {
+        if let Some(rel) = diff_paths(path, home) {
             let rendered = rel.display().to_string();
             return match rendered.as_str() {
                 "" => "~".into(),
+                "." => "~".into(),
                 _ => format!("~/{rendered}"),
             };
         }
     }
-    if let Ok(current) = std::env::current_dir() {
-        if let Ok(rel) = path.strip_prefix(&current) {
+    if let Some(current) = cwd {
+        if let Some(rel) = diff_paths(path, current) {
             let rendered = rel.display().to_string();
-            return if rendered.is_empty() {
+            return if rendered.is_empty() || rendered == "." {
                 ".".into()
             } else {
                 rendered
             };
         }
     }
-    path.file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| ".".into())
+    path.display().to_string()
 }
 
 #[cfg(test)]
@@ -180,5 +183,15 @@ mod tests {
         assert!(rendered.contains("idle"));
         assert!(rendered.contains("workspace"));
         assert!(!rendered.contains("Workspace"));
+    }
+
+    #[test]
+    fn compact_path_prefers_home_then_current_directory() {
+        let home = std::env::temp_dir().join("homeish");
+        let current = std::env::temp_dir().join("workspaceish");
+        let path = home.join("Projects/forge");
+        let rendered =
+            compact_path_label_with_anchors(&path, Some(home.as_path()), Some(current.as_path()));
+        assert_eq!(rendered, "~/Projects/forge");
     }
 }
