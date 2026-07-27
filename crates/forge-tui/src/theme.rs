@@ -17,6 +17,9 @@ pub const PANEL_ALT: Color = Color::Rgb(20, 28, 37);
 pub const HISTORY_BG: Color = Color::Rgb(27, 38, 52);
 pub const USER_BG: Color = Color::Rgb(14, 19, 25);
 pub const RESPONSE_BG: Color = Color::Rgb(17, 24, 32);
+pub const DIFF_ADD_BG: Color = Color::Rgb(22, 50, 36);
+pub const DIFF_REMOVE_BG: Color = Color::Rgb(58, 30, 32);
+pub const DIFF_HUNK_BG: Color = Color::Rgb(24, 38, 55);
 
 pub fn brand() -> Style {
     Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
@@ -76,6 +79,22 @@ pub fn user_message() -> Style {
 
 pub fn assistant_message() -> Style {
     Style::default().bg(RESPONSE_BG)
+}
+
+pub fn diff_add() -> Style {
+    Style::default().fg(OK).bg(DIFF_ADD_BG)
+}
+
+pub fn diff_remove() -> Style {
+    Style::default().fg(DANGER).bg(DIFF_REMOVE_BG)
+}
+
+pub fn diff_context() -> Style {
+    Style::default().fg(MUTED).bg(PANEL_ALT)
+}
+
+pub fn diff_hunk() -> Style {
+    Style::default().fg(ACCENT_2).bg(DIFF_HUNK_BG)
 }
 
 // Transcript roles. Keep these semantic so widgets do not need to know the
