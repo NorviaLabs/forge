@@ -510,10 +510,6 @@ impl ConversationModel {
                     completed,
                     next_actions,
                 } => {
-                    lines.push(Line::from(vec![
-                        Span::styled("CONTEXT LIFECYCLE", theme::brand()),
-                        Span::styled(" · hard reset + handoff", theme::muted()),
-                    ]));
                     for step in [
                         "✓ wrote .forge/progress.json",
                         "✓ journaled context_reset",
@@ -2492,7 +2488,6 @@ mod tests {
             .map(|span| span.content.as_ref())
             .collect::<String>();
         for expected in [
-            "CONTEXT LIFECYCLE",
             "Continuing after context reset",
             "82% → 14%",
             "rate limiting middleware",
