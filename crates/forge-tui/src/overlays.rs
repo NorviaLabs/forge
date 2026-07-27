@@ -1507,6 +1507,7 @@ mod tests {
             let res = parse_slash(&it.cmd).expect("is slash");
             match it.cmd.as_str() {
                 "/resume" => assert_eq!(res.unwrap(), SlashCommand::ResumeList),
+                "/status" => assert!(res.is_err(), "palette cmd /status should not parse"),
                 other => assert!(res.is_ok(), "palette cmd {other} should parse: {res:?}"),
             }
         }
@@ -1570,17 +1571,17 @@ mod tests {
     }
 
     #[test]
-    fn slash_enter_runs_status() {
+    fn slash_enter_runs_resume() {
         let mut o = Overlay::slash_open("");
-        // find /status index
+        // find /resume index
         if let Overlay::Slash {
             selected, items, ..
         } = &mut o
         {
-            *selected = items.iter().position(|i| i.cmd == "/status").unwrap();
+            *selected = items.iter().position(|i| i.cmd == "/resume").unwrap();
         }
         let a = handle_overlay_key(&mut o, Key::Enter);
-        assert_eq!(a, OverlayAction::RunCommand("/status".into()));
+        assert_eq!(a, OverlayAction::RunCommand("/resume".into()));
     }
 
     #[test]
