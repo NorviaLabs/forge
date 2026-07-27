@@ -1132,11 +1132,16 @@ fn looks_like_diff(content: &str) -> bool {
 }
 
 fn looks_like_code_change(name: &str, content: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    let content = content.to_ascii_lowercase();
     name.contains("write")
         || name.contains("search_replace")
         || name == "edit"
         || name == "git"
         || content.contains("```")
+        || content.contains("diff --git")
+        || content.contains("@@ ")
+        || (content.contains('\n') && (content.contains("+") || content.contains("-")))
 }
 
 #[allow(dead_code)]
