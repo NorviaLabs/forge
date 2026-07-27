@@ -13,7 +13,7 @@ fn help_lists_only_core_options() {
     assert!(!out.contains("status"));
     assert!(!out.contains("connect"));
     assert!(!out.contains("--worktree"));
-    assert!(!out.contains("--resume"));
+    assert!(out.contains("--resume"));
     assert!(!out.contains("--model"));
     assert!(!out.contains("--workspace"));
     assert!(!out.contains("--config"));
@@ -34,4 +34,14 @@ fn version_prints_package_version() {
         .arg("--version")
         .assert()
         .success();
+}
+
+#[test]
+fn invalid_resume_id_fails_parsing() {
+    Command::cargo_bin("forge")
+        .unwrap()
+        .args(["--resume", "not-a-uuid"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("invalid value"));
 }
