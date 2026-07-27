@@ -18,7 +18,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0-alpha.6"
+version = "0.1.0-alpha.9"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/NorviaLabs/forge"
@@ -48,7 +48,7 @@ futures = "0.3"
 bytes = "1"
 jsonschema = "0.28"
 crossterm = "0.28"
-ratatui = { version = "=0.30.0", default-features = false, features = ["crossterm_0_28", "underline-color", "layout-cache"] }
+ratatui = { version = "=0.28.1", default-features = false, features = ["crossterm", "underline-color"] }
 
 forge-types = { path = "crates/forge-types" }
 forge-config = { path = "crates/forge-config" }
@@ -65,4 +65,4 @@ forge-obs = { path = "crates/forge-obs" }
 forge-connect = { path = "crates/forge-connect" }
 sha2 = "0.10"
 hex = "0.4"
-fff-search = "0.9.0"
+fff-search = "0.8.0"
