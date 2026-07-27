@@ -21,7 +21,9 @@ pub enum ToolCardState {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ChatItem {
     /// Brand splash (replaces dumping system prompts into the chat).
-    Brand,
+    Brand {
+        version: String,
+    },
     Home {
         workspace: String,
         skills_loaded: usize,
@@ -332,12 +334,41 @@ impl ConversationModel {
         self.with_streaming_preview("", text)
     }
 
+    pub fn with_brand(mut self, version: impl Into<String>) -> Self {
+        if !self
+            .items
+            .iter()
+            .any(|item| matches!(item, ChatItem::Brand { .. }))
+        {
+            self.items.insert(
+                0,
+                ChatItem::Brand {
+                    version: version.into(),
+                },
+            );
+        }
+        self
+    }
+
     pub fn with_home(mut self, workspace: String, skills_loaded: usize) -> Self {
-        if self.items.is_empty() {
-            self.items.push(ChatItem::Home {
-                workspace,
-                skills_loaded,
-            });
+        if !self
+            .items
+            .iter()
+            .any(|item| matches!(item, ChatItem::Home { .. }))
+        {
+            let index = self
+                .items
+                .iter()
+                .position(|item| matches!(item, ChatItem::Brand { .. }))
+                .map(|idx| idx + 1)
+                .unwrap_or(0);
+            self.items.insert(
+                index,
+                ChatItem::Home {
+                    workspace,
+                    skills_loaded,
+                },
+            );
         }
         self
     }
@@ -429,24 +460,33 @@ impl ConversationModel {
 
         for (idx, item) in self.items.iter().enumerate() {
             match item {
-                ChatItem::Brand => {
-                    // Compact brand splash (not the model system prompt)
-                    lines.push(Line::from(vec![
-                        Span::styled("  ⬡  ", theme::brand()),
-                        Span::styled("Ready", theme::brand().add_modifier(Modifier::BOLD)),
-                        Span::styled("  ·  coding agent", theme::dim()),
-                    ]));
-                    if gap {
-                        lines.push(Line::from(""));
+                ChatItem::Brand { version } => {
+                    let art = [
+                        "  ███████╗ ██████╗ ██████╗  ██████╗ ███████╗",
+                        "██╔════╝██╔═══██╗██╔══██╗██╔════╝ ██╔════╝",
+                        "█████╗  ██║   ██║██████╔╝██║  ███╗█████╗",
+                        "██╔══╝  ██║   ██║██╔══██╗██║   ██║██╔══╝",
+                        "██║     ╚██████╔╝██║  ██║╚██████╔╝███████╗",
+                        "╚═╝      ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝",
+                    ];
+                    let version_tag = format!("{version:>12}");
+                    lines.push(Line::from(""));
+                    for row in art {
+                        lines.push(Line::from(centered_span(row, width, theme::warn())));
                     }
+                    lines.push(Line::from(centered_span(
+                        &version_tag,
+                        width,
+                        theme::warn().add_modifier(Modifier::BOLD),
+                    )));
+                    lines.push(Line::from(""));
                 }
                 ChatItem::Home { skills_loaded, .. } => {
-                    lines.push(Line::from(vec![
-                        Span::styled("Loaded AGENTS.md ", theme::muted()),
-                        Span::styled(format!("· {skills_loaded} skills"), theme::dim()),
-                    ]));
-                    lines.push(Line::from(Span::styled(
+                    let label = format!("Loaded AGENTS.md  ·  {skills_loaded} skills");
+                    lines.push(Line::from(centered_span(&label, width, theme::muted())));
+                    lines.push(Line::from(centered_span(
                         "Type a task, or / for commands.",
+                        width,
                         theme::muted(),
                     )));
                     if gap {
@@ -1079,6 +1119,12 @@ fn compact_summary(summary: &str) -> String {
         result.push('…');
     }
     result
+}
+
+fn centered_span(text: &str, width: usize, style: ratatui::style::Style) -> Span<'static> {
+    let text_width = text.chars().count();
+    let pad = width.saturating_sub(text_width) / 2;
+    Span::styled(format!("{:pad$}{text}", "", pad = pad), style)
 }
 
 #[allow(dead_code)] // kept for optional tool/diff UI later
