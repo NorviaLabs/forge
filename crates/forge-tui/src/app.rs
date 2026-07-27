@@ -269,6 +269,7 @@ pub struct TuiApp {
     pub slash_suggest_idx: usize,
     /// Multi-line notices (e.g. /connect list) shown above the input.
     pub notices: Vec<String>,
+    notices_until: Option<Instant>,
     /// Phase 10 / TUI-08 — always-visible feedback strip model.
     pub feedback: FeedbackModel,
     /// Phase 10 / TUI-08 — durable UI error/info banners in chat.
@@ -352,6 +353,7 @@ impl TuiApp {
             history: InputHistory::default(),
             slash_suggest_idx: 0,
             notices: startup_notices,
+            notices_until: None,
             feedback: FeedbackModel::default(),
             ui_banners: Vec::new(),
             busy_phase: BusyPhase::Idle,
@@ -422,6 +424,18 @@ impl TuiApp {
         match self.connect_profile.as_deref() {
             Some(id) => self.credentials_live_for(id),
             None => false,
+        }
+    }
+
+    fn push_notice(&mut self, lines: Vec<String>) {
+        self.notices = lines;
+        self.notices_until = Some(Instant::now() + Duration::from_secs(3));
+    }
+
+    fn tick_notices(&mut self) {
+        if self.notices_until.is_some_and(|until| Instant::now() >= until) {
+            self.notices.clear();
+            self.notices_until = None;
         }
     }
 
@@ -1045,7 +1059,7 @@ impl TuiApp {
                     &mut self.connect_profile,
                     &mut model,
                 ) {
-                    self.notices = msg.lines().map(|s| s.to_string()).collect();
+                    self.push_notice(msg.lines().map(|s| s.to_string()).collect());
                 }
                 return;
             }
@@ -1099,6 +1113,9 @@ impl TuiApp {
                 let lines: Vec<String> = msg.lines().map(|s| s.to_string()).collect();
                 self.status_message = lines.first().cloned().unwrap_or_default();
                 self.notices.clear();
+                self.notices_until = None;
+                self.notices_until = None;
+                self.notices_until = None;
                 self.push_activity(
                     ActivityKind::Connect,
                     FeedbackSeverity::Ok,
@@ -1123,7 +1140,7 @@ impl TuiApp {
                     self.open_api_key_prompt(&profile_id, Some(error));
                 } else {
                     self.status_message = error.clone();
-                    self.notices = vec![error];
+                    self.push_notice(vec![error]);
                 }
             }
         }
@@ -1143,7 +1160,7 @@ impl TuiApp {
             Ok(Err(pending)) => self.show_oauth_pending(pending),
             Err(e) => {
                 self.status_message = e.to_string();
-                self.notices = vec![e.to_string()];
+                self.push_notice(vec![e.to_string()]);
                 self.report_error(&e.to_string());
             }
         }
@@ -1198,7 +1215,7 @@ impl TuiApp {
             .first()
             .cloned()
             .unwrap_or_else(|| format!("OAuth for {}", pending.profile_id));
-        self.notices = lines;
+        self.push_notice(lines);
         self.overlay = Some(Overlay::connect_oauth(
             pending.profile_id.clone(),
             title,
@@ -1603,7 +1620,7 @@ impl TuiApp {
             HitlDecision::Approve => "approved".into(),
             HitlDecision::Deny => "denied".into(),
         };
-        self.notices = vec![format!("HITL {}.", self.status_message)];
+        self.push_notice(vec![format!("HITL {}.", self.status_message)]);
         self.busy_phase = BusyPhase::Idle;
         if let Some(term) = terminal.as_deref_mut() {
             let _ = term.draw(|f| self.draw(f));
@@ -1781,13 +1798,13 @@ impl TuiApp {
             Ok(o) if o.is_error => {
                 self.busy_phase = BusyPhase::Idle;
                 self.report_error(&format!("git commit failed: {}", o.content.trim()));
-                self.notices = o
+                self.push_notice(o
                     .content
                     .lines()
                     .map(|s| s.to_string())
                     .filter(|s| !s.is_empty())
                     .take(16)
-                    .collect();
+                    .collect());
                 return;
             }
             Err(e) => {
@@ -1815,20 +1832,19 @@ impl TuiApp {
             Ok(o) if o.is_error => {
                 // Commit succeeded; push failed — surface both.
                 self.report_error(&format!("committed but push failed: {}", o.content.trim()));
-                self.notices = vec![format!("Committed: {message}"), "Push failed:".into()]
-                    .into_iter()
-                    .chain(
-                        o.content
-                            .lines()
-                            .map(|s| s.to_string())
-                            .filter(|s| !s.is_empty())
-                            .take(12),
-                    )
-                    .collect();
+                let mut lines = vec![format!("Committed: {message}"), "Push failed:".into()];
+                lines.extend(
+                    o.content
+                        .lines()
+                        .map(|s| s.to_string())
+                        .filter(|s| !s.is_empty())
+                        .take(12),
+                );
+                self.push_notice(lines);
             }
             Err(e) => {
                 self.report_error(&format!("committed but push failed: {e}"));
-                self.notices = vec![format!("Committed: {message}"), format!("Push error: {e}")];
+                self.push_notice(vec![format!("Committed: {message}"), format!("Push error: {e}")]);
             }
             Ok(o) => {
                 self.push_toast("synced");
@@ -1851,6 +1867,7 @@ impl TuiApp {
                     }
                 }
                 self.notices.clear();
+                self.notices_until = None;
                 self.push_activity(ActivityKind::Tool, FeedbackSeverity::Ok, lines.join(" · "));
                 self.push_activity(ActivityKind::Tool, FeedbackSeverity::Ok, "git push");
             }
@@ -2599,6 +2616,7 @@ Reply with ONLY the commit message line.\n\n\
                     self.feedback = FeedbackModel::default();
                     self.status_message.clear();
                     self.notices.clear();
+                    self.notices_until = None;
                     self.tool_expanded = false;
                 }
             }
@@ -2757,10 +2775,10 @@ Reply with ONLY the commit message line.\n\n\
                 FeedbackSeverity::Warn,
                 format!("connect `{target_prefix}` first before selecting {model_id}"),
             );
-            self.notices = vec![
+            self.push_notice(vec![
                 format!("No connected provider matches `{target_prefix}`."),
                 "Use /connect, or pick a model from the current provider catalog.".into(),
-            ];
+            ]);
             return;
         } else {
             self.apply_model_selection("native", &model_id);
@@ -2841,8 +2859,9 @@ Reply with ONLY the commit message line.\n\n\
                     ) {
                         Ok(sessions) if sessions.is_empty() => {
                             self.status_message = "no previous sessions".into();
-                            self.notices =
-                                vec!["No previous sessions found for this workspace.".into()];
+                            self.push_notice(
+                                vec!["No previous sessions found for this workspace.".into()],
+                            );
                         }
                         Ok(sessions) => {
                             self.status_message = format!("{} resumable sessions", sessions.len());
@@ -2953,10 +2972,10 @@ Reply with ONLY the commit message line.\n\n\
                         if ok {
                             self.push_toast("copied last answer");
                         } else {
-                            self.notices = vec![
+                            self.push_notice(vec![
                                 "Clipboard unavailable (pbcopy/wl-copy).".into(),
                                 text.chars().take(400).collect(),
-                            ];
+                            ]);
                         }
                     } else {
                         self.push_toast("nothing to copy");
@@ -3566,6 +3585,7 @@ async fn run_loop(
 ) -> Result<(), TuiError> {
     while !app.should_quit {
         app.tick_toast();
+        app.tick_notices();
         app.drain_auto_hitl().await?;
         app.maybe_open_hitl();
         // Grok-style device-code: poll token endpoint while overlay is open
