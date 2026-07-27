@@ -2043,7 +2043,7 @@ Reply with ONLY the commit message line.\n\n\
     }
 
     pub fn draw(&mut self, frame: &mut ratatui::Frame) {
-        let area = frame.area();
+        let area = frame.size();
         if is_too_small(area) {
             frame.render_widget(
                 Paragraph::new("Terminal too small — resize to at least 40x18"),
@@ -5005,7 +5005,7 @@ mod tests {
         let buf = term.backend().buffer();
         for y in 0..buf.area().height {
             for x in 0..buf.area().width {
-                text.push_str(buf[(x, y)].symbol());
+                text.push_str(buf.get(x, y).symbol());
             }
             text.push('\n');
         }
@@ -5040,7 +5040,7 @@ mod tests {
         let buf = term.backend().buffer();
         for y in 0..buf.area().height {
             for x in 0..buf.area().width {
-                text.push_str(buf[(x, y)].symbol());
+                text.push_str(buf.get(x, y).symbol());
             }
             text.push('\n');
         }
@@ -5074,7 +5074,7 @@ mod tests {
         let buf = term.backend().buffer();
         for y in 0..buf.area().height {
             for x in 0..buf.area().width {
-                text.push_str(buf[(x, y)].symbol());
+                text.push_str(buf.get(x, y).symbol());
             }
             text.push('\n');
         }
@@ -5186,7 +5186,7 @@ mod tests {
         let buf = term.backend().buffer();
         for y in 0..buf.area().height {
             for x in 0..buf.area().width {
-                text.push_str(buf[(x, y)].symbol());
+                text.push_str(buf.get(x, y).symbol());
             }
             text.push('\n');
         }
