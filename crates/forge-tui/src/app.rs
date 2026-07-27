@@ -1580,7 +1580,7 @@ impl TuiApp {
         }
         self.pending_sync = true;
         self.busy_phase = BusyPhase::Other("git sync".into());
-        self.set_feedback(FeedbackSeverity::Info, "syncing…");
+        self.push_toast("syncing…");
         self.status_message = "syncing…".into();
         self.push_activity(
             ActivityKind::Tool,
@@ -2794,52 +2794,6 @@ Reply with ONLY the commit message line.\n\n\
                 Ok(SlashCommand::Quit) => {
                     self.should_quit = true;
                     self.status_message = "quitting…".into();
-                }
-                Ok(SlashCommand::Status) => {
-                    let chrome = self.refresh_status_model();
-                    let report = self.session.token_usage_report();
-                    let cursor = self.session.journal_cursor().await?;
-                    let mut lines = session_chrome_lines(&chrome);
-                    lines.push(format!("session={}", self.session.session_id));
-                    lines.push(format!("context_tokens={}", report.context_tokens_est));
-                    lines.push(format!("context_capacity={}", report.context_capacity));
-                    lines.push(format!("context_pct={:.1}%", report.context_pct * 100.0));
-                    lines.push(format!(
-                        "reset_pct={:.1}%",
-                        self.session.context_reset_ratio() * 100.0
-                    ));
-                    lines.push(format!(
-                        "workspace={}",
-                        self.session.workspace_root().display()
-                    ));
-                    lines.push(format!("journal={}", self.session.journal_dir().display()));
-                    lines.push(format!("cursor={cursor}"));
-                    lines.push(format!("tools={}", self.session.list_tools().len()));
-                    lines.push(format!(
-                        "hitl_pending={}",
-                        self.session.pending_hitl.is_some()
-                    ));
-                    self.overlay = Some(Overlay::StatusReport {
-                        title: "Status".into(),
-                        lines,
-                    });
-                    let api = &report.api;
-                    self.set_feedback(
-                        FeedbackSeverity::Info,
-                        format!(
-                            "{} · {} · ctx {:.0}% · tokens in {} · out {} · total {} · cache {} / {}",
-                            chrome.provider,
-                            chrome.model,
-                            chrome.ctx_pct * 100.0,
-                            api.prompt_tokens,
-                            api.completion_tokens,
-                            api.total_api_tokens(),
-                            api.prompt_cache_hits,
-                            api.prompt_cache_writes,
-                        ),
-                    );
-                    self.status_message = "status · context".into();
-                    self.notices.clear();
                 }
                 Ok(SlashCommand::Compact) => {
                     self.queue_context_reset();
