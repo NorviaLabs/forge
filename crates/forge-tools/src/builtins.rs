@@ -107,7 +107,7 @@ pub(crate) async fn unified_diff(
         .arg("diff")
         .arg("--no-index")
         .arg("--no-color")
-        .arg("--unified=999999")
+        .arg("--unified=3")
         .arg(&old_path)
         .arg(&new_path)
         .stdout(Stdio::piped())
