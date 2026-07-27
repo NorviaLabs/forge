@@ -39,6 +39,7 @@ pub struct ModelRequest {
     pub messages: Vec<Message>,
     pub tools: Vec<ToolDescriptor>,
     pub model: String,
+    pub reasoning_effort: Option<String>,
     pub prompt_cache: bool,
 }
 
@@ -123,6 +124,7 @@ mod tests {
                 }],
                 tools: vec![],
                 model: "mock".into(),
+                reasoning_effort: None,
                 prompt_cache: true,
             })
             .await
@@ -147,6 +149,7 @@ mod tests {
                 messages: vec![],
                 tools: vec![],
                 model: "mock".into(),
+                reasoning_effort: None,
                 prompt_cache: true,
             })
             .await
