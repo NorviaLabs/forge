@@ -242,4 +242,21 @@ mod tests {
             "stale copy:\n{text}"
         );
     }
+
+    #[tokio::test]
+    async fn visual_splash_disappears_after_typing() {
+        let (_d, mut app) = app().await;
+        app.handle_key(press(KeyCode::Char('h'))).await.unwrap();
+        let backend = TestBackend::new(120, 40);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| app.draw(f)).unwrap();
+        let text = buffer_text(&term);
+
+        assert!(!text.contains("FORGE"), "splash still visible:\n{text}");
+        assert!(
+            !text.contains("Loaded AGENTS.md"),
+            "home copy still visible:\n{text}"
+        );
+        assert!(text.contains("h"), "typed input missing:\n{text}");
+    }
 }
