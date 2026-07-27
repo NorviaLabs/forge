@@ -59,7 +59,7 @@ impl ReasoningEffort {
         }
         let model = model.to_ascii_lowercase();
         if model.starts_with("openai-codex/") {
-            return vec![Auto, Minimal, Low, Medium, High, XHigh, Max];
+            return vec![Minimal, Low, Medium, High, XHigh, Max];
         }
         if model.starts_with("anthropic/") {
             let model_id = model.trim_start_matches("anthropic/");
@@ -165,16 +165,31 @@ mod tests {
 
     #[test]
     fn default_matches_provider_family() {
-        assert_eq!(ReasoningEffort::default_for_model("openai/gpt-4.1-mini"), ReasoningEffort::Auto);
-        assert_eq!(ReasoningEffort::default_for_model("anthropic/claude-sonnet-4"), ReasoningEffort::Low);
-        assert_eq!(ReasoningEffort::default_for_model("opencode-go/deepseek-v4-flash"), ReasoningEffort::Medium);
+        assert_eq!(
+            ReasoningEffort::default_for_model("openai/gpt-4.1-mini"),
+            ReasoningEffort::Auto
+        );
+        assert_eq!(
+            ReasoningEffort::default_for_model("anthropic/claude-sonnet-4"),
+            ReasoningEffort::Low
+        );
+        assert_eq!(
+            ReasoningEffort::default_for_model("opencode-go/deepseek-v4-flash"),
+            ReasoningEffort::Medium
+        );
     }
 
     #[test]
     fn options_match_transport_support() {
         assert_eq!(
             ReasoningEffort::options_for_model("openai/gpt-5.2"),
-            vec![ReasoningEffort::Minimal, ReasoningEffort::Low, ReasoningEffort::Medium, ReasoningEffort::High, ReasoningEffort::XHigh]
+            vec![
+                ReasoningEffort::Minimal,
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+                ReasoningEffort::XHigh
+            ]
         );
         assert!(
             ReasoningEffort::options_for_model("openai/gpt-5.2").contains(&ReasoningEffort::High)
@@ -186,6 +201,10 @@ mod tests {
         assert!(
             ReasoningEffort::options_for_model("openai-codex/gpt-5.6-sol")
                 .contains(&ReasoningEffort::Max)
+        );
+        assert!(
+            !ReasoningEffort::options_for_model("openai-codex/gpt-5.6-sol")
+                .contains(&ReasoningEffort::Auto)
         );
         assert!(
             ReasoningEffort::options_for_model("anthropic/claude-sonnet-4-6")
