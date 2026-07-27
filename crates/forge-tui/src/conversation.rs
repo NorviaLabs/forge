@@ -1569,32 +1569,49 @@ pub struct ConversationWidget<'a> {
 
 pub struct ConversationLinesWidget<'a> {
     pub lines: &'a [Line<'static>],
+    pub tail_lines: &'a [Line<'static>],
     pub scroll: u16,
     pub follow: bool,
 }
 
 fn render_conversation_lines(
     lines: &[Line<'static>],
+    tail_lines: &[Line<'static>],
     scroll_from_bottom: u16,
     follow: bool,
     area: Rect,
     buf: &mut Buffer,
 ) {
-    let total = lines.len() as u16;
-    let max_scroll = total.saturating_sub(area.height);
+    let total = lines.len().saturating_add(tail_lines.len());
+    let max_scroll = total.saturating_sub(area.height as usize);
     let scroll = if follow {
         max_scroll
     } else {
-        max_scroll.saturating_sub(scroll_from_bottom.min(max_scroll))
+        max_scroll.saturating_sub((scroll_from_bottom as usize).min(max_scroll))
     };
-    let start = scroll as usize;
-    let end = (start + area.height as usize).min(lines.len());
-    Paragraph::new(lines[start..end].to_vec()).render(area, buf);
+    let end = scroll.saturating_add(area.height as usize).min(total);
+    let visible = (scroll..end)
+        .map(|index| {
+            if index < lines.len() {
+                lines[index].clone()
+            } else {
+                tail_lines[index - lines.len()].clone()
+            }
+        })
+        .collect::<Vec<_>>();
+    Paragraph::new(visible).render(area, buf);
 }
 
 impl Widget for ConversationLinesWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        render_conversation_lines(self.lines, self.scroll, self.follow, area, buf);
+        render_conversation_lines(
+            self.lines,
+            self.tail_lines,
+            self.scroll,
+            self.follow,
+            area,
+            buf,
+        );
     }
 }
 
@@ -1611,7 +1628,7 @@ impl Widget for ConversationWidget<'_> {
             height: area.height.saturating_sub(inset_y),
         };
         let lines = self.model.lines_for_width(area.width as usize);
-        render_conversation_lines(&lines, self.model.scroll, self.model.follow, area, buf);
+        render_conversation_lines(&lines, &[], self.model.scroll, self.model.follow, area, buf);
     }
 }
 
