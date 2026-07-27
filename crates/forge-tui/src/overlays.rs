@@ -11,7 +11,7 @@ use std::path::Path;
 
 #[derive(Debug, Clone)]
 pub enum Overlay {
-    Welcome,
+    Help,
     Effort {
         model: String,
         selected: usize,
@@ -217,7 +217,7 @@ fn effort_options(model: &str) -> Vec<ReasoningEffort> {
 
 impl Overlay {
     pub fn welcome() -> Self {
-        Self::Welcome
+        Self::Help
     }
 
     pub fn slash_open(filter: impl Into<String>) -> Self {
@@ -650,7 +650,7 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             OverlayAction::None
         }
         Key::Enter => match overlay {
-            Overlay::Welcome => OverlayAction::BeginOnboarding,
+            Overlay::Help => OverlayAction::BeginOnboarding,
             Overlay::Effort {
                 selected, items, ..
             } => items
@@ -977,10 +977,10 @@ impl Widget for OverlayWidget<'_> {
             Clear.render(area, buf);
         }
         match self.overlay {
-            Overlay::Welcome => {
+            Overlay::Help => {
                 let r = centered_rect(64, 58, area);
                 Paragraph::new(
-                    "Your terminal-native coding agent. Let's get you ready in two quick steps.\n\n1  Connect a model provider\n   Sign in or add an API key using secure credential storage.\n\n2  Choose your model\n   Pick a default from the provider's available models.\n\nIt works in your current directory and asks before sensitive actions.\n\nPress Enter to get started  ·  Esc to explore without connecting",
+                    "Forge is a terminal coding agent. Type a request and press Enter to run it in the current folder. Use / for commands, Ctrl+B to toggle the sidebar, and F1 to reopen this help. Forge asks before sensitive actions and keeps your session history.\n\nKeys: Enter send · ↑↓ navigate lists · Tab complete/select · Esc close/cancel\n\nPress Enter to get started · Esc to close",
                 )
                 .wrap(ratatui::widgets::Wrap { trim: true })
                 .block(
@@ -988,7 +988,7 @@ impl Widget for OverlayWidget<'_> {
                         .borders(Borders::ALL)
                         .border_style(theme::brand())
                         .style(theme::panel())
-                        .title(Span::styled(" Welcome ", theme::brand())),
+                        .title(Span::styled(" Help ", theme::brand())),
                 )
                 .render(r, buf);
             }
