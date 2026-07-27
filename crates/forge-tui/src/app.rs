@@ -145,10 +145,6 @@ fn recent_resume_sessions(
     Ok(sessions)
 }
 
-fn footer_usage_summary(report: &forge_core::TokenUsageReport) -> String {
-    footer_usage_summary_with_cost(report, None)
-}
-
 fn footer_usage_summary_with_cost(
     report: &forge_core::TokenUsageReport,
     cost: Option<forge_connect::CatalogCost>,
@@ -5167,7 +5163,7 @@ mod tests {
         };
 
         assert_eq!(
-            footer_usage_summary(&report),
+            footer_usage_summary_with_cost(&report, None),
             "in 6,094 · out 36 · total 6,130"
         );
     }
