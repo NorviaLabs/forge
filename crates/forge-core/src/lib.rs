@@ -550,6 +550,7 @@ impl AgentSession {
             messages: self.messages.clone(),
             tools,
             model: self.active_model.clone(),
+            reasoning_effort: None,
             prompt_cache: true,
         }
     }
