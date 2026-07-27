@@ -55,12 +55,13 @@ async fn run() -> anyhow::Result<ExitCode> {
     };
     let cfg = Config::load(overrides).map_err(|e| anyhow::anyhow!(e))?;
 
-    let session = open_session(&cfg).await?;
+    let (session, startup_notices) = open_session(&cfg).await?;
     let runtime = TuiRuntimeConfig {
         model_label: cfg.model.model.clone(),
         provider: cfg.model.provider.as_str().into(),
         cwd: cfg.workspace_root().to_path_buf(),
         version: env!("CARGO_PKG_VERSION").into(),
+        startup_notices,
     };
     let code = run_tui(session, runtime)
         .await
@@ -89,7 +90,7 @@ fn inject_connect_credentials_into_env() {
     }
 }
 
-async fn open_session(cfg: &Config) -> anyhow::Result<AgentSession> {
+async fn open_session(cfg: &Config) -> anyhow::Result<(AgentSession, Vec<String>)> {
     inject_connect_credentials_into_env();
 
     let model: Arc<dyn ModelClient> =
@@ -119,11 +120,12 @@ async fn open_session(cfg: &Config) -> anyhow::Result<AgentSession> {
         }],
     );
 
+    let mut startup_notices = Vec::new();
     if !cfg.mcp.servers.is_empty() {
         let mut mgr = McpManager::new();
         let errors = mgr.connect_all(&cfg.mcp.servers).await;
         for e in errors {
-            eprintln!("mcp: {e}");
+            startup_notices.push(format!("mcp: {e}"));
         }
         let _ = mgr.register_into(&mut tools).await;
     }
@@ -144,5 +146,5 @@ async fn open_session(cfg: &Config) -> anyhow::Result<AgentSession> {
     if !cfg.model.model.is_empty() {
         session.set_active_model(cfg.model.model.clone());
     }
-    Ok(session)
+    Ok((session, startup_notices))
 }
