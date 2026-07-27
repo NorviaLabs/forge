@@ -137,7 +137,7 @@ Slash commands can be typed directly in the textbox or discovered with **Ctrl+K*
 | Command | Description |
 |---------|-------------|
 | `/status` | Session, model, context, and connection info |
-| `/model` | Pick a connected model, then its supported reasoning effort (`/model refresh` re-fetches remote catalogs) |
+| `/model` | Pick a connected model, then its supported reasoning effort |
 | `/model openai/gpt-4.1-mini` | Switch to a specific model |
 | `/connect` | Open the provider connect picker |
 | `/disconnect` | Disconnect current provider and clear stored credentials |

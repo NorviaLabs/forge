@@ -17,9 +17,8 @@ use crossterm::terminal::{
 };
 use forge_connect::{
     builtin_registry, handle_connect_action, models_for_picker, needs_tui_api_key_prompt,
-    needs_tui_oauth, normalize_model_id, refresh_models_dev_registry, refresh_profile_catalog,
-    ConnectAction, ConnectError, ConnectRegistry, ConnectService, CredentialStore,
-    ModelCatalogCache, OauthPending,
+    needs_tui_oauth, normalize_model_id, ConnectAction, ConnectError, ConnectRegistry,
+    ConnectService, CredentialStore, ModelCatalogCache, OauthPending,
 };
 use forge_core::{AgentSession, ApplyOutcome, LoopError};
 use forge_tools::{GitTool, Tool, ToolContext};
@@ -167,8 +166,6 @@ pub struct TuiApp {
     pending_turn_continue: bool,
     /// Long-running slash action queued to run on the event loop (so the command echo paints).
     pending_sync: bool,
-    /// Catalog refresh queued to run on the event loop (can do network).
-    pending_model_refresh: bool,
     /// HITL resolve queued to run on the event loop (journals + state updates).
     pending_hitl_decision: Option<HitlDecision>,
     /// Context reset queued to run on the event loop.
@@ -244,7 +241,6 @@ impl TuiApp {
             pending_prompt: None,
             pending_turn_continue: false,
             pending_sync: false,
-            pending_model_refresh: false,
             pending_hitl_decision: None,
             pending_context_reset: false,
             message_queue: MessageQueue::new(),
@@ -393,7 +389,6 @@ impl TuiApp {
         self.oauth_last_poll = None;
         self.pending_prompt = None;
         self.pending_sync = false;
-        self.pending_model_refresh = false;
         self.pending_hitl_decision = None;
         self.pending_context_reset = false;
         self.message_queue = MessageQueue::new();
@@ -1281,89 +1276,6 @@ impl TuiApp {
         models_from_catalog(&entries)
     }
 
-    /// Force-refresh remote catalogs for every connected profile.
-    fn refresh_model_catalogs(&mut self) {
-        let svc = ConnectService {
-            registry: &self.connect_registry,
-            store: &self.connect_store,
-            active_profile_id: self.connect_profile.clone(),
-            active_model: Some(self.runtime.model_label.clone()),
-        };
-        let mut profiles = svc.connected_profiles().unwrap_or_default();
-        // Also try the currently-selected provider/model prefix so `/model refresh` gives a
-        // useful error line even when the profile isn't "connected" yet.
-        let prefix = self
-            .runtime
-            .model_label
-            .split('/')
-            .next()
-            .unwrap_or("")
-            .trim();
-        if !prefix.is_empty() {
-            let pid = match prefix {
-                "opencode-go" => "opencode_go",
-                "opencode-zen" => "opencode_zen",
-                other => other,
-            };
-            if profiles.iter().all(|p| p.id != pid) {
-                if let Some(p) = self.connect_registry.get(pid).cloned() {
-                    profiles.push(p);
-                }
-            }
-        }
-        if profiles.is_empty() {
-            self.set_feedback(
-                FeedbackSeverity::Warn,
-                "no connected providers — /connect first",
-            );
-            self.notices = vec![
-                "Connect a provider, then run /model refresh.".into(),
-                "Fallbacks: /model openai/gpt-4.1-mini (provider/model id).".into(),
-            ];
-            return;
-        }
-        let cache = ModelCatalogCache::user_default();
-        let mut lines = Vec::new();
-        let mut ok_n = 0usize;
-        match refresh_models_dev_registry(&profiles, &cache) {
-            Ok(models) => lines.push(format!("models.dev: {models} known compatible models")),
-            Err(e) => lines.push(format!("models.dev: refresh failed — {e}")),
-        }
-        for p in &profiles {
-            match refresh_profile_catalog(p, &self.connect_store, &cache) {
-                Ok(models) => {
-                    ok_n += 1;
-                    lines.push(format!(
-                        "{}: {} models (e.g. {})",
-                        p.id,
-                        models.len(),
-                        models.first().map(|s| s.as_str()).unwrap_or("—")
-                    ));
-                }
-                Err(e) => {
-                    lines.push(format!("{}: refresh failed — {e}", p.id));
-                }
-            }
-        }
-        self.status_message = format!("catalog refresh · {ok_n}/{} ok", profiles.len());
-        self.set_feedback(
-            FeedbackSeverity::Info,
-            format!("catalogs refreshed ({ok_n}/{})", profiles.len()),
-        );
-        self.notices.clear();
-        self.push_activity(
-            ActivityKind::System,
-            FeedbackSeverity::Info,
-            lines.join(" · "),
-        );
-        self.push_toast(self.status_message.clone());
-        // Open picker with fresh data
-        let items = self.model_picker_items(true);
-        let mut ov = Overlay::model_open_with(items);
-        ov.focus_model(&self.runtime.model_label);
-        self.overlay = Some(ov);
-    }
-
     /// Enqueue while a message is processing (TUI Enter path only).
     fn enqueue_user_message(&mut self, line: String) {
         let n = self.message_queue.enqueue(line);
@@ -1526,33 +1438,10 @@ impl TuiApp {
         );
     }
 
-    fn queue_model_refresh(&mut self) {
-        if self.busy
-            || self.pending_prompt.is_some()
-            || self.pending_sync
-            || self.pending_model_refresh
-            || self.pending_hitl_decision.is_some()
-            || self.pending_context_reset
-        {
-            self.set_feedback(FeedbackSeverity::Warn, "busy — wait before /model refresh");
-            return;
-        }
-        self.pending_model_refresh = true;
-        self.busy_phase = BusyPhase::Other("model catalog refresh".into());
-        self.status_message = "refreshing model catalogs…".into();
-        self.set_feedback(FeedbackSeverity::Info, "refreshing model catalogs…");
-        self.push_activity(
-            ActivityKind::System,
-            FeedbackSeverity::Info,
-            "model refresh queued",
-        );
-    }
-
     fn queue_context_reset(&mut self) {
         if self.busy
             || self.pending_prompt.is_some()
             || self.pending_sync
-            || self.pending_model_refresh
             || self.pending_hitl_decision.is_some()
             || self.pending_context_reset
         {
@@ -1563,26 +1452,6 @@ impl TuiApp {
         self.busy_phase = BusyPhase::Other("context reset".into());
         self.status_message = "resetting context…".into();
         self.set_feedback(FeedbackSeverity::Info, "resetting context…");
-    }
-
-    pub async fn drain_pending_model_refresh(
-        &mut self,
-        mut terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
-    ) -> Result<(), TuiError> {
-        if !self.pending_model_refresh {
-            return Ok(());
-        }
-        self.pending_model_refresh = false;
-        if let Some(term) = terminal.as_deref_mut() {
-            let _ = term.draw(|f| self.draw(f));
-        }
-        // `refresh_model_catalogs` is sync (uses ureq). We still run it here, but it's
-        // now drained on the event loop after the command echo has painted.
-        self.refresh_model_catalogs();
-        if let Some(term) = terminal.as_deref_mut() {
-            let _ = term.draw(|f| self.draw(f));
-        }
-        Ok(())
     }
 
     pub async fn drain_pending_hitl(
@@ -2612,16 +2481,7 @@ Reply with ONLY the commit message line.\n\n\
         &mut self,
         provider: Option<&str>,
         model: Option<&str>,
-        refresh: bool,
     ) {
-        if refresh {
-            self.queue_model_refresh();
-            if cfg!(test) {
-                let _ = self.drain_pending_model_refresh(None).await;
-            }
-            return;
-        }
-
         if provider.is_none() && model.is_none() {
             let items = self.model_picker_items(true);
             let mut overlay = Overlay::model_open_with(items);
@@ -2640,7 +2500,7 @@ Reply with ONLY the commit message line.\n\n\
         if model_id.trim().is_empty() {
             self.set_feedback(
                 FeedbackSeverity::Warn,
-                "usage: /model <provider/model> | /model refresh",
+                "usage: /model <provider/model>",
             );
             return;
         }
@@ -2754,12 +2614,8 @@ Reply with ONLY the commit message line.\n\n\
                         let _ = self.drain_pending_context_reset(None).await;
                     }
                 }
-                Ok(SlashCommand::Model {
-                    provider,
-                    model,
-                    refresh,
-                }) => {
-                    self.handle_model_command(provider.as_deref(), model.as_deref(), refresh)
+                Ok(SlashCommand::Model { provider, model }) => {
+                    self.handle_model_command(provider.as_deref(), model.as_deref())
                         .await
                 }
                 Ok(SlashCommand::ResumeList) => {
@@ -3505,10 +3361,6 @@ async fn run_loop(
         // Drain queued long-running slash tasks (so the command echo paints first).
         if app.pending_sync {
             app.drain_pending_sync(Some(terminal)).await?;
-            continue;
-        }
-        if app.pending_model_refresh {
-            app.drain_pending_model_refresh(Some(terminal)).await?;
             continue;
         }
         if app.pending_hitl_decision.is_some() {
