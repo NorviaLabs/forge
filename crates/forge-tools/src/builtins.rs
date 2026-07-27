@@ -92,7 +92,11 @@ fn unique_temp_path(label: &str) -> PathBuf {
     ))
 }
 
-async fn unified_diff(path: &str, old: Option<&str>, new: &str) -> Result<String, ToolError> {
+pub(crate) async fn unified_diff(
+    path: &str,
+    old: Option<&str>,
+    new: &str,
+) -> Result<String, ToolError> {
     let old_path = unique_temp_path("old");
     let new_path = unique_temp_path("new");
     let old_content = old.unwrap_or("");
