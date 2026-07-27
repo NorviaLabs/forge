@@ -1,12 +1,8 @@
-//! Status bar — calm single chrome line (polish).
+//! Session chrome data for `/status`.
 
 use crate::theme;
 use forge_types::SessionStatus;
-use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
 use ratatui::style::Modifier;
-use ratatui::text::{Line, Span};
-use ratatui::widgets::Widget;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Progressive busy phase (Phase 10 / TUI-10; also used in chrome label).
@@ -131,44 +127,6 @@ impl StatusModel {
 
     fn model_display(&self) -> &str {
         self.model.rsplit('/').next().unwrap_or(self.model.as_str())
-    }
-}
-
-#[allow(dead_code)]
-pub struct StatusBar<'a> {
-    pub model: &'a StatusModel,
-}
-
-impl Widget for StatusBar<'_> {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        if area.height == 0 || area.width == 0 {
-            return;
-        }
-        let (label, style) = self.model.status_label();
-        let model_disp = StatusModel::truncate_model(
-            self.model.model_display(),
-            if area.width < 100 { 16 } else { 28 },
-        );
-        let provider = self.model.provider_display();
-        let ctx = format!("{:.0}% context", self.model.ctx_pct * 100.0);
-        let ctx_style = if self.model.ctx_pct >= 0.90 {
-            theme::danger().add_modifier(Modifier::BOLD)
-        } else if self.model.ctx_pct >= 0.70 {
-            theme::warn().add_modifier(Modifier::BOLD)
-        } else {
-            theme::info()
-        };
-        let spans = vec![
-            Span::styled(model_disp, theme::text()),
-            Span::styled(" · ", theme::dim()),
-            Span::styled(provider, theme::metadata_style()),
-            Span::styled(" · ", theme::dim()),
-            Span::styled(ctx, ctx_style),
-            Span::styled(" · ", theme::dim()),
-            Span::styled(label, style),
-        ];
-        let line = Line::from(spans);
-        buf.set_line(area.x, area.y, &line, area.width);
     }
 }
 
