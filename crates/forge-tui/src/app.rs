@@ -24,6 +24,7 @@ use forge_core::{AgentSession, ApplyOutcome, LoopError};
 use forge_tools::{GitTool, Tool, ToolContext};
 use forge_types::{HitlDecision, ModelStreamEvent, ProgressDocument};
 use ratatui::backend::CrosstermBackend;
+use ratatui::text::Line;
 use ratatui::Terminal;
 use serde_json::json;
 use thiserror::Error;
@@ -215,6 +216,35 @@ fn footer_provider_id(provider: &str, connect_profile: Option<&str>) -> String {
     connect_profile.unwrap_or(provider).to_owned()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConversationRenderKey {
+    session_id: uuid::Uuid,
+    width: u16,
+    messages: usize,
+    last_message_content: usize,
+    last_message_thinking: usize,
+    events: usize,
+    last_event_detail: usize,
+    banners: usize,
+    queue: usize,
+    queue_selected: Option<usize>,
+    chat_message_start: usize,
+    chat_event_start: usize,
+    busy: bool,
+    busy_phase: String,
+    tool_expanded: bool,
+    stream_preview: usize,
+    stream_thinking: usize,
+    splash_dismissed: bool,
+    slash_mode: bool,
+    status: forge_types::SessionStatus,
+}
+
+struct ConversationRenderCache {
+    key: ConversationRenderKey,
+    lines: Vec<Line<'static>>,
+}
+
 pub struct TuiApp {
     pub session: AgentSession,
     pub input: InputModel,
@@ -293,6 +323,8 @@ pub struct TuiApp {
     chat_follow: bool,
     context_reset_snapshot: Option<(f64, f64)>,
     splash_dismissed: bool,
+    conversation_cache: Option<ConversationRenderCache>,
+    model_cost_cache: Option<(String, Option<forge_connect::CatalogCost>)>,
 }
 
 impl TuiApp {
@@ -347,6 +379,8 @@ impl TuiApp {
             chat_follow: true,
             context_reset_snapshot: None,
             splash_dismissed: false,
+            conversation_cache: None,
+            model_cost_cache: None,
         }
         .restore_saved_auth()
         .apply_connection_chrome()
@@ -410,7 +444,7 @@ impl TuiApp {
 
     fn refresh_connection_ui(&mut self) {
         self.sync_provider_connection();
-        let connected = self.is_provider_connected();
+        let connected = !self.input.not_connected;
         self.input.not_connected = !connected;
         if connected {
             if self.input.hint.contains("Not connected") || self.input.hint.contains("/connect") {
@@ -1361,8 +1395,15 @@ impl TuiApp {
         models_from_catalog(&entries)
     }
 
-    fn active_model_cost(&self) -> Option<forge_connect::CatalogCost> {
-        ModelCatalogCache::user_default().get_registry_cost(&self.runtime.model_label)
+    fn active_model_cost(&mut self) -> Option<forge_connect::CatalogCost> {
+        if let Some((model, cost)) = &self.model_cost_cache {
+            if model == &self.runtime.model_label {
+                return *cost;
+            }
+        }
+        let cost = ModelCatalogCache::user_default().get_registry_cost(&self.runtime.model_label);
+        self.model_cost_cache = Some((self.runtime.model_label.clone(), cost));
+        cost
     }
 
     /// Enqueue while a message is processing (TUI Enter path only).
@@ -1886,6 +1927,10 @@ Reply with ONLY the commit message line.\n\n\
     }
 
     pub fn refresh_status_model(&self) -> StatusModel {
+        self.refresh_status_model_with_connected(self.is_provider_connected())
+    }
+
+    fn refresh_status_model_with_connected(&self, provider_connected: bool) -> StatusModel {
         let id = self.session.session_id.to_string();
         let short = if id.len() > 8 {
             id[..8].to_string()
@@ -1902,7 +1947,7 @@ Reply with ONLY the commit message line.\n\n\
             busy: self.busy,
             busy_phase: self.busy_phase.clone(),
             connect_profile: self.connect_profile.clone(),
-            provider_connected: self.is_provider_connected(),
+            provider_connected,
             web_search_label: self.web_search_label.clone(),
             tools_visible: self.session.list_tools().len(),
             prompt_cache_hits: self.session.token_usage.prompt_cache_hits,
@@ -1938,7 +1983,8 @@ Reply with ONLY the commit message line.\n\n\
         let input_h = (self.input.visual_lines() + 2).clamp(3, 8);
         let slash_mode = self.overlay.is_none() && self.input.text.starts_with('/');
         let regions = split_areas_full(area, fb_h, input_h, !slash_mode && self.sidebar_visible, 0);
-        let status = self.refresh_status_model();
+        let connected = self.is_provider_connected();
+        let status = self.refresh_status_model_with_connected(connected);
 
         let stream_wait = if self.busy && self.pending_prompt.is_none() {
             let elapsed = if !self.stream_thinking.is_empty() {
@@ -1976,54 +2022,103 @@ Reply with ONLY the commit message line.\n\n\
             &self.session.messages[self.chat_message_start.min(self.session.messages.len())..];
         let visible_events =
             &self.session.events[self.chat_event_start.min(self.session.events.len())..];
-        let mut conv = ConversationModel::from_messages(
-            visible_messages,
-            visible_events,
-            self.session.status,
-            opts,
-        )
-        .with_extra_banners(self.ui_banners.iter().cloned());
-        if !self.splash_dismissed {
-            conv = conv.with_brand(self.runtime.version.clone());
-        }
-        if !slash_mode && !self.splash_dismissed {
-            conv = conv.with_home(
-                self.runtime.cwd.display().to_string(),
-                self.session.loaded_skills_count(),
+        let key = ConversationRenderKey {
+            session_id: self.session.session_id,
+            width: regions.chat.width,
+            messages: visible_messages.len(),
+            last_message_content: visible_messages
+                .last()
+                .map_or(0, |message| message.content.len()),
+            last_message_thinking: visible_messages
+                .last()
+                .and_then(|message| message.thinking.as_ref())
+                .map_or(0, String::len),
+            events: visible_events.len(),
+            last_event_detail: visible_events.last().map_or(0, |event| event.detail.len()),
+            banners: self.ui_banners.len(),
+            queue: self.message_queue.len(),
+            queue_selected: self.queue_selected,
+            chat_message_start: self.chat_message_start,
+            chat_event_start: self.chat_event_start,
+            busy: self.busy,
+            busy_phase: self.busy_phase.label(),
+            tool_expanded: self.tool_expanded,
+            stream_preview: self.stream_preview.len(),
+            stream_thinking: self.stream_thinking.len(),
+            splash_dismissed: self.splash_dismissed,
+            slash_mode,
+            status: self.session.status,
+        };
+        if self.conversation_cache.as_ref().map(|cache| &cache.key) != Some(&key) {
+            let mut conv = ConversationModel::from_messages(
+                visible_messages,
+                visible_events,
+                self.session.status,
+                opts,
+            )
+            .with_extra_banners(self.ui_banners.iter().cloned());
+            if !self.splash_dismissed {
+                conv = conv.with_brand(self.runtime.version.clone());
+            }
+            if !slash_mode && !self.splash_dismissed {
+                conv = conv.with_home(
+                    self.runtime.cwd.display().to_string(),
+                    self.session.loaded_skills_count(),
+                );
+            }
+            conv = conv.with_queued_messages(
+                self.message_queue.iter().cloned().collect::<Vec<_>>(),
+                self.queue_selected,
             );
+            if slash_mode {
+                conv = conv.with_extra_banners([ChatItem::Banner {
+                    text: "Surface-local commands do not call the model.".into(),
+                    kind: BannerKind::Info,
+                }]);
+            }
+            if let BusyPhase::Tool { name } = &self.busy_phase {
+                conv = conv.with_running_tool(name.clone());
+            }
+            if let Some(payload) = &self.session.pending_hitl {
+                let args = payload
+                    .args_redacted
+                    .get("command")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| payload.args_redacted.to_string());
+                conv = conv.with_blocked_tool(payload.tool.clone(), args);
+            }
+            if self.busy && self.pending_prompt.is_none() {
+                conv = conv.with_streaming_preview(
+                    self.stream_thinking.clone(),
+                    self.stream_preview.clone(),
+                );
+            }
+            let width = regions.chat.width.saturating_sub(2) as usize;
+            self.conversation_cache = Some(ConversationRenderCache {
+                key,
+                lines: conv.lines_for_width(width),
+            });
         }
-        conv = conv.with_queued_messages(
-            self.message_queue.iter().cloned().collect::<Vec<_>>(),
-            self.queue_selected,
-        );
-        if slash_mode {
-            conv = conv.with_extra_banners([ChatItem::Banner {
-                text: "Surface-local commands do not call the model.".into(),
-                kind: BannerKind::Info,
-            }]);
-        }
-        if let BusyPhase::Tool { name } = &self.busy_phase {
-            conv = conv.with_running_tool(name.clone());
-        }
-        if let Some(payload) = &self.session.pending_hitl {
-            let args = payload
-                .args_redacted
-                .get("command")
-                .and_then(|value| value.as_str())
-                .map(str::to_owned)
-                .unwrap_or_else(|| payload.args_redacted.to_string());
-            conv = conv.with_blocked_tool(payload.tool.clone(), args);
-        }
-        conv.follow = self.chat_follow;
-        conv.scroll = self.chat_scroll;
-        if self.busy && self.pending_prompt.is_none() {
-            // Stream thinking body + answer (status line covers wait/think timers)
-            conv = conv
-                .with_streaming_preview(self.stream_thinking.clone(), self.stream_preview.clone());
-        }
+        let cached = self
+            .conversation_cache
+            .as_ref()
+            .expect("conversation cache populated");
         frame.render_widget(
-            crate::conversation::ConversationWidget { model: &conv },
-            regions.chat,
+            crate::conversation::ConversationLinesWidget {
+                lines: &cached.lines,
+                scroll: self.chat_scroll,
+                follow: self.chat_follow,
+            },
+            ratatui::layout::Rect {
+                x: regions.chat.x.saturating_add(2.min(regions.chat.width)),
+                y: regions.chat.y.saturating_add(1.min(regions.chat.height)),
+                width: regions.chat.width.saturating_sub(2.min(regions.chat.width)),
+                height: regions
+                    .chat
+                    .height
+                    .saturating_sub(1.min(regions.chat.height)),
+            },
         );
         if let Some(sidebar_area) = regions.sidebar {
             let activity = self
@@ -2169,7 +2264,7 @@ Reply with ONLY the commit message line.\n\n\
         let mut input = self.input.clone();
         // Allow composing the next message while a turn runs; only dim slightly when busy.
         input.dimmed = self.busy && self.input.text.is_empty();
-        input.not_connected = !self.is_provider_connected();
+        input.not_connected = !connected;
         frame.render_widget(InputBar { model: &input }, regions.input);
 
         let qn = self.message_queue.len();
@@ -2184,7 +2279,7 @@ Reply with ONLY the commit message line.\n\n\
             }
         } else if self.session.pending_hitl.is_some() {
             "a approve · s session · d deny".into()
-        } else if !self.is_provider_connected() {
+        } else if !connected {
             "/connect to enable chat".into()
         } else if qn > 0 {
             format!("queue {qn} · Ctrl+Up/Down select · Ctrl+Backspace cancel")
@@ -2195,6 +2290,7 @@ Reply with ONLY the commit message line.\n\n\
             self.runtime.provider.as_str(),
             status.connect_profile.as_deref(),
         );
+        let model_cost = self.active_model_cost();
         let footer = FooterModel {
             cwd: self.runtime.cwd.display().to_string(),
             session_short: status.session_short,
@@ -2211,7 +2307,7 @@ Reply with ONLY the commit message line.\n\n\
             hints,
             ..footer_usage_summary(
                 &context,
-                self.active_model_cost(),
+                model_cost,
                 footer_provider.as_str(),
                 self.runtime.model_label.as_str(),
             )
@@ -3484,6 +3580,40 @@ mod tests {
         .await
         .unwrap();
         (dir, session)
+    }
+
+    #[tokio::test]
+    async fn typing_reuses_cached_conversation_lines() {
+        use ratatui::backend::TestBackend;
+
+        let (dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "mock".into(),
+                provider: "mock".into(),
+                cwd: dir.path().to_path_buf(),
+                version: "test".into(),
+                startup_notices: Vec::new(),
+            },
+        );
+        app.splash_dismissed = true;
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        app.conversation_cache
+            .as_mut()
+            .unwrap()
+            .lines
+            .reserve(1_000);
+        let cached_capacity = app.conversation_cache.as_ref().unwrap().lines.capacity();
+
+        app.input.insert('x');
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+
+        assert_eq!(
+            app.conversation_cache.as_ref().unwrap().lines.capacity(),
+            cached_capacity
+        );
     }
 
     #[test]
