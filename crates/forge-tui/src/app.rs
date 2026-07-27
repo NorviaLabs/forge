@@ -1974,7 +1974,7 @@ Reply with ONLY the commit message line.\n\n\
         if !slash_mode {
             conv = conv.with_home(
                 self.runtime.cwd.display().to_string(),
-                self.session.journal_dir().display().to_string(),
+                self.session.loaded_skills_count(),
             );
         }
         conv = conv.with_queued_messages(

@@ -24,7 +24,7 @@ pub enum ChatItem {
     Brand,
     Home {
         workspace: String,
-        journal: String,
+        skills_loaded: usize,
     },
     ContextHandoff {
         before_pct: f64,
@@ -332,9 +332,12 @@ impl ConversationModel {
         self.with_streaming_preview("", text)
     }
 
-    pub fn with_home(mut self, workspace: String, journal: String) -> Self {
+    pub fn with_home(mut self, workspace: String, skills_loaded: usize) -> Self {
         if self.items.is_empty() {
-            self.items.push(ChatItem::Home { workspace, journal });
+            self.items.push(ChatItem::Home {
+                workspace,
+                skills_loaded,
+            });
         }
         self
     }
@@ -437,7 +440,10 @@ impl ConversationModel {
                         lines.push(Line::from(""));
                     }
                 }
-                ChatItem::Home { workspace, journal } => {
+                ChatItem::Home {
+                    workspace,
+                    skills_loaded,
+                } => {
                     lines.push(Line::from(Span::styled("SYSTEM", theme::dim())));
                     lines.push(Line::from(vec![
                         Span::styled("Workspace ", theme::text()),
@@ -447,8 +453,7 @@ impl ConversationModel {
                     ]));
                     lines.push(Line::from(vec![
                         Span::styled("Loaded AGENTS.md ", theme::muted()),
-                        Span::styled("· journal ", theme::dim()),
-                        Span::styled(journal.clone(), theme::muted()),
+                        Span::styled(format!("· {skills_loaded} skills"), theme::dim()),
                     ]));
                     lines.push(Line::from(Span::styled(
                         "Type a task, or / for commands.",
