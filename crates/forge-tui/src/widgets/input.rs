@@ -478,7 +478,7 @@ mod tests {
         let backend = TestBackend::new(40, 5);
         let mut term = Terminal::new(backend).unwrap();
         term.draw(|f| {
-            f.render_widget(InputBar { model: &m }, f.area());
+            f.render_widget(InputBar { model: &m }, f.size());
         })
         .unwrap();
         let buf = term.backend().buffer();
@@ -486,7 +486,7 @@ mod tests {
         let mut found = false;
         for y in 0..area.height {
             for x in 0..area.width {
-                let cell = &buf[(x, y)];
+                let cell = &buf.get(x, y);
                 if cell.style().bg == Some(theme::TEXT) {
                     found = true;
                 }
@@ -501,12 +501,12 @@ mod tests {
         let backend = TestBackend::new(40, 5);
         let mut term = Terminal::new(backend).unwrap();
         term.draw(|f| {
-            f.render_widget(InputBar { model: &m }, f.area());
+            f.render_widget(InputBar { model: &m }, f.size());
         })
         .unwrap();
         let buf = term.backend().buffer();
         // Empty input renders prompt first, then the caret cell.
-        let cell = &buf[(2, 1)];
+        let cell = &buf.get(2, 1);
         assert_eq!(cell.symbol(), " ");
         assert_eq!(cell.style().bg, Some(theme::TEXT));
     }
@@ -519,7 +519,7 @@ mod tests {
         let backend = TestBackend::new(40, 5);
         let mut term = Terminal::new(backend).unwrap();
         term.draw(|f| {
-            f.render_widget(InputBar { model: &m }, f.area());
+            f.render_widget(InputBar { model: &m }, f.size());
         })
         .unwrap();
         let buf = term.backend().buffer();
@@ -527,7 +527,7 @@ mod tests {
         let mut found_a = false;
         for y in 0..area.height {
             for x in 0..area.width {
-                let cell = &buf[(x, y)];
+                let cell = &buf.get(x, y);
                 if cell.symbol() == "a" && cell.style().bg == Some(theme::TEXT) {
                     found_a = true;
                 }

@@ -2298,9 +2298,9 @@ mod tests {
         })
         .unwrap();
         let buf = term.backend().buffer();
-        assert_eq!(buf[(0, 0)].symbol(), " ");
-        assert_eq!(buf[(1, 0)].symbol(), " ");
-        assert_ne!(buf[(0, 1)].symbol(), "F");
+        assert_eq!(buf.get(0, 0).symbol(), " ");
+        assert_eq!(buf.get(1, 0).symbol(), " ");
+        assert_ne!(buf.get(0, 1).symbol(), "F");
     }
 
     #[test]
