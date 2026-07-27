@@ -64,6 +64,37 @@ pub enum TuiError {
 }
 
 #[derive(Debug, Clone)]
+pub struct ExitSummary {
+    pub exit_code: ExitCode,
+    pub session_id: String,
+    pub token_usage: Option<String>,
+}
+
+fn format_exit_token_usage(report: &forge_core::TokenUsageReport) -> String {
+    let api = &report.api;
+    format!(
+        "Token usage: total={} input={} (+ {} cached) output={} (reasoning {})",
+        format_with_commas(api.total_api_tokens()),
+        format_with_commas(api.prompt_tokens),
+        format_with_commas(api.prompt_cache_hits),
+        format_with_commas(api.completion_tokens),
+        format_with_commas(api.thinking_tokens_est),
+    )
+}
+
+fn format_with_commas(value: u64) -> String {
+    let digits = value.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, ch) in digits.chars().rev().enumerate() {
+        if index > 0 && index % 3 == 0 {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out.chars().rev().collect()
+}
+
+#[derive(Debug, Clone)]
 pub struct TuiRuntimeConfig {
     pub model_label: String,
     pub provider: String,
@@ -116,10 +147,10 @@ fn recent_resume_sessions(
 
 fn footer_usage_summary(cost_notice: Option<&String>, report: &forge_core::TokenUsageReport) -> String {
     let usage = format!(
-        "in {} · out {} · tok {}",
-        report.api.prompt_tokens,
-        report.api.completion_tokens,
-        report.api.total_api_tokens()
+        "in {} · out {} · total {}",
+        format_with_commas(report.api.prompt_tokens),
+        format_with_commas(report.api.completion_tokens),
+        format_with_commas(report.api.total_api_tokens())
     );
     match cost_notice
         .and_then(|line| line.split_once(": ").map(|(_, value)| value.trim()))
@@ -3295,7 +3326,7 @@ async fn drain_events(app: &mut TuiApp) -> Result<(), TuiError> {
 pub async fn run_tui(
     session: AgentSession,
     runtime: TuiRuntimeConfig,
-) -> Result<ExitCode, TuiError> {
+) -> Result<ExitSummary, TuiError> {
     enable_raw_mode()?;
     let mut stdout = stdout();
     // Bracketed paste plus keyboard enhancement for reliable key disambiguation.
@@ -3334,7 +3365,15 @@ pub async fn run_tui(
     )?;
     terminal.show_cursor()?;
 
-    result.map(|_| app.last_exit)
+    result.map(|_| {
+        let report = app.session.token_usage_report();
+        ExitSummary {
+            exit_code: app.last_exit,
+            session_id: app.session.session_id.to_string(),
+            token_usage: (report.api.total_api_tokens() > 0)
+                .then(|| format_exit_token_usage(&report)),
+        }
+    })
 }
 
 async fn run_loop(
@@ -4794,7 +4833,7 @@ mod tests {
             text.push('\n');
         }
         assert!(text.contains("gpt-test"), "chrome missing model:\n{text}");
-        assert!(text.contains("in 0 · out 0 · tok 0"), "footer missing usage:\n{text}");
+        assert!(text.contains("in 0 · out 0 · total 0"), "footer missing usage:\n{text}");
     }
 
     #[tokio::test]
@@ -5101,5 +5140,65 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn exit_summary_formats_token_usage() {
+        let report = forge_core::TokenUsageReport {
+            api: forge_core::SessionTokenUsage {
+                prompt_tokens: 6_094,
+                completion_tokens: 36,
+                model_calls_with_usage: 1,
+                model_steps: 1,
+                thinking_tokens_est: 19,
+                prompt_cache_hits: 5_504,
+                prompt_cache_writes: 0,
+            },
+            context_tokens_est: 0,
+            context_capacity: 1,
+            context_pct: 0.0,
+            system_tokens_est: 0,
+            user_tokens_est: 0,
+            assistant_tokens_est: 0,
+            tool_tokens_est: 0,
+            thinking_in_context_est: 0,
+            message_count: 0,
+            tool_message_count: 0,
+        };
+
+        assert_eq!(
+            format_exit_token_usage(&report),
+            "Token usage: total=6,130 input=6,094 (+ 5,504 cached) output=36 (reasoning 19)"
+        );
+    }
+
+    #[test]
+    fn footer_usage_formats_with_total_and_commas() {
+        let report = forge_core::TokenUsageReport {
+            api: forge_core::SessionTokenUsage {
+                prompt_tokens: 6_094,
+                completion_tokens: 36,
+                model_calls_with_usage: 1,
+                model_steps: 1,
+                thinking_tokens_est: 19,
+                prompt_cache_hits: 5_504,
+                prompt_cache_writes: 0,
+            },
+            context_tokens_est: 0,
+            context_capacity: 1,
+            context_pct: 0.0,
+            system_tokens_est: 0,
+            user_tokens_est: 0,
+            assistant_tokens_est: 0,
+            tool_tokens_est: 0,
+            thinking_in_context_est: 0,
+            message_count: 0,
+            tool_message_count: 0,
+        };
+
+        assert_eq!(
+            footer_usage_summary(None, &report),
+            "in 6,094 · out 36 · total 6,130"
+        );
     }
 }
