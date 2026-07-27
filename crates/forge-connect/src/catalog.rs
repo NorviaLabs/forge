@@ -1,7 +1,8 @@
 //! Remote model catalog fetch + on-disk cache (connect-command.md §3.5).
 //!
 //! After `/connect`, Forge can list live models from each provider and feed `/model`.
-//! Uses cached or live provider catalogs; providers own model availability.
+//! A models.dev registry supplies durable public metadata; provider catalogs remain
+//! account-specific availability signals.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -15,12 +16,28 @@ use crate::store::{resolve_key, CredentialStore};
 
 /// Default TTL for cached catalog entries (1 hour).
 pub const DEFAULT_TTL_SECS: u64 = 3600;
+/// Public registry data changes less frequently than a provider's account catalog.
+pub const MODELS_DEV_TTL_SECS: u64 = 24 * 60 * 60;
+const MODELS_DEV_URL: &str = "https://models.dev/api.json";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CatalogSource {
+    /// Directly returned by the connected provider for this account.
+    Live,
+    /// Previously returned by the connected provider for this account.
+    Cached,
+    /// Public models.dev metadata; an account may still lack access.
+    Registry,
+    /// Built-in emergency fallback when no catalog data is available.
+    Default,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CatalogEntry {
     /// Native provider/model string, e.g. `openai/gpt-4.1-mini`.
     pub id: String,
     pub profile_id: String,
+    pub source: CatalogSource,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -31,6 +48,12 @@ struct CatalogFile {
     /// profile_id → unix secs when last refreshed
     #[serde(default)]
     fetched_at: BTreeMap<String, u64>,
+    /// profile_id → public models.dev model ids, namespaced for Forge routing.
+    #[serde(default)]
+    registry_models: BTreeMap<String, Vec<String>>,
+    /// Unix seconds when the public registry was refreshed.
+    #[serde(default)]
+    registry_fetched_at: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -119,6 +142,81 @@ impl ModelCatalogCache {
         file.fetched_at.remove(profile_id);
         self.save(&file)
     }
+
+    pub fn registry_is_fresh(&self) -> bool {
+        self.load()
+            .registry_fetched_at
+            .is_some_and(|t| Self::now_secs().saturating_sub(t) < MODELS_DEV_TTL_SECS)
+    }
+
+    pub fn get_registry_cached(&self, profile_id: &str) -> Vec<String> {
+        self.load()
+            .registry_models
+            .get(profile_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn put_registry(&self, models: BTreeMap<String, Vec<String>>) -> Result<(), String> {
+        let mut file = self.load();
+        file.registry_models = models;
+        file.registry_fetched_at = Some(Self::now_secs());
+        self.save(&file)
+    }
+}
+
+/// Refresh the public models.dev fallback registry for the configured Forge profiles.
+/// The registry is intentionally metadata-only: it never claims a model is entitled
+/// for the current account, which remains the job of a provider's live catalog.
+pub fn refresh_models_dev_registry(
+    profiles: &[ConnectProfile],
+    cache: &ModelCatalogCache,
+) -> Result<usize, String> {
+    let ua = format!("forge-connect/{}", env!("CARGO_PKG_VERSION"));
+    let body: serde_json::Value = ureq::get(MODELS_DEV_URL)
+        .set("User-Agent", &ua)
+        .timeout(std::time::Duration::from_secs(10))
+        .call()
+        .map_err(|e| format!("models.dev registry: {e}"))?
+        .into_json()
+        .map_err(|e| format!("models.dev registry JSON: {e}"))?;
+
+    let mut by_profile = BTreeMap::new();
+    let mut total = 0usize;
+    for profile in profiles {
+        let mut ids = std::collections::BTreeSet::new();
+        for provider_id in &profile.models_dev_providers {
+            let Some(models) = body
+                .get(provider_id)
+                .and_then(|provider| provider.get("models"))
+                .and_then(serde_json::Value::as_object)
+            else {
+                continue;
+            };
+            for (model_id, model) in models {
+                if models_dev_model_is_agent_compatible(model) {
+                    ids.insert(format!("{}/{}", profile.model_provider_prefix, model_id));
+                }
+            }
+        }
+        total += ids.len();
+        by_profile.insert(profile.id.clone(), ids.into_iter().collect());
+    }
+    cache.put_registry(by_profile)?;
+    Ok(total)
+}
+
+fn models_dev_model_is_agent_compatible(model: &serde_json::Value) -> bool {
+    if model.get("status").and_then(|v| v.as_str()) == Some("deprecated") {
+        return false;
+    }
+    if model.get("tool_call").and_then(|v| v.as_bool()) != Some(true) {
+        return false;
+    }
+    model
+        .pointer("/modalities/output")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|output| output.iter().any(|m| m.as_str() == Some("text")))
 }
 
 /// Resolve API key for catalog HTTP (env or store). OAuth access token for xAI.
@@ -477,7 +575,8 @@ pub fn refresh_profile_catalog(
     Ok(models)
 }
 
-/// Models for the picker: live/cached catalog for each connected profile, else defaults.
+/// Models for the picker: account-returned rows first, supplemented by models.dev
+/// public metadata, then the profile's minimal built-in fallback.
 pub fn models_for_picker(
     profiles: &[ConnectProfile],
     store: &CredentialStore,
@@ -487,25 +586,53 @@ pub fn models_for_picker(
     let mut out = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
 
+    if refresh_stale && !cache.registry_is_fresh() {
+        // Registry availability must never prevent opening the picker. The existing
+        // cache and built-ins below remain usable offline.
+        let _ = refresh_models_dev_registry(profiles, cache);
+    }
+
     for p in profiles {
-        let mut ids = Vec::new();
+        let mut entries = Vec::new();
         let is_ollama = p.id == crate::ollama::PROFILE_ID;
         if refresh_stale && (is_ollama || !cache.is_fresh(&p.id)) {
             if let Ok(m) = refresh_profile_catalog(p, store, cache) {
-                ids = m;
+                entries.extend(m.into_iter().map(|id| (id, CatalogSource::Live)));
             }
         }
-        if ids.is_empty() && !(is_ollama && refresh_stale) {
-            ids = cache.get_cached(&p.id);
+        if entries.is_empty() && !(is_ollama && refresh_stale) {
+            entries.extend(
+                cache
+                    .get_cached(&p.id)
+                    .into_iter()
+                    .map(|id| (id, CatalogSource::Cached)),
+            );
         }
-        if ids.is_empty() && !is_ollama {
-            ids = p.default_models.clone();
+        if !is_ollama {
+            // A provider catalog verifies some models for this account, but it is
+            // often incomplete (notably the Codex subscription endpoint). Keep
+            // those rows first and append registry rows as explicitly-unverified.
+            entries.extend(
+                cache
+                    .get_registry_cached(&p.id)
+                    .into_iter()
+                    .map(|id| (id, CatalogSource::Registry)),
+            );
         }
-        for id in ids {
+        if entries.is_empty() && !is_ollama {
+            entries.extend(
+                p.default_models
+                    .iter()
+                    .cloned()
+                    .map(|id| (id, CatalogSource::Default)),
+            );
+        }
+        for (id, source) in entries {
             if seen.insert(id.clone()) {
                 out.push(CatalogEntry {
                     id,
                     profile_id: p.id.clone(),
+                    source,
                 });
             }
         }
@@ -585,6 +712,67 @@ mod tests {
         let entries = models_for_picker(std::slice::from_ref(&p), &store, &cache, false);
         assert!(!entries.is_empty());
         assert!(entries.iter().all(|e| e.id.starts_with("openai/")));
+    }
+
+    #[test]
+    fn registry_models_are_used_when_account_catalog_is_unavailable() {
+        let dir = tempdir().unwrap();
+        let cache = ModelCatalogCache::new(dir.path().join("c.toml"));
+        let store = CredentialStore::new(dir.path().join("k.toml"));
+        let profile = crate::openai_codex::openai_codex_profile();
+        let mut registry = BTreeMap::new();
+        registry.insert(
+            profile.id.clone(),
+            vec!["openai-codex/gpt-5.6-terra".into()],
+        );
+        cache.put_registry(registry).unwrap();
+
+        let entries = models_for_picker(&[profile], &store, &cache, false);
+        assert_eq!(entries[0].id, "openai-codex/gpt-5.6-terra");
+        assert_eq!(entries[0].source, CatalogSource::Registry);
+    }
+
+    #[test]
+    fn registry_supplements_a_partial_account_catalog() {
+        let dir = tempdir().unwrap();
+        let cache = ModelCatalogCache::new(dir.path().join("c.toml"));
+        let store = CredentialStore::new(dir.path().join("k.toml"));
+        let profile = crate::openai_codex::openai_codex_profile();
+        cache
+            .put(&profile.id, vec!["openai-codex/gpt-5.6-sol".into()])
+            .unwrap();
+        let mut registry = BTreeMap::new();
+        registry.insert(
+            profile.id.clone(),
+            vec![
+                "openai-codex/gpt-5.6-sol".into(),
+                "openai-codex/gpt-5.6-terra".into(),
+            ],
+        );
+        cache.put_registry(registry).unwrap();
+
+        let entries = models_for_picker(&[profile], &store, &cache, false);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].source, CatalogSource::Cached);
+        assert_eq!(entries[1].id, "openai-codex/gpt-5.6-terra");
+        assert_eq!(entries[1].source, CatalogSource::Registry);
+    }
+
+    #[test]
+    fn models_dev_filter_excludes_non_agent_models() {
+        assert!(models_dev_model_is_agent_compatible(&serde_json::json!({
+            "tool_call": true,
+            "modalities": { "output": ["text"] }
+        })));
+        assert!(!models_dev_model_is_agent_compatible(&serde_json::json!({
+            "tool_call": false,
+            "modalities": { "output": ["text"] }
+        })));
+        assert!(!models_dev_model_is_agent_compatible(&serde_json::json!({
+            "tool_call": true,
+            "modalities": { "output": ["text"] },
+            "status": "deprecated"
+        })));
     }
 
     #[test]

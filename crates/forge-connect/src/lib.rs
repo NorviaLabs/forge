@@ -22,7 +22,8 @@ pub use anthropic::{anthropic_profile, PROFILE_ID as ANTHROPIC_PROFILE_ID};
 pub use auth::{AuthMode, OauthPending, OauthTokens};
 pub use catalog::{
     credential_for_catalog, fetch_remote_models, models_for_picker, normalize_model_id,
-    refresh_profile_catalog, CatalogEntry, ModelCatalogCache, DEFAULT_TTL_SECS,
+    refresh_models_dev_registry, refresh_profile_catalog, CatalogEntry, CatalogSource,
+    ModelCatalogCache, DEFAULT_TTL_SECS, MODELS_DEV_TTL_SECS,
 };
 pub use cost::provider_cost_report;
 pub use oauth_xai::{
