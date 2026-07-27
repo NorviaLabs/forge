@@ -393,6 +393,15 @@ impl AgentSession {
         self.context.load_skills().len()
     }
 
+    /// Names of project/global skills available to the current session.
+    pub fn loaded_skill_names(&self) -> Vec<String> {
+        self.context
+            .load_skills()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect()
+    }
+
     pub fn list_tools(&self) -> Vec<String> {
         let desc = self.tools.list_descriptors();
         if self.enable_gov {
