@@ -141,10 +141,6 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
             desc: "Switch provider/model (config only)".into(),
         },
         PaletteItem {
-            cmd: "/model refresh".into(),
-            desc: "Refresh model catalogs".into(),
-        },
-        PaletteItem {
             cmd: "/compact".into(),
             desc: "Force handoff + clear context".into(),
         },
@@ -669,7 +665,6 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                     if matches!(
                         cmd.as_str(),
                         "/status"
-                            | "/model refresh"
                             | "/quit"
                             | "/compact"
                             | "/sync"
@@ -1526,7 +1521,7 @@ mod tests {
             }
         }
         assert!(
-            items.len() >= 13,
+            items.len() >= 12,
             "expected full command list, got {}",
             items.len()
         );
