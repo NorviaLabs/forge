@@ -187,9 +187,21 @@ fn footer_usage_summary(
             ..Default::default()
         };
     }
-    let usage = lines.iter().find(|line| line.starts_with("Session limit:")).cloned().unwrap_or_default();
-    let weekly_limit = lines.iter().find(|line| line.starts_with("Weekly limit:")).cloned().unwrap_or_default();
-    let credits = lines.iter().find(|line| line.starts_with("Credits:") || line.starts_with("Credit balance:")).cloned().unwrap_or_default();
+    let usage = lines
+        .iter()
+        .find(|line| line.starts_with("Session limit:"))
+        .cloned()
+        .unwrap_or_default();
+    let weekly_limit = lines
+        .iter()
+        .find(|line| line.starts_with("Weekly limit:"))
+        .cloned()
+        .unwrap_or_default();
+    let credits = lines
+        .iter()
+        .find(|line| line.starts_with("Credits:") || line.starts_with("Credit balance:"))
+        .cloned()
+        .unwrap_or_default();
     crate::widgets::FooterModel {
         usage,
         weekly_limit,
@@ -197,6 +209,10 @@ fn footer_usage_summary(
         usage_summary: footer_usage_summary_with_cost(report, cost),
         ..Default::default()
     }
+}
+
+fn footer_provider_id(provider: &str, connect_profile: Option<&str>) -> String {
+    connect_profile.unwrap_or(provider).to_owned()
 }
 
 pub struct TuiApp {
@@ -2175,6 +2191,10 @@ Reply with ONLY the commit message line.\n\n\
         } else {
             "/ commands  ·  F1 help  ·  Esc cancel".into()
         };
+        let footer_provider = footer_provider_id(
+            self.runtime.provider.as_str(),
+            status.connect_profile.as_deref(),
+        );
         let footer = FooterModel {
             cwd: self.runtime.cwd.display().to_string(),
             session_short: status.session_short,
@@ -2192,7 +2212,7 @@ Reply with ONLY the commit message line.\n\n\
             ..footer_usage_summary(
                 &context,
                 self.active_model_cost(),
-                self.runtime.provider.as_str(),
+                footer_provider.as_str(),
                 self.runtime.model_label.as_str(),
             )
         };
@@ -5240,5 +5260,14 @@ mod tests {
             ),
             "in 1,000,000 · out 500,000 · total 1,500,000 · $10.5000"
         );
+    }
+
+    #[test]
+    fn footer_limits_use_connected_profile_instead_of_native_transport() {
+        assert_eq!(
+            footer_provider_id("native", Some("openai-codex")),
+            "openai-codex"
+        );
+        assert_eq!(footer_provider_id("mock", None), "mock");
     }
 }
