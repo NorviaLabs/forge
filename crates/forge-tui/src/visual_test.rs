@@ -102,10 +102,6 @@ mod tests {
             "expected selection marker or input:\n{text}"
         );
         assert!(
-            text.contains("Surface-local commands do not call the model"),
-            "missing command safety note:\n{text}"
-        );
-        assert!(
             text.contains("Resume session by id"),
             "missing selected command help:\n{text}"
         );

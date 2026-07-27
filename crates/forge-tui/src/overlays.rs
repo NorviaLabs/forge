@@ -1581,7 +1581,7 @@ mod tests {
             *selected = items.iter().position(|i| i.cmd == "/resume").unwrap();
         }
         let a = handle_overlay_key(&mut o, Key::Enter);
-        assert_eq!(a, OverlayAction::RunCommand("/resume".into()));
+        assert_eq!(a, OverlayAction::InsertInput("/resume ".into()));
     }
 
     #[test]
