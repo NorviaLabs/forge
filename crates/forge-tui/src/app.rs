@@ -45,7 +45,7 @@ use crate::overlays::{
 };
 use crate::sidebar::{SidebarModel, SidebarWidget};
 use crate::theme;
-use crate::widgets::status::{session_chrome_lines, StatusBar};
+use crate::widgets::status::session_chrome_lines;
 use crate::widgets::{
     classify_operator_error, BusyPhase, FeedbackBar, FeedbackModel, FeedbackSeverity, FooterBar,
     FooterModel, InputBar, InputModel, StatusModel,
@@ -1894,7 +1894,6 @@ Reply with ONLY the commit message line.\n\n\
         let slash_mode = self.overlay.is_none() && self.input.text.starts_with('/');
         let regions = split_areas_full(area, fb_h, input_h, !slash_mode && self.sidebar_visible, 0);
         let status = self.refresh_status_model();
-        frame.render_widget(StatusBar { model: &status }, regions.status);
 
         let stream_wait = if self.busy && self.pending_prompt.is_none() {
             let elapsed = if !self.stream_thinking.is_empty() {
