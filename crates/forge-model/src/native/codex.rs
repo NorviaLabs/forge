@@ -113,7 +113,7 @@ pub(super) async fn complete(
 }
 
 fn request_body(
-    client: &NativeModelClient,
+    _client: &NativeModelClient,
     req: &ModelRequest,
     model: &str,
     aliases: &BTreeMap<String, String>,
@@ -346,7 +346,6 @@ fn codex_effort(req: &ModelRequest) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ModelClient;
     use forge_config::Config;
     use forge_types::{Message, MessageRole, ModelStreamEvent, SideEffectClass, ToolDescriptor};
 
