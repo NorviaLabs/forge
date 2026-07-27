@@ -145,7 +145,7 @@ fn parse_patch(patch: &str) -> Result<Vec<PatchAction>, ToolError> {
                     index += 1;
                 }
                 if old_lines == new_lines {
-                    return execution_error("update hunk does not change any content");
+                    continue;
                 }
                 hunks.push(Hunk {
                     old_lines,
@@ -153,7 +153,7 @@ fn parse_patch(patch: &str) -> Result<Vec<PatchAction>, ToolError> {
                 });
             }
             if hunks.is_empty() {
-                return execution_error("update action requires at least one hunk");
+                return execution_error("update action does not change any content");
             }
             actions.push(PatchAction::Update {
                 path: path.to_string(),
@@ -362,5 +362,48 @@ mod tests {
             std::fs::read_to_string(dir.path().join("file.txt")).unwrap(),
             "actual\n"
         );
+    }
+}
+
+#[cfg(test)]
+mod noop_hunk_regression_tests {
+    use super::*;
+    use serde_json::json;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn ignores_noop_hunks_when_other_hunks_change_content() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("file.txt"), "one\ntwo\nthree\n").unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let patch = "*** Begin Patch\n*** Update File: file.txt\n@@\n one\n two\n@@\n two\n-three\n+done\n*** End Patch";
+
+        let output = ApplyPatchTool
+            .call(&ctx, json!({"patch": patch}))
+            .await
+            .unwrap();
+
+        assert!(!output.is_error);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("file.txt")).unwrap(),
+            "one\ntwo\ndone\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_update_when_all_hunks_are_noops() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("file.txt"), "one\ntwo\n").unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let patch = "*** Begin Patch\n*** Update File: file.txt\n@@\n one\n two\n*** End Patch";
+
+        let error = ApplyPatchTool
+            .call(&ctx, json!({"patch": patch}))
+            .await
+            .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("update action does not change any content"));
     }
 }
