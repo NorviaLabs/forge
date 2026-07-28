@@ -371,6 +371,8 @@ pub struct TuiApp {
     /// User preference; narrow terminals still hide the sidebar responsively.
     sidebar_visible: bool,
     inspector_view: InspectorView,
+    /// Selected index in the changed-files inventory for Diff workspace.
+    diff_selected: usize,
     /// Soft-cancel in-flight turn (Esc while busy).
     cancel_requested: bool,
     /// Tools allowed for the rest of this session (HITL "s").
@@ -453,6 +455,7 @@ impl TuiApp {
             file_explorer: FileExplorer::new(Some(workspace_root)),
             sidebar_visible: true,
             inspector_view: InspectorView::default(),
+            diff_selected: 0,
             cancel_requested: false,
             hitl_session_allow: HashSet::new(),
             toast: None,
@@ -2866,53 +2869,51 @@ Reply with ONLY the commit message line.\n\n\
             return;
         }
 
+        let changed = gs.changed_files();
+        let selected = self.diff_selected.min(changed.len().saturating_sub(1));
+        let selected_path = changed.get(selected).map(|f| &f.path);
+
         let mut lines = vec![Line::from(Span::styled("CHANGES", theme::brand()))];
         lines.push(Line::from(""));
 
-        let mut staged = Vec::new();
-        let mut unstaged = Vec::new();
-        let mut untracked = Vec::new();
-        let mut conflicts = Vec::new();
-
-        for (path, status) in &gs.status {
-            let path_str = path.display().to_string();
-            match status {
-                GitStatusKind::Conflicted => conflicts.push(path_str),
-                GitStatusKind::Added => staged.push(path_str),
-                GitStatusKind::Modified => unstaged.push(path_str),
-                GitStatusKind::Untracked => untracked.push(path_str),
-            }
+        for (i, f) in changed.iter().enumerate() {
+            let marker = if i == selected { "▶ " } else { "  " };
+            let path = f.path.display().to_string();
+            let status = if f.unstaged == Some(GitStatusKind::Modified) {
+                "M"
+            } else if f.unstaged == Some(GitStatusKind::Added) {
+                "A"
+            } else {
+                "?"
+            };
+            lines.push(Line::from(format!("{marker}{status} {path}")));
         }
 
-        if !conflicts.is_empty() {
-            lines.push(Line::from(Span::styled("Conflicts", theme::danger())));
-            for p in conflicts {
-                lines.push(Line::from(Span::styled(format!(" U {}", p), theme::danger())));
-            }
-            lines.push(Line::from(""));
-        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled("UNSTAGED DIFF", theme::info())));
 
-        if !staged.is_empty() {
-            lines.push(Line::from(Span::styled("Staged", theme::ok())));
-            for p in staged {
-                lines.push(Line::from(Span::styled(format!(" A {}", p), theme::ok())));
+        if let Some(path) = selected_path {
+            match gs.get_unstaged_diff(&self.runtime.cwd, path) {
+                Ok(diff) => {
+                    for line in diff.lines().take(20) {
+                        let style = if line.starts_with('+') {
+                            theme::ok()
+                        } else if line.starts_with('-') {
+                            theme::danger()
+                        } else if line.starts_with("@@") {
+                            theme::warn()
+                        } else {
+                            theme::muted()
+                        };
+                        lines.push(Line::styled(line.to_string(), style));
+                    }
+                }
+                Err(e) => {
+                    lines.push(Line::styled(format!("Unable to load diff: {}", e), theme::danger()));
+                }
             }
-            lines.push(Line::from(""));
-        }
-
-        if !unstaged.is_empty() {
-            lines.push(Line::from(Span::styled("Unstaged", theme::info())));
-            for p in unstaged {
-                lines.push(Line::from(Span::styled(format!(" M {}", p), theme::info())));
-            }
-            lines.push(Line::from(""));
-        }
-
-        if !untracked.is_empty() {
-            lines.push(Line::from(Span::styled("Untracked", theme::muted())));
-            for p in untracked {
-                lines.push(Line::from(Span::styled(format!(" ? {}", p), theme::muted())));
-            }
+        } else {
+            lines.push(Line::from("No unstaged file selected."));
         }
 
         Paragraph::new(lines)
