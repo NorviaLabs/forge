@@ -2687,6 +2687,7 @@ Reply with ONLY the commit message line.\n\n\
             }
             KeyCode::Char('r') if key.modifiers.is_empty() => {
                 self.source_viewer.refresh(self.session.workspace_root());
+                self.file_explorer.refresh_git_status();
                 true
             }
             KeyCode::Char('h') if key.modifiers.is_empty() => {
@@ -2977,6 +2978,7 @@ Reply with ONLY the commit message line.\n\n\
                 self.workspace_mode = next;
                 if next == WorkspaceMode::Editor {
                     self.source_viewer.refresh(self.session.workspace_root());
+                    self.file_explorer.refresh_git_status();
                 }
             }
             KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => {
@@ -2984,6 +2986,7 @@ Reply with ONLY the commit message line.\n\n\
                 self.workspace_mode = next;
                 if next == WorkspaceMode::Editor {
                     self.source_viewer.refresh(self.session.workspace_root());
+                    self.file_explorer.refresh_git_status();
                 }
             }
             KeyCode::Char('1') if key.modifiers.contains(KeyModifiers::ALT) => {
@@ -3697,14 +3700,15 @@ Reply with ONLY the commit message line.\n\n\
                     // Reset per-model-step thinking timers for multi-tool loops.
                     self.thinking_started = None;
                     self.thought_secs = None;
+                    let mut turn_done = false;
                     match out {
                         ApplyOutcome::Done(_) => {
                             outcome_err = None;
-                            break 'turns;
+                            turn_done = true;
                         }
                         ApplyOutcome::Hitl(_) => {
                             outcome_err = None;
-                            break 'turns;
+                            turn_done = true;
                         }
                         ApplyOutcome::Continue => {
                             self.busy_phase = BusyPhase::Model;
@@ -3713,6 +3717,10 @@ Reply with ONLY the commit message line.\n\n\
                             }
                             continue;
                         }
+                    }
+                    if turn_done {
+                        self.file_explorer.refresh_git_status();
+                        break 'turns;
                     }
                 }
                 Err(e) => {

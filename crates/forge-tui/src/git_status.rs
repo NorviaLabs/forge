@@ -4,6 +4,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, TryRecvError};
 
+use ratatui::style::Style;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GitStatusKind {
     Modified,
@@ -19,6 +21,17 @@ impl GitStatusKind {
             Self::Added => "A",
             Self::Untracked => "?",
             Self::Conflicted => "U",
+        }
+    }
+
+    /// Semantic style for the status marker. The marker character is always
+    /// rendered; colour is a secondary cue.
+    pub fn style(self) -> Style {
+        match self {
+            Self::Modified => crate::theme::info(),
+            Self::Added => crate::theme::ok(),
+            Self::Untracked => crate::theme::muted(),
+            Self::Conflicted => crate::theme::danger(),
         }
     }
 
@@ -274,5 +287,105 @@ mod tests {
         std::fs::write(root.path().join("a.txt"), "x").unwrap();
         let map = load_git_status(root.path()).unwrap();
         assert!(map.is_empty());
+    }
+
+    #[tokio::test]
+    async fn load_git_status_handles_spaces_and_unicode() {
+        let root = tempfile::tempdir().unwrap();
+        Command::new("git")
+            .arg("init")
+            .current_dir(root.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "forge@test"])
+            .current_dir(root.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Forge Test"])
+            .current_dir(root.path())
+            .output()
+            .unwrap();
+        std::fs::write(root.path().join("file with spaces.txt"), "x").unwrap();
+        std::fs::write(root.path().join("文件.txt"), "y").unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(root.path())
+            .output()
+            .unwrap();
+
+        let map = load_git_status(root.path()).unwrap();
+        assert_eq!(
+            map.get(Path::new("file with spaces.txt")),
+            Some(&GitStatusKind::Added)
+        );
+        assert_eq!(map.get(Path::new("文件.txt")), Some(&GitStatusKind::Added));
+    }
+
+    #[test]
+    fn cache_replaces_status_on_refresh_coalescing() {
+        fn make_repo_with(name: &str) -> tempfile::TempDir {
+            let root = tempfile::tempdir().unwrap();
+            Command::new("git")
+                .arg("init")
+                .current_dir(root.path())
+                .output()
+                .unwrap();
+            Command::new("git")
+                .args(["config", "user.email", "forge@test"])
+                .current_dir(root.path())
+                .output()
+                .unwrap();
+            Command::new("git")
+                .args(["config", "user.name", "Forge Test"])
+                .current_dir(root.path())
+                .output()
+                .unwrap();
+            std::fs::write(root.path().join(name), "x").unwrap();
+            Command::new("git")
+                .args(["add", name])
+                .current_dir(root.path())
+                .output()
+                .unwrap();
+            root
+        }
+
+        let first = make_repo_with("first.txt");
+        let second = make_repo_with("second.txt");
+        let mut cache = GitStatusCache::new();
+
+        cache.start_refresh(first.path().to_path_buf());
+        // Start a second refresh while the first is in flight. This must not block.
+        cache.start_refresh(second.path().to_path_buf());
+        while cache.loading {
+            cache.poll();
+        }
+
+        assert!(cache.status.contains_key(Path::new("second.txt")));
+        assert!(!cache.status.contains_key(Path::new("first.txt")));
+        assert!(cache.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn load_git_status_reports_git_failure() {
+        let root = tempfile::tempdir().unwrap();
+        Command::new("git")
+            .arg("init")
+            .current_dir(root.path())
+            .output()
+            .unwrap();
+        // Corrupt the repository so `git status` fails.
+        std::fs::remove_file(root.path().join(".git/HEAD")).unwrap();
+        let result = load_git_status(root.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn clean_file_has_no_marker() {
+        let mut map = HashMap::new();
+        map.insert(PathBuf::from("dirty.txt"), GitStatusKind::Modified);
+        // A file not present in the status map is considered clean.
+        assert!(map.get(Path::new("clean.txt")).is_none());
     }
 }
