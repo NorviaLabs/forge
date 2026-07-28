@@ -156,7 +156,11 @@ mod tests {
         let (dir, mut app) = app().await;
         let workspace = dir.path().join("repo");
         fs::create_dir_all(&workspace).unwrap();
-        Command::new("git").arg("init").current_dir(&workspace).output().unwrap();
+        Command::new("git")
+            .arg("init")
+            .current_dir(&workspace)
+            .output()
+            .unwrap();
         fs::write(workspace.join("x.txt"), "changed").unwrap();
         app.session = rebuild_session(dir.path(), &workspace).await;
         app.runtime.cwd = workspace.clone();
@@ -587,6 +591,8 @@ mod tests {
             f.render_widget(
                 SourceViewerWidget {
                     viewer: &mut app.source_viewer,
+                    focused: false,
+                    mode_label: "NAV",
                 },
                 f.area(),
             );

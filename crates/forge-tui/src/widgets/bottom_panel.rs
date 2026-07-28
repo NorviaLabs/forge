@@ -87,6 +87,7 @@ pub struct BottomPanelModel<'a> {
 
 pub struct BottomPanel<'a> {
     pub model: BottomPanelModel<'a>,
+    pub focused: bool,
 }
 
 impl Widget for BottomPanel<'_> {
@@ -94,26 +95,51 @@ impl Widget for BottomPanel<'_> {
         if area.height == 0 || !self.model.state.open {
             return;
         }
+        let style = if self.focused {
+            theme::brand()
+        } else {
+            theme::muted()
+        };
         let title = Line::from(
-            BottomPanelTab::ALL
-                .into_iter()
-                .enumerate()
-                .flat_map(|(idx, tab)| {
-                    let style = if tab == self.model.state.active {
-                        theme::brand()
-                    } else {
-                        theme::muted()
-                    };
-                    [
-                        Span::styled(format!(" Alt+{} {} ", idx + 1, tab.label()), style),
-                        Span::styled(" ", theme::muted()),
-                    ]
-                })
-                .collect::<Vec<_>>(),
+            vec![Span::styled(
+                if self.focused {
+                    " Bottom · NAV ".to_string()
+                } else {
+                    " Bottom ".to_string()
+                },
+                style,
+            )]
+            .into_iter()
+            .chain(
+                BottomPanelTab::ALL
+                    .into_iter()
+                    .enumerate()
+                    .flat_map(|(idx, tab)| {
+                        let tab_style = if tab == self.model.state.active {
+                            if self.focused {
+                                theme::brand()
+                            } else {
+                                theme::dim()
+                            }
+                        } else {
+                            theme::muted()
+                        };
+                        [
+                            Span::styled(format!(" Alt+{} {} ", idx + 1, tab.label()), tab_style),
+                            Span::styled(" ", theme::muted()),
+                        ]
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .collect::<Vec<_>>(),
         );
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(theme::border())
+            .border_style(if self.focused {
+                theme::brand()
+            } else {
+                theme::border()
+            })
             .title(title)
             .title_bottom(Line::from("Ctrl+P close"));
         let inner = block.inner(area);
