@@ -35,6 +35,7 @@ impl BottomPanelTab {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BottomPanelState {
     pub open: bool,
+    pub focused: bool,
     pub active: BottomPanelTab,
 }
 
@@ -42,6 +43,7 @@ impl Default for BottomPanelState {
     fn default() -> Self {
         Self {
             open: false,
+            focused: false,
             active: BottomPanelTab::Terminal,
         }
     }
@@ -50,11 +52,30 @@ impl Default for BottomPanelState {
 impl BottomPanelState {
     pub fn toggle(&mut self) {
         self.open = !self.open;
+        self.focused = self.open;
     }
 
     pub fn open_tab(&mut self, tab: BottomPanelTab) {
         self.active = tab;
         self.open = true;
+        self.focused = true;
+    }
+
+    pub fn next_tab(&mut self) {
+        let index = BottomPanelTab::ALL
+            .iter()
+            .position(|tab| *tab == self.active)
+            .unwrap_or(0);
+        self.active = BottomPanelTab::ALL[(index + 1) % BottomPanelTab::ALL.len()];
+    }
+
+    pub fn previous_tab(&mut self) {
+        let index = BottomPanelTab::ALL
+            .iter()
+            .position(|tab| *tab == self.active)
+            .unwrap_or(0);
+        self.active = BottomPanelTab::ALL
+            [(index + BottomPanelTab::ALL.len() - 1) % BottomPanelTab::ALL.len()];
     }
 }
 
@@ -188,6 +209,7 @@ mod tests {
     fn default_panel_is_closed_on_terminal() {
         let state = BottomPanelState::default();
         assert!(!state.open);
+        assert!(!state.focused);
         assert_eq!(state.active, BottomPanelTab::Terminal);
     }
 
@@ -196,9 +218,20 @@ mod tests {
         let mut state = BottomPanelState::default();
         state.open_tab(BottomPanelTab::Activity);
         assert!(state.open);
+        assert!(state.focused);
         assert_eq!(state.active, BottomPanelTab::Activity);
         state.toggle();
         assert!(!state.open);
+        assert!(!state.focused);
         assert_eq!(state.active, BottomPanelTab::Activity);
+    }
+
+    #[test]
+    fn tabs_cycle_in_both_directions() {
+        let mut state = BottomPanelState::default();
+        state.previous_tab();
+        assert_eq!(state.active, BottomPanelTab::Diagnostics);
+        state.next_tab();
+        assert_eq!(state.active, BottomPanelTab::Terminal);
     }
 }
