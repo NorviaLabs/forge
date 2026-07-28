@@ -25,6 +25,8 @@ pub enum Overlay {
     },
     Hitl {
         payload: HitlPayload,
+        /// Whether to show the expanded policy-details section.
+        expanded: bool,
     },
     TurnLimit {
         turns: u32,
@@ -329,7 +331,10 @@ impl Overlay {
     }
 
     pub fn hitl(payload: HitlPayload) -> Self {
-        Self::Hitl { payload }
+        Self::Hitl {
+            payload,
+            expanded: false,
+        }
     }
 
     pub fn turn_limit(turns: u32) -> Self {
@@ -863,6 +868,15 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
         Key::Char('d') | Key::Char('D') if matches!(overlay, Overlay::Hitl { .. }) => {
             OverlayAction::HitlDeny
         }
+        Key::Char('v') | Key::Char('V') if matches!(overlay, Overlay::Hitl { .. }) => {
+            if let Overlay::Hitl {
+                ref mut expanded, ..
+            } = overlay
+            {
+                *expanded = !*expanded;
+            }
+            OverlayAction::None
+        }
         Key::Char('y') | Key::Char('Y') if matches!(overlay, Overlay::TurnLimit { .. }) => {
             OverlayAction::ContinueTurns
         }
@@ -895,7 +909,66 @@ fn hitl_args(args: &serde_json::Value) -> String {
         .and_then(|value| value.as_str())
         .map(str::to_owned)
         .unwrap_or_else(|| serde_json::to_string(args).unwrap_or_else(|_| "{}".into()));
-    value.chars().take(240).collect()
+    value.chars().take(300).collect()
+}
+
+fn hitl_risk_summary(tool: &str, args: &serde_json::Value) -> &'static str {
+    // Deterministic consequence summary based on tool and argument metadata.
+    // Keep these concise; the expanded policy details contain the full reason.
+    match tool {
+        // File-write tools.
+        "write" => "This writes or modifies file contents.",
+        "edit" | "edit_file" | "publish" => "This edits or patches a file.",
+        "append" => "This appends content to a file.",
+
+        // Shell / command execution.
+        "bash" | "sh" | "cmd" | "powershell" | "shell" | "exec" => {
+            "This runs a shell command with your permissions."
+        }
+
+        // Network / remote.
+        "http" | "fetch" | "curl" | "wget" => "This makes an external network request.",
+        "ssh" | "scp" | "rsync" => "This connects to a remote host.",
+        "git" | "go_git"
+            if args
+                .get("command")
+                .and_then(|v| v.as_str())
+                .map_or(false, |s| s.starts_with("push")) =>
+        {
+            "This pushes changes to a remote repository."
+        }
+        "git" | "go_git" => "This runs a Git command in the repository.",
+        "fork" | "clone" => "This creates a copy of a remote repository.",
+
+        // Package / system mutation.
+        "install" | "pip_install" | "npm_install" | "cargo_install" | "brew" | "apt"
+        | "apt-get" | "apk" | "pacman" => "This installs or modifies system packages.",
+        "rm" | "remove" | "del" | "delete" | "unlink" => {
+            "This permanently removes files or directories."
+        }
+        "mv" | "rename" | "move" => "This moves or renames files.",
+
+        // Database.
+        "sql" | "psql" | "mysql" | "sqlite" => "This executes a database query.",
+
+        // Unknown.
+        _ => "This command may modify your workspace or cause external side effects.",
+    }
+}
+
+fn hitl_command(tool: &str, args: &serde_json::Value) -> String {
+    let raw = hitl_args(args);
+    if tool == "bash" {
+        format!("$ {raw}")
+    } else if tool == "write" || tool == "edit" {
+        if let Some(path) = args.get("path").and_then(|v| v.as_str()) {
+            format!("{tool}  {path}")
+        } else {
+            format!("{tool}  {raw}")
+        }
+    } else {
+        raw
+    }
 }
 
 fn parent_dir(path: &str) -> Option<String> {
@@ -1063,15 +1136,28 @@ impl Widget for OverlayWidget<'_> {
                     )
                     .render(r, buf);
             }
-            Overlay::Hitl { payload } => {
-                let r = centered_rect(56, 38, area);
+            Overlay::Hitl { payload, expanded } => {
+                let r = centered_rect(46, 36, area);
+                let cmd = hitl_command(&payload.tool, &payload.args_redacted);
                 let args = hitl_args(&payload.args_redacted);
-                let body = format!(
-                    "Approve this action?\n\n{}\n\nThis may change your workspace or run a command with side effects.\n\nDetails\nTool:  {}\nArgs:  {args}\nWhy:   {}\n\n\
-Secrets are not shown. If Forge exits, restore this session to continue without redoing completed steps.\n\n\
-[a] Approve once    [s] Allow for session\n[d] Deny            [Esc] Dismiss · remains pending",
-                    payload.reason, payload.tool, payload.reason
+                let risk = hitl_risk_summary(&payload.tool, &payload.args_redacted);
+
+                let mut body = format!(
+                    "{}\n\n{}\n\n{}\n\n  [a] Approve once    [s] Allow for session\n  [d] Deny            [Esc] Dismiss\n",
+                    payload.reason, cmd, risk
                 );
+                if *expanded {
+                    body.push_str(&format!(
+                        "\n━━━ details ━━━\nTool: {}\nArgs: {}\nPolicy: {}\n\n\
+Secrets are not shown. If Forge exits, restore this session to continue\n\
+without redoing completed steps.\n\
+                         ",
+                        payload.tool, args, payload.reason
+                    ));
+                } else {
+                    body.push_str("\n  [v] View policy details");
+                }
+
                 Paragraph::new(body)
                     .wrap(ratatui::widgets::Wrap { trim: true })
                     .block(
@@ -1531,10 +1617,51 @@ mod tests {
             OverlayAction::HitlApprove
         );
         assert_eq!(
+            handle_overlay_key(&mut o, Key::Char('s')),
+            OverlayAction::HitlApproveSession
+        );
+        assert_eq!(
             handle_overlay_key(&mut o, Key::Char('d')),
             OverlayAction::HitlDeny
         );
         assert_eq!(handle_overlay_key(&mut o, Key::Esc), OverlayAction::Close);
+    }
+
+    #[test]
+    fn hitl_toggle_expanded() {
+        let mut o = Overlay::hitl(HitlPayload {
+            call_id: "1".into(),
+            tool: "write".into(),
+            args_redacted: json!({"path": "src/main.rs"}),
+            reason: "Edit tool requires approval".into(),
+        });
+        assert!(!matches!(o, Overlay::Hitl { expanded: true, .. }));
+        handle_overlay_key(&mut o, Key::Char('v'));
+        assert!(matches!(o, Overlay::Hitl { expanded: true, .. }));
+        handle_overlay_key(&mut o, Key::Char('v'));
+        assert!(matches!(
+            o,
+            Overlay::Hitl {
+                expanded: false,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn hitl_risk_summary_works_for_known_tools() {
+        assert_eq!(
+            hitl_risk_summary("bash", &json!({})),
+            "This runs a shell command with your permissions."
+        );
+        assert_eq!(
+            hitl_risk_summary("write", &json!({})),
+            "This writes or modifies file contents."
+        );
+        assert_eq!(
+            hitl_risk_summary("unknown_tool", &json!({})),
+            "This command may modify your workspace or cause external side effects."
+        );
     }
 
     #[test]
