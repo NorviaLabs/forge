@@ -18,6 +18,35 @@ pub enum ToolCardState {
     Error,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActivityCategory {
+    Exploring,
+    Implementing,
+    Validating,
+    Reviewing,
+    Recovering,
+    Waiting,
+}
+
+impl ActivityCategory {
+    fn label(self, running: bool) -> &'static str {
+        match (self, running) {
+            (Self::Exploring, true) => "Exploring repository",
+            (Self::Exploring, false) => "Explored repository",
+            (Self::Implementing, true) => "Implementing changes",
+            (Self::Implementing, false) => "Implemented changes",
+            (Self::Validating, true) => "Running validation",
+            (Self::Validating, false) => "Validation completed",
+            (Self::Reviewing, true) => "Reviewing workspace",
+            (Self::Reviewing, false) => "Reviewed workspace",
+            (Self::Recovering, true) => "Recovering session",
+            (Self::Recovering, false) => "Recovered session",
+            (Self::Waiting, true) => "Waiting",
+            (Self::Waiting, false) => "Waited",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ChatItem {
     /// Brand splash (replaces dumping system prompts into the chat).
@@ -104,6 +133,12 @@ pub enum ChatItem {
         state: ToolCardState,
         /// Optional duration label e.g. "142ms" (when known).
         duration: Option<String>,
+    },
+    ActivityGroup {
+        category: ActivityCategory,
+        summary: String,
+        detail: String,
+        state: ToolCardState,
     },
     /// Unified-ish diff snippet for write tools.
     DiffCard {
@@ -275,6 +310,7 @@ impl ConversationModel {
                 }
             }
         }
+        items = group_routine_activity(items);
         if status == SessionStatus::AwaitingHitl {
             items.push(ChatItem::Banner {
                 text: "Awaiting approval · a approve · s allow session · d deny · Esc dismiss"
@@ -364,8 +400,18 @@ impl ConversationModel {
     }
 
     pub fn with_running_tool(mut self, name: impl Into<String>) -> Self {
+        let name = name.into();
+        if let Some(category) = routine_tool_category(&name, "", None) {
+            self.items.push(ChatItem::ActivityGroup {
+                category,
+                summary: running_activity_summary(category, &name),
+                detail: format!("{name}: tool_intent committed · awaiting result"),
+                state: ToolCardState::Running,
+            });
+            return self;
+        }
         self.items.push(ChatItem::ToolCard {
-            name: name.into(),
+            name,
             summary: "journal: tool_intent committed · awaiting result".into(),
             detail: String::new(),
             state: ToolCardState::Running,
@@ -425,9 +471,14 @@ impl ConversationModel {
 
     /// Index of the last tool card (for expand).
     pub fn last_tool_index(&self) -> Option<usize> {
-        self.items
-            .iter()
-            .rposition(|i| matches!(i, ChatItem::ToolCard { .. } | ChatItem::DiffCard { .. }))
+        self.items.iter().rposition(|i| {
+            matches!(
+                i,
+                ChatItem::ToolCard { .. }
+                    | ChatItem::ActivityGroup { .. }
+                    | ChatItem::DiffCard { .. }
+            )
+        })
     }
 
     pub fn lines(&self) -> Vec<Line<'static>> {
@@ -443,7 +494,12 @@ impl ConversationModel {
         let tool_count = self
             .items
             .iter()
-            .filter(|i| matches!(i, ChatItem::ToolCard { .. }))
+            .filter(|i| {
+                matches!(
+                    i,
+                    ChatItem::ToolCard { .. } | ChatItem::ActivityGroup { .. }
+                )
+            })
             .count();
         let mut tool_i = 0usize;
         let last_tool = self.last_tool_index();
@@ -923,6 +979,59 @@ impl ConversationModel {
                         lines.push(Line::from(""));
                     }
                 }
+                ChatItem::ActivityGroup {
+                    category,
+                    summary,
+                    detail,
+                    state,
+                } => {
+                    tool_i += 1;
+                    let (tag, st) = match state {
+                        ToolCardState::Running => ("●", theme::tool_running_style()),
+                        ToolCardState::Done => ("✓", theme::tool_success_style()),
+                        ToolCardState::Blocked => ("⏸", theme::warn()),
+                        ToolCardState::Error => ("✗", theme::tool_failure_style()),
+                    };
+                    let running = *state == ToolCardState::Running;
+                    let is_last = Some(idx) == last_tool;
+                    let expand = self.opts.tool_expanded && is_last;
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("{tag} "), st),
+                        Span::styled(
+                            category.label(running),
+                            theme::text().add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled("  ", theme::metadata_style()),
+                        Span::styled(summary.clone(), theme::metadata_style()),
+                        Span::styled(
+                            if !expand { "  · Ctrl+O details" } else { "" },
+                            theme::metadata_style(),
+                        ),
+                    ]));
+                    if expand {
+                        lines.push(Line::from(Span::styled(
+                            "  Details are also available in Activity.",
+                            theme::dim(),
+                        )));
+                        for l in detail.lines().take(40) {
+                            lines.push(Line::from(Span::styled(format!("  {l}"), theme::muted())));
+                        }
+                        if detail.lines().count() > 40 {
+                            lines.push(Line::from(Span::styled(
+                                "  … truncated · Ctrl+O collapse",
+                                theme::dim(),
+                            )));
+                        } else {
+                            lines.push(Line::from(Span::styled(
+                                "  (Ctrl+O collapse)",
+                                theme::dim(),
+                            )));
+                        }
+                    }
+                    if gap {
+                        lines.push(Line::from(""));
+                    }
+                }
                 ChatItem::DiffCard {
                     path,
                     lines: dl,
@@ -1273,6 +1382,212 @@ fn result_count_label(count: usize, singular: &str, plural: &str) -> String {
         format!("1 {singular}")
     } else {
         format!("{count} {plural}")
+    }
+}
+
+fn group_routine_activity(items: Vec<ChatItem>) -> Vec<ChatItem> {
+    let mut grouped = Vec::new();
+    let mut pending: Vec<ChatItem> = Vec::new();
+
+    for item in items {
+        if let Some(category) = item_routine_category(&item) {
+            if pending
+                .first()
+                .and_then(item_routine_category)
+                .is_some_and(|current| current == category)
+            {
+                pending.push(item);
+            } else {
+                flush_activity_group(&mut grouped, &mut pending);
+                pending.push(item);
+            }
+        } else {
+            flush_activity_group(&mut grouped, &mut pending);
+            grouped.push(item);
+        }
+    }
+    flush_activity_group(&mut grouped, &mut pending);
+    grouped
+}
+
+fn flush_activity_group(grouped: &mut Vec<ChatItem>, pending: &mut Vec<ChatItem>) {
+    if pending.is_empty() {
+        return;
+    }
+    if pending.len() == 1 {
+        grouped.push(pending.pop().expect("pending item"));
+        return;
+    }
+    let category = pending
+        .first()
+        .and_then(item_routine_category)
+        .expect("routine group");
+    let summary = activity_group_summary(category, pending);
+    let detail = pending
+        .iter()
+        .map(activity_group_detail)
+        .collect::<Vec<_>>()
+        .join("\n---\n");
+    grouped.push(ChatItem::ActivityGroup {
+        category,
+        summary,
+        detail,
+        state: ToolCardState::Done,
+    });
+    pending.clear();
+}
+
+fn item_routine_category(item: &ChatItem) -> Option<ActivityCategory> {
+    match item {
+        ChatItem::ToolCard {
+            name,
+            summary,
+            state: ToolCardState::Done,
+            ..
+        } => routine_tool_category(name, summary, None),
+        _ => None,
+    }
+}
+
+fn routine_tool_category(
+    name: &str,
+    summary: &str,
+    call: Option<&ToolCall>,
+) -> Option<ActivityCategory> {
+    match name {
+        "read_file" | "fffind" | "ffgrep" | "fffind_files" | "ffgrep_files" => {
+            Some(ActivityCategory::Exploring)
+        }
+        "git"
+            if tool_argument(call, "subcommand").is_some_and(is_read_only_git)
+                || summary
+                    .split_whitespace()
+                    .nth(1)
+                    .is_some_and(is_read_only_git) =>
+        {
+            Some(ActivityCategory::Exploring)
+        }
+        "write_file" | "apply_patch" => Some(ActivityCategory::Implementing),
+        "bash" if is_validation_command(summary.trim_start_matches("$ ")) => {
+            Some(ActivityCategory::Validating)
+        }
+        _ => None,
+    }
+}
+
+fn is_read_only_git(subcommand: &str) -> bool {
+    matches!(
+        subcommand,
+        "status" | "diff" | "log" | "show" | "branch" | "rev-parse" | "ls-files" | "blame"
+    )
+}
+
+fn is_validation_command(command: &str) -> bool {
+    let command = command.trim();
+    [
+        "cargo test",
+        "cargo check",
+        "cargo fmt",
+        "cargo clippy",
+        "npm test",
+        "pnpm test",
+        "yarn test",
+        "pytest",
+        "go test",
+    ]
+    .iter()
+    .any(|prefix| command.starts_with(prefix))
+}
+
+fn running_activity_summary(category: ActivityCategory, name: &str) -> String {
+    match category {
+        ActivityCategory::Exploring => format!("Reading via {name}"),
+        ActivityCategory::Implementing => format!("Changing files via {name}"),
+        ActivityCategory::Validating => name.to_string(),
+        ActivityCategory::Reviewing => "Inspecting results".into(),
+        ActivityCategory::Recovering => "Restoring task state".into(),
+        ActivityCategory::Waiting => "Awaiting next event".into(),
+    }
+}
+
+fn activity_group_summary(category: ActivityCategory, items: &[ChatItem]) -> String {
+    match category {
+        ActivityCategory::Exploring => {
+            let reads = items
+                .iter()
+                .filter(
+                    |item| matches!(item, ChatItem::ToolCard { name, .. } if name == "read_file"),
+                )
+                .count();
+            let searches = items
+                .iter()
+                .filter(|item| matches!(item, ChatItem::ToolCard { name, .. } if name == "fffind" || name == "ffgrep"))
+                .count();
+            join_counts(&[
+                (reads, "file inspected", "files inspected"),
+                (searches, "search", "searches"),
+            ])
+        }
+        ActivityCategory::Implementing => {
+            let changed = items
+                .iter()
+                .filter(|item| match item {
+                    ChatItem::DiffCard { .. } => true,
+                    ChatItem::ToolCard { name, .. } => {
+                        name == "write_file" || name == "apply_patch"
+                    }
+                    _ => false,
+                })
+                .count();
+            result_count_label(changed, "file changed", "files changed")
+        }
+        ActivityCategory::Validating => items
+            .iter()
+            .filter_map(|item| match item {
+                ChatItem::ToolCard { summary, .. } => summary.split(" · ").next(),
+                _ => None,
+            })
+            .next()
+            .unwrap_or("validation command")
+            .to_string(),
+        ActivityCategory::Reviewing => result_count_label(items.len(), "review", "reviews"),
+        ActivityCategory::Recovering => "Restored previous task state".into(),
+        ActivityCategory::Waiting => result_count_label(items.len(), "wait", "waits"),
+    }
+}
+
+fn join_counts(counts: &[(usize, &str, &str)]) -> String {
+    let parts = counts
+        .iter()
+        .filter(|(count, _, _)| *count > 0)
+        .map(|(count, singular, plural)| result_count_label(*count, singular, plural))
+        .collect::<Vec<_>>();
+    if parts.is_empty() {
+        "activity completed".into()
+    } else {
+        parts.join(" · ")
+    }
+}
+
+fn activity_group_detail(item: &ChatItem) -> String {
+    match item {
+        ChatItem::ToolCard {
+            name,
+            summary,
+            detail,
+            ..
+        } => format!("{name}: {summary}\n{detail}"),
+        ChatItem::DiffCard { path, lines, .. } => format!("diff: {path}\n{}", lines.join("\n")),
+        ChatItem::SessionRecovery {
+            session_id,
+            journal_path,
+            last_seq,
+            ..
+        } => {
+            format!("session recovery: {session_id}\n{journal_path}\nlast seq {last_seq}")
+        }
+        ChatItem::ContextHandoff { goal, .. } => format!("context handoff: {goal}"),
+        _ => String::new(),
     }
 }
 
@@ -2054,14 +2369,14 @@ mod tests {
             SessionStatus::Running,
             ConversationViewOpts::default(),
         );
-        assert_eq!(
-            model
-                .items
-                .iter()
-                .filter(|item| matches!(item, ChatItem::ToolCard { .. }))
-                .count(),
-            output_count
-        );
+        assert_eq!(output_count, outputs.len());
+        assert!(model.items.iter().any(|item| matches!(
+            item,
+            ChatItem::ActivityGroup {
+                category: ActivityCategory::Exploring,
+                ..
+            }
+        )));
         assert!(
             !model
                 .items
@@ -2082,16 +2397,19 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         for summary in [
-            "src/lib.rs · 4 lines",
+            "Explored repository",
+            "2 searches",
             "$ cargo test --quiet · 3 output lines",
-            "*.rs · 2 files",
-            "ToolCard · 2 matches",
-            "git status · 2 output lines",
             "ratatui diff rendering · 1 result",
         ] {
             assert!(rendered.contains(summary), "missing {summary}:\n{rendered}");
         }
-        for hidden in ["pub fn noisy", "feature-a", "https://ratatui.rs"] {
+        for hidden in [
+            "pub fn noisy",
+            "feature-a",
+            "https://ratatui.rs",
+            "ToolCard · 2 matches",
+        ] {
             assert!(
                 !rendered.contains(hidden),
                 "tool detail leaked into the compact card: {hidden}\n{rendered}"
@@ -2113,6 +2431,91 @@ mod tests {
         .map(|span| span.content.as_ref())
         .collect::<String>();
         assert!(expanded.contains("https://ratatui.rs"), "{expanded}");
+    }
+
+    #[test]
+    fn routine_activity_groups_respect_boundaries_and_failures() {
+        let model = ConversationModel {
+            items: group_routine_activity(vec![
+                ChatItem::ToolCard {
+                    name: "read_file".into(),
+                    summary: "a.rs · 2 lines".into(),
+                    detail: "a".into(),
+                    state: ToolCardState::Done,
+                    duration: None,
+                },
+                ChatItem::ToolCard {
+                    name: "ffgrep".into(),
+                    summary: "needle · 1 match".into(),
+                    detail: "a.rs:1:needle".into(),
+                    state: ToolCardState::Done,
+                    duration: None,
+                },
+                ChatItem::User {
+                    text: "stop".into(),
+                },
+                ChatItem::ToolCard {
+                    name: "bash".into(),
+                    summary: "$ cargo test · failed".into(),
+                    detail: "status 101".into(),
+                    state: ToolCardState::Error,
+                    duration: None,
+                },
+            ]),
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+
+        let text = rendered_text(&model);
+        assert!(text.contains("✓ Explored repository"));
+        assert!(text.contains("› stop"));
+        assert!(text.contains("✗ bash"));
+        assert!(!text.contains("Validation completed"));
+    }
+
+    #[test]
+    fn grouped_activity_renders_running_completed_and_details() {
+        let running = ConversationModel::from_messages(
+            &[],
+            &[],
+            SessionStatus::Running,
+            ConversationViewOpts::default(),
+        )
+        .with_running_tool("read_file");
+        let running_text = rendered_text(&running);
+        assert!(running_text.contains("● Exploring repository"));
+        assert!(running_text.contains("Reading via read_file"));
+
+        let completed = ConversationModel {
+            items: group_routine_activity(vec![
+                ChatItem::ToolCard {
+                    name: "write_file".into(),
+                    summary: "wrote · src/lib.rs".into(),
+                    detail: "src/lib.rs".into(),
+                    state: ToolCardState::Done,
+                    duration: None,
+                },
+                ChatItem::ToolCard {
+                    name: "apply_patch".into(),
+                    summary: "wrote · src/app.rs".into(),
+                    detail: "src/app.rs".into(),
+                    state: ToolCardState::Done,
+                    duration: None,
+                },
+            ]),
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts {
+                tool_expanded: true,
+                ..Default::default()
+            },
+        };
+        let text = rendered_text(&completed);
+        assert!(text.contains("✓ Implemented changes"));
+        assert!(text.contains("2 files changed"));
+        assert!(text.contains("Details are also available in Activity."));
+        assert!(text.contains("write_file: wrote · src/lib.rs"));
     }
 
     #[test]
@@ -2170,9 +2573,9 @@ mod tests {
             .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
             .collect::<String>();
         for expected in [
-            "TOOL · REJECTED",
-            "Side effects not executed",
-            "retry 2/3",
+            "Correcting an invalid tool request",
+            "No command was executed and no files were changed.",
+            "Retrying with corrected tool details 2/3",
             "Retrying",
         ] {
             assert!(
@@ -2450,8 +2853,8 @@ mod tests {
             .flat_map(|line| line.spans.iter())
             .map(|span| span.content.as_ref())
             .collect::<String>();
-        assert!(text.contains("◐ read_file"));
-        assert!(text.contains("tool_intent committed · awaiting result"));
+        assert!(text.contains("● Exploring repository"));
+        assert!(text.contains("Reading via read_file"));
     }
 
     #[test]
@@ -2493,7 +2896,8 @@ mod tests {
             .flat_map(|line| line.spans.iter())
             .map(|span| span.content.as_ref())
             .collect::<String>();
-        assert!(text.is_empty());
+        assert!(text.contains("Continuing in a fresh context"));
+        assert!(text.contains("rate limiting middleware"));
     }
 
     #[test]
@@ -2581,5 +2985,14 @@ mod tests {
         m.scroll = 0;
         m.scroll_down(1);
         assert!(m.follow);
+    }
+
+    fn rendered_text(model: &ConversationModel) -> String {
+        model
+            .lines()
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>()
     }
 }
