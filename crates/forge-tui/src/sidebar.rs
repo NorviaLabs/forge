@@ -18,7 +18,11 @@ pub struct SidebarModel {
     pub provider: String,
     pub model: String,
     pub objective: Option<String>,
+    pub repo_name: Option<String>,
+    pub branch: Option<String>,
     pub files_changed: Option<usize>,
+    pub git_status_loading: bool,
+    pub git_status_error: bool,
     pub validation: Option<String>,
     pub elapsed: Option<String>,
     pub ctx_pct: f64,
@@ -96,7 +100,11 @@ impl SidebarModel {
             provider: String::new(),
             model: session.active_model.clone(),
             objective,
+            repo_name: None,
+            branch: None,
             files_changed: None,
+            git_status_loading: false,
+            git_status_error: false,
             validation: None,
             elapsed: None,
             ctx_pct: session.context_usage_ratio(),
@@ -172,32 +180,39 @@ impl SidebarWidget<'_> {
             theme::metadata_style(),
         )));
         if self.model.busy || self.model.objective.is_some() {
-            lines.push(kv(
-                "Objective",
-                self.model.objective.as_deref().unwrap_or("Not available"),
-            ));
+            if let Some(obj) = self.model.objective.as_deref() {
+                lines.push(kv("Objective", &truncate(obj, 60)));
+            }
             lines.push(kv("Stage", self.stage()));
-            lines.push(kv(
-                "Files changed",
-                self.model
-                    .files_changed
-                    .map(|count| count.to_string())
-                    .as_deref()
-                    .unwrap_or("Not available"),
-            ));
-            lines.push(kv(
-                "Validation",
-                self.model.validation.as_deref().unwrap_or("Not available"),
-            ));
-            lines.push(kv(
-                "Elapsed",
-                self.model.elapsed.as_deref().unwrap_or("Not available"),
-            ));
+            lines.push(kv("Changes", self.changes_label()));
+            if self.model.validation.is_some() {
+                lines.push(kv(
+                    "Validation",
+                    self.model.validation.as_deref().unwrap_or("Not run"),
+                ));
+            } else {
+                lines.push(kv("Validation", "Not run"));
+            }
+            if let Some(elapsed) = self.model.elapsed.as_deref() {
+                lines.push(kv("Elapsed", elapsed));
+            }
         } else {
             lines.push(Line::from(Span::styled("No active task", theme::muted())));
-            lines.push(kv("Repository", "Not available"));
-            lines.push(kv("Changes", "Not available"));
+            lines.push(kv("Repository", self.repository_label()));
+            lines.push(kv("Changes", self.changes_label()));
         }
+    }
+
+    fn repository_label(&self) -> String {
+        repository_label(&self.model.repo_name, &self.model.branch)
+    }
+
+    fn changes_label(&self) -> String {
+        changes_label(
+            self.model.git_status_loading,
+            self.model.git_status_error,
+            self.model.files_changed,
+        )
     }
 
     fn context_lines(&self, lines: &mut Vec<Line<'static>>) {
@@ -279,6 +294,29 @@ impl SidebarWidget<'_> {
     }
 }
 
+fn repository_label(repo_name: &Option<String>, branch: &Option<String>) -> String {
+    match (repo_name, branch) {
+        (Some(repo), Some(branch)) => format!("{repo}/{branch}"),
+        (Some(repo), None) => repo.clone(),
+        (None, Some(branch)) => branch.clone(),
+        (None, None) => "Not available".into(),
+    }
+}
+
+fn changes_label(loading: bool, error: bool, files_changed: Option<usize>) -> String {
+    if loading {
+        return "Loading…".into();
+    }
+    if error {
+        return "Unavailable".into();
+    }
+    match files_changed {
+        Some(0) | None => "Clean".into(),
+        Some(1) => "1 modified file".into(),
+        Some(n) => format!("{n} modified files"),
+    }
+}
+
 fn present(value: &str) -> &str {
     if value.trim().is_empty() {
         "Not available"
@@ -287,10 +325,18 @@ fn present(value: &str) -> &str {
     }
 }
 
-fn kv(label: &'static str, value: &str) -> Line<'static> {
+fn truncate(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        value.to_string()
+    } else {
+        value.chars().take(max_chars).collect::<String>() + "…"
+    }
+}
+
+fn kv(label: &'static str, value: impl AsRef<str>) -> Line<'static> {
     Line::from(vec![
         Span::styled(format!("{label} "), theme::dim()),
-        Span::styled(value.to_string(), theme::text()),
+        Span::styled(value.as_ref().to_string(), theme::text()),
     ])
 }
 
@@ -349,5 +395,142 @@ mod tests {
 
         let m = SidebarModel::from_session_with_activity(&s, &["model started".into()]);
         assert_eq!(m.activity, vec!["model started"]);
+    }
+
+    fn model() -> SidebarModel {
+        SidebarModel {
+            session_id: String::new(),
+            journal_dir: String::new(),
+            status: String::new(),
+            surface: String::new(),
+            role: String::new(),
+            provider: String::new(),
+            model: String::new(),
+            objective: None,
+            repo_name: None,
+            branch: None,
+            files_changed: None,
+            git_status_loading: false,
+            git_status_error: false,
+            validation: None,
+            elapsed: None,
+            ctx_pct: 0.0,
+            ctx_used: 0,
+            ctx_total: 0,
+            tokens_used: 0,
+            message_count: 0,
+            tool_message_count: 0,
+            busy: false,
+            step: String::new(),
+            context_reset: None,
+            skills: Vec::new(),
+            tools: Vec::new(),
+            activity: Vec::new(),
+            session_allows: Vec::new(),
+            pending_approval: false,
+        }
+    }
+
+    #[test]
+    fn task_lines_hide_unknown_values_when_idle() {
+        let mut m = model();
+        m.busy = false;
+        m.objective = None;
+        m.repo_name = Some("forge".into());
+        m.branch = Some("main".into());
+        m.files_changed = Some(0);
+        m.git_status_loading = false;
+        m.git_status_error = false;
+
+        let widget = SidebarWidget {
+            model: &m,
+            view: InspectorView::Task,
+        };
+        let text = render_lines(&widget);
+        assert!(text.contains("No active task"), "{text}");
+        assert!(text.contains("Repository"), "{text}");
+        assert!(text.contains("forge/main"), "{text}");
+        assert!(text.contains("Changes"), "{text}");
+        assert!(text.contains("Clean"), "{text}");
+        assert!(!text.contains("Stage"), "{text}");
+        assert!(!text.contains("Validation"), "{text}");
+        assert!(!text.contains("Elapsed"), "{text}");
+    }
+
+    #[test]
+    fn task_lines_show_active_task_details() {
+        let mut m = model();
+        m.busy = true;
+        m.objective = Some("Add source search across files".into());
+        m.step = "Implementing".into();
+        m.files_changed = Some(2);
+        m.elapsed = Some("1.2s".into());
+
+        let widget = SidebarWidget {
+            model: &m,
+            view: InspectorView::Task,
+        };
+        let text = render_lines(&widget);
+        assert!(text.contains("Objective"), "{text}");
+        assert!(text.contains("Add source search across files"), "{text}");
+        assert!(text.contains("Stage"), "{text}");
+        assert!(text.contains("Implementing"), "{text}");
+        assert!(text.contains("Changes"), "{text}");
+        assert!(text.contains("2 modified files"), "{text}");
+        assert!(text.contains("Validation"), "{text}");
+        assert!(text.contains("Not run"), "{text}");
+        assert!(text.contains("Elapsed"), "{text}");
+        assert!(text.contains("1.2s"), "{text}");
+    }
+
+    #[test]
+    fn task_lines_truncate_long_objective() {
+        let mut m = model();
+        m.busy = true;
+        m.objective = Some("a".repeat(100));
+
+        let widget = SidebarWidget {
+            model: &m,
+            view: InspectorView::Task,
+        };
+        let text = render_lines(&widget);
+        assert!(
+            !text.contains(&"a".repeat(100)),
+            "long objective should be truncated"
+        );
+        assert!(text.contains("…"), "{text}");
+    }
+
+    #[test]
+    fn changes_label_reflects_git_status_states() {
+        assert_eq!(changes_label(false, false, None), "Clean");
+        assert_eq!(changes_label(false, false, Some(1)), "1 modified file");
+        assert_eq!(changes_label(false, false, Some(3)), "3 modified files");
+        assert_eq!(changes_label(true, false, Some(3)), "Loading…");
+        assert_eq!(changes_label(false, true, Some(3)), "Unavailable");
+    }
+
+    fn render_lines(widget: &SidebarWidget<'_>) -> String {
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                f.render_widget(
+                    SidebarWidget {
+                        model: widget.model,
+                        view: widget.view,
+                    },
+                    f.area(),
+                );
+            })
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<Vec<_>>()
+            .join("")
     }
 }

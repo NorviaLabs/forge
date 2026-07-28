@@ -7,14 +7,11 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 use crossterm::event::{
-    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers,
-    KeyboardEnhancementFlags, MouseEventKind, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
+    self, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers,
+    KeyboardEnhancementFlags, MouseEventKind, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
-use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
-};
+use crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
 use forge_connect::{
     builtin_registry, handle_connect_action, models_for_picker, needs_tui_api_key_prompt,
     needs_tui_oauth, normalize_model_id, ConnectAction, ConnectError, ConnectRegistry,
@@ -51,6 +48,7 @@ use crate::overlays::{
 };
 use crate::sidebar::{InspectorView, SidebarModel, SidebarWidget};
 use crate::source_viewer::{SourceViewer, SourceViewerWidget};
+use crate::terminal::TerminalGuard;
 use crate::theme;
 use crate::widgets::{
     classify_operator_error, BottomPanel, BottomPanelModel, BottomPanelState, BottomPanelTab,
@@ -390,10 +388,10 @@ pub struct TuiApp {
 }
 
 #[derive(Debug, Clone)]
-struct RepoHeaderCache {
-    repo_name: Option<String>,
-    branch: Option<String>,
-    dirty: bool,
+pub(crate) struct RepoHeaderCache {
+    pub(crate) repo_name: Option<String>,
+    pub(crate) branch: Option<String>,
+    pub(crate) dirty: bool,
 }
 
 impl TuiApp {
@@ -2379,6 +2377,17 @@ Reply with ONLY the commit message line.\n\n\
             .into();
             sidebar.context_reset = self.context_reset_snapshot;
             sidebar.session_allows = self.hitl_session_allow.iter().cloned().collect();
+            let header = self.repo_header();
+            sidebar.repo_name = header.repo_name;
+            sidebar.branch = header.branch;
+            let gs = &self.file_explorer.git_status;
+            sidebar.git_status_loading = gs.loading;
+            sidebar.git_status_error = gs.error.is_some();
+            sidebar.files_changed = Some(gs.status.len());
+            sidebar.elapsed = self
+                .turn_started
+                .or(self.thinking_started)
+                .map(|started| format_elapsed_tenths(started.elapsed().as_secs_f64()));
             frame.render_widget(
                 SidebarWidget {
                     model: &sidebar,
@@ -3424,7 +3433,7 @@ Reply with ONLY the commit message line.\n\n\
                     }
                 }
                 Ok(SlashCommand::Refresh) => {
-                    self.file_explorer.refresh_selected();
+                    self.file_explorer.refresh_git_status();
                     self.status_message = "Refreshing git status...".into();
                 }
                 Err(e) => {
@@ -3927,6 +3936,8 @@ pub async fn run_tui(
     runtime: TuiRuntimeConfig,
 ) -> Result<ExitSummary, TuiError> {
     enable_raw_mode()?;
+    // Ensure the terminal is restored on panic, returned errors and normal exit.
+    let _guard = TerminalGuard::install();
     let mut stdout = stdout();
     // Bracketed paste plus keyboard enhancement for reliable key disambiguation.
     // Deliberately do not enable mouse capture: the terminal must retain mouse selection so
@@ -3954,15 +3965,6 @@ pub async fn run_tui(
     let result = run_loop(&mut terminal, &mut app).await;
 
     app.persist_selection();
-
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        PopKeyboardEnhancementFlags,
-        DisableBracketedPaste,
-        LeaveAlternateScreen
-    )?;
-    terminal.show_cursor()?;
 
     result.map(|_| {
         let report = app.session.token_usage_report();

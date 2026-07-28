@@ -13,6 +13,7 @@ mod msg_queue;
 mod overlays;
 mod sidebar;
 mod source_viewer;
+mod terminal;
 mod theme;
 #[cfg(test)]
 mod visual_test;
