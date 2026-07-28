@@ -1,8 +1,6 @@
 //! External editor resolution and argument parsing.
 
 use std::env;
-use std::ffi::OsString;
-use std::path::PathBuf;
 
 /// Resolve the external editor command from the environment.
 ///
@@ -28,19 +26,6 @@ pub fn resolve_editor() -> Option<(String, Vec<String>)> {
     Some((cmd, args))
 }
 
-/// Build the `std::process::Command` for the external editor.
-///
-/// The file path is appended as a separate argument to avoid shell injection.
-pub fn editor_command(file: &std::path::Path) -> Option<std::process::Command> {
-    let (cmd, args) = resolve_editor()?;
-    let mut command = std::process::Command::new(&cmd);
-    for arg in &args {
-        command.arg(arg);
-    }
-    command.arg(file);
-    Some(command)
-}
-
 /// Error type for external editor resolution.
 #[derive(Debug)]
 pub enum EditorError {
@@ -62,7 +47,7 @@ impl std::fmt::Display for EditorError {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
 
     #[test]
     fn argument_splitting_handles_command_with_flags() {

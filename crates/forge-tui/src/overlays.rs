@@ -127,10 +127,6 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
     // Keep in sync with `commands::parse_slash`.
     vec![
         PaletteItem {
-            cmd: "/status".into(),
-            desc: "Show task, repository, validation, and model".into(),
-        },
-        PaletteItem {
             cmd: "/connect".into(),
             desc: "Connect provider (xAI, OpenCode Go/Zen, OpenAI, Anthropic, Ollama)".into(),
         },
@@ -662,10 +658,10 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             } => {
                 if let Some(item) = items.get(*selected) {
                     let cmd = item.cmd.clone();
-                    // no-arg commands execute; others insert
+                    // no-arg or picker-opening commands execute; resume inserts to allow ID
                     if matches!(
                         cmd.as_str(),
-                        "/status" | "/quit" | "/compact" | "/sync" | "/copy" | "/clear" | "/file"
+                        "/connect" | "/model" | "/disconnect" | "/quit" | "/compact" | "/sync" | "/copy" | "/clear" | "/file"
                     ) {
                         OverlayAction::RunCommand(cmd)
                     } else {
@@ -1593,12 +1589,11 @@ mod tests {
             let res = parse_slash(&it.cmd).expect("is slash");
             match it.cmd.as_str() {
                 "/resume" => assert_eq!(res.unwrap(), SlashCommand::ResumeList),
-                "/status" => assert!(res.is_err(), "palette cmd /status should not parse"),
                 other => assert!(res.is_ok(), "palette cmd {other} should parse: {res:?}"),
             }
         }
         assert!(
-            items.len() >= 11,
+            items.len() >= 10,
             "expected full command list, got {}",
             items.len()
         );
