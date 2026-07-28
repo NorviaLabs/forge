@@ -14,6 +14,13 @@ pub enum GitStatusKind {
     Conflicted,
 }
 
+#[derive(Debug, Clone)]
+pub struct ChangedFile {
+    pub path: PathBuf,
+    pub staged: Option<GitStatusKind>,
+    pub unstaged: Option<GitStatusKind>,
+}
+
 impl GitStatusKind {
     pub fn marker(self) -> &'static str {
         match self {
@@ -107,6 +114,20 @@ impl GitStatusCache {
 
     pub fn get(&self, path: &Path) -> Option<GitStatusKind> {
         self.status.get(path).copied()
+    }
+
+    /// Returns changed files with staged and unstaged status distinguished.
+    pub fn changed_files(&self) -> Vec<ChangedFile> {
+        let mut files = Vec::new();
+        for (path, status) in &self.status {
+            files.push(ChangedFile {
+                path: path.clone(),
+                staged: None,
+                unstaged: Some(*status),
+            });
+        }
+        files.sort_by(|a, b| a.path.cmp(&b.path));
+        files
     }
 }
 
