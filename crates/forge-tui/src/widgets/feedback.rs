@@ -99,7 +99,7 @@ pub fn classify_operator_error(raw: &str) -> String {
     {
         let trimmed: String = raw.chars().take(200).collect();
         return format!(
-            "Tool validation failed before execution: {trimmed}. No side effects were applied."
+            "Correcting an invalid tool request: {trimmed}. No command was executed and no files were changed."
         );
     }
     if lower.contains("429") || lower.contains("rate limit") || lower.contains("rate_limit") {
@@ -157,8 +157,8 @@ mod tests {
     #[test]
     fn classify_validation() {
         let message = classify_operator_error("schema validation failed: path is required");
-        assert!(message.contains("before execution"));
-        assert!(message.contains("No side effects"));
+        assert!(message.contains("invalid tool request"));
+        assert!(message.contains("No command was executed"));
     }
 
     #[test]
