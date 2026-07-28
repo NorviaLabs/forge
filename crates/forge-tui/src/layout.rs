@@ -11,6 +11,7 @@ const CONTENT_WIDTH_PERCENT: u32 = 95;
 pub struct LayoutRegions {
     pub status: Rect,
     pub chat: Rect,
+    pub files: Option<Rect>,
     pub sidebar: Option<Rect>,
     /// Contextual bottom panel. 0-height when closed or space is tight.
     pub bottom_panel: Rect,
@@ -47,6 +48,26 @@ pub fn split_areas_with_bottom_panel(
     area: Rect,
     feedback_h: u16,
     input_h: u16,
+    show_sidebar: bool,
+    queue_h: u16,
+    bottom_panel_h: u16,
+) -> LayoutRegions {
+    split_areas_with_side_panels(
+        area,
+        feedback_h,
+        input_h,
+        false,
+        show_sidebar,
+        queue_h,
+        bottom_panel_h,
+    )
+}
+
+pub fn split_areas_with_side_panels(
+    area: Rect,
+    feedback_h: u16,
+    input_h: u16,
+    show_files: bool,
     show_sidebar: bool,
     queue_h: u16,
     bottom_panel_h: u16,
@@ -91,9 +112,20 @@ pub fn split_areas_with_bottom_panel(
 
     // Preserve a usable chat width on smaller terminals. The inspector is a
     // secondary surface and disappears below 100 columns.
-    let show_sidebar = show_sidebar && content_area.width >= 100;
+    let show_files = show_files && content_area.width >= 110;
+    let show_sidebar = show_sidebar && content_area.width >= if show_files { 140 } else { 100 };
+    let file_width = (content_area.width / 5).clamp(24, 32);
+    let sidebar_width = (content_area.width / 4).clamp(24, 34);
+    let (files, main) = if show_files {
+        let columns = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(file_width), Constraint::Min(40)])
+            .split(main);
+        (Some(columns[0]), columns[1])
+    } else {
+        (None, main)
+    };
     let (chat, sidebar) = if show_sidebar {
-        let sidebar_width = (content_area.width / 4).clamp(24, 34);
         let columns = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Min(40), Constraint::Length(sidebar_width)])
@@ -106,6 +138,7 @@ pub fn split_areas_with_bottom_panel(
     LayoutRegions {
         status,
         chat,
+        files,
         sidebar,
         bottom_panel,
         feedback,
@@ -200,6 +233,26 @@ mod tests {
         let r = split_areas_full(area, 0, 3, false, 0);
         assert!(r.sidebar.is_none());
         assert_eq!(r.chat, Rect::new(3, 1, 114, 35));
+    }
+
+    #[test]
+    fn files_panel_reserves_bounded_left_space() {
+        let area = Rect::new(0, 0, 120, 40);
+        let r = split_areas_with_side_panels(area, 0, 3, true, false, 0, 0);
+        assert_eq!(r.files, Some(Rect::new(3, 1, 24, 35)));
+        assert_eq!(r.chat, Rect::new(27, 1, 90, 35));
+        assert!(r.sidebar.is_none());
+    }
+
+    #[test]
+    fn files_and_sidebar_coexist_only_when_wide() {
+        let wide = split_areas_with_side_panels(Rect::new(0, 0, 160, 40), 0, 3, true, true, 0, 0);
+        assert!(wide.files.is_some());
+        assert!(wide.sidebar.is_some());
+
+        let narrow = split_areas_with_side_panels(Rect::new(0, 0, 100, 30), 0, 3, true, true, 0, 0);
+        assert!(narrow.files.is_none());
+        assert!(narrow.sidebar.is_some());
     }
 
     #[test]

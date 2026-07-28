@@ -38,11 +38,12 @@ use crate::conversation::{
     StreamWaitPhase,
 };
 use crate::effort::ReasoningEffort;
+use crate::file_explorer::{FileExplorer, FileExplorerWidget};
 use crate::history::InputHistory;
 use crate::layout::is_too_small;
 #[cfg(test)]
 use crate::layout::split_areas_full;
-use crate::layout::split_areas_with_bottom_panel;
+use crate::layout::split_areas_with_side_panels;
 use crate::msg_queue::MessageQueue;
 use crate::overlays::{
     filter_palette, handle_overlay_key, models_from_catalog, ConnectProfileItem, FileExplorerItem,
@@ -358,6 +359,8 @@ pub struct TuiApp {
     /// Active workspace tab. Older restored sessions safely use the default Chat mode.
     pub workspace_mode: WorkspaceMode,
     pub bottom_panel: BottomPanelState,
+    pub files_visible: bool,
+    pub file_explorer: FileExplorer,
     /// User preference; narrow terminals still hide the sidebar responsively.
     sidebar_visible: bool,
     inspector_view: InspectorView,
@@ -393,6 +396,7 @@ impl TuiApp {
         let mut input = InputModel::default();
         input.hint = "Describe a task…".into();
         let startup_notices = runtime.startup_notices.clone();
+        let workspace_root = session.workspace_root().to_path_buf();
         Self {
             session,
             input,
@@ -433,6 +437,8 @@ impl TuiApp {
             tool_expanded: false,
             workspace_mode: WorkspaceMode::default(),
             bottom_panel: BottomPanelState::default(),
+            files_visible: false,
+            file_explorer: FileExplorer::new(Some(workspace_root)),
             sidebar_visible: true,
             inspector_view: InspectorView::default(),
             cancel_requested: false,
@@ -2155,10 +2161,11 @@ Reply with ONLY the commit message line.\n\n\
         let input_h = (self.input.visual_lines() + 2).clamp(3, 8);
         let slash_mode = self.overlay.is_none() && self.input.text.starts_with('/');
         let panel_h = if self.bottom_panel.open { 8 } else { 0 };
-        let mut regions = split_areas_with_bottom_panel(
+        let mut regions = split_areas_with_side_panels(
             area,
             fb_h,
             input_h,
+            !slash_mode && self.files_visible,
             !slash_mode && self.sidebar_visible,
             0,
             panel_h,
@@ -2175,6 +2182,14 @@ Reply with ONLY the commit message line.\n\n\
         let connected = self.is_provider_connected();
         let status = self.refresh_status_model_with_connected(connected);
         frame.render_widget(StatusBar { model: &status }, regions.status);
+        if let Some(files) = regions.files {
+            frame.render_widget(
+                FileExplorerWidget {
+                    explorer: &mut self.file_explorer,
+                },
+                files,
+            );
+        }
 
         let stream_wait = if self.busy && self.pending_prompt.is_none() {
             let elapsed = if !self.stream_thinking.is_empty() {
@@ -2501,7 +2516,8 @@ Reply with ONLY the commit message line.\n\n\
         } else if qn > 0 {
             format!("queue {qn} · Ctrl+Up/Down select · Ctrl+Backspace cancel")
         } else {
-            "/ commands  ·  Alt+←/→ tabs  ·  Alt+[ / ] inspector  ·  F1 help".into()
+            "/ commands  ·  Ctrl+E files  ·  Alt+←/→ tabs  ·  Alt+[ / ] inspector  ·  F1 help"
+                .into()
         };
         let footer_provider = footer_provider_id(
             self.runtime.provider.as_str(),
@@ -2566,6 +2582,52 @@ Reply with ONLY the commit message line.\n\n\
                     .border_style(theme::muted()),
             )
             .render(area, buf);
+    }
+
+    fn toggle_files_panel(&mut self) {
+        self.files_visible = !self.files_visible;
+        self.file_explorer.focused = self.files_visible;
+    }
+
+    fn handle_file_explorer_key(&mut self, key: event::KeyEvent) -> bool {
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('e') {
+            self.toggle_files_panel();
+            return true;
+        }
+        if !self.files_visible || !self.file_explorer.focused {
+            return false;
+        }
+        match key.code {
+            KeyCode::Esc => {
+                self.file_explorer.focused = false;
+                true
+            }
+            KeyCode::Up => {
+                self.file_explorer.move_selection(-1);
+                true
+            }
+            KeyCode::Down => {
+                self.file_explorer.move_selection(1);
+                true
+            }
+            KeyCode::Right => {
+                self.file_explorer.expand_selected();
+                true
+            }
+            KeyCode::Left => {
+                self.file_explorer.collapse_selected();
+                true
+            }
+            KeyCode::Enter => {
+                self.file_explorer.activate_selected();
+                true
+            }
+            KeyCode::Char('r') if key.modifiers.is_empty() => {
+                self.file_explorer.refresh_selected();
+                true
+            }
+            _ => false,
+        }
     }
 
     pub async fn handle_key(&mut self, key: event::KeyEvent) -> Result<(), TuiError> {
@@ -2717,6 +2779,10 @@ Reply with ONLY the commit message line.\n\n\
                     }
                 }
             }
+            return Ok(());
+        }
+
+        if self.handle_file_explorer_key(key) {
             return Ok(());
         }
 
