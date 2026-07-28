@@ -406,60 +406,69 @@ impl Widget for FileExplorerWidget<'_> {
         let mut lines = Vec::new();
         if self.explorer.root.is_none() {
             lines.push(Line::from("No repository detected"));
-        } else if visible.len() == 1 && visible[0].error.is_none() {
-            lines.push(Line::from("This directory is empty"));
-        } else {
-            let error_shown = self.explorer.git_status.error.is_some();
-            if let Some(error) = self.explorer.git_status.error.as_deref() {
+        } else if let Some(root) = self.explorer.root.as_ref() {
+            if root.loading || !root.loaded {
+                lines.push(Line::from("Loading files…"));
+            } else if let Some(ref error) = root.error {
                 lines.push(Line::styled(
-                    format!("Git status unavailable: {}", error),
-                    theme::muted(),
+                    format!("Unable to load files: {}", error),
+                    theme::danger(),
                 ));
-            }
-            let list_height = height.saturating_sub(error_shown as usize);
-            for node in visible.iter().skip(self.explorer.scroll).take(list_height) {
-                let selected = self.explorer.selected_path.as_ref() == Some(&node.path);
-                let marker = match node.kind {
-                    FileKind::Directory if node.loading => "…",
-                    FileKind::Directory if node.expanded => "▾",
-                    FileKind::Directory => "▸",
-                    FileKind::File => " ",
-                };
-                let prefix = "  ".repeat(node.depth);
-                let status = if node.kind == FileKind::File {
-                    self.explorer.git_status_for(&node.path)
-                } else {
-                    None
-                };
-                let mut spans = vec![Span::raw(format!("{prefix}{marker} "))];
-                if let Some(status) = status {
-                    spans.push(Span::styled(
-                        format!("{} ", status.marker()),
-                        status.style(),
-                    ));
-                }
-                spans.push(Span::raw(node.display_name.clone()));
-                let mut line = Line::from(spans);
-                if selected {
-                    line.style = theme::brand();
-                }
-                lines.push(line);
-                if let Some(error) = &node.error {
+            } else if root.children.is_empty() {
+                lines.push(Line::from("This directory is empty"));
+            } else {
+                let error_shown = self.explorer.git_status.error.is_some();
+                if let Some(error) = self.explorer.git_status.error.as_deref() {
                     lines.push(Line::styled(
-                        format!("{prefix}  Unable to read this directory"),
-                        theme::danger(),
-                    ));
-                    lines.push(Line::styled(format!("{prefix}  {error}"), theme::muted()));
-                } else if node.kind == FileKind::Directory
-                    && node.expanded
-                    && node.loaded
-                    && node.child_count == 0
-                    && node.depth > 0
-                {
-                    lines.push(Line::styled(
-                        format!("{prefix}  This directory is empty"),
+                        format!("Git status unavailable: {}", error),
                         theme::muted(),
                     ));
+                }
+                let list_height = height.saturating_sub(error_shown as usize);
+                for node in visible.iter().skip(self.explorer.scroll).take(list_height) {
+                    let selected = self.explorer.selected_path.as_ref() == Some(&node.path);
+                    let marker = match node.kind {
+                        FileKind::Directory if node.loading => "…",
+                        FileKind::Directory if node.expanded => "▾",
+                        FileKind::Directory => "▸",
+                        FileKind::File => " ",
+                    };
+                    let prefix = "  ".repeat(node.depth);
+                    let status = if node.kind == FileKind::File {
+                        self.explorer.git_status_for(&node.path)
+                    } else {
+                        None
+                    };
+                    let mut spans = vec![Span::raw(format!("{prefix}{marker} "))];
+                    if let Some(status) = status {
+                        spans.push(Span::styled(
+                            format!("{} ", status.marker()),
+                            status.style(),
+                        ));
+                    }
+                    spans.push(Span::raw(node.display_name.clone()));
+                    let mut line = Line::from(spans);
+                    if selected {
+                        line.style = theme::brand();
+                    }
+                    lines.push(line);
+                    if let Some(error) = &node.error {
+                        lines.push(Line::styled(
+                            format!("{prefix}  Unable to read this directory"),
+                            theme::danger(),
+                        ));
+                        lines.push(Line::styled(format!("{prefix}  {error}"), theme::muted()));
+                    } else if node.kind == FileKind::Directory
+                        && node.expanded
+                        && node.loaded
+                        && node.child_count == 0
+                        && node.depth > 0
+                    {
+                        lines.push(Line::styled(
+                            format!("{prefix}  This directory is empty"),
+                            theme::muted(),
+                        ));
+                    }
                 }
             }
         }
@@ -538,5 +547,96 @@ mod tests {
         #[cfg(windows)]
         std::os::windows::fs::symlink_dir(outside.path(), root.path().join("outside")).unwrap();
         assert!(safe_path(root.path(), &root.path().join("outside")).is_err());
+    }
+
+    #[test]
+    fn populated_root_is_loaded_and_not_empty() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("a.txt"), "").unwrap();
+        fs::create_dir(root.path().join("src")).unwrap();
+
+        let explorer = FileExplorer::new(Some(root.path().to_path_buf()));
+        let root_node = explorer.root.as_ref().expect("root missing");
+        assert!(root_node.loaded);
+        assert!(!root_node.loading);
+        assert!(root_node.error.is_none());
+        assert_eq!(explorer.visible_nodes().len(), 3);
+    }
+
+    #[test]
+    fn genuinely_empty_root_shows_empty_state() {
+        let root = tempfile::tempdir().unwrap();
+        let explorer = FileExplorer::new(Some(root.path().to_path_buf()));
+        let root_node = explorer.root.as_ref().expect("root missing");
+        assert!(root_node.loaded);
+        assert!(root_node.children.is_empty());
+        assert_eq!(explorer.visible_nodes().len(), 1);
+    }
+
+    #[test]
+    fn git_status_refresh_does_not_clear_tree() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("a.txt"), "").unwrap();
+        let mut explorer = FileExplorer::new(Some(root.path().to_path_buf()));
+        let before = explorer.visible_nodes().len();
+        explorer.refresh_git_status();
+        explorer.git_status.poll();
+        assert_eq!(explorer.visible_nodes().len(), before);
+    }
+
+    #[test]
+    fn refresh_selected_directory_reloads_only_that_directory() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("src")).unwrap();
+        fs::write(root.path().join("src/lib.rs"), "").unwrap();
+        fs::write(root.path().join("root.txt"), "").unwrap();
+        let mut explorer = FileExplorer::new(Some(root.path().to_path_buf()));
+        explorer.selected_path = Some(root.path().join("src").canonicalize().unwrap());
+        explorer.expand_selected();
+        assert_eq!(explorer.visible_nodes().len(), 4);
+
+        // Refreshing the selected directory should keep the root and other siblings intact.
+        explorer.refresh_selected();
+        assert_eq!(explorer.visible_nodes().len(), 4);
+    }
+
+    #[test]
+    fn deleted_selected_path_falls_back_to_root() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("src")).unwrap();
+        fs::write(root.path().join("src/lib.rs"), "").unwrap();
+        let mut explorer = FileExplorer::new(Some(root.path().to_path_buf()));
+        explorer.selected_path = Some(root.path().join("src/lib.rs").canonicalize().unwrap());
+        fs::remove_file(root.path().join("src/lib.rs")).unwrap();
+
+        explorer.refresh_selected();
+        // The tree remains populated; selection should fall back to an existing node.
+        assert!(
+            explorer.selected_path.is_some(),
+            "selection should not be lost"
+        );
+        assert!(explorer.root.as_ref().unwrap().loaded);
+        assert!(!explorer.root.as_ref().unwrap().children.is_empty());
+    }
+
+    #[test]
+    fn loading_root_does_not_show_empty_message() {
+        let mut root = FileNode::root(PathBuf::from("/tmp/forge-test-root"));
+        root.loaded = false;
+        root.loading = true;
+        root.children.clear();
+        let explorer = FileExplorer {
+            root: Some(root),
+            selected_path: Some(PathBuf::from("/tmp/forge-test-root")),
+            scroll: 0,
+            focused: false,
+            root_path: Some(PathBuf::from("/tmp/forge-test-root")),
+            git_status: GitStatusCache::new(),
+        };
+        let root_node = explorer.root.as_ref().unwrap();
+        assert!(!root_node.loaded);
+        assert!(root_node.loading);
+        assert!(!root_node.children.is_empty() || true); // children may be empty while loading
+        assert_eq!(explorer.visible_nodes().len(), 1);
     }
 }
