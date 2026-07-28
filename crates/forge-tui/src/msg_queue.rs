@@ -97,4 +97,41 @@ mod tests {
         q.clear();
         assert!(q.is_empty());
     }
+
+    #[test]
+    fn drop_at_zero_or_out_of_range_returns_none() {
+        let mut q = MessageQueue::new();
+        q.enqueue("a");
+        assert!(q.drop_at(0).is_none());
+        assert!(q.drop_at(2).is_none());
+        assert_eq!(q.len(), 1);
+    }
+
+    #[test]
+    fn push_front_adds_to_front() {
+        let mut q = MessageQueue::new();
+        q.enqueue("a");
+        q.enqueue("c");
+        q.push_front("b");
+        assert_eq!(q.dequeue().as_deref(), Some("b"));
+        assert_eq!(q.dequeue().as_deref(), Some("a"));
+        assert_eq!(q.dequeue().as_deref(), Some("c"));
+    }
+
+    #[test]
+    fn list_lines_formats_correctly() {
+        let mut q = MessageQueue::new();
+        assert!(q.list_lines()[0].contains("empty"));
+        q.enqueue("hello world");
+        let lines = q.list_lines();
+        assert!(lines[0].contains("1 message"));
+        assert!(lines[1].contains("1. hello world"));
+    }
+
+    #[test]
+    fn enqueue_trims_whitespace() {
+        let mut q = MessageQueue::new();
+        q.enqueue("  spaced  ");
+        assert_eq!(q.dequeue().as_deref(), Some("spaced"));
+    }
 }

@@ -184,4 +184,25 @@ mod tests {
         let a = FileAttachment::new("src/main.rs".into(), 41);
         assert_eq!(a.label(), "Context: src/main.rs:42");
     }
+
+    #[test]
+    fn build_attachment_text_empty_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.rs");
+        fs::write(&path, "").unwrap();
+
+        let text = build_attachment_text(&path, 0, "empty.rs", 100).unwrap();
+        assert!(text.contains("Cursor line: 1"));
+        assert!(text.contains("File contents:"));
+    }
+
+    #[test]
+    fn build_attachment_text_single_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("single.rs");
+        fs::write(&path, "only line").unwrap();
+
+        let text = build_attachment_text(&path, 0, "single.rs", 100).unwrap();
+        assert!(text.contains(" →   1| only line"));
+    }
 }
