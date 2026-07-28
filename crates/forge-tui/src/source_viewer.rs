@@ -505,7 +505,7 @@ impl SourceViewer {
             None => return,
         };
         self.search.active_index = index;
-        self.current_line = m.line;
+        self.current_line = m.line.min(self.lines.len().saturating_sub(1));
         self.ensure_current_visible(self.last_content_width.max(1));
         let width = self.last_content_width.max(1);
         if m.start < self.h_scroll {
@@ -606,9 +606,11 @@ fn find_matches(lines: &[String], query: &str) -> Vec<Match> {
     }
     let mut matches = Vec::new();
     for (line_idx, line) in lines.iter().enumerate() {
-        let line_chars: Vec<char> = line.chars().collect();
         let line_lower: Vec<char> = line.to_lowercase().chars().collect();
-        let max_start = line_lower.len().saturating_sub(query_lower.len());
+        if line_lower.len() < query_lower.len() {
+            continue;
+        }
+        let max_start = line_lower.len() - query_lower.len();
         for start in 0..=max_start {
             if line_lower[start..start + query_lower.len()] == query_lower[..] {
                 matches.push(Match {
@@ -1309,6 +1311,116 @@ mod tests {
     fn find_matches_empty_query() {
         let lines = vec!["hello".into()];
         assert!(find_matches(&lines, "").is_empty());
+    }
+
+    #[test]
+    fn find_matches_empty_line_with_non_empty_query() {
+        // Regression: this used to panic with "range end index 1 out of range
+        // for slice of length 0" at the empty line.
+        let lines = vec!["hello".into(), "".into(), "world".into()];
+        let matches = find_matches(&lines, "o");
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].line, 0);
+        assert_eq!(matches[1].line, 2);
+    }
+
+    #[test]
+    fn find_matches_zero_matches() {
+        let lines = vec!["hello".into(), "world".into()];
+        assert!(find_matches(&lines, "xyz").is_empty());
+    }
+
+    #[test]
+    fn find_matches_at_start_and_end() {
+        let lines = vec!["abc".into(), "cab".into()];
+        let matches = find_matches(&lines, "a");
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].line, 0);
+        assert_eq!(matches[0].start, 0);
+        assert_eq!(matches[1].line, 1);
+        assert_eq!(matches[1].start, 1);
+    }
+
+    #[test]
+    fn find_matches_is_unicode_safe() {
+        let lines = vec!["αβγδ".into(), "ΓΔ".into()];
+        let matches = find_matches(&lines, "βγ");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].line, 0);
+        assert_eq!(matches[0].start, 1);
+        assert_eq!(matches[0].end, 3);
+
+        // Case-insensitive match across scripts.
+        let matches = find_matches(&lines, "γδ");
+        assert_eq!(matches.len(), 2);
+    }
+
+    #[test]
+    fn search_empty_file_is_safe() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("x.txt");
+        fs::write(&path, "").unwrap();
+
+        let mut viewer = SourceViewer::new();
+        viewer.open(root.path(), &path);
+        viewer.start_search();
+        viewer.update_search_query("foo");
+        assert!(viewer.search.matches.is_empty());
+        viewer.next_match();
+        viewer.prev_match();
+    }
+
+    #[test]
+    fn search_zero_matches_is_safe() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("x.txt");
+        fs::write(&path, "hello world\n").unwrap();
+
+        let mut viewer = SourceViewer::new();
+        viewer.open(root.path(), &path);
+        viewer.start_search();
+        viewer.update_search_query("xyz");
+        assert!(viewer.search.matches.is_empty());
+        assert_eq!(viewer.search.active_index, 0);
+        viewer.next_match();
+        viewer.prev_match();
+    }
+
+    #[test]
+    fn search_file_emptied_while_open() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("x.txt");
+        fs::write(&path, "hello\nworld\n").unwrap();
+
+        let mut viewer = SourceViewer::new();
+        viewer.open(root.path(), &path);
+        viewer.start_search();
+        viewer.update_search_query("hello");
+        assert_eq!(viewer.search.matches.len(), 1);
+
+        fs::write(&path, "").unwrap();
+        viewer.refresh(root.path());
+        assert!(viewer.search.matches.is_empty());
+        assert!(viewer.search.active_index < viewer.search.matches.len().max(1));
+    }
+
+    #[test]
+    fn search_file_shortened_while_open() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("x.txt");
+        fs::write(&path, "hello\nworld\n").unwrap();
+
+        let mut viewer = SourceViewer::new();
+        viewer.open(root.path(), &path);
+        viewer.start_search();
+        viewer.update_search_query("world");
+        assert_eq!(viewer.search.matches.len(), 1);
+        assert_eq!(viewer.search.matches[0].line, 1);
+
+        fs::write(&path, "hello\n").unwrap();
+        viewer.refresh(root.path());
+        assert!(viewer.search.matches.is_empty());
+        assert!(viewer.current_line < viewer.lines.len().max(1));
     }
 
     #[test]
