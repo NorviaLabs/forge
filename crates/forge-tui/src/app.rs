@@ -2361,7 +2361,7 @@ Reply with ONLY the commit message line.\n\n\
     }
 
     pub fn draw(&mut self, frame: &mut ratatui::Frame) {
-        let area = frame.size();
+        let area = frame.area();
         if is_too_small(area) {
             frame.render_widget(
                 Paragraph::new("Terminal too small — resize to at least 40x18"),
@@ -4053,15 +4053,11 @@ Reply with ONLY the commit message line.\n\n\
                     // Reset per-model-step thinking timers for multi-tool loops.
                     self.thinking_started = None;
                     self.thought_secs = None;
-                    let mut turn_done = false;
                     match out {
-                        ApplyOutcome::Done(_) => {
+                        ApplyOutcome::Done(_) | ApplyOutcome::Hitl(_) => {
                             outcome_err = None;
-                            turn_done = true;
-                        }
-                        ApplyOutcome::Hitl(_) => {
-                            outcome_err = None;
-                            turn_done = true;
+                            self.file_explorer.refresh_git_status();
+                            break 'turns;
                         }
                         ApplyOutcome::Continue => {
                             self.busy_phase = BusyPhase::Model;
@@ -4070,10 +4066,6 @@ Reply with ONLY the commit message line.\n\n\
                             }
                             continue;
                         }
-                    }
-                    if turn_done {
-                        self.file_explorer.refresh_git_status();
-                        break 'turns;
                     }
                 }
                 Err(e) => {
@@ -5928,7 +5920,7 @@ mod tests {
         let buf = term.backend().buffer();
         for y in 0..buf.area().height {
             for x in 0..buf.area().width {
-                text.push_str(buf.get(x, y).symbol());
+                text.push_str(buf[(x, y)].symbol());
             }
             text.push('\n');
         }
@@ -5963,7 +5955,7 @@ mod tests {
         let buf = term.backend().buffer();
         for y in 0..buf.area().height {
             for x in 0..buf.area().width {
-                text.push_str(buf.get(x, y).symbol());
+                text.push_str(buf[(x, y)].symbol());
             }
             text.push('\n');
         }
@@ -5997,7 +5989,7 @@ mod tests {
         let buf = term.backend().buffer();
         for y in 0..buf.area().height {
             for x in 0..buf.area().width {
-                text.push_str(buf.get(x, y).symbol());
+                text.push_str(buf[(x, y)].symbol());
             }
             text.push('\n');
         }
@@ -6109,7 +6101,7 @@ mod tests {
         let buf = term.backend().buffer();
         for y in 0..buf.area().height {
             for x in 0..buf.area().width {
-                text.push_str(buf.get(x, y).symbol());
+                text.push_str(buf[(x, y)].symbol());
             }
             text.push('\n');
         }
