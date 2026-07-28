@@ -2351,7 +2351,7 @@ Reply with ONLY the commit message line.\n\n\
             self.last_editor_height = regions.chat.height;
             frame.render_widget(
                 SourceViewerWidget {
-                    viewer: &self.source_viewer,
+                    viewer: &mut self.source_viewer,
                 },
                 regions.chat,
             );
@@ -2617,12 +2617,38 @@ Reply with ONLY the commit message line.\n\n\
         if self.workspace_mode != WorkspaceMode::Editor {
             return false;
         }
+
+        // Let workspace-tab switching close an active search/jump and fall
+        // through to the global Alt+arrow handler.
+        if key.modifiers.contains(KeyModifiers::ALT)
+            && (key.code == KeyCode::Left || key.code == KeyCode::Right)
+        {
+            self.source_viewer.close_search();
+            self.source_viewer.close_jump();
+            return false;
+        }
+
+        if self.source_viewer.search.open {
+            return self.handle_search_key(key);
+        }
+        if self.source_viewer.jump.open {
+            return self.handle_jump_key(key);
+        }
+
         let height = self.last_editor_height.saturating_sub(2) as usize;
         // Navigation shortcuts are plain keys so that Alt/Ctrl combinations
         // continue to control workspace tabs and other chrome.
         match key.code {
             KeyCode::Esc if key.modifiers.is_empty() => {
                 self.workspace_mode = WorkspaceMode::Chat;
+                true
+            }
+            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.source_viewer.start_search();
+                true
+            }
+            KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.source_viewer.start_jump();
                 true
             }
             KeyCode::Up if key.modifiers.is_empty() => {
@@ -2688,6 +2714,54 @@ Reply with ONLY the commit message line.\n\n\
                 true
             }
             _ => false,
+        }
+    }
+
+    fn handle_search_key(&mut self, key: event::KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Esc => {
+                self.source_viewer.close_search();
+                true
+            }
+            KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.source_viewer.prev_match();
+                true
+            }
+            KeyCode::Enter => {
+                self.source_viewer.next_match();
+                true
+            }
+            KeyCode::Backspace => {
+                self.source_viewer.backspace_search();
+                true
+            }
+            KeyCode::Char(c) if !c.is_control() => {
+                self.source_viewer.append_search_char(c);
+                true
+            }
+            _ => true,
+        }
+    }
+
+    fn handle_jump_key(&mut self, key: event::KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Esc => {
+                self.source_viewer.close_jump();
+                true
+            }
+            KeyCode::Enter => {
+                self.source_viewer.commit_jump();
+                true
+            }
+            KeyCode::Backspace => {
+                self.source_viewer.backspace_jump();
+                true
+            }
+            KeyCode::Char(c) if c.is_ascii_digit() => {
+                self.source_viewer.append_jump_char(c);
+                true
+            }
+            _ => true,
         }
     }
 
