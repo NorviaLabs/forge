@@ -241,10 +241,8 @@ impl ConversationModel {
                     if let Some(ref th) = m.thinking {
                         if !th.trim().is_empty() {
                             latest_thinking = Some(th.clone());
-                            items.push(ChatItem::Thinking {
-                                text: th.clone(),
-                                duration_secs: m.thinking_duration_secs,
-                            });
+                            // Reasoning is kept for diff rationale and model context but is not
+                            // rendered as visible Chat rows by default.
                         }
                     }
                     if !m.content.is_empty() {
@@ -330,21 +328,14 @@ impl ConversationModel {
         Self::from_messages(&session.messages, &session.events, session.status, opts)
     }
 
-    /// Streaming thinking + assistant (thinking always expanded while busy).
+    /// Streaming assistant preview. Live reasoning is tracked by the caller via
+    /// `opts.stream_wait` / `opts.stream_thought_secs` and is not rendered as Chat rows.
     pub fn with_streaming_preview(
         mut self,
-        thinking: impl Into<String>,
+        _thinking: impl Into<String>,
         text: impl Into<String>,
     ) -> Self {
-        let thinking = thinking.into();
         let text = text.into();
-        if !thinking.is_empty() {
-            // Live stream: duration filled in by app when thinking ends
-            self.items.push(ChatItem::Thinking {
-                text: thinking,
-                duration_secs: self.opts.stream_thought_secs,
-            });
-        }
         // Only show the answer bubble once content tokens start (status line covers wait/think).
         if !text.is_empty() {
             let mut body = text;
@@ -726,27 +717,9 @@ impl ConversationModel {
                         lines.push(Line::from(""));
                     }
                 }
-                // Thinking: show the live body while processing; hide completed thoughts.
-                ChatItem::Thinking {
-                    text,
-                    duration_secs,
-                } => {
-                    if duration_secs.is_some() && !self.opts.busy {
-                        if gap {
-                            lines.push(Line::from(""));
-                        }
-                        continue;
-                    }
-                    // Providers sometimes wrap the entire reasoning summary
-                    // in Markdown bold markers. Thinking already has its own
-                    // visual treatment, so do not expose those delimiters.
-                    let text = text.replace("**", "");
-                    for l in wrap(&text, width.saturating_sub(3)) {
-                        lines.push(Line::from(vec![
-                            Span::styled("⋯ ", theme::metadata_style()),
-                            Span::styled(l, theme::progress_style()),
-                        ]));
-                    }
+                // Reasoning / chain-of-thought is intentionally not rendered as ordinary
+                // Chat rows. It remains available for diff rationale and model context.
+                ChatItem::Thinking { .. } => {
                     if gap {
                         lines.push(Line::from(""));
                     }
@@ -1988,10 +1961,9 @@ mod tests {
             SessionStatus::Running,
             ConversationViewOpts::default(),
         );
-        // System prompts stay hidden while tool results become compact cards.
+        // System prompts and reasoning stay hidden; tool results become compact cards.
         assert!(matches!(m.items[0], ChatItem::User { .. }));
-        assert!(matches!(m.items[1], ChatItem::Thinking { .. }));
-        assert!(matches!(m.items[2], ChatItem::Assistant { .. }));
+        assert!(matches!(m.items[1], ChatItem::Assistant { .. }));
         assert!(m
             .items
             .iter()
@@ -2110,7 +2082,7 @@ mod tests {
     }
 
     #[test]
-    fn active_thinking_wraps_to_the_viewport_width() {
+    fn active_thinking_is_hidden_from_rendered_lines() {
         let msgs = vec![Message {
             role: MessageRole::Assistant,
             content: String::new(),
@@ -2129,25 +2101,17 @@ mod tests {
             ConversationViewOpts::default(),
         );
 
-        let thought_lines = model
-            .lines_for_width(24)
-            .iter()
-            .filter(|line| {
-                line.spans
-                    .first()
-                    .is_some_and(|span| span.content.as_ref() == "⋯ ")
-            })
-            .count();
-        assert_eq!(thought_lines, 4, "thinking must wrap at the pane width");
-        assert!(model.lines_for_width(24).iter().any(|line| {
-            line.spans.iter().any(|span| {
-                span.content.as_ref() != "⋯ " && span.style.add_modifier.contains(Modifier::ITALIC)
-            })
-        }));
+        let rendered_text = rendered_text(&model);
+        assert!(
+            !rendered_text.contains("one two three"),
+            "active reasoning must not appear in chat: {rendered_text}"
+        );
+        // The only visible content should be the empty assistant placeholder (if any).
+        assert!(model.items.is_empty() || rendered_text.is_empty());
     }
 
     #[test]
-    fn active_thinking_wraps_across_lines() {
+    fn assistant_output_remains_visible_while_thinking_is_hidden() {
         let msgs = vec![Message {
             role: MessageRole::Assistant,
             content: "ans".into(),
@@ -2177,9 +2141,15 @@ mod tests {
             .iter()
             .filter(|line| line.starts_with("⋯ "))
             .count();
+        assert_eq!(
+            thought_lines,
+            0,
+            "active reasoning must not produce visible rows, got:\n{}",
+            rendered_lines.join("\n")
+        );
         assert!(
-            thought_lines > 1,
-            "active thinking should wrap to multiple lines, got:\n{}",
+            rendered_lines.iter().any(|line| line.contains("ans")),
+            "assistant output must remain visible, got:\n{}",
             rendered_lines.join("\n")
         );
     }
