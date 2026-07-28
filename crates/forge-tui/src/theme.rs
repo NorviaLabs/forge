@@ -176,4 +176,20 @@ mod tests {
         assert_ne!(user_message().bg, assistant_message().bg);
         assert_ne!(assistant_message().bg, Some(PANEL));
     }
+
+    #[test]
+    fn danger_and_warn_are_different() {
+        assert_ne!(danger().fg, warn().fg);
+    }
+
+    #[test]
+    fn info_uses_accent_2() {
+        assert_eq!(info().fg, Some(ACCENT_2));
+    }
+
+    #[test]
+    fn diff_styles_use_background() {
+        assert!(diff_add().bg.is_some());
+        assert!(diff_remove().bg.is_some());
+    }
 }

@@ -215,4 +215,26 @@ mod tests {
                 .contains(&ReasoningEffort::XHigh)
         );
     }
+
+    #[test]
+    fn parse_invalid_returns_err() {
+        assert!("bogus".parse::<ReasoningEffort>().is_err());
+    }
+
+    #[test]
+    fn default_is_auto() {
+        assert_eq!(ReasoningEffort::default(), ReasoningEffort::Auto);
+    }
+
+    #[test]
+    fn max_options_are_available_for_some_models() {
+        let opts = ReasoningEffort::options_for_model("openai-codex/gpt-5.8");
+        assert!(opts.contains(&ReasoningEffort::Max));
+    }
+
+    #[test]
+    fn unknown_model_returns_default() {
+        let opts = ReasoningEffort::options_for_model("mocked/model");
+        assert_eq!(opts, vec![ReasoningEffort::Auto]);
+    }
 }

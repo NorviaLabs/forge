@@ -128,4 +128,43 @@ mod tests {
             "tool:web_search"
         );
     }
+
+    #[test]
+    fn recent_returns_newest_when_fewer_than_n() {
+        let mut f = ActivityFeed::with_capacity(10);
+        f.push(ActivityKind::System, FeedbackSeverity::Info, "a");
+        f.push(ActivityKind::System, FeedbackSeverity::Info, "b");
+        assert_eq!(f.recent(5).len(), 2);
+        assert_eq!(f.recent(5)[0].summary, "a");
+    }
+
+    #[test]
+    fn recent_returns_empty_when_empty() {
+        let f = ActivityFeed::with_capacity(5);
+        assert!(f.recent(3).is_empty());
+    }
+
+    #[test]
+    fn all_returns_all_items() {
+        let mut f = ActivityFeed::with_capacity(10);
+        f.push(ActivityKind::Model, FeedbackSeverity::Info, "m1");
+        f.push(ActivityKind::Tool, FeedbackSeverity::Ok, "t1");
+        assert_eq!(f.all().len(), 2);
+    }
+
+    #[test]
+    fn capacity_one_holds_at_most_one() {
+        let mut f = ActivityFeed::with_capacity(1);
+        f.push(ActivityKind::System, FeedbackSeverity::Info, "first");
+        f.push(ActivityKind::System, FeedbackSeverity::Info, "second");
+        assert_eq!(f.len(), 1);
+        assert_eq!(f.recent(1)[0].summary, "second");
+    }
+
+    #[test]
+    fn len_and_is_empty() {
+        let f = ActivityFeed::with_capacity(5);
+        assert!(f.is_empty());
+        assert_eq!(f.len(), 0);
+    }
 }
