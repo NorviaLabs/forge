@@ -518,6 +518,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn editor_focused_current_line_uses_brand_gutter_no_bright_bg() {
+        let (dir, mut app) = app().await;
+        let workspace = dir.path().join("repo");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(workspace.join("x.txt"), "first\nsecond\nthird\n").unwrap();
+        app.session = rebuild_session(dir.path(), &workspace).await;
+        app.runtime.cwd = workspace.clone();
+        app.source_viewer.open(&workspace, &workspace.join("x.txt"));
+        app.workspace_mode = WorkspaceMode::Editor;
+        app.source_viewer.focused = true;
+        app.source_viewer.current_line = 1;
+
+        let backend = TestBackend::new(80, 24);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| app.draw(f)).unwrap();
+        let buf = term.backend().buffer();
+        let text = buffer_text(&term);
+        assert!(
+            text.contains("2 │ second"),
+            "current line not rendered:\n{text}"
+        );
+
+        // The current line's content cells should not have the old bright cyan
+        // selected-row background.
+        let accent = ratatui::style::Color::Rgb(61, 214, 198);
+        let line_y = text.lines().position(|l| l.contains("2 │ second")).unwrap();
+        let content_start_x = text.lines().nth(line_y).unwrap().find('│').unwrap() + 1;
+        let has_bright_bg = (content_start_x..buf.area().width as usize)
+            .any(|x| buf.get(x as u16, line_y as u16).style().bg == Some(accent));
+        assert!(
+            !has_bright_bg,
+            "current line content still has bright cyan background:\n{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn editor_unfocused_current_line_reduces_gutter_emphasis() {
+        use crate::source_viewer::SourceViewerWidget;
+        let (dir, mut app) = app().await;
+        let workspace = dir.path().join("repo");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(workspace.join("x.txt"), "first\nsecond\nthird\n").unwrap();
+        app.session = rebuild_session(dir.path(), &workspace).await;
+        app.runtime.cwd = workspace.clone();
+        app.source_viewer.open(&workspace, &workspace.join("x.txt"));
+        app.source_viewer.focused = false;
+        app.source_viewer.current_line = 1;
+
+        let backend = TestBackend::new(80, 24);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| {
+            f.render_widget(
+                SourceViewerWidget {
+                    viewer: &mut app.source_viewer,
+                },
+                f.area(),
+            );
+        })
+        .unwrap();
+        let text = buffer_text(&term);
+        // When the editor is not focused, the current line is still visible but
+        // the gutter should not be bold brand.
+        assert!(
+            text.contains("2 │ second"),
+            "current line not rendered:\n{text}"
+        );
+    }
+
+    #[tokio::test]
     async fn explorer_shows_git_status_markers() {
         let (dir, mut app) = app().await;
         let workspace = dir.path().join("repo");
