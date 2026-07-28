@@ -24,7 +24,9 @@ use forge_core::{AgentSession, ApplyOutcome, LoopError};
 use forge_tools::{GitTool, Tool, ToolContext};
 use forge_types::{HitlDecision, ModelStreamEvent, ProgressDocument};
 use ratatui::backend::CrosstermBackend;
-use ratatui::text::Line;
+use ratatui::style::Modifier;
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 use ratatui::Terminal;
 use serde_json::json;
 use thiserror::Error;
@@ -50,8 +52,51 @@ use crate::widgets::{
     classify_operator_error, BusyPhase, FeedbackBar, FeedbackModel, FeedbackSeverity, FooterBar,
     FooterModel, InputBar, InputModel, StatusBar, StatusModel,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WorkspaceMode {
+    #[default]
+    Chat,
+    Editor,
+    Diff,
+}
+
+impl WorkspaceMode {
+    const ALL: [Self; 3] = [Self::Chat, Self::Editor, Self::Diff];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Chat => "Chat",
+            Self::Editor => "Editor",
+            Self::Diff => "Diff",
+        }
+    }
+
+    fn empty_state(self) -> Option<&'static str> {
+        match self {
+            Self::Chat => None,
+            Self::Editor => Some("Editor is not available yet."),
+            Self::Diff => Some("Diff view is not available yet."),
+        }
+    }
+
+    fn next(self) -> Self {
+        match self {
+            Self::Chat => Self::Editor,
+            Self::Editor => Self::Diff,
+            Self::Diff => Self::Chat,
+        }
+    }
+
+    fn previous(self) -> Self {
+        match self {
+            Self::Chat => Self::Diff,
+            Self::Editor => Self::Chat,
+            Self::Diff => Self::Editor,
+        }
+    }
+}
 use crate::ExitCode;
-use ratatui::widgets::Paragraph;
 
 #[derive(Debug, Error)]
 pub enum TuiError {
@@ -307,6 +352,8 @@ pub struct TuiApp {
     reasoning_effort: ReasoningEffort,
     /// Expand last tool detail (Ctrl+O).
     tool_expanded: bool,
+    /// Active workspace tab. Older restored sessions safely use the default Chat mode.
+    pub workspace_mode: WorkspaceMode,
     /// User preference; narrow terminals still hide the sidebar responsively.
     sidebar_visible: bool,
     /// Soft-cancel in-flight turn (Esc while busy).
@@ -379,6 +426,7 @@ impl TuiApp {
             thought_secs: None,
             reasoning_effort: ReasoningEffort::Auto,
             tool_expanded: false,
+            workspace_mode: WorkspaceMode::default(),
             sidebar_visible: true,
             cancel_requested: false,
             hitl_session_allow: HashSet::new(),
@@ -2099,7 +2147,17 @@ Reply with ONLY the commit message line.\n\n\
         let fb_h = if self.feedback.is_empty() { 0 } else { 1 };
         let input_h = (self.input.visual_lines() + 2).clamp(3, 8);
         let slash_mode = self.overlay.is_none() && self.input.text.starts_with('/');
-        let regions = split_areas_full(area, fb_h, input_h, !slash_mode && self.sidebar_visible, 0);
+        let mut regions =
+            split_areas_full(area, fb_h, input_h, !slash_mode && self.sidebar_visible, 0);
+        let workspace_rows = ratatui::layout::Layout::default()
+            .direction(ratatui::layout::Direction::Vertical)
+            .constraints([
+                ratatui::layout::Constraint::Length(1),
+                ratatui::layout::Constraint::Min(0),
+            ])
+            .split(regions.chat);
+        self.render_workspace_tabs(workspace_rows[0], frame.buffer_mut());
+        regions.chat = workspace_rows[1];
         let connected = self.is_provider_connected();
         let status = self.refresh_status_model_with_connected(connected);
         frame.render_widget(StatusBar { model: &status }, regions.status);
@@ -2226,23 +2284,27 @@ Reply with ONLY the commit message line.\n\n\
             .conversation_cache
             .as_ref()
             .expect("conversation cache populated");
-        frame.render_widget(
-            crate::conversation::ConversationLinesWidget {
-                lines: &cached.lines,
-                tail_lines: &live_lines,
-                scroll: self.chat_scroll,
-                follow: self.chat_follow,
-            },
-            ratatui::layout::Rect {
-                x: regions.chat.x.saturating_add(2.min(regions.chat.width)),
-                y: regions.chat.y.saturating_add(1.min(regions.chat.height)),
-                width: regions.chat.width.saturating_sub(2.min(regions.chat.width)),
-                height: regions
-                    .chat
-                    .height
-                    .saturating_sub(1.min(regions.chat.height)),
-            },
-        );
+        if self.workspace_mode == WorkspaceMode::Chat {
+            frame.render_widget(
+                crate::conversation::ConversationLinesWidget {
+                    lines: &cached.lines,
+                    tail_lines: &live_lines,
+                    scroll: self.chat_scroll,
+                    follow: self.chat_follow,
+                },
+                ratatui::layout::Rect {
+                    x: regions.chat.x.saturating_add(2.min(regions.chat.width)),
+                    y: regions.chat.y.saturating_add(1.min(regions.chat.height)),
+                    width: regions.chat.width.saturating_sub(2.min(regions.chat.width)),
+                    height: regions
+                        .chat
+                        .height
+                        .saturating_sub(1.min(regions.chat.height)),
+                },
+            );
+        } else {
+            self.render_workspace_empty_state(regions.chat, frame.buffer_mut());
+        }
         if let Some(sidebar_area) = regions.sidebar {
             let activity = self
                 .activity
@@ -2405,7 +2467,7 @@ Reply with ONLY the commit message line.\n\n\
         } else if qn > 0 {
             format!("queue {qn} · Ctrl+Up/Down select · Ctrl+Backspace cancel")
         } else {
-            "/ commands  ·  F1 help  ·  Esc cancel".into()
+            "/ commands  ·  Alt+←/→ tabs  ·  F1 help  ·  Esc cancel".into()
         };
         let footer_provider = footer_provider_id(
             self.runtime.provider.as_str(),
@@ -2434,6 +2496,42 @@ Reply with ONLY the commit message line.\n\n\
         if let Some(ref ov) = self.overlay {
             frame.render_widget(OverlayWidget { overlay: ov }, area);
         }
+    }
+
+    fn render_workspace_tabs(
+        &self,
+        area: ratatui::layout::Rect,
+        buf: &mut ratatui::buffer::Buffer,
+    ) {
+        let spans = WorkspaceMode::ALL.into_iter().flat_map(|mode| {
+            let style = if mode == self.workspace_mode {
+                theme::brand().add_modifier(Modifier::BOLD)
+            } else {
+                theme::dim()
+            };
+            [
+                Span::raw(" "),
+                Span::styled(mode.label(), style),
+                Span::raw(" "),
+            ]
+        });
+        Paragraph::new(Line::from_iter(spans)).render(area, buf);
+    }
+
+    fn render_workspace_empty_state(
+        &self,
+        area: ratatui::layout::Rect,
+        buf: &mut ratatui::buffer::Buffer,
+    ) {
+        Paragraph::new(self.workspace_mode.empty_state().unwrap_or_default())
+            .style(theme::dim())
+            .alignment(ratatui::layout::Alignment::Center)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(theme::muted()),
+            )
+            .render(area, buf);
     }
 
     pub async fn handle_key(&mut self, key: event::KeyEvent) -> Result<(), TuiError> {
@@ -2589,6 +2687,12 @@ Reply with ONLY the commit message line.\n\n\
         }
 
         match key.code {
+            KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.workspace_mode = self.workspace_mode.previous();
+            }
+            KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.workspace_mode = self.workspace_mode.next();
+            }
             KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.move_queue_selection(-1);
             }

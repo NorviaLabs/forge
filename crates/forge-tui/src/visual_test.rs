@@ -2,7 +2,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::app::{TuiApp, TuiRuntimeConfig};
+    use crate::app::{TuiApp, TuiRuntimeConfig, WorkspaceMode};
     use crate::overlays::Overlay;
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
     use forge_core::{AgentSession, LoopConfig};
@@ -107,9 +107,13 @@ mod tests {
     }
 
     fn press(code: KeyCode) -> KeyEvent {
+        press_with(code, KeyModifiers::NONE)
+    }
+
+    fn press_with(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
         KeyEvent {
             code,
-            modifiers: KeyModifiers::NONE,
+            modifiers,
             kind: KeyEventKind::Press,
             state: crossterm::event::KeyEventState::NONE,
         }
@@ -127,6 +131,62 @@ mod tests {
             out.push('\n');
         }
         out
+    }
+
+    #[tokio::test]
+    async fn workspace_tabs_default_to_chat() {
+        let (_d, mut app) = app().await;
+        assert_eq!(app.workspace_mode, WorkspaceMode::Chat);
+
+        let backend = TestBackend::new(120, 40);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| app.draw(f)).unwrap();
+        let text = buffer_text(&term);
+
+        assert!(text.contains("Chat"), "missing Chat tab:\n{text}");
+        assert!(text.contains("Editor"), "missing Editor tab:\n{text}");
+        assert!(text.contains("Diff"), "missing Diff tab:\n{text}");
+    }
+
+    #[tokio::test]
+    async fn workspace_tabs_cycle_to_empty_states() {
+        let (_d, mut app) = app().await;
+        app.handle_key(press_with(KeyCode::Right, KeyModifiers::ALT))
+            .await
+            .unwrap();
+        assert_eq!(app.workspace_mode, WorkspaceMode::Editor);
+
+        let backend = TestBackend::new(120, 40);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| app.draw(f)).unwrap();
+        let text = buffer_text(&term);
+        assert!(
+            text.contains("Editor is not available yet."),
+            "missing editor empty state:\n{text}"
+        );
+
+        app.handle_key(press_with(KeyCode::Right, KeyModifiers::ALT))
+            .await
+            .unwrap();
+        assert_eq!(app.workspace_mode, WorkspaceMode::Diff);
+        term.draw(|f| app.draw(f)).unwrap();
+        let text = buffer_text(&term);
+        assert!(
+            text.contains("Diff view is not available yet."),
+            "missing diff empty state:\n{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_tabs_do_not_handle_keys_under_overlay() {
+        let (_d, mut app) = app().await;
+        app.overlay = Some(Overlay::Help);
+        app.handle_key(press_with(KeyCode::Right, KeyModifiers::ALT))
+            .await
+            .unwrap();
+
+        assert_eq!(app.workspace_mode, WorkspaceMode::Chat);
+        assert!(matches!(app.overlay, Some(Overlay::Help)));
     }
 
     #[tokio::test]
