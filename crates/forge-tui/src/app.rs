@@ -45,8 +45,9 @@ use crate::layout::split_areas_full;
 use crate::layout::split_areas_with_side_panels;
 use crate::msg_queue::MessageQueue;
 use crate::overlays::{
-    filter_palette, handle_overlay_key, models_from_catalog, ConnectProfileItem, FileExplorerItem,
-    Key, Key as OverlayKey, Overlay, OverlayAction, OverlayWidget, PaletteItem, ResumeSessionItem,
+    centered_rect, filter_palette, handle_overlay_key, models_from_catalog, ConnectProfileItem,
+    FileExplorerItem, Key, Key as OverlayKey, Overlay, OverlayAction, OverlayWidget, PaletteItem,
+    ResumeSessionItem,
 };
 use crate::sidebar::{InspectorView, SidebarModel, SidebarWidget};
 use crate::source_viewer::{SourceViewer, SourceViewerWidget};
@@ -57,6 +58,7 @@ use crate::widgets::{
     BusyPhase, FeedbackBar, FeedbackModel, FeedbackSeverity, FooterBar, FooterModel, InputBar,
     InputModel, StatusBar, StatusModel,
 };
+use ratatui::widgets::Clear;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WorkspaceMode {
@@ -64,6 +66,21 @@ pub enum WorkspaceMode {
     Chat,
     Editor,
     Diff,
+}
+
+impl WorkspaceMode {
+    fn mode_label(self, focus: FocusMode) -> &'static str {
+        match focus {
+            FocusMode::Input(InputOwner::ChatComposer) if self == Self::Chat => "INPUT",
+            FocusMode::Transient(TransientOwner::SourceSearch)
+                if self == Self::Editor || self == Self::Chat =>
+            {
+                "SEARCH"
+            }
+            FocusMode::Transient(TransientOwner::JumpToLine) if self == Self::Editor => "JUMP",
+            _ => "NAV",
+        }
+    }
 }
 
 impl WorkspaceMode {
@@ -102,6 +119,17 @@ enum FocusBlock {
     Workspace,
     Inspector,
     BottomPanel,
+}
+
+impl FocusBlock {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Files => "FILES",
+            Self::Workspace => "CHAT",
+            Self::Inspector => "INSPECTOR",
+            Self::BottomPanel => "BOTTOM",
+        }
+    }
 }
 
 impl FocusBlock {
@@ -2508,6 +2536,7 @@ Reply with ONLY the commit message line.\n\n\
             frame.render_widget(
                 FileExplorerWidget {
                     explorer: &mut self.file_explorer,
+                    focused: self.focus.block == FocusBlock::Files,
                 },
                 files,
             );
@@ -2658,6 +2687,8 @@ Reply with ONLY the commit message line.\n\n\
             frame.render_widget(
                 SourceViewerWidget {
                     viewer: &mut self.source_viewer,
+                    focused: self.focus.block == FocusBlock::Workspace,
+                    mode_label: self.workspace_mode.mode_label(self.focus.mode),
                 },
                 regions.chat,
             );
@@ -2700,6 +2731,7 @@ Reply with ONLY the commit message line.\n\n\
                 SidebarWidget {
                     model: &sidebar,
                     view: self.inspector_view,
+                    focused: self.focus.block == FocusBlock::Inspector,
                 },
                 sidebar_area,
             );
@@ -2712,6 +2744,7 @@ Reply with ONLY the commit message line.\n\n\
                     busy_phase: &self.busy_phase,
                     activity: &self.activity,
                 },
+                focused: self.focus.block == FocusBlock::BottomPanel,
             },
             regions.bottom_panel,
         );
@@ -2843,6 +2876,12 @@ Reply with ONLY the commit message line.\n\n\
             InputBar {
                 model: &input,
                 attachment: attachment_label.as_deref(),
+                focused: matches!(self.focus.mode, FocusMode::Input(InputOwner::ChatComposer)),
+                mode_label: if matches!(self.focus.mode, FocusMode::Input(_)) {
+                    "INPUT"
+                } else {
+                    "NAV"
+                },
             },
             regions.input,
         );
@@ -2853,7 +2892,7 @@ Reply with ONLY the commit message line.\n\n\
         let (status_label, _) = status.status_label_with_busy_detail(busy_detail.as_deref());
         let hints = if self.busy {
             if qn > 0 {
-                format!("queue {qn} · Ctrl+Up/Down select · Ctrl+Backspace cancel")
+                "queue · Ctrl+Up/Down select · Ctrl+Backspace cancel".into()
             } else {
                 "type + Enter to queue · Esc interrupt".into()
             }
@@ -2862,10 +2901,9 @@ Reply with ONLY the commit message line.\n\n\
         } else if !connected {
             "/connect to enable chat".into()
         } else if qn > 0 {
-            format!("queue {qn} · Ctrl+Up/Down select · Ctrl+Backspace cancel")
+            "queue · Ctrl+Up/Down select · Ctrl+Backspace cancel".into()
         } else {
-            "/ commands  ·  Ctrl+E files  ·  Tab / Shift+Tab blocks  ·  ⇧← / ⇧→ switch tab  ·  F1 help"
-                .into()
+            self.footer_hints()
         };
         let footer_provider = footer_provider_id(
             self.runtime.provider.as_str(),
@@ -2892,7 +2930,10 @@ Reply with ONLY the commit message line.\n\n\
         frame.render_widget(FooterBar { model: &footer }, regions.footer);
 
         if let Some(ref ov) = self.overlay {
-            frame.render_widget(OverlayWidget { overlay: ov }, area);
+            match ov {
+                Overlay::Help => self.render_help_overlay(area, frame.buffer_mut()),
+                _ => frame.render_widget(OverlayWidget { overlay: ov }, area),
+            }
         }
     }
 
@@ -2901,7 +2942,18 @@ Reply with ONLY the commit message line.\n\n\
         area: ratatui::layout::Rect,
         buf: &mut ratatui::buffer::Buffer,
     ) {
-        let spans = WorkspaceMode::ALL.into_iter().flat_map(|mode| {
+        let mut spans = vec![
+            Span::styled(
+                format!(
+                    "{} · {}",
+                    self.workspace_mode.label(),
+                    self.workspace_mode.mode_label(self.focus.mode)
+                ),
+                theme::brand(),
+            ),
+            Span::raw("  "),
+        ];
+        spans.extend(WorkspaceMode::ALL.into_iter().flat_map(|mode| {
             let style = if mode == self.workspace_mode {
                 theme::brand().add_modifier(Modifier::BOLD)
             } else {
@@ -2912,7 +2964,7 @@ Reply with ONLY the commit message line.\n\n\
                 Span::styled(mode.label(), style),
                 Span::raw(" "),
             ]
-        });
+        }));
         Paragraph::new(Line::from_iter(spans)).render(area, buf);
     }
 
@@ -3077,8 +3129,11 @@ Reply with ONLY the commit message line.\n\n\
             && self.focus.mode == FocusMode::Navigation
             && self.bottom_panel.open;
         self.source_viewer.focused = self.focus.block == FocusBlock::Workspace
-            && self.focus.mode == FocusMode::Navigation
-            && self.workspace_mode == WorkspaceMode::Editor;
+            && self.workspace_mode == WorkspaceMode::Editor
+            && matches!(
+                self.focus.mode,
+                FocusMode::Navigation | FocusMode::Transient(_)
+            );
     }
 
     fn focus_block(&mut self, block: FocusBlock) {
@@ -3161,6 +3216,88 @@ Reply with ONLY the commit message line.\n\n\
         }
         self.bottom_panel.open = true;
         self.focus_block(FocusBlock::BottomPanel);
+    }
+
+    fn footer_hints(&self) -> String {
+        match self.focus.mode {
+            FocusMode::Input(InputOwner::ChatComposer) => {
+                "Enter send · ⇧Enter newline · Esc leave input · Tab complete · F1 help".into()
+            }
+            FocusMode::Transient(TransientOwner::SourceSearch) => {
+                "Enter next · ⇧Enter prev · Esc leave search · F1 help".into()
+            }
+            FocusMode::Transient(TransientOwner::JumpToLine) => {
+                "Enter jump · Esc leave jump · F1 help".into()
+            }
+            FocusMode::Navigation => match self.focus.block {
+                FocusBlock::Files => "Tab / Shift+Tab blocks · Esc leave · F1 help".into(),
+                FocusBlock::Workspace => {
+                    "Tab / Shift+Tab blocks · ⇧← / ⇧→ switch tab · Enter or i interact · Esc leave · F1 help".into()
+                }
+                FocusBlock::Inspector => {
+                    "Tab / Shift+Tab blocks · ⇧← / ⇧→ switch tab · Esc leave · F1 help".into()
+                }
+                FocusBlock::BottomPanel => {
+                    "Tab / Shift+Tab blocks · ⇧← / ⇧→ switch tab · Esc leave · F1 help".into()
+                }
+            },
+        }
+    }
+
+    fn render_help_overlay(&self, area: ratatui::layout::Rect, buf: &mut ratatui::buffer::Buffer) {
+        let r = centered_rect(64, 58, area);
+        Clear.render(r, buf);
+        Paragraph::new(self.help_text())
+            .wrap(ratatui::widgets::Wrap { trim: true })
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(theme::brand())
+                    .style(theme::panel())
+                    .title(Span::styled(" Help ", theme::brand())),
+            )
+            .render(r, buf);
+    }
+
+    fn help_text(&self) -> String {
+        let mode = self.workspace_mode.mode_label(self.focus.mode);
+        let mut text = String::from("Forge is an AI coding agent for your terminal.\n\n");
+        text.push_str(&format!(
+            "Active: {} · {}\n\n",
+            self.focus.block.label(),
+            mode
+        ));
+        text.push_str("Global\n");
+        text.push_str("• Tab / Shift+Tab  Move between visible blocks\n");
+        text.push_str("• F1  Help\n");
+        text.push_str("• Esc  Leave one interaction level\n\n");
+        text.push_str("Active block\n");
+        match self.focus.block {
+            FocusBlock::Workspace => {
+                text.push_str("• ⇧← / ⇧→  Switch workspace tab\n");
+                text.push_str("• Enter or i  Enter chat input\n");
+                text.push_str("• G / r  Editor navigation and refresh\n");
+                text.push_str("• Ctrl+F / Ctrl+G  Search or jump\n");
+            }
+            FocusBlock::Inspector => {
+                text.push_str("• ⇧← / ⇧→  Switch inspector tab\n");
+                text.push_str("• Esc  Return to previous block\n");
+            }
+            FocusBlock::BottomPanel => {
+                text.push_str("• ⇧← / ⇧→  Switch bottom-panel tab\n");
+                text.push_str("• Esc  Return to previous block\n");
+            }
+            FocusBlock::Files => {
+                text.push_str("• Enter  Open or expand\n");
+                text.push_str("• Esc  Return to previous block\n");
+            }
+        }
+        if matches!(self.focus.mode, FocusMode::Input(_)) {
+            text.push_str("\nInput\n• Esc  Leave input\n");
+        } else if matches!(self.focus.mode, FocusMode::Transient(_)) {
+            text.push_str("\nTransient input\n• Esc  Close\n");
+        }
+        text
     }
 
     fn toggle_bottom_panel(&mut self) {
@@ -6251,7 +6388,7 @@ mod tests {
                 startup_notices: Vec::new(),
             },
         );
-        for c in "/sta".chars() {
+        for c in "/res".chars() {
             app.handle_key(press(KeyCode::Char(c), KeyModifiers::NONE))
                 .await
                 .unwrap();
@@ -6261,7 +6398,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            app.input.text.starts_with("/status"),
+            app.input.text.starts_with("/resume"),
             "got {}",
             app.input.text
         );
@@ -6389,7 +6526,16 @@ mod tests {
             suggestions.iter().map(|s| &s.cmd).collect::<Vec<_>>()
         );
         for cmd in [
-            "/status", "/connect", "/model", "/compact", "/resume", "/sync", "/quit",
+            "/connect",
+            "/model",
+            "/compact",
+            "/resume",
+            "/file",
+            "/sync",
+            "/copy",
+            "/clear",
+            "/disconnect",
+            "/quit",
         ] {
             assert!(
                 suggestions.iter().any(|s| s.cmd == cmd),
