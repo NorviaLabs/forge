@@ -14,6 +14,7 @@ mod tests {
     use std::fs;
     use std::io::Write;
     use std::path::PathBuf;
+    use std::process::Command;
     use std::sync::Arc;
     use tempfile::TempDir;
 
@@ -461,6 +462,119 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(app.workspace_mode, WorkspaceMode::Editor);
+    }
+
+    #[tokio::test]
+    async fn editor_search_finds_and_navigates_matches() {
+        let (dir, mut app) = app().await;
+        let workspace = dir.path().join("repo");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(workspace.join("x.txt"), "foo bar\nfoo baz\n").unwrap();
+        app.session = rebuild_session(dir.path(), &workspace).await;
+        app.runtime.cwd = workspace.clone();
+        app.source_viewer.open(&workspace, &workspace.join("x.txt"));
+        app.workspace_mode = WorkspaceMode::Editor;
+
+        app.handle_key(press_with(KeyCode::Char('f'), KeyModifiers::CONTROL))
+            .await
+            .unwrap();
+        assert!(app.source_viewer.search.open);
+        for c in "foo".chars() {
+            app.handle_key(press(KeyCode::Char(c))).await.unwrap();
+        }
+        assert_eq!(app.source_viewer.search.matches.len(), 2);
+        assert_eq!(app.source_viewer.current_line, 0);
+        app.handle_key(press(KeyCode::Enter)).await.unwrap();
+        assert_eq!(app.source_viewer.current_line, 1);
+        app.handle_key(press_with(KeyCode::Enter, KeyModifiers::SHIFT))
+            .await
+            .unwrap();
+        assert_eq!(app.source_viewer.current_line, 0);
+        app.handle_key(press(KeyCode::Esc)).await.unwrap();
+        assert!(!app.source_viewer.search.open);
+    }
+
+    #[tokio::test]
+    async fn editor_jump_to_line_moves_cursor() {
+        let (dir, mut app) = app().await;
+        let workspace = dir.path().join("repo");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(workspace.join("x.txt"), "1\n2\n3\n4\n").unwrap();
+        app.session = rebuild_session(dir.path(), &workspace).await;
+        app.runtime.cwd = workspace.clone();
+        app.source_viewer.open(&workspace, &workspace.join("x.txt"));
+        app.workspace_mode = WorkspaceMode::Editor;
+
+        app.handle_key(press_with(KeyCode::Char('g'), KeyModifiers::CONTROL))
+            .await
+            .unwrap();
+        assert!(app.source_viewer.jump.open);
+        for c in "3".chars() {
+            app.handle_key(press(KeyCode::Char(c))).await.unwrap();
+        }
+        app.handle_key(press(KeyCode::Enter)).await.unwrap();
+        assert!(!app.source_viewer.jump.open);
+        assert_eq!(app.source_viewer.current_line, 2);
+    }
+
+    #[tokio::test]
+    async fn explorer_shows_git_status_markers() {
+        let (dir, mut app) = app().await;
+        let workspace = dir.path().join("repo");
+        fs::create_dir_all(&workspace).unwrap();
+        Command::new("git")
+            .arg("init")
+            .current_dir(&workspace)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "forge@test"])
+            .current_dir(&workspace)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Forge Test"])
+            .current_dir(&workspace)
+            .output()
+            .unwrap();
+        fs::write(workspace.join("tracked.txt"), "x").unwrap();
+        fs::write(workspace.join("untracked.txt"), "y").unwrap();
+        Command::new("git")
+            .args(["add", "tracked.txt"])
+            .current_dir(&workspace)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(&workspace)
+            .output()
+            .unwrap();
+        fs::write(workspace.join("tracked.txt"), "changed").unwrap();
+
+        app.session = rebuild_session(dir.path(), &workspace).await;
+        app.runtime.cwd = workspace.clone();
+        app.file_explorer = crate::file_explorer::FileExplorer::new(Some(workspace.clone()));
+        app.files_visible = true;
+        app.file_explorer.focused = true;
+
+        // Wait for the background git-status thread.
+        while app.file_explorer.git_status.loading {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            app.file_explorer.git_status.poll();
+        }
+
+        let backend = TestBackend::new(120, 40);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| app.draw(f)).unwrap();
+        let text = buffer_text(&term);
+        assert!(
+            text.contains("M tracked.txt"),
+            "missing modified marker:\n{text}"
+        );
+        assert!(
+            text.contains("? untracked.txt"),
+            "missing untracked marker:\n{text}"
+        );
     }
 
     async fn rebuild_session(dir: &std::path::Path, workspace: &std::path::Path) -> AgentSession {
