@@ -85,7 +85,9 @@ pub fn build_attachment_text(
 #[derive(Debug)]
 pub enum AttachmentError {
     Unreadable,
+    #[allow(dead_code)]
     OutsideRepository,
+    #[allow(dead_code)]
     Binary,
 }
 

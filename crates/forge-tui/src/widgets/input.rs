@@ -510,7 +510,7 @@ mod tests {
                     model: &m,
                     attachment: None,
                 },
-                f.size(),
+                f.area(),
             );
         })
         .unwrap();
@@ -519,7 +519,7 @@ mod tests {
         let mut found = false;
         for y in 0..area.height {
             for x in 0..area.width {
-                let cell = &buf.get(x, y);
+                let cell = &buf[(x, y)];
                 if cell.style().bg == Some(theme::TEXT) {
                     found = true;
                 }
@@ -539,13 +539,13 @@ mod tests {
                     model: &m,
                     attachment: None,
                 },
-                f.size(),
+                f.area(),
             );
         })
         .unwrap();
         let buf = term.backend().buffer();
         // Empty input renders prompt first, then the caret cell.
-        let cell = &buf.get(2, 1);
+        let cell = &buf[(2, 1)];
         assert_eq!(cell.symbol(), " ");
         assert_eq!(cell.style().bg, Some(theme::TEXT));
     }
@@ -563,7 +563,7 @@ mod tests {
                     model: &m,
                     attachment: None,
                 },
-                f.size(),
+                f.area(),
             );
         })
         .unwrap();
@@ -572,7 +572,7 @@ mod tests {
         let mut found_a = false;
         for y in 0..area.height {
             for x in 0..area.width {
-                let cell = &buf.get(x, y);
+                let cell = &buf[(x, y)];
                 if cell.symbol() == "a" && cell.style().bg == Some(theme::TEXT) {
                     found_a = true;
                 }

@@ -238,14 +238,11 @@ impl Widget for StatusBar<'_> {
             if used + model_needed + ctx_needed + state_needed <= area.width as usize {
                 spans.push(Span::raw(separators));
                 spans.push(Span::styled(model, theme::metadata_style()));
-                used += model_needed;
                 spans.push(Span::raw(separators));
                 spans.push(Span::styled(ctx, theme::muted()));
-                used += ctx_needed;
             } else if used + model_needed + state_needed <= area.width as usize {
                 spans.push(Span::raw(separators));
                 spans.push(Span::styled(model, theme::metadata_style()));
-                used += model_needed;
             }
             spans.push(Span::raw(separators));
             spans.push(Span::styled(state_field.0, state_field.1));
@@ -452,7 +449,7 @@ mod tests {
         let area = Rect::new(0, 0, 80, 1);
         let mut buf = Buffer::empty(area);
         StatusBar { model: &m }.render(area, &mut buf);
-        let rendered: String = (0..area.width).map(|x| buf.get(x, 0).symbol()).collect();
+        let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
         assert!(rendered.contains("Forge"));
         assert!(rendered.contains("forge/main*"));
         assert!(rendered.contains("mock"));
@@ -484,7 +481,7 @@ mod tests {
         let area = Rect::new(0, 0, 24, 1);
         let mut buf = Buffer::empty(area);
         StatusBar { model: &m }.render(area, &mut buf);
-        let rendered: String = (0..area.width).map(|x| buf.get(x, 0).symbol()).collect();
+        let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
         assert!(rendered.contains("Forge"));
         assert!(rendered.contains("Idle"));
     }
