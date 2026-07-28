@@ -2743,7 +2743,6 @@ Reply with ONLY the commit message line.\n\n\
             overlay.focus_model(&self.runtime.model_label);
             self.overlay = Some(overlay);
             self.status_message = "pick a model (live catalog when connected)".into();
-            
         }
 
         let connected_prefix = self.connect_profile.as_deref().and_then(|id| {

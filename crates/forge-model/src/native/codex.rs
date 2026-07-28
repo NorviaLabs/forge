@@ -160,16 +160,20 @@ fn request_body(
                         "content": [{"type": "output_text", "text": message.content}]
                     }));
                 }
-                input.extend(message.tool_calls.iter().filter(|call| {
-                    function_output_ids.contains(call.id.as_str())
-                }).map(|call| {
-                    json!({
-                        "type": "function_call",
-                        "call_id": call.id,
-                        "name": aliases.get(&call.name).unwrap_or(&call.name),
-                        "arguments": call.arguments.to_string()
-                    })
-                }));
+                input.extend(
+                    message
+                        .tool_calls
+                        .iter()
+                        .filter(|call| function_output_ids.contains(call.id.as_str()))
+                        .map(|call| {
+                            json!({
+                                "type": "function_call",
+                                "call_id": call.id,
+                                "name": aliases.get(&call.name).unwrap_or(&call.name),
+                                "arguments": call.arguments.to_string()
+                            })
+                        }),
+                );
             }
         }
     }

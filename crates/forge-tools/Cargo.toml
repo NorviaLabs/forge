@@ -17,6 +17,10 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 jsonschema = { workspace = true }
 reqwest = { workspace = true }
+regex = { workspace = true }
+fff-search = { workspace = true }
+fff-grep = { workspace = true }
+fff-query-parser = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
