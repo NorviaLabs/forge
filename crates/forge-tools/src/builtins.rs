@@ -347,7 +347,7 @@ pub fn default_builtins() -> Vec<std::sync::Arc<dyn Tool>> {
         std::sync::Arc::new(BashTool),
         std::sync::Arc::new(GitTool),
     ];
-    tools.extend(crate::fff::fff_tools());
+    tools.extend(crate::fast_file_tools::fff_tools());
     tools
 }
 
@@ -530,7 +530,9 @@ mod tests {
 
     #[test]
     fn fff_find_schema_rejects_empty_args() {
-        let t = crate::fff::FffFindTool::new(std::sync::Arc::new(crate::fff::FffState::new()));
+        let t = crate::fast_file_tools::FffFindTool::new(std::sync::Arc::new(
+            crate::fast_file_tools::FastFileState::new(),
+        ));
         let err =
             crate::validation::validate_args("fffind", &t.input_schema(), &json!({})).unwrap_err();
         assert_eq!(err.tool, "fffind");
@@ -538,8 +540,8 @@ mod tests {
 
     #[test]
     fn fff_grep_schema_rejects_empty_args() {
-        let state = std::sync::Arc::new(crate::fff::FffState::new());
-        let t = crate::fff::FffGrepTool::new(state);
+        let state = std::sync::Arc::new(crate::fast_file_tools::FastFileState::new());
+        let t = crate::fast_file_tools::FffGrepTool::new(state);
         let err =
             crate::validation::validate_args("ffgrep", &t.input_schema(), &json!({})).unwrap_err();
         assert_eq!(err.tool, "ffgrep");
@@ -547,15 +549,17 @@ mod tests {
 
     #[test]
     fn fff_find_schema_accepts_query() {
-        let t = crate::fff::FffFindTool::new(std::sync::Arc::new(crate::fff::FffState::new()));
+        let t = crate::fast_file_tools::FffFindTool::new(std::sync::Arc::new(
+            crate::fast_file_tools::FastFileState::new(),
+        ));
         crate::validation::validate_args("fffind", &t.input_schema(), &json!({"query": "main.rs"}))
             .unwrap();
     }
 
     #[test]
     fn fff_grep_schema_accepts_pattern() {
-        let state = std::sync::Arc::new(crate::fff::FffState::new());
-        let t = crate::fff::FffGrepTool::new(state);
+        let state = std::sync::Arc::new(crate::fast_file_tools::FastFileState::new());
+        let t = crate::fast_file_tools::FffGrepTool::new(state);
         crate::validation::validate_args("ffgrep", &t.input_schema(), &json!({"pattern": "TODO"}))
             .unwrap();
     }
