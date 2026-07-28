@@ -40,7 +40,7 @@ use crate::conversation::{
 use crate::effort::ReasoningEffort;
 use crate::history::InputHistory;
 use crate::layout::is_too_small;
-use crate::layout::split_areas_full;
+use crate::layout::split_areas_with_bottom_panel;
 use crate::msg_queue::MessageQueue;
 use crate::overlays::{
     filter_palette, handle_overlay_key, models_from_catalog, ConnectProfileItem, FileExplorerItem,
@@ -49,8 +49,9 @@ use crate::overlays::{
 use crate::sidebar::{SidebarModel, SidebarWidget};
 use crate::theme;
 use crate::widgets::{
-    classify_operator_error, BusyPhase, FeedbackBar, FeedbackModel, FeedbackSeverity, FooterBar,
-    FooterModel, InputBar, InputModel, StatusBar, StatusModel,
+    classify_operator_error, BottomPanel, BottomPanelModel, BottomPanelState, BottomPanelTab,
+    BusyPhase, FeedbackBar, FeedbackModel, FeedbackSeverity, FooterBar, FooterModel, InputBar,
+    InputModel, StatusBar, StatusModel,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -354,6 +355,7 @@ pub struct TuiApp {
     tool_expanded: bool,
     /// Active workspace tab. Older restored sessions safely use the default Chat mode.
     pub workspace_mode: WorkspaceMode,
+    pub bottom_panel: BottomPanelState,
     /// User preference; narrow terminals still hide the sidebar responsively.
     sidebar_visible: bool,
     /// Soft-cancel in-flight turn (Esc while busy).
@@ -427,6 +429,7 @@ impl TuiApp {
             reasoning_effort: ReasoningEffort::Auto,
             tool_expanded: false,
             workspace_mode: WorkspaceMode::default(),
+            bottom_panel: BottomPanelState::default(),
             sidebar_visible: true,
             cancel_requested: false,
             hitl_session_allow: HashSet::new(),
@@ -2147,8 +2150,15 @@ Reply with ONLY the commit message line.\n\n\
         let fb_h = if self.feedback.is_empty() { 0 } else { 1 };
         let input_h = (self.input.visual_lines() + 2).clamp(3, 8);
         let slash_mode = self.overlay.is_none() && self.input.text.starts_with('/');
-        let mut regions =
-            split_areas_full(area, fb_h, input_h, !slash_mode && self.sidebar_visible, 0);
+        let panel_h = if self.bottom_panel.open { 8 } else { 0 };
+        let mut regions = split_areas_with_bottom_panel(
+            area,
+            fb_h,
+            input_h,
+            !slash_mode && self.sidebar_visible,
+            0,
+            panel_h,
+        );
         let workspace_rows = ratatui::layout::Layout::default()
             .direction(ratatui::layout::Direction::Vertical)
             .constraints([
@@ -2326,6 +2336,17 @@ Reply with ONLY the commit message line.\n\n\
             frame.render_widget(SidebarWidget { model: &sidebar }, sidebar_area);
         }
 
+        frame.render_widget(
+            BottomPanel {
+                model: BottomPanelModel {
+                    state: &self.bottom_panel,
+                    busy_phase: &self.busy_phase,
+                    activity: &self.activity,
+                },
+            },
+            regions.bottom_panel,
+        );
+
         // Notices (help, connect list, multi-line status) just above input
         if !self.notices.is_empty() && self.overlay.is_none() {
             let notice_h = (self.notices.len() as u16).min(18).saturating_add(1);
@@ -2467,7 +2488,7 @@ Reply with ONLY the commit message line.\n\n\
         } else if qn > 0 {
             format!("queue {qn} · Ctrl+Up/Down select · Ctrl+Backspace cancel")
         } else {
-            "/ commands  ·  Alt+←/→ tabs  ·  F1 help  ·  Esc cancel".into()
+            "/ commands  ·  Alt+←/→ tabs  ·  Ctrl+P panel  ·  F1 help".into()
         };
         let footer_provider = footer_provider_id(
             self.runtime.provider.as_str(),
@@ -2693,6 +2714,18 @@ Reply with ONLY the commit message line.\n\n\
             KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => {
                 self.workspace_mode = self.workspace_mode.next();
             }
+            KeyCode::Char('1') if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.bottom_panel.open_tab(BottomPanelTab::Tests);
+            }
+            KeyCode::Char('2') if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.bottom_panel.open_tab(BottomPanelTab::Diagnostics);
+            }
+            KeyCode::Char('3') if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.bottom_panel.open_tab(BottomPanelTab::Terminal);
+            }
+            KeyCode::Char('4') if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.bottom_panel.open_tab(BottomPanelTab::Activity);
+            }
             KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.move_queue_selection(-1);
             }
@@ -2730,6 +2763,9 @@ Reply with ONLY the commit message line.\n\n\
             }
             KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.sidebar_visible = !self.sidebar_visible;
+            }
+            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.bottom_panel.toggle();
             }
             KeyCode::F(1) => {
                 if self.overlay.is_none() {
@@ -3996,6 +4032,57 @@ mod tests {
         }
         assert_eq!(app.input.text, "next");
         assert_eq!(app.message_queue.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn ctrl_p_toggles_bottom_panel_without_touching_input() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "mock".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "0.12.0".into(),
+                startup_notices: Vec::new(),
+            },
+        );
+        app.input.set_text("draft".into());
+
+        app.handle_key(press(KeyCode::Char('p'), KeyModifiers::CONTROL))
+            .await
+            .unwrap();
+        assert!(app.bottom_panel.open);
+        assert_eq!(app.input.text, "draft");
+
+        app.handle_key(press(KeyCode::Char('p'), KeyModifiers::CONTROL))
+            .await
+            .unwrap();
+        assert!(!app.bottom_panel.open);
+        assert_eq!(app.input.text, "draft");
+    }
+
+    #[tokio::test]
+    async fn alt_number_opens_selected_bottom_panel_tab() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "mock".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "0.12.0".into(),
+                startup_notices: Vec::new(),
+            },
+        );
+
+        app.handle_key(press(KeyCode::Char('4'), KeyModifiers::ALT))
+            .await
+            .unwrap();
+        assert!(app.bottom_panel.open);
+        assert_eq!(app.bottom_panel.active, BottomPanelTab::Activity);
     }
 
     #[tokio::test]

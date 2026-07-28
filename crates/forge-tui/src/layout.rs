@@ -12,6 +12,8 @@ pub struct LayoutRegions {
     pub status: Rect,
     pub chat: Rect,
     pub sidebar: Option<Rect>,
+    /// Contextual bottom panel. 0-height when closed or space is tight.
+    pub bottom_panel: Rect,
     /// Phase 10 / TUI-08 — 0-height when empty.
     pub feedback: Rect,
     /// Outbound message queue (click a row to cancel). 0-height when empty.
@@ -37,6 +39,18 @@ pub fn split_areas_full(
     show_sidebar: bool,
     queue_h: u16,
 ) -> LayoutRegions {
+    split_areas_with_bottom_panel(area, feedback_h, input_h, show_sidebar, queue_h, 0)
+}
+
+/// Full layout control plus optional bottom panel height.
+pub fn split_areas_with_bottom_panel(
+    area: Rect,
+    feedback_h: u16,
+    input_h: u16,
+    show_sidebar: bool,
+    queue_h: u16,
+    bottom_panel_h: u16,
+) -> LayoutRegions {
     let content_width = (u32::from(area.width) * CONTENT_WIDTH_PERCENT / 100) as u16;
     let content_area = Rect {
         x: area.x + area.width.saturating_sub(content_width) / 2,
@@ -47,11 +61,18 @@ pub fn split_areas_full(
     let fb = feedback_h.min(2);
     let input_h = input_h.clamp(3, 8);
     let qh = queue_h.min(8);
+    let fixed_h = 1 + fb + qh + input_h + 1;
+    let panel_h = if content_area.height >= fixed_h + 10 {
+        bottom_panel_h.min(8)
+    } else {
+        0
+    };
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),       // status
             Constraint::Min(3),          // main
+            Constraint::Length(panel_h), // bottom panel
             Constraint::Length(fb),      // feedback
             Constraint::Length(qh),      // message queue
             Constraint::Length(input_h), // input (multi-line)
@@ -61,10 +82,11 @@ pub fn split_areas_full(
 
     let status = rows[0];
     let main = rows[1];
-    let feedback = rows[2];
-    let queue = rows[3];
-    let input = rows[4];
-    let footer = rows[5];
+    let bottom_panel = rows[2];
+    let feedback = rows[3];
+    let queue = rows[4];
+    let input = rows[5];
+    let footer = rows[6];
 
     // Preserve a usable chat width on smaller terminals. The sidebar is a
     // secondary surface and disappears below 100 columns.
@@ -83,6 +105,7 @@ pub fn split_areas_full(
         status,
         chat,
         sidebar,
+        bottom_panel,
         feedback,
         queue,
         input,
@@ -108,9 +131,27 @@ mod tests {
         assert_eq!(r.sidebar, Some(Rect::new(89, 1, 28, 35)));
         assert_eq!(r.footer.height, 1);
         assert_eq!(r.input.height, 3);
+        assert_eq!(r.bottom_panel.height, 0);
         assert_eq!(r.feedback.height, 0);
         assert_eq!(r.queue.height, 0);
         assert_eq!(r.footer.y + r.footer.height, area.height);
+    }
+
+    #[test]
+    fn bottom_panel_reserves_bounded_space() {
+        let area = Rect::new(0, 0, 120, 40);
+        let r = split_areas_with_bottom_panel(area, 0, 3, true, 0, 20);
+        assert_eq!(r.bottom_panel.height, 8);
+        assert_eq!(r.input.height, 3);
+        assert_eq!(r.footer.y + r.footer.height, area.height);
+    }
+
+    #[test]
+    fn bottom_panel_hides_when_height_is_tight() {
+        let area = Rect::new(0, 0, 80, MIN_HEIGHT);
+        let r = split_areas_with_bottom_panel(area, 0, 3, true, 0, 6);
+        assert_eq!(r.bottom_panel.height, 0);
+        assert_eq!(r.input.height, 3);
     }
 
     #[test]
