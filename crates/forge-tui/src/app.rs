@@ -50,6 +50,7 @@ use crate::overlays::{
     Key, Key as OverlayKey, Overlay, OverlayAction, OverlayWidget, PaletteItem, ResumeSessionItem,
 };
 use crate::sidebar::{InspectorView, SidebarModel, SidebarWidget};
+use crate::source_viewer::{SourceViewer, SourceViewerWidget};
 use crate::theme;
 use crate::widgets::{
     classify_operator_error, BottomPanel, BottomPanelModel, BottomPanelState, BottomPanelTab,
@@ -79,7 +80,7 @@ impl WorkspaceMode {
     fn empty_state(self) -> Option<&'static str> {
         match self {
             Self::Chat => None,
-            Self::Editor => Some("Editor is not available yet."),
+            Self::Editor => None,
             Self::Diff => Some("Diff view is not available yet."),
         }
     }
@@ -358,6 +359,8 @@ pub struct TuiApp {
     tool_expanded: bool,
     /// Active workspace tab. Older restored sessions safely use the default Chat mode.
     pub workspace_mode: WorkspaceMode,
+    /// Read-only source viewer state for the Editor workspace tab.
+    pub source_viewer: SourceViewer,
     pub bottom_panel: BottomPanelState,
     pub files_visible: bool,
     pub file_explorer: FileExplorer,
@@ -370,6 +373,8 @@ pub struct TuiApp {
     hitl_session_allow: HashSet<String>,
     /// Transient toast (auto-clears).
     toast: Option<(Instant, String)>,
+    /// Last measured height of the editor viewport for page scrolling.
+    last_editor_height: u16,
     /// Session message/event offsets hidden by the most recent `/clear`.
     chat_message_start: usize,
     chat_event_start: usize,
@@ -436,6 +441,7 @@ impl TuiApp {
             reasoning_effort: ReasoningEffort::Auto,
             tool_expanded: false,
             workspace_mode: WorkspaceMode::default(),
+            source_viewer: SourceViewer::new(),
             bottom_panel: BottomPanelState::default(),
             files_visible: false,
             file_explorer: FileExplorer::new(Some(workspace_root)),
@@ -454,6 +460,7 @@ impl TuiApp {
             model_cost_cache: None,
             footer_limits_cache: None,
             footer_limits_rx: None,
+            last_editor_height: 24,
         }
         .restore_saved_auth()
         .apply_connection_chrome()
@@ -1065,6 +1072,15 @@ impl TuiApp {
             }
             Err(err) => self.open_file_explorer(None, Some(format!("Could not open file: {err}"))),
         }
+    }
+
+    fn open_file_in_editor(&mut self, path: &Path) {
+        let root = self.session.workspace_root().to_path_buf();
+        self.source_viewer.open(&root, path);
+        self.workspace_mode = WorkspaceMode::Editor;
+        self.status_message = "Viewing file (readonly)".into();
+        // Keep the file explorer in sync with the active file.
+        self.file_explorer.selected_path = Some(path.to_path_buf());
     }
 
     fn open_api_key_prompt(&mut self, profile_id: &str, error: Option<String>) {
@@ -2331,6 +2347,14 @@ Reply with ONLY the commit message line.\n\n\
                         .saturating_sub(1.min(regions.chat.height)),
                 },
             );
+        } else if self.workspace_mode == WorkspaceMode::Editor {
+            self.last_editor_height = regions.chat.height;
+            frame.render_widget(
+                SourceViewerWidget {
+                    viewer: &self.source_viewer,
+                },
+                regions.chat,
+            );
         } else {
             self.render_workspace_empty_state(regions.chat, frame.buffer_mut());
         }
@@ -2589,6 +2613,84 @@ Reply with ONLY the commit message line.\n\n\
         self.file_explorer.focused = self.files_visible;
     }
 
+    fn handle_editor_key(&mut self, key: event::KeyEvent) -> bool {
+        if self.workspace_mode != WorkspaceMode::Editor {
+            return false;
+        }
+        let height = self.last_editor_height.saturating_sub(2) as usize;
+        // Navigation shortcuts are plain keys so that Alt/Ctrl combinations
+        // continue to control workspace tabs and other chrome.
+        match key.code {
+            KeyCode::Esc if key.modifiers.is_empty() => {
+                self.workspace_mode = WorkspaceMode::Chat;
+                true
+            }
+            KeyCode::Up if key.modifiers.is_empty() => {
+                self.source_viewer.move_cursor_vertical(-1, height);
+                true
+            }
+            KeyCode::Down if key.modifiers.is_empty() => {
+                self.source_viewer.move_cursor_vertical(1, height);
+                true
+            }
+            KeyCode::PageUp if key.modifiers.is_empty() => {
+                self.source_viewer
+                    .move_cursor_vertical(-(height as isize), height);
+                true
+            }
+            KeyCode::PageDown if key.modifiers.is_empty() => {
+                self.source_viewer
+                    .move_cursor_vertical(height as isize, height);
+                true
+            }
+            KeyCode::Home if key.modifiers.is_empty() => {
+                self.source_viewer.move_to_start_of_line();
+                true
+            }
+            KeyCode::End if key.modifiers.is_empty() => {
+                self.source_viewer.move_to_end_of_line();
+                true
+            }
+            KeyCode::Left if key.modifiers.is_empty() => {
+                self.source_viewer.move_cursor_horizontal(-1);
+                true
+            }
+            KeyCode::Right if key.modifiers.is_empty() => {
+                self.source_viewer.move_cursor_horizontal(1);
+                true
+            }
+            KeyCode::Char('r') if key.modifiers.is_empty() => {
+                self.source_viewer.refresh(self.session.workspace_root());
+                true
+            }
+            KeyCode::Char('h') if key.modifiers.is_empty() => {
+                self.source_viewer.move_cursor_horizontal(-1);
+                true
+            }
+            KeyCode::Char('l') if key.modifiers.is_empty() => {
+                self.source_viewer.move_cursor_horizontal(1);
+                true
+            }
+            KeyCode::Char('j') if key.modifiers.is_empty() => {
+                self.source_viewer.move_cursor_vertical(1, height);
+                true
+            }
+            KeyCode::Char('k') if key.modifiers.is_empty() => {
+                self.source_viewer.move_cursor_vertical(-1, height);
+                true
+            }
+            KeyCode::Char('g') if key.modifiers.is_empty() => {
+                self.source_viewer.move_to_first_line();
+                true
+            }
+            KeyCode::Char('G') if key.modifiers.is_empty() => {
+                self.source_viewer.move_to_last_line();
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn handle_file_explorer_key(&mut self, key: event::KeyEvent) -> bool {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('e') {
             self.toggle_files_panel();
@@ -2619,7 +2721,11 @@ Reply with ONLY the commit message line.\n\n\
                 true
             }
             KeyCode::Enter => {
-                self.file_explorer.activate_selected();
+                if let Some(path) = self.file_explorer.selected_file_path() {
+                    self.open_file_in_editor(&path);
+                } else {
+                    self.file_explorer.activate_selected();
+                }
                 true
             }
             KeyCode::Char('r') if key.modifiers.is_empty() => {
@@ -2786,12 +2892,25 @@ Reply with ONLY the commit message line.\n\n\
             return Ok(());
         }
 
+        if self.handle_editor_key(key) {
+            self.source_viewer.clear_notice();
+            return Ok(());
+        }
+
         match key.code {
             KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => {
-                self.workspace_mode = self.workspace_mode.previous();
+                let next = self.workspace_mode.previous();
+                self.workspace_mode = next;
+                if next == WorkspaceMode::Editor {
+                    self.source_viewer.refresh(self.session.workspace_root());
+                }
             }
             KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => {
-                self.workspace_mode = self.workspace_mode.next();
+                let next = self.workspace_mode.next();
+                self.workspace_mode = next;
+                if next == WorkspaceMode::Editor {
+                    self.source_viewer.refresh(self.session.workspace_root());
+                }
             }
             KeyCode::Char('1') if key.modifiers.contains(KeyModifiers::ALT) => {
                 self.bottom_panel.open_tab(BottomPanelTab::Tests);
