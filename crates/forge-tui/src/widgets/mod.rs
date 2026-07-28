@@ -1,3 +1,4 @@
+pub mod bottom_panel;
 pub mod code_block;
 pub mod feedback;
 pub mod footer;
@@ -5,6 +6,7 @@ pub mod input;
 pub mod queue;
 pub mod status;
 
+pub use bottom_panel::{BottomPanel, BottomPanelModel, BottomPanelState, BottomPanelTab};
 pub use feedback::{classify_operator_error, FeedbackBar, FeedbackModel, FeedbackSeverity};
 pub use footer::{FooterBar, FooterModel};
 pub use input::{InputBar, InputModel};
