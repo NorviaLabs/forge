@@ -6,6 +6,7 @@ use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
+use crate::git_status::{GitStatusCache, GitStatusKind};
 use crate::theme;
 
 const HIDDEN_DIRS: &[&str] = &[".git", "target", ".forge"];
@@ -78,13 +79,14 @@ pub struct VisibleNode {
     pub depth: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct FileExplorer {
     pub root: Option<FileNode>,
     pub selected_path: Option<PathBuf>,
     pub scroll: usize,
     pub focused: bool,
     root_path: Option<PathBuf>,
+    pub git_status: GitStatusCache,
 }
 
 impl FileExplorer {
@@ -95,9 +97,13 @@ impl FileExplorer {
             selected_path: root_path.clone(),
             scroll: 0,
             focused: false,
-            root_path,
+            root_path: root_path.clone(),
+            git_status: GitStatusCache::new(),
         };
         explorer.load_root();
+        if let Some(root) = root_path {
+            explorer.git_status.start_refresh(root);
+        }
         explorer
     }
 
@@ -116,11 +122,17 @@ impl FileExplorer {
                     node.loaded = false;
                     load_children(root_path.as_deref(), node);
                     node.expanded = true;
+                    if let Some(root) = root_path {
+                        self.git_status.start_refresh(root);
+                    }
                     return;
                 }
             }
         }
         self.load_root();
+        if let Some(root) = root_path {
+            self.git_status.start_refresh(root);
+        }
     }
 
     pub fn toggle_focus(&mut self) {
@@ -146,6 +158,12 @@ impl FileExplorer {
                 text
             }
         })
+    }
+
+    pub fn git_status_for(&self, path: &Path) -> Option<GitStatusKind> {
+        let root = self.root_path.as_ref()?;
+        let rel = path.strip_prefix(root).ok()?;
+        self.git_status.get(rel)
     }
 
     pub fn move_selection(&mut self, delta: isize) {
@@ -361,6 +379,7 @@ pub struct FileExplorerWidget<'a> {
 
 impl Widget for FileExplorerWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        self.explorer.git_status.poll();
         let title = if self.explorer.focused {
             "FILES *"
         } else {
@@ -394,8 +413,16 @@ impl Widget for FileExplorerWidget<'_> {
                     FileKind::File => " ",
                 };
                 let prefix = "  ".repeat(node.depth);
+                let status_marker = if node.kind == FileKind::File {
+                    self.explorer
+                        .git_status_for(&node.path)
+                        .map(|s| format!("{} ", s.marker()))
+                        .unwrap_or_default()
+                } else {
+                    String::new()
+                };
                 let mut line = Line::from(vec![Span::raw(format!(
-                    "{prefix}{marker} {}",
+                    "{prefix}{marker} {status_marker}{}",
                     node.display_name
                 ))]);
                 if selected {
