@@ -4986,6 +4986,28 @@ mod tests {
 
     #[tokio::test]
     async fn connect_opencode_go_opens_api_key_overlay() {
+        // Isolate HOME to prevent restore_saved_auth from discovering real credentials.
+        let _home_guard = {
+            let temp_home = tempfile::TempDir::new().unwrap();
+            let cred_dir = temp_home.path().join("Library/Application Support/forge");
+            std::fs::create_dir_all(&cred_dir).unwrap_or_default();
+            let _ = std::fs::write(cred_dir.join("credentials.toml"), "");
+
+            let guard = ScopedEnvGuard::new(&[
+                "HOME",
+                "XDG_CONFIG_HOME",
+                "OPENAI_API_KEY",
+                "ANTHROPIC_API_KEY",
+                "OPENCODE_API_KEY",
+                "OPENCODE_GO_API_KEY",
+                "OPENCODE_ZEN_API_KEY",
+                "OLLAMA_API_KEY",
+                "XAI_API_KEY",
+            ]);
+            std::env::set_var("HOME", temp_home.path());
+            (temp_home, guard)
+        };
+
         let (_dir, session) = test_session().await;
         let mut app = TuiApp::new(
             session,
@@ -4997,21 +5019,8 @@ mod tests {
                 startup_notices: Vec::new(),
             },
         );
-        let _key_guard = ScopedEnvGuard::new(&[
-            "OPENAI_API_KEY",
-            "ANTHROPIC_API_KEY",
-            "OPENCODE_API_KEY",
-            "OPENCODE_GO_API_KEY",
-            "OPENCODE_ZEN_API_KEY",
-            "OLLAMA_API_KEY",
-            "XAI_API_KEY",
-        ]);
-        app.connect_store = CredentialStore::new(
-            tempfile::TempDir::new()
-                .unwrap()
-                .path()
-                .join("empty-creds.toml"),
-        );
+        let _store_dir = tempfile::TempDir::new().unwrap();
+        app.connect_store = CredentialStore::new(_store_dir.path().join("empty-creds.toml"));
         app.dispatch_line("/connect opencode_go").await.unwrap();
         match &app.overlay {
             Some(Overlay::ConnectApiKey {
@@ -5696,6 +5705,32 @@ mod tests {
     async fn blocks_chat_when_not_connected() {
         use crossterm::event::{KeyCode, KeyModifiers};
 
+        // Isolate HOME to a temp dir so CredentialStore::user_default() cannot
+        // discover the real user's ~/.forge/credentials.toml.
+        let _home_guard = {
+            let temp_home = tempfile::TempDir::new().unwrap();
+            // Create the credential directory structure that user_default() expects.
+            // On macOS: {HOME}/Library/Application Support/forge/credentials.toml
+            // On Linux: {HOME}/.config/forge/credentials.toml
+            let cred_dir = temp_home.path().join("Library/Application Support/forge");
+            std::fs::create_dir_all(&cred_dir).unwrap_or_default();
+            let _ = std::fs::write(cred_dir.join("credentials.toml"), "");
+
+            let guard = ScopedEnvGuard::new(&[
+                "HOME",
+                "XDG_CONFIG_HOME",
+                "OPENAI_API_KEY",
+                "ANTHROPIC_API_KEY",
+                "OPENCODE_API_KEY",
+                "OPENCODE_GO_API_KEY",
+                "OPENCODE_ZEN_API_KEY",
+                "OLLAMA_API_KEY",
+                "XAI_API_KEY",
+            ]);
+            std::env::set_var("HOME", temp_home.path());
+            (temp_home, guard)
+        };
+
         let (_dir, session) = test_session().await;
         let mut app = TuiApp::new(
             session,
@@ -5707,24 +5742,10 @@ mod tests {
                 startup_notices: Vec::new(),
             },
         );
-        // Clear env vars so dev machine credentials don't leak into tests.
-        // Must be after TuiApp::new() — restore_saved_auth sets env from stored credentials.
-        let _key_guard = ScopedEnvGuard::new(&[
-            "OPENAI_API_KEY",
-            "ANTHROPIC_API_KEY",
-            "OPENCODE_API_KEY",
-            "OPENCODE_GO_API_KEY",
-            "OPENCODE_ZEN_API_KEY",
-            "OLLAMA_API_KEY",
-            "XAI_API_KEY",
-        ]);
+        // Override credential store with empty temp file so connection check fails.
+        let _store_dir = tempfile::TempDir::new().unwrap();
+        app.connect_store = CredentialStore::new(_store_dir.path().join("empty-creds.toml"));
         app.connect_profile = None;
-        app.connect_store = CredentialStore::new(
-            tempfile::TempDir::new()
-                .unwrap()
-                .path()
-                .join("empty-creds.toml"),
-        );
         app.refresh_connection_ui();
         assert!(!app.is_provider_connected());
 
