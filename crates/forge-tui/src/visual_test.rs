@@ -11,6 +11,8 @@ mod tests {
     use forge_types::ModelResponse;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+    use std::fs;
+    use std::io::Write;
     use std::path::PathBuf;
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -149,7 +151,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn workspace_tabs_cycle_to_empty_states() {
+    async fn workspace_tabs_cycle_to_editor_and_diff() {
         let (_d, mut app) = app().await;
         app.handle_key(press_with(KeyCode::Right, KeyModifiers::ALT))
             .await
@@ -161,7 +163,7 @@ mod tests {
         term.draw(|f| app.draw(f)).unwrap();
         let text = buffer_text(&term);
         assert!(
-            text.contains("Editor is not available yet."),
+            text.contains("No file open"),
             "missing editor empty state:\n{text}"
         );
 
@@ -374,5 +376,113 @@ mod tests {
             "home copy still visible:\n{text}"
         );
         assert!(text.contains("h"), "typed input missing:\n{text}");
+    }
+
+    #[tokio::test]
+    async fn editor_opens_text_file_from_files_panel() {
+        let (dir, mut app) = app().await;
+        let workspace = dir.path().join("repo");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(
+            workspace.join("main.rs"),
+            "fn main() {\n    println!(\"hi\");\n}\n",
+        )
+        .unwrap();
+        app.session = rebuild_session(dir.path(), &workspace).await;
+        app.runtime.cwd = workspace.clone();
+        app.file_explorer = crate::file_explorer::FileExplorer::new(Some(workspace.clone()));
+        app.files_visible = true;
+        app.file_explorer.focused = true;
+        // Select the file and open it.
+        app.file_explorer.move_selection(1);
+        app.handle_key(press(KeyCode::Enter)).await.unwrap();
+
+        assert_eq!(app.workspace_mode, WorkspaceMode::Editor);
+        let backend = TestBackend::new(120, 40);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| app.draw(f)).unwrap();
+        let text = buffer_text(&term);
+        assert!(text.contains("main.rs"), "missing path:\n{text}");
+        assert!(text.contains("fn main()"), "missing content:\n{text}");
+        assert!(text.contains("1 │"), "missing line numbers:\n{text}");
+    }
+
+    #[tokio::test]
+    async fn editor_shows_binary_state_for_binary_file() {
+        let (dir, mut app) = app().await;
+        let workspace = dir.path().join("repo");
+        fs::create_dir_all(&workspace).unwrap();
+        let mut file = fs::File::create(workspace.join("image.bin")).unwrap();
+        file.write_all(&[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+            .unwrap();
+        app.session = rebuild_session(dir.path(), &workspace).await;
+        app.runtime.cwd = workspace.clone();
+        app.file_explorer = crate::file_explorer::FileExplorer::new(Some(workspace.clone()));
+        app.files_visible = true;
+        app.file_explorer.focused = true;
+        app.file_explorer.move_selection(1);
+        app.handle_key(press(KeyCode::Enter)).await.unwrap();
+
+        let backend = TestBackend::new(120, 40);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| app.draw(f)).unwrap();
+        let text = buffer_text(&term);
+        assert!(
+            text.contains("Binary file"),
+            "missing binary header:\n{text}"
+        );
+        assert!(text.contains("image.bin"), "missing path:\n{text}");
+    }
+
+    #[tokio::test]
+    async fn editor_navigation_moves_cursor() {
+        let (dir, mut app) = app().await;
+        let workspace = dir.path().join("repo");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(workspace.join("x.txt"), "line1\nline2\nline3\n").unwrap();
+        app.session = rebuild_session(dir.path(), &workspace).await;
+        app.runtime.cwd = workspace.clone();
+        app.source_viewer.open(&workspace, &workspace.join("x.txt"));
+        app.workspace_mode = WorkspaceMode::Editor;
+
+        app.handle_key(press(KeyCode::Down)).await.unwrap();
+        assert_eq!(app.source_viewer.current_line, 1);
+        app.handle_key(press(KeyCode::Down)).await.unwrap();
+        app.handle_key(press(KeyCode::Down)).await.unwrap();
+        assert_eq!(app.source_viewer.current_line, 2); // clamped
+        app.handle_key(press(KeyCode::End)).await.unwrap();
+        assert_eq!(app.source_viewer.h_scroll, 5); // "line3" width
+        app.handle_key(press(KeyCode::Home)).await.unwrap();
+        assert_eq!(app.source_viewer.h_scroll, 0);
+        app.handle_key(press_with(KeyCode::Right, KeyModifiers::ALT))
+            .await
+            .unwrap();
+        app.handle_key(press_with(KeyCode::Left, KeyModifiers::ALT))
+            .await
+            .unwrap();
+        assert_eq!(app.workspace_mode, WorkspaceMode::Editor);
+    }
+
+    async fn rebuild_session(dir: &std::path::Path, workspace: &std::path::Path) -> AgentSession {
+        let model = Arc::new(MockModelClient::script(vec![ModelResponse {
+            text: "ok".into(),
+            tool_calls: vec![],
+            usage: None,
+            thinking: None,
+        }]));
+        AgentSession::create(
+            LoopConfig {
+                max_turns: 4,
+                workspace: workspace.to_path_buf(),
+                journal_dir: dir.join("j"),
+                enable_context_lifecycle: true,
+                enable_governance: true,
+                ..Default::default()
+            },
+            model,
+            ToolRegistry::new(),
+        )
+        .await
+        .unwrap()
     }
 }

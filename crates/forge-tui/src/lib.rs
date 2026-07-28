@@ -11,6 +11,7 @@ mod layout;
 mod msg_queue;
 mod overlays;
 mod sidebar;
+mod source_viewer;
 mod theme;
 #[cfg(test)]
 mod visual_test;
