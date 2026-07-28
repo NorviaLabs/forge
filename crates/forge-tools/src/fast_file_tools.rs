@@ -313,7 +313,10 @@ mod tests {
 
     #[test]
     fn plain_mode_auto_detects_regex_literal() {
-        assert_eq!(grep_mode("/foo.*/", Some(&FffModeArg::Plain)), GrepMode::Regex);
+        assert_eq!(
+            grep_mode("/foo.*/", Some(&FffModeArg::Plain)),
+            GrepMode::Regex
+        );
     }
 
     #[test]
