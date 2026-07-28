@@ -191,6 +191,9 @@ impl FileExplorer {
                     load_children(root_path.as_deref(), node);
                 }
                 node.expanded = true;
+                if let Some(root) = root_path {
+                    self.git_status.start_refresh(root);
+                }
             }
         }
     }

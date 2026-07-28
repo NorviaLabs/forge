@@ -42,6 +42,8 @@ pub enum SlashCommand {
     },
     /// Stage all changes, generate a commit message from the changeset, commit, and push.
     Sync,
+    /// Refresh the file explorer's git status cache.
+    Refresh,
 }
 
 pub fn parse_slash(line: &str) -> Option<Result<SlashCommand, CommandError>> {
@@ -91,6 +93,7 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
             path: parts.next().map(|s| s.to_string()),
         }),
         "sync" => Ok(SlashCommand::Sync),
+        "refresh" => Ok(SlashCommand::Refresh),
         other => Err(CommandError::Unknown(other.to_string())),
     }
 }
@@ -170,6 +173,14 @@ mod tests {
         assert_eq!(parse_slash("/sync").unwrap().unwrap(), SlashCommand::Sync);
         assert!(parse_slash("/commit").unwrap().is_err());
         assert!(parse_slash("/push").unwrap().is_err());
+    }
+
+    #[test]
+    fn parses_refresh() {
+        assert_eq!(
+            parse_slash("/refresh").unwrap().unwrap(),
+            SlashCommand::Refresh
+        );
     }
 
     #[test]

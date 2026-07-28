@@ -3420,6 +3420,10 @@ Reply with ONLY the commit message line.\n\n\
                         let _ = self.drain_pending_sync(None).await;
                     }
                 }
+                Ok(SlashCommand::Refresh) => {
+                    self.file_explorer.refresh_selected();
+                    self.status_message = "Refreshing git status...".into();
+                }
                 Err(e) => {
                     let msg = e.to_string();
                     self.set_feedback(FeedbackSeverity::Warn, msg.clone());
