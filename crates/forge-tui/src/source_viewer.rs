@@ -78,6 +78,8 @@ pub struct SourceViewer {
     pub current_line: usize,
     /// Horizontal scroll offset in display columns.
     pub h_scroll: usize,
+    /// Whether the editor panel currently has focus. Affects current-line emphasis.
+    pub focused: bool,
     pub status: ViewerStatus,
     /// Raw size on disk when the file was loaded.
     pub size_bytes: u64,
@@ -110,6 +112,7 @@ impl Default for SourceViewer {
             top_line: 0,
             current_line: 0,
             h_scroll: 0,
+            focused: true,
             status: ViewerStatus::Empty,
             size_bytes: 0,
             preview: false,
@@ -981,26 +984,24 @@ impl SourceViewerWidget<'_> {
                 }
             };
 
-            let displayed_chars: usize = spans.iter().map(|s| s.content.chars().count()).sum();
-            let mut spans = spans;
-            if selected && displayed_chars < content_width {
-                let pad = " ".repeat(content_width - displayed_chars);
-                spans.push(Span::styled(pad, theme::selected_row()));
-            }
-
             let number = format!("{:>number_width$}", index + 1);
             let gutter_text = format!("{number} │ ");
 
             let gutter_style = if selected {
-                theme::brand().add_modifier(Modifier::BOLD)
+                if self.viewer.focused {
+                    theme::brand().add_modifier(Modifier::BOLD)
+                } else {
+                    theme::text()
+                }
             } else {
                 theme::muted()
             };
 
             let mut line_spans = vec![Span::styled(gutter_text, gutter_style)];
-            if selected {
+            if selected && self.viewer.focused {
+                // Subtle dark tint behind the current line so syntax colours stay readable.
                 line_spans.extend(spans.into_iter().map(|span| {
-                    let style = span.style.patch(theme::selected_row());
+                    let style = span.style.bg(theme::PANEL_ALT);
                     Span::styled(span.content.into_owned(), style)
                 }));
             } else {

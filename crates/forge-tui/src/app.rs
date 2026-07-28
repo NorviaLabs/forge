@@ -2347,6 +2347,7 @@ Reply with ONLY the commit message line.\n\n\
             );
         } else if self.workspace_mode == WorkspaceMode::Editor {
             self.last_editor_height = regions.chat.height;
+            self.source_viewer.focused = true;
             frame.render_widget(
                 SourceViewerWidget {
                     viewer: &mut self.source_viewer,
@@ -2354,6 +2355,7 @@ Reply with ONLY the commit message line.\n\n\
                 regions.chat,
             );
         } else {
+            self.source_viewer.focused = false;
             self.render_workspace_empty_state(regions.chat, frame.buffer_mut());
         }
         if let Some(sidebar_area) = regions.sidebar {
