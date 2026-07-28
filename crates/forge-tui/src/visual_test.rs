@@ -153,7 +153,15 @@ mod tests {
 
     #[tokio::test]
     async fn workspace_tabs_cycle_to_editor_and_diff() {
-        let (_d, mut app) = app().await;
+        let (dir, mut app) = app().await;
+        let workspace = dir.path().join("repo");
+        fs::create_dir_all(&workspace).unwrap();
+        Command::new("git").arg("init").current_dir(&workspace).output().unwrap();
+        fs::write(workspace.join("x.txt"), "changed").unwrap();
+        app.session = rebuild_session(dir.path(), &workspace).await;
+        app.runtime.cwd = workspace.clone();
+        app.file_explorer = crate::file_explorer::FileExplorer::new(Some(workspace.clone()));
+
         app.handle_key(press_with(KeyCode::Right, KeyModifiers::ALT))
             .await
             .unwrap();
@@ -172,6 +180,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(app.workspace_mode, WorkspaceMode::Diff);
+
+        // Wait for the background git-status thread.
+        while app.file_explorer.git_status.loading {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            app.file_explorer.git_status.poll();
+        }
+
         term.draw(|f| app.draw(f)).unwrap();
         let text = buffer_text(&term);
         assert!(
