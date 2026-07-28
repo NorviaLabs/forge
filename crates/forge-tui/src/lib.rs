@@ -6,6 +6,7 @@ mod commands;
 mod conversation;
 mod editor;
 mod effort;
+mod file_context;
 mod file_explorer;
 mod git_status;
 mod history;

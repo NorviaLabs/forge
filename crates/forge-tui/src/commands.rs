@@ -46,6 +46,8 @@ pub enum SlashCommand {
     Refresh,
     /// Open the active file in the external editor.
     Edit,
+    /// Attach the current active file to the next user message.
+    ContextFile,
 }
 
 pub fn parse_slash(line: &str) -> Option<Result<SlashCommand, CommandError>> {
@@ -97,6 +99,7 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
         "sync" => Ok(SlashCommand::Sync),
         "refresh" => Ok(SlashCommand::Refresh),
         "edit" => Ok(SlashCommand::Edit),
+        "context-file" | "context_file" | "cf" => Ok(SlashCommand::ContextFile),
         other => Err(CommandError::Unknown(other.to_string())),
     }
 }
@@ -179,16 +182,24 @@ mod tests {
     }
 
     #[test]
-    fn parses_refresh() {
-        assert_eq!(
-            parse_slash("/refresh").unwrap().unwrap(),
-            SlashCommand::Refresh
-        );
+    fn parses_edit() {
+        assert_eq!(parse_slash("/edit").unwrap().unwrap(), SlashCommand::Edit);
     }
 
     #[test]
-    fn parses_edit() {
-        assert_eq!(parse_slash("/edit").unwrap().unwrap(), SlashCommand::Edit);
+    fn parses_context_file() {
+        assert_eq!(
+            parse_slash("/context-file").unwrap().unwrap(),
+            SlashCommand::ContextFile
+        );
+        assert_eq!(
+            parse_slash("/context_file").unwrap().unwrap(),
+            SlashCommand::ContextFile
+        );
+        assert_eq!(
+            parse_slash("/cf").unwrap().unwrap(),
+            SlashCommand::ContextFile
+        );
     }
 
     #[test]
