@@ -244,6 +244,8 @@ fn normalize_pasted_text(pasted: &str) -> String {
 
 pub struct InputBar<'a> {
     pub model: &'a InputModel,
+    /// Optional file-attachment label shown above the prompt line.
+    pub attachment: Option<&'a str>,
 }
 
 impl Widget for InputBar<'_> {
@@ -251,6 +253,31 @@ impl Widget for InputBar<'_> {
         if area.width == 0 || area.height == 0 {
             return;
         }
+
+        // Reserve one row for the attachment indicator when set.
+        let lines_area = if self.attachment.is_some() && area.height > 1 {
+            // Render the attachment line at the top of the area.
+            let (att_row, input_area) = {
+                let rows = ratatui::layout::Layout::default()
+                    .direction(ratatui::layout::Direction::Vertical)
+                    .constraints([
+                        ratatui::layout::Constraint::Length(1),
+                        ratatui::layout::Constraint::Min(0),
+                    ])
+                    .split(area);
+                (rows[0], rows[1])
+            };
+            let att_text = self.attachment.unwrap_or("");
+            let att_line = Line::from(vec![
+                Span::styled("» ", theme::info()),
+                Span::styled(att_text, theme::info()),
+                Span::styled("  [Ctrl+A or /cf to remove]", theme::dim()),
+            ]);
+            Paragraph::new(att_line).render(att_row, buf);
+            input_area
+        } else {
+            area
+        };
         let base = if self.model.dimmed {
             theme::dim()
         } else if self.model.history_browse {
@@ -357,7 +384,7 @@ impl Widget for InputBar<'_> {
                 Modifier::empty()
             }))
             .block(block)
-            .render(area, buf);
+            .render(lines_area, buf);
     }
 }
 
@@ -478,7 +505,13 @@ mod tests {
         let backend = TestBackend::new(40, 5);
         let mut term = Terminal::new(backend).unwrap();
         term.draw(|f| {
-            f.render_widget(InputBar { model: &m }, f.size());
+            f.render_widget(
+                InputBar {
+                    model: &m,
+                    attachment: None,
+                },
+                f.size(),
+            );
         })
         .unwrap();
         let buf = term.backend().buffer();
@@ -501,7 +534,13 @@ mod tests {
         let backend = TestBackend::new(40, 5);
         let mut term = Terminal::new(backend).unwrap();
         term.draw(|f| {
-            f.render_widget(InputBar { model: &m }, f.size());
+            f.render_widget(
+                InputBar {
+                    model: &m,
+                    attachment: None,
+                },
+                f.size(),
+            );
         })
         .unwrap();
         let buf = term.backend().buffer();
@@ -519,7 +558,13 @@ mod tests {
         let backend = TestBackend::new(40, 5);
         let mut term = Terminal::new(backend).unwrap();
         term.draw(|f| {
-            f.render_widget(InputBar { model: &m }, f.size());
+            f.render_widget(
+                InputBar {
+                    model: &m,
+                    attachment: None,
+                },
+                f.size(),
+            );
         })
         .unwrap();
         let buf = term.backend().buffer();

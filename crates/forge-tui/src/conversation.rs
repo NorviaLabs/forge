@@ -232,9 +232,11 @@ impl ConversationModel {
                             text: m.content.clone(),
                         });
                     } else {
-                        items.push(ChatItem::User {
-                            text: m.content.clone(),
-                        });
+                        let (clean_text, attachment_line) = strip_attached_context(&m.content);
+                        items.push(ChatItem::User { text: clean_text });
+                        if let Some(line) = attachment_line {
+                            items.push(ChatItem::System { text: line });
+                        }
                     }
                 }
                 MessageRole::Assistant => {
@@ -1046,6 +1048,37 @@ impl ConversationModel {
             }
         }
         lines
+    }
+}
+
+/// If the message content begins with an Active-file context block, strip it
+/// and return the clean user query plus a compact attachment summary.
+fn strip_attached_context(content: &str) -> (String, Option<String>) {
+    if !content.starts_with("Active file:") {
+        return (content.to_string(), None);
+    }
+
+    // Find the first blank line followed by user content.
+    if let Some(dbl_newline) = content.find("\n\n\n") {
+        let header = &content[..dbl_newline];
+        let user_text = content[dbl_newline + 3..].trim_start().to_string();
+
+        // Extract the rel_path and cursor line from the header.
+        let rel_path = header
+            .lines()
+            .find_map(|line| line.strip_prefix("Active file: "))
+            .unwrap_or("")
+            .to_string();
+        let cursor = header
+            .lines()
+            .find_map(|line| line.strip_prefix("Cursor line: "))
+            .and_then(|s| s.trim().parse::<usize>().ok())
+            .unwrap_or(0);
+
+        let summary = format!("Attached: {rel_path}:{cursor}");
+        (user_text, Some(summary))
+    } else {
+        (content.to_string(), None)
     }
 }
 

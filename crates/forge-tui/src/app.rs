@@ -336,6 +336,8 @@ pub struct TuiApp {
     pending_context_reset: bool,
     /// External-editor request queued for the event loop (terminal suspend/resume).
     pending_external_editor: bool,
+    /// Active-file context attachment for the next user message.
+    pending_attachment: Option<crate::file_context::FileAttachment>,
     /// Additional user messages waiting to run after the current turn (FIFO).
     message_queue: MessageQueue,
     /// Selected queued row for keyboard cancellation.
@@ -433,6 +435,7 @@ impl TuiApp {
             pending_hitl_decision: None,
             pending_context_reset: false,
             pending_external_editor: false,
+            pending_attachment: None,
             message_queue: MessageQueue::new(),
             queue_selected: None,
             stream_preview: String::new(),
@@ -1083,6 +1086,47 @@ impl TuiApp {
         self.status_message = "Viewing file (readonly)".into();
         // Keep the file explorer in sync with the active file.
         self.file_explorer.selected_path = Some(path.to_path_buf());
+    }
+
+    /// Toggle attachment of the current source-viewer file to the next message.
+    fn toggle_file_attachment(&mut self) {
+        if self.pending_attachment.is_some() {
+            self.pending_attachment = None;
+            self.set_feedback(FeedbackSeverity::Info, "Attachment removed");
+            return;
+        }
+
+        let path = match &self.source_viewer.path {
+            Some(p) if self.source_viewer.status.is_openable() => p.clone(),
+            _ => {
+                self.set_feedback(FeedbackSeverity::Warn, "No openable file to attach");
+                return;
+            }
+        };
+
+        let root = self.session.workspace_root();
+        let rel_path = match path.strip_prefix(root) {
+            Ok(rel) => rel.display().to_string(),
+            Err(_) => {
+                self.set_feedback(
+                    FeedbackSeverity::Warn,
+                    "Active file is outside the repository",
+                );
+                return;
+            }
+        };
+
+        let cursor_line = self.source_viewer.current_line;
+        self.pending_attachment = Some(crate::file_context::FileAttachment::new(
+            rel_path,
+            cursor_line,
+        ));
+        if let Some(ref att) = self.pending_attachment {
+            self.set_feedback(
+                FeedbackSeverity::Info,
+                &format!("File attached · {}", att.label()),
+            );
+        }
     }
 
     fn open_api_key_prompt(&mut self, profile_id: &str, error: Option<String>) {
@@ -2682,7 +2726,14 @@ Reply with ONLY the commit message line.\n\n\
         // Allow composing the next message while a turn runs; only dim slightly when busy.
         input.dimmed = self.busy && self.input.text.is_empty();
         input.not_connected = !connected;
-        frame.render_widget(InputBar { model: &input }, regions.input);
+        let attachment_label = self.pending_attachment.as_ref().map(|a| a.label());
+        frame.render_widget(
+            InputBar {
+                model: &input,
+                attachment: attachment_label.as_deref(),
+            },
+            regions.input,
+        );
 
         let qn = self.message_queue.len();
         let context = self.session.token_usage_report();
@@ -2877,6 +2928,10 @@ Reply with ONLY the commit message line.\n\n\
             }
             KeyCode::Char('e') if key.modifiers.is_empty() => {
                 self.pending_external_editor = true;
+                true
+            }
+            KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.toggle_file_attachment();
                 true
             }
             _ => false,
@@ -3595,6 +3650,9 @@ Reply with ONLY the commit message line.\n\n\
                 Ok(SlashCommand::Edit) => {
                     self.pending_external_editor = true;
                 }
+                Ok(SlashCommand::ContextFile) => {
+                    self.toggle_file_attachment();
+                }
                 Err(e) => {
                     let msg = e.to_string();
                     self.set_feedback(FeedbackSeverity::Warn, msg.clone());
@@ -3608,6 +3666,27 @@ Reply with ONLY the commit message line.\n\n\
         // Queue user message — the event loop drains this so the YOU bubble paints
         // before the model call, and so stream deltas can redraw each frame.
         self.clear_error_chrome();
+
+        // Build the final message text, prepending file context if attached.
+        let mut final_line = line.to_string();
+        let attachment = self.pending_attachment.take();
+        if let Some(ref att) = attachment {
+            if let Some(p) = self.source_viewer.path.as_ref() {
+                match crate::file_context::build_attachment_text(
+                    p,
+                    att.cursor_line,
+                    &att.rel_path,
+                    150,
+                ) {
+                    Ok(ctx) => {
+                        final_line = format!("{}\n\n{}", ctx, final_line);
+                    }
+                    Err(e) => {
+                        self.set_feedback(FeedbackSeverity::Warn, &e.to_string());
+                    }
+                }
+            }
+        }
         // Re-apply credentials (with silent refresh) before each turn so sessions stay signed in.
         if !self.auth_suspended {
             if let Some(pid) = self.connect_profile.clone() {
@@ -3650,7 +3729,7 @@ Reply with ONLY the commit message line.\n\n\
             return Ok(());
         }
 
-        self.pending_prompt = Some(line.to_string());
+        self.pending_prompt = Some(final_line);
         self.busy = true;
         self.busy_phase = BusyPhase::Model;
         self.turn_started = Some(Instant::now());
