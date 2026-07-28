@@ -128,7 +128,7 @@ mod tests {
         let mut out = String::new();
         for y in 0..area.height {
             for x in 0..area.width {
-                let cell = &buf.get(x, y);
+                let cell = &buf[(x, y)];
                 out.push_str(cell.symbol());
             }
             out.push('\n');
@@ -245,7 +245,7 @@ mod tests {
         let mut found_caret_bg = false;
         for y in 0..area.height {
             for x in 0..area.width {
-                let cell = &buf.get(x, y);
+                let cell = &buf[(x, y)];
                 if cell.style().bg == Some(crate::theme::ACCENT) {
                     found_sel_bg = true;
                 }
@@ -561,7 +561,7 @@ mod tests {
         let line_y = text.lines().position(|l| l.contains("2 │ second")).unwrap();
         let content_start_x = text.lines().nth(line_y).unwrap().find('│').unwrap() + 1;
         let has_bright_bg = (content_start_x..buf.area().width as usize)
-            .any(|x| buf.get(x as u16, line_y as u16).style().bg == Some(accent));
+            .any(|x| buf[(x as u16, line_y as u16)].style().bg == Some(accent));
         assert!(
             !has_bright_bg,
             "current line content still has bright cyan background:\n{text}"

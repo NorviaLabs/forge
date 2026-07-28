@@ -79,7 +79,7 @@ mod tests {
         let mut text = String::new();
         for y in 0..height {
             for x in 0..width {
-                text.push_str(buffer.get(x, y).symbol());
+                text.push_str(buffer[(x, y)].symbol());
             }
             text.push('\n');
         }
