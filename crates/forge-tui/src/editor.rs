@@ -1,6 +1,7 @@
 //! External editor resolution and argument parsing.
 
 use std::env;
+use std::ffi::OsString;
 
 /// Resolve the external editor command from the environment.
 ///
@@ -12,18 +13,52 @@ use std::env;
 /// 2. `$EDITOR` otherwise
 /// 3. `None` when neither is set
 pub fn resolve_editor() -> Option<(String, Vec<String>)> {
-    let raw = env::var("VISUAL")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .or_else(|| env::var("EDITOR").ok().filter(|s| !s.is_empty()))?;
+    ["VISUAL", "EDITOR"]
+        .into_iter()
+        .filter_map(|name| env::var_os(name))
+        .find_map(parse_editor_value)
+}
 
-    let parts: Vec<&str> = raw.split_whitespace().collect();
-    if parts.is_empty() {
+fn parse_editor_value(raw: OsString) -> Option<(String, Vec<String>)> {
+    split_editor_value(&raw.to_string_lossy())
+}
+
+fn split_editor_value(raw: &str) -> Option<(String, Vec<String>)> {
+    let mut parts = Vec::new();
+    let mut part = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+
+    for character in raw.trim().chars() {
+        if escaped {
+            part.push(character);
+            escaped = false;
+        } else if character == '\\' && quote != Some('\'') {
+            escaped = true;
+        } else if matches!(character, '\'' | '"') {
+            if quote == Some(character) {
+                quote = None;
+            } else if quote.is_none() {
+                quote = Some(character);
+            } else {
+                part.push(character);
+            }
+        } else if character.is_whitespace() && quote.is_none() {
+            if !part.is_empty() {
+                parts.push(std::mem::take(&mut part));
+            }
+        } else {
+            part.push(character);
+        }
+    }
+    if escaped || quote.is_some() {
         return None;
     }
-    let cmd = parts[0].to_string();
-    let args: Vec<String> = parts[1..].iter().map(|s| s.to_string()).collect();
-    Some((cmd, args))
+    if !part.is_empty() {
+        parts.push(part);
+    }
+    let (command, args) = parts.split_first()?;
+    Some((command.clone(), args.to_vec()))
 }
 
 /// Error type for external editor resolution.
@@ -47,7 +82,7 @@ impl std::fmt::Display for EditorError {
 
 #[cfg(test)]
 mod tests {
-    
+    use super::*;
 
     #[test]
     fn argument_splitting_handles_command_with_flags() {
@@ -67,18 +102,20 @@ mod tests {
         assert!(split_editor_value("   ").is_none());
     }
 
-    /// Helper that tests splitting logic without touching env vars.
-    fn split_editor_value(raw: &str) -> Option<(String, Vec<String>)> {
-        if raw.is_empty() || raw.trim().is_empty() {
-            return None;
-        }
-        let raw = raw.trim();
-        let parts: Vec<&str> = raw.split_whitespace().collect();
-        if parts.is_empty() {
-            return None;
-        }
-        let cmd = parts[0].to_string();
-        let args: Vec<String> = parts[1..].iter().map(|s| s.to_string()).collect();
-        Some((cmd, args))
+    #[test]
+    fn argument_splitting_handles_quoted_executable_and_arguments() {
+        let result = split_editor_value("'/Applications/My Editor' --wait \"a b\"");
+        assert_eq!(
+            result,
+            Some((
+                "/Applications/My Editor".into(),
+                vec!["--wait".to_string(), "a b".to_string()]
+            ))
+        );
+    }
+
+    #[test]
+    fn argument_splitting_rejects_unclosed_quotes() {
+        assert!(split_editor_value("code --wait '").is_none());
     }
 }

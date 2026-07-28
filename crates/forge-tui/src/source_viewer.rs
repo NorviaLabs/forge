@@ -291,9 +291,14 @@ impl SourceViewer {
             self.size_bytes = 0;
             self.modified = None;
             self.preview = false;
+            self.language_label = None;
+            self.highlight_disabled = false;
+            self.highlighted_lines.clear();
             self.notice = Some("File no longer exists".into());
             self.search.open = false;
+            self.search.matches.clear();
             self.jump.open = false;
+            self.clamp_viewport();
             return;
         }
 

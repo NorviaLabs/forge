@@ -1087,6 +1087,7 @@ impl TuiApp {
         let root = self.session.workspace_root().to_path_buf();
         self.source_viewer.open(&root, path);
         self.workspace_mode = WorkspaceMode::Editor;
+        self.file_explorer.focused = false;
         self.status_message = "Viewing file (readonly)".into();
         // Keep the file explorer in sync with the active file.
         self.file_explorer.selected_path = Some(path.to_path_buf());
@@ -2758,7 +2759,7 @@ Reply with ONLY the commit message line.\n\n\
         } else if qn > 0 {
             format!("queue {qn} · Ctrl+Up/Down select · Ctrl+Backspace cancel")
         } else {
-            "/ commands  ·  Ctrl+E files  ·  Alt+←/→ tabs  ·  Alt+[ / ] inspector  ·  F1 help"
+            "/ commands  ·  Ctrl+E files  ·  Alt+←/→ workspace/panel tabs  ·  Alt+[ / ] inspector  ·  F1 help"
                 .into()
         };
         let footer_provider = footer_provider_id(
@@ -3028,7 +3029,9 @@ Reply with ONLY the commit message line.\n\n\
                 self.source_viewer.move_to_first_line();
                 true
             }
-            KeyCode::Char('G') if key.modifiers.is_empty() => {
+            KeyCode::Char('G')
+                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+            {
                 self.source_viewer.move_to_last_line();
                 true
             }
@@ -3041,6 +3044,31 @@ Reply with ONLY the commit message line.\n\n\
                 true
             }
             _ => false,
+        }
+    }
+
+    fn handle_bottom_panel_key(&mut self, key: event::KeyEvent) -> bool {
+        if !self.bottom_panel.open || !self.bottom_panel.focused {
+            return false;
+        }
+        match key.code {
+            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.bottom_panel.toggle();
+                true
+            }
+            KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.bottom_panel.previous_tab();
+                true
+            }
+            KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.bottom_panel.next_tab();
+                true
+            }
+            KeyCode::Esc => {
+                self.bottom_panel.focused = false;
+                true
+            }
+            _ => true,
         }
     }
 
@@ -3286,6 +3314,22 @@ Reply with ONLY the commit message line.\n\n\
                     }
                 }
             }
+            return Ok(());
+        }
+
+        // Transient source-viewer inputs own all keys until closed.
+        if self.workspace_mode == WorkspaceMode::Editor
+            && (self.source_viewer.search.open || self.source_viewer.jump.open)
+        {
+            if self.source_viewer.search.open {
+                self.handle_search_key(key);
+            } else {
+                self.handle_jump_key(key);
+            }
+            return Ok(());
+        }
+
+        if self.handle_bottom_panel_key(key) {
             return Ok(());
         }
 
@@ -4715,6 +4759,60 @@ mod tests {
             .unwrap();
         assert!(app.bottom_panel.open);
         assert_eq!(app.bottom_panel.active, BottomPanelTab::Activity);
+    }
+
+    #[tokio::test]
+    async fn focused_bottom_panel_cycles_without_typing_into_chat() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let (dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "mock".into(),
+                provider: "mock".into(),
+                cwd: dir.path().to_path_buf(),
+                version: "0.12.0".into(),
+                startup_notices: Vec::new(),
+            },
+        );
+        app.input.set_text("draft");
+        app.bottom_panel.open_tab(BottomPanelTab::Terminal);
+
+        app.handle_key(press(KeyCode::Right, KeyModifiers::ALT))
+            .await
+            .unwrap();
+        assert_eq!(app.bottom_panel.active, BottomPanelTab::Activity);
+        app.handle_key(press(KeyCode::Left, KeyModifiers::ALT))
+            .await
+            .unwrap();
+        assert_eq!(app.bottom_panel.active, BottomPanelTab::Terminal);
+        assert_eq!(app.input.text, "draft");
+    }
+
+    #[tokio::test]
+    async fn editor_uppercase_g_does_not_reach_chat_input() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let (dir, session) = test_session().await;
+        let path = dir.path().join("source.txt");
+        fs::write(&path, "one\ntwo\nthree\n").unwrap();
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "mock".into(),
+                provider: "mock".into(),
+                cwd: dir.path().to_path_buf(),
+                version: "0.12.0".into(),
+                startup_notices: Vec::new(),
+            },
+        );
+        app.input.set_text("draft");
+        app.open_file_in_editor(&path);
+
+        app.handle_key(press(KeyCode::Char('G'), KeyModifiers::SHIFT))
+            .await
+            .unwrap();
+        assert_eq!(app.source_viewer.current_line, 2);
+        assert_eq!(app.input.text, "draft");
     }
 
     #[tokio::test]
