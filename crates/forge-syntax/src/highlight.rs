@@ -337,7 +337,7 @@ pub fn highlight_to_lines(
     lang: &str,
     code: &str,
     theme: &HighlightTheme,
-) -> Vec<Vec<(String, (u8, u8, u8), bool, bool)>> {
+) -> Vec<Vec<HighlightedSegment>> {
     let spans = highlight(lang, code, theme);
     let line_offsets: Vec<usize> = std::iter::once(0)
         .chain(code.match_indices('\n').map(|(i, _)| i + 1))
@@ -394,6 +394,8 @@ pub fn highlight_to_lines(
         })
         .collect()
 }
+
+type HighlightedSegment = (String, (u8, u8, u8), bool, bool);
 
 #[cfg(test)]
 mod tests {
