@@ -49,9 +49,9 @@ jsonschema = "0.28"
 crossterm = "0.28"
 ratatui = { version = "=0.27.0", default-features = false, features = ["crossterm", "underline-color"] }
 regex = "1"
-fff-search = "0.10.2-nightly.fde8c52"
-fff-grep = "0.10.2-nightly.fde8c52"
-fff-query-parser = "0.10.2-nightly.fde8c52"
+fff-search = "0.10.1"
+fff-grep = "0.10.1"
+fff-query-parser = "0.10.1"
 
 forge-types = { path = "crates/forge-types" }
 forge-config = { path = "crates/forge-config" }
