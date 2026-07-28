@@ -668,4 +668,106 @@ mod tests {
         .await
         .unwrap()
     }
+
+    #[tokio::test]
+    async fn files_stay_populated_after_turn() {
+        let (dir, mut app) = app().await;
+        let workspace = dir.path().join("repo");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(workspace.join("a.txt"), "hello").unwrap();
+        app.session = rebuild_session(dir.path(), &workspace).await;
+        app.runtime.cwd = workspace.clone();
+        app.file_explorer = crate::file_explorer::FileExplorer::new(Some(workspace.clone()));
+        app.files_visible = true;
+
+        let before = app.file_explorer.visible_nodes().len();
+        assert!(before > 1, "explorer should have files before turn");
+
+        // Simulate a chat turn the app would process while files are open.
+        app.handle_key(press(KeyCode::Char('x'))).await.unwrap();
+        app.handle_key(press(KeyCode::Enter)).await.unwrap();
+
+        let after = app.file_explorer.visible_nodes().len();
+        assert!(
+            after >= before,
+            "explorer tree must not shrink after turn: {before} → {after}"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_survives_overlay_open() {
+        let (dir, mut app) = app().await;
+        let workspace = dir.path().join("repo");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(workspace.join("x.txt"), "searchable content\n").unwrap();
+        app.session = rebuild_session(dir.path(), &workspace).await;
+        app.runtime.cwd = workspace.clone();
+        app.source_viewer.open(&workspace, &workspace.join("x.txt"));
+        app.workspace_mode = WorkspaceMode::Editor;
+
+        app.source_viewer.start_search();
+        app.source_viewer.update_search_query("searchable");
+        assert!(!app.source_viewer.search.matches.is_empty());
+
+        // Open an overlay (no-op overlay that doesn't touch search state).
+        app.overlay = Some(crate::overlays::Overlay::turn_limit(5));
+
+        let backend = TestBackend::new(120, 40);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| app.draw(f)).unwrap();
+        // The draw must not panic. Search matches remain valid even though the
+        // overlay takes input priority.
+        assert_eq!(app.source_viewer.search.matches.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn search_survives_viewport_change() {
+        let (dir, mut app) = app().await;
+        let workspace = dir.path().join("repo");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(workspace.join("x.txt"), "alpha\nbeta\nsearchable gamma\n").unwrap();
+        app.session = rebuild_session(dir.path(), &workspace).await;
+        app.runtime.cwd = workspace.clone();
+        app.source_viewer.open(&workspace, &workspace.join("x.txt"));
+        app.workspace_mode = WorkspaceMode::Editor;
+
+        app.source_viewer.start_search();
+        app.source_viewer.update_search_query("searchable");
+        assert!(!app.source_viewer.search.matches.is_empty());
+
+        // Render at one size, then resize and render again.
+        let backend = TestBackend::new(80, 24);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| app.draw(f)).unwrap();
+        drop(term);
+
+        let backend2 = TestBackend::new(60, 16);
+        let mut term2 = Terminal::new(backend2).unwrap();
+        term2.draw(|f| app.draw(f)).unwrap();
+        // Must not panic and search matches should still be valid.
+        assert!(!app.source_viewer.search.matches.is_empty());
+    }
+
+    #[tokio::test]
+    async fn load_failure_shows_unable_to_load() {
+        let (dir, mut app) = app().await;
+        let workspace = dir.path().join("repo");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(workspace.join("a.txt"), "hello").unwrap();
+        app.session = rebuild_session(dir.path(), &workspace).await;
+        app.runtime.cwd = workspace.clone();
+        // Create an explorer whose root cannot be read.
+        app.file_explorer =
+            crate::file_explorer::FileExplorer::new(Some(workspace.join("nonexistent")));
+        app.files_visible = true;
+
+        let backend = TestBackend::new(120, 24);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| app.draw(f)).unwrap();
+        let text = buffer_text(&term);
+        assert!(
+            text.contains("Unable to load files"),
+            "load failure should show error, got:\n{text}"
+        );
+    }
 }
