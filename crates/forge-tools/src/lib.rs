@@ -3,7 +3,7 @@
 
 mod apply_patch;
 mod builtins;
-mod fff;
+mod fast_file_tools;
 mod registry;
 mod validation;
 pub mod web_search;
