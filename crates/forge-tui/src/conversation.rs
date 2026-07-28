@@ -484,13 +484,64 @@ impl ConversationModel {
                     }
                 }
                 ChatItem::ContextHandoff {
-                    before_pct: _,
-                    after_pct: _,
-                    goal: _,
-                    completed: _,
-                    next_actions: _,
-                } => {}
-                ChatItem::SessionRecovery { last_assistant, .. } => {
+                    before_pct,
+                    after_pct,
+                    goal,
+                    completed,
+                    next_actions,
+                } => {
+                    lines.push(Line::from(Span::styled(
+                        "Continuing in a fresh context",
+                        theme::brand(),
+                    )));
+                    lines.push(Line::from(Span::styled(
+                        format!("Preserving task state · {before_pct:.0}% → {after_pct:.0}%"),
+                        theme::muted(),
+                    )));
+                    if !goal.trim().is_empty() {
+                        lines.push(kv_line("Objective", goal));
+                    }
+                    if !completed.is_empty() {
+                        lines.push(kv_line("Completed", &completed.join(", ")));
+                    }
+                    if !next_actions.is_empty() {
+                        lines.push(kv_line("Next action", &next_actions.join(", ")));
+                    }
+                    if gap {
+                        lines.push(Line::from(""));
+                    }
+                }
+                ChatItem::SessionRecovery {
+                    session_id,
+                    journal_path,
+                    last_seq,
+                    model_steps,
+                    tool_results,
+                    incomplete_intents,
+                    last_assistant,
+                } => {
+                    lines.push(Line::from(Span::styled(
+                        "Restoring the previous session",
+                        theme::brand(),
+                    )));
+                    lines.push(Line::from(Span::styled(
+                        "Checking repository state before continuing.",
+                        theme::muted(),
+                    )));
+                    lines.push(kv_line("Conversation", "restored"));
+                    lines.push(kv_line("Tool results", &tool_results.to_string()));
+                    if *incomplete_intents > 0 {
+                        lines.push(kv_line(
+                            "Interrupted work",
+                            &format!("{incomplete_intents} item not repeated"),
+                        ));
+                    }
+                    lines.push(kv_line(
+                        "Runtime details",
+                        &format!(
+                            "session {session_id} · {journal_path} · seq {last_seq} · {model_steps} model steps"
+                        ),
+                    ));
                     let _ = last_assistant;
                     if let Some(restored) = last_assistant {
                         lines.push(Line::from(""));
@@ -520,12 +571,11 @@ impl ConversationModel {
                     lines.push(Line::from(Span::styled("STATUS", theme::brand())));
                     for (heading, rows) in [
                         (
-                            "Session",
+                            "Work",
                             vec![
-                                ("id", session_id.clone()),
-                                ("status", status.clone()),
-                                ("surface", "tui".into()),
-                                ("journal", format!("{journal} · cursor #{cursor}")),
+                                ("state", status.clone()),
+                                ("repository", workspace.clone()),
+                                ("validation", "Not available".into()),
                             ],
                         ),
                         (
@@ -533,7 +583,11 @@ impl ConversationModel {
                             vec![
                                 ("provider", provider.clone()),
                                 ("model", model.clone()),
-                                ("switch", "config-only (/model)".into()),
+                                (
+                                    "switch",
+                                    "Applies to future turns. Current task state is preserved."
+                                        .into(),
+                                ),
                             ],
                         ),
                         (
@@ -553,11 +607,14 @@ impl ConversationModel {
                             vec![("root", workspace.clone()), ("worktree", "off".into())],
                         ),
                         (
-                            "Governance",
+                            "Runtime",
                             vec![
+                                ("session", session_id.clone()),
+                                ("journal", format!("{journal} · cursor #{cursor}")),
+                                ("surface", "tui".into()),
                                 ("tools", format!("{tools} allowed")),
                                 (
-                                    "hitl",
+                                    "approval",
                                     if *hitl_pending {
                                         "approval pending".into()
                                     } else {
@@ -670,22 +727,22 @@ impl ConversationModel {
                 }
                 ChatItem::ValidationFailure { tool, error, retry } => {
                     lines.push(Line::from(vec![
-                        Span::styled("TOOL · REJECTED", theme::danger()),
-                        Span::styled("  TOOL CONTRACT", theme::dim()),
+                        Span::styled("Correcting an invalid tool request", theme::danger()),
+                        Span::styled("  DETAILS", theme::dim()),
                     ]));
                     lines.push(Line::from(vec![
                         Span::styled(format!("{tool}  "), theme::text()),
-                        Span::styled("invalid arguments · schema enforced", theme::danger()),
+                        Span::styled("invalid arguments", theme::danger()),
                     ]));
                     for line in wrap(error, width.saturating_sub(2)) {
                         lines.push(Line::from(Span::styled(line, theme::muted())));
                     }
                     lines.push(Line::from(Span::styled(
-                        "Side effects not executed · validation failure journaled",
+                        "No command was executed and no files were changed.",
                         theme::ok(),
                     )));
                     lines.push(Line::from(Span::styled(
-                        format!("↻ automatic validation retry {retry}/3 sent to model"),
+                        format!("Retrying with corrected tool details {retry}/3"),
                         theme::warn(),
                     )));
                     if gap {
@@ -717,12 +774,9 @@ impl ConversationModel {
                     let body = text
                         .lines()
                         .skip_while(|line| line.trim_start().starts_with("[REPAIR TASK"));
+                    lines.push(Line::from(Span::styled("Review", theme::progress_style())));
                     lines.push(Line::from(Span::styled(
-                        "Evaluation",
-                        theme::progress_style(),
-                    )));
-                    lines.push(Line::from(Span::styled(
-                        "Dual-sensor gate after implementation step.",
+                        "Findings, evidence, severity, and suggested actions.",
                         theme::progress_style(),
                     )));
                     for line in body {
@@ -730,6 +784,11 @@ impl ConversationModel {
                         if trimmed.is_empty() {
                             continue;
                         }
+                        let display = trimmed
+                            .replace("EVALUATOR REPORT", "Review")
+                            .replace("Evaluator Report", "Review")
+                            .replace("Repair:", "Suggested action:")
+                            .replace("Finding:", "Finding:");
                         let style = if trimmed.starts_with("SENSOR")
                             || trimmed.starts_with("EVALUATOR REPORT")
                         {
@@ -742,12 +801,12 @@ impl ConversationModel {
                         } else {
                             theme::progress_style()
                         };
-                        for wrapped in wrap(trimmed, width) {
+                        for wrapped in wrap(&display, width) {
                             lines.push(Line::from(Span::styled(wrapped, style)));
                         }
                     }
                     lines.push(Line::from(Span::styled(
-                        "+ enqueued repair task for Generator",
+                        "+ suggested action sent back to the task",
                         theme::warn().add_modifier(Modifier::ITALIC),
                     )));
                     if gap {
@@ -952,6 +1011,13 @@ fn centered_span(text: &str, width: usize, style: ratatui::style::Style) -> Span
     let text_width = text.chars().count();
     let pad = width.saturating_sub(text_width) / 2;
     Span::styled(format!("{:pad$}{text}", "", pad = pad), style)
+}
+
+fn kv_line(label: &'static str, value: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{label}: "), theme::dim()),
+        Span::styled(value.to_string(), theme::text()),
+    ])
 }
 
 fn looks_like_diff(content: &str) -> bool {
@@ -2490,11 +2556,11 @@ mod tests {
             .map(|span| span.content.as_ref())
             .collect::<String>();
         for expected in [
-            "Evaluation",
+            "Review",
             "SENSOR · DETERMINISTIC",
-            "EVALUATOR REPORT",
+            "Findings, evidence, severity, and suggested actions.",
             "Finding:",
-            "enqueued repair task for Generator",
+            "suggested action sent back to the task",
             "Repairing",
         ] {
             assert!(text.contains(expected), "missing {expected:?}: {text}");

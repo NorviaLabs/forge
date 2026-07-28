@@ -126,7 +126,7 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
     vec![
         PaletteItem {
             cmd: "/status".into(),
-            desc: "Session, budget, journal cursor".into(),
+            desc: "Show task, repository, validation, and model".into(),
         },
         PaletteItem {
             cmd: "/connect".into(),
@@ -134,15 +134,15 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
         },
         PaletteItem {
             cmd: "/model".into(),
-            desc: "Switch provider/model (config only)".into(),
+            desc: "Switch model for future turns".into(),
         },
         PaletteItem {
             cmd: "/compact".into(),
-            desc: "Force handoff + clear context".into(),
+            desc: "Continue in a fresh context".into(),
         },
         PaletteItem {
             cmd: "/resume".into(),
-            desc: "Resume session by id".into(),
+            desc: "Restore a previous session".into(),
         },
         PaletteItem {
             cmd: "/file".into(),
@@ -1067,10 +1067,10 @@ impl Widget for OverlayWidget<'_> {
                 let r = centered_rect(56, 38, area);
                 let args = hitl_args(&payload.args_redacted);
                 let body = format!(
-                    "Human approval required\n\nTool:  {}\nArgs:  {args}\nWhy:   {}\n\n\
-Secrets are not shown. The process may exit; approve later with the same session id — the journal resumes without redoing completed steps.\n\n\
+                    "Approve this action?\n\n{}\n\nThis may change your workspace or run a command with side effects.\n\nDetails\nTool:  {}\nArgs:  {args}\nWhy:   {}\n\n\
+Secrets are not shown. If Forge exits, restore this session to continue without redoing completed steps.\n\n\
 [a] Approve once    [s] Allow for session\n[d] Deny            [Esc] Dismiss · remains pending",
-                    payload.tool, payload.reason
+                    payload.reason, payload.tool, payload.reason
                 );
                 Paragraph::new(body)
                     .wrap(ratatui::widgets::Wrap { trim: true })
@@ -1080,7 +1080,7 @@ Secrets are not shown. The process may exit; approve later with the same session
                             .border_style(theme::warn())
                             .style(theme::panel())
                             .title(Span::styled(
-                                format!(" HITL · high-risk · {} ", payload.tool),
+                                format!(" Approval required · {} ", payload.tool),
                                 theme::warn().add_modifier(Modifier::BOLD),
                             )),
                     )
