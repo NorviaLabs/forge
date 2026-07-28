@@ -661,7 +661,15 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                     // no-arg or picker-opening commands execute; resume inserts to allow ID
                     if matches!(
                         cmd.as_str(),
-                        "/connect" | "/model" | "/disconnect" | "/quit" | "/compact" | "/sync" | "/copy" | "/clear" | "/file"
+                        "/connect"
+                            | "/model"
+                            | "/disconnect"
+                            | "/quit"
+                            | "/compact"
+                            | "/sync"
+                            | "/copy"
+                            | "/clear"
+                            | "/file"
                     ) {
                         OverlayAction::RunCommand(cmd)
                     } else {
@@ -1034,7 +1042,7 @@ impl Widget for OverlayWidget<'_> {
             Overlay::Help => {
                 let r = centered_rect(64, 58, area);
                 Paragraph::new(
-                    "Forge is an AI coding agent for your terminal.\n\nStart typing and press Enter.\n\nShortcuts\n• /       Commands\n• Ctrl+B  Toggle inspector\n• Alt+[ / ] Inspector views\n• Ctrl+P  Toggle bottom panel\n• Alt+1-4 Bottom panel tabs\n• Alt+←/→ Workspace tabs\n• Tab     Complete\n• ↑↓      Navigate\n• Esc     Close\n• F1      Help\n\nEditor (when a file is open)\n• Ctrl+F  Search file\n• Ctrl+G  Jump to line\n• Esc     Return to Chat\n\nForge asks before sensitive actions and automatically saves your session.\n\nPress Enter to get started.",
+                    "Forge is an AI coding agent for your terminal.\n\nStart typing and press Enter.\n\nShortcuts\n• /       Commands\n• Ctrl+B  Toggle inspector\n• Tab / Shift+Tab  Focus visible panels\n• Ctrl+P  Toggle bottom panel\n• Alt+1-4 Bottom panel tabs\n• Alt+←/→ Workspace tabs\n• ⇧← / ⇧→  Switch tab\n• i       Focus Chat composer\n• Tab     Complete (Chat composer)\n• ↑↓      Navigate\n• Esc     Close\n• F1      Help\n\nEditor (when a file is open)\n• Ctrl+F  Search file\n• Ctrl+G  Jump to line\n• Esc     Return to workspace\n\nForge asks before sensitive actions and automatically saves your session.\n\nPress Enter to get started.",
                 )
                 .wrap(ratatui::widgets::Wrap { trim: true })
                 .block(

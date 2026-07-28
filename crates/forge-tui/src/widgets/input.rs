@@ -246,6 +246,8 @@ pub struct InputBar<'a> {
     pub model: &'a InputModel,
     /// Optional file-attachment label shown above the prompt line.
     pub attachment: Option<&'a str>,
+    pub focused: bool,
+    pub mode_label: &'a str,
 }
 
 impl Widget for InputBar<'_> {
@@ -351,20 +353,21 @@ impl Widget for InputBar<'_> {
             out
         };
 
-        let border = if self.model.not_connected {
+        let border = if self.focused {
+            theme::brand()
+        } else if self.model.not_connected {
             theme::warn()
         } else {
             theme::border()
         };
-        let title = if self.model.not_connected {
-            Some(" not connected · /connect required ")
+        let mut title = format!(" Chat · {} ", self.mode_label);
+        if self.model.not_connected {
+            title.push_str("· not connected /connect required ");
         } else if self.model.history_browse {
-            Some(" history ")
+            title.push_str("· history ");
         } else if self.model.text.contains('\n') {
-            Some(" multi-line · Shift+Enter newline ")
-        } else {
-            None
-        };
+            title.push_str("· multi-line Shift+Enter newline ");
+        }
         let block = Block::default()
             .borders(Borders::TOP)
             .border_style(border)
@@ -373,10 +376,14 @@ impl Widget for InputBar<'_> {
             } else {
                 theme::panel()
             });
-        let block = match title {
-            Some(title) => block.title(Span::styled(title, theme::muted())),
-            None => block,
-        };
+        let block = block.title(Span::styled(
+            title,
+            if self.focused {
+                theme::brand()
+            } else {
+                theme::muted()
+            },
+        ));
         Paragraph::new(lines)
             .style(Style::default().add_modifier(if self.model.dimmed {
                 Modifier::DIM
@@ -509,6 +516,8 @@ mod tests {
                 InputBar {
                     model: &m,
                     attachment: None,
+                    focused: true,
+                    mode_label: "INPUT",
                 },
                 f.area(),
             );
@@ -538,6 +547,8 @@ mod tests {
                 InputBar {
                     model: &m,
                     attachment: None,
+                    focused: true,
+                    mode_label: "INPUT",
                 },
                 f.area(),
             );
@@ -562,6 +573,8 @@ mod tests {
                 InputBar {
                     model: &m,
                     attachment: None,
+                    focused: true,
+                    mode_label: "INPUT",
                 },
                 f.area(),
             );

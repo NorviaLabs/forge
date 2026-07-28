@@ -129,13 +129,31 @@ impl SidebarModel {
 pub struct SidebarWidget<'a> {
     pub model: &'a SidebarModel,
     pub view: InspectorView,
+    pub focused: bool,
 }
 
 impl Widget for SidebarWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        let title = if self.focused {
+            " Inspector · NAV "
+        } else {
+            " Inspector "
+        };
         let block = Block::default()
             .borders(Borders::LEFT)
-            .border_style(theme::border())
+            .border_style(if self.focused {
+                theme::brand()
+            } else {
+                theme::border()
+            })
+            .title(Span::styled(
+                title,
+                if self.focused {
+                    theme::brand()
+                } else {
+                    theme::dim()
+                },
+            ))
             .style(theme::panel_alt());
         let inner = block.inner(area);
         block.render(area, buf);
@@ -445,6 +463,7 @@ mod tests {
         let widget = SidebarWidget {
             model: &m,
             view: InspectorView::Task,
+            focused: false,
         };
         let text = render_lines(&widget);
         assert!(text.contains("No active task"), "{text}");
@@ -469,6 +488,7 @@ mod tests {
         let widget = SidebarWidget {
             model: &m,
             view: InspectorView::Task,
+            focused: false,
         };
         let text = render_lines(&widget);
         assert!(text.contains("Objective"), "{text}");
@@ -492,6 +512,7 @@ mod tests {
         let widget = SidebarWidget {
             model: &m,
             view: InspectorView::Task,
+            focused: false,
         };
         let text = render_lines(&widget);
         assert!(
@@ -519,6 +540,7 @@ mod tests {
                     SidebarWidget {
                         model: widget.model,
                         view: widget.view,
+                        focused: false,
                     },
                     f.area(),
                 );

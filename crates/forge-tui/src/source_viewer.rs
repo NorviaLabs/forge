@@ -823,14 +823,27 @@ fn detect_highlight_language(rel_path: &str, content: &str) -> (Option<String>, 
 
 pub struct SourceViewerWidget<'a> {
     pub viewer: &'a mut SourceViewer,
+    pub focused: bool,
+    pub mode_label: &'a str,
 }
 
 impl Widget for SourceViewerWidget<'_> {
     fn render(mut self, area: Rect, buf: &mut Buffer) {
         let block = Block::default()
-            .title(self.title())
+            .title(Span::styled(
+                self.title(),
+                if self.focused {
+                    theme::brand()
+                } else {
+                    theme::muted()
+                },
+            ))
             .borders(Borders::ALL)
-            .border_style(theme::border());
+            .border_style(if self.focused {
+                theme::brand()
+            } else {
+                theme::border()
+            });
         let inner = block.inner(area);
         block.render(area, buf);
 
@@ -889,7 +902,7 @@ impl Widget for SourceViewerWidget<'_> {
 
 impl SourceViewerWidget<'_> {
     fn title(&self) -> String {
-        let mut title = " Editor ".to_string();
+        let mut title = format!(" Editor · {} ", self.mode_label);
         if let Some(notice) = &self.viewer.notice {
             title.push_str(&format!("· {notice} "));
         }

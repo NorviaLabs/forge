@@ -380,20 +380,28 @@ fn sort_nodes(nodes: &mut [FileNode]) {
 
 pub struct FileExplorerWidget<'a> {
     pub explorer: &'a mut FileExplorer,
+    pub focused: bool,
 }
 
 impl Widget for FileExplorerWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         self.explorer.git_status.poll();
-        let title = if self.explorer.focused {
-            "FILES *"
+        let title = if self.focused {
+            " Files · NAV "
         } else {
-            "FILES"
+            " Files "
         };
         let block = Block::default()
-            .title(title)
+            .title(Span::styled(
+                title,
+                if self.focused {
+                    theme::brand()
+                } else {
+                    theme::muted()
+                },
+            ))
             .borders(Borders::ALL)
-            .border_style(if self.explorer.focused {
+            .border_style(if self.focused {
                 theme::brand()
             } else {
                 theme::border()

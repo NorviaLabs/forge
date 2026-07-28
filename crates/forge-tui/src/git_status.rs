@@ -142,8 +142,7 @@ impl GitStatusCache {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(format!("git diff failed: {stderr}"));
         }
-        String::from_utf8(output.stdout)
-            .map_err(|e| format!("diff output is not valid UTF-8: {e}"))
+        String::from_utf8(output.stdout).map_err(|e| format!("diff output is not valid UTF-8: {e}"))
     }
 }
 
