@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::thread::JoinHandle;
+use std::sync::mpsc::{Receiver, TryRecvError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GitStatusKind {
@@ -33,7 +33,7 @@ impl GitStatusKind {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct GitStatusCache {
     /// Repository-root-relative canonical paths to status.
     pub status: HashMap<PathBuf, GitStatusKind>,
@@ -41,42 +41,54 @@ pub struct GitStatusCache {
     pub loading: bool,
     /// Last refresh error, if any.
     pub error: Option<String>,
-    pending: Option<JoinHandle<Result<HashMap<PathBuf, GitStatusKind>, String>>>,
+    pending: Option<Receiver<Result<HashMap<PathBuf, GitStatusKind>, String>>>,
 }
 
 impl GitStatusCache {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            status: HashMap::new(),
+            loading: false,
+            error: None,
+            pending: None,
+        }
     }
 
     /// Start a background refresh of the Git status for `root`.
+    /// This is fully non-blocking: any previous in-flight refresh is dropped
+    /// without waiting for its thread to finish.
     pub fn start_refresh(&mut self, root: PathBuf) {
         self.loading = true;
         self.error = None;
-        if let Some(handle) = self.pending.take() {
-            let _ = handle.join();
-        }
-        self.pending = Some(std::thread::spawn(move || load_git_status(&root)));
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(load_git_status(&root));
+        });
+        self.pending = Some(rx);
     }
 
     /// Check whether the pending refresh has completed and update the cache.
     /// This is non-blocking and safe to call from the render loop.
     pub fn poll(&mut self) {
-        if let Some(handle) = &self.pending {
-            if !handle.is_finished() {
-                return;
-            }
-        }
-        let Some(handle) = self.pending.take() else {
+        let Some(rx) = self.pending.take() else {
             return;
         };
-        // The thread is finished, so this join returns immediately.
-        let result = handle.join();
-        self.loading = false;
-        match result {
-            Ok(Ok(map)) => self.status = map,
-            Ok(Err(err)) => self.error = Some(err),
-            Err(_) => self.error = Some("Git status refresh panicked".into()),
+        match rx.try_recv() {
+            Ok(Ok(map)) => {
+                self.loading = false;
+                self.status = map;
+            }
+            Ok(Err(err)) => {
+                self.loading = false;
+                self.error = Some(err);
+            }
+            Err(TryRecvError::Empty) => {
+                self.pending = Some(rx);
+            }
+            Err(TryRecvError::Disconnected) => {
+                self.loading = false;
+                self.error = Some("Git status refresh disconnected".into());
+            }
         }
     }
 
