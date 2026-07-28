@@ -37,6 +37,7 @@ use crate::conversation::{
 use crate::editor::EditorError;
 use crate::effort::ReasoningEffort;
 use crate::file_explorer::{FileExplorer, FileExplorerWidget};
+use crate::git_status::GitStatusKind;
 use crate::history::InputHistory;
 use crate::layout::is_too_small;
 #[cfg(test)]
@@ -80,7 +81,7 @@ impl WorkspaceMode {
         match self {
             Self::Chat => None,
             Self::Editor => None,
-            Self::Diff => Some("Diff view is not available yet."),
+            Self::Diff => None,
         }
     }
 
@@ -2548,6 +2549,8 @@ Reply with ONLY the commit message line.\n\n\
                 },
                 regions.chat,
             );
+        } else if self.workspace_mode == WorkspaceMode::Diff {
+            self.render_diff_workspace(regions.chat, frame.buffer_mut());
         } else {
             self.source_viewer.focused = false;
             self.render_workspace_empty_state(regions.chat, frame.buffer_mut());
@@ -2812,6 +2815,108 @@ Reply with ONLY the commit message line.\n\n\
         Paragraph::new(self.workspace_mode.empty_state().unwrap_or_default())
             .style(theme::dim())
             .alignment(ratatui::layout::Alignment::Center)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(theme::muted()),
+            )
+            .render(area, buf);
+    }
+
+    fn render_diff_workspace(
+        &self,
+        area: ratatui::layout::Rect,
+        buf: &mut ratatui::buffer::Buffer,
+    ) {
+        let gs = &self.file_explorer.git_status;
+        if gs.loading {
+            Paragraph::new("Loading changes…")
+                .style(theme::muted())
+                .alignment(ratatui::layout::Alignment::Center)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(theme::muted()),
+                )
+                .render(area, buf);
+            return;
+        }
+        if gs.error.is_some() {
+            Paragraph::new("Changes unavailable\n\nGit status could not be read.\nThe rest of Forge remains usable.")
+                .style(theme::muted())
+                .alignment(ratatui::layout::Alignment::Center)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(theme::muted()),
+                )
+                .render(area, buf);
+            return;
+        }
+        if gs.status.is_empty() {
+            Paragraph::new("No changes\n\nThe working tree is clean.")
+                .style(theme::muted())
+                .alignment(ratatui::layout::Alignment::Center)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(theme::muted()),
+                )
+                .render(area, buf);
+            return;
+        }
+
+        let mut lines = vec![Line::from(Span::styled("CHANGES", theme::brand()))];
+        lines.push(Line::from(""));
+
+        let mut staged = Vec::new();
+        let mut unstaged = Vec::new();
+        let mut untracked = Vec::new();
+        let mut conflicts = Vec::new();
+
+        for (path, status) in &gs.status {
+            let path_str = path.display().to_string();
+            match status {
+                GitStatusKind::Conflicted => conflicts.push(path_str),
+                GitStatusKind::Added => staged.push(path_str),
+                GitStatusKind::Modified => unstaged.push(path_str),
+                GitStatusKind::Untracked => untracked.push(path_str),
+            }
+        }
+
+        if !conflicts.is_empty() {
+            lines.push(Line::from(Span::styled("Conflicts", theme::danger())));
+            for p in conflicts {
+                lines.push(Line::from(Span::styled(format!(" U {}", p), theme::danger())));
+            }
+            lines.push(Line::from(""));
+        }
+
+        if !staged.is_empty() {
+            lines.push(Line::from(Span::styled("Staged", theme::ok())));
+            for p in staged {
+                lines.push(Line::from(Span::styled(format!(" A {}", p), theme::ok())));
+            }
+            lines.push(Line::from(""));
+        }
+
+        if !unstaged.is_empty() {
+            lines.push(Line::from(Span::styled("Unstaged", theme::info())));
+            for p in unstaged {
+                lines.push(Line::from(Span::styled(format!(" M {}", p), theme::info())));
+            }
+            lines.push(Line::from(""));
+        }
+
+        if !untracked.is_empty() {
+            lines.push(Line::from(Span::styled("Untracked", theme::muted())));
+            for p in untracked {
+                lines.push(Line::from(Span::styled(format!(" ? {}", p), theme::muted())));
+            }
+        }
+
+        Paragraph::new(lines)
+            .style(theme::text())
             .block(
                 Block::default()
                     .borders(Borders::ALL)
