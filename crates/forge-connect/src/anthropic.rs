@@ -76,7 +76,7 @@ Create a key at https://console.anthropic.com/settings/keys."
 Create a key at https://console.anthropic.com/settings/keys."
                 .into())
         }
-        Err(ureq::Error::Status(code, _)) if code == 404 => verify_via_messages(key, base),
+        Err(ureq::Error::Status(404, _)) => verify_via_messages(key, base),
         Err(ureq::Error::Status(code, _)) if code < 500 => Ok(()),
         Err(other) => Err(format!(
             "Could not reach Anthropic to verify key ({other}). Check network."
