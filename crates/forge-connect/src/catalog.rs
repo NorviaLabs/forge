@@ -532,7 +532,7 @@ fn http_get_json_ids(url: &str, headers: &[(&str, &str)]) -> Result<Vec<String>,
         let body: serde_json::Value = resp.into_json().map_err(|e| format!("catalog JSON: {e}"))?;
         return parse_openai_style_model_ids(&body);
     }
-    return Err(format!("catalog GET {url}: too many redirects"));
+    Err(format!("catalog GET {url}: too many redirects"))
 }
 
 fn parse_openai_style_model_ids(body: &serde_json::Value) -> Result<Vec<String>, String> {

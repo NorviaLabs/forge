@@ -140,7 +140,7 @@ fn recent_resume_sessions(
             .unwrap_or(SystemTime::UNIX_EPOCH);
         sessions.push(ResumeSession { id, modified });
     }
-    sessions.sort_by(|left, right| right.modified.cmp(&left.modified));
+    sessions.sort_by_key(|session| std::cmp::Reverse(session.modified));
     sessions.truncate(limit);
     Ok(sessions)
 }
@@ -1737,7 +1737,6 @@ impl TuiApp {
             if let Some(term) = terminal.as_deref_mut() {
                 let _ = term.draw(|f| self.draw(f));
             }
-            return;
         }
 
         // Stage everything.
@@ -2256,12 +2255,10 @@ Reply with ONLY the commit message line.\n\n\
                 let n = suggestions.len();
                 let idx = self.slash_suggest_idx.min(n.saturating_sub(1));
                 // Use as much space above the input as possible (cap for readability).
-                let max_list = (input.y.saturating_sub(2)).min(16).max(1) as usize;
+                let max_list = input.y.saturating_sub(2).clamp(1, 16) as usize;
                 let visible = n.min(max_list);
                 // Scroll so the highlighted row stays on screen.
-                let start = if n <= visible {
-                    0
-                } else if idx < visible / 2 {
+                let start = if n <= visible || idx < visible / 2 {
                     0
                 } else if idx + (visible - visible / 2) >= n {
                     n - visible
@@ -2746,7 +2743,7 @@ Reply with ONLY the commit message line.\n\n\
             overlay.focus_model(&self.runtime.model_label);
             self.overlay = Some(overlay);
             self.status_message = "pick a model (live catalog when connected)".into();
-            return;
+            
         }
 
         let connected_prefix = self.connect_profile.as_deref().and_then(|id| {

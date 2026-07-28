@@ -227,7 +227,7 @@ impl XaiOauthClient {
         if !(200..300).contains(&status) {
             if let Ok(err) = serde_json::from_str::<TokenErrorResponse>(&body) {
                 return Err(XaiOauthError::Oauth(
-                    err.error_description.unwrap_or_else(|| err.error),
+                    err.error_description.unwrap_or(err.error),
                 ));
             }
             return Err(XaiOauthError::Token(format!("HTTP {status}: {body}")));

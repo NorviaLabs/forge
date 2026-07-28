@@ -138,12 +138,11 @@ pub fn detect_language(input: &str) -> Result<SyntaxLanguage, &'static str> {
     }
 
     // Check for JSON
-    if (trimmed.starts_with('{') && trimmed.ends_with('}'))
-        || (trimmed.starts_with('[') && trimmed.ends_with(']'))
+    if ((trimmed.starts_with('{') && trimmed.ends_with('}'))
+        || (trimmed.starts_with('[') && trimmed.ends_with(']')))
+        && serde_json::from_str::<serde_json::Value>(trimmed).is_ok()
     {
-        if serde_json::from_str::<serde_json::Value>(trimmed).is_ok() {
-            return Ok(SyntaxLanguage::Json);
-        }
+        return Ok(SyntaxLanguage::Json);
     }
 
     // Check for HTML

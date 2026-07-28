@@ -363,8 +363,8 @@ mod tests {
         assert!(new_msgs[0].content.contains("# Context Handoff"));
         assert!(new_msgs[0].content.starts_with(system_prompt));
         // capacity default 200_000 tokens; fill past 80%
-        assert!(eng.should_reset(
-            &std::iter::repeat(Message {
+        assert!(eng.should_reset(&std::iter::repeat_n(
+            Message {
                 role: MessageRole::Assistant,
                 content: "y".repeat(4000),
                 tool_call_id: None,
@@ -372,10 +372,10 @@ mod tests {
                 thinking: None,
                 thinking_duration_secs: None,
                 tool_calls: vec![],
-            })
-            .take(200)
-            .collect::<Vec<_>>()
-        ));
+            },
+            200,
+        )
+        .collect::<Vec<_>>()));
     }
 
     #[test]

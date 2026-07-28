@@ -16,7 +16,7 @@ impl SearchBackend for MockSearchBackend {
         req: &SearchRequest,
         _secrets: &SearchSecrets,
     ) -> Result<Vec<SearchHit>, SearchError> {
-        let n = req.num_results.max(1).min(10) as usize;
+        let n = req.num_results.clamp(1, 10) as usize;
         let slug = slugify(&req.query);
         let mut hits = Vec::with_capacity(n);
         for i in 0..n {
