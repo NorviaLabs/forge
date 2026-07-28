@@ -175,8 +175,8 @@ mod tests {
         term.draw(|f| app.draw(f)).unwrap();
         let text = buffer_text(&term);
         assert!(
-            text.contains("Diff view is not available yet."),
-            "missing diff empty state:\n{text}"
+            text.contains("CHANGES") || text.contains("No changes"),
+            "missing diff inventory or empty state:\n{text}"
         );
     }
 
