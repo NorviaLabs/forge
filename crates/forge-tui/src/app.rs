@@ -34,6 +34,7 @@ use crate::conversation::{
     format_elapsed_tenths, BannerKind, ChatItem, ConversationModel, ConversationViewOpts,
     StreamWaitPhase,
 };
+use crate::editor::EditorError;
 use crate::effort::ReasoningEffort;
 use crate::file_explorer::{FileExplorer, FileExplorerWidget};
 use crate::history::InputHistory;
@@ -333,6 +334,8 @@ pub struct TuiApp {
     pending_hitl_decision: Option<HitlDecision>,
     /// Context reset queued to run on the event loop.
     pending_context_reset: bool,
+    /// External-editor request queued for the event loop (terminal suspend/resume).
+    pending_external_editor: bool,
     /// Additional user messages waiting to run after the current turn (FIFO).
     message_queue: MessageQueue,
     /// Selected queued row for keyboard cancellation.
@@ -429,6 +432,7 @@ impl TuiApp {
             pending_sync: false,
             pending_hitl_decision: None,
             pending_context_reset: false,
+            pending_external_editor: false,
             message_queue: MessageQueue::new(),
             queue_selected: None,
             stream_preview: String::new(),
@@ -1761,6 +1765,152 @@ impl TuiApp {
         Ok(())
     }
 
+    /// Open the active file in the user's configured external editor.
+    ///
+    /// Suspends the TUI terminal, spawns the editor, waits for it to
+    /// complete, restores the TUI, and refreshes the source viewer and
+    /// Git status.
+    pub async fn drain_pending_external_editor(
+        &mut self,
+        mut terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
+    ) -> Result<(), TuiError> {
+        if !self.pending_external_editor {
+            return Ok(());
+        }
+        self.pending_external_editor = false;
+
+        // 1. Guard: must have a valid text file open.
+        let file_path = match &self.source_viewer.path {
+            Some(p) if self.source_viewer.status.is_openable() => p.clone(),
+            Some(_) => {
+                self.set_feedback(
+                    FeedbackSeverity::Warn,
+                    "Cannot open binary files in an external editor",
+                );
+                return Ok(());
+            }
+            None => {
+                self.set_feedback(FeedbackSeverity::Warn, "No file open in the source viewer");
+                return Ok(());
+            }
+        };
+
+        // 2. Guard: no unsafe write-active tool.
+        if matches!(self.busy_phase, BusyPhase::Tool { .. }) {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                "External editor unavailable while Forge is writing files.\n\n\
+                 Wait for the current operation to finish, then try again.",
+            );
+            return Ok(());
+        }
+
+        // 3. Resolve editor.
+        let (editor_cmd, _editor_args) = match crate::editor::resolve_editor() {
+            Some(r) => r,
+            None => {
+                self.set_feedback(
+                    FeedbackSeverity::Warn,
+                    &EditorError::NotConfigured.to_string(),
+                );
+                return Ok(());
+            }
+        };
+
+        // 4. Flush pending redraw.
+        if let Some(term) = terminal.as_deref_mut() {
+            let _ = term.draw(|f| self.draw(f));
+        }
+
+        // 5. Suspend the TUI terminal (restore normal terminal state).
+        crate::terminal::restore_terminal();
+
+        // 6. Spawn the editor and wait.
+        let mut cmd = std::process::Command::new(&editor_cmd);
+        for arg in &_editor_args {
+            cmd.arg(arg);
+        }
+        cmd.arg(&file_path);
+
+        let status = match cmd.status() {
+            Ok(s) => s,
+            Err(e) => {
+                // Re-enter TUI mode so the user sees the error message.
+                let _ = crate::terminal::reinit_terminal();
+                self.set_feedback(
+                    FeedbackSeverity::Warn,
+                    &EditorError::SpawnFailed(e).to_string(),
+                );
+                return Ok(());
+            }
+        };
+
+        // 7. Re-enter TUI terminal mode.
+        let _ = crate::terminal::reinit_terminal();
+
+        // 8. Report non-zero exit.
+        if let Some(code) = status.code() {
+            if code != 0 {
+                self.push_activity(
+                    ActivityKind::System,
+                    FeedbackSeverity::Warn,
+                    format!("external editor exited with status {code}"),
+                );
+            }
+        }
+
+        // 9. Refresh the active file and Git status.
+        self.refresh_post_editor();
+        Ok(())
+    }
+
+    /// Called after the external editor exits. Reloads the file, refreshes
+    /// syntax highlighting, search state, and Git markers.
+    fn refresh_post_editor(&mut self) {
+        let root = self.session.workspace_root().to_path_buf();
+        let path = self.source_viewer.path.clone();
+        let old_line = self.source_viewer.current_line;
+        let old_top = self.source_viewer.top_line;
+
+        if let Some(p) = &path {
+            if p.exists() {
+                self.source_viewer.refresh(&root);
+                // Preserve sensible cursor.
+                self.source_viewer.current_line =
+                    old_line.min(self.source_viewer.lines.len().saturating_sub(1));
+                self.source_viewer.top_line =
+                    old_top.min(self.source_viewer.lines.len().saturating_sub(1));
+            } else {
+                // File was deleted — show that in the viewer.
+                self.source_viewer.path = None;
+                self.source_viewer.status = crate::source_viewer::ViewerStatus::NotFound;
+                self.source_viewer.lines.clear();
+            }
+        }
+
+        // Invalidate search matches (recomputed lazily).
+        let search_query = self.source_viewer.search.query.clone();
+        if !search_query.is_empty() {
+            self.source_viewer.update_search_query(&search_query);
+        }
+
+        // Refresh Git status.
+        self.file_explorer.refresh_git_status();
+
+        // Show a compact notice.
+        let gs = &self.file_explorer.git_status;
+        let changed = gs.status.len();
+        let gs_text = if changed == 0 {
+            "No repository changes detected".into()
+        } else if changed == 1 {
+            "1 file changed".into()
+        } else {
+            format!("{changed} files changed")
+        };
+        self.notices.clear();
+        self.push_notice(vec!["Returned from external editor".into(), gs_text]);
+    }
+
     /// Drive `/sync` work with a terminal handle available for intermediate redraws.
     pub async fn drain_pending_sync(
         &mut self,
@@ -2725,6 +2875,10 @@ Reply with ONLY the commit message line.\n\n\
                 self.source_viewer.move_to_last_line();
                 true
             }
+            KeyCode::Char('e') if key.modifiers.is_empty() => {
+                self.pending_external_editor = true;
+                true
+            }
             _ => false,
         }
     }
@@ -3438,6 +3592,9 @@ Reply with ONLY the commit message line.\n\n\
                     self.file_explorer.refresh_git_status();
                     self.status_message = "Refreshing git status...".into();
                 }
+                Ok(SlashCommand::Edit) => {
+                    self.pending_external_editor = true;
+                }
                 Err(e) => {
                     let msg = e.to_string();
                     self.set_feedback(FeedbackSeverity::Warn, msg.clone());
@@ -4012,6 +4169,10 @@ async fn run_loop(
         }
         if app.pending_context_reset {
             app.drain_pending_context_reset(Some(terminal)).await?;
+            continue;
+        }
+        if app.pending_external_editor {
+            app.drain_pending_external_editor(Some(terminal)).await?;
             continue;
         }
 
@@ -6003,5 +6164,92 @@ mod tests {
             "openai-codex"
         );
         assert_eq!(footer_provider_id("mock", None), "mock");
+    }
+
+    #[tokio::test]
+    async fn external_editor_keybind_sets_flag() {
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "m".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "0.10.0".into(),
+                startup_notices: Vec::new(),
+            },
+        );
+        assert!(!app.pending_external_editor);
+        app.workspace_mode = WorkspaceMode::Editor;
+        app.source_viewer
+            .open(Path::new("/tmp"), &PathBuf::from("/tmp/fake.txt"));
+        app.handle_key(press(KeyCode::Char('e'), KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert!(app.pending_external_editor);
+    }
+
+    #[tokio::test]
+    async fn external_editor_preconditions_no_file() {
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "m".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "0.10.0".into(),
+                startup_notices: Vec::new(),
+            },
+        );
+        app.pending_external_editor = true;
+        app.drain_pending_external_editor(None).await.unwrap();
+        // Should not crash; feedback set because no file is open.
+        assert!(!app.pending_external_editor);
+    }
+
+    #[tokio::test]
+    async fn external_editor_preconditions_binary_file() {
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "m".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "0.10.0".into(),
+                startup_notices: Vec::new(),
+            },
+        );
+        app.source_viewer.status = crate::source_viewer::ViewerStatus::Binary;
+        app.source_viewer.path = Some(PathBuf::from("/tmp/fake.bin"));
+        app.pending_external_editor = true;
+        app.drain_pending_external_editor(None).await.unwrap();
+        // Should not crash; feedback set because binary.
+        assert!(!app.pending_external_editor);
+    }
+
+    #[tokio::test]
+    async fn external_editor_rejects_during_tool_execution() {
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "m".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "0.10.0".into(),
+                startup_notices: Vec::new(),
+            },
+        );
+        app.busy_phase = BusyPhase::Tool {
+            name: "write".into(),
+        };
+        app.source_viewer.status = crate::source_viewer::ViewerStatus::Ok;
+        app.source_viewer.path = Some(PathBuf::from("/tmp/fake.txt"));
+        app.pending_external_editor = true;
+        app.drain_pending_external_editor(None).await.unwrap();
+        // Should not crash; feedback set because tool is active.
+        assert!(!app.pending_external_editor);
     }
 }

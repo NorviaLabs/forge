@@ -22,6 +22,27 @@ pub fn restore_terminal() {
     let _ = stdout.execute(Show);
 }
 
+/// Re-initialise the terminal after an external-editor session.
+/// This re-enters alternate screen, re-enables raw mode, and restores
+/// keyboard enhancement flags.
+pub fn reinit_terminal() -> Result<(), Box<dyn std::error::Error>> {
+    use crossterm::event::{
+        EnableBracketedPaste, KeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    };
+    use crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
+    use crossterm::ExecutableCommand;
+
+    enable_raw_mode()?;
+    let mut stdout = stdout();
+    stdout.execute(EnterAlternateScreen)?;
+    stdout.execute(EnableBracketedPaste)?;
+    stdout.execute(PushKeyboardEnhancementFlags(
+        KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+            | KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
+    ))?;
+    Ok(())
+}
+
 /// Guard that installs a panic hook restoring the terminal and chains to the
 /// previous hook. Dropping the guard restores the terminal and reinstates the
 /// previous panic hook.

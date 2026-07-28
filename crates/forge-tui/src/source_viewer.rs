@@ -103,6 +103,13 @@ pub struct SourceViewer {
     last_content_width: usize,
 }
 
+impl ViewerStatus {
+    /// Whether the viewer has a text file that can be sent to an external editor.
+    pub fn is_openable(&self) -> bool {
+        matches!(self, Self::Ok | Self::LargeFile { .. })
+    }
+}
+
 impl Default for SourceViewer {
     fn default() -> Self {
         Self {

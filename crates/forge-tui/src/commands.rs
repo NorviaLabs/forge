@@ -44,6 +44,8 @@ pub enum SlashCommand {
     Sync,
     /// Refresh the file explorer's git status cache.
     Refresh,
+    /// Open the active file in the external editor.
+    Edit,
 }
 
 pub fn parse_slash(line: &str) -> Option<Result<SlashCommand, CommandError>> {
@@ -94,6 +96,7 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
         }),
         "sync" => Ok(SlashCommand::Sync),
         "refresh" => Ok(SlashCommand::Refresh),
+        "edit" => Ok(SlashCommand::Edit),
         other => Err(CommandError::Unknown(other.to_string())),
     }
 }
@@ -181,6 +184,11 @@ mod tests {
             parse_slash("/refresh").unwrap().unwrap(),
             SlashCommand::Refresh
         );
+    }
+
+    #[test]
+    fn parses_edit() {
+        assert_eq!(parse_slash("/edit").unwrap().unwrap(), SlashCommand::Edit);
     }
 
     #[test]

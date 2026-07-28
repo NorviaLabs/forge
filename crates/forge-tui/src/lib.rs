@@ -4,6 +4,7 @@ mod activity;
 mod app;
 mod commands;
 mod conversation;
+mod editor;
 mod effort;
 mod file_explorer;
 mod git_status;
