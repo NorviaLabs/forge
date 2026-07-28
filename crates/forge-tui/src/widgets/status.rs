@@ -133,11 +133,11 @@ impl StatusModel {
             return (text, theme::info().add_modifier(Modifier::BOLD));
         }
         match self.status {
-            SessionStatus::Running => ("idle".into(), theme::ok()),
-            SessionStatus::Completed => ("done".into(), theme::ok()),
-            SessionStatus::Failed => ("failed".into(), theme::danger()),
+            SessionStatus::Running => ("Idle".into(), theme::ok()),
+            SessionStatus::Completed => ("Completed".into(), theme::ok()),
+            SessionStatus::Failed => ("Failed".into(), theme::danger()),
             SessionStatus::AwaitingHitl => (
-                "awaiting hitl".into(),
+                "Waiting for you".into(),
                 theme::warn().add_modifier(Modifier::BOLD),
             ),
         }
@@ -307,7 +307,7 @@ mod tests {
             branch: None,
             dirty: false,
         };
-        assert_eq!(m.status_label().0, "awaiting hitl");
+        assert_eq!(m.status_label().0, "Waiting for you");
     }
 
     #[test]

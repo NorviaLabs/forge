@@ -1681,10 +1681,10 @@ impl TuiApp {
         }
         self.session.resolve_hitl(decision.clone(), "tui").await?;
         self.status_message = match decision {
-            HitlDecision::Approve => "approved".into(),
-            HitlDecision::Deny => "denied".into(),
+            HitlDecision::Approve => "Action approved".into(),
+            HitlDecision::Deny => "Action denied".into(),
         };
-        self.push_notice(vec![format!("HITL {}.", self.status_message)]);
+        self.push_notice(vec![self.status_message.clone()]);
         self.busy_phase = BusyPhase::Idle;
         if let Some(term) = terminal.as_deref_mut() {
             let _ = term.draw(|f| self.draw(f));
@@ -1714,7 +1714,7 @@ impl TuiApp {
         ));
         self.chat_message_start = self.session.messages.len();
         self.chat_event_start = self.session.events.len();
-        self.push_toast("context compacted");
+        self.push_toast("Continuing in a fresh context");
         let progress = fs::read_to_string(self.runtime.cwd.join(".forge/progress.json"))
             .ok()
             .and_then(|text| serde_json::from_str::<ProgressDocument>(&text).ok());
@@ -1730,9 +1730,9 @@ impl TuiApp {
         self.push_activity(
             ActivityKind::Context,
             FeedbackSeverity::Ok,
-            format!("context handoff · {before} → {after} tokens"),
+            format!("fresh context prepared · {before} → {after} tokens"),
         );
-        self.status_message = "context compacted".into();
+        self.status_message = "Continuing in a fresh context".into();
         self.notices.clear();
         self.busy_phase = BusyPhase::Idle;
         if let Some(term) = terminal.as_deref_mut() {
@@ -3991,7 +3991,7 @@ mod tests {
             .all()
             .iter()
             .any(|item| item.kind == ActivityKind::Context));
-        assert_eq!(app.status_message, "context compacted");
+        assert_eq!(app.status_message, "Continuing in a fresh context");
         assert!(app
             .ui_banners
             .iter()
@@ -5174,7 +5174,7 @@ mod tests {
             branch: None,
             dirty: false,
         };
-        assert_eq!(m.status_label().0, "idle");
+        assert_eq!(m.status_label().0, "Idle");
     }
 
     #[tokio::test]

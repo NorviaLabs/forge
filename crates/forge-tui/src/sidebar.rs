@@ -72,10 +72,10 @@ impl SidebarModel {
         let id = session.session_id.to_string();
         let short = if id.len() > 8 { &id[..8] } else { &id };
         let status = match session.status {
-            SessionStatus::Running => "running",
-            SessionStatus::Completed => "completed",
-            SessionStatus::Failed => "failed",
-            SessionStatus::AwaitingHitl => "awaiting hitl",
+            SessionStatus::Running => "Implementing",
+            SessionStatus::Completed => "Completed",
+            SessionStatus::Failed => "Failed",
+            SessionStatus::AwaitingHitl => "Waiting for you",
         };
         let mut tools = session.list_tools();
         tools.sort();
@@ -212,11 +212,11 @@ impl SidebarWidget<'_> {
         ));
         lines.push(kv("Tokens used", &self.model.tokens_used.to_string()));
         if let Some((before, after)) = self.model.context_reset {
-            lines.push(kv("Compaction", &format!("{before:.0}% → {after:.0}%")));
+            lines.push(kv("Fresh context", &format!("{before:.0}% → {after:.0}%")));
         } else {
-            lines.push(kv("Compaction", "Not active"));
+            lines.push(kv("Fresh context", "Not active"));
         }
-        lines.push(kv("Offloaded results", "Recent activity"));
+        lines.push(kv("Preserved details", "Recent activity"));
         lines.push(kv(
             "Instructions",
             &format!("{} skills", self.model.skills.len()),
@@ -297,9 +297,9 @@ fn kv(label: &'static str, value: &str) -> Line<'static> {
 #[allow(dead_code)]
 fn status_style(s: &str) -> ratatui::style::Style {
     match s {
-        "awaiting hitl" => theme::warn(),
-        "failed" => theme::danger(),
-        "completed" => theme::ok(),
+        "Waiting for you" => theme::warn(),
+        "Failed" => theme::danger(),
+        "Completed" => theme::ok(),
         _ => theme::info(),
     }
 }
@@ -343,7 +343,7 @@ mod tests {
         s.run_user_message("hi").await.unwrap();
         let m = SidebarModel::from_session(&s);
         assert!(!m.session_id.is_empty());
-        assert!(!m.tools.is_empty() || m.status == "completed");
+        assert!(!m.tools.is_empty() || m.status == "Completed");
         assert!(m.ctx_pct >= 0.0);
         assert!(m.skills.iter().any(|s| s == "inspect"));
 
