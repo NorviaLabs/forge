@@ -217,7 +217,7 @@ mod tests {
             "expected selection marker or input:\n{text}"
         );
         assert!(
-            text.contains("Resume session by id"),
+            text.contains("Restore a previous session"),
             "missing selected command help:\n{text}"
         );
         // Selected row must use solid teal background (theme::ACCENT)
