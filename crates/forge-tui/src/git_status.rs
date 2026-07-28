@@ -129,6 +129,22 @@ impl GitStatusCache {
         files.sort_by(|a, b| a.path.cmp(&b.path));
         files
     }
+
+    /// Returns the unstaged unified diff for one path.
+    pub fn get_unstaged_diff(&self, root: &Path, path: &Path) -> Result<String, String> {
+        let output = std::process::Command::new("git")
+            .args(["diff", "--no-color", "--", path.to_str().unwrap_or("")])
+            .current_dir(root)
+            .output()
+            .map_err(|e| format!("failed to run git diff: {e}"))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("git diff failed: {stderr}"));
+        }
+        String::from_utf8(output.stdout)
+            .map_err(|e| format!("diff output is not valid UTF-8: {e}"))
+    }
 }
 
 fn load_git_status(root: &Path) -> Result<HashMap<PathBuf, GitStatusKind>, String> {
