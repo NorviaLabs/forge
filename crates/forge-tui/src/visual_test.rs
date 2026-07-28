@@ -51,6 +51,61 @@ mod tests {
         (dir, app)
     }
 
+    #[tokio::test]
+    async fn visual_header_shows_repo_model_context_and_state_when_wide() {
+        let (dir, mut app) = app().await;
+        let repo = dir.path().join("forge");
+        std::fs::create_dir_all(&repo).unwrap();
+        app.runtime.cwd = repo.clone();
+        std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.email", "forge@test"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Forge Test"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        std::fs::write(repo.join("dirty.txt"), "x").unwrap();
+        app.runtime.cwd = repo.clone();
+        app.handle_key(press(KeyCode::Char('x'))).await.unwrap();
+        let backend = TestBackend::new(120, 30);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| app.draw(f)).unwrap();
+        let text = buffer_text(&term);
+        let top = text.lines().next().unwrap_or_default();
+        assert!(top.contains("Forge"), "missing header brand:\n{text}");
+        assert!(top.contains("main*"), "missing dirty branch:\n{text}");
+    }
+
+    #[tokio::test]
+    async fn visual_header_omits_low_priority_fields_when_narrow() {
+        let (dir, mut app) = app().await;
+        let repo = dir.path().join("forge");
+        std::fs::create_dir_all(&repo).unwrap();
+        app.runtime.cwd = repo.clone();
+        std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        app.runtime.cwd = repo.clone();
+        app.handle_key(press(KeyCode::Char('x'))).await.unwrap();
+        let backend = TestBackend::new(40, 24);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| app.draw(f)).unwrap();
+        let text = buffer_text(&term);
+        let top = text.lines().next().unwrap_or_default();
+        assert!(top.contains("Forge"), "missing Forge:\n{text}");
+        assert!(top.contains("Idle"), "missing state:\n{text}");
+    }
+
     fn press(code: KeyCode) -> KeyEvent {
         KeyEvent {
             code,

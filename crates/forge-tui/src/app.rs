@@ -48,7 +48,7 @@ use crate::sidebar::{SidebarModel, SidebarWidget};
 use crate::theme;
 use crate::widgets::{
     classify_operator_error, BusyPhase, FeedbackBar, FeedbackModel, FeedbackSeverity, FooterBar,
-    FooterModel, InputBar, InputModel, StatusModel,
+    FooterModel, InputBar, InputModel, StatusBar, StatusModel,
 };
 use crate::ExitCode;
 use ratatui::widgets::Paragraph;
@@ -327,6 +327,13 @@ pub struct TuiApp {
     model_cost_cache: Option<(String, Option<forge_connect::CatalogCost>)>,
     footer_limits_cache: Option<FooterLimitsCache>,
     footer_limits_rx: Option<std::sync::mpsc::Receiver<(String, FooterLimits)>>,
+}
+
+#[derive(Debug, Clone)]
+struct RepoHeaderCache {
+    repo_name: Option<String>,
+    branch: Option<String>,
+    dirty: bool,
 }
 
 impl TuiApp {
@@ -1948,6 +1955,7 @@ Reply with ONLY the commit message line.\n\n\
     }
 
     fn refresh_status_model_with_connected(&self, provider_connected: bool) -> StatusModel {
+        let repo = self.repo_header();
         let id = self.session.session_id.to_string();
         let short = if id.len() > 8 {
             id[..8].to_string()
@@ -1969,6 +1977,44 @@ Reply with ONLY the commit message line.\n\n\
             tools_visible: self.session.list_tools().len(),
             prompt_cache_hits: self.session.token_usage.prompt_cache_hits,
             prompt_cache_writes: self.session.token_usage.prompt_cache_writes,
+            repo_name: repo.repo_name.clone(),
+            branch: repo.branch.clone(),
+            dirty: repo.dirty,
+        }
+    }
+
+    fn repo_header(&self) -> RepoHeaderCache {
+        let repo_name = self
+            .runtime
+            .cwd
+            .file_name()
+            .and_then(|value| value.to_str())
+            .map(str::to_string);
+
+        let branch = std::process::Command::new("git")
+            .args(["branch", "--show-current"])
+            .current_dir(&self.runtime.cwd)
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .map(|text| text.trim().to_string())
+            .filter(|text| !text.is_empty());
+
+        let dirty = std::process::Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(&self.runtime.cwd)
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .map(|text| !text.trim().is_empty())
+            .unwrap_or(false);
+
+        RepoHeaderCache {
+            repo_name,
+            branch,
+            dirty,
         }
     }
 
@@ -2056,6 +2102,7 @@ Reply with ONLY the commit message line.\n\n\
         let regions = split_areas_full(area, fb_h, input_h, !slash_mode && self.sidebar_visible, 0);
         let connected = self.is_provider_connected();
         let status = self.refresh_status_model_with_connected(connected);
+        frame.render_widget(StatusBar { model: &status }, regions.status);
 
         let stream_wait = if self.busy && self.pending_prompt.is_none() {
             let elapsed = if !self.stream_thinking.is_empty() {
@@ -4888,6 +4935,9 @@ mod tests {
             tools_visible: 0,
             prompt_cache_hits: 0,
             prompt_cache_writes: 0,
+            repo_name: None,
+            branch: None,
+            dirty: false,
         };
         assert_eq!(m.status_label().0, "idle");
     }
