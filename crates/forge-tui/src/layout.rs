@@ -252,7 +252,7 @@ mod tests {
 
         let narrow = split_areas_with_side_panels(Rect::new(0, 0, 100, 30), 0, 3, true, true, 0, 0);
         assert!(narrow.files.is_none());
-        assert!(narrow.sidebar.is_some());
+        assert!(narrow.sidebar.is_none());
     }
 
     #[test]

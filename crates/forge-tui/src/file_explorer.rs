@@ -89,6 +89,7 @@ pub struct FileExplorer {
 
 impl FileExplorer {
     pub fn new(root_path: Option<PathBuf>) -> Self {
+        let root_path = root_path.map(|p| p.canonicalize().unwrap_or(p));
         let mut explorer = Self {
             root: root_path.clone().map(FileNode::root),
             selected_path: root_path.clone(),
@@ -205,6 +206,14 @@ impl FileExplorer {
                 self.selected_path = Some(parent.to_path_buf());
             }
         }
+    }
+
+    /// Returns the selected path if it points to a regular file.
+    pub fn selected_file_path(&self) -> Option<PathBuf> {
+        let path = self.selected_path.as_ref()?;
+        self.find(path)
+            .filter(|node| node.kind == FileKind::File)
+            .map(|_| path.clone())
     }
 
     pub fn ensure_selection_visible(&mut self, height: usize) {
@@ -457,7 +466,7 @@ mod tests {
         fs::write(root.path().join("src/lib.rs"), "").unwrap();
         let mut explorer = FileExplorer::new(Some(root.path().to_path_buf()));
         assert_eq!(explorer.visible_nodes().len(), 2);
-        explorer.selected_path = Some(root.path().join("src"));
+        explorer.selected_path = Some(root.path().join("src").canonicalize().unwrap());
         explorer.expand_selected();
         assert_eq!(explorer.visible_nodes().len(), 3);
         explorer.collapse_selected();
