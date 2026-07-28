@@ -5,6 +5,7 @@ mod app;
 mod commands;
 mod conversation;
 mod effort;
+mod file_explorer;
 mod history;
 mod layout;
 mod msg_queue;
@@ -22,6 +23,7 @@ pub use conversation::{
     BannerKind, ChatItem, ConversationModel, ConversationViewOpts, StreamWaitPhase, ToolCardState,
 };
 pub use effort::ReasoningEffort;
+pub use file_explorer::{FileExplorer, FileExplorerWidget};
 pub use history::InputHistory;
 pub use layout::{
     is_too_small, split_areas, split_areas_ex, split_areas_full, LayoutRegions, MIN_HEIGHT,
