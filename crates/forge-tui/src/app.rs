@@ -77,14 +77,6 @@ impl WorkspaceMode {
         }
     }
 
-    fn empty_state(self) -> Option<&'static str> {
-        match self {
-            Self::Chat => None,
-            Self::Editor => None,
-            Self::Diff => None,
-        }
-    }
-
     fn next(self) -> Self {
         match self {
             Self::Chat => Self::Editor,
@@ -98,6 +90,86 @@ impl WorkspaceMode {
             Self::Chat => Self::Diff,
             Self::Editor => Self::Chat,
             Self::Diff => Self::Editor,
+        }
+    }
+}
+
+/// The four spatially stable keyboard regions.  This is intentionally small:
+/// component-specific selection state remains with the component itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FocusBlock {
+    Files,
+    Workspace,
+    Inspector,
+    BottomPanel,
+}
+
+impl FocusBlock {
+    const ORDER: [Self; 4] = [
+        Self::Files,
+        Self::Workspace,
+        Self::Inspector,
+        Self::BottomPanel,
+    ];
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InputOwner {
+    ChatComposer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TransientOwner {
+    SourceSearch,
+    JumpToLine,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FocusMode {
+    Navigation,
+    Input(InputOwner),
+    Transient(TransientOwner),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TabNavCommand {
+    PreviousTab,
+    NextTab,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FocusState {
+    block: FocusBlock,
+    mode: FocusMode,
+    previous_block: Option<FocusBlock>,
+    return_block: Option<FocusBlock>,
+}
+
+impl Default for FocusState {
+    fn default() -> Self {
+        Self {
+            block: FocusBlock::Workspace,
+            mode: FocusMode::Input(InputOwner::ChatComposer),
+            previous_block: None,
+            return_block: Some(FocusBlock::Workspace),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FocusAvailability {
+    files: bool,
+    inspector: bool,
+    bottom_panel: bool,
+}
+
+impl FocusAvailability {
+    fn contains(self, block: FocusBlock) -> bool {
+        match block {
+            FocusBlock::Files => self.files,
+            FocusBlock::Workspace => true,
+            FocusBlock::Inspector => self.inspector,
+            FocusBlock::BottomPanel => self.bottom_panel,
         }
     }
 }
@@ -368,6 +440,9 @@ pub struct TuiApp {
     pub bottom_panel: BottomPanelState,
     pub files_visible: bool,
     pub file_explorer: FileExplorer,
+    /// Authoritative keyboard ownership. Legacy component `focused` flags are
+    /// synchronised from this state for rendering only.
+    focus: FocusState,
     /// User preference; narrow terminals still hide the sidebar responsively.
     sidebar_visible: bool,
     inspector_view: InspectorView,
@@ -453,6 +528,7 @@ impl TuiApp {
             bottom_panel: BottomPanelState::default(),
             files_visible: false,
             file_explorer: FileExplorer::new(Some(workspace_root)),
+            focus: FocusState::default(),
             sidebar_visible: true,
             inspector_view: InspectorView::default(),
             diff_selected: 0,
@@ -1087,7 +1163,7 @@ impl TuiApp {
         let root = self.session.workspace_root().to_path_buf();
         self.source_viewer.open(&root, path);
         self.workspace_mode = WorkspaceMode::Editor;
-        self.file_explorer.focused = false;
+        self.focus_block(FocusBlock::Workspace);
         self.status_message = "Viewing file (readonly)".into();
         // Keep the file explorer in sync with the active file.
         self.file_explorer.selected_path = Some(path.to_path_buf());
@@ -2213,15 +2289,31 @@ Reply with ONLY the commit message line.\n\n\
         }
     }
 
-    /// Insert bracketed-paste text into the active target (API-key modal or main input).
+    /// Insert bracketed-paste text into the current explicit text owner.
     fn handle_paste(&mut self, data: &str) {
         if let Some(ref mut ov) = self.overlay {
             let _ = handle_overlay_key(ov, OverlayKey::Paste(data.to_string()));
             return;
         }
-        self.input.history_browse = false;
-        self.input.insert_paste(data);
-        self.clamp_slash_suggest();
+        self.normalize_focus();
+        match self.focus.mode {
+            FocusMode::Input(InputOwner::ChatComposer) => {
+                self.input.history_browse = false;
+                self.input.insert_paste(data);
+                self.clamp_slash_suggest();
+            }
+            FocusMode::Transient(TransientOwner::SourceSearch) => {
+                for ch in data.chars().filter(|ch| !ch.is_control()) {
+                    self.source_viewer.append_search_char(ch);
+                }
+            }
+            FocusMode::Transient(TransientOwner::JumpToLine) => {
+                for ch in data.chars().filter(|ch| ch.is_ascii_digit()) {
+                    self.source_viewer.append_jump_char(ch);
+                }
+            }
+            FocusMode::Navigation => {}
+        }
     }
 
     pub fn refresh_status_model(&self) -> StatusModel {
@@ -2364,6 +2456,11 @@ Reply with ONLY the commit message line.\n\n\
     pub fn draw(&mut self, frame: &mut ratatui::Frame) {
         let area = frame.area();
         if is_too_small(area) {
+            self.focus.block = FocusBlock::Workspace;
+            self.focus.mode = FocusMode::Navigation;
+            self.file_explorer.focused = false;
+            self.bottom_panel.focused = false;
+            self.source_viewer.focused = false;
             frame.render_widget(
                 Paragraph::new("Terminal too small — resize to at least 40x18"),
                 area,
@@ -2383,6 +2480,18 @@ Reply with ONLY the commit message line.\n\n\
             0,
             panel_h,
         );
+        // Layout can hide a requested side/bottom panel. Focus must follow the
+        // rendered geometry rather than leaving an invisible key owner behind.
+        let available = FocusAvailability {
+            files: regions.files.is_some(),
+            inspector: regions.sidebar.is_some(),
+            bottom_panel: self.bottom_panel.open && regions.bottom_panel.height > 0,
+        };
+        if !available.contains(self.focus.block) {
+            self.focus.block = FocusBlock::Workspace;
+            self.focus.mode = FocusMode::Navigation;
+        }
+        self.normalize_focus();
         let workspace_rows = ratatui::layout::Layout::default()
             .direction(ratatui::layout::Direction::Vertical)
             .constraints([
@@ -2546,7 +2655,6 @@ Reply with ONLY the commit message line.\n\n\
             );
         } else if self.workspace_mode == WorkspaceMode::Editor {
             self.last_editor_height = regions.chat.height;
-            self.source_viewer.focused = true;
             frame.render_widget(
                 SourceViewerWidget {
                     viewer: &mut self.source_viewer,
@@ -2555,9 +2663,6 @@ Reply with ONLY the commit message line.\n\n\
             );
         } else if self.workspace_mode == WorkspaceMode::Diff {
             self.render_diff_workspace(regions.chat, frame.buffer_mut());
-        } else {
-            self.source_viewer.focused = false;
-            self.render_workspace_empty_state(regions.chat, frame.buffer_mut());
         }
         if let Some(sidebar_area) = regions.sidebar {
             let activity = self
@@ -2759,7 +2864,7 @@ Reply with ONLY the commit message line.\n\n\
         } else if qn > 0 {
             format!("queue {qn} · Ctrl+Up/Down select · Ctrl+Backspace cancel")
         } else {
-            "/ commands  ·  Ctrl+E files  ·  Alt+←/→ workspace/panel tabs  ·  Alt+[ / ] inspector  ·  F1 help"
+            "/ commands  ·  Ctrl+E files  ·  Tab / Shift+Tab blocks  ·  ⇧← / ⇧→ switch tab  ·  F1 help"
                 .into()
         };
         let footer_provider = footer_provider_id(
@@ -2809,22 +2914,6 @@ Reply with ONLY the commit message line.\n\n\
             ]
         });
         Paragraph::new(Line::from_iter(spans)).render(area, buf);
-    }
-
-    fn render_workspace_empty_state(
-        &self,
-        area: ratatui::layout::Rect,
-        buf: &mut ratatui::buffer::Buffer,
-    ) {
-        Paragraph::new(self.workspace_mode.empty_state().unwrap_or_default())
-            .style(theme::dim())
-            .alignment(ratatui::layout::Alignment::Center)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(theme::muted()),
-            )
-            .render(area, buf);
     }
 
     fn render_diff_workspace(
@@ -2910,7 +2999,10 @@ Reply with ONLY the commit message line.\n\n\
                     }
                 }
                 Err(e) => {
-                    lines.push(Line::styled(format!("Unable to load diff: {}", e), theme::danger()));
+                    lines.push(Line::styled(
+                        format!("Unable to load diff: {}", e),
+                        theme::danger(),
+                    ));
                 }
             }
         } else {
@@ -2929,7 +3021,156 @@ Reply with ONLY the commit message line.\n\n\
 
     fn toggle_files_panel(&mut self) {
         self.files_visible = !self.files_visible;
-        self.file_explorer.focused = self.files_visible;
+        if self.files_visible {
+            self.focus_block(FocusBlock::Files);
+        } else {
+            self.restore_focus_after_closing(FocusBlock::Files);
+        }
+        self.normalize_focus();
+    }
+
+    fn focus_availability(&self) -> FocusAvailability {
+        FocusAvailability {
+            files: self.files_visible,
+            inspector: self.sidebar_visible,
+            bottom_panel: self.bottom_panel.open,
+        }
+    }
+
+    fn normalize_focus(&mut self) {
+        // Keep direct legacy component setup from creating a hidden owner in
+        // tests or older call sites while production transitions use the
+        // focus helpers below.
+        if self.focus.mode == FocusMode::Input(InputOwner::ChatComposer) {
+            if self.bottom_panel.open && self.bottom_panel.focused {
+                self.focus.block = FocusBlock::BottomPanel;
+                self.focus.mode = FocusMode::Navigation;
+            } else if self.files_visible && self.file_explorer.focused {
+                self.focus.block = FocusBlock::Files;
+                self.focus.mode = FocusMode::Navigation;
+            }
+        }
+        let available = self.focus_availability();
+        if !available.contains(self.focus.block) {
+            self.focus.block = FocusBlock::Workspace;
+            self.focus.mode = FocusMode::Navigation;
+            self.focus.return_block = Some(FocusBlock::Workspace);
+        }
+        if self.focus.mode == FocusMode::Input(InputOwner::ChatComposer)
+            && self.workspace_mode != WorkspaceMode::Chat
+        {
+            // Old callers can still select a workspace tab directly. Do not
+            // leave the composer as an invisible owner in that legacy state.
+            self.focus.mode = FocusMode::Navigation;
+        }
+        if self.source_viewer.search.open {
+            self.focus.block = FocusBlock::Workspace;
+            self.focus.mode = FocusMode::Transient(TransientOwner::SourceSearch);
+        } else if self.source_viewer.jump.open {
+            self.focus.block = FocusBlock::Workspace;
+            self.focus.mode = FocusMode::Transient(TransientOwner::JumpToLine);
+        }
+        self.file_explorer.focused = self.focus.block == FocusBlock::Files
+            && self.focus.mode == FocusMode::Navigation
+            && self.files_visible;
+        self.bottom_panel.focused = self.focus.block == FocusBlock::BottomPanel
+            && self.focus.mode == FocusMode::Navigation
+            && self.bottom_panel.open;
+        self.source_viewer.focused = self.focus.block == FocusBlock::Workspace
+            && self.focus.mode == FocusMode::Navigation
+            && self.workspace_mode == WorkspaceMode::Editor;
+    }
+
+    fn focus_block(&mut self, block: FocusBlock) {
+        if self.focus.block != block {
+            self.focus.previous_block = Some(self.focus.block);
+        }
+        self.focus.block = block;
+        self.focus.mode = FocusMode::Navigation;
+        self.focus.return_block = Some(block);
+        self.normalize_focus();
+    }
+
+    fn enter_chat_composer(&mut self) {
+        self.focus.block = FocusBlock::Workspace;
+        self.focus.mode = FocusMode::Input(InputOwner::ChatComposer);
+        self.focus.return_block = Some(FocusBlock::Workspace);
+        self.normalize_focus();
+    }
+
+    fn enter_transient(&mut self, owner: TransientOwner) {
+        self.focus.block = FocusBlock::Workspace;
+        self.focus.mode = FocusMode::Transient(owner);
+        self.focus.return_block = Some(FocusBlock::Workspace);
+        self.normalize_focus();
+    }
+
+    fn restore_focus_after_closing(&mut self, closed: FocusBlock) {
+        let previous = self
+            .focus
+            .previous_block
+            .filter(|block| *block != closed && self.focus_availability().contains(*block))
+            .unwrap_or(FocusBlock::Workspace);
+        self.focus.block = previous;
+        self.focus.mode = FocusMode::Navigation;
+        self.focus.return_block = Some(previous);
+    }
+
+    fn cycle_focus_block(&mut self, forward: bool) {
+        let available = self.focus_availability();
+        let current = FocusBlock::ORDER
+            .iter()
+            .position(|block| *block == self.focus.block)
+            .unwrap_or(1);
+        for offset in 1..=FocusBlock::ORDER.len() {
+            let index = if forward {
+                (current + offset) % FocusBlock::ORDER.len()
+            } else {
+                (current + FocusBlock::ORDER.len() - offset) % FocusBlock::ORDER.len()
+            };
+            let next = FocusBlock::ORDER[index];
+            if available.contains(next) {
+                self.focus_block(next);
+                break;
+            }
+        }
+    }
+
+    fn tab_nav_command(&self, key: event::KeyEvent) -> Option<TabNavCommand> {
+        let shifted = key.modifiers.contains(KeyModifiers::SHIFT);
+        let plain = !key.modifiers.contains(KeyModifiers::CONTROL)
+            && !key.modifiers.contains(KeyModifiers::ALT);
+        match key.code {
+            KeyCode::Left if shifted && plain => Some(TabNavCommand::PreviousTab),
+            KeyCode::Right if shifted && plain => Some(TabNavCommand::NextTab),
+            _ => None,
+        }
+    }
+
+    fn escape_navigation(&mut self) {
+        match self.focus.block {
+            FocusBlock::Workspace => {}
+            block => self.restore_focus_after_closing(block),
+        }
+        self.normalize_focus();
+    }
+
+    fn open_bottom_panel(&mut self, tab: Option<BottomPanelTab>) {
+        if let Some(tab) = tab {
+            self.bottom_panel.active = tab;
+        }
+        self.bottom_panel.open = true;
+        self.focus_block(FocusBlock::BottomPanel);
+    }
+
+    fn toggle_bottom_panel(&mut self) {
+        if self.bottom_panel.open {
+            self.bottom_panel.open = false;
+            self.restore_focus_after_closing(FocusBlock::BottomPanel);
+            self.normalize_focus();
+        } else {
+            self.open_bottom_panel(None);
+        }
     }
 
     fn handle_editor_key(&mut self, key: event::KeyEvent) -> bool {
@@ -2937,37 +3178,22 @@ Reply with ONLY the commit message line.\n\n\
             return false;
         }
 
-        // Let workspace-tab switching close an active search/jump and fall
-        // through to the global Alt+arrow handler.
-        if key.modifiers.contains(KeyModifiers::ALT)
-            && (key.code == KeyCode::Left || key.code == KeyCode::Right)
-        {
-            self.source_viewer.close_search();
-            self.source_viewer.close_jump();
-            return false;
-        }
-
-        if self.source_viewer.search.open {
-            return self.handle_search_key(key);
-        }
-        if self.source_viewer.jump.open {
-            return self.handle_jump_key(key);
-        }
-
         let height = self.last_editor_height.saturating_sub(2) as usize;
         // Navigation shortcuts are plain keys so that Alt/Ctrl combinations
         // continue to control workspace tabs and other chrome.
         match key.code {
             KeyCode::Esc if key.modifiers.is_empty() => {
-                self.workspace_mode = WorkspaceMode::Chat;
+                self.escape_navigation();
                 true
             }
             KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.source_viewer.start_search();
+                self.enter_transient(TransientOwner::SourceSearch);
                 true
             }
             KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.source_viewer.start_jump();
+                self.enter_transient(TransientOwner::JumpToLine);
                 true
             }
             KeyCode::Up if key.modifiers.is_empty() => {
@@ -3048,27 +3274,34 @@ Reply with ONLY the commit message line.\n\n\
     }
 
     fn handle_bottom_panel_key(&mut self, key: event::KeyEvent) -> bool {
-        if !self.bottom_panel.open || !self.bottom_panel.focused {
+        if !self.bottom_panel.open {
             return false;
         }
-        match key.code {
-            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.bottom_panel.toggle();
-                true
-            }
-            KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => {
+        match self.tab_nav_command(key) {
+            Some(TabNavCommand::PreviousTab) => {
                 self.bottom_panel.previous_tab();
                 true
             }
-            KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => {
+            Some(TabNavCommand::NextTab) => {
                 self.bottom_panel.next_tab();
                 true
             }
-            KeyCode::Esc => {
-                self.bottom_panel.focused = false;
-                true
-            }
-            _ => true,
+            None => match key.code {
+                // Preserve the established alternate navigation bindings.
+                KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => {
+                    self.bottom_panel.previous_tab();
+                    true
+                }
+                KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => {
+                    self.bottom_panel.next_tab();
+                    true
+                }
+                KeyCode::Esc => {
+                    self.escape_navigation();
+                    true
+                }
+                _ => false,
+            },
         }
     }
 
@@ -3076,6 +3309,8 @@ Reply with ONLY the commit message line.\n\n\
         match key.code {
             KeyCode::Esc => {
                 self.source_viewer.close_search();
+                self.focus.mode = FocusMode::Navigation;
+                self.normalize_focus();
                 true
             }
             KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
@@ -3102,6 +3337,8 @@ Reply with ONLY the commit message line.\n\n\
         match key.code {
             KeyCode::Esc => {
                 self.source_viewer.close_jump();
+                self.focus.mode = FocusMode::Navigation;
+                self.normalize_focus();
                 true
             }
             KeyCode::Enter => {
@@ -3121,16 +3358,12 @@ Reply with ONLY the commit message line.\n\n\
     }
 
     fn handle_file_explorer_key(&mut self, key: event::KeyEvent) -> bool {
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('e') {
-            self.toggle_files_panel();
-            return true;
-        }
-        if !self.files_visible || !self.file_explorer.focused {
+        if !self.files_visible {
             return false;
         }
         match key.code {
             KeyCode::Esc => {
-                self.file_explorer.focused = false;
+                self.escape_navigation();
                 true
             }
             KeyCode::Up => {
@@ -3165,8 +3398,316 @@ Reply with ONLY the commit message line.\n\n\
         }
     }
 
-    pub async fn handle_key(&mut self, key: event::KeyEvent) -> Result<(), TuiError> {
+    fn select_workspace_tab(&mut self, next: WorkspaceMode) {
+        self.workspace_mode = next;
+        if next == WorkspaceMode::Editor {
+            self.source_viewer.refresh(self.session.workspace_root());
+            self.file_explorer.refresh_git_status();
+        }
+        self.normalize_focus();
+    }
+
+    fn handle_workspace_navigation_key(&mut self, key: event::KeyEvent) -> bool {
+        match self.tab_nav_command(key) {
+            Some(TabNavCommand::PreviousTab) => {
+                self.select_workspace_tab(self.workspace_mode.previous());
+                true
+            }
+            Some(TabNavCommand::NextTab) => {
+                self.select_workspace_tab(self.workspace_mode.next());
+                true
+            }
+            None => match key.code {
+                KeyCode::Enter | KeyCode::Char('i')
+                    if key.modifiers.is_empty() && self.workspace_mode == WorkspaceMode::Chat =>
+                {
+                    self.enter_chat_composer();
+                    true
+                }
+                KeyCode::Up
+                    if key.modifiers.is_empty() && self.workspace_mode == WorkspaceMode::Diff =>
+                {
+                    self.diff_selected = self.diff_selected.saturating_sub(1);
+                    true
+                }
+                KeyCode::Down
+                    if key.modifiers.is_empty() && self.workspace_mode == WorkspaceMode::Diff =>
+                {
+                    let count = self.file_explorer.git_status.changed_files().len();
+                    self.diff_selected = self
+                        .diff_selected
+                        .saturating_add(1)
+                        .min(count.saturating_sub(1));
+                    true
+                }
+                _ if self.workspace_mode == WorkspaceMode::Editor => self.handle_editor_key(key),
+                KeyCode::Esc if key.modifiers.is_empty() => {
+                    self.escape_navigation();
+                    true
+                }
+                _ => false,
+            },
+        }
+    }
+
+    fn handle_active_block_key(&mut self, key: event::KeyEvent) -> bool {
+        match self.focus.block {
+            FocusBlock::Files => self.handle_file_explorer_key(key),
+            FocusBlock::Workspace => self.handle_workspace_navigation_key(key),
+            FocusBlock::Inspector => match self.tab_nav_command(key) {
+                Some(TabNavCommand::PreviousTab) => {
+                    self.inspector_view = self.inspector_view.previous();
+                    true
+                }
+                Some(TabNavCommand::NextTab) => {
+                    self.inspector_view = self.inspector_view.next();
+                    true
+                }
+                None => match key.code {
+                    KeyCode::Esc if key.modifiers.is_empty() => {
+                        self.escape_navigation();
+                        true
+                    }
+                    _ => false,
+                },
+            },
+            FocusBlock::BottomPanel => self.handle_bottom_panel_key(key),
+        }
+    }
+
+    fn handle_global_key(&mut self, key: event::KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.select_workspace_tab(self.workspace_mode.previous());
+                true
+            }
+            KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.select_workspace_tab(self.workspace_mode.next());
+                true
+            }
+            KeyCode::Char('1') if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.open_bottom_panel(Some(BottomPanelTab::Tests));
+                true
+            }
+            KeyCode::Char('2') if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.open_bottom_panel(Some(BottomPanelTab::Diagnostics));
+                true
+            }
+            KeyCode::Char('3') if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.open_bottom_panel(Some(BottomPanelTab::Terminal));
+                true
+            }
+            KeyCode::Char('4') if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.open_bottom_panel(Some(BottomPanelTab::Activity));
+                true
+            }
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.move_queue_selection(-1);
+                true
+            }
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.move_queue_selection(1);
+                true
+            }
+            KeyCode::Backspace if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.cancel_selected_queue();
+                true
+            }
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if self.busy {
+                    if self.cancel_requested {
+                        self.should_quit = true;
+                        self.last_exit = ExitCode::Canceled;
+                    } else {
+                        self.cancel_requested = true;
+                        self.push_toast("interrupt requested · Ctrl+C again to quit");
+                    }
+                } else {
+                    self.should_quit = true;
+                    self.last_exit = ExitCode::Canceled;
+                }
+                true
+            }
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.should_quit = true;
+                true
+            }
+            KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) && !self.busy => {
+                self.overlay = Some(Overlay::slash_open(""));
+                true
+            }
+            KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.tool_expanded = !self.tool_expanded;
+                true
+            }
+            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.toggle_files_panel();
+                true
+            }
+            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.sidebar_visible = !self.sidebar_visible;
+                if self.sidebar_visible {
+                    self.focus_block(FocusBlock::Inspector);
+                } else {
+                    self.restore_focus_after_closing(FocusBlock::Inspector);
+                    self.normalize_focus();
+                }
+                true
+            }
+            // Preserve the established inspector shortcut while the new
+            // unmodified bracket grammar applies to Inspector navigation.
+            KeyCode::Char('[') if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.inspector_view = self.inspector_view.previous();
+                true
+            }
+            KeyCode::Char(']') if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.inspector_view = self.inspector_view.next();
+                true
+            }
+            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.toggle_bottom_panel();
+                true
+            }
+            KeyCode::F(1) if self.overlay.is_none() => {
+                self.overlay = Some(Overlay::welcome());
+                self.set_feedback(
+                    FeedbackSeverity::Info,
+                    "Help · press Enter to get started or Esc to dismiss",
+                );
+                true
+            }
+            _ => false,
+        }
+    }
+
+    async fn handle_chat_composer_key(&mut self, key: event::KeyEvent) -> Result<bool, TuiError> {
         let input_was_empty = self.input.text.is_empty();
+        let consumed = match key.code {
+            KeyCode::Esc if key.modifiers.is_empty() => {
+                self.focus.mode = FocusMode::Navigation;
+                self.normalize_focus();
+                true
+            }
+            KeyCode::Enter
+                if key.modifiers.contains(KeyModifiers::SHIFT)
+                    || key.modifiers.contains(KeyModifiers::ALT) =>
+            {
+                self.input.insert_newline();
+                true
+            }
+            KeyCode::Enter => {
+                let suggestions = self.slash_suggestions();
+                if self.input.text.starts_with('/')
+                    && !suggestions.is_empty()
+                    && !self.input.text.contains(' ')
+                {
+                    let idx = self.slash_suggest_idx.min(suggestions.len() - 1);
+                    let cmd = suggestions[idx].cmd.clone();
+                    let cur = self.input.text.trim();
+                    let line = if cur == cmd.as_str() || cur.starts_with(&(cmd.clone() + " ")) {
+                        self.input.take()
+                    } else {
+                        self.input.set_text(cmd);
+                        self.input.take()
+                    };
+                    if !line.is_empty() {
+                        self.history.push(&line);
+                        self.slash_suggest_idx = 0;
+                        self.notices.clear();
+                        self.input.history_browse = false;
+                        self.dispatch_line(&line).await?;
+                    }
+                } else {
+                    let line = self.input.take();
+                    if line.trim().is_empty() {
+                        if !self.busy && !self.message_queue.is_empty() {
+                            self.dequeue_and_send_next();
+                        }
+                    } else {
+                        self.history.push(&line);
+                        self.slash_suggest_idx = 0;
+                        self.notices.clear();
+                        self.input.history_browse = false;
+                        if self.busy && !line.trim_start().starts_with('/') {
+                            self.enqueue_user_message(line);
+                        } else {
+                            self.dispatch_line(&line).await?;
+                        }
+                    }
+                }
+                true
+            }
+            KeyCode::Tab => {
+                self.complete_slash_suggestion();
+                true
+            }
+            KeyCode::Up if key.modifiers.is_empty() => {
+                let suggestions = self.slash_suggestions();
+                if self.input.text.starts_with('/')
+                    && !suggestions.is_empty()
+                    && !self.history.browsing()
+                {
+                    self.slash_suggest_idx =
+                        (self.slash_suggest_idx + suggestions.len() - 1) % suggestions.len();
+                } else if let Some(text) = self.history.up(&self.input.text) {
+                    self.apply_history_text(text);
+                }
+                true
+            }
+            KeyCode::Down if key.modifiers.is_empty() => {
+                let suggestions = self.slash_suggestions();
+                if self.input.text.starts_with('/')
+                    && !suggestions.is_empty()
+                    && !self.history.browsing()
+                {
+                    self.slash_suggest_idx = (self.slash_suggest_idx + 1) % suggestions.len();
+                } else if let Some(text) = self.history.down() {
+                    self.apply_history_text(text);
+                }
+                true
+            }
+            KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.input.insert_newline();
+                true
+            }
+            KeyCode::Char(c) if key.modifiers.is_empty() && !c.is_control() => {
+                self.input.history_browse = false;
+                self.input.insert(c);
+                self.clamp_slash_suggest();
+                true
+            }
+            KeyCode::Backspace if key.modifiers.is_empty() => {
+                self.input.backspace();
+                self.clamp_slash_suggest();
+                true
+            }
+            KeyCode::Left if key.modifiers.is_empty() => {
+                self.input.move_left();
+                true
+            }
+            KeyCode::Right if key.modifiers.is_empty() => {
+                self.input.move_right();
+                true
+            }
+            KeyCode::Left if key.modifiers.contains(KeyModifiers::SHIFT) => true,
+            KeyCode::Right if key.modifiers.contains(KeyModifiers::SHIFT) => true,
+            KeyCode::PageUp if key.modifiers.is_empty() => {
+                self.scroll_conversation_up(5);
+                true
+            }
+            KeyCode::PageDown if key.modifiers.is_empty() => {
+                self.scroll_conversation_down(5);
+                true
+            }
+            _ => false,
+        };
+        if input_was_empty && !self.input.text.is_empty() {
+            self.splash_dismissed = true;
+        }
+        Ok(consumed)
+    }
+
+    pub async fn handle_key(&mut self, key: event::KeyEvent) -> Result<(), TuiError> {
         // Allow arrow-key auto-repeat for overlays (and other selection UIs).
         if key.kind != KeyEventKind::Press {
             let allow_repeat = matches!(
@@ -3317,240 +3858,38 @@ Reply with ONLY the commit message line.\n\n\
             return Ok(());
         }
 
-        // Transient source-viewer inputs own all keys until closed.
-        if self.workspace_mode == WorkspaceMode::Editor
-            && (self.source_viewer.search.open || self.source_viewer.jump.open)
-        {
-            if self.source_viewer.search.open {
+        self.normalize_focus();
+        match self.focus.mode {
+            FocusMode::Transient(TransientOwner::SourceSearch) => {
                 self.handle_search_key(key);
-            } else {
+                return Ok(());
+            }
+            FocusMode::Transient(TransientOwner::JumpToLine) => {
                 self.handle_jump_key(key);
+                return Ok(());
             }
-            return Ok(());
-        }
-
-        if self.handle_bottom_panel_key(key) {
-            return Ok(());
-        }
-
-        if self.handle_file_explorer_key(key) {
-            return Ok(());
-        }
-
-        if self.handle_editor_key(key) {
-            self.source_viewer.clear_notice();
-            return Ok(());
-        }
-
-        match key.code {
-            KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => {
-                let next = self.workspace_mode.previous();
-                self.workspace_mode = next;
-                if next == WorkspaceMode::Editor {
-                    self.source_viewer.refresh(self.session.workspace_root());
-                    self.file_explorer.refresh_git_status();
-                }
-            }
-            KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => {
-                let next = self.workspace_mode.next();
-                self.workspace_mode = next;
-                if next == WorkspaceMode::Editor {
-                    self.source_viewer.refresh(self.session.workspace_root());
-                    self.file_explorer.refresh_git_status();
-                }
-            }
-            KeyCode::Char('1') if key.modifiers.contains(KeyModifiers::ALT) => {
-                self.bottom_panel.open_tab(BottomPanelTab::Tests);
-            }
-            KeyCode::Char('2') if key.modifiers.contains(KeyModifiers::ALT) => {
-                self.bottom_panel.open_tab(BottomPanelTab::Diagnostics);
-            }
-            KeyCode::Char('3') if key.modifiers.contains(KeyModifiers::ALT) => {
-                self.bottom_panel.open_tab(BottomPanelTab::Terminal);
-            }
-            KeyCode::Char('4') if key.modifiers.contains(KeyModifiers::ALT) => {
-                self.bottom_panel.open_tab(BottomPanelTab::Activity);
-            }
-            KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.move_queue_selection(-1);
-            }
-            KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.move_queue_selection(1);
-            }
-            KeyCode::Backspace if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.cancel_selected_queue();
-            }
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if self.busy {
-                    // First Ctrl+C while busy: soft cancel; second: quit
-                    if self.cancel_requested {
-                        self.should_quit = true;
-                        self.last_exit = ExitCode::Canceled;
-                    } else {
-                        self.cancel_requested = true;
-                        self.push_toast("interrupt requested · Ctrl+C again to quit");
-                    }
-                } else {
-                    self.should_quit = true;
-                    self.last_exit = ExitCode::Canceled;
-                }
-            }
-            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.should_quit = true;
-            }
-            KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if !self.busy {
-                    self.overlay = Some(Overlay::slash_open(""));
-                }
-            }
-            KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.tool_expanded = !self.tool_expanded;
-            }
-            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.sidebar_visible = !self.sidebar_visible;
-            }
-            KeyCode::Char('[') if key.modifiers.contains(KeyModifiers::ALT) => {
-                self.inspector_view = self.inspector_view.previous();
-            }
-            KeyCode::Char(']') if key.modifiers.contains(KeyModifiers::ALT) => {
-                self.inspector_view = self.inspector_view.next();
-            }
-            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.bottom_panel.toggle();
-            }
-            KeyCode::F(1) => {
-                if self.overlay.is_none() {
-                    self.overlay = Some(Overlay::welcome());
-                    self.set_feedback(
-                        FeedbackSeverity::Info,
-                        "Help · press Enter to get started or Esc to dismiss",
-                    );
-                }
-            }
-            KeyCode::Esc => {
-                self.history.reset_browse();
-                self.notices.clear();
-                self.clear_error_chrome();
-                if self.busy {
-                    // Soft interrupt — stop after current model chunk / turn
-                    self.cancel_requested = true;
-                    self.push_toast("interrupt · finishing current step…");
-                } else if !self.input.text.is_empty() {
-                    self.input.clear();
-                    self.slash_suggest_idx = 0;
-                } else {
-                    self.feedback = FeedbackModel::default();
-                    self.status_message.clear();
-                    self.notices.clear();
-                    self.notices_until = None;
-                    self.tool_expanded = false;
-                }
-            }
-            // Shift+Enter or Alt+Enter → newline (multi-line input)
-            KeyCode::Enter
-                if key.modifiers.contains(KeyModifiers::SHIFT)
-                    || key.modifiers.contains(KeyModifiers::ALT) =>
-            {
-                self.input.insert_newline();
-            }
-            KeyCode::Enter => {
-                // Slash suggestions open: Enter selects the highlighted command and runs it.
-                // (Do not require the typed prefix to match cmd — filter can match on desc too.)
-                let suggestions = self.slash_suggestions();
-                if self.input.text.starts_with('/')
-                    && !suggestions.is_empty()
-                    && !self.input.text.contains(' ')
-                {
-                    let idx = self.slash_suggest_idx.min(suggestions.len() - 1);
-                    let cmd = suggestions[idx].cmd.clone();
-                    let cur = self.input.text.trim();
-                    // Keep args only if user already typed past the bare command
-                    let line = if cur == cmd.as_str() || cur.starts_with(&(cmd.clone() + " ")) {
-                        self.input.take()
-                    } else {
-                        self.input.set_text(cmd);
-                        self.input.take()
-                    };
-                    if line.is_empty() {
-                        return Ok(());
-                    }
-                    self.history.push(&line);
-                    self.slash_suggest_idx = 0;
-                    self.notices.clear();
-                    self.input.history_browse = false;
-                    self.dispatch_line(&line).await?;
+            FocusMode::Input(InputOwner::ChatComposer) => {
+                if self.handle_chat_composer_key(key).await? {
                     return Ok(());
                 }
-                let line = self.input.take();
-                // Empty Enter while idle + queue non-empty still sends the next message.
-                if line.trim().is_empty() {
-                    if !self.busy && !self.message_queue.is_empty() {
-                        self.dequeue_and_send_next();
-                    }
+            }
+            FocusMode::Navigation => {
+                if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
+                    self.cycle_focus_block(!matches!(key.code, KeyCode::BackTab));
                     return Ok(());
                 }
-                self.history.push(&line);
-                self.slash_suggest_idx = 0;
-                self.notices.clear();
-                self.input.history_browse = false;
-                // While current message is processing, non-slash text is enqueued (TUI state).
-                if self.busy && !line.trim_start().starts_with('/') {
-                    self.enqueue_user_message(line);
+                if key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::SHIFT) {
+                    self.cycle_focus_block(false);
                     return Ok(());
                 }
-                self.dispatch_line(&line).await?;
-            }
-            KeyCode::Tab => {
-                self.complete_slash_suggestion();
-            }
-            KeyCode::Up => {
-                let suggestions = self.slash_suggestions();
-                if self.input.text.starts_with('/')
-                    && !suggestions.is_empty()
-                    && !self.history.browsing()
-                {
-                    let n = suggestions.len();
-                    self.slash_suggest_idx = (self.slash_suggest_idx + n - 1) % n;
-                } else if let Some(text) = self.history.up(&self.input.text) {
-                    self.apply_history_text(text);
+                if self.handle_active_block_key(key) {
+                    self.source_viewer.clear_notice();
+                    return Ok(());
                 }
             }
-            KeyCode::Down => {
-                let suggestions = self.slash_suggestions();
-                if self.input.text.starts_with('/')
-                    && !suggestions.is_empty()
-                    && !self.history.browsing()
-                {
-                    let n = suggestions.len();
-                    self.slash_suggest_idx = (self.slash_suggest_idx + 1) % n;
-                } else if let Some(text) = self.history.down() {
-                    self.apply_history_text(text);
-                }
-            }
-            KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                // Ctrl+J also inserts newline (terminals that don't send Shift+Enter)
-                self.input.insert_newline();
-            }
-            KeyCode::Char(c) => {
-                // Phase 8 (TUI-06): `/` inserts into the main textbox; do not open palette.
-                // Typing while busy composes the next message (Enter enqueues).
-                self.input.history_browse = false;
-                self.input.insert(c);
-                self.clamp_slash_suggest();
-            }
-            KeyCode::Backspace => {
-                self.input.backspace();
-                self.clamp_slash_suggest();
-            }
-            KeyCode::Left => self.input.move_left(),
-            KeyCode::Right => self.input.move_right(),
-            KeyCode::PageUp => self.scroll_conversation_up(5),
-            KeyCode::PageDown => self.scroll_conversation_down(5),
-            _ => {}
         }
-        if input_was_empty && !self.input.text.is_empty() {
-            self.splash_dismissed = true;
-        }
+
+        let _ = self.handle_global_key(key);
         Ok(())
     }
 
@@ -4447,6 +4786,218 @@ mod tests {
         .await
         .unwrap();
         (dir, session)
+    }
+
+    async fn focus_test_app() -> (TempDir, TuiApp) {
+        let (dir, session) = test_session().await;
+        let app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "mock".into(),
+                provider: "mock".into(),
+                cwd: dir.path().to_path_buf(),
+                version: "test".into(),
+                startup_notices: Vec::new(),
+            },
+        );
+        (dir, app)
+    }
+
+    #[tokio::test]
+    async fn focus_starts_with_explicit_chat_composer_ownership() {
+        let (_dir, app) = focus_test_app().await;
+        assert_eq!(app.focus.block, FocusBlock::Workspace);
+        assert_eq!(app.focus.mode, FocusMode::Input(InputOwner::ChatComposer));
+    }
+
+    #[tokio::test]
+    async fn tab_cycles_visible_blocks_and_skips_hidden_ones() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.focus.mode = FocusMode::Navigation;
+        app.files_visible = true;
+        app.bottom_panel.open = true;
+        app.normalize_focus();
+
+        app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert_eq!(app.focus.block, FocusBlock::Inspector);
+        app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert_eq!(app.focus.block, FocusBlock::BottomPanel);
+        app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert_eq!(app.focus.block, FocusBlock::Files);
+
+        app.sidebar_visible = false;
+        app.normalize_focus();
+        app.handle_key(press(KeyCode::BackTab, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert_eq!(app.focus.block, FocusBlock::BottomPanel);
+    }
+
+    #[tokio::test]
+    async fn opening_and_closing_bottom_panel_transfers_focus() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.focus.mode = FocusMode::Navigation;
+        app.handle_key(press(KeyCode::Char('p'), KeyModifiers::CONTROL))
+            .await
+            .unwrap();
+        assert_eq!(app.focus.block, FocusBlock::BottomPanel);
+        assert!(app.bottom_panel.open);
+        app.handle_key(press(KeyCode::Char('p'), KeyModifiers::CONTROL))
+            .await
+            .unwrap();
+        assert_eq!(app.focus.block, FocusBlock::Workspace);
+        assert!(!app.bottom_panel.open);
+    }
+
+    #[tokio::test]
+    async fn shift_arrow_tabs_only_apply_to_the_active_navigation_block() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.focus.mode = FocusMode::Navigation;
+        app.handle_key(press(KeyCode::Right, KeyModifiers::SHIFT))
+            .await
+            .unwrap();
+        assert_eq!(app.workspace_mode, WorkspaceMode::Editor);
+
+        app.focus_block(FocusBlock::Inspector);
+        app.handle_key(press(KeyCode::Right, KeyModifiers::SHIFT))
+            .await
+            .unwrap();
+        assert_eq!(app.inspector_view, InspectorView::Context);
+
+        app.open_bottom_panel(None);
+        app.handle_key(press(KeyCode::Right, KeyModifiers::SHIFT))
+            .await
+            .unwrap();
+        assert_eq!(app.bottom_panel.active, BottomPanelTab::Activity);
+    }
+
+    #[tokio::test]
+    async fn chat_input_keeps_literal_brackets_and_shift_arrows_do_not_switch_tabs() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.handle_key(press(KeyCode::Char('['), KeyModifiers::NONE))
+            .await
+            .unwrap();
+        app.handle_key(press(KeyCode::Char(']'), KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert_eq!(app.input.text, "[]");
+        app.handle_key(press(KeyCode::Right, KeyModifiers::SHIFT))
+            .await
+            .unwrap();
+        assert_eq!(app.workspace_mode, WorkspaceMode::Chat);
+        app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert_eq!(app.focus.mode, FocusMode::Navigation);
+        assert_eq!(app.focus.block, FocusBlock::Workspace);
+        app.handle_key(press(KeyCode::Char('i'), KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert_eq!(app.focus.mode, FocusMode::Input(InputOwner::ChatComposer));
+    }
+
+    #[tokio::test]
+    async fn source_search_is_transient_and_esc_restores_workspace_navigation() {
+        let (dir, mut app) = focus_test_app().await;
+        let path = dir.path().join("source.txt");
+        fs::write(&path, "line\n").unwrap();
+        app.open_file_in_editor(&path);
+        app.handle_key(press(KeyCode::Char('f'), KeyModifiers::CONTROL))
+            .await
+            .unwrap();
+        assert_eq!(
+            app.focus.mode,
+            FocusMode::Transient(TransientOwner::SourceSearch)
+        );
+        app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert!(!app.source_viewer.search.open);
+        assert_eq!(app.focus.mode, FocusMode::Navigation);
+    }
+
+    #[tokio::test]
+    async fn source_search_keeps_shift_arrows_inside_the_search_field() {
+        let (dir, mut app) = focus_test_app().await;
+        let path = dir.path().join("source.txt");
+        fs::write(&path, "line\n").unwrap();
+        app.open_file_in_editor(&path);
+        app.handle_key(press(KeyCode::Char('f'), KeyModifiers::CONTROL))
+            .await
+            .unwrap();
+        app.handle_key(press(KeyCode::Right, KeyModifiers::SHIFT))
+            .await
+            .unwrap();
+        assert!(app.source_viewer.search.open);
+        assert_eq!(
+            app.focus.mode,
+            FocusMode::Transient(TransientOwner::SourceSearch)
+        );
+    }
+
+    #[tokio::test]
+    async fn jump_to_line_keeps_shift_arrows_inside_the_jump_field() {
+        let (dir, mut app) = focus_test_app().await;
+        let path = dir.path().join("source.txt");
+        fs::write(&path, "line\n").unwrap();
+        app.open_file_in_editor(&path);
+        app.handle_key(press(KeyCode::Char('g'), KeyModifiers::CONTROL))
+            .await
+            .unwrap();
+        app.handle_key(press(KeyCode::Right, KeyModifiers::SHIFT))
+            .await
+            .unwrap();
+        assert!(app.source_viewer.jump.open);
+        assert_eq!(
+            app.focus.mode,
+            FocusMode::Transient(TransientOwner::JumpToLine)
+        );
+    }
+
+    #[tokio::test]
+    async fn editor_reload_does_not_reach_chat_input() {
+        let (dir, mut app) = focus_test_app().await;
+        let path = dir.path().join("source.txt");
+        fs::write(&path, "before\n").unwrap();
+        app.input.set_text("draft");
+        app.open_file_in_editor(&path);
+        fs::write(&path, "after\n").unwrap();
+        app.handle_key(press(KeyCode::Char('r'), KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert_eq!(app.input.text, "draft");
+        assert_eq!(app.source_viewer.lines, vec!["after"]);
+    }
+
+    #[tokio::test]
+    async fn overlay_precedes_block_navigation() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.focus.mode = FocusMode::Navigation;
+        app.overlay = Some(Overlay::welcome());
+        app.handle_key(press(KeyCode::Char(']'), KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert_eq!(app.workspace_mode, WorkspaceMode::Chat);
+        assert!(app.overlay.is_some());
+    }
+
+    #[tokio::test]
+    async fn resize_drops_focus_from_a_zero_width_files_block() {
+        use ratatui::backend::TestBackend;
+
+        let (_dir, mut app) = focus_test_app().await;
+        app.files_visible = true;
+        app.focus_block(FocusBlock::Files);
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        assert_eq!(app.focus.block, FocusBlock::Workspace);
+        assert_eq!(app.focus.mode, FocusMode::Navigation);
     }
 
     #[tokio::test]
