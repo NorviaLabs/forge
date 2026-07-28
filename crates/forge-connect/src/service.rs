@@ -62,6 +62,7 @@ pub enum ConnectAction {
 }
 
 /// Parse `/connect …` args (without the leading `/connect`).
+#[allow(clippy::result_large_err)]
 pub fn parse_connect_args(args: &str) -> Result<ConnectAction, ConnectError> {
     let args = args.trim();
     if args.is_empty() {
@@ -93,7 +94,9 @@ pub struct ConnectService<'a> {
     pub active_model: Option<String>,
 }
 
+#[allow(clippy::result_large_err)]
 impl<'a> ConnectService<'a> {
+    #[allow(clippy::result_large_err)]
     pub fn list_lines(&self) -> Result<Vec<String>, ConnectError> {
         let mut lines = Vec::new();
         for p in self.registry.profiles() {
@@ -121,6 +124,7 @@ impl<'a> ConnectService<'a> {
         Ok(lines)
     }
 
+    #[allow(clippy::result_large_err)]
     pub fn status(&self) -> Result<ConnectStatus, ConnectError> {
         let mut connected = Vec::new();
         for p in self.registry.profiles() {
@@ -145,6 +149,7 @@ impl<'a> ConnectService<'a> {
         })
     }
 
+    #[allow(clippy::result_large_err)]
     pub fn status_message(&self) -> Result<String, ConnectError> {
         let s = self.status()?;
         Ok(format!(
@@ -358,6 +363,7 @@ impl<'a> ConnectService<'a> {
     }
 
     /// Connect dispatch used by CLI/TUI after collecting secrets.
+    #[allow(clippy::result_large_err)]
     pub fn connect(
         &mut self,
         profile_id: &str,
@@ -607,6 +613,7 @@ impl<'a> ConnectService<'a> {
     }
 
     /// Profiles that already have stored credentials (for session restore).
+    #[allow(clippy::result_large_err)]
     pub fn connected_profiles(&self) -> Result<Vec<ConnectProfile>, ConnectError> {
         let mut out = Vec::new();
         for p in self.registry.profiles() {
@@ -631,12 +638,14 @@ impl<'a> ConnectService<'a> {
         Ok(out)
     }
 
+    #[allow(clippy::result_large_err)]
     fn profile_or_err(&self, profile_id: &str) -> Result<ConnectProfile, ConnectError> {
         self.registry.get(profile_id).cloned().ok_or_else(|| {
             ConnectError::UnknownProfile(profile_id.into(), self.registry.ids().join(", "))
         })
     }
 
+    #[allow(clippy::result_large_err)]
     fn activate(
         &mut self,
         profile: &ConnectProfile,
@@ -687,6 +696,7 @@ pub fn needs_tui_oauth(registry: &ConnectRegistry, profile_id: &str) -> bool {
         .unwrap_or(false)
 }
 
+#[allow(clippy::result_large_err)]
 pub fn handle_connect_action(
     action: ConnectAction,
     registry: &ConnectRegistry,

@@ -933,7 +933,7 @@ impl AgentSession {
         // Execute with stored args (may be redacted in production; Phase 2 keeps full call in journal intent before wait ideally)
         // Re-fetch from last HitlWait — for approve path re-execute with redacted args is weak;
         // store original args in pending for this implementation:
-        let _ = self.run_one_tool_exec_only(&call, &mut budget).await?;
+        self.run_one_tool_exec_only(&call, &mut budget).await?;
         Ok(())
     }
 

@@ -136,7 +136,7 @@ pub enum StreamWaitPhase {
 }
 
 /// Render options for progressive disclosure / density.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ConversationViewOpts {
     pub busy: bool,
     /// Expand the last tool card's full output.
@@ -147,18 +147,6 @@ pub struct ConversationViewOpts {
     pub stream_wait: Option<(StreamWaitPhase, f64)>,
     /// When thinking just finished (answer streaming), show its elapsed time.
     pub stream_thought_secs: Option<f64>,
-}
-
-impl Default for ConversationViewOpts {
-    fn default() -> Self {
-        Self {
-            busy: false,
-            tool_expanded: false,
-            compact: false,
-            stream_wait: None,
-            stream_thought_secs: None,
-        }
-    }
 }
 
 /// Format elapsed time in 0.1s increments through 5s, then whole seconds.
@@ -1447,7 +1435,9 @@ fn highlight_inline_code(line: &str) -> Vec<Span<'static>> {
     spans
 }
 
-fn render_highlighted_line(segments: &[(String, (u8, u8, u8), bool, bool)]) -> Vec<Span<'static>> {
+type HighlightSegment = (String, (u8, u8, u8), bool, bool);
+
+fn render_highlighted_line(segments: &[HighlightSegment]) -> Vec<Span<'static>> {
     segments
         .iter()
         .map(|(text, rgb, bold, italic)| {
@@ -1707,8 +1697,7 @@ mod tests {
 
     #[test]
     fn wide_viewport_does_not_wrap_at_the_old_column_limit() {
-        let content = std::iter::repeat("word")
-            .take(24)
+        let content = std::iter::repeat_n("word", 24)
             .collect::<Vec<_>>()
             .join(" ");
         let msgs = vec![Message {
