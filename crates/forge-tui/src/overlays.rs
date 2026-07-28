@@ -965,7 +965,7 @@ impl Widget for OverlayWidget<'_> {
             Overlay::Help => {
                 let r = centered_rect(64, 58, area);
                 Paragraph::new(
-                    "Forge is an AI coding agent for your terminal.\n\nStart typing and press Enter.\n\nShortcuts\n• /       Commands\n• Ctrl+B  Toggle sidebar\n• Ctrl+P  Toggle bottom panel\n• Alt+1-4 Bottom panel tabs\n• Alt+←/→ Workspace tabs\n• Tab     Complete\n• ↑↓      Navigate\n• Esc     Close\n• F1      Help\n\nForge asks before sensitive actions and automatically saves your session.\n\nPress Enter to get started.",
+                    "Forge is an AI coding agent for your terminal.\n\nStart typing and press Enter.\n\nShortcuts\n• /       Commands\n• Ctrl+B  Toggle inspector\n• Alt+[ / ] Inspector views\n• Ctrl+P  Toggle bottom panel\n• Alt+1-4 Bottom panel tabs\n• Alt+←/→ Workspace tabs\n• Tab     Complete\n• ↑↓      Navigate\n• Esc     Close\n• F1      Help\n\nForge asks before sensitive actions and automatically saves your session.\n\nPress Enter to get started.",
                 )
                 .wrap(ratatui::widgets::Wrap { trim: true })
                 .block(
