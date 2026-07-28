@@ -2,7 +2,11 @@
 
 use crate::theme;
 use forge_types::SessionStatus;
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
 use ratatui::style::Modifier;
+use ratatui::text::{Line, Span};
+use ratatui::widgets::Widget;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Progressive busy phase (Phase 10 / TUI-10; also used in chrome label).
@@ -58,11 +62,58 @@ pub struct StatusModel {
     pub tools_visible: usize,
     pub prompt_cache_hits: u64,
     pub prompt_cache_writes: u64,
+    pub repo_name: Option<String>,
+    pub branch: Option<String>,
+    pub dirty: bool,
 }
 
 impl StatusModel {
     pub fn status_label(&self) -> (String, ratatui::style::Style) {
         self.status_label_with_busy_detail(None)
+    }
+
+    pub fn current_state_label(&self) -> &'static str {
+        match self.status {
+            SessionStatus::AwaitingHitl => "Waiting for you",
+            SessionStatus::Failed => "Failed",
+            SessionStatus::Completed => "Completed",
+            SessionStatus::Running => {
+                if self.busy {
+                    match &self.busy_phase {
+                        BusyPhase::Idle => "Idle",
+                        BusyPhase::Model => "Implementing",
+                        BusyPhase::Connect => "Waiting for you",
+                        BusyPhase::Tool { name } => match name.as_str() {
+                            "read_file" | "fffind" | "ffgrep" | "web_search" => "Exploring",
+                            "git" => "Validating",
+                            _ => "Implementing",
+                        },
+                        BusyPhase::Other(step) => match step.as_str() {
+                            "git sync" => "Validating",
+                            _ => "Implementing",
+                        },
+                    }
+                } else {
+                    "Idle"
+                }
+            }
+        }
+    }
+
+    pub fn repo_branch_label(&self) -> Option<String> {
+        let repo = self
+            .repo_name
+            .as_deref()
+            .filter(|value| !value.is_empty())?;
+        let branch = self.branch.as_deref().filter(|value| !value.is_empty());
+        let mut text = match branch {
+            Some(branch) => format!("{repo}/{branch}"),
+            None => repo.to_string(),
+        };
+        if self.dirty {
+            text.push('*');
+        }
+        Some(text)
     }
 
     pub fn status_label_with_busy_detail(
@@ -114,6 +165,94 @@ impl StatusModel {
             .collect();
         format!("{start}…{end}")
     }
+
+    fn truncate_middle(text: &str, max: usize) -> String {
+        let n = text.chars().count();
+        if n <= max {
+            return text.to_string();
+        }
+        if max < 5 {
+            return text.chars().take(max).collect();
+        }
+        let keep = (max - 1) / 2;
+        let start: String = text.chars().take(keep).collect();
+        let end: String = text
+            .chars()
+            .rev()
+            .take(max - keep - 1)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
+        format!("{start}…{end}")
+    }
+}
+
+pub struct StatusBar<'a> {
+    pub model: &'a StatusModel,
+}
+
+impl Widget for StatusBar<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        if area.height == 0 || area.width == 0 {
+            return;
+        }
+        let mut spans = vec![Span::styled(
+            "Forge",
+            theme::brand().add_modifier(Modifier::BOLD),
+        )];
+        let repo = self.model.repo_branch_label();
+        let model = self
+            .model
+            .model
+            .rsplit('/')
+            .next()
+            .unwrap_or(self.model.model.as_str())
+            .to_string();
+        let ctx = format!("{:.0}% context", self.model.ctx_pct * 100.0);
+        let state = self.model.current_state_label().to_string();
+
+        let separators = "  ";
+        let mut used = spans[0].content.chars().count();
+        let state_field = (state, theme::info().add_modifier(Modifier::BOLD));
+        let state_needed = separators.chars().count() + state_field.0.chars().count();
+
+        if let Some(repo) = repo {
+            let reserve = state_needed + separators.chars().count() + 6;
+            let available_repo = (area.width as usize)
+                .saturating_sub(used + separators.chars().count())
+                .saturating_sub(reserve)
+                .max(8);
+            let repo = StatusModel::truncate_middle(&repo, available_repo);
+            let needed = separators.chars().count() + repo.chars().count();
+            if used + needed <= area.width as usize {
+                spans.push(Span::raw(separators));
+                spans.push(Span::styled(repo, theme::text()));
+                used += needed;
+            }
+        }
+
+        if used + state_needed <= area.width as usize {
+            let model_needed = separators.chars().count() + model.chars().count();
+            let ctx_needed = separators.chars().count() + ctx.chars().count();
+            if used + model_needed + ctx_needed + state_needed <= area.width as usize {
+                spans.push(Span::raw(separators));
+                spans.push(Span::styled(model, theme::metadata_style()));
+                used += model_needed;
+                spans.push(Span::raw(separators));
+                spans.push(Span::styled(ctx, theme::muted()));
+                used += ctx_needed;
+            } else if used + model_needed + state_needed <= area.width as usize {
+                spans.push(Span::raw(separators));
+                spans.push(Span::styled(model, theme::metadata_style()));
+                used += model_needed;
+            }
+            spans.push(Span::raw(separators));
+            spans.push(Span::styled(state_field.0, state_field.1));
+        }
+
+        buf.set_line(area.x, area.y, &Line::from(spans), area.width);
+    }
 }
 
 /// Build chrome from app-facing fields (single source for status + /status).
@@ -145,6 +284,7 @@ pub fn session_chrome_lines(m: &StatusModel) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::buffer::Buffer;
 
     #[test]
     fn hitl_label() {
@@ -163,6 +303,9 @@ mod tests {
             tools_visible: 0,
             prompt_cache_hits: 0,
             prompt_cache_writes: 0,
+            repo_name: None,
+            branch: None,
+            dirty: false,
         };
         assert_eq!(m.status_label().0, "awaiting hitl");
     }
@@ -184,6 +327,9 @@ mod tests {
             tools_visible: 5,
             prompt_cache_hits: 0,
             prompt_cache_writes: 0,
+            repo_name: None,
+            branch: None,
+            dirty: false,
         };
         assert!(m.status_label().0.contains("thinking"));
     }
@@ -205,6 +351,9 @@ mod tests {
             tools_visible: 4,
             prompt_cache_hits: 2,
             prompt_cache_writes: 1,
+            repo_name: None,
+            branch: None,
+            dirty: false,
         };
         let lines = session_chrome_lines(&m);
         assert!(lines.iter().any(|l| l.contains("provider=native")));
@@ -231,10 +380,14 @@ mod tests {
             tools_visible: 0,
             prompt_cache_hits: 0,
             prompt_cache_writes: 0,
+            repo_name: Some("forge".into()),
+            branch: Some("main".into()),
+            dirty: true,
         };
 
         assert_eq!(m.connect_profile.as_deref(), Some("openai-code"));
         assert_eq!(m.model.rsplit('/').next(), Some("gpt-5.4"));
+        assert_eq!(m.repo_branch_label().as_deref(), Some("forge/main*"));
     }
 
     #[test]
@@ -242,5 +395,97 @@ mod tests {
         let s = StatusModel::truncate_model("openai/very-long-model-name-here", 12);
         assert!(s.contains('…'));
         assert!(s.chars().count() <= 12);
+    }
+
+    #[test]
+    fn truncate_middle_keeps_edges() {
+        let s = StatusModel::truncate_middle("forge/very-long-branch-name", 12);
+        assert!(s.contains('…'));
+        assert!(s.chars().count() <= 12);
+    }
+
+    #[test]
+    fn awaiting_hitl_maps_to_waiting_for_you() {
+        let m = StatusModel {
+            status: SessionStatus::AwaitingHitl,
+            session_short: "abc".into(),
+            model: "mock".into(),
+            provider: "mock".into(),
+            effort: "auto".into(),
+            ctx_pct: 0.32,
+            busy: false,
+            busy_phase: BusyPhase::Idle,
+            connect_profile: None,
+            provider_connected: true,
+            web_search_label: None,
+            tools_visible: 0,
+            prompt_cache_hits: 0,
+            prompt_cache_writes: 0,
+            repo_name: Some("forge".into()),
+            branch: Some("main".into()),
+            dirty: false,
+        };
+        assert_eq!(m.current_state_label(), "Waiting for you");
+    }
+
+    #[test]
+    fn status_bar_renders_full_header_when_wide() {
+        let m = StatusModel {
+            status: SessionStatus::Running,
+            session_short: "abc".into(),
+            model: "mock".into(),
+            provider: "mock".into(),
+            effort: "auto".into(),
+            ctx_pct: 0.32,
+            busy: false,
+            busy_phase: BusyPhase::Idle,
+            connect_profile: None,
+            provider_connected: true,
+            web_search_label: None,
+            tools_visible: 0,
+            prompt_cache_hits: 0,
+            prompt_cache_writes: 0,
+            repo_name: Some("forge".into()),
+            branch: Some("main".into()),
+            dirty: true,
+        };
+        let area = Rect::new(0, 0, 80, 1);
+        let mut buf = Buffer::empty(area);
+        StatusBar { model: &m }.render(area, &mut buf);
+        let rendered: String = (0..area.width).map(|x| buf.get(x, 0).symbol()).collect();
+        assert!(rendered.contains("Forge"));
+        assert!(rendered.contains("forge/main*"));
+        assert!(rendered.contains("mock"));
+        assert!(rendered.contains("32% context"));
+        assert!(rendered.contains("Idle"));
+    }
+
+    #[test]
+    fn status_bar_preserves_state_on_narrow_width() {
+        let m = StatusModel {
+            status: SessionStatus::Running,
+            session_short: "abc".into(),
+            model: "very-long-model-name".into(),
+            provider: "mock".into(),
+            effort: "auto".into(),
+            ctx_pct: 0.32,
+            busy: false,
+            busy_phase: BusyPhase::Idle,
+            connect_profile: None,
+            provider_connected: true,
+            web_search_label: None,
+            tools_visible: 0,
+            prompt_cache_hits: 0,
+            prompt_cache_writes: 0,
+            repo_name: Some("forge".into()),
+            branch: Some("main".into()),
+            dirty: false,
+        };
+        let area = Rect::new(0, 0, 24, 1);
+        let mut buf = Buffer::empty(area);
+        StatusBar { model: &m }.render(area, &mut buf);
+        let rendered: String = (0..area.width).map(|x| buf.get(x, 0).symbol()).collect();
+        assert!(rendered.contains("Forge"));
+        assert!(rendered.contains("Idle"));
     }
 }
