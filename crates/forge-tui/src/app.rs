@@ -40,13 +40,15 @@ use crate::conversation::{
 use crate::effort::ReasoningEffort;
 use crate::history::InputHistory;
 use crate::layout::is_too_small;
+#[cfg(test)]
+use crate::layout::split_areas_full;
 use crate::layout::split_areas_with_bottom_panel;
 use crate::msg_queue::MessageQueue;
 use crate::overlays::{
     filter_palette, handle_overlay_key, models_from_catalog, ConnectProfileItem, FileExplorerItem,
     Key, Key as OverlayKey, Overlay, OverlayAction, OverlayWidget, PaletteItem, ResumeSessionItem,
 };
-use crate::sidebar::{SidebarModel, SidebarWidget};
+use crate::sidebar::{InspectorView, SidebarModel, SidebarWidget};
 use crate::theme;
 use crate::widgets::{
     classify_operator_error, BottomPanel, BottomPanelModel, BottomPanelState, BottomPanelTab,
@@ -358,6 +360,7 @@ pub struct TuiApp {
     pub bottom_panel: BottomPanelState,
     /// User preference; narrow terminals still hide the sidebar responsively.
     sidebar_visible: bool,
+    inspector_view: InspectorView,
     /// Soft-cancel in-flight turn (Esc while busy).
     cancel_requested: bool,
     /// Tools allowed for the rest of this session (HITL "s").
@@ -431,6 +434,7 @@ impl TuiApp {
             workspace_mode: WorkspaceMode::default(),
             bottom_panel: BottomPanelState::default(),
             sidebar_visible: true,
+            inspector_view: InspectorView::default(),
             cancel_requested: false,
             hitl_session_allow: HashSet::new(),
             toast: None,
@@ -2323,6 +2327,8 @@ Reply with ONLY the commit message line.\n\n\
                 .map(|item| item.summary.clone())
                 .collect::<Vec<_>>();
             let mut sidebar = SidebarModel::from_session_with_activity(&self.session, &activity);
+            sidebar.provider = self.runtime.provider.clone();
+            sidebar.model = self.runtime.model_label.clone();
             sidebar.busy = self.busy;
             sidebar.step = match &self.busy_phase {
                 BusyPhase::Model => "model_stream",
@@ -2333,7 +2339,14 @@ Reply with ONLY the commit message line.\n\n\
             }
             .into();
             sidebar.context_reset = self.context_reset_snapshot;
-            frame.render_widget(SidebarWidget { model: &sidebar }, sidebar_area);
+            sidebar.session_allows = self.hitl_session_allow.iter().cloned().collect();
+            frame.render_widget(
+                SidebarWidget {
+                    model: &sidebar,
+                    view: self.inspector_view,
+                },
+                sidebar_area,
+            );
         }
 
         frame.render_widget(
@@ -2488,7 +2501,7 @@ Reply with ONLY the commit message line.\n\n\
         } else if qn > 0 {
             format!("queue {qn} · Ctrl+Up/Down select · Ctrl+Backspace cancel")
         } else {
-            "/ commands  ·  Alt+←/→ tabs  ·  Ctrl+P panel  ·  F1 help".into()
+            "/ commands  ·  Alt+←/→ tabs  ·  Alt+[ / ] inspector  ·  F1 help".into()
         };
         let footer_provider = footer_provider_id(
             self.runtime.provider.as_str(),
@@ -2763,6 +2776,12 @@ Reply with ONLY the commit message line.\n\n\
             }
             KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.sidebar_visible = !self.sidebar_visible;
+            }
+            KeyCode::Char('[') if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.inspector_view = self.inspector_view.previous();
+            }
+            KeyCode::Char(']') if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.inspector_view = self.inspector_view.next();
             }
             KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.bottom_panel.toggle();
@@ -4048,7 +4067,7 @@ mod tests {
                 startup_notices: Vec::new(),
             },
         );
-        app.input.set_text("draft".into());
+        app.input.set_text("draft");
 
         app.handle_key(press(KeyCode::Char('p'), KeyModifiers::CONTROL))
             .await
@@ -4889,6 +4908,31 @@ mod tests {
                 .sidebar
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn inspector_view_shortcuts_cycle_without_hiding_sidebar() {
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "mock".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "test".into(),
+                startup_notices: Vec::new(),
+            },
+        );
+        assert_eq!(app.inspector_view, InspectorView::Task);
+        app.handle_key(press(KeyCode::Char(']'), KeyModifiers::ALT))
+            .await
+            .unwrap();
+        assert_eq!(app.inspector_view, InspectorView::Context);
+        app.handle_key(press(KeyCode::Char('['), KeyModifiers::ALT))
+            .await
+            .unwrap();
+        assert_eq!(app.inspector_view, InspectorView::Task);
+        assert!(app.sidebar_visible);
     }
 
     #[tokio::test]

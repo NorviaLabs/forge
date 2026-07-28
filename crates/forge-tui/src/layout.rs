@@ -62,8 +62,9 @@ pub fn split_areas_with_bottom_panel(
     let input_h = input_h.clamp(3, 8);
     let qh = queue_h.min(8);
     let fixed_h = 1 + fb + qh + input_h + 1;
-    let panel_h = if content_area.height >= fixed_h + 10 {
-        bottom_panel_h.min(8)
+    let requested_panel_h = bottom_panel_h.min(8);
+    let panel_h = if content_area.height >= fixed_h + requested_panel_h + 10 {
+        requested_panel_h
     } else {
         0
     };
@@ -88,13 +89,14 @@ pub fn split_areas_with_bottom_panel(
     let input = rows[5];
     let footer = rows[6];
 
-    // Preserve a usable chat width on smaller terminals. The sidebar is a
+    // Preserve a usable chat width on smaller terminals. The inspector is a
     // secondary surface and disappears below 100 columns.
     let show_sidebar = show_sidebar && content_area.width >= 100;
     let (chat, sidebar) = if show_sidebar {
+        let sidebar_width = (content_area.width / 4).clamp(24, 34);
         let columns = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Min(40), Constraint::Length(28)])
+            .constraints([Constraint::Min(40), Constraint::Length(sidebar_width)])
             .split(main);
         (columns[0], Some(columns[1]))
     } else {
@@ -159,8 +161,8 @@ mod tests {
         let area = Rect::new(0, 0, 200, 40);
         let r = split_areas(area);
         assert_eq!(r.status, Rect::new(5, 0, 190, 1));
-        assert_eq!(r.chat, Rect::new(5, 1, 162, 35));
-        assert_eq!(r.sidebar, Some(Rect::new(167, 1, 28, 35)));
+        assert_eq!(r.chat, Rect::new(5, 1, 156, 35));
+        assert_eq!(r.sidebar, Some(Rect::new(161, 1, 34, 35)));
         assert_eq!(r.input.x, 5);
         assert_eq!(r.input.width, 190);
         assert_eq!(r.footer.x, 5);
@@ -190,6 +192,14 @@ mod tests {
         assert!(r.sidebar.is_none());
         assert_eq!(r.chat.width, 57);
         assert_eq!(r.status.width, 57);
+    }
+
+    #[test]
+    fn hidden_sidebar_gives_chat_full_main_width() {
+        let area = Rect::new(0, 0, 120, 40);
+        let r = split_areas_full(area, 0, 3, false, 0);
+        assert!(r.sidebar.is_none());
+        assert_eq!(r.chat, Rect::new(3, 1, 114, 35));
     }
 
     #[test]

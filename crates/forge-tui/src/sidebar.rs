@@ -2,27 +2,65 @@
 
 use crate::theme;
 use forge_core::AgentSession;
-use forge_types::SessionStatus;
+use forge_types::{MessageRole, SessionStatus};
 use ratatui::buffer::Buffer;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
 #[derive(Debug, Clone)]
 pub struct SidebarModel {
     pub session_id: String,
+    pub journal_dir: String,
     pub status: String,
     pub surface: String,
     pub role: String,
+    pub provider: String,
+    pub model: String,
+    pub objective: Option<String>,
+    pub files_changed: Option<usize>,
+    pub validation: Option<String>,
+    pub elapsed: Option<String>,
     pub ctx_pct: f64,
     pub ctx_used: usize,
     pub ctx_total: usize,
+    pub tokens_used: u64,
+    pub message_count: usize,
+    pub tool_message_count: usize,
     pub busy: bool,
     pub step: String,
     pub context_reset: Option<(f64, f64)>,
     pub skills: Vec<String>,
     pub tools: Vec<String>,
     pub activity: Vec<String>,
+    pub session_allows: Vec<String>,
+    pub pending_approval: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InspectorView {
+    #[default]
+    Task,
+    Context,
+    Runtime,
+}
+
+impl InspectorView {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Task => Self::Context,
+            Self::Context => Self::Runtime,
+            Self::Runtime => Self::Task,
+        }
+    }
+
+    pub fn previous(self) -> Self {
+        match self {
+            Self::Task => Self::Runtime,
+            Self::Context => Self::Task,
+            Self::Runtime => Self::Context,
+        }
+    }
 }
 
 impl SidebarModel {
@@ -42,20 +80,39 @@ impl SidebarModel {
         let mut tools = session.list_tools();
         tools.sort();
         let context = session.token_usage_report();
+        let objective = session
+            .messages
+            .iter()
+            .rev()
+            .find(|message| message.role == MessageRole::User)
+            .map(|message| message.content.trim().to_string())
+            .filter(|content| !content.is_empty());
         Self {
             session_id: short.to_string(),
+            journal_dir: session.journal_dir().display().to_string(),
             status: status.into(),
             surface: "tui".into(),
             role: "generator".into(),
+            provider: String::new(),
+            model: session.active_model.clone(),
+            objective,
+            files_changed: None,
+            validation: None,
+            elapsed: None,
             ctx_pct: session.context_usage_ratio(),
             ctx_used: context.context_tokens_est,
             ctx_total: context.context_capacity,
+            tokens_used: context.api.total_api_tokens(),
+            message_count: context.message_count,
+            tool_message_count: context.tool_message_count,
             busy: false,
             step: String::new(),
             context_reset: None,
             skills: session.loaded_skill_names(),
             tools,
             activity: activity_lines.to_vec(),
+            session_allows: Vec::new(),
+            pending_approval: session.pending_hitl.is_some(),
         }
     }
 }
@@ -63,6 +120,7 @@ impl SidebarModel {
 #[allow(dead_code)]
 pub struct SidebarWidget<'a> {
     pub model: &'a SidebarModel,
+    pub view: InspectorView,
 }
 
 impl Widget for SidebarWidget<'_> {
@@ -74,91 +132,166 @@ impl Widget for SidebarWidget<'_> {
         let inner = block.inner(area);
         block.render(area, buf);
 
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(4),
-                Constraint::Length(4),
-                Constraint::Min(4),
-            ])
-            .split(inner);
+        Paragraph::new(self.lines(inner.height)).render(inner, buf);
+    }
+}
 
-        // Session
-        let mut sess_lines = vec![
-            Line::from(Span::styled("Now", theme::brand())),
-            Line::from(vec![
-                Span::styled("state ", theme::dim()),
-                Span::styled(self.model.status.clone(), status_style(&self.model.status)),
-            ]),
-        ];
-        if self.model.busy {
-            sess_lines.push(Line::from(vec![
-                Span::styled("active ", theme::dim()),
-                Span::styled(self.model.step.clone(), theme::info()),
-            ]));
+impl SidebarWidget<'_> {
+    fn lines(&self, height: u16) -> Vec<Line<'static>> {
+        let mut lines = vec![self.tabs(), Line::from("")];
+        match self.view {
+            InspectorView::Task => self.task_lines(&mut lines),
+            InspectorView::Context => self.context_lines(&mut lines),
+            InspectorView::Runtime => self.runtime_lines(&mut lines),
         }
-        Paragraph::new(sess_lines).render(chunks[0], buf);
+        lines.truncate(height as usize);
+        lines
+    }
 
+    fn tabs(&self) -> Line<'static> {
+        let tab = |view, label| {
+            let style = if self.view == view {
+                theme::brand()
+            } else {
+                theme::dim()
+            };
+            Span::styled(label, style)
+        };
+        Line::from(vec![
+            tab(InspectorView::Task, "Task"),
+            Span::raw(" | "),
+            tab(InspectorView::Context, "Context"),
+            Span::raw(" | "),
+            tab(InspectorView::Runtime, "Runtime"),
+        ])
+    }
+
+    fn task_lines(&self, lines: &mut Vec<Line<'static>>) {
+        lines.push(Line::from(Span::styled(
+            "CURRENT TASK",
+            theme::metadata_style(),
+        )));
+        if self.model.busy || self.model.objective.is_some() {
+            lines.push(kv(
+                "Objective",
+                self.model.objective.as_deref().unwrap_or("Not available"),
+            ));
+            lines.push(kv("Stage", self.stage()));
+            lines.push(kv(
+                "Files changed",
+                self.model
+                    .files_changed
+                    .map(|count| count.to_string())
+                    .as_deref()
+                    .unwrap_or("Not available"),
+            ));
+            lines.push(kv(
+                "Validation",
+                self.model.validation.as_deref().unwrap_or("Not available"),
+            ));
+            lines.push(kv(
+                "Elapsed",
+                self.model.elapsed.as_deref().unwrap_or("Not available"),
+            ));
+        } else {
+            lines.push(Line::from(Span::styled("No active task", theme::muted())));
+            lines.push(kv("Repository", "Not available"));
+            lines.push(kv("Changes", "Not available"));
+        }
+    }
+
+    fn context_lines(&self, lines: &mut Vec<Line<'static>>) {
+        lines.push(Line::from(Span::styled("CONTEXT", theme::metadata_style())));
+        lines.push(kv("Model", present(&self.model.model)));
+        lines.push(kv("Provider", present(&self.model.provider)));
         let pct = (self.model.ctx_pct * 100.0).clamp(0.0, 100.0);
-        let mut tool_lines = vec![
-            Line::from(Span::styled("Context", theme::metadata_style())),
-            Line::from(vec![
-                Span::styled("used ", theme::dim()),
-                Span::styled(format!("{pct:.0}%"), theme::info()),
-            ]),
-            Line::from(Span::styled(
-                format!(
-                    "{}k / {}k tokens",
-                    self.model.ctx_used / 1000,
-                    self.model.ctx_total / 1000
-                ),
-                theme::muted(),
-            )),
-        ];
+        lines.push(kv("Window", &format!("{pct:.0}%")));
+        lines.push(kv(
+            "Context tokens",
+            &format!("{} / {}", self.model.ctx_used, self.model.ctx_total),
+        ));
+        lines.push(kv("Tokens used", &self.model.tokens_used.to_string()));
         if let Some((before, after)) = self.model.context_reset {
-            tool_lines.splice(
-                1..3,
-                [
-                    Line::from(vec![
-                        Span::styled("before ", theme::dim()),
-                        Span::styled(format!("{before:.0}%"), theme::warn()),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("after  ", theme::dim()),
-                        Span::styled(format!("{after:.0}%"), theme::ok()),
-                    ]),
-                ],
-            );
+            lines.push(kv("Compaction", &format!("{before:.0}% → {after:.0}%")));
+        } else {
+            lines.push(kv("Compaction", "Not active"));
         }
+        lines.push(kv("Offloaded results", "Recent activity"));
+        lines.push(kv(
+            "Instructions",
+            &format!("{} skills", self.model.skills.len()),
+        ));
+        for name in &self.model.skills {
+            lines.push(Line::from(Span::styled(format!("· {name}"), theme::text())));
+        }
+    }
 
-        Paragraph::new(tool_lines).render(chunks[1], buf);
-
-        let mut lower = Vec::new();
-        if !self.model.skills.is_empty() {
-            lower.push(Line::from(Span::styled("Skills", theme::metadata_style())));
-            let max = (chunks[2].height as usize / 2).max(1);
-            for name in self.model.skills.iter().take(max) {
-                lower.push(Line::from(Span::styled(format!("· {name}"), theme::text())));
-            }
+    fn runtime_lines(&self, lines: &mut Vec<Line<'static>>) {
+        lines.push(Line::from(Span::styled("RUNTIME", theme::metadata_style())));
+        lines.push(kv("Session", &self.model.session_id));
+        lines.push(kv("Journal", &self.model.journal_dir));
+        lines.push(kv("State", &self.model.status));
+        lines.push(kv("Surface", &self.model.surface));
+        lines.push(kv("Role", &self.model.role));
+        lines.push(kv(
+            "Approval",
+            if self.model.pending_approval {
+                "waiting"
+            } else {
+                "none"
+            },
+        ));
+        lines.push(kv(
+            "Session allows",
+            &self.model.session_allows.len().to_string(),
+        ));
+        lines.push(kv("Messages", &self.model.message_count.to_string()));
+        lines.push(kv(
+            "Tool results",
+            &self.model.tool_message_count.to_string(),
+        ));
+        lines.push(kv("Tools", &self.model.tools.len().to_string()));
+        for name in &self.model.tools {
+            lines.push(Line::from(Span::styled(
+                format!("· {name}"),
+                theme::muted(),
+            )));
         }
         if !self.model.activity.is_empty() {
-            if !lower.is_empty() {
-                lower.push(Line::from(""));
-            }
-            lower.push(Line::from(Span::styled("Recent", theme::metadata_style())));
-            let max = (chunks[2].height as usize)
-                .saturating_sub(lower.len() + 1)
-                .max(1);
-            for summary in self.model.activity.iter().rev().take(max) {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled("Recent", theme::metadata_style())));
+            for summary in self.model.activity.iter().rev() {
                 let text: String = summary.chars().take(34).collect();
-                lower.push(Line::from(Span::styled(
+                lines.push(Line::from(Span::styled(
                     format!("· {text}"),
                     theme::muted(),
                 )));
             }
         }
-        Paragraph::new(lower).render(chunks[2], buf);
     }
+
+    fn stage(&self) -> &str {
+        if self.model.busy {
+            present(&self.model.step)
+        } else {
+            &self.model.status
+        }
+    }
+}
+
+fn present(value: &str) -> &str {
+    if value.trim().is_empty() {
+        "Not available"
+    } else {
+        value
+    }
+}
+
+fn kv(label: &'static str, value: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{label} "), theme::dim()),
+        Span::styled(value.to_string(), theme::text()),
+    ])
 }
 
 #[allow(dead_code)]

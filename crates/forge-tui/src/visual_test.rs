@@ -318,6 +318,9 @@ mod tests {
             crate::widgets::FeedbackSeverity::Info,
             "model started",
         );
+        app.handle_key(press_with(KeyCode::Char('['), KeyModifiers::ALT))
+            .await
+            .unwrap();
         let backend = TestBackend::new(120, 30);
         let mut term = Terminal::new(backend).unwrap();
         term.draw(|f| app.draw(f)).unwrap();
@@ -326,7 +329,7 @@ mod tests {
             text.contains("in 0 · out 0 · total 0"),
             "missing footer usage:\n{text}"
         );
-        assert!(text.contains("Now"), "missing sidebar:\n{text}");
+        assert!(text.contains("Runtime"), "missing inspector:\n{text}");
         assert!(text.contains("Recent"), "missing recent activity:\n{text}");
         assert!(
             text.contains("model started"),
