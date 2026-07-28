@@ -113,6 +113,12 @@ impl FileExplorer {
         }
     }
 
+    pub fn refresh_git_status(&mut self) {
+        if let Some(root) = self.root_path.clone() {
+            self.git_status.start_refresh(root);
+        }
+    }
+
     pub fn refresh_selected(&mut self) {
         let selected = self.selected_path.clone();
         let root_path = self.root_path.clone();
@@ -122,17 +128,13 @@ impl FileExplorer {
                     node.loaded = false;
                     load_children(root_path.as_deref(), node);
                     node.expanded = true;
-                    if let Some(root) = root_path {
-                        self.git_status.start_refresh(root);
-                    }
+                    self.refresh_git_status();
                     return;
                 }
             }
         }
         self.load_root();
-        if let Some(root) = root_path {
-            self.git_status.start_refresh(root);
-        }
+        self.refresh_git_status();
     }
 
     pub fn toggle_focus(&mut self) {
@@ -407,7 +409,15 @@ impl Widget for FileExplorerWidget<'_> {
         } else if visible.len() == 1 && visible[0].error.is_none() {
             lines.push(Line::from("This directory is empty"));
         } else {
-            for node in visible.iter().skip(self.explorer.scroll).take(height) {
+            let error_shown = self.explorer.git_status.error.is_some();
+            if let Some(error) = self.explorer.git_status.error.as_deref() {
+                lines.push(Line::styled(
+                    format!("Git status unavailable: {}", error),
+                    theme::muted(),
+                ));
+            }
+            let list_height = height.saturating_sub(error_shown as usize);
+            for node in visible.iter().skip(self.explorer.scroll).take(list_height) {
                 let selected = self.explorer.selected_path.as_ref() == Some(&node.path);
                 let marker = match node.kind {
                     FileKind::Directory if node.loading => "…",
@@ -416,18 +426,20 @@ impl Widget for FileExplorerWidget<'_> {
                     FileKind::File => " ",
                 };
                 let prefix = "  ".repeat(node.depth);
-                let status_marker = if node.kind == FileKind::File {
-                    self.explorer
-                        .git_status_for(&node.path)
-                        .map(|s| format!("{} ", s.marker()))
-                        .unwrap_or_default()
+                let status = if node.kind == FileKind::File {
+                    self.explorer.git_status_for(&node.path)
                 } else {
-                    String::new()
+                    None
                 };
-                let mut line = Line::from(vec![Span::raw(format!(
-                    "{prefix}{marker} {status_marker}{}",
-                    node.display_name
-                ))]);
+                let mut spans = vec![Span::raw(format!("{prefix}{marker} "))];
+                if let Some(status) = status {
+                    spans.push(Span::styled(
+                        format!("{} ", status.marker()),
+                        status.style(),
+                    ));
+                }
+                spans.push(Span::raw(node.display_name.clone()));
+                let mut line = Line::from(spans);
                 if selected {
                     line.style = theme::brand();
                 }
