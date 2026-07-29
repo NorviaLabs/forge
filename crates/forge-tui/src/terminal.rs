@@ -43,6 +43,18 @@ pub fn reinit_terminal() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Clear the physical terminal after re-entering the TUI so stale editor
+/// contents do not survive the first redraw.
+pub fn clear_terminal() -> Result<(), Box<dyn std::error::Error>> {
+    use crossterm::terminal::ClearType;
+    use crossterm::ExecutableCommand;
+
+    let mut stdout = stdout();
+    stdout.execute(crossterm::terminal::Clear(ClearType::All))?;
+    stdout.execute(crossterm::cursor::MoveTo(0, 0))?;
+    Ok(())
+}
+
 /// Guard that installs a panic hook restoring the terminal and chains to the
 /// previous hook. Dropping the guard restores the terminal and reinstates the
 /// previous panic hook.
@@ -173,5 +185,10 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(guard_count.load(Ordering::SeqCst), 1);
         assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn clear_terminal_is_safe() {
+        assert!(clear_terminal().is_ok());
     }
 }
