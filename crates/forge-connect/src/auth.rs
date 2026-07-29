@@ -242,6 +242,17 @@ mod tests {
     }
 
     #[test]
+    fn pending_open_url_prefers_complete_url_and_codex_gets_specific_instructions() {
+        let mut p = OauthPending::start_stub("openai_codex", "https://auth.openai.com");
+        p.verification_uri_complete = Some("https://auth.openai.com/complete?code=FORGE".into());
+
+        assert_eq!(p.open_url(), "https://auth.openai.com/complete?code=FORGE");
+        let instructions = p.operator_instructions();
+        assert!(instructions.contains("ChatGPT"));
+        assert!(instructions.contains("FORGE-OPE"));
+    }
+
+    #[test]
     fn needs_refresh_respects_expires_at() {
         let fresh = OauthTokens {
             access_token: "a".into(),
@@ -261,5 +272,26 @@ mod tests {
             expires_at: None,
         };
         assert!(!no_exp.needs_refresh(std::time::Duration::from_secs(300)));
+
+        let invalid = OauthTokens {
+            access_token: "a".into(),
+            refresh_token: None,
+            expires_at: Some("not-a-date".into()),
+        };
+        assert!(!invalid.needs_refresh(std::time::Duration::from_secs(300)));
+
+        let epoch_fresh = OauthTokens {
+            access_token: "a".into(),
+            refresh_token: None,
+            expires_at: Some("4102444800".into()),
+        };
+        assert!(!epoch_fresh.needs_refresh(std::time::Duration::from_secs(300)));
+
+        let before_epoch = OauthTokens {
+            access_token: "a".into(),
+            refresh_token: None,
+            expires_at: Some("1969-12-31T23:59:59Z".into()),
+        };
+        assert!(!before_epoch.needs_refresh(std::time::Duration::from_secs(300)));
     }
 }

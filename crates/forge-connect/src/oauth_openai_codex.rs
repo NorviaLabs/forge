@@ -215,11 +215,59 @@ where
 mod tests {
     use super::*;
     use serde::Deserialize;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
 
     #[derive(Deserialize)]
     struct IntervalFixture {
         #[serde(deserialize_with = "number_from_string_or_number")]
         interval: u64,
+    }
+
+    fn mock_server(status: u16, body: &'static str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0_u8; 2048];
+            let _ = stream.read(&mut buf);
+            let response = format!(
+                "HTTP/1.1 {status} test\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+        format!("http://{addr}/token")
+    }
+
+    #[test]
+    fn post_json_and_form_return_status_and_body_for_success_and_error_status() {
+        let (status, body) = OpenAiCodexOauthClient::post_json(
+            &mock_server(200, r#"{"ok":true}"#),
+            serde_json::json!({"client_id": CLIENT_ID}),
+        )
+        .unwrap();
+        assert_eq!(status, 200);
+        assert!(body.contains("ok"));
+
+        let (status, body) =
+            OpenAiCodexOauthClient::post_form(&mock_server(400, "bad request"), &[("a", "b")])
+                .unwrap();
+        assert_eq!(status, 400);
+        assert_eq!(body, "bad request");
+    }
+
+    #[test]
+    fn post_helpers_report_transport_errors() {
+        let err =
+            OpenAiCodexOauthClient::post_json("http://127.0.0.1:9/token", serde_json::json!({}))
+                .unwrap_err();
+        assert!(matches!(err, OpenAiCodexOauthError::Http(_)));
+
+        let err = OpenAiCodexOauthClient::post_form("http://127.0.0.1:9/token", &[("a", "b")])
+            .unwrap_err();
+        assert!(matches!(err, OpenAiCodexOauthError::Http(_)));
     }
 
     #[test]
