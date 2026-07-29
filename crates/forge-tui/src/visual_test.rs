@@ -50,6 +50,7 @@ mod tests {
                 version: "forge 0.8.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: forge_config::FileIconMode::Unicode,
             },
         );
         (dir, app)
@@ -165,7 +166,10 @@ mod tests {
         fs::write(workspace.join("x.txt"), "changed").unwrap();
         app.session = rebuild_session(dir.path(), &workspace).await;
         app.runtime.cwd = workspace.clone();
-        app.file_explorer = crate::file_explorer::FileExplorer::new(Some(workspace.clone()));
+        app.file_explorer = crate::file_explorer::FileExplorer::new(
+            Some(workspace.clone()),
+            forge_config::FileIconMode::Unicode,
+        );
 
         app.handle_key(press_with(KeyCode::Right, KeyModifiers::ALT))
             .await
@@ -412,7 +416,10 @@ mod tests {
         .unwrap();
         app.session = rebuild_session(dir.path(), &workspace).await;
         app.runtime.cwd = workspace.clone();
-        app.file_explorer = crate::file_explorer::FileExplorer::new(Some(workspace.clone()));
+        app.file_explorer = crate::file_explorer::FileExplorer::new(
+            Some(workspace.clone()),
+            forge_config::FileIconMode::Unicode,
+        );
         app.files_visible = true;
         app.focus_block(FocusBlock::Files);
         // Select the file and open it.
@@ -439,7 +446,10 @@ mod tests {
             .unwrap();
         app.session = rebuild_session(dir.path(), &workspace).await;
         app.runtime.cwd = workspace.clone();
-        app.file_explorer = crate::file_explorer::FileExplorer::new(Some(workspace.clone()));
+        app.file_explorer = crate::file_explorer::FileExplorer::new(
+            Some(workspace.clone()),
+            forge_config::FileIconMode::Unicode,
+        );
         app.files_visible = true;
         app.focus_block(FocusBlock::Files);
         app.file_explorer.move_selection(1);
@@ -648,7 +658,10 @@ mod tests {
 
         app.session = rebuild_session(dir.path(), &workspace).await;
         app.runtime.cwd = workspace.clone();
-        app.file_explorer = crate::file_explorer::FileExplorer::new(Some(workspace.clone()));
+        app.file_explorer = crate::file_explorer::FileExplorer::new(
+            Some(workspace.clone()),
+            forge_config::FileIconMode::Unicode,
+        );
         app.files_visible = true;
         app.focus_block(FocusBlock::Files);
 
@@ -663,11 +676,11 @@ mod tests {
         term.draw(|f| app.draw(f)).unwrap();
         let text = buffer_text(&term);
         assert!(
-            text.contains("M tracked.txt"),
+            text.contains("M ¶ tracked.txt"),
             "missing modified marker:\n{text}"
         );
         assert!(
-            text.contains("? untracked.txt"),
+            text.contains("? ¶ untracked.txt"),
             "missing untracked marker:\n{text}"
         );
     }
@@ -707,7 +720,10 @@ mod tests {
 
         app.session = rebuild_session(dir.path(), &workspace).await;
         app.runtime.cwd = workspace.clone();
-        app.file_explorer = crate::file_explorer::FileExplorer::new(Some(workspace));
+        app.file_explorer = crate::file_explorer::FileExplorer::new(
+            Some(workspace),
+            forge_config::FileIconMode::Unicode,
+        );
         app.files_visible = false;
         app.workspace_mode = WorkspaceMode::Diff;
 
@@ -758,7 +774,10 @@ mod tests {
         fs::write(workspace.join("a.txt"), "hello").unwrap();
         app.session = rebuild_session(dir.path(), &workspace).await;
         app.runtime.cwd = workspace.clone();
-        app.file_explorer = crate::file_explorer::FileExplorer::new(Some(workspace.clone()));
+        app.file_explorer = crate::file_explorer::FileExplorer::new(
+            Some(workspace.clone()),
+            forge_config::FileIconMode::Unicode,
+        );
         app.files_visible = true;
 
         let before = app.file_explorer.visible_nodes().len();
@@ -862,8 +881,10 @@ mod tests {
         app.session = rebuild_session(dir.path(), &workspace).await;
         app.runtime.cwd = workspace.clone();
         // Create an explorer whose root cannot be read.
-        app.file_explorer =
-            crate::file_explorer::FileExplorer::new(Some(workspace.join("nonexistent")));
+        app.file_explorer = crate::file_explorer::FileExplorer::new(
+            Some(workspace.join("nonexistent")),
+            forge_config::FileIconMode::Unicode,
+        );
         app.files_visible = true;
 
         let backend = TestBackend::new(120, 24);
