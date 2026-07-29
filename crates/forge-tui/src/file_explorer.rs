@@ -72,6 +72,38 @@ impl SemanticRole {
     }
 }
 
+fn language_icon_for_name(name: &str) -> Option<&'static str> {
+    let lower = name.to_ascii_lowercase();
+    if matches!(lower.as_str(), "cargo.toml" | "cargo.lock") {
+        return Some("🦀");
+    }
+    if matches!(lower.as_str(), "package.json" | "package-lock.json") {
+        return Some("");
+    }
+    if matches!(lower.as_str(), "go.mod" | "go.sum" | "go.work" | "go.work.sum") {
+        return Some("");
+    }
+    if matches!(lower.as_str(), "dockerfile") || lower.starts_with("dockerfile.") {
+        return Some("");
+    }
+    let ext = Path::new(name)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())?;
+    match ext.as_str() {
+        "rs" => Some("🦀"),
+        "js" | "jsx" | "mjs" | "cjs" => Some(""),
+        "ts" | "tsx" | "mts" | "cts" => Some(""),
+        "py" | "pyi" => Some(""),
+        "go" => Some(""),
+        "java" => Some(""),
+        "c" | "h" => Some(""),
+        "cc" | "cpp" | "cxx" | "hh" | "hpp" | "hxx" => Some(""),
+        "sh" | "bash" | "zsh" | "fish" => Some(""),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FileAppearance {
     pub icon: &'static str,
@@ -676,8 +708,13 @@ fn explorer_row_line(
         ));
     }
     if icon_mode == FileIconMode::Unicode {
+        let icon = if kind == FileKind::File {
+            language_icon_for_name(name).unwrap_or(appearance.icon)
+        } else {
+            appearance.icon
+        };
         spans.push(Span::styled(
-            format!("{} ", appearance.icon),
+            format!("{} ", icon),
             style_for(appearance.icon_role),
         ));
     }
@@ -943,8 +980,8 @@ mod tests {
             .iter()
             .map(|span| span.content.as_ref())
             .collect();
-        assert!(text.starts_with("  M λ long_filename.rs"));
-        assert_eq!(with_icon.spans[2].width(), 2);
+        assert!(text.starts_with("  M 🦀 long_filename.rs"));
+        assert_eq!(with_icon.spans[2].content.as_ref(), "🦀 ");
 
         let without_icon = explorer_row_line(
             "",
@@ -962,6 +999,28 @@ mod tests {
             .map(|span| span.content.as_ref())
             .collect();
         assert_eq!(text, "  M long_filename.rs");
+    }
+
+    #[test]
+    fn row_rendering_uses_language_icons_for_supported_files() {
+        for (name, icon) in [
+            ("main.py", ""),
+            ("app.tsx", ""),
+            ("go.mod", ""),
+            ("Dockerfile", ""),
+        ] {
+            let line = explorer_row_line(
+                "",
+                " ",
+                name,
+                FileKind::File,
+                false,
+                false,
+                None,
+                FileIconMode::Unicode,
+            );
+            assert_eq!(line.spans[1].content.as_ref(), format!("{icon} "));
+        }
     }
 
     #[test]
