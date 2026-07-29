@@ -6198,6 +6198,75 @@ mod tests {
         assert_eq!(app.input.text, "beta");
     }
 
+    #[test]
+    fn helper_labels_reflect_focus_mode() {
+        assert_eq!(
+            WorkspaceMode::Chat.mode_label(FocusMode::Input(InputOwner::ChatComposer)),
+            "INPUT"
+        );
+        assert_eq!(
+            WorkspaceMode::Editor.mode_label(FocusMode::Transient(TransientOwner::SourceSearch)),
+            "SEARCH"
+        );
+        assert_eq!(
+            WorkspaceMode::Editor.mode_label(FocusMode::Transient(TransientOwner::JumpToLine)),
+            "JUMP"
+        );
+        assert_eq!(WorkspaceMode::Diff.mode_label(FocusMode::Navigation), "NAV");
+    }
+
+    #[tokio::test]
+    async fn tab_nav_command_recognizes_shifted_plain_arrows_only() {
+        let (_dir, app) = focus_test_app().await;
+        assert_eq!(
+            app.tab_nav_command(press(KeyCode::Left, KeyModifiers::SHIFT)),
+            Some(TabNavCommand::PreviousTab)
+        );
+        assert_eq!(
+            app.tab_nav_command(press(KeyCode::Right, KeyModifiers::SHIFT)),
+            Some(TabNavCommand::NextTab)
+        );
+        assert_eq!(
+            app.tab_nav_command(press(KeyCode::Left, KeyModifiers::ALT)),
+            None
+        );
+        assert_eq!(
+            app.tab_nav_command(press(KeyCode::Right, KeyModifiers::CONTROL)),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn focus_availability_and_restore_skip_hidden_blocks() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.files_visible = true;
+        app.sidebar_visible = false;
+        app.bottom_panel.open = false;
+        let availability = app.focus_availability();
+        assert!(availability.contains(FocusBlock::Files));
+        assert!(!availability.contains(FocusBlock::Inspector));
+        assert!(!availability.contains(FocusBlock::BottomPanel));
+
+        app.focus.previous_block = Some(FocusBlock::Inspector);
+        app.restore_focus_after_closing(FocusBlock::Files);
+        assert_eq!(app.focus.block, FocusBlock::Workspace);
+        assert_eq!(app.focus.return_block, Some(FocusBlock::Workspace));
+    }
+
+    #[tokio::test]
+    async fn footer_hints_change_with_focus_context() {
+        let (_dir, mut app) = focus_test_app().await;
+        assert!(app.footer_hints().contains("Enter send"));
+
+        app.focus.mode = FocusMode::Navigation;
+        app.workspace_mode = WorkspaceMode::Editor;
+        assert!(app.footer_hints().contains("⇧← / ⇧→ switch tab"));
+        assert!(app.footer_hints().contains("Esc leave"));
+
+        app.focus.mode = FocusMode::Transient(TransientOwner::SourceSearch);
+        assert!(app.footer_hints().contains("leave search"));
+    }
+
     fn press(code: KeyCode, mods: KeyModifiers) -> event::KeyEvent {
         event::KeyEvent {
             code,
