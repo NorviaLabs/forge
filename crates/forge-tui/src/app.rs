@@ -21,12 +21,12 @@ use forge_connect::{
 use forge_core::{AgentSession, ApplyOutcome, LoopError};
 use forge_tools::{GitTool, Tool, ToolContext};
 use forge_types::{HitlDecision, ModelStreamEvent, ProgressDocument};
+use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use ratatui::backend::CrosstermBackend;
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 use ratatui::Terminal;
-use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde_json::json;
 use thiserror::Error;
 
@@ -51,19 +51,20 @@ use crate::overlays::{
     FileExplorerItem, Key, Key as OverlayKey, Overlay, OverlayAction, OverlayWidget, PaletteItem,
     ResumeSessionItem,
 };
+use crate::run::{RunExecutionMode, RunHistoryFile, RunState, RunStateModel};
 use crate::sidebar::{InspectorView, SidebarModel, SidebarWidget};
 use crate::source_viewer::{SourceViewer, SourceViewerWidget};
 use crate::terminal::TerminalGuard;
 use crate::theme;
-use crate::validation::ValidationSnapshot;
 use crate::widgets::{
     classify_operator_error, BottomPanel, BottomPanelModel, BottomPanelState, BottomPanelTab,
     BusyPhase, FeedbackBar, FeedbackModel, FeedbackSeverity, FooterBar, FooterModel, InputBar,
     InputModel, StatusBar, StatusModel,
 };
-use crate::ValidationStatus;
 use forge_config::CommandConfig;
 use ratatui::widgets::Clear;
+
+use crate::{MAX_RECENT_RUNS, RUN_HISTORY_VERSION};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WorkspaceMode {
@@ -86,7 +87,7 @@ struct FileChangeEvent {
 }
 
 #[derive(Debug)]
-enum ValidationEvent {
+enum RunEvent {
     Output(Vec<u8>),
     Finished {
         exit_code: Option<i32>,
@@ -495,7 +496,7 @@ pub struct TuiApp {
     file_change_rx: Receiver<FileChangeEvent>,
     file_change_tx: Sender<FileChangeEvent>,
     pub bottom_panel: BottomPanelState,
-    pub validation: ValidationSnapshot,
+    pub run: RunStateModel,
     pub files_visible: bool,
     pub file_explorer: FileExplorer,
     /// Authoritative keyboard ownership. Legacy component `focused` flags are
@@ -527,8 +528,8 @@ pub struct TuiApp {
     footer_limits_cache: Option<FooterLimitsCache>,
     footer_limits_rx: Option<std::sync::mpsc::Receiver<(String, FooterLimits)>>,
     terminal_capture: TerminalCapture,
-    validation_rx: Option<std::sync::mpsc::Receiver<ValidationEvent>>,
-    validation_abort: Option<tokio::task::JoinHandle<()>>,
+    run_rx: Option<std::sync::mpsc::Receiver<RunEvent>>,
+    run_abort: Option<tokio::task::JoinHandle<()>>,
 }
 
 #[derive(Debug, Clone)]
@@ -544,11 +545,7 @@ impl TuiApp {
         input.hint = "Describe a task…".into();
         let startup_notices = runtime.startup_notices.clone();
         let workspace_root = session.workspace_root().to_path_buf();
-        let validation = runtime
-            .validation_command
-            .clone()
-            .map(ValidationSnapshot::configured)
-            .unwrap_or_default();
+        let run = RunStateModel::new(workspace_root.clone(), runtime.validation_command.clone());
         let (file_change_tx, file_change_rx) = mpsc::channel();
         let mut app = Self {
             session,
@@ -597,7 +594,7 @@ impl TuiApp {
             file_change_rx,
             file_change_tx,
             bottom_panel: BottomPanelState::default(),
-            validation,
+            run,
             files_visible: false,
             file_explorer: FileExplorer::new(Some(workspace_root)),
             focus: FocusState::default(),
@@ -618,13 +615,55 @@ impl TuiApp {
             footer_limits_cache: None,
             footer_limits_rx: None,
             terminal_capture: TerminalCapture::default(),
-            validation_rx: None,
-            validation_abort: None,
+            run_rx: None,
+            run_abort: None,
             last_editor_height: 24,
         };
         app.init_file_watcher();
-        app.normalize_restored_validation();
+        app.load_run_history();
+        app.normalize_restored_run();
         app.restore_saved_auth().apply_connection_chrome()
+    }
+
+    fn run_history_path(&self) -> PathBuf {
+        self.session
+            .workspace_root()
+            .join(".forge/run-history.json")
+    }
+
+    fn load_run_history(&mut self) {
+        let Ok(text) = fs::read_to_string(self.run_history_path()) else {
+            return;
+        };
+        let Ok(history) = serde_json::from_str::<RunHistoryFile>(&text) else {
+            self.run.error = Some("run history is malformed; recent runs were not loaded".into());
+            return;
+        };
+        let workspace_id = self.session.workspace_root().display().to_string();
+        if history.version == RUN_HISTORY_VERSION
+            && history.repository_or_workspace_id == workspace_id
+        {
+            self.run.recent = history.recent.into_iter().take(MAX_RECENT_RUNS).collect();
+        }
+    }
+
+    fn save_run_history(&mut self) {
+        let path = self.run_history_path();
+        let history = RunHistoryFile {
+            version: RUN_HISTORY_VERSION,
+            repository_or_workspace_id: self.session.workspace_root().display().to_string(),
+            recent: self.run.recent.iter().cloned().collect(),
+        };
+        let result =
+            fs::create_dir_all(path.parent().unwrap_or_else(|| Path::new("."))).and_then(|_| {
+                fs::write(
+                    &path,
+                    serde_json::to_vec_pretty(&history).unwrap_or_default(),
+                )
+            });
+        if let Err(error) = result {
+            self.run.error = Some(format!("could not persist recent runs: {error}"));
+        }
     }
 
     fn init_file_watcher(&mut self) {
@@ -632,7 +671,10 @@ impl TuiApp {
         let mut watcher = match RecommendedWatcher::new(
             move |result: notify::Result<notify::Event>| {
                 if let Ok(event) = result {
-                    if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)) {
+                    if matches!(
+                        event.kind,
+                        EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)
+                    ) {
                         for path in event.paths {
                             let _ = tx.send(FileChangeEvent { path });
                         }
@@ -668,23 +710,20 @@ impl TuiApp {
         }
     }
 
-    fn normalize_restored_validation(&mut self) {
-        if matches!(self.validation.status, ValidationStatus::Running) {
-            self.validation.finish(
-                ValidationStatus::Cancelled,
-                None,
-                std::time::SystemTime::now(),
-            );
+    fn normalize_restored_run(&mut self) {
+        if let Some(record) = self.run.current.as_mut() {
+            if matches!(record.state, RunState::Running | RunState::Queued) {
+                record.state = RunState::Cancelled;
+                record.finished_at = Some(std::time::SystemTime::now());
+            }
         }
         self.pending_validation = false;
-        self.validation_rx = None;
-        self.validation_abort = None;
+        self.run_rx = None;
+        self.run_abort = None;
     }
 
     fn note_workspace_changed(&mut self) {
         self.file_explorer.refresh_git_status();
-        self.validation
-            .update_staleness(self.file_explorer.git_status.revision());
     }
 
     // Intentionally keep the conversation window clean: only real chat (user/assistant)
@@ -1938,42 +1977,104 @@ impl TuiApp {
         );
     }
 
-    fn run_validation(&mut self) {
-        let Some(command) = self.validation.command.clone() else {
-            self.validation.status = ValidationStatus::NotConfigured;
-            return;
-        };
-        if matches!(self.validation.status, ValidationStatus::Running) {
+    fn run_current_draft(&mut self) {
+        if self
+            .run
+            .current
+            .as_ref()
+            .is_some_and(|record| record.state == RunState::Running)
+        {
+            self.run.error = Some("a run is already active; cancel it first".into());
             return;
         }
-        self.pending_validation = true;
-        self.validation.start(
-            self.workspace_revision_marker(),
-            Some("Terminal".into()),
-            std::time::SystemTime::now(),
-        );
-        self.busy_phase = BusyPhase::Tool {
-            name: "validation".into(),
+        let invocation = match self.run.draft.invocation() {
+            Ok(invocation) => invocation,
+            Err(error) => {
+                self.run.error = Some(error.to_string());
+                return;
+            }
         };
-        self.status_message = format!(
-            "validation: {}",
-            crate::validation::validation_command_text(&command)
+        if !invocation.working_directory.is_dir() {
+            self.run.error = Some(format!(
+                "working directory is not accessible: {}",
+                invocation.working_directory.display()
+            ));
+            return;
+        }
+        let mut record = self.run.record(
+            invocation.clone(),
+            crate::RunProvenance::Manual,
+            Some(self.session.session_id.to_string()),
         );
+        record.state = RunState::Running;
+        record.started_at = Some(std::time::SystemTime::now());
+        self.run.current = Some(record);
+        self.run.error = None;
+        self.pending_validation = true;
+        self.busy_phase = BusyPhase::Tool { name: "run".into() };
+        self.status_message = format!("run: {}", invocation.summary());
     }
 
-    fn cancel_validation(&mut self) {
-        if matches!(self.validation.status, ValidationStatus::Running) {
-            self.pending_validation = false;
-            if let Some(handle) = self.validation_abort.take() {
-                handle.abort();
+    fn rerun_current(&mut self) {
+        let Some(record) = self
+            .run
+            .current
+            .clone()
+            .or_else(|| self.run.recent.front().cloned())
+        else {
+            self.run.error = Some("no previous run".into());
+            return;
+        };
+        let draft = &mut self.run.draft;
+        draft.command_input = record.invocation.summary();
+        draft.working_directory = record.invocation.working_directory;
+        draft.environment_delta = record.invocation.environment_delta;
+        draft.execution_mode = record.invocation.execution_mode;
+        draft.source_record_id = Some(record.id);
+        self.run_current_draft();
+    }
+
+    fn edit_and_rerun_current(&mut self) {
+        let Some(record) = self
+            .run
+            .current
+            .clone()
+            .or_else(|| self.run.recent.front().cloned())
+        else {
+            self.run.error = Some("no previous run".into());
+            return;
+        };
+        self.run.draft.command_input = record.invocation.summary();
+        self.run.draft.working_directory = record.invocation.working_directory;
+        self.run.draft.environment_delta = record.invocation.environment_delta;
+        self.run.draft.execution_mode = record.invocation.execution_mode;
+        self.run.draft.source_record_id = Some(record.id);
+        self.run.editing = true;
+    }
+
+    fn cancel_run(&mut self) {
+        let mut cancelled = None;
+        if let Some(record) = self.run.current.as_mut() {
+            if record.state == RunState::Running {
+                if let Some(handle) = self.run_abort.take() {
+                    handle.abort();
+                }
+                record.state = RunState::Cancelled;
+                record.finished_at = Some(std::time::SystemTime::now());
+                record.duration = record.started_at.and_then(|start| {
+                    record
+                        .finished_at
+                        .and_then(|end| end.duration_since(start).ok())
+                });
+                self.run_rx = None;
+                self.pending_validation = false;
+                self.busy_phase = BusyPhase::Idle;
+                cancelled = Some(record.clone());
             }
-            self.validation_rx = None;
-            self.validation.finish(
-                ValidationStatus::Cancelled,
-                None,
-                std::time::SystemTime::now(),
-            );
-            self.busy_phase = BusyPhase::Idle;
+        }
+        if let Some(record) = cancelled {
+            self.run.remember(record);
+            self.save_run_history();
         }
     }
 
@@ -1981,37 +2082,46 @@ impl TuiApp {
         &mut self,
         mut terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
     ) -> Result<(), TuiError> {
-        if !self.pending_validation || !matches!(self.validation.status, ValidationStatus::Running)
+        if !self.pending_validation
+            || !self
+                .run
+                .current
+                .as_ref()
+                .is_some_and(|record| record.state == RunState::Running)
         {
             return Ok(());
         }
         self.pending_validation = false;
-        let Some(command) = self.validation.command.clone() else {
-            self.validation.status = ValidationStatus::NotConfigured;
-            self.busy_phase = BusyPhase::Idle;
+        let Some(record) = self.run.current.as_ref() else {
             return Ok(());
         };
+        let invocation = record.invocation.clone();
         if let Some(term) = terminal.as_deref_mut() {
             let _ = term.draw(|f| self.draw(f));
         }
-        self.terminal_capture.title = Some(format!(
-            "validation · {}",
-            crate::validation::validation_command_text(&command)
-        ));
+        self.terminal_capture.title = Some(format!("run · {}", invocation.summary()));
         self.terminal_capture.content.clear();
         self.terminal_capture.truncated = false;
         let (tx, rx) = std::sync::mpsc::channel();
-        let workspace = self.session.workspace_root().to_path_buf();
-        let executable = command.executable.clone();
-        let args = command.args.clone();
-        self.validation_rx = Some(rx);
-        self.validation_abort = Some(tokio::spawn(async move {
+        self.run_rx = Some(rx);
+        self.run_abort = Some(tokio::spawn(async move {
             use tokio::io::AsyncReadExt;
-            let mut cmd = tokio::process::Command::new(&executable);
-            cmd.args(&args)
-                .current_dir(workspace)
+            let mut cmd = tokio::process::Command::new(&invocation.executable);
+            cmd.args(&invocation.arguments)
+                .current_dir(&invocation.working_directory)
+                .kill_on_drop(true)
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped());
+            for change in invocation.environment_delta {
+                match change {
+                    crate::RunEnvironmentChange::Set { name, value } => {
+                        cmd.env(name, value);
+                    }
+                    crate::RunEnvironmentChange::Remove { name } => {
+                        cmd.env_remove(name);
+                    }
+                }
+            }
             match cmd.spawn() {
                 Ok(mut child) => {
                     let mut stdout = child.stdout.take();
@@ -2024,10 +2134,14 @@ impl TuiApp {
                                 match stream.read(&mut buf).await {
                                     Ok(0) => break,
                                     Ok(n) => {
-                                        let _ =
-                                            tx_out.send(ValidationEvent::Output(buf[..n].to_vec()));
+                                        let _ = tx_out.send(RunEvent::Output(buf[..n].to_vec()));
                                     }
-                                    Err(_) => break,
+                                    Err(error) => {
+                                        let _ = tx_out.send(RunEvent::SpawnFailed(format!(
+                                            "output capture failed: {error}"
+                                        )));
+                                        break;
+                                    }
                                 }
                             }
                         }
@@ -2040,10 +2154,14 @@ impl TuiApp {
                                 match stream.read(&mut buf).await {
                                     Ok(0) => break,
                                     Ok(n) => {
-                                        let _ =
-                                            tx_err.send(ValidationEvent::Output(buf[..n].to_vec()));
+                                        let _ = tx_err.send(RunEvent::Output(buf[..n].to_vec()));
                                     }
-                                    Err(_) => break,
+                                    Err(error) => {
+                                        let _ = tx_err.send(RunEvent::SpawnFailed(format!(
+                                            "output capture failed: {error}"
+                                        )));
+                                        break;
+                                    }
                                 }
                             }
                         }
@@ -2053,81 +2171,83 @@ impl TuiApp {
                     let _ = stderr_task.await;
                     match status {
                         Ok(status) => {
-                            let _ = tx.send(ValidationEvent::Finished {
+                            let _ = tx.send(RunEvent::Finished {
                                 exit_code: status.code(),
                                 success: status.success(),
                             });
                         }
                         Err(error) => {
-                            let _ = tx.send(ValidationEvent::SpawnFailed(error.to_string()));
+                            let _ = tx.send(RunEvent::SpawnFailed(error.to_string()));
                         }
                     }
                 }
                 Err(error) => {
-                    let _ = tx.send(ValidationEvent::SpawnFailed(error.to_string()));
+                    let _ = tx.send(RunEvent::SpawnFailed(error.to_string()));
                 }
             }
         }));
         Ok(())
     }
 
-    fn poll_validation(&mut self) {
-        let Some(rx) = self.validation_rx.take() else {
+    fn poll_run(&mut self) {
+        let Some(rx) = self.run_rx.take() else {
             return;
         };
         match rx.try_recv() {
-            Ok(ValidationEvent::Output(chunk)) => {
+            Ok(RunEvent::Output(chunk)) => {
                 self.append_terminal_output(&chunk);
-                self.validation_rx = Some(rx);
+                self.run_rx = Some(rx);
             }
-            Ok(ValidationEvent::Finished { exit_code, success }) => {
-                self.validation_abort = None;
+            Ok(RunEvent::Finished { exit_code, success }) => {
+                self.run_abort = None;
                 self.busy_phase = BusyPhase::Idle;
-                let completed_at = std::time::SystemTime::now();
-                if success {
-                    self.validation
-                        .finish(ValidationStatus::Passed, exit_code, completed_at);
-                    self.push_activity(
-                        ActivityKind::Tool,
-                        FeedbackSeverity::Ok,
-                        "validation passed",
-                    );
-                } else {
-                    self.validation
-                        .finish(ValidationStatus::Failed, exit_code, completed_at);
-                    self.push_activity(
-                        ActivityKind::Tool,
-                        FeedbackSeverity::Warn,
-                        "validation failed",
-                    );
+                if let Some(mut record) = self.run.current.take() {
+                    record.state = if success {
+                        RunState::Succeeded
+                    } else {
+                        RunState::Failed
+                    };
+                    record.exit_status = exit_code;
+                    record.finished_at = Some(std::time::SystemTime::now());
+                    record.duration = record.started_at.and_then(|start| {
+                        record
+                            .finished_at
+                            .and_then(|end| end.duration_since(start).ok())
+                    });
+                    self.run.current = Some(record.clone());
+                    self.run.remember(record);
+                    self.save_run_history();
                 }
-                self.validation.parse_cargo_output(
-                    &self.terminal_capture.content,
-                    self.terminal_capture.truncated,
-                );
             }
-            Ok(ValidationEvent::SpawnFailed(error)) => {
-                self.validation_abort = None;
+            Ok(RunEvent::SpawnFailed(error)) => {
+                self.run_abort = None;
                 self.busy_phase = BusyPhase::Idle;
-                self.validation.finish(
-                    ValidationStatus::Failed,
-                    None,
-                    std::time::SystemTime::now(),
-                );
+                if let Some(mut record) = self.run.current.take() {
+                    record.state = RunState::StartFailed;
+                    record.spawn_error = Some(error.clone());
+                    record.finished_at = Some(std::time::SystemTime::now());
+                    record.duration = record.started_at.and_then(|start| {
+                        record
+                            .finished_at
+                            .and_then(|end| end.duration_since(start).ok())
+                    });
+                    self.run.current = Some(record.clone());
+                    self.run.remember(record);
+                    self.save_run_history();
+                }
                 self.terminal_capture.content = error.clone();
-                self.report_error(&format!("validation launch failed: {error}"));
+                self.report_error(&format!("run launch failed: {error}"));
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {
-                self.validation_rx = Some(rx);
+                self.run_rx = Some(rx);
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                self.validation_abort = None;
+                self.run_abort = None;
                 self.busy_phase = BusyPhase::Idle;
-                self.validation.finish(
-                    ValidationStatus::Failed,
-                    None,
-                    std::time::SystemTime::now(),
-                );
+                if let Some(record) = self.run.current.as_mut() {
+                    record.state = RunState::CaptureFailed;
+                    record.finished_at = Some(std::time::SystemTime::now());
+                }
             }
         }
     }
@@ -2141,10 +2261,6 @@ impl TuiApp {
             self.terminal_capture.content.truncate(MAX_CAPTURE);
             self.terminal_capture.truncated = true;
         }
-    }
-
-    fn workspace_revision_marker(&self) -> u64 {
-        self.file_explorer.git_status.revision()
     }
 
     fn queue_context_reset(&mut self) {
@@ -2811,8 +2927,6 @@ Reply with ONLY the commit message line.\n\n\
     }
 
     pub fn draw(&mut self, frame: &mut ratatui::Frame) {
-        self.validation
-            .update_staleness(self.file_explorer.git_status.revision());
         let area = frame.area();
         if is_too_small(area) {
             self.focus.block = FocusBlock::Workspace;
@@ -3055,7 +3169,20 @@ Reply with ONLY the commit message line.\n\n\
             sidebar.git_status_loading = gs.loading;
             sidebar.git_status_error = gs.error.is_some();
             sidebar.files_changed = Some(gs.status.len());
-            sidebar.validation = Some(self.validation.display_status().to_string());
+            sidebar.validation = self.run.current.as_ref().map(|record| {
+                format!(
+                    "Run {}",
+                    match record.state {
+                        RunState::Queued => "queued",
+                        RunState::Running => "running",
+                        RunState::Succeeded => "succeeded",
+                        RunState::Failed => "failed",
+                        RunState::Cancelled => "cancelled",
+                        RunState::StartFailed => "start failed",
+                        RunState::CaptureFailed => "capture failed",
+                    }
+                )
+            });
             sidebar.elapsed = self
                 .turn_started
                 .or(self.thinking_started)
@@ -3076,7 +3203,7 @@ Reply with ONLY the commit message line.\n\n\
                     state: &self.bottom_panel,
                     busy_phase: &self.busy_phase,
                     activity: &self.activity,
-                    validation: &self.validation,
+                    run: &self.run,
                     terminal_title: self.terminal_capture.title.as_deref(),
                     terminal_content: &self.terminal_capture.content,
                     terminal_truncated: self.terminal_capture.truncated,
@@ -3756,6 +3883,32 @@ Reply with ONLY the commit message line.\n\n\
                 true
             }
             None => match key.code {
+                KeyCode::Char(c)
+                    if self.bottom_panel.active == BottomPanelTab::Run
+                        && self.run.editing
+                        && key.modifiers.is_empty() =>
+                {
+                    if self.run.editing_directory {
+                        let mut text = self.run.draft.working_directory.display().to_string();
+                        text.push(c);
+                        self.run.draft.working_directory = PathBuf::from(text);
+                    } else {
+                        self.run.draft.command_input.push(c);
+                    }
+                    true
+                }
+                KeyCode::Backspace
+                    if self.bottom_panel.active == BottomPanelTab::Run && self.run.editing =>
+                {
+                    if self.run.editing_directory {
+                        let mut text = self.run.draft.working_directory.display().to_string();
+                        text.pop();
+                        self.run.draft.working_directory = PathBuf::from(text);
+                    } else {
+                        self.run.draft.command_input.pop();
+                    }
+                    true
+                }
                 // Preserve the established alternate navigation bindings.
                 KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => {
                     self.bottom_panel.previous_tab();
@@ -3765,18 +3918,42 @@ Reply with ONLY the commit message line.\n\n\
                     self.bottom_panel.next_tab();
                     true
                 }
-                KeyCode::Enter if self.bottom_panel.active == BottomPanelTab::Tests => {
-                    if matches!(self.validation.status, ValidationStatus::Running) {
-                        self.cancel_validation();
+                KeyCode::Enter if self.bottom_panel.active == BottomPanelTab::Run => {
+                    if self
+                        .run
+                        .current
+                        .as_ref()
+                        .is_some_and(|record| record.state == RunState::Running)
+                    {
+                        self.cancel_run();
                     } else {
-                        self.run_validation();
+                        self.run_current_draft();
                     }
                     true
                 }
-                KeyCode::Char('r') if self.bottom_panel.active == BottomPanelTab::Tests => {
-                    if !matches!(self.validation.status, ValidationStatus::Running) {
-                        self.run_validation();
-                    }
+                KeyCode::Char('r') if self.bottom_panel.active == BottomPanelTab::Run => {
+                    self.rerun_current();
+                    true
+                }
+                KeyCode::Char('e') if self.bottom_panel.active == BottomPanelTab::Run => {
+                    self.edit_and_rerun_current();
+                    true
+                }
+                KeyCode::Char('m') if self.bottom_panel.active == BottomPanelTab::Run => {
+                    self.run.draft.execution_mode = match self.run.draft.execution_mode {
+                        RunExecutionMode::Direct => RunExecutionMode::Shell,
+                        RunExecutionMode::Shell => RunExecutionMode::Direct,
+                    };
+                    true
+                }
+                KeyCode::Char('i') if self.bottom_panel.active == BottomPanelTab::Run => {
+                    self.run.editing = true;
+                    self.run.editing_directory = false;
+                    true
+                }
+                KeyCode::Char('d') if self.bottom_panel.active == BottomPanelTab::Run => {
+                    self.run.editing = true;
+                    self.run.editing_directory = true;
                     true
                 }
                 KeyCode::Esc => {
@@ -3964,7 +4141,7 @@ Reply with ONLY the commit message line.\n\n\
                 true
             }
             KeyCode::Char('1') if key.modifiers.contains(KeyModifiers::ALT) => {
-                self.open_bottom_panel(Some(BottomPanelTab::Tests));
+                self.open_bottom_panel(Some(BottomPanelTab::Run));
                 true
             }
             KeyCode::Char('2') if key.modifiers.contains(KeyModifiers::ALT) => {
@@ -5209,7 +5386,7 @@ async fn run_loop(
 ) -> Result<(), TuiError> {
     while !app.should_quit {
         app.poll_file_changes();
-        app.poll_validation();
+        app.poll_run();
         app.tick_toast();
         app.tick_notices();
         app.drain_auto_hitl().await?;
@@ -5303,34 +5480,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn validation_run_only_from_tests_panel_focus() {
+    async fn run_only_from_run_panel_focus() {
         let (_dir, mut app) = focus_test_app().await;
-        app.validation = ValidationSnapshot::configured(CommandConfig {
-            executable: "true".into(),
-            args: vec![],
-        });
+        app.run.draft.command_input = "true".into();
 
         app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
             .await
             .unwrap();
-        assert!(!matches!(app.validation.status, ValidationStatus::Running));
+        assert!(!app
+            .run
+            .current
+            .as_ref()
+            .is_some_and(|record| record.state == RunState::Running));
 
-        app.bottom_panel.open_tab(BottomPanelTab::Tests);
+        app.bottom_panel.open_tab(BottomPanelTab::Run);
         app.focus_block(FocusBlock::BottomPanel);
         app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
             .await
             .unwrap();
-        assert!(matches!(app.validation.status, ValidationStatus::Running));
+        assert!(app
+            .run
+            .current
+            .as_ref()
+            .is_some_and(|record| record.state == RunState::Running));
     }
 
     #[tokio::test]
-    async fn validation_cancel_from_tests_panel() {
+    async fn run_cancel_from_run_panel() {
         let (_dir, mut app) = focus_test_app().await;
-        app.validation = ValidationSnapshot::configured(CommandConfig {
-            executable: "true".into(),
-            args: vec![],
-        });
-        app.bottom_panel.open_tab(BottomPanelTab::Tests);
+        app.run.draft.command_input = "true".into();
+        app.bottom_panel.open_tab(BottomPanelTab::Run);
         app.focus_block(FocusBlock::BottomPanel);
         app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
             .await
@@ -5338,11 +5517,15 @@ mod tests {
         app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
             .await
             .unwrap();
-        assert!(matches!(app.validation.status, ValidationStatus::Cancelled));
+        assert!(app
+            .run
+            .current
+            .as_ref()
+            .is_some_and(|record| record.state == RunState::Cancelled));
     }
 
     #[tokio::test]
-    async fn restored_running_validation_becomes_cancelled() {
+    async fn restored_running_run_becomes_cancelled() {
         let (_dir, session) = test_session().await;
         let mut app = TuiApp::new(
             session,
@@ -5358,49 +5541,27 @@ mod tests {
                 }),
             },
         );
-        app.validation.status = ValidationStatus::Running;
-        app.normalize_restored_validation();
-        assert!(matches!(app.validation.status, ValidationStatus::Cancelled));
+        app.run.draft.command_input = "true".into();
+        app.run_current_draft();
+        app.normalize_restored_run();
+        assert!(app
+            .run
+            .current
+            .as_ref()
+            .is_some_and(|record| record.state == RunState::Cancelled));
         assert!(!app.pending_validation);
-        assert!(app.validation_rx.is_none());
+        assert!(app.run_rx.is_none());
     }
 
     #[tokio::test]
-    async fn workspace_change_marks_completed_validation_stale() {
+    async fn ui_navigation_does_not_mutate_run_history() {
         let (_dir, mut app) = focus_test_app().await;
-        app.validation = ValidationSnapshot::configured(CommandConfig {
-            executable: "true".into(),
-            args: vec![],
-        });
-        app.validation.finish(
-            ValidationStatus::Passed,
-            Some(0),
-            std::time::SystemTime::now(),
-        );
-        app.validation.repo_generation = app.file_explorer.git_status.revision();
-        app.note_workspace_changed();
-        assert_eq!(app.validation.display_status(), "Stale");
-    }
-
-    #[tokio::test]
-    async fn ui_navigation_does_not_mark_validation_stale() {
-        let (_dir, mut app) = focus_test_app().await;
-        app.validation = ValidationSnapshot::configured(CommandConfig {
-            executable: "true".into(),
-            args: vec![],
-        });
-        app.validation.finish(
-            ValidationStatus::Passed,
-            Some(0),
-            std::time::SystemTime::now(),
-        );
-        app.validation.repo_generation = app.file_explorer.git_status.revision();
-        app.bottom_panel.open_tab(BottomPanelTab::Tests);
+        app.bottom_panel.open_tab(BottomPanelTab::Run);
         app.focus_block(FocusBlock::BottomPanel);
         app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
             .await
             .unwrap();
-        assert_eq!(app.validation.display_status(), "Passed");
+        assert!(app.run.recent.is_empty());
     }
 
     async fn focus_test_app() -> (TempDir, TuiApp) {
