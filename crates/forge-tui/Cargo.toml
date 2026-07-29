@@ -23,6 +23,7 @@ ratatui = { workspace = true }
 chrono = { workspace = true }
 dirs = { workspace = true }
 pathdiff = { workspace = true }
+notify = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
