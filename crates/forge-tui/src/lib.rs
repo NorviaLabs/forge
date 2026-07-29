@@ -13,6 +13,7 @@ mod history;
 mod layout;
 mod msg_queue;
 mod overlays;
+mod run;
 mod sidebar;
 mod source_viewer;
 mod terminal;
@@ -39,6 +40,11 @@ pub use msg_queue::MessageQueue;
 pub use overlays::{
     default_models, default_palette_items, filter_palette, handle_overlay_key, models_from_catalog,
     Key as OverlayKey, Overlay, OverlayAction,
+};
+pub use run::{
+    command_text as run_command_text, legacy_command_text, RunDraft, RunEnvironmentChange,
+    RunExecutionMode, RunFreshness, RunHistoryFile, RunInvocation, RunParseError, RunProvenance,
+    RunRecord, RunState, RunStateModel, MAX_RECENT_RUNS, RUN_HISTORY_VERSION,
 };
 pub use sidebar::SidebarModel;
 pub use validation::{
