@@ -360,14 +360,6 @@ impl Widget for InputBar<'_> {
         } else {
             theme::border()
         };
-        let mut title = format!(" Chat · {} ", self.mode_label);
-        if self.model.not_connected {
-            title.push_str("· not connected /connect required ");
-        } else if self.model.history_browse {
-            title.push_str("· history ");
-        } else if self.model.text.contains('\n') {
-            title.push_str("· multi-line Shift+Enter newline ");
-        }
         let block = Block::default()
             .borders(Borders::TOP)
             .border_style(border)
@@ -376,14 +368,6 @@ impl Widget for InputBar<'_> {
             } else {
                 theme::panel()
             });
-        let block = block.title(Span::styled(
-            title,
-            if self.focused {
-                theme::brand()
-            } else {
-                theme::muted()
-            },
-        ));
         Paragraph::new(lines)
             .style(Style::default().add_modifier(if self.model.dimmed {
                 Modifier::DIM
