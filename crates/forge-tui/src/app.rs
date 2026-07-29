@@ -77,6 +77,81 @@ pub enum WorkspaceMode {
     Diff,
 }
 
+const WORKSPACE_HISTORY_LIMIT: usize = 32;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WorkspaceView {
+    Conversation,
+    File(PathBuf),
+    Diff(DiffCommandContext),
+    Run(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkspaceViewKind {
+    Conversation,
+    File,
+    Diff,
+    Run,
+}
+
+impl WorkspaceView {
+    fn kind(&self) -> WorkspaceViewKind {
+        match self {
+            Self::Conversation => WorkspaceViewKind::Conversation,
+            Self::File(_) => WorkspaceViewKind::File,
+            Self::Diff(_) => WorkspaceViewKind::Diff,
+            Self::Run(_) => WorkspaceViewKind::Run,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WorkspaceNavigation {
+    current: WorkspaceView,
+    history: Vec<WorkspaceView>,
+}
+
+impl Default for WorkspaceNavigation {
+    fn default() -> Self {
+        Self {
+            current: WorkspaceView::Conversation,
+            history: Vec::new(),
+        }
+    }
+}
+
+impl WorkspaceNavigation {
+    fn push_view(&mut self, view: WorkspaceView) {
+        if self.current == view {
+            return;
+        }
+        self.history.push(self.current.clone());
+        if self.history.len() > WORKSPACE_HISTORY_LIMIT {
+            let overflow = self.history.len() - WORKSPACE_HISTORY_LIMIT;
+            self.history.drain(0..overflow);
+        }
+        self.current = view;
+    }
+
+    fn replace_view(&mut self, view: WorkspaceView) {
+        self.current = view;
+    }
+
+    fn navigate_to(&mut self, view: WorkspaceView) {
+        if self.current.kind() == view.kind() {
+            self.replace_view(view);
+        } else {
+            self.push_view(view);
+        }
+    }
+
+    fn home(&mut self) {
+        self.history.clear();
+        self.current = WorkspaceView::Conversation;
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 struct TerminalCapture {
     title: Option<String>,
@@ -248,10 +323,13 @@ enum SlashCommandOrigin {
 enum SemanticCommand {
     GoHome,
     GoBack,
+    PushView(WorkspaceView),
+    ReplaceView(WorkspaceView),
     OpenFile(PathBuf),
     ReviewChanges(DiffCommandContext),
     OpenRun(RunCommandTarget),
     ToggleFiles,
+    CloseOverlay,
     FocusComposer,
     SubmitMessage,
     InsertComposerNewline,
@@ -632,6 +710,8 @@ pub struct TuiApp {
     reasoning_effort: ReasoningEffort,
     /// Expand last tool detail (Ctrl+O).
     tool_expanded: bool,
+    /// V3.1 contextual workspace navigation, adapted to the current tab UI.
+    workspace_navigation: WorkspaceNavigation,
     /// Active workspace tab. Older restored sessions safely use the default Chat mode.
     pub workspace_mode: WorkspaceMode,
     /// Read-only source viewer state for the Editor workspace tab.
@@ -734,6 +814,7 @@ impl TuiApp {
             thought_secs: None,
             reasoning_effort: ReasoningEffort::Auto,
             tool_expanded: false,
+            workspace_navigation: WorkspaceNavigation::default(),
             workspace_mode: WorkspaceMode::default(),
             source_viewer: SourceViewer::new(),
             file_watcher: None,
@@ -1494,7 +1575,7 @@ impl TuiApp {
         }
     }
 
-    fn open_file_in_editor(&mut self, path: &Path) {
+    fn show_file_in_editor(&mut self, path: &Path) {
         let root = self.session.workspace_root().to_path_buf();
         self.source_viewer.open(&root, path);
         self.workspace_mode = WorkspaceMode::Editor;
@@ -1502,6 +1583,10 @@ impl TuiApp {
         self.status_message = "Viewing file (readonly)".into();
         // Keep the file explorer in sync with the active file.
         self.file_explorer.selected_path = Some(path.to_path_buf());
+    }
+
+    fn open_file_in_editor(&mut self, path: &Path) {
+        self.navigate_to_workspace_view(WorkspaceView::File(path.to_path_buf()));
     }
 
     fn file_ops(&self) -> Result<WorkspaceFileOps, FileOperationError> {
@@ -4071,6 +4156,88 @@ Reply with ONLY the commit message line.\n\n\
         self.normalize_focus();
     }
 
+    fn current_run_id(&self) -> Option<String> {
+        self.run.current.as_ref().map(|record| record.id.clone())
+    }
+
+    fn run_exists(&self, id: &str) -> bool {
+        self.run
+            .current
+            .as_ref()
+            .is_some_and(|record| record.id == id)
+            || self.run.recent.iter().any(|record| record.id == id)
+    }
+
+    fn workspace_view_is_valid(&self, view: &WorkspaceView) -> bool {
+        match view {
+            WorkspaceView::Conversation => true,
+            WorkspaceView::File(path) => path.is_file() || path.is_symlink(),
+            WorkspaceView::Diff(DiffCommandContext::Current) => true,
+            WorkspaceView::Run(id) => self.run_exists(id),
+        }
+    }
+
+    fn apply_workspace_view(&mut self, view: &WorkspaceView) {
+        match view {
+            WorkspaceView::Conversation => {
+                self.workspace_mode = WorkspaceMode::Chat;
+            }
+            WorkspaceView::File(path) => {
+                self.show_file_in_editor(path);
+            }
+            WorkspaceView::Diff(DiffCommandContext::Current) => {
+                self.workspace_mode = WorkspaceMode::Diff;
+                self.focus_block(FocusBlock::Workspace);
+            }
+            WorkspaceView::Run(id) => {
+                if self.run_exists(id) {
+                    self.open_bottom_panel(Some(BottomPanelTab::Run));
+                } else {
+                    self.set_feedback(
+                        FeedbackSeverity::Warn,
+                        format!("Run is no longer available: {id}"),
+                    );
+                    self.workspace_navigation
+                        .replace_view(WorkspaceView::Conversation);
+                    self.workspace_mode = WorkspaceMode::Chat;
+                }
+            }
+        }
+        self.normalize_focus();
+    }
+
+    fn push_workspace_view(&mut self, view: WorkspaceView) {
+        self.workspace_navigation.push_view(view.clone());
+        self.apply_workspace_view(&view);
+    }
+
+    fn replace_workspace_view(&mut self, view: WorkspaceView) {
+        self.workspace_navigation.replace_view(view.clone());
+        self.apply_workspace_view(&view);
+    }
+
+    fn navigate_to_workspace_view(&mut self, view: WorkspaceView) {
+        self.workspace_navigation.navigate_to(view.clone());
+        self.apply_workspace_view(&view);
+    }
+
+    fn go_home_workspace(&mut self) {
+        self.workspace_navigation.home();
+        self.apply_workspace_view(&WorkspaceView::Conversation);
+    }
+
+    fn go_back_workspace(&mut self) {
+        let mut next = WorkspaceView::Conversation;
+        while let Some(candidate) = self.workspace_navigation.history.pop() {
+            if self.workspace_view_is_valid(&candidate) {
+                next = candidate;
+                break;
+            }
+        }
+        self.workspace_navigation.replace_view(next.clone());
+        self.apply_workspace_view(&next);
+    }
+
     fn focus_availability(&self) -> FocusAvailability {
         FocusAvailability {
             files: self.files_visible,
@@ -4742,10 +4909,11 @@ Reply with ONLY the commit message line.\n\n\
         command: SemanticCommand,
     ) -> Result<bool, TuiError> {
         match command {
-            SemanticCommand::GoHome => self.select_workspace_tab(WorkspaceMode::Chat),
-            SemanticCommand::GoBack | SemanticCommand::CancelCurrentInteraction => {
-                self.escape_navigation()
-            }
+            SemanticCommand::GoHome => self.go_home_workspace(),
+            SemanticCommand::GoBack => self.go_back_workspace(),
+            SemanticCommand::PushView(view) => self.push_workspace_view(view),
+            SemanticCommand::ReplaceView(view) => self.replace_workspace_view(view),
+            SemanticCommand::CancelCurrentInteraction => self.escape_navigation(),
             SemanticCommand::OpenFile(path) => {
                 if path.is_file() || path.is_symlink() {
                     self.open_file_in_editor(&path);
@@ -4757,19 +4925,19 @@ Reply with ONLY the commit message line.\n\n\
                 }
             }
             SemanticCommand::ReviewChanges(DiffCommandContext::Current) => {
-                self.select_workspace_tab(WorkspaceMode::Diff)
+                self.navigate_to_workspace_view(WorkspaceView::Diff(DiffCommandContext::Current))
             }
             SemanticCommand::OpenRun(target) => match target {
-                RunCommandTarget::Current => self.open_bottom_panel(Some(BottomPanelTab::Run)),
-                RunCommandTarget::Id(id) => {
-                    let exists = self
-                        .run
-                        .current
-                        .as_ref()
-                        .is_some_and(|record| record.id == id)
-                        || self.run.recent.iter().any(|record| record.id == id);
-                    if exists {
+                RunCommandTarget::Current => {
+                    if let Some(id) = self.current_run_id() {
+                        self.navigate_to_workspace_view(WorkspaceView::Run(id));
+                    } else {
                         self.open_bottom_panel(Some(BottomPanelTab::Run));
+                    }
+                }
+                RunCommandTarget::Id(id) => {
+                    if self.run_exists(&id) {
+                        self.navigate_to_workspace_view(WorkspaceView::Run(id));
                     } else {
                         self.set_feedback(
                             FeedbackSeverity::Warn,
@@ -4779,6 +4947,10 @@ Reply with ONLY the commit message line.\n\n\
                 }
             },
             SemanticCommand::ToggleFiles => self.toggle_files_panel(),
+            SemanticCommand::CloseOverlay => {
+                self.overlay = None;
+                self.explorer_dialog = None;
+            }
             SemanticCommand::FocusComposer => self.enter_chat_composer(),
             SemanticCommand::SubmitMessage => self.submit_composer_message().await?,
             SemanticCommand::InsertComposerNewline => self.input.insert_newline(),
@@ -5136,15 +5308,29 @@ Reply with ONLY the commit message line.\n\n\
     }
 
     fn select_workspace_tab(&mut self, next: WorkspaceMode) {
-        self.workspace_mode = next;
-        if next != WorkspaceMode::Chat {
-            self.focus_block(FocusBlock::Workspace);
+        match next {
+            WorkspaceMode::Chat => self.replace_workspace_view(WorkspaceView::Conversation),
+            WorkspaceMode::Editor => {
+                if let Some(path) = self.source_viewer.path.clone() {
+                    self.workspace_navigation
+                        .navigate_to(WorkspaceView::File(path));
+                    self.workspace_mode = WorkspaceMode::Editor;
+                    self.focus_block(FocusBlock::Workspace);
+                    self.source_viewer.refresh(self.session.workspace_root());
+                    self.note_workspace_changed();
+                    self.normalize_focus();
+                } else {
+                    self.workspace_mode = WorkspaceMode::Editor;
+                    self.focus_block(FocusBlock::Workspace);
+                    self.source_viewer.refresh(self.session.workspace_root());
+                    self.note_workspace_changed();
+                    self.normalize_focus();
+                }
+            }
+            WorkspaceMode::Diff => {
+                self.navigate_to_workspace_view(WorkspaceView::Diff(DiffCommandContext::Current))
+            }
         }
-        if next == WorkspaceMode::Editor {
-            self.source_viewer.refresh(self.session.workspace_root());
-            self.note_workspace_changed();
-        }
-        self.normalize_focus();
     }
 
     async fn handle_workspace_navigation_key(
@@ -6848,6 +7034,219 @@ mod tests {
         .unwrap();
 
         assert_eq!(app.status_message, "Refreshing git status...");
+    }
+
+    #[tokio::test]
+    async fn workspace_navigation_starts_at_conversation_home() {
+        let (_dir, app) = focus_test_app().await;
+
+        assert_eq!(
+            app.workspace_navigation.current,
+            WorkspaceView::Conversation
+        );
+        assert!(app.workspace_navigation.history.is_empty());
+        assert_eq!(app.workspace_mode, WorkspaceMode::Chat);
+    }
+
+    #[tokio::test]
+    async fn workspace_navigation_pushes_file_and_replaces_file_resource() {
+        let (dir, mut app) = focus_test_app().await;
+        let first = dir.path().join("a.rs");
+        let second = dir.path().join("b.rs");
+        fs::write(&first, "fn a() {}\n").unwrap();
+        fs::write(&second, "fn b() {}\n").unwrap();
+
+        app.execute_semantic_command(SemanticCommand::OpenFile(first.clone()))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            app.workspace_navigation.current,
+            WorkspaceView::File(first.clone())
+        );
+        assert_eq!(
+            app.workspace_navigation.history,
+            vec![WorkspaceView::Conversation]
+        );
+        assert_eq!(app.workspace_mode, WorkspaceMode::Editor);
+
+        app.execute_semantic_command(SemanticCommand::OpenFile(second.clone()))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            app.workspace_navigation.current,
+            WorkspaceView::File(second)
+        );
+        assert_eq!(
+            app.workspace_navigation.history,
+            vec![WorkspaceView::Conversation]
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_navigation_pushes_between_file_diff_and_file() {
+        let (dir, mut app) = focus_test_app().await;
+        let first = dir.path().join("a.rs");
+        let second = dir.path().join("b.rs");
+        fs::write(&first, "fn a() {}\n").unwrap();
+        fs::write(&second, "fn b() {}\n").unwrap();
+
+        app.execute_semantic_command(SemanticCommand::OpenFile(first.clone()))
+            .await
+            .unwrap();
+        app.execute_semantic_command(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            app.workspace_navigation.current,
+            WorkspaceView::Diff(DiffCommandContext::Current)
+        );
+        assert_eq!(
+            app.workspace_navigation.history,
+            vec![
+                WorkspaceView::Conversation,
+                WorkspaceView::File(first.clone())
+            ]
+        );
+        assert_eq!(app.workspace_mode, WorkspaceMode::Diff);
+
+        app.execute_semantic_command(SemanticCommand::OpenFile(second.clone()))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            app.workspace_navigation.current,
+            WorkspaceView::File(second)
+        );
+        assert_eq!(
+            app.workspace_navigation.history,
+            vec![
+                WorkspaceView::Conversation,
+                WorkspaceView::File(first),
+                WorkspaceView::Diff(DiffCommandContext::Current)
+            ]
+        );
+        assert_eq!(app.workspace_mode, WorkspaceMode::Editor);
+    }
+
+    #[tokio::test]
+    async fn workspace_back_skips_invalid_file_entries() {
+        let (dir, mut app) = focus_test_app().await;
+        let path = dir.path().join("stale.rs");
+        fs::write(&path, "fn stale() {}\n").unwrap();
+
+        app.execute_semantic_command(SemanticCommand::OpenFile(path.clone()))
+            .await
+            .unwrap();
+        app.execute_semantic_command(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
+            .await
+            .unwrap();
+        fs::remove_file(&path).unwrap();
+        app.execute_semantic_command(SemanticCommand::GoBack)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            app.workspace_navigation.current,
+            WorkspaceView::Conversation
+        );
+        assert_eq!(app.workspace_mode, WorkspaceMode::Chat);
+    }
+
+    #[tokio::test]
+    async fn workspace_home_returns_to_conversation_and_clears_history() {
+        let (dir, mut app) = focus_test_app().await;
+        let path = dir.path().join("main.rs");
+        fs::write(&path, "fn main() {}\n").unwrap();
+
+        app.execute_semantic_command(SemanticCommand::OpenFile(path))
+            .await
+            .unwrap();
+        app.execute_semantic_command(SemanticCommand::GoHome)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            app.workspace_navigation.current,
+            WorkspaceView::Conversation
+        );
+        assert!(app.workspace_navigation.history.is_empty());
+        assert_eq!(app.workspace_mode, WorkspaceMode::Chat);
+    }
+
+    #[tokio::test]
+    async fn overlay_open_and_close_do_not_mutate_workspace_history() {
+        let (dir, mut app) = focus_test_app().await;
+        let path = dir.path().join("main.rs");
+        fs::write(&path, "fn main() {}\n").unwrap();
+        app.execute_semantic_command(SemanticCommand::OpenFile(path))
+            .await
+            .unwrap();
+        let before = app.workspace_navigation.clone();
+
+        app.overlay = Some(Overlay::welcome());
+        app.execute_semantic_command(SemanticCommand::CloseOverlay)
+            .await
+            .unwrap();
+
+        assert_eq!(app.workspace_navigation, before);
+        assert!(app.overlay.is_none());
+    }
+
+    #[tokio::test]
+    async fn files_visibility_is_independent_of_workspace_navigation() {
+        let (dir, mut app) = focus_test_app().await;
+        let path = dir.path().join("main.rs");
+        fs::write(&path, "fn main() {}\n").unwrap();
+        app.files_visible = true;
+
+        app.execute_semantic_command(SemanticCommand::OpenFile(path))
+            .await
+            .unwrap();
+        app.execute_semantic_command(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
+            .await
+            .unwrap();
+        app.execute_semantic_command(SemanticCommand::GoHome)
+            .await
+            .unwrap();
+
+        assert!(app.files_visible);
+        assert_eq!(
+            app.workspace_navigation.current,
+            WorkspaceView::Conversation
+        );
+    }
+
+    #[tokio::test]
+    async fn leaving_run_view_does_not_cancel_running_run() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.run.draft.command_input = "true".into();
+        app.run_current_draft();
+        let id = app.run.current.as_ref().unwrap().id.clone();
+
+        app.execute_semantic_command(SemanticCommand::OpenRun(RunCommandTarget::Current))
+            .await
+            .unwrap();
+        assert_eq!(
+            app.workspace_navigation.current,
+            WorkspaceView::Run(id.clone())
+        );
+
+        app.execute_semantic_command(SemanticCommand::GoBack)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            app.workspace_navigation.current,
+            WorkspaceView::Conversation
+        );
+        assert!(app
+            .run
+            .current
+            .as_ref()
+            .is_some_and(|record| record.id == id && record.state == RunState::Running));
     }
 
     #[tokio::test]
