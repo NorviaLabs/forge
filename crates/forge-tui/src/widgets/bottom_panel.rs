@@ -103,9 +103,9 @@ impl Widget for BottomPanel<'_> {
         let title = Line::from(
             vec![Span::styled(
                 if self.focused {
-                    " Bottom · NAV ".to_string()
+                    " BOTTOM · NAV ".to_string()
                 } else {
-                    " Bottom ".to_string()
+                    " BOTTOM ".to_string()
                 },
                 style,
             )]
@@ -117,15 +117,15 @@ impl Widget for BottomPanel<'_> {
                     .flat_map(|(idx, tab)| {
                         let tab_style = if tab == self.model.state.active {
                             if self.focused {
-                                theme::brand()
+                                theme::brand().add_modifier(ratatui::style::Modifier::UNDERLINED)
                             } else {
-                                theme::dim()
+                                theme::text().add_modifier(ratatui::style::Modifier::BOLD)
                             }
                         } else {
                             theme::muted()
                         };
                         [
-                            Span::styled(format!(" Alt+{} {} ", idx + 1, tab.label()), tab_style),
+                            Span::styled(format!(" {} {} ", idx + 1, tab.label()), tab_style),
                             Span::styled(" ", theme::muted()),
                         ]
                     })
@@ -138,32 +138,20 @@ impl Widget for BottomPanel<'_> {
             .border_style(if self.focused {
                 theme::brand()
             } else {
-                theme::border()
+                theme::border_muted()
             })
             .title(title)
-            .title_bottom(Line::from("Ctrl+P close"));
+            .title_bottom(Line::from("⇧←/⇧→ tab · Esc back · Ctrl+P close"));
         let inner = block.inner(area);
         block.render(area, buf);
         let lines = match self.model.state.active {
             BottomPanelTab::Tests => vec![
-                Line::styled(
-                    "No structured test results are available yet.",
-                    theme::text(),
-                ),
-                Line::styled(
-                    "Command output remains available in Terminal.",
-                    theme::muted(),
-                ),
+                Line::styled("No validation run yet", theme::text()),
+                Line::styled("Captured command output is in Terminal.", theme::muted()),
             ],
             BottomPanelTab::Diagnostics => vec![
-                Line::styled(
-                    "No structured diagnostics are available yet.",
-                    theme::text(),
-                ),
-                Line::styled(
-                    "Compiler and tool output remains available in Terminal.",
-                    theme::muted(),
-                ),
+                Line::styled("No diagnostics", theme::text()),
+                Line::styled("Compiler and tool output is in Terminal.", theme::muted()),
             ],
             BottomPanelTab::Terminal => terminal_lines(self.model.busy_phase, self.model.activity),
             BottomPanelTab::Activity => activity_lines(self.model.activity),
@@ -191,10 +179,7 @@ fn terminal_lines<'a>(busy_phase: &'a BusyPhase, activity: &'a ActivityFeed) -> 
         .take(5)
         .collect::<Vec<_>>();
     if tool_items.is_empty() {
-        lines.push(Line::styled(
-            "No captured command output yet.",
-            theme::muted(),
-        ));
+        lines.push(Line::styled("No command output yet", theme::muted()));
     } else {
         for item in tool_items.into_iter().rev() {
             lines.push(Line::from(vec![
@@ -208,7 +193,7 @@ fn terminal_lines<'a>(busy_phase: &'a BusyPhase, activity: &'a ActivityFeed) -> 
 
 fn activity_lines(activity: &ActivityFeed) -> Vec<Line<'_>> {
     if activity.is_empty() {
-        return vec![Line::styled("No technical activity yet.", theme::muted())];
+        return vec![Line::styled("No activity yet", theme::muted())];
     }
     activity
         .all()
@@ -307,8 +292,9 @@ mod tests {
         };
 
         let rendered = rendered_text(model, true);
-        assert!(rendered.contains("Bottom · NAV"));
+        assert!(rendered.contains("BOTTOM · NAV"));
         assert!(rendered.contains("Diagnostics"));
+        assert!(rendered.contains("⇧←/⇧→ tab"));
         assert!(rendered.contains("Ctrl+P close"));
     }
 
