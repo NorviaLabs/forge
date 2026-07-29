@@ -2,7 +2,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::app::{TuiApp, TuiRuntimeConfig, WorkspaceMode};
+    use crate::app::{FocusBlock, TuiApp, TuiRuntimeConfig, WorkspaceMode};
     use crate::overlays::Overlay;
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
     use forge_core::{AgentSession, LoopConfig};
@@ -413,7 +413,7 @@ mod tests {
         app.runtime.cwd = workspace.clone();
         app.file_explorer = crate::file_explorer::FileExplorer::new(Some(workspace.clone()));
         app.files_visible = true;
-        app.file_explorer.focused = true;
+        app.focus_block(FocusBlock::Files);
         // Select the file and open it.
         app.file_explorer.move_selection(1);
         app.handle_key(press(KeyCode::Enter)).await.unwrap();
@@ -440,7 +440,7 @@ mod tests {
         app.runtime.cwd = workspace.clone();
         app.file_explorer = crate::file_explorer::FileExplorer::new(Some(workspace.clone()));
         app.files_visible = true;
-        app.file_explorer.focused = true;
+        app.focus_block(FocusBlock::Files);
         app.file_explorer.move_selection(1);
         app.handle_key(press(KeyCode::Enter)).await.unwrap();
 
@@ -465,6 +465,7 @@ mod tests {
         app.runtime.cwd = workspace.clone();
         app.source_viewer.open(&workspace, &workspace.join("x.txt"));
         app.workspace_mode = WorkspaceMode::Editor;
+        app.focus_block(FocusBlock::Workspace);
 
         app.handle_key(press(KeyCode::Down)).await.unwrap();
         assert_eq!(app.source_viewer.current_line, 1);
@@ -494,6 +495,7 @@ mod tests {
         app.runtime.cwd = workspace.clone();
         app.source_viewer.open(&workspace, &workspace.join("x.txt"));
         app.workspace_mode = WorkspaceMode::Editor;
+        app.focus_block(FocusBlock::Workspace);
 
         app.handle_key(press_with(KeyCode::Char('f'), KeyModifiers::CONTROL))
             .await
@@ -524,6 +526,7 @@ mod tests {
         app.runtime.cwd = workspace.clone();
         app.source_viewer.open(&workspace, &workspace.join("x.txt"));
         app.workspace_mode = WorkspaceMode::Editor;
+        app.focus_block(FocusBlock::Workspace);
 
         app.handle_key(press_with(KeyCode::Char('g'), KeyModifiers::CONTROL))
             .await
@@ -646,7 +649,7 @@ mod tests {
         app.runtime.cwd = workspace.clone();
         app.file_explorer = crate::file_explorer::FileExplorer::new(Some(workspace.clone()));
         app.files_visible = true;
-        app.file_explorer.focused = true;
+        app.focus_block(FocusBlock::Files);
 
         // Wait for the background git-status thread.
         while app.file_explorer.git_status.loading {

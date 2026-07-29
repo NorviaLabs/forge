@@ -292,13 +292,13 @@ impl Widget for InputBar<'_> {
         let lines: Vec<Line> = if self.model.text.is_empty() && !self.model.hint.is_empty() {
             vec![Line::from(vec![
                 Span::styled("› ", theme::brand()),
-                Span::styled(" ", theme::caret()), // block cell
+                Span::styled(" ", if self.focused { theme::caret() } else { base }),
                 Span::styled(self.model.hint.as_str(), theme::dim()),
             ])]
         } else if self.model.text.is_empty() {
             vec![Line::from(vec![
                 Span::styled("› ", theme::brand()),
-                Span::styled(" ", theme::caret()),
+                Span::styled(" ", if self.focused { theme::caret() } else { base }),
             ])]
         } else {
             let t = &self.model.text;
@@ -308,7 +308,7 @@ impl Widget for InputBar<'_> {
             let mut out = Vec::new();
             for (i, raw) in t.split('\n').enumerate() {
                 let prefix = if i == 0 { "› " } else { "  " };
-                if i == line_idx {
+                if self.focused && i == line_idx {
                     let line_start = if i == 0 {
                         0
                     } else {
@@ -344,7 +344,7 @@ impl Widget for InputBar<'_> {
                     ]));
                 }
             }
-            if t.ends_with('\n') && cur == t.len() {
+            if self.focused && t.ends_with('\n') && cur == t.len() {
                 out.push(Line::from(vec![
                     Span::styled("  ", theme::brand()),
                     Span::styled(" ", theme::caret()),

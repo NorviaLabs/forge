@@ -71,14 +71,13 @@ pub enum WorkspaceMode {
 impl WorkspaceMode {
     fn mode_label(self, focus: FocusMode) -> &'static str {
         match focus {
-            FocusMode::Input(InputOwner::ChatComposer) if self == Self::Chat => "INPUT",
             FocusMode::Transient(TransientOwner::SourceSearch)
                 if self == Self::Editor || self == Self::Chat =>
             {
                 "SEARCH"
             }
             FocusMode::Transient(TransientOwner::JumpToLine) if self == Self::Editor => "JUMP",
-            _ => "NAV",
+            _ => self.label(),
         }
     }
 }
@@ -111,12 +110,13 @@ impl WorkspaceMode {
     }
 }
 
-/// The four spatially stable keyboard regions.  This is intentionally small:
+/// The spatially stable keyboard regions.  This is intentionally small:
 /// component-specific selection state remains with the component itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FocusBlock {
+pub(crate) enum FocusBlock {
     Files,
     Workspace,
+    Composer,
     Inspector,
     BottomPanel,
 }
@@ -126,6 +126,7 @@ impl FocusBlock {
         match self {
             Self::Files => "FILES",
             Self::Workspace => "CHAT",
+            Self::Composer => "COMPOSER",
             Self::Inspector => "INSPECTOR",
             Self::BottomPanel => "BOTTOM",
         }
@@ -133,17 +134,13 @@ impl FocusBlock {
 }
 
 impl FocusBlock {
-    const ORDER: [Self; 4] = [
+    const ORDER: [Self; 5] = [
         Self::Files,
         Self::Workspace,
+        Self::Composer,
         Self::Inspector,
         Self::BottomPanel,
     ];
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum InputOwner {
-    ChatComposer,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,7 +152,6 @@ enum TransientOwner {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FocusMode {
     Navigation,
-    Input(InputOwner),
     Transient(TransientOwner),
 }
 
@@ -176,8 +172,8 @@ struct FocusState {
 impl Default for FocusState {
     fn default() -> Self {
         Self {
-            block: FocusBlock::Workspace,
-            mode: FocusMode::Input(InputOwner::ChatComposer),
+            block: FocusBlock::Composer,
+            mode: FocusMode::Navigation,
             previous_block: None,
             return_block: Some(FocusBlock::Workspace),
         }
@@ -196,6 +192,7 @@ impl FocusAvailability {
         match block {
             FocusBlock::Files => self.files,
             FocusBlock::Workspace => true,
+            FocusBlock::Composer => true,
             FocusBlock::Inspector => self.inspector,
             FocusBlock::BottomPanel => self.bottom_panel,
         }
@@ -2337,7 +2334,7 @@ Reply with ONLY the commit message line.\n\n\
         }
         self.normalize_focus();
         match self.focus.mode {
-            FocusMode::Input(InputOwner::ChatComposer) => {
+            FocusMode::Navigation if self.focus.block == FocusBlock::Composer => {
                 self.input.history_browse = false;
                 self.input.insert_paste(data);
                 self.clamp_slash_suggest();
@@ -2888,11 +2885,14 @@ Reply with ONLY the commit message line.\n\n\
             InputBar {
                 model: &input,
                 attachment: attachment_label.as_deref(),
-                focused: matches!(self.focus.mode, FocusMode::Input(InputOwner::ChatComposer)),
-                mode_label: if matches!(self.focus.mode, FocusMode::Input(_)) {
-                    "INPUT"
+                focused: self.focus.mode == FocusMode::Navigation
+                    && self.focus.block == FocusBlock::Composer,
+                mode_label: if self.focus.mode == FocusMode::Navigation
+                    && self.focus.block == FocusBlock::Composer
+                {
+                    "COMPOSER"
                 } else {
-                    "NAV"
+                    "Chat"
                 },
             },
             regions.input,
@@ -3102,30 +3102,11 @@ Reply with ONLY the commit message line.\n\n\
     }
 
     fn normalize_focus(&mut self) {
-        // Keep direct legacy component setup from creating a hidden owner in
-        // tests or older call sites while production transitions use the
-        // focus helpers below.
-        if self.focus.mode == FocusMode::Input(InputOwner::ChatComposer) {
-            if self.bottom_panel.open && self.bottom_panel.focused {
-                self.focus.block = FocusBlock::BottomPanel;
-                self.focus.mode = FocusMode::Navigation;
-            } else if self.files_visible && self.file_explorer.focused {
-                self.focus.block = FocusBlock::Files;
-                self.focus.mode = FocusMode::Navigation;
-            }
-        }
         let available = self.focus_availability();
         if !available.contains(self.focus.block) {
             self.focus.block = FocusBlock::Workspace;
             self.focus.mode = FocusMode::Navigation;
             self.focus.return_block = Some(FocusBlock::Workspace);
-        }
-        if self.focus.mode == FocusMode::Input(InputOwner::ChatComposer)
-            && self.workspace_mode != WorkspaceMode::Chat
-        {
-            // Old callers can still select a workspace tab directly. Do not
-            // leave the composer as an invisible owner in that legacy state.
-            self.focus.mode = FocusMode::Navigation;
         }
         if self.source_viewer.search.open {
             self.focus.block = FocusBlock::Workspace;
@@ -3148,7 +3129,7 @@ Reply with ONLY the commit message line.\n\n\
             );
     }
 
-    fn focus_block(&mut self, block: FocusBlock) {
+    pub(crate) fn focus_block(&mut self, block: FocusBlock) {
         if self.focus.block != block {
             self.focus.previous_block = Some(self.focus.block);
         }
@@ -3159,9 +3140,7 @@ Reply with ONLY the commit message line.\n\n\
     }
 
     fn enter_chat_composer(&mut self) {
-        self.focus.block = FocusBlock::Workspace;
-        self.focus.mode = FocusMode::Input(InputOwner::ChatComposer);
-        self.focus.return_block = Some(FocusBlock::Workspace);
+        self.focus_block(FocusBlock::Composer);
         self.normalize_focus();
     }
 
@@ -3217,6 +3196,15 @@ Reply with ONLY the commit message line.\n\n\
     fn escape_navigation(&mut self) {
         match self.focus.block {
             FocusBlock::Workspace => {}
+            FocusBlock::Composer => {
+                let previous = self
+                    .focus
+                    .previous_block
+                    .filter(|block| *block != FocusBlock::Composer)
+                    .filter(|block| self.focus_availability().contains(*block))
+                    .unwrap_or(FocusBlock::Workspace);
+                self.focus_block(previous);
+            }
             block => self.restore_focus_after_closing(block),
         }
         self.normalize_focus();
@@ -3232,9 +3220,6 @@ Reply with ONLY the commit message line.\n\n\
 
     fn footer_hints(&self) -> String {
         match self.focus.mode {
-            FocusMode::Input(InputOwner::ChatComposer) => {
-                "Enter send · ⇧Enter newline · Esc leave input · Tab complete · ? help".into()
-            }
             FocusMode::Transient(TransientOwner::SourceSearch) => {
                 "Enter next · ⇧Enter prev · Esc leave search · ? help".into()
             }
@@ -3242,15 +3227,19 @@ Reply with ONLY the commit message line.\n\n\
                 "Enter jump · Esc leave jump · ? help".into()
             }
             FocusMode::Navigation => match self.focus.block {
-                FocusBlock::Files => "Tab / Shift+Tab blocks · Esc leave · ? help".into(),
+                FocusBlock::Composer => {
+                    "Enter send · ⇧Enter newline · Esc return · Tab complete · Type chat · ? help"
+                        .into()
+                }
+                FocusBlock::Files => "Tab / Shift+Tab blocks · Type chat · ? help".into(),
                 FocusBlock::Workspace => {
-                    "Tab / Shift+Tab blocks · ⇧← / ⇧→ switch tab · Enter or i interact · Esc leave · ? help".into()
+                    "Tab / Shift+Tab blocks · ⇧← / ⇧→ switch tab · Type chat · ? help".into()
                 }
                 FocusBlock::Inspector => {
-                    "Tab / Shift+Tab blocks · ⇧← / ⇧→ switch tab · Esc leave · ? help".into()
+                    "Tab / Shift+Tab blocks · ⇧← / ⇧→ switch tab · Type chat · ? help".into()
                 }
                 FocusBlock::BottomPanel => {
-                    "Tab / Shift+Tab blocks · ⇧← / ⇧→ switch tab · Esc leave · ? help".into()
+                    "Tab / Shift+Tab blocks · ⇧← / ⇧→ switch tab · Type chat · ? help".into()
                 }
             },
         }
@@ -3287,9 +3276,14 @@ Reply with ONLY the commit message line.\n\n\
         match self.focus.block {
             FocusBlock::Workspace => {
                 text.push_str("• ⇧← / ⇧→  Switch workspace tab\n");
-                text.push_str("• Enter or i  Enter chat input\n");
+                text.push_str("• Type  Start chat in composer\n");
                 text.push_str("• G / r  Editor navigation and refresh\n");
                 text.push_str("• Ctrl+F / Ctrl+G  Search or jump\n");
+            }
+            FocusBlock::Composer => {
+                text.push_str("• Enter  Send\n");
+                text.push_str("• ⇧Enter  Newline\n");
+                text.push_str("• Esc  Return to previous block\n");
             }
             FocusBlock::Inspector => {
                 text.push_str("• ⇧← / ⇧→  Switch inspector tab\n");
@@ -3304,9 +3298,7 @@ Reply with ONLY the commit message line.\n\n\
                 text.push_str("• Esc  Return to previous block\n");
             }
         }
-        if matches!(self.focus.mode, FocusMode::Input(_)) {
-            text.push_str("\nInput\n• Esc  Leave input\n");
-        } else if matches!(self.focus.mode, FocusMode::Transient(_)) {
+        if matches!(self.focus.mode, FocusMode::Transient(_)) {
             text.push_str("\nTransient input\n• Esc  Close\n");
         }
         text
@@ -3567,12 +3559,6 @@ Reply with ONLY the commit message line.\n\n\
                 true
             }
             None => match key.code {
-                KeyCode::Enter | KeyCode::Char('i')
-                    if key.modifiers.is_empty() && self.workspace_mode == WorkspaceMode::Chat =>
-                {
-                    self.enter_chat_composer();
-                    true
-                }
                 KeyCode::Up
                     if key.modifiers.is_empty() && self.workspace_mode == WorkspaceMode::Diff =>
                 {
@@ -3603,6 +3589,7 @@ Reply with ONLY the commit message line.\n\n\
         match self.focus.block {
             FocusBlock::Files => self.handle_file_explorer_key(key),
             FocusBlock::Workspace => self.handle_workspace_navigation_key(key),
+            FocusBlock::Composer => false,
             FocusBlock::Inspector => match self.tab_nav_command(key) {
                 Some(TabNavCommand::PreviousTab) => {
                     self.inspector_view = self.inspector_view.previous();
@@ -3729,12 +3716,30 @@ Reply with ONLY the commit message line.\n\n\
         }
     }
 
+    fn printable_chat_char(key: event::KeyEvent) -> Option<char> {
+        let non_shift_modifiers = key.modifiers & !(KeyModifiers::SHIFT | KeyModifiers::NONE);
+        match key.code {
+            KeyCode::Char(c) if non_shift_modifiers.is_empty() && !c.is_control() => Some(c),
+            _ => None,
+        }
+    }
+
+    fn type_to_compose(&mut self, key: event::KeyEvent) -> bool {
+        let Some(c) = Self::printable_chat_char(key) else {
+            return false;
+        };
+        self.enter_chat_composer();
+        self.input.history_browse = false;
+        self.input.insert(c);
+        self.clamp_slash_suggest();
+        true
+    }
+
     async fn handle_chat_composer_key(&mut self, key: event::KeyEvent) -> Result<bool, TuiError> {
         let input_was_empty = self.input.text.is_empty();
         let consumed = match key.code {
             KeyCode::Esc if key.modifiers.is_empty() => {
-                self.focus.mode = FocusMode::Navigation;
-                self.normalize_focus();
+                self.escape_navigation();
                 true
             }
             KeyCode::Enter
@@ -3787,8 +3792,12 @@ Reply with ONLY the commit message line.\n\n\
                 true
             }
             KeyCode::Tab => {
-                self.complete_slash_suggestion();
-                true
+                if self.input.text.starts_with('/') && !self.slash_suggestions().is_empty() {
+                    self.complete_slash_suggestion();
+                    true
+                } else {
+                    false
+                }
             }
             KeyCode::Up if key.modifiers.is_empty() => {
                 let suggestions = self.slash_suggestions();
@@ -4017,8 +4026,12 @@ Reply with ONLY the commit message line.\n\n\
                 self.handle_jump_key(key);
                 return Ok(());
             }
-            FocusMode::Input(InputOwner::ChatComposer) => {
+            FocusMode::Navigation if self.focus.block == FocusBlock::Composer => {
                 if self.handle_chat_composer_key(key).await? {
+                    return Ok(());
+                }
+                if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
+                    self.cycle_focus_block(!matches!(key.code, KeyCode::BackTab));
                     return Ok(());
                 }
             }
@@ -4038,7 +4051,10 @@ Reply with ONLY the commit message line.\n\n\
             }
         }
 
-        let _ = self.handle_global_key(key);
+        if self.handle_global_key(key) {
+            return Ok(());
+        }
+        let _ = self.type_to_compose(key);
         Ok(())
     }
 
@@ -4953,20 +4969,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn focus_starts_with_explicit_chat_composer_ownership() {
+    async fn focus_starts_on_composer_block() {
         let (_dir, app) = focus_test_app().await;
-        assert_eq!(app.focus.block, FocusBlock::Workspace);
-        assert_eq!(app.focus.mode, FocusMode::Input(InputOwner::ChatComposer));
+        assert_eq!(app.focus.block, FocusBlock::Composer);
+        assert_eq!(app.focus.mode, FocusMode::Navigation);
     }
 
     #[tokio::test]
     async fn tab_cycles_visible_blocks_and_skips_hidden_ones() {
         let (_dir, mut app) = focus_test_app().await;
-        app.focus.mode = FocusMode::Navigation;
+        app.focus_block(FocusBlock::Workspace);
         app.files_visible = true;
         app.bottom_panel.open = true;
         app.normalize_focus();
 
+        app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert_eq!(app.focus.block, FocusBlock::Composer);
         app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
             .await
             .unwrap();
@@ -4989,9 +5009,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tab_and_shift_tab_reach_composer() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.focus_block(FocusBlock::Workspace);
+
+        app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert_eq!(app.focus.block, FocusBlock::Composer);
+
+        app.handle_key(press(KeyCode::BackTab, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert_eq!(app.focus.block, FocusBlock::Workspace);
+    }
+
+    #[tokio::test]
     async fn opening_and_closing_bottom_panel_transfers_focus() {
         let (_dir, mut app) = focus_test_app().await;
-        app.focus.mode = FocusMode::Navigation;
+        app.focus_block(FocusBlock::Workspace);
         app.handle_key(press(KeyCode::Char('p'), KeyModifiers::CONTROL))
             .await
             .unwrap();
@@ -5007,7 +5043,7 @@ mod tests {
     #[tokio::test]
     async fn shift_arrow_tabs_only_apply_to_the_active_navigation_block() {
         let (_dir, mut app) = focus_test_app().await;
-        app.focus.mode = FocusMode::Navigation;
+        app.focus_block(FocusBlock::Workspace);
         app.handle_key(press(KeyCode::Right, KeyModifiers::SHIFT))
             .await
             .unwrap();
@@ -5045,10 +5081,87 @@ mod tests {
             .unwrap();
         assert_eq!(app.focus.mode, FocusMode::Navigation);
         assert_eq!(app.focus.block, FocusBlock::Workspace);
-        app.handle_key(press(KeyCode::Char('i'), KeyModifiers::NONE))
+        app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
             .await
             .unwrap();
-        assert_eq!(app.focus.mode, FocusMode::Input(InputOwner::ChatComposer));
+        assert_eq!(app.focus.block, FocusBlock::Composer);
+        assert_eq!(app.input.text, "[]x");
+    }
+
+    #[tokio::test]
+    async fn esc_from_composer_returns_to_previous_block_and_keeps_draft() {
+        let (_dir, mut app) = focus_test_app().await;
+        for block in [
+            FocusBlock::Files,
+            FocusBlock::Workspace,
+            FocusBlock::Inspector,
+            FocusBlock::BottomPanel,
+        ] {
+            app.files_visible = true;
+            app.sidebar_visible = true;
+            app.bottom_panel.open = true;
+            app.focus_block(block);
+            app.enter_chat_composer();
+            app.input.set_text("draft");
+            app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
+                .await
+                .unwrap();
+            assert_eq!(app.focus.block, block);
+            assert_eq!(app.input.text, "draft");
+        }
+    }
+
+    #[tokio::test]
+    async fn type_to_compose_keeps_first_unbound_printable() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.focus_block(FocusBlock::Workspace);
+        app.workspace_mode = WorkspaceMode::Diff;
+
+        app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
+            .await
+            .unwrap();
+
+        assert_eq!(app.focus.block, FocusBlock::Composer);
+        assert_eq!(app.input.text, "x");
+    }
+
+    #[tokio::test]
+    async fn registered_printable_editor_commands_do_not_enter_composer() {
+        let (dir, mut app) = focus_test_app().await;
+        let path = dir.path().join("source.txt");
+        fs::write(&path, "a\nb\nc\n").unwrap();
+        app.open_file_in_editor(&path);
+        app.input.set_text("");
+
+        app.handle_key(press(KeyCode::Char('r'), KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert_eq!(app.focus.block, FocusBlock::Workspace);
+        assert!(app.input.text.is_empty());
+
+        app.handle_key(press(KeyCode::Char('G'), KeyModifiers::SHIFT))
+            .await
+            .unwrap();
+        assert_eq!(app.focus.block, FocusBlock::Workspace);
+        assert!(app.input.text.is_empty());
+    }
+
+    #[tokio::test]
+    async fn non_printable_keys_do_not_type_to_compose() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.focus_block(FocusBlock::Workspace);
+
+        for key in [
+            press(KeyCode::Enter, KeyModifiers::NONE),
+            press(KeyCode::Left, KeyModifiers::NONE),
+            press(KeyCode::Right, KeyModifiers::SHIFT),
+            press(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            press(KeyCode::Char('x'), KeyModifiers::ALT),
+        ] {
+            app.handle_key(key).await.unwrap();
+            assert_eq!(app.focus.block, FocusBlock::Workspace);
+            assert!(app.input.text.is_empty());
+        }
     }
 
     #[tokio::test]
@@ -5477,6 +5590,7 @@ mod tests {
         );
         app.input.set_text("draft");
         app.bottom_panel.open_tab(BottomPanelTab::Terminal);
+        app.focus_block(FocusBlock::BottomPanel);
 
         app.handle_key(press(KeyCode::Right, KeyModifiers::ALT))
             .await
@@ -6213,8 +6327,8 @@ mod tests {
     #[test]
     fn helper_labels_reflect_focus_mode() {
         assert_eq!(
-            WorkspaceMode::Chat.mode_label(FocusMode::Input(InputOwner::ChatComposer)),
-            "INPUT"
+            WorkspaceMode::Chat.mode_label(FocusMode::Navigation),
+            "Chat"
         );
         assert_eq!(
             WorkspaceMode::Editor.mode_label(FocusMode::Transient(TransientOwner::SourceSearch)),
@@ -6224,7 +6338,10 @@ mod tests {
             WorkspaceMode::Editor.mode_label(FocusMode::Transient(TransientOwner::JumpToLine)),
             "JUMP"
         );
-        assert_eq!(WorkspaceMode::Diff.mode_label(FocusMode::Navigation), "NAV");
+        assert_eq!(
+            WorkspaceMode::Diff.mode_label(FocusMode::Navigation),
+            "Diff"
+        );
     }
 
     #[tokio::test]
@@ -6270,10 +6387,10 @@ mod tests {
         let (_dir, mut app) = focus_test_app().await;
         assert!(app.footer_hints().contains("Enter send"));
 
-        app.focus.mode = FocusMode::Navigation;
+        app.focus_block(FocusBlock::Workspace);
         app.workspace_mode = WorkspaceMode::Editor;
         assert!(app.footer_hints().contains("⇧← / ⇧→ switch tab"));
-        assert!(app.footer_hints().contains("Esc leave"));
+        assert!(app.footer_hints().contains("Type chat"));
 
         app.focus.mode = FocusMode::Transient(TransientOwner::SourceSearch);
         assert!(app.footer_hints().contains("leave search"));
@@ -7255,6 +7372,7 @@ mod tests {
         );
         assert!(!app.pending_external_editor);
         app.workspace_mode = WorkspaceMode::Editor;
+        app.focus_block(FocusBlock::Workspace);
         app.source_viewer
             .open(Path::new("/tmp"), &PathBuf::from("/tmp/fake.txt"));
         app.handle_key(press(KeyCode::Char('e'), KeyModifiers::NONE))
@@ -7337,5 +7455,4 @@ mod tests {
         let result = app.resume_after_external_editor(None);
         assert!(result.is_ok());
     }
-
 }
