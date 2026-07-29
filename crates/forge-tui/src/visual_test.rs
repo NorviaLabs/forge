@@ -242,7 +242,8 @@ mod tests {
             text.contains("Restore a previous session"),
             "missing selected command help:\n{text}"
         );
-        // Selected row must use solid teal background (theme::ACCENT)
+        // Selected row uses the design-system selected surface, distinct from
+        // the cyan focus accent.
         let buf = term.backend().buffer();
         let area = buf.area();
         let mut found_sel_bg = false;
@@ -250,7 +251,7 @@ mod tests {
         for y in 0..area.height {
             for x in 0..area.width {
                 let cell = &buf[(x, y)];
-                if cell.style().bg == Some(crate::theme::ACCENT) {
+                if cell.style().bg == Some(crate::theme::SELECTED_BG) {
                     found_sel_bg = true;
                 }
                 // Block cursor: solid TEXT background cell (space or inverted char)
@@ -261,7 +262,7 @@ mod tests {
         }
         assert!(
             found_sel_bg,
-            "selected suggestion must have ACCENT background"
+            "selected suggestion must have selected-surface background"
         );
         assert!(
             found_caret_bg,

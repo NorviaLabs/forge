@@ -3221,24 +3221,24 @@ Reply with ONLY the commit message line.\n\n\
     fn footer_hints(&self) -> String {
         match self.focus.mode {
             FocusMode::Input(InputOwner::ChatComposer) => {
-                "Enter send · ⇧Enter newline · Esc leave input · Tab complete · F1 help".into()
+                "Enter send · ⇧Enter newline · Esc leave input · Tab complete · ? help".into()
             }
             FocusMode::Transient(TransientOwner::SourceSearch) => {
-                "Enter next · ⇧Enter prev · Esc leave search · F1 help".into()
+                "Enter next · ⇧Enter prev · Esc leave search · ? help".into()
             }
             FocusMode::Transient(TransientOwner::JumpToLine) => {
-                "Enter jump · Esc leave jump · F1 help".into()
+                "Enter jump · Esc leave jump · ? help".into()
             }
             FocusMode::Navigation => match self.focus.block {
-                FocusBlock::Files => "Tab / Shift+Tab blocks · Esc leave · F1 help".into(),
+                FocusBlock::Files => "Tab / Shift+Tab blocks · Esc leave · ? help".into(),
                 FocusBlock::Workspace => {
-                    "Tab / Shift+Tab blocks · ⇧← / ⇧→ switch tab · Enter or i interact · Esc leave · F1 help".into()
+                    "Tab / Shift+Tab blocks · ⇧← / ⇧→ switch tab · Enter or i interact · Esc leave · ? help".into()
                 }
                 FocusBlock::Inspector => {
-                    "Tab / Shift+Tab blocks · ⇧← / ⇧→ switch tab · Esc leave · F1 help".into()
+                    "Tab / Shift+Tab blocks · ⇧← / ⇧→ switch tab · Esc leave · ? help".into()
                 }
                 FocusBlock::BottomPanel => {
-                    "Tab / Shift+Tab blocks · ⇧← / ⇧→ switch tab · Esc leave · F1 help".into()
+                    "Tab / Shift+Tab blocks · ⇧← / ⇧→ switch tab · Esc leave · ? help".into()
                 }
             },
         }
@@ -3269,7 +3269,7 @@ Reply with ONLY the commit message line.\n\n\
         ));
         text.push_str("Global\n");
         text.push_str("• Tab / Shift+Tab  Move between visible blocks\n");
-        text.push_str("• F1  Help\n");
+        text.push_str("• ?  Help\n");
         text.push_str("• Esc  Leave one interaction level\n\n");
         text.push_str("Active block\n");
         match self.focus.block {
@@ -3691,8 +3691,8 @@ Reply with ONLY the commit message line.\n\n\
                 }
                 true
             }
-            // Preserve the established inspector shortcut while the new
-            // unmodified bracket grammar applies to Inspector navigation.
+            // Preserve the established explicit Alt+[ / Alt+] inspector shortcut.
+            // Common tab navigation is handled through Shift+Arrow commands.
             KeyCode::Char('[') if key.modifiers.contains(KeyModifiers::ALT) => {
                 self.inspector_view = self.inspector_view.previous();
                 true
