@@ -223,6 +223,93 @@ enum ExplorerDialog {
     },
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DiffCommandContext {
+    Current,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RunCommandTarget {
+    Current,
+    Id(String),
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SlashCommandOrigin {
+    Composer,
+    GlobalPalette,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SemanticCommand {
+    GoHome,
+    GoBack,
+    OpenFile(PathBuf),
+    ReviewChanges(DiffCommandContext),
+    OpenRun(RunCommandTarget),
+    ToggleFiles,
+    FocusComposer,
+    SubmitMessage,
+    InsertComposerNewline,
+    OpenSlashCommands,
+    OpenGlobalCommandPalette,
+    OpenHelp,
+    SelectEntry(PathBuf),
+    MoveFileSelection(isize),
+    ExpandSelectedDirectory,
+    CollapseSelectedDirectory,
+    ToggleDirectory(PathBuf),
+    OpenSelectedEntry,
+    CancelCurrentInteraction,
+    ConfirmCurrentInteraction,
+    DispatchSlash {
+        origin: SlashCommandOrigin,
+        line: String,
+    },
+    CycleFocus {
+        forward: bool,
+    },
+    CycleWorkspaceTab {
+        forward: bool,
+    },
+    ToggleInspector,
+    CycleInspectorTab {
+        forward: bool,
+    },
+    ToggleBottomPanel,
+    CycleBottomPanelTab {
+        forward: bool,
+    },
+    OpenBottomPanel(BottomPanelTab),
+    RefreshFiles,
+    RefreshEditor,
+    BeginCreateFile,
+    BeginCreateDirectory,
+    BeginRename,
+    RequestDelete,
+    SelectPreviousChange,
+    SelectNextChange,
+    StartSourceSearch,
+    StartJumpToLine,
+    OpenExternalEditor,
+    ToggleCurrentFileAttachment,
+    ToggleToolDetails,
+    MoveQueueSelection(i32),
+    CancelSelectedQueueMessage,
+    QuitOrInterrupt,
+    Quit,
+    RunOrCancel,
+    Rerun,
+    EditAndRerun,
+    ToggleRunExecutionMode,
+    EditRunCommand,
+    EditRunDirectory,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TabNavCommand {
     PreviousTab,
@@ -4370,6 +4457,517 @@ Reply with ONLY the commit message line.\n\n\
         }
     }
 
+    fn semantic_command_for_global_key(&self, key: event::KeyEvent) -> Option<SemanticCommand> {
+        match key.code {
+            KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => {
+                Some(SemanticCommand::CycleWorkspaceTab { forward: false })
+            }
+            KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => {
+                Some(SemanticCommand::CycleWorkspaceTab { forward: true })
+            }
+            KeyCode::Char('1') if key.modifiers.contains(KeyModifiers::ALT) => {
+                Some(SemanticCommand::OpenRun(RunCommandTarget::Current))
+            }
+            KeyCode::Char('2') if key.modifiers.contains(KeyModifiers::ALT) => Some(
+                SemanticCommand::OpenBottomPanel(BottomPanelTab::Diagnostics),
+            ),
+            KeyCode::Char('3') if key.modifiers.contains(KeyModifiers::ALT) => {
+                Some(SemanticCommand::OpenBottomPanel(BottomPanelTab::Terminal))
+            }
+            KeyCode::Char('4') if key.modifiers.contains(KeyModifiers::ALT) => {
+                Some(SemanticCommand::OpenBottomPanel(BottomPanelTab::Activity))
+            }
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(SemanticCommand::MoveQueueSelection(-1))
+            }
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(SemanticCommand::MoveQueueSelection(1))
+            }
+            KeyCode::Backspace if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(SemanticCommand::CancelSelectedQueueMessage)
+            }
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(SemanticCommand::QuitOrInterrupt)
+            }
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(SemanticCommand::Quit)
+            }
+            KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) && !self.busy => {
+                Some(SemanticCommand::OpenGlobalCommandPalette)
+            }
+            KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(SemanticCommand::ToggleToolDetails)
+            }
+            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(SemanticCommand::ToggleFiles)
+            }
+            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(SemanticCommand::ToggleInspector)
+            }
+            KeyCode::Char('[') if key.modifiers.contains(KeyModifiers::ALT) => {
+                Some(SemanticCommand::CycleInspectorTab { forward: false })
+            }
+            KeyCode::Char(']') if key.modifiers.contains(KeyModifiers::ALT) => {
+                Some(SemanticCommand::CycleInspectorTab { forward: true })
+            }
+            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(SemanticCommand::ToggleBottomPanel)
+            }
+            KeyCode::F(1) if self.overlay.is_none() => Some(SemanticCommand::OpenHelp),
+            _ => None,
+        }
+    }
+
+    fn semantic_command_for_file_key(&self, key: event::KeyEvent) -> Option<SemanticCommand> {
+        if !self.files_visible {
+            return None;
+        }
+        match key.code {
+            KeyCode::Esc if key.modifiers.is_empty() => {
+                Some(SemanticCommand::CancelCurrentInteraction)
+            }
+            KeyCode::Up if key.modifiers.is_empty() => Some(SemanticCommand::MoveFileSelection(-1)),
+            KeyCode::Down if key.modifiers.is_empty() => {
+                Some(SemanticCommand::MoveFileSelection(1))
+            }
+            KeyCode::Right if key.modifiers.is_empty() => {
+                Some(SemanticCommand::ExpandSelectedDirectory)
+            }
+            KeyCode::Left if key.modifiers.is_empty() => {
+                Some(SemanticCommand::CollapseSelectedDirectory)
+            }
+            KeyCode::Enter if key.modifiers.is_empty() => Some(SemanticCommand::OpenSelectedEntry),
+            KeyCode::Char('r') if key.modifiers.is_empty() => Some(SemanticCommand::RefreshFiles),
+            KeyCode::Char('n') if key.modifiers.is_empty() => {
+                Some(SemanticCommand::BeginCreateFile)
+            }
+            KeyCode::Char('N')
+                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+            {
+                Some(SemanticCommand::BeginCreateDirectory)
+            }
+            KeyCode::Char('R')
+                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+            {
+                Some(SemanticCommand::BeginRename)
+            }
+            KeyCode::Char('d') if key.modifiers.is_empty() => Some(SemanticCommand::RequestDelete),
+            _ => None,
+        }
+    }
+
+    fn semantic_command_for_editor_key(&self, key: event::KeyEvent) -> Option<SemanticCommand> {
+        if self.workspace_mode != WorkspaceMode::Editor {
+            return None;
+        }
+        match key.code {
+            KeyCode::Esc if key.modifiers.is_empty() => {
+                Some(SemanticCommand::CancelCurrentInteraction)
+            }
+            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(SemanticCommand::StartSourceSearch)
+            }
+            KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(SemanticCommand::StartJumpToLine)
+            }
+            KeyCode::Char('r') if key.modifiers.is_empty() => Some(SemanticCommand::RefreshEditor),
+            KeyCode::Char('e') if key.modifiers.is_empty() => {
+                Some(SemanticCommand::OpenExternalEditor)
+            }
+            KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(SemanticCommand::ToggleCurrentFileAttachment)
+            }
+            _ => None,
+        }
+    }
+
+    fn semantic_command_for_workspace_key(&self, key: event::KeyEvent) -> Option<SemanticCommand> {
+        match self.tab_nav_command(key) {
+            Some(TabNavCommand::PreviousTab) => {
+                return Some(SemanticCommand::CycleWorkspaceTab { forward: false });
+            }
+            Some(TabNavCommand::NextTab) => {
+                return Some(SemanticCommand::CycleWorkspaceTab { forward: true });
+            }
+            None => {}
+        }
+        match key.code {
+            KeyCode::Up
+                if key.modifiers.is_empty() && self.workspace_mode == WorkspaceMode::Diff =>
+            {
+                Some(SemanticCommand::SelectPreviousChange)
+            }
+            KeyCode::Down
+                if key.modifiers.is_empty() && self.workspace_mode == WorkspaceMode::Diff =>
+            {
+                Some(SemanticCommand::SelectNextChange)
+            }
+            KeyCode::Esc if key.modifiers.is_empty() => {
+                Some(SemanticCommand::CancelCurrentInteraction)
+            }
+            _ if self.workspace_mode == WorkspaceMode::Editor => {
+                self.semantic_command_for_editor_key(key)
+            }
+            _ => None,
+        }
+    }
+
+    fn semantic_command_for_inspector_key(&self, key: event::KeyEvent) -> Option<SemanticCommand> {
+        match self.tab_nav_command(key) {
+            Some(TabNavCommand::PreviousTab) => {
+                Some(SemanticCommand::CycleInspectorTab { forward: false })
+            }
+            Some(TabNavCommand::NextTab) => {
+                Some(SemanticCommand::CycleInspectorTab { forward: true })
+            }
+            None => match key.code {
+                KeyCode::Esc if key.modifiers.is_empty() => {
+                    Some(SemanticCommand::CancelCurrentInteraction)
+                }
+                _ => None,
+            },
+        }
+    }
+
+    fn semantic_command_for_bottom_panel_key(
+        &self,
+        key: event::KeyEvent,
+    ) -> Option<SemanticCommand> {
+        if !self.bottom_panel.open {
+            return None;
+        }
+        match self.tab_nav_command(key) {
+            Some(TabNavCommand::PreviousTab) => {
+                return Some(SemanticCommand::CycleBottomPanelTab { forward: false });
+            }
+            Some(TabNavCommand::NextTab) => {
+                return Some(SemanticCommand::CycleBottomPanelTab { forward: true });
+            }
+            None => {}
+        }
+        match key.code {
+            KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => {
+                Some(SemanticCommand::CycleBottomPanelTab { forward: false })
+            }
+            KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => {
+                Some(SemanticCommand::CycleBottomPanelTab { forward: true })
+            }
+            KeyCode::Enter if self.bottom_panel.active == BottomPanelTab::Run => {
+                Some(SemanticCommand::RunOrCancel)
+            }
+            KeyCode::Char('r') if self.bottom_panel.active == BottomPanelTab::Run => {
+                Some(SemanticCommand::Rerun)
+            }
+            KeyCode::Char('e') if self.bottom_panel.active == BottomPanelTab::Run => {
+                Some(SemanticCommand::EditAndRerun)
+            }
+            KeyCode::Char('m') if self.bottom_panel.active == BottomPanelTab::Run => {
+                Some(SemanticCommand::ToggleRunExecutionMode)
+            }
+            KeyCode::Char('i') if self.bottom_panel.active == BottomPanelTab::Run => {
+                Some(SemanticCommand::EditRunCommand)
+            }
+            KeyCode::Char('d') if self.bottom_panel.active == BottomPanelTab::Run => {
+                Some(SemanticCommand::EditRunDirectory)
+            }
+            KeyCode::Esc if key.modifiers.is_empty() => {
+                Some(SemanticCommand::CancelCurrentInteraction)
+            }
+            _ => None,
+        }
+    }
+
+    fn semantic_command_for_composer_key(&self, key: event::KeyEvent) -> Option<SemanticCommand> {
+        match key.code {
+            KeyCode::Esc if key.modifiers.is_empty() => {
+                Some(SemanticCommand::CancelCurrentInteraction)
+            }
+            KeyCode::Enter
+                if key.modifiers.contains(KeyModifiers::SHIFT)
+                    || key.modifiers.contains(KeyModifiers::ALT) =>
+            {
+                Some(SemanticCommand::InsertComposerNewline)
+            }
+            KeyCode::Enter if key.modifiers.is_empty() => Some(SemanticCommand::SubmitMessage),
+            KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(SemanticCommand::InsertComposerNewline)
+            }
+            _ => None,
+        }
+    }
+
+    async fn submit_composer_message(&mut self) -> Result<(), TuiError> {
+        let suggestions = self.slash_suggestions();
+        if self.input.text.starts_with('/')
+            && !suggestions.is_empty()
+            && !self.input.text.contains(' ')
+        {
+            let idx = self.slash_suggest_idx.min(suggestions.len() - 1);
+            let cmd = suggestions[idx].cmd.clone();
+            let cur = self.input.text.trim();
+            let line = if cur == cmd.as_str() || cur.starts_with(&(cmd.clone() + " ")) {
+                self.input.take()
+            } else {
+                self.input.set_text(cmd);
+                self.input.take()
+            };
+            if !line.is_empty() {
+                self.history.push(&line);
+                self.slash_suggest_idx = 0;
+                self.notices.clear();
+                self.input.history_browse = false;
+                self.dispatch_line(&line).await?;
+            }
+            return Ok(());
+        }
+
+        let line = self.input.take();
+        if line.trim().is_empty() {
+            if !self.busy && !self.message_queue.is_empty() {
+                self.dequeue_and_send_next();
+            }
+            return Ok(());
+        }
+
+        self.history.push(&line);
+        self.slash_suggest_idx = 0;
+        self.notices.clear();
+        self.input.history_browse = false;
+        if self.busy && !line.trim_start().starts_with('/') {
+            self.enqueue_user_message(line);
+        } else if line.trim_start().starts_with('/') {
+            self.dispatch_line(&line).await?;
+        } else {
+            self.dispatch_line(&line).await?;
+        }
+        Ok(())
+    }
+
+    async fn execute_semantic_command(
+        &mut self,
+        command: SemanticCommand,
+    ) -> Result<bool, TuiError> {
+        match command {
+            SemanticCommand::GoHome => self.select_workspace_tab(WorkspaceMode::Chat),
+            SemanticCommand::GoBack | SemanticCommand::CancelCurrentInteraction => {
+                self.escape_navigation()
+            }
+            SemanticCommand::OpenFile(path) => {
+                if path.is_file() || path.is_symlink() {
+                    self.open_file_in_editor(&path);
+                } else {
+                    self.set_feedback(
+                        FeedbackSeverity::Warn,
+                        format!("File is no longer available: {}", path.display()),
+                    );
+                }
+            }
+            SemanticCommand::ReviewChanges(DiffCommandContext::Current) => {
+                self.select_workspace_tab(WorkspaceMode::Diff)
+            }
+            SemanticCommand::OpenRun(target) => match target {
+                RunCommandTarget::Current => self.open_bottom_panel(Some(BottomPanelTab::Run)),
+                RunCommandTarget::Id(id) => {
+                    let exists = self
+                        .run
+                        .current
+                        .as_ref()
+                        .is_some_and(|record| record.id == id)
+                        || self.run.recent.iter().any(|record| record.id == id);
+                    if exists {
+                        self.open_bottom_panel(Some(BottomPanelTab::Run));
+                    } else {
+                        self.set_feedback(
+                            FeedbackSeverity::Warn,
+                            format!("Run is no longer available: {id}"),
+                        );
+                    }
+                }
+            },
+            SemanticCommand::ToggleFiles => self.toggle_files_panel(),
+            SemanticCommand::FocusComposer => self.enter_chat_composer(),
+            SemanticCommand::SubmitMessage => self.submit_composer_message().await?,
+            SemanticCommand::InsertComposerNewline => self.input.insert_newline(),
+            SemanticCommand::OpenSlashCommands => {
+                self.enter_chat_composer();
+                if self.input.text.is_empty() {
+                    self.input.insert('/');
+                    self.clamp_slash_suggest();
+                }
+            }
+            SemanticCommand::OpenHelp => {
+                self.overlay = Some(Overlay::welcome());
+                self.set_feedback(
+                    FeedbackSeverity::Info,
+                    "Help · press Enter to get started or Esc to dismiss",
+                );
+            }
+            SemanticCommand::OpenGlobalCommandPalette => {
+                self.overlay = Some(Overlay::slash_open(""));
+            }
+            SemanticCommand::SelectEntry(path) => {
+                if self
+                    .file_explorer
+                    .visible_nodes()
+                    .iter()
+                    .any(|node| node.path == path)
+                {
+                    self.file_explorer.selected_path = Some(path);
+                    if self.files_visible {
+                        self.focus_block(FocusBlock::Files);
+                    }
+                }
+            }
+            SemanticCommand::MoveFileSelection(delta) => self.file_explorer.move_selection(delta),
+            SemanticCommand::ExpandSelectedDirectory => self.file_explorer.expand_selected(),
+            SemanticCommand::CollapseSelectedDirectory => self.file_explorer.collapse_selected(),
+            SemanticCommand::ToggleDirectory(path) => {
+                if self.file_explorer.visible_nodes().iter().any(|node| {
+                    node.path == path && node.kind == crate::file_explorer::FileKind::Directory
+                }) {
+                    self.file_explorer.selected_path = Some(path);
+                    self.file_explorer.activate_selected();
+                }
+            }
+            SemanticCommand::OpenSelectedEntry | SemanticCommand::ConfirmCurrentInteraction => {
+                if let Some(path) = self.file_explorer.selected_file_path() {
+                    if path.is_file() || path.is_symlink() {
+                        self.open_file_in_editor(&path);
+                    } else {
+                        self.set_feedback(
+                            FeedbackSeverity::Warn,
+                            format!("File is no longer available: {}", path.display()),
+                        );
+                    }
+                } else {
+                    self.file_explorer.activate_selected();
+                }
+            }
+            SemanticCommand::DispatchSlash { origin, line } => {
+                match origin {
+                    SlashCommandOrigin::Composer | SlashCommandOrigin::GlobalPalette => {}
+                }
+                self.dispatch_line(&line).await?;
+            }
+            SemanticCommand::CycleFocus { forward } => self.cycle_focus_block(forward),
+            SemanticCommand::CycleWorkspaceTab { forward } => {
+                let next = if forward {
+                    self.workspace_mode.next()
+                } else {
+                    self.workspace_mode.previous()
+                };
+                self.select_workspace_tab(next);
+            }
+            SemanticCommand::ToggleInspector => {
+                self.sidebar_visible = !self.sidebar_visible;
+                if self.sidebar_visible {
+                    self.focus_block(FocusBlock::Inspector);
+                } else {
+                    self.restore_focus_after_closing(FocusBlock::Inspector);
+                    self.normalize_focus();
+                }
+            }
+            SemanticCommand::CycleInspectorTab { forward } => {
+                self.inspector_view = if forward {
+                    self.inspector_view.next()
+                } else {
+                    self.inspector_view.previous()
+                };
+            }
+            SemanticCommand::ToggleBottomPanel => self.toggle_bottom_panel(),
+            SemanticCommand::CycleBottomPanelTab { forward } => {
+                if forward {
+                    self.bottom_panel.next_tab();
+                } else {
+                    self.bottom_panel.previous_tab();
+                }
+            }
+            SemanticCommand::OpenBottomPanel(tab) => self.open_bottom_panel(Some(tab)),
+            SemanticCommand::RefreshFiles => self.file_explorer.refresh_selected(),
+            SemanticCommand::RefreshEditor => {
+                self.source_viewer.refresh(self.session.workspace_root());
+                self.file_explorer.refresh_git_status();
+            }
+            SemanticCommand::BeginCreateFile => {
+                self.open_explorer_name_dialog(ExplorerNameAction::CreateFile)
+            }
+            SemanticCommand::BeginCreateDirectory => {
+                self.open_explorer_name_dialog(ExplorerNameAction::CreateDirectory)
+            }
+            SemanticCommand::BeginRename => {
+                self.open_explorer_name_dialog(ExplorerNameAction::Rename)
+            }
+            SemanticCommand::RequestDelete => self.open_explorer_delete_dialog(),
+            SemanticCommand::SelectPreviousChange => {
+                self.diff_selected = self.diff_selected.saturating_sub(1);
+            }
+            SemanticCommand::SelectNextChange => {
+                let count = self.file_explorer.git_status.changed_files().len();
+                self.diff_selected = self
+                    .diff_selected
+                    .saturating_add(1)
+                    .min(count.saturating_sub(1));
+            }
+            SemanticCommand::StartSourceSearch => {
+                self.source_viewer.start_search();
+                self.enter_transient(TransientOwner::SourceSearch);
+            }
+            SemanticCommand::StartJumpToLine => {
+                self.source_viewer.start_jump();
+                self.enter_transient(TransientOwner::JumpToLine);
+            }
+            SemanticCommand::OpenExternalEditor => self.pending_external_editor = true,
+            SemanticCommand::ToggleCurrentFileAttachment => self.toggle_file_attachment(),
+            SemanticCommand::ToggleToolDetails => self.tool_expanded = !self.tool_expanded,
+            SemanticCommand::MoveQueueSelection(delta) => self.move_queue_selection(delta),
+            SemanticCommand::CancelSelectedQueueMessage => self.cancel_selected_queue(),
+            SemanticCommand::QuitOrInterrupt => {
+                if self.busy {
+                    if self.cancel_requested {
+                        self.should_quit = true;
+                        self.last_exit = ExitCode::Canceled;
+                    } else {
+                        self.cancel_requested = true;
+                        self.push_toast("interrupt requested · Ctrl+C again to quit");
+                    }
+                } else {
+                    self.should_quit = true;
+                    self.last_exit = ExitCode::Canceled;
+                }
+            }
+            SemanticCommand::Quit => self.should_quit = true,
+            SemanticCommand::RunOrCancel => {
+                if self
+                    .run
+                    .current
+                    .as_ref()
+                    .is_some_and(|record| record.state == RunState::Running)
+                {
+                    self.cancel_run();
+                } else {
+                    self.run_current_draft();
+                }
+            }
+            SemanticCommand::Rerun => self.rerun_current(),
+            SemanticCommand::EditAndRerun => self.edit_and_rerun_current(),
+            SemanticCommand::ToggleRunExecutionMode => {
+                self.run.draft.execution_mode = match self.run.draft.execution_mode {
+                    RunExecutionMode::Direct => RunExecutionMode::Shell,
+                    RunExecutionMode::Shell => RunExecutionMode::Direct,
+                };
+            }
+            SemanticCommand::EditRunCommand => {
+                self.run.editing = true;
+                self.run.editing_directory = false;
+            }
+            SemanticCommand::EditRunDirectory => {
+                self.run.editing = true;
+                self.run.editing_directory = true;
+            }
+        }
+        Ok(true)
+    }
+
     fn handle_editor_key(&mut self, key: event::KeyEvent) -> bool {
         if self.workspace_mode != WorkspaceMode::Editor {
             return false;
@@ -4379,20 +4977,6 @@ Reply with ONLY the commit message line.\n\n\
         // Navigation shortcuts are plain keys so that Alt/Ctrl combinations
         // continue to control workspace tabs and other chrome.
         match key.code {
-            KeyCode::Esc if key.modifiers.is_empty() => {
-                self.escape_navigation();
-                true
-            }
-            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.source_viewer.start_search();
-                self.enter_transient(TransientOwner::SourceSearch);
-                true
-            }
-            KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.source_viewer.start_jump();
-                self.enter_transient(TransientOwner::JumpToLine);
-                true
-            }
             KeyCode::Up if key.modifiers.is_empty() => {
                 self.source_viewer.move_cursor_vertical(-1, height);
                 true
@@ -4427,11 +5011,6 @@ Reply with ONLY the commit message line.\n\n\
                 self.source_viewer.move_cursor_horizontal(1);
                 true
             }
-            KeyCode::Char('r') if key.modifiers.is_empty() => {
-                self.source_viewer.refresh(self.session.workspace_root());
-                self.file_explorer.refresh_git_status();
-                true
-            }
             KeyCode::Char('h') if key.modifiers.is_empty() => {
                 self.source_viewer.move_cursor_horizontal(-1);
                 true
@@ -4458,111 +5037,48 @@ Reply with ONLY the commit message line.\n\n\
                 self.source_viewer.move_to_last_line();
                 true
             }
-            KeyCode::Char('e') if key.modifiers.is_empty() => {
-                self.pending_external_editor = true;
-                true
-            }
-            KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.toggle_file_attachment();
-                true
-            }
             _ => false,
         }
     }
 
-    fn handle_bottom_panel_key(&mut self, key: event::KeyEvent) -> bool {
+    async fn handle_bottom_panel_key(&mut self, key: event::KeyEvent) -> Result<bool, TuiError> {
         if !self.bottom_panel.open {
-            return false;
+            return Ok(false);
         }
-        match self.tab_nav_command(key) {
-            Some(TabNavCommand::PreviousTab) => {
-                self.bottom_panel.previous_tab();
-                true
+        match key.code {
+            KeyCode::Char(c)
+                if self.bottom_panel.active == BottomPanelTab::Run
+                    && self.run.editing
+                    && key.modifiers.is_empty() =>
+            {
+                if self.run.editing_directory {
+                    let mut text = self.run.draft.working_directory.display().to_string();
+                    text.push(c);
+                    self.run.draft.working_directory = PathBuf::from(text);
+                } else {
+                    self.run.draft.command_input.push(c);
+                }
+                Ok(true)
             }
-            Some(TabNavCommand::NextTab) => {
-                self.bottom_panel.next_tab();
-                true
+            KeyCode::Backspace
+                if self.bottom_panel.active == BottomPanelTab::Run && self.run.editing =>
+            {
+                if self.run.editing_directory {
+                    let mut text = self.run.draft.working_directory.display().to_string();
+                    text.pop();
+                    self.run.draft.working_directory = PathBuf::from(text);
+                } else {
+                    self.run.draft.command_input.pop();
+                }
+                Ok(true)
             }
-            None => match key.code {
-                KeyCode::Char(c)
-                    if self.bottom_panel.active == BottomPanelTab::Run
-                        && self.run.editing
-                        && key.modifiers.is_empty() =>
-                {
-                    if self.run.editing_directory {
-                        let mut text = self.run.draft.working_directory.display().to_string();
-                        text.push(c);
-                        self.run.draft.working_directory = PathBuf::from(text);
-                    } else {
-                        self.run.draft.command_input.push(c);
-                    }
-                    true
+            _ => {
+                if let Some(command) = self.semantic_command_for_bottom_panel_key(key) {
+                    self.execute_semantic_command(command).await
+                } else {
+                    Ok(false)
                 }
-                KeyCode::Backspace
-                    if self.bottom_panel.active == BottomPanelTab::Run && self.run.editing =>
-                {
-                    if self.run.editing_directory {
-                        let mut text = self.run.draft.working_directory.display().to_string();
-                        text.pop();
-                        self.run.draft.working_directory = PathBuf::from(text);
-                    } else {
-                        self.run.draft.command_input.pop();
-                    }
-                    true
-                }
-                // Preserve the established alternate navigation bindings.
-                KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => {
-                    self.bottom_panel.previous_tab();
-                    true
-                }
-                KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => {
-                    self.bottom_panel.next_tab();
-                    true
-                }
-                KeyCode::Enter if self.bottom_panel.active == BottomPanelTab::Run => {
-                    if self
-                        .run
-                        .current
-                        .as_ref()
-                        .is_some_and(|record| record.state == RunState::Running)
-                    {
-                        self.cancel_run();
-                    } else {
-                        self.run_current_draft();
-                    }
-                    true
-                }
-                KeyCode::Char('r') if self.bottom_panel.active == BottomPanelTab::Run => {
-                    self.rerun_current();
-                    true
-                }
-                KeyCode::Char('e') if self.bottom_panel.active == BottomPanelTab::Run => {
-                    self.edit_and_rerun_current();
-                    true
-                }
-                KeyCode::Char('m') if self.bottom_panel.active == BottomPanelTab::Run => {
-                    self.run.draft.execution_mode = match self.run.draft.execution_mode {
-                        RunExecutionMode::Direct => RunExecutionMode::Shell,
-                        RunExecutionMode::Shell => RunExecutionMode::Direct,
-                    };
-                    true
-                }
-                KeyCode::Char('i') if self.bottom_panel.active == BottomPanelTab::Run => {
-                    self.run.editing = true;
-                    self.run.editing_directory = false;
-                    true
-                }
-                KeyCode::Char('d') if self.bottom_panel.active == BottomPanelTab::Run => {
-                    self.run.editing = true;
-                    self.run.editing_directory = true;
-                    true
-                }
-                KeyCode::Esc => {
-                    self.escape_navigation();
-                    true
-                }
-                _ => false,
-            },
+            }
         }
     }
 
@@ -4618,65 +5134,11 @@ Reply with ONLY the commit message line.\n\n\
         }
     }
 
-    fn handle_file_explorer_key(&mut self, key: event::KeyEvent) -> bool {
-        if !self.files_visible {
-            return false;
-        }
-        match key.code {
-            KeyCode::Esc => {
-                self.escape_navigation();
-                true
-            }
-            KeyCode::Up => {
-                self.file_explorer.move_selection(-1);
-                true
-            }
-            KeyCode::Down => {
-                self.file_explorer.move_selection(1);
-                true
-            }
-            KeyCode::Right => {
-                self.file_explorer.expand_selected();
-                true
-            }
-            KeyCode::Left => {
-                self.file_explorer.collapse_selected();
-                true
-            }
-            KeyCode::Enter => {
-                if let Some(path) = self.file_explorer.selected_file_path() {
-                    self.open_file_in_editor(&path);
-                } else {
-                    self.file_explorer.activate_selected();
-                }
-                true
-            }
-            KeyCode::Char('r') if key.modifiers.is_empty() => {
-                self.file_explorer.refresh_selected();
-                true
-            }
-            KeyCode::Char('n') if key.modifiers.is_empty() => {
-                self.open_explorer_name_dialog(ExplorerNameAction::CreateFile);
-                true
-            }
-            KeyCode::Char('N')
-                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
-            {
-                self.open_explorer_name_dialog(ExplorerNameAction::CreateDirectory);
-                true
-            }
-            KeyCode::Char('R')
-                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
-            {
-                self.open_explorer_name_dialog(ExplorerNameAction::Rename);
-                true
-            }
-            KeyCode::Char('d') if key.modifiers.is_empty() => {
-                self.open_explorer_delete_dialog();
-                true
-            }
-            _ => false,
-        }
+    async fn handle_file_explorer_key(&mut self, key: event::KeyEvent) -> Result<bool, TuiError> {
+        let Some(command) = self.semantic_command_for_file_key(key) else {
+            return Ok(false);
+        };
+        self.execute_semantic_command(command).await
     }
 
     fn select_workspace_tab(&mut self, next: WorkspaceMode) {
@@ -4691,172 +5153,40 @@ Reply with ONLY the commit message line.\n\n\
         self.normalize_focus();
     }
 
-    fn handle_workspace_navigation_key(&mut self, key: event::KeyEvent) -> bool {
-        match self.tab_nav_command(key) {
-            Some(TabNavCommand::PreviousTab) => {
-                self.select_workspace_tab(self.workspace_mode.previous());
-                true
-            }
-            Some(TabNavCommand::NextTab) => {
-                self.select_workspace_tab(self.workspace_mode.next());
-                true
-            }
-            None => match key.code {
-                KeyCode::Up
-                    if key.modifiers.is_empty() && self.workspace_mode == WorkspaceMode::Diff =>
-                {
-                    self.diff_selected = self.diff_selected.saturating_sub(1);
-                    true
-                }
-                KeyCode::Down
-                    if key.modifiers.is_empty() && self.workspace_mode == WorkspaceMode::Diff =>
-                {
-                    let count = self.file_explorer.git_status.changed_files().len();
-                    self.diff_selected = self
-                        .diff_selected
-                        .saturating_add(1)
-                        .min(count.saturating_sub(1));
-                    true
-                }
-                _ if self.workspace_mode == WorkspaceMode::Editor => self.handle_editor_key(key),
-                KeyCode::Esc if key.modifiers.is_empty() => {
-                    self.escape_navigation();
-                    true
-                }
-                _ => false,
-            },
+    async fn handle_workspace_navigation_key(
+        &mut self,
+        key: event::KeyEvent,
+    ) -> Result<bool, TuiError> {
+        if let Some(command) = self.semantic_command_for_workspace_key(key) {
+            return self.execute_semantic_command(command).await;
         }
+        if self.workspace_mode == WorkspaceMode::Editor {
+            return Ok(self.handle_editor_key(key));
+        }
+        Ok(false)
     }
 
-    fn handle_active_block_key(&mut self, key: event::KeyEvent) -> bool {
+    async fn handle_active_block_key(&mut self, key: event::KeyEvent) -> Result<bool, TuiError> {
         match self.focus.block {
-            FocusBlock::Files => self.handle_file_explorer_key(key),
-            FocusBlock::Workspace => self.handle_workspace_navigation_key(key),
-            FocusBlock::Composer => false,
-            FocusBlock::Inspector => match self.tab_nav_command(key) {
-                Some(TabNavCommand::PreviousTab) => {
-                    self.inspector_view = self.inspector_view.previous();
-                    true
+            FocusBlock::Files => self.handle_file_explorer_key(key).await,
+            FocusBlock::Workspace => self.handle_workspace_navigation_key(key).await,
+            FocusBlock::Composer => Ok(false),
+            FocusBlock::Inspector => {
+                if let Some(command) = self.semantic_command_for_inspector_key(key) {
+                    self.execute_semantic_command(command).await
+                } else {
+                    Ok(false)
                 }
-                Some(TabNavCommand::NextTab) => {
-                    self.inspector_view = self.inspector_view.next();
-                    true
-                }
-                None => match key.code {
-                    KeyCode::Esc if key.modifiers.is_empty() => {
-                        self.escape_navigation();
-                        true
-                    }
-                    _ => false,
-                },
-            },
-            FocusBlock::BottomPanel => self.handle_bottom_panel_key(key),
+            }
+            FocusBlock::BottomPanel => self.handle_bottom_panel_key(key).await,
         }
     }
 
-    fn handle_global_key(&mut self, key: event::KeyEvent) -> bool {
-        match key.code {
-            KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => {
-                self.select_workspace_tab(self.workspace_mode.previous());
-                true
-            }
-            KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => {
-                self.select_workspace_tab(self.workspace_mode.next());
-                true
-            }
-            KeyCode::Char('1') if key.modifiers.contains(KeyModifiers::ALT) => {
-                self.open_bottom_panel(Some(BottomPanelTab::Run));
-                true
-            }
-            KeyCode::Char('2') if key.modifiers.contains(KeyModifiers::ALT) => {
-                self.open_bottom_panel(Some(BottomPanelTab::Diagnostics));
-                true
-            }
-            KeyCode::Char('3') if key.modifiers.contains(KeyModifiers::ALT) => {
-                self.open_bottom_panel(Some(BottomPanelTab::Terminal));
-                true
-            }
-            KeyCode::Char('4') if key.modifiers.contains(KeyModifiers::ALT) => {
-                self.open_bottom_panel(Some(BottomPanelTab::Activity));
-                true
-            }
-            KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.move_queue_selection(-1);
-                true
-            }
-            KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.move_queue_selection(1);
-                true
-            }
-            KeyCode::Backspace if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.cancel_selected_queue();
-                true
-            }
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if self.busy {
-                    if self.cancel_requested {
-                        self.should_quit = true;
-                        self.last_exit = ExitCode::Canceled;
-                    } else {
-                        self.cancel_requested = true;
-                        self.push_toast("interrupt requested · Ctrl+C again to quit");
-                    }
-                } else {
-                    self.should_quit = true;
-                    self.last_exit = ExitCode::Canceled;
-                }
-                true
-            }
-            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.should_quit = true;
-                true
-            }
-            KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) && !self.busy => {
-                self.overlay = Some(Overlay::slash_open(""));
-                true
-            }
-            KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.tool_expanded = !self.tool_expanded;
-                true
-            }
-            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.toggle_files_panel();
-                true
-            }
-            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.sidebar_visible = !self.sidebar_visible;
-                if self.sidebar_visible {
-                    self.focus_block(FocusBlock::Inspector);
-                } else {
-                    self.restore_focus_after_closing(FocusBlock::Inspector);
-                    self.normalize_focus();
-                }
-                true
-            }
-            // Preserve the established explicit Alt+[ / Alt+] inspector shortcut.
-            // Common tab navigation is handled through Shift+Arrow commands.
-            KeyCode::Char('[') if key.modifiers.contains(KeyModifiers::ALT) => {
-                self.inspector_view = self.inspector_view.previous();
-                true
-            }
-            KeyCode::Char(']') if key.modifiers.contains(KeyModifiers::ALT) => {
-                self.inspector_view = self.inspector_view.next();
-                true
-            }
-            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.toggle_bottom_panel();
-                true
-            }
-            KeyCode::F(1) if self.overlay.is_none() => {
-                self.overlay = Some(Overlay::welcome());
-                self.set_feedback(
-                    FeedbackSeverity::Info,
-                    "Help · press Enter to get started or Esc to dismiss",
-                );
-                true
-            }
-            _ => false,
-        }
+    async fn handle_global_key(&mut self, key: event::KeyEvent) -> Result<bool, TuiError> {
+        let Some(command) = self.semantic_command_for_global_key(key) else {
+            return Ok(false);
+        };
+        self.execute_semantic_command(command).await
     }
 
     fn printable_chat_char(key: event::KeyEvent) -> Option<char> {
@@ -4867,73 +5197,28 @@ Reply with ONLY the commit message line.\n\n\
         }
     }
 
-    fn type_to_compose(&mut self, key: event::KeyEvent) -> bool {
+    async fn type_to_compose(&mut self, key: event::KeyEvent) -> Result<bool, TuiError> {
         let Some(c) = Self::printable_chat_char(key) else {
-            return false;
+            return Ok(false);
         };
-        self.enter_chat_composer();
+        self.execute_semantic_command(SemanticCommand::FocusComposer)
+            .await?;
         self.input.history_browse = false;
         self.input.insert(c);
         self.clamp_slash_suggest();
-        true
+        Ok(true)
     }
 
     async fn handle_chat_composer_key(&mut self, key: event::KeyEvent) -> Result<bool, TuiError> {
         let input_was_empty = self.input.text.is_empty();
+        if let Some(command) = self.semantic_command_for_composer_key(key) {
+            let consumed = self.execute_semantic_command(command).await?;
+            if input_was_empty && !self.input.text.is_empty() {
+                self.splash_dismissed = true;
+            }
+            return Ok(consumed);
+        }
         let consumed = match key.code {
-            KeyCode::Esc if key.modifiers.is_empty() => {
-                self.escape_navigation();
-                true
-            }
-            KeyCode::Enter
-                if key.modifiers.contains(KeyModifiers::SHIFT)
-                    || key.modifiers.contains(KeyModifiers::ALT) =>
-            {
-                self.input.insert_newline();
-                true
-            }
-            KeyCode::Enter => {
-                let suggestions = self.slash_suggestions();
-                if self.input.text.starts_with('/')
-                    && !suggestions.is_empty()
-                    && !self.input.text.contains(' ')
-                {
-                    let idx = self.slash_suggest_idx.min(suggestions.len() - 1);
-                    let cmd = suggestions[idx].cmd.clone();
-                    let cur = self.input.text.trim();
-                    let line = if cur == cmd.as_str() || cur.starts_with(&(cmd.clone() + " ")) {
-                        self.input.take()
-                    } else {
-                        self.input.set_text(cmd);
-                        self.input.take()
-                    };
-                    if !line.is_empty() {
-                        self.history.push(&line);
-                        self.slash_suggest_idx = 0;
-                        self.notices.clear();
-                        self.input.history_browse = false;
-                        self.dispatch_line(&line).await?;
-                    }
-                } else {
-                    let line = self.input.take();
-                    if line.trim().is_empty() {
-                        if !self.busy && !self.message_queue.is_empty() {
-                            self.dequeue_and_send_next();
-                        }
-                    } else {
-                        self.history.push(&line);
-                        self.slash_suggest_idx = 0;
-                        self.notices.clear();
-                        self.input.history_browse = false;
-                        if self.busy && !line.trim_start().starts_with('/') {
-                            self.enqueue_user_message(line);
-                        } else {
-                            self.dispatch_line(&line).await?;
-                        }
-                    }
-                }
-                true
-            }
             KeyCode::Tab => {
                 if self.input.text.starts_with('/') && !self.slash_suggestions().is_empty() {
                     self.complete_slash_suggestion();
@@ -4965,10 +5250,6 @@ Reply with ONLY the commit message line.\n\n\
                 } else if let Some(text) = self.history.down() {
                     self.apply_history_text(text);
                 }
-                true
-            }
-            KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.input.insert_newline();
                 true
             }
             KeyCode::Char(c) if key.modifiers.is_empty() && !c.is_control() => {
@@ -5096,7 +5377,11 @@ Reply with ONLY the commit message line.\n\n\
                 }
                 OverlayAction::RunCommand(cmd) => {
                     self.overlay = None;
-                    self.dispatch_line(&cmd).await?;
+                    self.execute_semantic_command(SemanticCommand::DispatchSlash {
+                        origin: SlashCommandOrigin::GlobalPalette,
+                        line: cmd,
+                    })
+                    .await?;
                 }
                 OverlayAction::InsertInput(s) => {
                     self.overlay = None;
@@ -5179,30 +5464,37 @@ Reply with ONLY the commit message line.\n\n\
                     return Ok(());
                 }
                 if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
-                    self.cycle_focus_block(!matches!(key.code, KeyCode::BackTab));
+                    self.execute_semantic_command(SemanticCommand::CycleFocus {
+                        forward: !matches!(key.code, KeyCode::BackTab),
+                    })
+                    .await?;
                     return Ok(());
                 }
             }
             FocusMode::Navigation => {
                 if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
-                    self.cycle_focus_block(!matches!(key.code, KeyCode::BackTab));
+                    self.execute_semantic_command(SemanticCommand::CycleFocus {
+                        forward: !matches!(key.code, KeyCode::BackTab),
+                    })
+                    .await?;
                     return Ok(());
                 }
                 if key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::SHIFT) {
-                    self.cycle_focus_block(false);
+                    self.execute_semantic_command(SemanticCommand::CycleFocus { forward: false })
+                        .await?;
                     return Ok(());
                 }
-                if self.handle_active_block_key(key) {
+                if self.handle_active_block_key(key).await? {
                     self.source_viewer.clear_notice();
                     return Ok(());
                 }
             }
         }
 
-        if self.handle_global_key(key) {
+        if self.handle_global_key(key).await? {
             return Ok(());
         }
-        let _ = self.type_to_compose(key);
+        let _ = self.type_to_compose(key).await?;
         Ok(())
     }
 
@@ -6413,6 +6705,155 @@ mod tests {
 
         assert_eq!(app.focus.block, FocusBlock::Composer);
         assert_eq!(app.input.text, "x");
+    }
+
+    #[tokio::test]
+    async fn semantic_key_paths_emit_existing_commands() {
+        let (_dir, mut app) = focus_test_app().await;
+        assert_eq!(
+            app.semantic_command_for_global_key(press(KeyCode::Char('e'), KeyModifiers::CONTROL)),
+            Some(SemanticCommand::ToggleFiles)
+        );
+        assert_eq!(
+            app.semantic_command_for_global_key(press(KeyCode::Char('k'), KeyModifiers::CONTROL)),
+            Some(SemanticCommand::OpenGlobalCommandPalette)
+        );
+
+        app.focus_block(FocusBlock::Workspace);
+        assert_eq!(
+            app.semantic_command_for_workspace_key(press(KeyCode::Right, KeyModifiers::SHIFT)),
+            Some(SemanticCommand::CycleWorkspaceTab { forward: true })
+        );
+        assert_eq!(
+            app.semantic_command_for_composer_key(press(KeyCode::Enter, KeyModifiers::NONE)),
+            Some(SemanticCommand::SubmitMessage)
+        );
+        assert_eq!(
+            app.semantic_command_for_composer_key(press(KeyCode::Enter, KeyModifiers::SHIFT)),
+            Some(SemanticCommand::InsertComposerNewline)
+        );
+
+        app.files_visible = true;
+        assert_eq!(
+            app.semantic_command_for_file_key(press(KeyCode::Enter, KeyModifiers::NONE)),
+            Some(SemanticCommand::OpenSelectedEntry)
+        );
+    }
+
+    #[tokio::test]
+    async fn semantic_commands_dispatch_without_rendering_a_frame() {
+        let (dir, mut app) = focus_test_app().await;
+        let path = dir.path().join("main.rs");
+        fs::write(&path, "fn main() {}\n").unwrap();
+
+        app.execute_semantic_command(SemanticCommand::ToggleFiles)
+            .await
+            .unwrap();
+        assert!(app.files_visible);
+        assert_eq!(app.focus.block, FocusBlock::Files);
+
+        app.execute_semantic_command(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
+            .await
+            .unwrap();
+        assert_eq!(app.workspace_mode, WorkspaceMode::Diff);
+
+        app.execute_semantic_command(SemanticCommand::OpenFile(path.clone()))
+            .await
+            .unwrap();
+        assert_eq!(app.workspace_mode, WorkspaceMode::Editor);
+        assert_eq!(
+            app.source_viewer.path.as_deref(),
+            Some(path.canonicalize().unwrap().as_path())
+        );
+
+        app.execute_semantic_command(SemanticCommand::OpenRun(RunCommandTarget::Current))
+            .await
+            .unwrap();
+        assert!(app.bottom_panel.open);
+        assert_eq!(app.bottom_panel.active, BottomPanelTab::Run);
+    }
+
+    #[tokio::test]
+    async fn semantic_dispatch_handles_invalid_or_stale_identifiers_without_panic() {
+        let (_dir, mut app) = focus_test_app().await;
+        let missing = PathBuf::from("/definitely/missing/forge-file.rs");
+
+        app.execute_semantic_command(SemanticCommand::SelectEntry(missing.clone()))
+            .await
+            .unwrap();
+        app.execute_semantic_command(SemanticCommand::ToggleDirectory(missing.clone()))
+            .await
+            .unwrap();
+        app.execute_semantic_command(SemanticCommand::OpenFile(missing))
+            .await
+            .unwrap();
+        app.execute_semantic_command(SemanticCommand::OpenRun(RunCommandTarget::Id(
+            "missing-run".into(),
+        )))
+        .await
+        .unwrap();
+
+        assert_eq!(app.workspace_mode, WorkspaceMode::Chat);
+        assert!(!app.bottom_panel.open);
+    }
+
+    #[tokio::test]
+    async fn modal_and_transient_precedence_still_wins_over_semantic_bindings() {
+        let (dir, mut app) = focus_test_app().await;
+        app.overlay = Some(Overlay::welcome());
+        app.handle_key(press(KeyCode::Char('e'), KeyModifiers::CONTROL))
+            .await
+            .unwrap();
+        assert!(!app.files_visible);
+        assert!(app.overlay.is_some());
+
+        app.overlay = None;
+        let path = dir.path().join("source.txt");
+        fs::write(&path, "alpha\n").unwrap();
+        app.open_file_in_editor(&path);
+        app.handle_key(press(KeyCode::Char('f'), KeyModifiers::CONTROL))
+            .await
+            .unwrap();
+        app.handle_key(press(KeyCode::Char('z'), KeyModifiers::NONE))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            app.focus.mode,
+            FocusMode::Transient(TransientOwner::SourceSearch)
+        );
+        assert_eq!(app.source_viewer.search.query, "z");
+        assert!(app.input.text.is_empty());
+    }
+
+    #[tokio::test]
+    async fn printable_globals_remain_available_to_type_to_compose() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.focus_block(FocusBlock::Workspace);
+        assert_eq!(
+            app.semantic_command_for_global_key(press(KeyCode::Char('x'), KeyModifiers::NONE)),
+            None
+        );
+
+        app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
+            .await
+            .unwrap();
+
+        assert_eq!(app.focus.block, FocusBlock::Composer);
+        assert_eq!(app.input.text, "x");
+    }
+
+    #[tokio::test]
+    async fn global_palette_selection_uses_semantic_dispatch() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.execute_semantic_command(SemanticCommand::DispatchSlash {
+            origin: SlashCommandOrigin::GlobalPalette,
+            line: "/refresh".into(),
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(app.status_message, "Refreshing git status...");
     }
 
     #[tokio::test]
