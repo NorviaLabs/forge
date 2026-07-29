@@ -1094,6 +1094,25 @@ mod tests {
     use super::*;
     use std::io::Write;
 
+    fn render_viewer(viewer: &mut SourceViewer) -> String {
+        let area = Rect::new(0, 0, 80, 16);
+        let mut buf = Buffer::empty(area);
+        SourceViewerWidget {
+            viewer,
+            focused: true,
+            mode_label: "NAV",
+        }
+        .render(area, &mut buf);
+        let mut text = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                text.push_str(buf[(x, y)].symbol());
+            }
+            text.push('\n');
+        }
+        text
+    }
+
     #[test]
     fn expand_tabs_replaces_tabs_with_spaces() {
         assert_eq!(expand_tabs("a\tb"), "a   b");
@@ -1105,6 +1124,18 @@ mod tests {
     fn split_lines_preserves_empty_lines() {
         let lines = split_lines("a\n\nb");
         assert_eq!(lines, vec!["a", "", "b"]);
+    }
+
+    #[test]
+    fn viewer_status_openable_matches_text_file_states() {
+        assert!(!ViewerStatus::Empty.is_openable());
+        assert!(!ViewerStatus::Loading.is_openable());
+        assert!(ViewerStatus::Ok.is_openable());
+        assert!(ViewerStatus::LargeFile { preview: true }.is_openable());
+        assert!(!ViewerStatus::Binary.is_openable());
+        assert!(!ViewerStatus::TooLarge.is_openable());
+        assert!(!ViewerStatus::NotFound.is_openable());
+        assert!(!ViewerStatus::Error("x".into()).is_openable());
     }
 
     #[test]
@@ -1127,6 +1158,43 @@ mod tests {
         assert_eq!(clip_line(line, 0, 3), "abc");
         assert_eq!(clip_line(line, 2, 3), "cde");
         assert_eq!(clip_line(line, 0, 100), "abcdef");
+        assert_eq!(clip_line(line, 20, 3), "");
+    }
+
+    #[test]
+    fn format_size_and_language_detection_cover_labels() {
+        assert_eq!(format_size(12), "12 bytes");
+        assert_eq!(format_size(2048), "2.0 KB");
+        assert_eq!(format_size(2 * 1024 * 1024), "2.0 MB");
+
+        assert_eq!(
+            detect_highlight_language("Cargo.toml", "").0.as_deref(),
+            Some("toml")
+        );
+        assert_eq!(
+            detect_highlight_language("Dockerfile", "").0.as_deref(),
+            Some("dockerfile")
+        );
+        assert_eq!(
+            detect_highlight_language(".gitignore", "").0.as_deref(),
+            Some("gitignore")
+        );
+        assert_eq!(
+            detect_highlight_language("README.markdown", "")
+                .0
+                .as_deref(),
+            Some("markdown")
+        );
+        assert_eq!(
+            detect_highlight_language("config.yaml", "").0.as_deref(),
+            Some("yaml")
+        );
+        assert_eq!(
+            detect_highlight_language("script", "#!/usr/bin/env python\nprint('x')")
+                .0
+                .as_deref(),
+            Some("python")
+        );
     }
 
     #[test]
@@ -1226,6 +1294,46 @@ mod tests {
         assert_eq!(viewer.h_scroll, 16_384);
         viewer.move_cursor_horizontal(-1_000_000);
         assert_eq!(viewer.h_scroll, 0);
+    }
+
+    #[test]
+    fn cursor_line_movement_and_search_input_editing_cover_edges() {
+        let mut viewer = SourceViewer::new();
+        viewer.lines = vec!["abc".into(), "def".into(), "ghi".into()];
+        viewer.status = ViewerStatus::Ok;
+        viewer.current_line = 1;
+        viewer.top_line = 1;
+        viewer.h_scroll = 2;
+
+        viewer.move_cursor_vertical(-10, 2);
+        assert_eq!(viewer.current_line, 0);
+        assert_eq!(viewer.top_line, 0);
+        viewer.move_cursor_vertical(10, 2);
+        assert_eq!(viewer.current_line, 2);
+        viewer.move_to_start_of_line();
+        assert_eq!(viewer.h_scroll, 0);
+        viewer.move_to_end_of_line();
+        assert_eq!(viewer.h_scroll, 3);
+        viewer.move_to_first_line();
+        assert_eq!((viewer.current_line, viewer.top_line), (0, 0));
+        viewer.move_to_last_line();
+        assert_eq!((viewer.current_line, viewer.top_line), (2, 2));
+
+        viewer.start_search();
+        viewer.append_search_char('d');
+        viewer.append_search_char('\n');
+        assert_eq!(viewer.search.query, "d");
+        viewer.backspace_search();
+        assert!(viewer.search.query.is_empty());
+        viewer.close_search();
+
+        viewer.start_jump();
+        viewer.append_jump_char('2');
+        viewer.append_jump_char('x');
+        assert_eq!(viewer.jump.input, "2");
+        viewer.backspace_jump();
+        assert!(viewer.jump.input.is_empty());
+        viewer.close_jump();
     }
 
     #[test]
@@ -1513,6 +1621,93 @@ mod tests {
 
         assert!(!viewer.jump.open);
         assert_eq!(viewer.current_line, 0);
+    }
+
+    #[test]
+    fn transient_inputs_restore_previous_viewport_or_accept_current() {
+        let mut viewer = SourceViewer::new();
+        viewer.lines = vec!["one".into(), "two".into(), "three".into()];
+        viewer.status = ViewerStatus::Ok;
+        viewer.current_line = 1;
+        viewer.top_line = 1;
+        viewer.h_scroll = 4;
+
+        viewer.start_search();
+        viewer.update_search_query("three");
+        assert_eq!(viewer.current_line, 2);
+        viewer.close_search();
+        assert_eq!(
+            (viewer.current_line, viewer.top_line, viewer.h_scroll),
+            (1, 1, 4)
+        );
+
+        viewer.start_search();
+        viewer.update_search_query("three");
+        viewer.accept_search();
+        assert_eq!(viewer.current_line, 2);
+        assert!(!viewer.search.open);
+
+        viewer.start_jump();
+        viewer.jump.input = "1".into();
+        viewer.commit_jump();
+        assert_eq!(viewer.current_line, 0);
+    }
+
+    #[test]
+    fn source_viewer_widget_renders_status_messages_and_transient_inputs() {
+        let mut empty = SourceViewer::new();
+        assert!(render_viewer(&mut empty).contains("No file open"));
+
+        let mut loading = SourceViewer::new();
+        loading.status = ViewerStatus::Loading;
+        assert!(render_viewer(&mut loading).contains("Loading"));
+
+        let mut binary = SourceViewer::new();
+        binary.status = ViewerStatus::Binary;
+        binary.rel_path = "bin.dat".into();
+        binary.size_bytes = 2048;
+        let binary_text = render_viewer(&mut binary);
+        assert!(binary_text.contains("Binary file"));
+        assert!(binary_text.contains("2.0 KB"));
+
+        let mut large = SourceViewer::new();
+        large.status = ViewerStatus::LargeFile { preview: true };
+        large.size_bytes = 2 * 1024 * 1024;
+        assert!(render_viewer(&mut large).contains("Showing a limited preview"));
+
+        let mut too_large = SourceViewer::new();
+        too_large.status = ViewerStatus::TooLarge;
+        too_large.size_bytes = 11 * 1024 * 1024;
+        assert!(render_viewer(&mut too_large).contains("cannot preview"));
+
+        let mut missing = SourceViewer::new();
+        missing.status = ViewerStatus::NotFound;
+        missing.rel_path = "gone.rs".into();
+        assert!(render_viewer(&mut missing).contains("File no longer exists"));
+
+        let mut error = SourceViewer::new();
+        error.status = ViewerStatus::Error("permission denied".into());
+        assert!(render_viewer(&mut error).contains("Unable to open file"));
+
+        let mut ok = SourceViewer::new();
+        ok.status = ViewerStatus::Ok;
+        ok.rel_path = "src/lib.rs".into();
+        ok.lines = vec!["fn main() {}".into()];
+        ok.language_label = Some("rust".into());
+        ok.notice = Some("Reloaded".into());
+        ok.start_search();
+        ok.update_search_query("missing");
+        let text = render_viewer(&mut ok);
+        assert!(text.contains("Editor · NAV"));
+        assert!(text.contains("src/lib.rs"));
+        assert!(text.contains("rust"));
+        assert!(text.contains("Search: missing"));
+        assert!(text.contains("No matches"));
+
+        ok.close_search();
+        ok.start_jump();
+        ok.jump.input = "12".into();
+        assert!(render_viewer(&mut ok).contains("Go to line: 12"));
     }
 
     #[test]

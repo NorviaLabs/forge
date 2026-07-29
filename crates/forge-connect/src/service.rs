@@ -758,7 +758,13 @@ mod tests {
     use crate::auth::AuthMode;
     use crate::profile::ConnectProfile;
     use crate::registry::ConnectRegistry;
+    use std::sync::{Mutex, OnceLock};
     use tempfile::tempdir;
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
 
     fn api_key_registry() -> ConnectRegistry {
         let mut r = ConnectRegistry::new();
@@ -800,14 +806,145 @@ mod tests {
     fn parse_connect_args_variants() {
         assert_eq!(parse_connect_args("").unwrap(), ConnectAction::Open);
         assert_eq!(parse_connect_args("list").unwrap(), ConnectAction::List);
+        assert_eq!(parse_connect_args("status").unwrap(), ConnectAction::Status);
         assert_eq!(
-            parse_connect_args("xai").unwrap(),
+            parse_connect_args("disconnect demo").unwrap(),
+            ConnectAction::Disconnect {
+                profile_id: Some("demo".into())
+            }
+        );
+        assert_eq!(
+            parse_connect_args("disconnect").unwrap(),
+            ConnectAction::Disconnect { profile_id: None }
+        );
+        assert_eq!(
+            parse_connect_args("XAI secret ignored-after-key").unwrap(),
             ConnectAction::Connect {
                 profile_id: "xai".into(),
-                api_key: None,
+                api_key: Some("secret".into()),
                 oauth_fixture: false
             }
         );
+    }
+
+    #[test]
+    fn list_status_and_open_messages_reflect_connection_state() {
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+        let reg = api_key_registry();
+        store.set_api_key("demo", "stored-key").unwrap();
+        let svc = ConnectService {
+            registry: &reg,
+            store: &store,
+            active_profile_id: Some("demo".into()),
+            active_model: Some("demo/model-1".into()),
+        };
+
+        let lines = svc.list_lines().unwrap();
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("[connected, active] demo"));
+        assert!(lines[0].contains("(api_key)"));
+
+        let status = svc.status().unwrap();
+        assert_eq!(status.profile_id.as_deref(), Some("demo"));
+        assert_eq!(status.model.as_deref(), Some("demo/model-1"));
+        assert_eq!(status.key_source, Some(KeySource::File));
+        assert_eq!(status.connected_profile_ids, vec!["demo"]);
+        assert!(svc
+            .status_message()
+            .unwrap()
+            .contains("active_profile=demo model=demo/model-1 key_source=file"));
+    }
+
+    #[test]
+    fn empty_registry_lists_empty_message_and_unknown_profile_reports_known_ids() {
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+        let empty = ConnectRegistry::new();
+        let svc = ConnectService {
+            registry: &empty,
+            store: &store,
+            active_profile_id: None,
+            active_model: None,
+        };
+        assert_eq!(
+            svc.list_lines().unwrap(),
+            vec!["(no connect profiles registered)".to_string()]
+        );
+
+        let reg = api_key_registry();
+        let mut active_profile = None;
+        let mut active_model = None;
+        let err = handle_connect_action(
+            ConnectAction::Connect {
+                profile_id: "missing".into(),
+                api_key: None,
+                oauth_fixture: false,
+            },
+            &reg,
+            &store,
+            &mut active_profile,
+            &mut active_model,
+        )
+        .unwrap_err();
+        assert_eq!(err.to_string(), "unknown profile `missing` (known: demo)");
+    }
+
+    #[test]
+    fn handle_connect_open_list_status_and_disconnect_update_active_state() {
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+        let reg = api_key_registry();
+        store.set_api_key("demo", "stored-key").unwrap();
+        store.set_last_selection("demo", "demo/model-1").unwrap();
+        let mut active_profile = Some("demo".into());
+        let mut active_model = Some("demo/model-1".into());
+
+        let open = handle_connect_action(
+            ConnectAction::Open,
+            &reg,
+            &store,
+            &mut active_profile,
+            &mut active_model,
+        )
+        .unwrap();
+        assert!(open.contains("Connect profiles"));
+        assert!(open.contains("demo auth: https://example.com"));
+
+        let status = handle_connect_action(
+            ConnectAction::Status,
+            &reg,
+            &store,
+            &mut active_profile,
+            &mut active_model,
+        )
+        .unwrap();
+        assert!(status.contains("active_profile=demo"));
+
+        let msg = handle_connect_action(
+            ConnectAction::Disconnect {
+                profile_id: Some("demo".into()),
+            },
+            &reg,
+            &store,
+            &mut active_profile,
+            &mut active_model,
+        )
+        .unwrap();
+        assert!(msg.contains("cleared stored credentials"));
+        assert_eq!(active_profile, None);
+        assert_eq!(active_model, Some("demo/model-1".into()));
+        assert!(store.last_selection().unwrap().is_none());
+
+        let msg = handle_connect_action(
+            ConnectAction::Disconnect { profile_id: None },
+            &reg,
+            &store,
+            &mut active_profile,
+            &mut active_model,
+        )
+        .unwrap_err();
+        assert_eq!(msg.to_string(), "no profile to disconnect");
     }
 
     #[test]
@@ -834,6 +971,32 @@ mod tests {
     }
 
     #[test]
+    fn api_key_connect_rejects_missing_key_and_persists_provided_key() {
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+        let reg = api_key_registry();
+        let mut svc = ConnectService {
+            registry: &reg,
+            store: &store,
+            active_profile_id: None,
+            active_model: None,
+        };
+
+        assert_eq!(
+            svc.connect_api_key("demo", Some("   ")).unwrap_err(),
+            ConnectError::MissingKey("demo".into())
+        );
+        let outcome = svc.connect_api_key("demo", Some(" secret ")).unwrap();
+        assert_eq!(outcome.key_source, KeySource::Provided);
+        assert_eq!(
+            store.get_api_key("demo").unwrap().as_deref(),
+            Some("secret")
+        );
+        assert_eq!(svc.active_profile_id.as_deref(), Some("demo"));
+        assert_eq!(svc.active_model.as_deref(), Some("demo/model-1"));
+    }
+
+    #[test]
     fn oauth_rejects_api_key() {
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
@@ -853,6 +1016,55 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, ConnectError::OauthRejectsApiKey(_)));
+    }
+
+    #[test]
+    fn oauth_connect_rejects_empty_tokens_and_non_oauth_profiles() {
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+        let api_reg = api_key_registry();
+        let oauth_reg = oauth_registry();
+        let mut api_svc = ConnectService {
+            registry: &api_reg,
+            store: &store,
+            active_profile_id: None,
+            active_model: None,
+        };
+        assert_eq!(
+            api_svc
+                .connect_oauth(
+                    "demo",
+                    OauthTokens {
+                        access_token: "real".into(),
+                        refresh_token: None,
+                        expires_at: None,
+                    },
+                )
+                .unwrap_err()
+                .to_string(),
+            "profile `demo` is not OAuth"
+        );
+
+        let mut oauth_svc = ConnectService {
+            registry: &oauth_reg,
+            store: &store,
+            active_profile_id: None,
+            active_model: None,
+        };
+        assert_eq!(
+            oauth_svc
+                .connect_oauth(
+                    "xai",
+                    OauthTokens {
+                        access_token: "   ".into(),
+                        refresh_token: None,
+                        expires_at: None,
+                    },
+                )
+                .unwrap_err()
+                .to_string(),
+            "OAuth access_token empty"
+        );
     }
 
     #[test]
@@ -881,7 +1093,34 @@ mod tests {
     }
 
     #[test]
+    fn oauth_stored_tokens_reactivate_without_fixture_or_api_key() {
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+        let reg = oauth_registry();
+        store
+            .set_oauth(
+                "xai",
+                OauthTokens {
+                    access_token: "real-token".into(),
+                    refresh_token: Some("refresh".into()),
+                    expires_at: None,
+                },
+            )
+            .unwrap();
+        let mut svc = ConnectService {
+            registry: &reg,
+            store: &store,
+            active_profile_id: None,
+            active_model: None,
+        };
+        let outcome = svc.connect("xai", None, false).unwrap();
+        assert_eq!(outcome.key_source, KeySource::Oauth);
+        assert_eq!(svc.active_profile_id.as_deref(), Some("xai"));
+    }
+
+    #[test]
     fn oauth_pending_without_fixture() {
+        let _guard = env_lock();
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
         let reg = oauth_registry();
@@ -898,6 +1137,245 @@ mod tests {
         let err = svc.connect("xai", None, false).unwrap_err();
         std::env::remove_var("FORGE_CONNECT_OAUTH_STUB");
         assert!(matches!(err, ConnectError::OauthDevicePending(_)));
+    }
+
+    #[test]
+    fn start_poll_and_complete_oauth_stub_paths_are_non_networked() {
+        let _guard = env_lock();
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+        let reg = oauth_registry();
+        std::env::set_var("FORGE_CONNECT_OAUTH_STUB", "1");
+        let mut svc = ConnectService {
+            registry: &reg,
+            store: &store,
+            active_profile_id: None,
+            active_model: None,
+        };
+        let pending = svc.start_oauth("xai").unwrap();
+        std::env::remove_var("FORGE_CONNECT_OAUTH_STUB");
+        assert_eq!(pending.profile_id, "xai");
+        assert!(pending.operator_instructions().contains("xAI"));
+        assert!(svc.poll_oauth_once(&pending).is_err());
+        assert!(svc
+            .complete_oauth_device_flow(&pending, std::time::Duration::from_millis(1))
+            .unwrap_err()
+            .to_string()
+            .contains("stub OAuth cannot complete"));
+
+        let other = OauthPending::start_stub("other", "https://auth.example");
+        assert_eq!(svc.poll_oauth_once(&other).unwrap(), None);
+    }
+
+    #[test]
+    fn connect_start_oauth_handles_non_oauth_stored_tokens_and_fixture_env() {
+        let _guard = env_lock();
+        std::env::remove_var("FORGE_CONNECT_OAUTH_FIXTURE");
+        std::env::remove_var("FORGE_XAI_OAUTH_ACCESS_TOKEN");
+        std::env::remove_var("FORGE_XAI_OAUTH_REFRESH_TOKEN");
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+        let api_reg = api_key_registry();
+        let mut api_svc = ConnectService {
+            registry: &api_reg,
+            store: &store,
+            active_profile_id: None,
+            active_model: None,
+        };
+        assert_eq!(
+            api_svc.connect_start_oauth("demo").unwrap_err().to_string(),
+            "profile `demo` is not OAuth"
+        );
+
+        let oauth_reg = oauth_registry();
+        store
+            .set_oauth(
+                "xai",
+                OauthTokens {
+                    access_token: "real-token".into(),
+                    refresh_token: None,
+                    expires_at: None,
+                },
+            )
+            .unwrap();
+        let mut oauth_svc = ConnectService {
+            registry: &oauth_reg,
+            store: &store,
+            active_profile_id: None,
+            active_model: None,
+        };
+        assert!(oauth_svc.connect_start_oauth("xai").unwrap().is_ok());
+
+        store.clear("xai").unwrap();
+        std::env::set_var("FORGE_CONNECT_OAUTH_FIXTURE", "1");
+        let fixture = oauth_svc.connect_start_oauth("xai").unwrap();
+        std::env::remove_var("FORGE_CONNECT_OAUTH_FIXTURE");
+        assert!(fixture.is_ok());
+        assert_eq!(
+            store.get_oauth("xai").unwrap().unwrap().access_token,
+            "fixture-access-token"
+        );
+    }
+
+    #[test]
+    fn ensure_oauth_fresh_filters_fixture_empty_and_uses_unexpired_real_token() {
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+        let reg = oauth_registry();
+        let svc = ConnectService {
+            registry: &reg,
+            store: &store,
+            active_profile_id: None,
+            active_model: None,
+        };
+        assert!(svc.ensure_oauth_fresh("xai").unwrap().is_none());
+
+        for access_token in ["", "fixture-access-token", "fixture-test"] {
+            store
+                .set_oauth(
+                    "xai",
+                    OauthTokens {
+                        access_token: access_token.into(),
+                        refresh_token: None,
+                        expires_at: None,
+                    },
+                )
+                .unwrap();
+            assert!(svc.ensure_oauth_fresh("xai").unwrap().is_none());
+        }
+
+        store
+            .set_oauth(
+                "xai",
+                OauthTokens {
+                    access_token: "real-token".into(),
+                    refresh_token: None,
+                    expires_at: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            svc.ensure_oauth_fresh("xai").unwrap().unwrap().access_token,
+            "real-token"
+        );
+    }
+
+    #[test]
+    fn provider_env_exports_api_keys_base_urls_and_filters_fixture_oauth() {
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+        let mut reg = ConnectRegistry::new();
+        reg.register(ConnectProfile {
+            id: "custom".into(),
+            title: "Custom".into(),
+            description: "".into(),
+            auth_mode: AuthMode::ApiKey {
+                tui_always_prompt: false,
+            },
+            api_key_env: vec!["CUSTOM_KEY".into(), "CUSTOM_ALT".into()],
+            default_base_url: Some("https://api.example".into()),
+            default_models: vec!["custom/model".into()],
+            models_dev_providers: vec![],
+            auth_url: None,
+            model_provider_prefix: "custom".into(),
+        });
+        store.set_api_key("custom", "secret").unwrap();
+        let svc = ConnectService {
+            registry: &reg,
+            store: &store,
+            active_profile_id: None,
+            active_model: None,
+        };
+        assert_eq!(
+            svc.provider_env_for_profile("custom").unwrap(),
+            vec![
+                ("CUSTOM_KEY".into(), "secret".into()),
+                ("CUSTOM_ALT".into(), "secret".into()),
+                ("CUSTOM_API_BASE".into(), "https://api.example".into()),
+            ]
+        );
+
+        let oauth_reg = oauth_registry();
+        store
+            .set_oauth(
+                "xai",
+                OauthTokens {
+                    access_token: "fixture-access-token".into(),
+                    refresh_token: None,
+                    expires_at: None,
+                },
+            )
+            .unwrap();
+        let oauth_svc = ConnectService {
+            registry: &oauth_reg,
+            store: &store,
+            active_profile_id: None,
+            active_model: None,
+        };
+        assert!(oauth_svc
+            .provider_env_for_profile("xai")
+            .unwrap()
+            .is_empty());
+        store
+            .set_oauth(
+                "xai",
+                OauthTokens {
+                    access_token: "real-token".into(),
+                    refresh_token: None,
+                    expires_at: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            oauth_svc.provider_env_for_profile("xai").unwrap(),
+            vec![("XAI_API_KEY".into(), "real-token".into())]
+        );
+    }
+
+    #[test]
+    fn connected_profiles_include_api_keys_and_skip_fixture_oauth() {
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+        let mut reg = ConnectRegistry::new();
+        reg.register(api_key_registry().profiles()[0].clone());
+        reg.register(oauth_registry().profiles()[0].clone());
+        store.set_api_key("demo", "secret").unwrap();
+        store
+            .set_oauth(
+                "xai",
+                OauthTokens {
+                    access_token: "fixture-access-token".into(),
+                    refresh_token: None,
+                    expires_at: None,
+                },
+            )
+            .unwrap();
+        let svc = ConnectService {
+            registry: &reg,
+            store: &store,
+            active_profile_id: None,
+            active_model: None,
+        };
+        assert_eq!(
+            svc.connected_profiles()
+                .unwrap()
+                .into_iter()
+                .map(|profile| profile.id)
+                .collect::<Vec<_>>(),
+            vec!["demo"]
+        );
+
+        store
+            .set_oauth(
+                "xai",
+                OauthTokens {
+                    access_token: "real-token".into(),
+                    refresh_token: None,
+                    expires_at: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(svc.connected_profiles().unwrap().len(), 2);
     }
 
     #[test]

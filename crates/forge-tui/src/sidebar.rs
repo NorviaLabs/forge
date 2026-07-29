@@ -523,6 +523,99 @@ mod tests {
     }
 
     #[test]
+    fn inspector_view_cycles_forward_and_backward() {
+        assert_eq!(InspectorView::Task.next(), InspectorView::Context);
+        assert_eq!(InspectorView::Context.next(), InspectorView::Runtime);
+        assert_eq!(InspectorView::Runtime.next(), InspectorView::Task);
+        assert_eq!(InspectorView::Task.previous(), InspectorView::Runtime);
+        assert_eq!(InspectorView::Context.previous(), InspectorView::Task);
+        assert_eq!(InspectorView::Runtime.previous(), InspectorView::Context);
+    }
+
+    #[test]
+    fn context_view_shows_model_tokens_reset_and_skills() {
+        let mut m = model();
+        m.model = "openai/gpt-5".into();
+        m.provider = "native".into();
+        m.ctx_pct = 1.42;
+        m.ctx_used = 1234;
+        m.ctx_total = 5678;
+        m.tokens_used = 42;
+        m.context_reset = Some((92.0, 18.0));
+        m.skills = vec!["rust".into(), "testing".into()];
+
+        let widget = SidebarWidget {
+            model: &m,
+            view: InspectorView::Context,
+            focused: true,
+        };
+        let text = render_lines(&widget);
+        assert!(text.contains("Inspector"));
+        assert!(text.contains("CONTEXT"), "{text}");
+        assert!(text.contains("openai/gpt-5"), "{text}");
+        assert!(text.contains("100%"), "{text}");
+        assert!(text.contains("1234 / 5678"), "{text}");
+        assert!(text.contains("42"), "{text}");
+        assert!(text.contains("92% → 18%"), "{text}");
+        assert!(text.contains("2 skills"), "{text}");
+        assert!(text.contains("· rust"), "{text}");
+    }
+
+    #[test]
+    fn runtime_view_shows_approval_tools_allows_and_recent_activity() {
+        let mut m = model();
+        m.session_id = "abcdef12".into();
+        m.journal_dir = "/tmp/forge/journal".into();
+        m.status = "Waiting for you".into();
+        m.surface = "tui".into();
+        m.role = "generator".into();
+        m.pending_approval = true;
+        m.session_allows = vec!["git status".into(), "read_file".into()];
+        m.message_count = 7;
+        m.tool_message_count = 3;
+        m.tools = vec!["git".into(), "read_file".into()];
+        m.activity = vec![
+            "first activity line that is intentionally long".into(),
+            "latest activity".into(),
+        ];
+
+        let widget = SidebarWidget {
+            model: &m,
+            view: InspectorView::Runtime,
+            focused: false,
+        };
+        let text = render_lines(&widget);
+        assert!(text.contains("RUNTIME"), "{text}");
+        assert!(text.contains("abcdef12"), "{text}");
+        assert!(text.contains("Waiting for you"), "{text}");
+        assert!(text.contains("Approval"), "{text}");
+        assert!(text.contains("waiting"), "{text}");
+        assert!(text.contains("Session allows"), "{text}");
+        assert!(text.contains("2"), "{text}");
+        assert!(text.contains("Messages"), "{text}");
+        assert!(text.contains("Tool results"), "{text}");
+        assert!(text.contains("· git"), "{text}");
+        assert!(text.contains("Recent"), "{text}");
+        assert!(text.contains("latest activity"), "{text}");
+    }
+
+    #[test]
+    fn labels_cover_repository_present_status_and_truncation_edges() {
+        assert_eq!(repository_label(&Some("forge".into()), &None), "forge");
+        assert_eq!(repository_label(&None, &Some("main".into())), "main");
+        assert_eq!(repository_label(&None, &None), "Not available");
+        assert_eq!(present(""), "Not available");
+        assert_eq!(present("  "), "Not available");
+        assert_eq!(present("value"), "value");
+        assert_eq!(truncate("abc", 3), "abc");
+        assert_eq!(truncate("abcd", 3), "abc…");
+        assert_eq!(status_style("Waiting for you"), theme::warn());
+        assert_eq!(status_style("Failed"), theme::danger());
+        assert_eq!(status_style("Completed"), theme::ok());
+        assert_eq!(status_style("Other"), theme::info());
+    }
+
+    #[test]
     fn changes_label_reflects_git_status_states() {
         assert_eq!(changes_label(false, false, None), "Clean");
         assert_eq!(changes_label(false, false, Some(1)), "1 modified file");
@@ -540,7 +633,7 @@ mod tests {
                     SidebarWidget {
                         model: widget.model,
                         view: widget.view,
-                        focused: false,
+                        focused: widget.focused,
                     },
                     f.area(),
                 );
