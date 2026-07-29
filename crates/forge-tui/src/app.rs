@@ -3420,10 +3420,7 @@ Reply with ONLY the commit message line.\n\n\
         area: ratatui::layout::Rect,
         buf: &mut ratatui::buffer::Buffer,
     ) {
-        let mut spans = vec![
-            Span::styled(self.workspace_mode.mode_label(self.focus.mode), theme::brand()),
-            Span::raw("  "),
-        ];
+        let mut spans = Vec::new();
         spans.extend(WorkspaceMode::ALL.into_iter().flat_map(|mode| {
             let style = if mode == self.workspace_mode {
                 theme::brand().add_modifier(Modifier::BOLD)
