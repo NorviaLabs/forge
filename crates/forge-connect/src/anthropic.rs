@@ -128,4 +128,10 @@ mod tests {
         let err = verify_api_key("sk-ant-short", DEFAULT_BASE_URL).unwrap_err();
         assert!(err.contains("too short"), "{err}");
     }
+
+    #[test]
+    fn empty_key_rejected_without_network() {
+        let err = verify_api_key("   ", DEFAULT_BASE_URL).unwrap_err();
+        assert_eq!(err, "API key is empty");
+    }
 }

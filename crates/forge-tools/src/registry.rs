@@ -170,4 +170,52 @@ mod tests {
         assert_eq!(out.content, "hi");
         assert!(!out.is_error);
     }
+
+    #[test]
+    fn tool_context_resolves_relative_absolute_and_missing_paths() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("a.txt");
+        std::fs::write(&file, "hi").unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+
+        assert_eq!(
+            ctx.resolve_path("a.txt").unwrap(),
+            file.canonicalize().unwrap()
+        );
+        assert_eq!(
+            ctx.resolve_path(file.to_str().unwrap())
+                .unwrap()
+                .canonicalize()
+                .unwrap(),
+            file.canonicalize().unwrap()
+        );
+
+        let missing = ctx.resolve_path("new.txt").unwrap();
+        assert_eq!(missing, dir.path().join("new.txt"));
+    }
+
+    #[test]
+    fn tool_context_rejects_canonical_escape() {
+        let dir = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let outside_file = outside.path().join("outside.txt");
+        std::fs::write(&outside_file, "no").unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+
+        let err = ctx
+            .resolve_path(outside_file.to_str().unwrap())
+            .unwrap_err();
+        assert!(
+            matches!(err, ToolError::Execution(message) if message.contains("escapes workspace"))
+        );
+    }
+
+    #[test]
+    fn registry_descriptors_and_names_are_sorted() {
+        let mut reg = ToolRegistry::new();
+        reg.register(Arc::new(ReadFileTool));
+        assert_eq!(reg.names(), vec!["read_file"]);
+        let descriptors = reg.list_descriptors();
+        assert_eq!(descriptors[0].name, "read_file");
+    }
 }
