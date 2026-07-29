@@ -57,6 +57,11 @@ pub enum ChatItem {
         workspace: String,
         skills_loaded: usize,
     },
+    ActivitySummary {
+        label: String,
+        action: Option<String>,
+        kind: BannerKind,
+    },
     ContextHandoff {
         before_pct: f64,
         after_pct: f64,
@@ -392,6 +397,31 @@ impl ConversationModel {
         self
     }
 
+    pub fn with_activity_summary(
+        mut self,
+        label: impl Into<String>,
+        action: Option<impl Into<String>>,
+        kind: BannerKind,
+    ) -> Self {
+        self.items
+            .retain(|item| !matches!(item, ChatItem::ActivitySummary { .. }));
+        let index = self
+            .items
+            .iter()
+            .rposition(|item| matches!(item, ChatItem::Home { .. } | ChatItem::Brand { .. }))
+            .map(|idx| idx + 1)
+            .unwrap_or(0);
+        self.items.insert(
+            index,
+            ChatItem::ActivitySummary {
+                label: label.into(),
+                action: action.map(Into::into),
+                kind,
+            },
+        );
+        self
+    }
+
     pub fn with_running_tool(mut self, name: impl Into<String>) -> Self {
         let name = name.into();
         if let Some(category) = routine_tool_category(&name, "", None) {
@@ -528,6 +558,30 @@ impl ConversationModel {
                         width,
                         theme::muted(),
                     )));
+                    if gap {
+                        lines.push(Line::from(""));
+                    }
+                }
+                ChatItem::ActivitySummary {
+                    label,
+                    action,
+                    kind,
+                } => {
+                    let st = match kind {
+                        BannerKind::Info => theme::info(),
+                        BannerKind::Warn => theme::warn(),
+                        BannerKind::Error => theme::danger(),
+                        BannerKind::Ok => theme::ok(),
+                    };
+                    let mut spans = vec![
+                        Span::styled("● ", st),
+                        Span::styled(label.clone(), theme::text().add_modifier(Modifier::BOLD)),
+                    ];
+                    if let Some(action) = action {
+                        spans.push(Span::styled(" · ", theme::muted()));
+                        spans.push(Span::styled(action.clone(), theme::brand()));
+                    }
+                    lines.push(Line::from(spans));
                     if gap {
                         lines.push(Line::from(""));
                     }
