@@ -355,7 +355,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn rendered_text(model: BottomPanelModel<'_>, focused: bool) -> String {
-        let area = Rect::new(0, 0, 80, 8);
+        let area = Rect::new(0, 0, 80, 12);
         let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
         terminal
             .draw(|frame| {
