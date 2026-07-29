@@ -65,6 +65,8 @@ pub struct StatusModel {
     pub repo_name: Option<String>,
     pub branch: Option<String>,
     pub dirty: bool,
+    pub resource: Option<String>,
+    pub activity: Option<String>,
 }
 
 impl StatusModel {
@@ -202,23 +204,19 @@ impl Widget for StatusBar<'_> {
             theme::brand().add_modifier(Modifier::BOLD),
         )];
         let repo = self.model.repo_branch_label();
-        let model = self
-            .model
-            .model
-            .rsplit('/')
-            .next()
-            .unwrap_or(self.model.model.as_str())
-            .to_string();
-        let ctx = format!("{:.0}% context", self.model.ctx_pct * 100.0);
-        let state = self.model.current_state_label().to_string();
-
         let separators = "  ";
         let mut used = spans[0].content.chars().count();
-        let state_field = (state, theme::info().add_modifier(Modifier::BOLD));
-        let state_needed = separators.chars().count() + state_field.0.chars().count();
+        let activity = self
+            .model
+            .activity
+            .as_deref()
+            .filter(|value| !value.is_empty());
+        let activity_needed = activity
+            .map(|value| separators.chars().count() + value.chars().count())
+            .unwrap_or(0);
 
         if let Some(repo) = repo {
-            let reserve = state_needed + separators.chars().count() + 6;
+            let reserve = activity_needed + separators.chars().count() + 8;
             let available_repo = (area.width as usize)
                 .saturating_sub(used + separators.chars().count())
                 .saturating_sub(reserve)
@@ -232,20 +230,35 @@ impl Widget for StatusBar<'_> {
             }
         }
 
-        if used + state_needed <= area.width as usize {
-            let model_needed = separators.chars().count() + model.chars().count();
-            let ctx_needed = separators.chars().count() + ctx.chars().count();
-            if used + model_needed + ctx_needed + state_needed <= area.width as usize {
+        if let Some(resource) = self
+            .model
+            .resource
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            let reserve = activity_needed;
+            let available_resource = (area.width as usize)
+                .saturating_sub(used + separators.chars().count())
+                .saturating_sub(reserve)
+                .max(8);
+            let resource = StatusModel::truncate_middle(resource, available_resource);
+            let needed = separators.chars().count() + resource.chars().count();
+            if used + needed <= area.width as usize {
                 spans.push(Span::raw(separators));
-                spans.push(Span::styled(model, theme::metadata_style()));
-                spans.push(Span::raw(separators));
-                spans.push(Span::styled(ctx, theme::muted()));
-            } else if used + model_needed + state_needed <= area.width as usize {
-                spans.push(Span::raw(separators));
-                spans.push(Span::styled(model, theme::metadata_style()));
+                spans.push(Span::styled(resource, theme::metadata_style()));
+                used += needed;
             }
-            spans.push(Span::raw(separators));
-            spans.push(Span::styled(state_field.0, state_field.1));
+        }
+
+        if let Some(activity) = activity {
+            let needed = separators.chars().count() + activity.chars().count();
+            if used + needed <= area.width as usize {
+                spans.push(Span::raw(separators));
+                spans.push(Span::styled(
+                    activity.to_string(),
+                    theme::info().add_modifier(Modifier::BOLD),
+                ));
+            }
         }
 
         buf.set_line(area.x, area.y, &Line::from(spans), area.width);
@@ -302,6 +315,8 @@ mod tests {
             repo_name: None,
             branch: None,
             dirty: false,
+            resource: None,
+            activity: None,
         }
     }
 
@@ -325,6 +340,8 @@ mod tests {
             repo_name: None,
             branch: None,
             dirty: false,
+            resource: None,
+            activity: None,
         };
         assert_eq!(m.status_label().0, "Waiting for you");
     }
@@ -349,6 +366,8 @@ mod tests {
             repo_name: None,
             branch: None,
             dirty: false,
+            resource: None,
+            activity: None,
         };
         assert!(m.status_label().0.contains("thinking"));
     }
@@ -373,6 +392,8 @@ mod tests {
             repo_name: None,
             branch: None,
             dirty: false,
+            resource: None,
+            activity: None,
         };
         let lines = session_chrome_lines(&m);
         assert!(lines.iter().any(|l| l.contains("provider=native")));
@@ -402,6 +423,8 @@ mod tests {
             repo_name: Some("forge".into()),
             branch: Some("main".into()),
             dirty: true,
+            resource: Some("src/app.rs".into()),
+            activity: Some("2 changes · Review".into()),
         };
 
         assert_eq!(m.connect_profile.as_deref(), Some("openai-code"));
@@ -443,6 +466,8 @@ mod tests {
             repo_name: Some("forge".into()),
             branch: Some("main".into()),
             dirty: false,
+            resource: None,
+            activity: None,
         };
         assert_eq!(m.current_state_label(), "Waiting for you");
     }
@@ -467,6 +492,8 @@ mod tests {
             repo_name: Some("forge".into()),
             branch: Some("main".into()),
             dirty: true,
+            resource: Some("src/app.rs".into()),
+            activity: Some("2 changes · Review".into()),
         };
         let area = Rect::new(0, 0, 80, 1);
         let mut buf = Buffer::empty(area);
@@ -474,9 +501,9 @@ mod tests {
         let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
         assert!(rendered.contains("Forge"));
         assert!(rendered.contains("forge/main*"));
-        assert!(rendered.contains("mock"));
-        assert!(rendered.contains("32% context"));
-        assert!(rendered.contains("Idle"));
+        assert!(rendered.contains("src/app.rs"));
+        assert!(rendered.contains("2 changes"));
+        assert!(!rendered.contains("32% context"));
     }
 
     #[test]
@@ -499,6 +526,8 @@ mod tests {
             repo_name: Some("forge".into()),
             branch: Some("main".into()),
             dirty: false,
+            resource: None,
+            activity: Some("Idle".into()),
         };
         let area = Rect::new(0, 0, 24, 1);
         let mut buf = Buffer::empty(area);

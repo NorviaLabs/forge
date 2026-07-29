@@ -2,7 +2,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::app::{FocusBlock, TuiApp, TuiRuntimeConfig, WorkspaceMode};
+    use crate::app::{FocusBlock, TuiApp, TuiRuntimeConfig};
     use crate::overlays::Overlay;
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
     use forge_core::{AgentSession, LoopConfig};
@@ -108,7 +108,14 @@ mod tests {
         let text = buffer_text(&term);
         let top = text.lines().next().unwrap_or_default();
         assert!(top.contains("Forge"), "missing Forge:\n{text}");
-        assert!(top.contains("Idle"), "missing state:\n{text}");
+        assert!(
+            !top.contains("mock"),
+            "model should not be duplicated:\n{text}"
+        );
+        assert!(
+            !top.contains("context"),
+            "context should not be duplicated:\n{text}"
+        );
     }
 
     fn press(code: KeyCode) -> KeyEvent {
@@ -139,22 +146,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn workspace_tabs_default_to_chat() {
+    async fn contextual_workspace_default_has_no_permanent_tabs() {
         let (_d, mut app) = app().await;
-        assert_eq!(app.workspace_mode, WorkspaceMode::Chat);
 
         let backend = TestBackend::new(120, 40);
         let mut term = Terminal::new(backend).unwrap();
         term.draw(|f| app.draw(f)).unwrap();
         let text = buffer_text(&term);
 
-        assert!(text.contains("Chat"), "missing Chat tab:\n{text}");
-        assert!(text.contains("Editor"), "missing Editor tab:\n{text}");
-        assert!(text.contains("Diff"), "missing Diff tab:\n{text}");
+        assert!(
+            !text.contains(" Chat  Editor  Diff "),
+            "permanent workspace tabs should be gone:\n{text}"
+        );
+        assert!(
+            text.contains("Type a task"),
+            "missing conversation home:\n{text}"
+        );
     }
 
     #[tokio::test]
-    async fn workspace_tabs_cycle_to_editor_and_diff() {
+    async fn contextual_workspace_review_changes_uses_redirected_tab_control() {
         let (dir, mut app) = app().await;
         let workspace = dir.path().join("repo");
         fs::create_dir_all(&workspace).unwrap();
@@ -174,21 +185,6 @@ mod tests {
         app.handle_key(press_with(KeyCode::Right, KeyModifiers::ALT))
             .await
             .unwrap();
-        assert_eq!(app.workspace_mode, WorkspaceMode::Editor);
-
-        let backend = TestBackend::new(120, 40);
-        let mut term = Terminal::new(backend).unwrap();
-        term.draw(|f| app.draw(f)).unwrap();
-        let text = buffer_text(&term);
-        assert!(
-            text.contains("No file open"),
-            "missing editor empty state:\n{text}"
-        );
-
-        app.handle_key(press_with(KeyCode::Right, KeyModifiers::ALT))
-            .await
-            .unwrap();
-        assert_eq!(app.workspace_mode, WorkspaceMode::Diff);
 
         // Wait for the background git-status thread.
         while app.file_explorer.git_status.loading {
@@ -196,6 +192,8 @@ mod tests {
             app.file_explorer.git_status.poll();
         }
 
+        let backend = TestBackend::new(120, 40);
+        let mut term = Terminal::new(backend).unwrap();
         term.draw(|f| app.draw(f)).unwrap();
         let text = buffer_text(&term);
         assert!(
@@ -205,14 +203,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn workspace_tabs_do_not_handle_keys_under_overlay() {
+    async fn workspace_navigation_does_not_handle_keys_under_overlay() {
         let (_d, mut app) = app().await;
         app.overlay = Some(Overlay::Help);
         app.handle_key(press_with(KeyCode::Right, KeyModifiers::ALT))
             .await
             .unwrap();
 
-        assert_eq!(app.workspace_mode, WorkspaceMode::Chat);
         assert!(matches!(app.overlay, Some(Overlay::Help)));
     }
 
@@ -426,7 +423,8 @@ mod tests {
         app.file_explorer.move_selection(1);
         app.handle_key(press(KeyCode::Enter)).await.unwrap();
 
-        assert_eq!(app.workspace_mode, WorkspaceMode::Editor);
+        let expected = workspace.join("main.rs").canonicalize().unwrap();
+        assert_eq!(app.source_viewer.path.as_deref(), Some(expected.as_path()));
         let backend = TestBackend::new(120, 40);
         let mut term = Terminal::new(backend).unwrap();
         term.draw(|f| app.draw(f)).unwrap();
@@ -474,9 +472,7 @@ mod tests {
         fs::write(workspace.join("x.txt"), "line1\nline2\nline3\n").unwrap();
         app.session = rebuild_session(dir.path(), &workspace).await;
         app.runtime.cwd = workspace.clone();
-        app.source_viewer.open(&workspace, &workspace.join("x.txt"));
-        app.workspace_mode = WorkspaceMode::Editor;
-        app.focus_block(FocusBlock::Workspace);
+        app.open_file_view_for_test(&workspace.join("x.txt"));
 
         app.handle_key(press(KeyCode::Down)).await.unwrap();
         assert_eq!(app.source_viewer.current_line, 1);
@@ -487,13 +483,6 @@ mod tests {
         assert_eq!(app.source_viewer.h_scroll, 5); // "line3" width
         app.handle_key(press(KeyCode::Home)).await.unwrap();
         assert_eq!(app.source_viewer.h_scroll, 0);
-        app.handle_key(press_with(KeyCode::Right, KeyModifiers::ALT))
-            .await
-            .unwrap();
-        app.handle_key(press_with(KeyCode::Left, KeyModifiers::ALT))
-            .await
-            .unwrap();
-        assert_eq!(app.workspace_mode, WorkspaceMode::Editor);
     }
 
     #[tokio::test]
@@ -504,9 +493,7 @@ mod tests {
         fs::write(workspace.join("x.txt"), "foo bar\nfoo baz\n").unwrap();
         app.session = rebuild_session(dir.path(), &workspace).await;
         app.runtime.cwd = workspace.clone();
-        app.source_viewer.open(&workspace, &workspace.join("x.txt"));
-        app.workspace_mode = WorkspaceMode::Editor;
-        app.focus_block(FocusBlock::Workspace);
+        app.open_file_view_for_test(&workspace.join("x.txt"));
 
         app.handle_key(press_with(KeyCode::Char('f'), KeyModifiers::CONTROL))
             .await
@@ -535,9 +522,7 @@ mod tests {
         fs::write(workspace.join("x.txt"), "1\n2\n3\n4\n").unwrap();
         app.session = rebuild_session(dir.path(), &workspace).await;
         app.runtime.cwd = workspace.clone();
-        app.source_viewer.open(&workspace, &workspace.join("x.txt"));
-        app.workspace_mode = WorkspaceMode::Editor;
-        app.focus_block(FocusBlock::Workspace);
+        app.open_file_view_for_test(&workspace.join("x.txt"));
 
         app.handle_key(press_with(KeyCode::Char('g'), KeyModifiers::CONTROL))
             .await
@@ -559,8 +544,7 @@ mod tests {
         fs::write(workspace.join("x.txt"), "first\nsecond\nthird\n").unwrap();
         app.session = rebuild_session(dir.path(), &workspace).await;
         app.runtime.cwd = workspace.clone();
-        app.source_viewer.open(&workspace, &workspace.join("x.txt"));
-        app.workspace_mode = WorkspaceMode::Editor;
+        app.open_file_view_for_test(&workspace.join("x.txt"));
         app.source_viewer.focused = true;
         app.source_viewer.current_line = 1;
 
@@ -724,7 +708,7 @@ mod tests {
             forge_config::FileIconMode::Unicode,
         );
         app.files_visible = false;
-        app.workspace_mode = WorkspaceMode::Diff;
+        app.review_changes_for_test();
 
         let backend = TestBackend::new(120, 40);
         let mut term = Terminal::new(backend).unwrap();
@@ -801,8 +785,7 @@ mod tests {
         fs::write(workspace.join("x.txt"), "searchable content\n").unwrap();
         app.session = rebuild_session(dir.path(), &workspace).await;
         app.runtime.cwd = workspace.clone();
-        app.source_viewer.open(&workspace, &workspace.join("x.txt"));
-        app.workspace_mode = WorkspaceMode::Editor;
+        app.open_file_view_for_test(&workspace.join("x.txt"));
 
         app.source_viewer.start_search();
         app.source_viewer.update_search_query("searchable");
@@ -827,8 +810,7 @@ mod tests {
         fs::write(workspace.join("x.txt"), "alpha\nbeta\nsearchable gamma\n").unwrap();
         app.session = rebuild_session(dir.path(), &workspace).await;
         app.runtime.cwd = workspace.clone();
-        app.source_viewer.open(&workspace, &workspace.join("x.txt"));
-        app.workspace_mode = WorkspaceMode::Editor;
+        app.open_file_view_for_test(&workspace.join("x.txt"));
 
         app.source_viewer.start_search();
         app.source_viewer.update_search_query("searchable");
@@ -855,8 +837,7 @@ mod tests {
         fs::write(workspace.join("x.rs"), "fn main() {}\n").unwrap();
         app.session = rebuild_session(dir.path(), &workspace).await;
         app.runtime.cwd = workspace.clone();
-        app.source_viewer.open(&workspace, &workspace.join("x.rs"));
-        app.workspace_mode = WorkspaceMode::Editor;
+        app.open_file_view_for_test(&workspace.join("x.rs"));
 
         let backend = TestBackend::new(80, 24);
         let mut term = Terminal::new(backend).unwrap();

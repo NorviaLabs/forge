@@ -23,7 +23,6 @@ use forge_tools::{GitTool, Tool, ToolContext};
 use forge_types::{HitlDecision, ModelStreamEvent, ProgressDocument};
 use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use ratatui::backend::CrosstermBackend;
-use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 use ratatui::Terminal;
@@ -172,48 +171,6 @@ enum RunEvent {
         success: bool,
     },
     SpawnFailed(String),
-}
-
-impl WorkspaceMode {
-    fn mode_label(self, focus: FocusMode) -> &'static str {
-        match focus {
-            FocusMode::Transient(TransientOwner::SourceSearch)
-                if self == Self::Editor || self == Self::Chat =>
-            {
-                "SEARCH"
-            }
-            FocusMode::Transient(TransientOwner::JumpToLine) if self == Self::Editor => "JUMP",
-            _ => self.label(),
-        }
-    }
-}
-
-impl WorkspaceMode {
-    const ALL: [Self; 3] = [Self::Chat, Self::Editor, Self::Diff];
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::Chat => "Chat",
-            Self::Editor => "Editor",
-            Self::Diff => "Diff",
-        }
-    }
-
-    fn next(self) -> Self {
-        match self {
-            Self::Chat => Self::Editor,
-            Self::Editor => Self::Diff,
-            Self::Diff => Self::Chat,
-        }
-    }
-
-    fn previous(self) -> Self {
-        match self {
-            Self::Chat => Self::Diff,
-            Self::Editor => Self::Chat,
-            Self::Diff => Self::Editor,
-        }
-    }
 }
 
 /// The spatially stable keyboard regions.  This is intentionally small:
@@ -1587,6 +1544,16 @@ impl TuiApp {
 
     fn open_file_in_editor(&mut self, path: &Path) {
         self.navigate_to_workspace_view(WorkspaceView::File(path.to_path_buf()));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn open_file_view_for_test(&mut self, path: &Path) {
+        self.open_file_in_editor(path);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn review_changes_for_test(&mut self) {
+        self.navigate_to_workspace_view(WorkspaceView::Diff(DiffCommandContext::Current));
     }
 
     fn file_ops(&self) -> Result<WorkspaceFileOps, FileOperationError> {
@@ -3443,6 +3410,61 @@ Reply with ONLY the commit message line.\n\n\
             repo_name: repo.repo_name.clone(),
             branch: repo.branch.clone(),
             dirty: repo.dirty,
+            resource: self.workspace_resource_label(),
+            activity: self.workspace_activity_label(),
+        }
+    }
+
+    fn workspace_resource_label(&self) -> Option<String> {
+        match &self.workspace_navigation.current {
+            WorkspaceView::Conversation => None,
+            WorkspaceView::File(path) => {
+                Some(relative_display(self.session.workspace_root(), path))
+            }
+            WorkspaceView::Diff(DiffCommandContext::Current) => Some("Review changes".into()),
+            WorkspaceView::Run(id) => self
+                .run
+                .current
+                .as_ref()
+                .filter(|record| record.id == *id)
+                .map(|record| format!("Run: {}", record.invocation.summary()))
+                .or_else(|| Some("Run".into())),
+        }
+    }
+
+    fn workspace_activity_label(&self) -> Option<String> {
+        match &self.workspace_navigation.current {
+            WorkspaceView::Diff(DiffCommandContext::Current) => {
+                let total = self.file_explorer.git_status.status.len();
+                (total > 0).then(|| format!("{} of {} changes", self.diff_selected + 1, total))
+            }
+            WorkspaceView::Run(id) => self
+                .run
+                .current
+                .as_ref()
+                .filter(|record| record.id == *id)
+                .map(|record| {
+                    format!(
+                        "{}",
+                        match record.state {
+                            RunState::Queued => "Queued",
+                            RunState::Running => "Running",
+                            RunState::Succeeded => "Succeeded",
+                            RunState::Failed => "Failed",
+                            RunState::Cancelled => "Cancelled",
+                            RunState::StartFailed => "Could not start",
+                            RunState::CaptureFailed => "Capture failed",
+                        }
+                    )
+                }),
+            _ => {
+                let changes = self.file_explorer.git_status.status.len();
+                if changes > 0 {
+                    Some(format!("{changes} changes · Review"))
+                } else {
+                    self.busy_status_detail()
+                }
+            }
         }
     }
 
@@ -3494,6 +3516,25 @@ Reply with ONLY the commit message line.\n\n\
                 .unwrap_or(0.0);
             format!("{label} {}", format_elapsed_tenths(elapsed))
         })
+    }
+
+    fn current_workspace_is_conversation(&self) -> bool {
+        matches!(
+            self.workspace_navigation.current,
+            WorkspaceView::Conversation
+        )
+    }
+
+    fn current_workspace_is_file(&self) -> bool {
+        matches!(self.workspace_navigation.current, WorkspaceView::File(_))
+    }
+
+    fn current_workspace_is_diff(&self) -> bool {
+        matches!(self.workspace_navigation.current, WorkspaceView::Diff(_))
+    }
+
+    fn current_workspace_is_run(&self) -> bool {
+        matches!(self.workspace_navigation.current, WorkspaceView::Run(_))
     }
 
     fn footer_limits(&mut self, provider: &str) -> FooterLimits {
@@ -3568,7 +3609,7 @@ Reply with ONLY the commit message line.\n\n\
         let input_h = (self.input.visual_lines() + 2).clamp(3, 8);
         let slash_mode = self.overlay.is_none() && self.input.text.starts_with('/');
         let panel_h = if self.bottom_panel.open { 8 } else { 0 };
-        let mut regions = split_areas_with_side_panels(
+        let regions = split_areas_with_side_panels(
             area,
             fb_h,
             input_h,
@@ -3589,15 +3630,6 @@ Reply with ONLY the commit message line.\n\n\
             self.focus.mode = FocusMode::Navigation;
         }
         self.normalize_focus();
-        let workspace_rows = ratatui::layout::Layout::default()
-            .direction(ratatui::layout::Direction::Vertical)
-            .constraints([
-                ratatui::layout::Constraint::Length(1),
-                ratatui::layout::Constraint::Min(0),
-            ])
-            .split(regions.chat);
-        self.render_workspace_tabs(workspace_rows[0], frame.buffer_mut());
-        regions.chat = workspace_rows[1];
         let connected = self.is_provider_connected();
         let status = self.refresh_status_model_with_connected(connected);
         frame.render_widget(StatusBar { model: &status }, regions.status);
@@ -3734,35 +3766,42 @@ Reply with ONLY the commit message line.\n\n\
             .conversation_cache
             .as_ref()
             .expect("conversation cache populated");
-        if self.workspace_mode == WorkspaceMode::Chat {
-            frame.render_widget(
-                crate::conversation::ConversationLinesWidget {
-                    lines: &cached.lines,
-                    tail_lines: &live_lines,
-                    scroll: self.chat_scroll,
-                    follow: self.chat_follow,
-                },
-                ratatui::layout::Rect {
-                    x: regions.chat.x.saturating_add(2.min(regions.chat.width)),
-                    y: regions.chat.y.saturating_add(1.min(regions.chat.height)),
-                    width: regions.chat.width.saturating_sub(2.min(regions.chat.width)),
-                    height: regions
-                        .chat
-                        .height
-                        .saturating_sub(1.min(regions.chat.height)),
-                },
-            );
-        } else if self.workspace_mode == WorkspaceMode::Editor {
-            self.last_editor_height = regions.chat.height;
-            frame.render_widget(
-                SourceViewerWidget {
-                    viewer: &mut self.source_viewer,
-                    focused: self.focus.block == FocusBlock::Workspace,
-                },
-                regions.chat,
-            );
-        } else if self.workspace_mode == WorkspaceMode::Diff {
-            self.render_diff_workspace(regions.chat, frame.buffer_mut());
+        match self.workspace_navigation.current.clone() {
+            WorkspaceView::Conversation => {
+                frame.render_widget(
+                    crate::conversation::ConversationLinesWidget {
+                        lines: &cached.lines,
+                        tail_lines: &live_lines,
+                        scroll: self.chat_scroll,
+                        follow: self.chat_follow,
+                    },
+                    ratatui::layout::Rect {
+                        x: regions.chat.x.saturating_add(2.min(regions.chat.width)),
+                        y: regions.chat.y.saturating_add(1.min(regions.chat.height)),
+                        width: regions.chat.width.saturating_sub(2.min(regions.chat.width)),
+                        height: regions
+                            .chat
+                            .height
+                            .saturating_sub(1.min(regions.chat.height)),
+                    },
+                );
+            }
+            WorkspaceView::File(_) => {
+                self.last_editor_height = regions.chat.height;
+                frame.render_widget(
+                    SourceViewerWidget {
+                        viewer: &mut self.source_viewer,
+                        focused: self.focus.block == FocusBlock::Workspace,
+                    },
+                    regions.chat,
+                );
+            }
+            WorkspaceView::Diff(DiffCommandContext::Current) => {
+                self.render_diff_workspace(regions.chat, frame.buffer_mut());
+            }
+            WorkspaceView::Run(id) => {
+                self.render_run_workspace(&id, regions.chat, frame.buffer_mut());
+            }
         }
         if let Some(sidebar_area) = regions.sidebar {
             let activity = self
@@ -4022,27 +4061,6 @@ Reply with ONLY the commit message line.\n\n\
         }
     }
 
-    fn render_workspace_tabs(
-        &self,
-        area: ratatui::layout::Rect,
-        buf: &mut ratatui::buffer::Buffer,
-    ) {
-        let mut spans = Vec::new();
-        spans.extend(WorkspaceMode::ALL.into_iter().flat_map(|mode| {
-            let style = if mode == self.workspace_mode {
-                theme::brand().add_modifier(Modifier::BOLD)
-            } else {
-                theme::dim()
-            };
-            [
-                Span::raw(" "),
-                Span::styled(mode.label(), style),
-                Span::raw(" "),
-            ]
-        }));
-        Paragraph::new(Line::from_iter(spans)).render(area, buf);
-    }
-
     fn render_diff_workspace(
         &self,
         area: ratatui::layout::Rect,
@@ -4146,6 +4164,77 @@ Reply with ONLY the commit message line.\n\n\
             .render(area, buf);
     }
 
+    fn render_run_workspace(
+        &self,
+        id: &str,
+        area: ratatui::layout::Rect,
+        buf: &mut ratatui::buffer::Buffer,
+    ) {
+        let current = self.run.current.as_ref().filter(|record| record.id == id);
+        let mut lines = Vec::new();
+        if let Some(record) = current {
+            lines.push(Line::from(vec![
+                Span::styled("Run ", theme::muted()),
+                Span::styled(record.invocation.summary(), theme::text()),
+            ]));
+            lines.push(Line::styled(
+                format!(
+                    "State: {}",
+                    match record.state {
+                        RunState::Queued => "Queued",
+                        RunState::Running => "Running",
+                        RunState::Succeeded => "Succeeded",
+                        RunState::Failed => "Failed",
+                        RunState::Cancelled => "Cancelled",
+                        RunState::StartFailed => "Could not start",
+                        RunState::CaptureFailed => "Capture failed",
+                    }
+                ),
+                theme::text(),
+            ));
+            if let Some(code) = record.exit_status {
+                lines.push(Line::styled(format!("Exit status: {code}"), theme::muted()));
+            }
+        } else {
+            lines.push(Line::styled("Run is no longer available.", theme::warn()));
+        }
+        if !self.terminal_capture.content.is_empty() {
+            lines.push(Line::styled("Output", theme::muted()));
+            for line in self.terminal_capture.content.lines().take(12) {
+                lines.push(Line::styled(line.to_string(), theme::text()));
+            }
+            if self.terminal_capture.truncated {
+                lines.push(Line::styled("Output truncated", theme::muted()));
+            }
+        } else if let Some(record) = current {
+            lines.push(Line::styled(
+                format!(
+                    "Directory: {}",
+                    record.invocation.working_directory.display()
+                ),
+                theme::muted(),
+            ));
+        }
+        lines.push(Line::styled(
+            "Back · Enter cancel while running · r rerun · e edit rerun",
+            theme::muted(),
+        ));
+
+        Paragraph::new(lines)
+            .wrap(ratatui::widgets::Wrap { trim: true })
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(if self.focus.block == FocusBlock::Workspace {
+                        theme::brand()
+                    } else {
+                        theme::border_muted()
+                    })
+                    .title(Span::styled(" Run ", theme::brand())),
+            )
+            .render(area, buf);
+    }
+
     fn toggle_files_panel(&mut self) {
         self.files_visible = !self.files_visible;
         if self.files_visible {
@@ -4191,7 +4280,8 @@ Reply with ONLY the commit message line.\n\n\
             }
             WorkspaceView::Run(id) => {
                 if self.run_exists(id) {
-                    self.open_bottom_panel(Some(BottomPanelTab::Run));
+                    self.workspace_mode = WorkspaceMode::Chat;
+                    self.focus_block(FocusBlock::Workspace);
                 } else {
                     self.set_feedback(
                         FeedbackSeverity::Warn,
@@ -4267,7 +4357,7 @@ Reply with ONLY the commit message line.\n\n\
             && self.focus.mode == FocusMode::Navigation
             && self.bottom_panel.open;
         self.source_viewer.focused = self.focus.block == FocusBlock::Workspace
-            && self.workspace_mode == WorkspaceMode::Editor
+            && self.current_workspace_is_file()
             && matches!(
                 self.focus.mode,
                 FocusMode::Navigation | FocusMode::Transient(_)
@@ -4380,13 +4470,13 @@ Reply with ONLY the commit message line.\n\n\
                     "Enter open · n/N new · R rename · d delete · r refresh · ? help".into()
                 }
                 FocusBlock::Workspace => {
-                    "Tab / Shift+Tab blocks · ⇧← / ⇧→ switch tab · Type chat · ? help".into()
+                    "Tab / Shift+Tab blocks · Alt+← back · Alt+→ review changes · Type chat · ? help".into()
                 }
                 FocusBlock::Inspector => {
-                    "Tab / Shift+Tab blocks · ⇧← / ⇧→ switch tab · Type chat · ? help".into()
+                    "Tab / Shift+Tab blocks · ⇧← / ⇧→ switch inspector tab · Type chat · ? help".into()
                 }
                 FocusBlock::BottomPanel => {
-                    "Tab / Shift+Tab blocks · ⇧← / ⇧→ switch tab · Type chat · ? help".into()
+                    "Tab / Shift+Tab blocks · ⇧← / ⇧→ switch bottom tab · Type chat · ? help".into()
                 }
             },
         }
@@ -4561,7 +4651,24 @@ Reply with ONLY the commit message line.\n\n\
     }
 
     fn help_text(&self) -> String {
-        let mode = self.workspace_mode.mode_label(self.focus.mode);
+        let mode = match self.focus.mode {
+            FocusMode::Transient(TransientOwner::SourceSearch)
+                if self.current_workspace_is_file() || self.current_workspace_is_conversation() =>
+            {
+                "SEARCH"
+            }
+            FocusMode::Transient(TransientOwner::JumpToLine)
+                if self.current_workspace_is_file() =>
+            {
+                "JUMP"
+            }
+            _ => match self.workspace_navigation.current {
+                WorkspaceView::Conversation => "Conversation",
+                WorkspaceView::File(_) => "File",
+                WorkspaceView::Diff(_) => "Review changes",
+                WorkspaceView::Run(_) => "Run",
+            },
+        };
         let mut text = String::from("Forge is an AI coding agent for your terminal.\n\n");
         text.push_str(&format!(
             "Active: {} · {}\n\n",
@@ -4575,7 +4682,8 @@ Reply with ONLY the commit message line.\n\n\
         text.push_str("Active block\n");
         match self.focus.block {
             FocusBlock::Workspace => {
-                text.push_str("• ⇧← / ⇧→  Switch workspace tab\n");
+                text.push_str("• Alt+←  Back\n");
+                text.push_str("• Alt+→  Review changes\n");
                 text.push_str("• Type  Start chat in composer\n");
                 text.push_str("• G / r  Editor navigation and refresh\n");
                 text.push_str("• Ctrl+F / Ctrl+G  Search or jump\n");
@@ -4621,10 +4729,10 @@ Reply with ONLY the commit message line.\n\n\
     fn semantic_command_for_global_key(&self, key: event::KeyEvent) -> Option<SemanticCommand> {
         match key.code {
             KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => {
-                Some(SemanticCommand::CycleWorkspaceTab { forward: false })
+                Some(SemanticCommand::GoBack)
             }
             KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => {
-                Some(SemanticCommand::CycleWorkspaceTab { forward: true })
+                Some(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
             }
             KeyCode::Char('1') if key.modifiers.contains(KeyModifiers::ALT) => {
                 Some(SemanticCommand::OpenRun(RunCommandTarget::Current))
@@ -4718,7 +4826,7 @@ Reply with ONLY the commit message line.\n\n\
     }
 
     fn semantic_command_for_editor_key(&self, key: event::KeyEvent) -> Option<SemanticCommand> {
-        if self.workspace_mode != WorkspaceMode::Editor {
+        if !self.current_workspace_is_file() {
             return None;
         }
         match key.code {
@@ -4745,30 +4853,37 @@ Reply with ONLY the commit message line.\n\n\
     fn semantic_command_for_workspace_key(&self, key: event::KeyEvent) -> Option<SemanticCommand> {
         match self.tab_nav_command(key) {
             Some(TabNavCommand::PreviousTab) => {
-                return Some(SemanticCommand::CycleWorkspaceTab { forward: false });
+                return Some(SemanticCommand::GoBack);
             }
             Some(TabNavCommand::NextTab) => {
-                return Some(SemanticCommand::CycleWorkspaceTab { forward: true });
+                return Some(SemanticCommand::ReviewChanges(DiffCommandContext::Current));
             }
             None => {}
         }
         match key.code {
-            KeyCode::Up
-                if key.modifiers.is_empty() && self.workspace_mode == WorkspaceMode::Diff =>
-            {
+            KeyCode::Up if key.modifiers.is_empty() && self.current_workspace_is_diff() => {
                 Some(SemanticCommand::SelectPreviousChange)
             }
-            KeyCode::Down
-                if key.modifiers.is_empty() && self.workspace_mode == WorkspaceMode::Diff =>
-            {
+            KeyCode::Down if key.modifiers.is_empty() && self.current_workspace_is_diff() => {
                 Some(SemanticCommand::SelectNextChange)
             }
             KeyCode::Esc if key.modifiers.is_empty() => {
-                Some(SemanticCommand::CancelCurrentInteraction)
+                if self.current_workspace_is_conversation() {
+                    Some(SemanticCommand::CancelCurrentInteraction)
+                } else {
+                    Some(SemanticCommand::GoBack)
+                }
             }
-            _ if self.workspace_mode == WorkspaceMode::Editor => {
-                self.semantic_command_for_editor_key(key)
+            KeyCode::Enter if key.modifiers.is_empty() && self.current_workspace_is_run() => {
+                Some(SemanticCommand::RunOrCancel)
             }
+            KeyCode::Char('r') if key.modifiers.is_empty() && self.current_workspace_is_run() => {
+                Some(SemanticCommand::Rerun)
+            }
+            KeyCode::Char('e') if key.modifiers.is_empty() && self.current_workspace_is_run() => {
+                Some(SemanticCommand::EditAndRerun)
+            }
+            _ if self.current_workspace_is_file() => self.semantic_command_for_editor_key(key),
             _ => None,
         }
     }
@@ -5017,12 +5132,13 @@ Reply with ONLY the commit message line.\n\n\
             }
             SemanticCommand::CycleFocus { forward } => self.cycle_focus_block(forward),
             SemanticCommand::CycleWorkspaceTab { forward } => {
-                let next = if forward {
-                    self.workspace_mode.next()
+                if forward {
+                    self.navigate_to_workspace_view(WorkspaceView::Diff(
+                        DiffCommandContext::Current,
+                    ));
                 } else {
-                    self.workspace_mode.previous()
-                };
-                self.select_workspace_tab(next);
+                    self.go_back_workspace();
+                }
             }
             SemanticCommand::ToggleInspector => {
                 self.sidebar_visible = !self.sidebar_visible;
@@ -5135,7 +5251,7 @@ Reply with ONLY the commit message line.\n\n\
     }
 
     fn handle_editor_key(&mut self, key: event::KeyEvent) -> bool {
-        if self.workspace_mode != WorkspaceMode::Editor {
+        if !self.current_workspace_is_file() {
             return false;
         }
 
@@ -5307,32 +5423,6 @@ Reply with ONLY the commit message line.\n\n\
         self.execute_semantic_command(command).await
     }
 
-    fn select_workspace_tab(&mut self, next: WorkspaceMode) {
-        match next {
-            WorkspaceMode::Chat => self.replace_workspace_view(WorkspaceView::Conversation),
-            WorkspaceMode::Editor => {
-                if let Some(path) = self.source_viewer.path.clone() {
-                    self.workspace_navigation
-                        .navigate_to(WorkspaceView::File(path));
-                    self.workspace_mode = WorkspaceMode::Editor;
-                    self.focus_block(FocusBlock::Workspace);
-                    self.source_viewer.refresh(self.session.workspace_root());
-                    self.note_workspace_changed();
-                    self.normalize_focus();
-                } else {
-                    self.workspace_mode = WorkspaceMode::Editor;
-                    self.focus_block(FocusBlock::Workspace);
-                    self.source_viewer.refresh(self.session.workspace_root());
-                    self.note_workspace_changed();
-                    self.normalize_focus();
-                }
-            }
-            WorkspaceMode::Diff => {
-                self.navigate_to_workspace_view(WorkspaceView::Diff(DiffCommandContext::Current))
-            }
-        }
-    }
-
     async fn handle_workspace_navigation_key(
         &mut self,
         key: event::KeyEvent,
@@ -5340,7 +5430,7 @@ Reply with ONLY the commit message line.\n\n\
         if let Some(command) = self.semantic_command_for_workspace_key(key) {
             return self.execute_semantic_command(command).await;
         }
-        if self.workspace_mode == WorkspaceMode::Editor {
+        if self.current_workspace_is_file() {
             return Ok(self.handle_editor_key(key));
         }
         Ok(false)
@@ -6809,7 +6899,10 @@ mod tests {
         app.handle_key(press(KeyCode::Right, KeyModifiers::SHIFT))
             .await
             .unwrap();
-        assert_eq!(app.workspace_mode, WorkspaceMode::Editor);
+        assert_eq!(
+            app.workspace_navigation.current,
+            WorkspaceView::Diff(DiffCommandContext::Current)
+        );
 
         app.focus_block(FocusBlock::Inspector);
         app.handle_key(press(KeyCode::Right, KeyModifiers::SHIFT))
@@ -6877,7 +6970,9 @@ mod tests {
     async fn type_to_compose_keeps_first_unbound_printable() {
         let (_dir, mut app) = focus_test_app().await;
         app.focus_block(FocusBlock::Workspace);
-        app.workspace_mode = WorkspaceMode::Diff;
+        app.execute_semantic_command(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
+            .await
+            .unwrap();
 
         app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
             .await
@@ -6902,7 +6997,7 @@ mod tests {
         app.focus_block(FocusBlock::Workspace);
         assert_eq!(
             app.semantic_command_for_workspace_key(press(KeyCode::Right, KeyModifiers::SHIFT)),
-            Some(SemanticCommand::CycleWorkspaceTab { forward: true })
+            Some(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
         );
         assert_eq!(
             app.semantic_command_for_composer_key(press(KeyCode::Enter, KeyModifiers::NONE)),
@@ -7250,27 +7345,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn characterization_workspace_tabs_are_reachable_with_current_controls() {
-        let (_dir, mut app) = focus_test_app().await;
+    async fn characterization_contextual_views_are_reachable_with_current_controls() {
+        let (dir, mut app) = focus_test_app().await;
+        let path = dir.path().join("source.rs");
+        fs::write(&path, "fn main() {}\n").unwrap();
         app.focus_block(FocusBlock::Workspace);
-        assert_eq!(app.workspace_mode, WorkspaceMode::Chat);
+        assert_eq!(
+            app.workspace_navigation.current,
+            WorkspaceView::Conversation
+        );
 
         app.handle_key(press(KeyCode::Right, KeyModifiers::SHIFT))
             .await
             .unwrap();
-        assert_eq!(app.workspace_mode, WorkspaceMode::Editor);
-        assert_eq!(app.focus.block, FocusBlock::Workspace);
-
-        app.handle_key(press(KeyCode::Right, KeyModifiers::SHIFT))
-            .await
-            .unwrap();
-        assert_eq!(app.workspace_mode, WorkspaceMode::Diff);
+        assert_eq!(
+            app.workspace_navigation.current,
+            WorkspaceView::Diff(DiffCommandContext::Current)
+        );
         assert_eq!(app.focus.block, FocusBlock::Workspace);
 
         app.handle_key(press(KeyCode::Left, KeyModifiers::SHIFT))
             .await
             .unwrap();
-        assert_eq!(app.workspace_mode, WorkspaceMode::Editor);
+        assert_eq!(
+            app.workspace_navigation.current,
+            WorkspaceView::Conversation
+        );
+
+        app.execute_semantic_command(SemanticCommand::OpenFile(path.clone()))
+            .await
+            .unwrap();
+        assert_eq!(app.workspace_navigation.current, WorkspaceView::File(path));
     }
 
     #[tokio::test]
@@ -7351,7 +7456,9 @@ mod tests {
     #[tokio::test]
     async fn switching_to_diff_focuses_workspace_for_navigation() {
         let (_dir, mut app) = focus_test_app().await;
-        app.select_workspace_tab(WorkspaceMode::Diff);
+        app.execute_semantic_command(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
+            .await
+            .unwrap();
         app.file_explorer
             .git_status
             .status
@@ -7365,7 +7472,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(app.workspace_mode, WorkspaceMode::Diff);
+        assert_eq!(
+            app.workspace_navigation.current,
+            WorkspaceView::Diff(DiffCommandContext::Current)
+        );
         assert_eq!(app.focus.block, FocusBlock::Workspace);
         assert_eq!(app.diff_selected, 1);
     }
@@ -8801,24 +8911,25 @@ mod tests {
         assert_eq!(app.input.text, "beta");
     }
 
-    #[test]
-    fn helper_labels_reflect_focus_mode() {
-        assert_eq!(
-            WorkspaceMode::Chat.mode_label(FocusMode::Navigation),
-            "Chat"
+    #[tokio::test]
+    async fn helper_labels_reflect_focus_mode() {
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "mock".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "test".into(),
+                startup_notices: Vec::new(),
+                validation_command: None,
+                file_icons: FileIconMode::Unicode,
+            },
         );
-        assert_eq!(
-            WorkspaceMode::Editor.mode_label(FocusMode::Transient(TransientOwner::SourceSearch)),
-            "SEARCH"
-        );
-        assert_eq!(
-            WorkspaceMode::Editor.mode_label(FocusMode::Transient(TransientOwner::JumpToLine)),
-            "JUMP"
-        );
-        assert_eq!(
-            WorkspaceMode::Diff.mode_label(FocusMode::Navigation),
-            "Diff"
-        );
+        assert!(app.help_text().contains("Conversation"));
+        app.workspace_navigation
+            .replace_view(WorkspaceView::Diff(DiffCommandContext::Current));
+        assert!(app.help_text().contains("Review changes"));
     }
 
     #[tokio::test]
@@ -8865,8 +8976,8 @@ mod tests {
         assert!(app.footer_hints().contains("Enter send"));
 
         app.focus_block(FocusBlock::Workspace);
-        app.workspace_mode = WorkspaceMode::Editor;
-        assert!(app.footer_hints().contains("⇧← / ⇧→ switch tab"));
+        assert!(app.footer_hints().contains("Alt+← back"));
+        assert!(app.footer_hints().contains("Alt+→ review changes"));
         assert!(app.footer_hints().contains("Type chat"));
 
         app.focus.mode = FocusMode::Transient(TransientOwner::SourceSearch);
@@ -9289,6 +9400,8 @@ mod tests {
             repo_name: None,
             branch: None,
             dirty: false,
+            resource: None,
+            activity: None,
         };
         assert_eq!(m.status_label().0, "Idle");
     }
@@ -9898,10 +10011,9 @@ mod tests {
             },
         );
         assert!(!app.pending_external_editor);
-        app.workspace_mode = WorkspaceMode::Editor;
-        app.focus_block(FocusBlock::Workspace);
-        app.source_viewer
-            .open(Path::new("/tmp"), &PathBuf::from("/tmp/fake.txt"));
+        let path = app.session.workspace_root().join("fake.txt");
+        fs::write(&path, "hello").unwrap();
+        app.open_file_in_editor(&path);
         app.handle_key(press(KeyCode::Char('e'), KeyModifiers::NONE))
             .await
             .unwrap();
