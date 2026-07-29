@@ -732,7 +732,11 @@ impl TuiApp {
             self.refresh_active_source_viewer();
             self.notices.clear();
         }
-        self.note_workspace_changed();
+        if self.focus.block == FocusBlock::Files && self.focus.mode == FocusMode::Navigation {
+            self.file_explorer.refresh_git_status();
+        } else {
+            self.note_workspace_changed();
+        }
     }
 
     // Intentionally keep the conversation window clean: only real chat (user/assistant)
@@ -5638,6 +5642,37 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(app.focus.block, FocusBlock::BottomPanel);
+    }
+
+    #[tokio::test]
+    async fn file_change_does_not_reload_tree_while_files_sidebar_is_focused() {
+        let (dir, mut app) = focus_test_app().await;
+        fs::create_dir(dir.path().join("crates")).unwrap();
+        fs::create_dir(dir.path().join("crates/forge-tui")).unwrap();
+        fs::write(dir.path().join("crates/forge-tui/Cargo.toml"), "").unwrap();
+        app.file_explorer.refresh_selected();
+        app.file_explorer.selected_path = Some(dir.path().join("crates").canonicalize().unwrap());
+        app.file_explorer.expand_selected();
+        app.file_explorer.selected_path =
+            Some(dir.path().join("crates/forge-tui").canonicalize().unwrap());
+        app.file_explorer.expand_selected();
+        app.files_visible = true;
+        app.focus_block(FocusBlock::Files);
+        app.file_explorer.git_status = crate::git_status::GitStatusCache::new();
+
+        app.file_change_tx
+            .send(FileChangeEvent {
+                path: app.session.workspace_root().join("changed.txt"),
+            })
+            .unwrap();
+        app.poll_file_changes();
+
+        assert!(app.file_explorer.git_status.loading);
+        assert!(app
+            .file_explorer
+            .visible_nodes()
+            .iter()
+            .any(|node| node.display_name == "Cargo.toml"));
     }
 
     #[tokio::test]
