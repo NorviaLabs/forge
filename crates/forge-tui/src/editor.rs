@@ -1,7 +1,6 @@
 //! External editor resolution and argument parsing.
 
 use std::env;
-use std::ffi::OsString;
 
 /// Resolve the external editor command from the environment.
 ///
@@ -13,14 +12,16 @@ use std::ffi::OsString;
 /// 2. `$EDITOR` otherwise
 /// 3. `None` when neither is set
 pub fn resolve_editor() -> Option<(String, Vec<String>)> {
-    ["VISUAL", "EDITOR"]
-        .into_iter()
-        .filter_map(|name| env::var_os(name))
-        .find_map(parse_editor_value)
+    resolve_env_editor("VISUAL").or_else(|| resolve_env_editor("EDITOR"))
 }
 
-fn parse_editor_value(raw: OsString) -> Option<(String, Vec<String>)> {
-    split_editor_value(&raw.to_string_lossy())
+fn resolve_env_editor(name: &str) -> Option<(String, Vec<String>)> {
+    let raw = env::var_os(name)?;
+    let raw = raw.to_string_lossy();
+    if raw.trim().is_empty() {
+        return None;
+    }
+    split_editor_value(&raw)
 }
 
 fn split_editor_value(raw: &str) -> Option<(String, Vec<String>)> {
@@ -146,4 +147,50 @@ mod tests {
         assert!(err.to_string().contains("Unable to start editor"));
         assert!(err.to_string().contains("missing"));
     }
+
+    fn with_env(name: &str, value: Option<&str>, f: impl FnOnce()) {
+        let previous = env::var_os(name);
+        match value {
+            Some(value) => env::set_var(name, value),
+            None => env::remove_var(name),
+        }
+        f();
+        match previous {
+            Some(value) => env::set_var(name, value),
+            None => env::remove_var(name),
+        }
+    }
+
+    #[test]
+    fn resolve_editor_prefers_visual_then_editor() {
+        with_env("VISUAL", Some("nvim"), || {
+            with_env("EDITOR", Some("vim"), || {
+                assert_eq!(resolve_editor(), Some(("nvim".into(), vec![])));
+            });
+        });
+    }
+
+    #[test]
+    fn resolve_editor_skips_empty_visual() {
+        with_env("VISUAL", Some("   "), || {
+            with_env("EDITOR", Some("nano"), || {
+                assert_eq!(resolve_editor(), Some(("nano".into(), vec![])));
+            });
+        });
+    }
+
+    #[test]
+    fn resolve_editor_supports_quoted_command_paths() {
+        let result = split_editor_value(
+            r#""/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code" --wait"#,
+        );
+        assert_eq!(
+            result,
+            Some((
+                "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code".into(),
+                vec!["--wait".to_string()]
+            ))
+        );
+    }
+
 }
