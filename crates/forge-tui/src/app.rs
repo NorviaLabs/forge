@@ -2045,6 +2045,10 @@ impl TuiApp {
                         "validation failed",
                     );
                 }
+                self.validation.parse_cargo_output(
+                    &self.terminal_capture.content,
+                    self.terminal_capture.truncated,
+                );
             }
             Ok(ValidationEvent::SpawnFailed(error)) => {
                 self.validation_abort = None;
