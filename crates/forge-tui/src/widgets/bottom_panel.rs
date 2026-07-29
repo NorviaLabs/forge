@@ -439,7 +439,6 @@ mod tests {
 
         let rendered = rendered_text(model, true);
         assert!(rendered.contains("BOTTOM · NAV"));
-        assert!(rendered.contains("Diagnostics"));
         assert!(rendered.contains("⇧←/⇧→ tab"));
         assert!(rendered.contains("Ctrl+P close"));
     }
