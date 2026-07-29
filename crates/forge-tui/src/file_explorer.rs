@@ -405,6 +405,40 @@ impl FileExplorer {
         self.refresh_git_status();
     }
 
+    pub fn refresh_parent_and_select(&mut self, parent: &Path, selected: &Path) {
+        let root_path = self.root_path.clone();
+        if let Some(node) = self.find_mut(parent) {
+            if node.kind == FileKind::Directory {
+                node.loaded = false;
+                load_children(root_path.as_deref(), node);
+                node.expanded = true;
+            }
+        } else {
+            self.load_root();
+        }
+        self.selected_path = Some(selected.to_path_buf());
+        self.refresh_git_status();
+    }
+
+    pub fn refresh_after_delete(&mut self, parent: &Path, deleted: &Path) {
+        let previous = self.visible_nodes();
+        self.refresh_parent_and_select(parent, parent);
+        let visible = self.visible_nodes();
+        if visible.is_empty() {
+            self.selected_path = self.root_path.clone();
+            return;
+        }
+        let deleted_index = previous
+            .iter()
+            .position(|node| node.path == deleted)
+            .unwrap_or(0);
+        let next = deleted_index.min(visible.len().saturating_sub(1));
+        self.selected_path = Some(visible[next].path.clone());
+        if self.selected_path.as_deref() == Some(deleted) {
+            self.selected_path = Some(parent.to_path_buf());
+        }
+    }
+
     pub fn toggle_focus(&mut self) {
         self.focused = !self.focused;
     }
@@ -428,6 +462,23 @@ impl FileExplorer {
                 text
             }
         })
+    }
+
+    pub fn root_path(&self) -> Option<&Path> {
+        self.root_path.as_deref()
+    }
+
+    pub fn selected_node(&self) -> Option<&FileNode> {
+        let path = self.selected_path.as_ref()?;
+        self.find(path)
+    }
+
+    pub fn selected_creation_parent(&self) -> Option<PathBuf> {
+        match self.selected_node() {
+            Some(node) if node.kind == FileKind::Directory => Some(node.path.clone()),
+            Some(node) => node.path.parent().map(Path::to_path_buf),
+            None => self.root_path.clone(),
+        }
     }
 
     pub fn git_status_for(&self, path: &Path) -> Option<GitStatusKind> {

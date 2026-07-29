@@ -39,6 +39,9 @@ use crate::conversation::{
 use crate::editor::EditorError;
 use crate::effort::ReasoningEffort;
 use crate::file_explorer::{FileExplorer, FileExplorerWidget};
+use crate::file_ops::{
+    DeleteMode, EntryKind, FileOperationError, FileOperationKind, WorkspaceFileOps,
+};
 use crate::git_status::GitStatusKind;
 use crate::history::InputHistory;
 use crate::layout::is_too_small;
@@ -181,6 +184,43 @@ enum TransientOwner {
 enum FocusMode {
     Navigation,
     Transient(TransientOwner),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExplorerNameAction {
+    CreateFile,
+    CreateDirectory,
+    Rename,
+}
+
+#[derive(Debug, Clone)]
+enum ExplorerDialog {
+    Name {
+        action: ExplorerNameAction,
+        parent: PathBuf,
+        source: Option<PathBuf>,
+        input: String,
+        error: Option<String>,
+    },
+    ConfirmCreate {
+        action: ExplorerNameAction,
+        parent: PathBuf,
+        name: String,
+        path: PathBuf,
+    },
+    ConfirmRename {
+        source: PathBuf,
+        path: PathBuf,
+        name: String,
+    },
+    ConfirmDelete {
+        source: PathBuf,
+        name: String,
+        kind: EntryKind,
+        non_empty: bool,
+        permanent: bool,
+        error: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -388,6 +428,22 @@ fn footer_provider_id(provider: &str, connect_profile: Option<&str>) -> String {
     connect_profile.unwrap_or(provider).to_owned()
 }
 
+fn relative_display(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .display()
+        .to_string()
+}
+
+fn rebase_path(path: &Path, old_base: &Path, new_base: &Path) -> Option<PathBuf> {
+    if path == old_base {
+        return Some(new_base.to_path_buf());
+    }
+    path.strip_prefix(old_base)
+        .ok()
+        .map(|suffix| new_base.join(suffix))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ConversationRenderKey {
     session_id: uuid::Uuid,
@@ -500,6 +556,7 @@ pub struct TuiApp {
     pub run: RunStateModel,
     pub files_visible: bool,
     pub file_explorer: FileExplorer,
+    explorer_dialog: Option<ExplorerDialog>,
     /// Authoritative keyboard ownership. Legacy component `focused` flags are
     /// synchronised from this state for rendering only.
     focus: FocusState,
@@ -599,6 +656,7 @@ impl TuiApp {
             run,
             files_visible: false,
             file_explorer: FileExplorer::new(Some(workspace_root), file_icons),
+            explorer_dialog: None,
             focus: FocusState::default(),
             sidebar_visible: true,
             inspector_view: InspectorView::default(),
@@ -1357,6 +1415,374 @@ impl TuiApp {
         self.status_message = "Viewing file (readonly)".into();
         // Keep the file explorer in sync with the active file.
         self.file_explorer.selected_path = Some(path.to_path_buf());
+    }
+
+    fn file_ops(&self) -> Result<WorkspaceFileOps, FileOperationError> {
+        WorkspaceFileOps::new(self.session.workspace_root())
+    }
+
+    fn open_explorer_name_dialog(&mut self, action: ExplorerNameAction) {
+        let Some(parent) = self.file_explorer.selected_creation_parent() else {
+            self.set_feedback(FeedbackSeverity::Warn, "No workspace folder selected");
+            return;
+        };
+        let (source, input) = if action == ExplorerNameAction::Rename {
+            let Some(node) = self.file_explorer.selected_node() else {
+                self.set_feedback(FeedbackSeverity::Warn, "No file or folder selected");
+                return;
+            };
+            if self.file_explorer.root_path() == Some(node.path.as_path()) {
+                self.set_feedback(FeedbackSeverity::Warn, "Cannot rename the workspace root");
+                return;
+            }
+            (Some(node.path.clone()), node.display_name.clone())
+        } else {
+            (None, String::new())
+        };
+        self.explorer_dialog = Some(ExplorerDialog::Name {
+            action,
+            parent,
+            source,
+            input,
+            error: None,
+        });
+        self.focus_block(FocusBlock::Files);
+    }
+
+    fn open_explorer_delete_dialog(&mut self) {
+        let Some(node) = self.file_explorer.selected_node() else {
+            self.set_feedback(FeedbackSeverity::Warn, "No file or folder selected");
+            return;
+        };
+        if self.file_explorer.root_path() == Some(node.path.as_path()) {
+            self.set_feedback(FeedbackSeverity::Warn, "Cannot delete the workspace root");
+            return;
+        }
+        let ops = match self.file_ops() {
+            Ok(ops) => ops,
+            Err(error) => {
+                self.set_feedback(FeedbackSeverity::Error, error.actionable());
+                return;
+            }
+        };
+        let kind = match ops.entry_kind(&node.path) {
+            Ok(kind) => kind,
+            Err(error) => {
+                self.set_feedback(FeedbackSeverity::Error, error.actionable());
+                return;
+            }
+        };
+        let non_empty = match ops.is_non_empty_directory(&node.path) {
+            Ok(non_empty) => non_empty,
+            Err(error) => {
+                self.set_feedback(FeedbackSeverity::Error, error.actionable());
+                return;
+            }
+        };
+        self.explorer_dialog = Some(ExplorerDialog::ConfirmDelete {
+            source: node.path.clone(),
+            name: node.display_name.clone(),
+            kind,
+            non_empty,
+            permanent: false,
+            error: None,
+        });
+        self.focus_block(FocusBlock::Files);
+    }
+
+    fn handle_explorer_dialog_key(&mut self, key: event::KeyEvent) -> bool {
+        let Some(dialog) = self.explorer_dialog.take() else {
+            return false;
+        };
+        let next = match dialog {
+            ExplorerDialog::Name {
+                action,
+                parent,
+                source,
+                mut input,
+                ..
+            } => match key.code {
+                KeyCode::Esc if key.modifiers.is_empty() => None,
+                KeyCode::Backspace if key.modifiers.is_empty() => {
+                    input.pop();
+                    Some(ExplorerDialog::Name {
+                        action,
+                        parent,
+                        source,
+                        input,
+                        error: None,
+                    })
+                }
+                KeyCode::Char(c)
+                    if (key.modifiers & !(KeyModifiers::SHIFT | KeyModifiers::NONE)).is_empty()
+                        && !c.is_control() =>
+                {
+                    input.push(c);
+                    Some(ExplorerDialog::Name {
+                        action,
+                        parent,
+                        source,
+                        input,
+                        error: None,
+                    })
+                }
+                KeyCode::Enter if key.modifiers.is_empty() => {
+                    match self.prepare_explorer_name_operation(
+                        action,
+                        &parent,
+                        source.as_deref(),
+                        &input,
+                    ) {
+                        Ok(next) => Some(next),
+                        Err(error) => Some(ExplorerDialog::Name {
+                            action,
+                            parent,
+                            source,
+                            input,
+                            error: Some(error.actionable()),
+                        }),
+                    }
+                }
+                _ => Some(ExplorerDialog::Name {
+                    action,
+                    parent,
+                    source,
+                    input,
+                    error: None,
+                }),
+            },
+            ExplorerDialog::ConfirmCreate {
+                action,
+                parent,
+                name,
+                path,
+            } => match key.code {
+                KeyCode::Esc if key.modifiers.is_empty() => None,
+                KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    self.apply_confirmed_create(action, &parent, &name);
+                    None
+                }
+                _ => Some(ExplorerDialog::ConfirmCreate {
+                    action,
+                    parent,
+                    name,
+                    path,
+                }),
+            },
+            ExplorerDialog::ConfirmRename { source, path, name } => match key.code {
+                KeyCode::Esc if key.modifiers.is_empty() => None,
+                KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    self.apply_confirmed_rename(&source, &name);
+                    None
+                }
+                _ => Some(ExplorerDialog::ConfirmRename { source, path, name }),
+            },
+            ExplorerDialog::ConfirmDelete {
+                source,
+                name,
+                kind,
+                non_empty,
+                permanent,
+                error,
+            } => match key.code {
+                KeyCode::Esc if key.modifiers.is_empty() => None,
+                KeyCode::Char('p') | KeyCode::Char('P') if error.is_some() && !permanent => {
+                    Some(ExplorerDialog::ConfirmDelete {
+                        source,
+                        name,
+                        kind,
+                        non_empty,
+                        permanent: true,
+                        error: None,
+                    })
+                }
+                KeyCode::Char('D') if permanent || non_empty => {
+                    self.apply_confirmed_delete(
+                        &source,
+                        if permanent {
+                            DeleteMode::Permanent
+                        } else {
+                            DeleteMode::Trash
+                        },
+                    );
+                    None
+                }
+                KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y')
+                    if !permanent && !non_empty && error.is_none() =>
+                {
+                    self.apply_confirmed_delete(&source, DeleteMode::Trash);
+                    None
+                }
+                _ => Some(ExplorerDialog::ConfirmDelete {
+                    source,
+                    name,
+                    kind,
+                    non_empty,
+                    permanent,
+                    error,
+                }),
+            },
+        };
+        self.explorer_dialog = next;
+        true
+    }
+
+    fn prepare_explorer_name_operation(
+        &self,
+        action: ExplorerNameAction,
+        parent: &Path,
+        source: Option<&Path>,
+        input: &str,
+    ) -> Result<ExplorerDialog, FileOperationError> {
+        let ops = self.file_ops()?;
+        match action {
+            ExplorerNameAction::CreateFile | ExplorerNameAction::CreateDirectory => {
+                let path = ops.plan_create(parent, input)?;
+                Ok(ExplorerDialog::ConfirmCreate {
+                    action,
+                    parent: parent.to_path_buf(),
+                    name: input.trim().to_string(),
+                    path,
+                })
+            }
+            ExplorerNameAction::Rename => {
+                let source = source.ok_or(FileOperationError::MissingSource)?;
+                let path = ops.plan_rename(source, input)?;
+                Ok(ExplorerDialog::ConfirmRename {
+                    source: source.to_path_buf(),
+                    path,
+                    name: input.trim().to_string(),
+                })
+            }
+        }
+    }
+
+    fn apply_confirmed_create(&mut self, action: ExplorerNameAction, parent: &Path, name: &str) {
+        let result = match self.file_ops() {
+            Ok(ops) if action == ExplorerNameAction::CreateFile => ops.create_file(parent, name),
+            Ok(ops) => ops.create_directory(parent, name),
+            Err(error) => Err(error),
+        };
+        match result {
+            Ok(result) => self.reconcile_file_operation(result),
+            Err(error) => self.set_feedback(FeedbackSeverity::Error, error.actionable()),
+        }
+    }
+
+    fn apply_confirmed_rename(&mut self, source: &Path, name: &str) {
+        let result = self
+            .file_ops()
+            .and_then(|ops| ops.rename_entry(source, name));
+        match result {
+            Ok(result) => self.reconcile_file_operation(result),
+            Err(error) => self.set_feedback(FeedbackSeverity::Error, error.actionable()),
+        }
+    }
+
+    fn apply_confirmed_delete(&mut self, source: &Path, mode: DeleteMode) {
+        let result = self
+            .file_ops()
+            .and_then(|ops| ops.delete_entry(source, mode));
+        match result {
+            Ok(result) => self.reconcile_file_operation(result),
+            Err(FileOperationError::TrashUnavailable(reason)) if mode == DeleteMode::Trash => {
+                if let Some(node) = self.file_explorer.selected_node() {
+                    let kind = self
+                        .file_ops()
+                        .and_then(|ops| ops.entry_kind(&node.path))
+                        .unwrap_or(EntryKind::Other);
+                    let non_empty = self
+                        .file_ops()
+                        .and_then(|ops| ops.is_non_empty_directory(&node.path))
+                        .unwrap_or(false);
+                    self.explorer_dialog = Some(ExplorerDialog::ConfirmDelete {
+                        source: node.path.clone(),
+                        name: node.display_name.clone(),
+                        kind,
+                        non_empty,
+                        permanent: false,
+                        error: Some(FileOperationError::TrashUnavailable(reason).actionable()),
+                    });
+                } else {
+                    self.set_feedback(FeedbackSeverity::Error, "Trash is unavailable");
+                }
+            }
+            Err(error) => self.set_feedback(FeedbackSeverity::Error, error.actionable()),
+        }
+    }
+
+    fn reconcile_file_operation(&mut self, result: crate::file_ops::FileOperationResult) {
+        let root = self.session.workspace_root().to_path_buf();
+        match result.kind {
+            FileOperationKind::CreateFile | FileOperationKind::CreateDirectory => {
+                self.file_explorer
+                    .refresh_parent_and_select(&result.parent, &result.path);
+                self.set_feedback(
+                    FeedbackSeverity::Ok,
+                    format!("Created {}", relative_display(&root, &result.path)),
+                );
+            }
+            FileOperationKind::RenameEntry => {
+                if let Some(new_path) = result.new_path.as_ref() {
+                    self.reconcile_path_rename(&result.path, new_path);
+                    self.file_explorer
+                        .refresh_parent_and_select(&result.parent, new_path);
+                    self.set_feedback(
+                        FeedbackSeverity::Ok,
+                        format!("Renamed to {}", relative_display(&root, new_path)),
+                    );
+                }
+            }
+            FileOperationKind::DeleteEntry => {
+                self.reconcile_path_delete(&result.path);
+                self.file_explorer
+                    .refresh_after_delete(&result.parent, &result.path);
+                self.set_feedback(
+                    FeedbackSeverity::Ok,
+                    format!("Removed {}", relative_display(&root, &result.path)),
+                );
+            }
+        }
+        self.diff_selected = self.diff_selected.min(
+            self.file_explorer
+                .git_status
+                .changed_files()
+                .len()
+                .saturating_sub(1),
+        );
+    }
+
+    fn reconcile_path_rename(&mut self, old_path: &Path, new_path: &Path) {
+        let root = self.session.workspace_root().to_path_buf();
+        if let Some(open_path) = self.source_viewer.path.clone() {
+            if let Some(rebased) = rebase_path(&open_path, old_path, new_path) {
+                self.source_viewer
+                    .reconcile_renamed_path(&root, &open_path, &rebased);
+            }
+        }
+        if let Some(att) = self.pending_attachment.as_mut() {
+            let abs = root.join(&att.rel_path);
+            if let Some(rebased) = rebase_path(&abs, old_path, new_path) {
+                att.rel_path = relative_display(&root, &rebased);
+            }
+        }
+        self.file_explorer.refresh_git_status();
+    }
+
+    fn reconcile_path_delete(&mut self, deleted_path: &Path) {
+        let root = self.session.workspace_root().to_path_buf();
+        if let Some(open_path) = self.source_viewer.path.clone() {
+            if open_path == deleted_path || open_path.starts_with(deleted_path) {
+                self.source_viewer.reconcile_deleted_path(&open_path);
+            }
+        }
+        if self.pending_attachment.as_ref().is_some_and(|att| {
+            let abs = root.join(&att.rel_path);
+            abs == deleted_path || abs.starts_with(deleted_path)
+        }) {
+            self.pending_attachment = None;
+        }
+        self.file_explorer.refresh_git_status();
     }
 
     /// Toggle attachment of the current source-viewer file to the next message.
@@ -2781,6 +3207,13 @@ Reply with ONLY the commit message line.\n\n\
 
     /// Insert bracketed-paste text into the current explicit text owner.
     fn handle_paste(&mut self, data: &str) {
+        if let Some(ExplorerDialog::Name { input, error, .. }) = self.explorer_dialog.as_mut() {
+            for ch in data.chars().filter(|ch| !ch.is_control()) {
+                input.push(ch);
+            }
+            *error = None;
+            return;
+        }
         if let Some(ref mut ov) = self.overlay {
             let _ = handle_overlay_key(ov, OverlayKey::Paste(data.to_string()));
             return;
@@ -3413,7 +3846,9 @@ Reply with ONLY the commit message line.\n\n\
         };
         frame.render_widget(FooterBar { model: &footer }, regions.footer);
 
-        if let Some(ref ov) = self.overlay {
+        if let Some(ref dialog) = self.explorer_dialog {
+            self.render_explorer_dialog(dialog, area, frame.buffer_mut());
+        } else if let Some(ref ov) = self.overlay {
             match ov {
                 Overlay::Help => self.render_help_overlay(area, frame.buffer_mut()),
                 _ => frame.render_widget(OverlayWidget { overlay: ov }, area),
@@ -3693,7 +4128,9 @@ Reply with ONLY the commit message line.\n\n\
                     "Enter send · ⇧Enter newline · Esc return · Tab complete · Type chat · ? help"
                         .into()
                 }
-                FocusBlock::Files => "Tab / Shift+Tab blocks · Type chat · ? help".into(),
+                FocusBlock::Files => {
+                    "Enter open · n/N new · R rename · d delete · r refresh · ? help".into()
+                }
                 FocusBlock::Workspace => {
                     "Tab / Shift+Tab blocks · ⇧← / ⇧→ switch tab · Type chat · ? help".into()
                 }
@@ -3718,6 +4155,159 @@ Reply with ONLY the commit message line.\n\n\
                     .border_style(theme::brand())
                     .style(theme::panel())
                     .title(Span::styled(" Help ", theme::brand())),
+            )
+            .render(r, buf);
+    }
+
+    fn render_explorer_dialog(
+        &self,
+        dialog: &ExplorerDialog,
+        area: ratatui::layout::Rect,
+        buf: &mut ratatui::buffer::Buffer,
+    ) {
+        let r = centered_rect(64, 34, area);
+        Clear.render(r, buf);
+        let mut lines = Vec::new();
+        let (title, border) = match dialog {
+            ExplorerDialog::Name { action, .. } => (
+                match action {
+                    ExplorerNameAction::CreateFile => " New File ",
+                    ExplorerNameAction::CreateDirectory => " New Folder ",
+                    ExplorerNameAction::Rename => " Rename ",
+                },
+                theme::brand(),
+            ),
+            ExplorerDialog::ConfirmDelete { permanent, .. } if *permanent => {
+                (" Permanent Delete ", theme::danger())
+            }
+            ExplorerDialog::ConfirmDelete { .. } => (" Delete ", theme::warn()),
+            ExplorerDialog::ConfirmCreate { .. } => (" Confirm Create ", theme::warn()),
+            ExplorerDialog::ConfirmRename { .. } => (" Confirm Rename ", theme::warn()),
+        };
+        match dialog {
+            ExplorerDialog::Name {
+                action,
+                parent,
+                input,
+                error,
+                ..
+            } => {
+                let label = match action {
+                    ExplorerNameAction::CreateFile => "Enter one file name:",
+                    ExplorerNameAction::CreateDirectory => "Enter one folder name:",
+                    ExplorerNameAction::Rename => "Enter the new name:",
+                };
+                lines.push(Line::styled(label, theme::text()));
+                lines.push(Line::styled(
+                    format!(
+                        "Parent: {}",
+                        relative_display(self.session.workspace_root(), parent)
+                    ),
+                    theme::muted(),
+                ));
+                lines.push(Line::from(""));
+                lines.push(Line::styled(format!("> {input}"), theme::text()));
+                if let Some(error) = error {
+                    lines.push(Line::from(""));
+                    lines.push(Line::styled(error.clone(), theme::danger()));
+                }
+                lines.push(Line::from(""));
+                lines.push(Line::styled("Enter confirm · Esc cancel", theme::muted()));
+            }
+            ExplorerDialog::ConfirmCreate { action, path, .. } => {
+                let what = if *action == ExplorerNameAction::CreateDirectory {
+                    "folder"
+                } else {
+                    "file"
+                };
+                lines.push(Line::styled(
+                    format!(
+                        "Create {what} \"{}\"?",
+                        relative_display(self.session.workspace_root(), path)
+                    ),
+                    theme::text(),
+                ));
+                lines.push(Line::from(""));
+                lines.push(Line::styled("Enter/y confirm · Esc cancel", theme::muted()));
+            }
+            ExplorerDialog::ConfirmRename { source, path, .. } => {
+                lines.push(Line::styled(
+                    format!(
+                        "Rename \"{}\"?",
+                        relative_display(self.session.workspace_root(), source)
+                    ),
+                    theme::text(),
+                ));
+                lines.push(Line::styled(
+                    format!(
+                        "To \"{}\"",
+                        relative_display(self.session.workspace_root(), path)
+                    ),
+                    theme::text(),
+                ));
+                lines.push(Line::from(""));
+                lines.push(Line::styled("Enter/y confirm · Esc cancel", theme::muted()));
+            }
+            ExplorerDialog::ConfirmDelete {
+                name,
+                kind,
+                non_empty,
+                permanent,
+                error,
+                ..
+            } => {
+                if let Some(error) = error {
+                    lines.push(Line::styled(error.clone(), theme::danger()));
+                    lines.push(Line::from(""));
+                    lines.push(Line::styled(
+                        "Press p to choose explicit permanent delete · Esc cancel",
+                        theme::muted(),
+                    ));
+                } else if *permanent {
+                    lines.push(Line::styled(
+                        format!("Permanently delete \"{name}\"?"),
+                        theme::danger(),
+                    ));
+                    lines.push(Line::styled(
+                        "This cannot be undone by Forge.",
+                        theme::danger(),
+                    ));
+                    lines.push(Line::from(""));
+                    lines.push(Line::styled(
+                        "Press D to permanently delete · Esc cancel",
+                        theme::muted(),
+                    ));
+                } else {
+                    let copy = match (kind, non_empty) {
+                        (EntryKind::Directory, true) => {
+                            format!("Move folder \"{name}\" and its contents to Trash?")
+                        }
+                        (EntryKind::Directory, false) => {
+                            format!("Move folder \"{name}\" to Trash?")
+                        }
+                        _ => format!("Move \"{name}\" to Trash?"),
+                    };
+                    lines.push(Line::styled(copy, theme::text()));
+                    lines.push(Line::from(""));
+                    if *non_empty {
+                        lines.push(Line::styled(
+                            "Press D to confirm · Esc cancel",
+                            theme::muted(),
+                        ));
+                    } else {
+                        lines.push(Line::styled("Enter/y confirm · Esc cancel", theme::muted()));
+                    }
+                }
+            }
+        }
+        Paragraph::new(lines)
+            .wrap(ratatui::widgets::Wrap { trim: true })
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(border)
+                    .style(theme::panel())
+                    .title(Span::styled(title, border)),
             )
             .render(r, buf);
     }
@@ -3757,6 +4347,10 @@ Reply with ONLY the commit message line.\n\n\
             }
             FocusBlock::Files => {
                 text.push_str("• Enter  Open or expand\n");
+                text.push_str("• n / N  New file / folder\n");
+                text.push_str("• R  Rename selected entry\n");
+                text.push_str("• d  Delete selected entry\n");
+                text.push_str("• r  Refresh selected directory\n");
                 text.push_str("• Esc  Return to previous block\n");
             }
         }
@@ -4059,6 +4653,26 @@ Reply with ONLY the commit message line.\n\n\
             }
             KeyCode::Char('r') if key.modifiers.is_empty() => {
                 self.file_explorer.refresh_selected();
+                true
+            }
+            KeyCode::Char('n') if key.modifiers.is_empty() => {
+                self.open_explorer_name_dialog(ExplorerNameAction::CreateFile);
+                true
+            }
+            KeyCode::Char('N')
+                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+            {
+                self.open_explorer_name_dialog(ExplorerNameAction::CreateDirectory);
+                true
+            }
+            KeyCode::Char('R')
+                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+            {
+                self.open_explorer_name_dialog(ExplorerNameAction::Rename);
+                true
+            }
+            KeyCode::Char('d') if key.modifiers.is_empty() => {
+                self.open_explorer_delete_dialog();
                 true
             }
             _ => false,
@@ -4408,6 +5022,11 @@ Reply with ONLY the commit message line.\n\n\
             if !allow_repeat {
                 return Ok(());
             }
+        }
+
+        if self.explorer_dialog.is_some() {
+            self.handle_explorer_dialog_key(key);
+            return Ok(());
         }
 
         if matches!(self.overlay, Some(Overlay::StatusReport { .. })) {
@@ -5797,6 +6416,105 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn characterization_workspace_tabs_are_reachable_with_current_controls() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.focus_block(FocusBlock::Workspace);
+        assert_eq!(app.workspace_mode, WorkspaceMode::Chat);
+
+        app.handle_key(press(KeyCode::Right, KeyModifiers::SHIFT))
+            .await
+            .unwrap();
+        assert_eq!(app.workspace_mode, WorkspaceMode::Editor);
+        assert_eq!(app.focus.block, FocusBlock::Workspace);
+
+        app.handle_key(press(KeyCode::Right, KeyModifiers::SHIFT))
+            .await
+            .unwrap();
+        assert_eq!(app.workspace_mode, WorkspaceMode::Diff);
+        assert_eq!(app.focus.block, FocusBlock::Workspace);
+
+        app.handle_key(press(KeyCode::Left, KeyModifiers::SHIFT))
+            .await
+            .unwrap();
+        assert_eq!(app.workspace_mode, WorkspaceMode::Editor);
+    }
+
+    #[tokio::test]
+    async fn characterization_files_selection_and_expansion_survive_focus_roundtrip() {
+        let (dir, mut app) = focus_test_app().await;
+        fs::create_dir(dir.path().join("src")).unwrap();
+        fs::write(dir.path().join("src/lib.rs"), "").unwrap();
+        app.file_explorer.refresh_workspace();
+        let src = dir.path().join("src").canonicalize().unwrap();
+        app.files_visible = true;
+        app.focus_block(FocusBlock::Files);
+        app.file_explorer.selected_path = Some(src.clone());
+        app.file_explorer.expand_selected();
+
+        app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert_ne!(app.focus.block, FocusBlock::Files);
+        app.handle_key(press(KeyCode::BackTab, KeyModifiers::NONE))
+            .await
+            .unwrap();
+
+        assert_eq!(app.focus.block, FocusBlock::Files);
+        assert_eq!(
+            app.file_explorer.selected_path.as_deref(),
+            Some(src.as_path())
+        );
+        assert!(app
+            .file_explorer
+            .visible_nodes()
+            .iter()
+            .any(|node| node.display_name == "lib.rs"));
+    }
+
+    #[tokio::test]
+    async fn characterization_80x24_draws_without_panic() {
+        use ratatui::backend::TestBackend;
+
+        let (_dir, mut app) = focus_test_app().await;
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn characterization_run_completion_preserves_bottom_panel_focus() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.open_bottom_panel(Some(BottomPanelTab::Run));
+        app.run.draft.command_input = "/usr/bin/true".into();
+
+        app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert_eq!(app.focus.block, FocusBlock::BottomPanel);
+        assert!(app.pending_validation);
+
+        app.drain_pending_validation(None).await.unwrap();
+        for _ in 0..50 {
+            app.poll_run();
+            if app
+                .run
+                .current
+                .as_ref()
+                .is_some_and(|record| record.state != RunState::Running)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        assert_eq!(app.focus.block, FocusBlock::BottomPanel);
+        assert!(app.run.current.as_ref().is_some_and(|record| matches!(
+            record.state,
+            RunState::Succeeded | RunState::Failed | RunState::StartFailed
+        )));
+    }
+
+    #[tokio::test]
     async fn switching_to_diff_focuses_workspace_for_navigation() {
         let (_dir, mut app) = focus_test_app().await;
         app.select_workspace_tab(WorkspaceMode::Diff);
@@ -5928,6 +6646,176 @@ mod tests {
             .unwrap();
         assert_eq!(app.input.text, "draft");
         assert_eq!(app.source_viewer.lines, vec!["after"]);
+    }
+
+    #[tokio::test]
+    async fn explorer_new_file_dialog_owns_printable_input_and_selects_created_file() {
+        let (dir, mut app) = focus_test_app().await;
+        app.files_visible = true;
+        app.focus_block(FocusBlock::Files);
+        app.input.set_text("");
+
+        app.handle_key(press(KeyCode::Char('n'), KeyModifiers::NONE))
+            .await
+            .unwrap();
+        for ch in "new.rs".chars() {
+            app.handle_key(press(KeyCode::Char(ch), KeyModifiers::NONE))
+                .await
+                .unwrap();
+        }
+        assert!(app.input.text.is_empty());
+        assert!(matches!(
+            app.explorer_dialog,
+            Some(ExplorerDialog::Name { .. })
+        ));
+
+        app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert!(matches!(
+            app.explorer_dialog,
+            Some(ExplorerDialog::ConfirmCreate { .. })
+        ));
+        app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .unwrap();
+
+        let created = dir.path().join("new.rs").canonicalize().unwrap();
+        assert!(created.is_file());
+        assert_eq!(
+            app.file_explorer.selected_path.as_deref(),
+            Some(created.as_path())
+        );
+        assert_eq!(app.focus.block, FocusBlock::Files);
+    }
+
+    #[tokio::test]
+    async fn explorer_name_escape_cancels_without_focus_change_or_composer_input() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.files_visible = true;
+        app.focus_block(FocusBlock::Files);
+
+        app.handle_key(press(KeyCode::Char('n'), KeyModifiers::NONE))
+            .await
+            .unwrap();
+        app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
+            .await
+            .unwrap();
+        app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
+            .await
+            .unwrap();
+
+        assert!(app.explorer_dialog.is_none());
+        assert_eq!(app.focus.block, FocusBlock::Files);
+        assert!(app.input.text.is_empty());
+    }
+
+    #[tokio::test]
+    async fn explorer_rename_prepopulates_and_updates_open_child_file() {
+        let (dir, mut app) = focus_test_app().await;
+        let src = dir.path().join("src");
+        fs::create_dir(&src).unwrap();
+        let src = src.canonicalize().unwrap();
+        let child = src.join("lib.rs");
+        fs::write(&child, "pub fn old() {}\n").unwrap();
+        app.file_explorer.refresh_workspace();
+        app.file_explorer.selected_path = Some(src.clone());
+        app.open_file_in_editor(&child);
+        app.files_visible = true;
+        app.focus_block(FocusBlock::Files);
+        app.file_explorer.selected_path = Some(src.clone());
+
+        app.handle_key(press(KeyCode::Char('R'), KeyModifiers::SHIFT))
+            .await
+            .unwrap();
+        match app.explorer_dialog.as_mut() {
+            Some(ExplorerDialog::Name { input, .. }) => {
+                assert_eq!(input, "src");
+                *input = "Source".into();
+            }
+            other => panic!("unexpected dialog: {other:?}"),
+        }
+        app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .unwrap();
+
+        let renamed_child = dir.path().join("Source/lib.rs").canonicalize().unwrap();
+        assert!(renamed_child.is_file());
+        assert_eq!(
+            app.source_viewer.path.as_deref(),
+            Some(renamed_child.as_path())
+        );
+        let renamed_dir = dir.path().join("Source").canonicalize().unwrap();
+        assert_eq!(
+            app.file_explorer.selected_path.as_deref(),
+            Some(renamed_dir.as_path())
+        );
+    }
+
+    #[tokio::test]
+    async fn explorer_rename_collision_keeps_name_dialog_with_error() {
+        let (dir, mut app) = focus_test_app().await;
+        let old = dir.path().join("old.rs");
+        let existing = dir.path().join("existing.rs");
+        fs::write(&old, "").unwrap();
+        fs::write(&existing, "").unwrap();
+        app.file_explorer.refresh_workspace();
+        app.file_explorer.selected_path = Some(old.canonicalize().unwrap());
+        app.files_visible = true;
+        app.focus_block(FocusBlock::Files);
+
+        app.open_explorer_name_dialog(ExplorerNameAction::Rename);
+        match app.explorer_dialog.as_mut() {
+            Some(ExplorerDialog::Name { input, .. }) => *input = "existing.rs".into(),
+            other => panic!("unexpected dialog: {other:?}"),
+        }
+        app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .unwrap();
+
+        match app.explorer_dialog {
+            Some(ExplorerDialog::Name {
+                error: Some(error), ..
+            }) => {
+                assert!(error.contains("Destination already exists"));
+            }
+            other => panic!("unexpected dialog: {other:?}"),
+        }
+        assert!(app.input.text.is_empty());
+    }
+
+    #[tokio::test]
+    async fn explorer_delete_non_empty_folder_requires_stronger_confirmation() {
+        let (dir, mut app) = focus_test_app().await;
+        let folder = dir.path().join("generated");
+        fs::create_dir(&folder).unwrap();
+        fs::write(folder.join("out.txt"), "").unwrap();
+        let folder = folder.canonicalize().unwrap();
+        app.file_explorer.refresh_workspace();
+        app.file_explorer.selected_path = Some(folder.clone());
+        app.files_visible = true;
+        app.focus_block(FocusBlock::Files);
+
+        app.handle_key(press(KeyCode::Char('d'), KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert!(matches!(
+            app.explorer_dialog,
+            Some(ExplorerDialog::ConfirmDelete {
+                non_empty: true,
+                permanent: false,
+                ..
+            })
+        ));
+
+        app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert!(folder.exists());
+        assert!(app.explorer_dialog.is_some());
     }
 
     #[tokio::test]
