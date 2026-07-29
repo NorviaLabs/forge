@@ -218,4 +218,86 @@ mod tests {
         let json = r#"{"key": "value", "num": 42}"#;
         assert_eq!(detect_language(json).unwrap(), SyntaxLanguage::Json);
     }
+
+    #[test]
+    fn syntax_language_parse_display_and_parser_cover_supported_languages() {
+        for (alias, language, display) in [
+            ("rs", SyntaxLanguage::Rust, "rust"),
+            ("ts", SyntaxLanguage::TypeScript, "typescript"),
+            ("tsx", SyntaxLanguage::TypeScript, "typescript"),
+            ("js", SyntaxLanguage::JavaScript, "javascript"),
+            ("jsx", SyntaxLanguage::JavaScript, "javascript"),
+            ("mjs", SyntaxLanguage::JavaScript, "javascript"),
+            ("cjs", SyntaxLanguage::JavaScript, "javascript"),
+            ("py", SyntaxLanguage::Python, "python"),
+            ("pyi", SyntaxLanguage::Python, "python"),
+            ("go", SyntaxLanguage::Go, "go"),
+            ("golang", SyntaxLanguage::Go, "go"),
+            ("html", SyntaxLanguage::Html, "html"),
+            ("htm", SyntaxLanguage::Html, "html"),
+            ("css", SyntaxLanguage::Css, "css"),
+            ("scss", SyntaxLanguage::Css, "css"),
+            ("sass", SyntaxLanguage::Css, "css"),
+            ("less", SyntaxLanguage::Css, "css"),
+            ("sh", SyntaxLanguage::Bash, "bash"),
+            ("zsh", SyntaxLanguage::Bash, "bash"),
+            ("shell", SyntaxLanguage::Bash, "bash"),
+            ("*", SyntaxLanguage::Unknown, "unknown"),
+        ] {
+            let parsed: SyntaxLanguage = alias.parse().unwrap();
+            assert_eq!(parsed, language);
+            assert_eq!(language.to_string(), display);
+            let _parser = get_parser(language);
+        }
+        assert!("definitely-not-a-language"
+            .parse::<SyntaxLanguage>()
+            .is_err());
+    }
+
+    #[test]
+    fn detect_language_uses_shebangs_and_common_patterns() {
+        assert_eq!(
+            detect_language("#!/usr/bin/env python\nprint('x')").unwrap(),
+            SyntaxLanguage::Python
+        );
+        assert_eq!(
+            detect_language("#!/bin/sh\necho x").unwrap(),
+            SyntaxLanguage::Bash
+        );
+        assert_eq!(
+            detect_language("<!DOCTYPE html><html></html>").unwrap(),
+            SyntaxLanguage::Html
+        );
+        assert_eq!(
+            detect_language("fn main() -> i32 { let x = 1; x }").unwrap(),
+            SyntaxLanguage::Rust
+        );
+        assert_eq!(
+            detect_language("package main\nfunc main() {}").unwrap(),
+            SyntaxLanguage::Go
+        );
+        assert_eq!(
+            detect_language("def main():\n    return 1").unwrap(),
+            SyntaxLanguage::Python
+        );
+        assert_eq!(
+            detect_language("interface User { name: string }").unwrap(),
+            SyntaxLanguage::TypeScript
+        );
+        assert_eq!(
+            detect_language("plain text").unwrap(),
+            SyntaxLanguage::Unknown
+        );
+    }
+
+    #[test]
+    fn detect_from_path_handles_case_windows_paths_and_unknowns() {
+        assert_eq!(
+            detect_from_path("C:\\Temp\\APP.TSX"),
+            SyntaxLanguage::TypeScript
+        );
+        assert_eq!(detect_from_path("/tmp/site.HTML"), SyntaxLanguage::Html);
+        assert_eq!(detect_from_path("Dockerfile"), SyntaxLanguage::Unknown);
+        assert_eq!(detect_from_path("archive.tar.gz"), SyntaxLanguage::Unknown);
+    }
 }

@@ -168,6 +168,12 @@ mod tests {
     }
 
     #[test]
+    fn empty_key_rejected_without_network() {
+        let err = verify_api_key("   ", DEFAULT_BASE_URL).unwrap_err();
+        assert_eq!(err, "API key is empty");
+    }
+
+    #[test]
     fn profile_uses_go_endpoint() {
         let p = opencode_go_profile();
         assert!(p

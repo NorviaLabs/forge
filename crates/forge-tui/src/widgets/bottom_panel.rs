@@ -230,6 +230,27 @@ fn activity_lines(activity: &ActivityFeed) -> Vec<Line<'_>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn rendered_text(model: BottomPanelModel<'_>, focused: bool) -> String {
+        let area = Rect::new(0, 0, 80, 8);
+        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(BottomPanel { model, focused }, area);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 
     #[test]
     fn default_panel_is_closed_on_terminal() {
@@ -259,5 +280,56 @@ mod tests {
         assert_eq!(state.active, BottomPanelTab::Diagnostics);
         state.next_tab();
         assert_eq!(state.active, BottomPanelTab::Terminal);
+    }
+
+    #[test]
+    fn tabs_wrap_across_the_full_cycle() {
+        let mut state = BottomPanelState::default();
+        state.active = BottomPanelTab::Activity;
+        state.next_tab();
+        assert_eq!(state.active, BottomPanelTab::Tests);
+        state.previous_tab();
+        assert_eq!(state.active, BottomPanelTab::Activity);
+    }
+
+    #[test]
+    fn renders_active_tab_and_focus_state_in_title() {
+        let activity = ActivityFeed::default();
+        let state = BottomPanelState {
+            open: true,
+            focused: true,
+            active: BottomPanelTab::Diagnostics,
+        };
+        let model = BottomPanelModel {
+            state: &state,
+            busy_phase: &BusyPhase::Idle,
+            activity: &activity,
+        };
+
+        let rendered = rendered_text(model, true);
+        assert!(rendered.contains("Bottom · NAV"));
+        assert!(rendered.contains("Diagnostics"));
+        assert!(rendered.contains("Ctrl+P close"));
+    }
+
+    #[test]
+    fn renders_each_tab_without_panicking() {
+        let activity = ActivityFeed::default();
+        let state = BottomPanelState {
+            open: true,
+            focused: false,
+            active: BottomPanelTab::Tests,
+        };
+        for tab in BottomPanelTab::ALL {
+            let mut state = state.clone();
+            state.active = tab;
+            let model = BottomPanelModel {
+                state: &state,
+                busy_phase: &BusyPhase::Idle,
+                activity: &activity,
+            };
+            let rendered = rendered_text(model, false);
+            assert!(rendered.contains(tab.label()));
+        }
     }
 }

@@ -102,6 +102,7 @@ pub fn client_from_config(cfg: &Config) -> Result<Box<dyn ModelClient>, ModelErr
 mod tests {
     use super::*;
     use forge_types::{MessageRole, ToolCall};
+    use std::sync::mpsc;
 
     #[tokio::test]
     async fn mock_returns_text() {
@@ -164,5 +165,32 @@ mod tests {
         let c = client_from_config(&cfg).unwrap();
         // type erased — just ensure constructs
         let _ = c;
+    }
+
+    #[tokio::test]
+    async fn complete_with_stream_emits_message_boundaries() {
+        let client = MockModelClient::script(vec![ModelResponse {
+            text: "hello".into(),
+            tool_calls: vec![],
+            usage: None,
+            thinking: Some("think".into()),
+        }]);
+        let (tx, rx) = mpsc::channel();
+        let resp = client
+            .complete_with_stream(
+                ModelRequest {
+                    messages: vec![],
+                    tools: vec![],
+                    model: "mock".into(),
+                    reasoning_effort: None,
+                    prompt_cache: false,
+                },
+                Some(tx),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.text, "hello");
+        let events: Vec<_> = rx.try_iter().collect();
+        assert_eq!(events.len(), 3);
     }
 }

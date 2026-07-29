@@ -373,6 +373,50 @@ pub fn try_open_browser(url: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvGuard {
+        saved: Vec<(&'static str, Option<String>)>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl EnvGuard {
+        fn set_forge_and_grok_values() -> Self {
+            let lock = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+            let keys = [
+                "FORGE_XAI_OAUTH_ISSUER",
+                "GROK_OAUTH2_ISSUER",
+                "FORGE_XAI_OAUTH_CLIENT_ID",
+                "GROK_OAUTH2_CLIENT_ID",
+                "FORGE_XAI_OAUTH_SCOPES",
+                "GROK_OAUTH2_SCOPES",
+            ];
+            let saved = keys
+                .into_iter()
+                .map(|key| (key, std::env::var(key).ok()))
+                .collect::<Vec<_>>();
+            std::env::set_var("FORGE_XAI_OAUTH_ISSUER", "https://issuer.example/");
+            std::env::set_var("GROK_OAUTH2_ISSUER", "https://fallback.example/");
+            std::env::set_var("FORGE_XAI_OAUTH_CLIENT_ID", "forge-client");
+            std::env::set_var("GROK_OAUTH2_CLIENT_ID", "grok-client");
+            std::env::set_var("FORGE_XAI_OAUTH_SCOPES", "scope-a");
+            std::env::set_var("GROK_OAUTH2_SCOPES", "scope-b");
+            Self { saved, _lock: lock }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (key, value) in self.saved.drain(..) {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
 
     #[test]
     fn default_client_matches_grok_cli() {
@@ -396,9 +440,75 @@ mod tests {
         assert!(s2.ends_with('Z'));
     }
 
+    #[test]
+    fn from_env_trims_issuer_and_prefers_forge_over_grok_env() {
+        let _guard = EnvGuard::set_forge_and_grok_values();
+
+        let client = XaiOauthClient::from_env();
+        assert_eq!(client.issuer, "https://issuer.example");
+        assert_eq!(client.client_id, "forge-client");
+        assert_eq!(client.scopes, "scope-a");
+    }
+
+    #[test]
+    fn oauth_response_shapes_parse_defaults() {
+        let device: DeviceCodeResponse = serde_json::from_str(
+            r#"{"device_code":"dev","user_code":"user","verification_uri_complete":"https://complete"}"#,
+        )
+        .unwrap();
+        assert_eq!(device.device_code, "dev");
+        assert_eq!(device.verification_uri, None);
+        assert_eq!(
+            device.verification_uri_complete.as_deref(),
+            Some("https://complete")
+        );
+        assert_eq!(device.expires_in, None);
+        assert_eq!(device.interval, None);
+
+        let token: TokenResponse = serde_json::from_str(r#"{"access_token":"access"}"#).unwrap();
+        assert_eq!(token.access_token, "access");
+        assert_eq!(token.refresh_token, None);
+        assert_eq!(token.expires_in, None);
+
+        let err: TokenErrorResponse = serde_json::from_str(r#"{"error":"slow_down"}"#).unwrap();
+        assert_eq!(err.error, "slow_down");
+        assert_eq!(err.error_description, None);
+    }
+
+    #[test]
+    fn civil_date_conversion_handles_boundaries() {
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+        assert_eq!(chrono_lite_rfc3339(86_399), "1970-01-01T23:59:59Z");
+        assert_eq!(chrono_lite_rfc3339(86_400), "1970-01-02T00:00:00Z");
+        assert_eq!(chrono_lite_rfc3339(-1), "1969-12-31T23:59:59Z");
+        assert_eq!(
+            httpdate_or_rfc3339(std::time::UNIX_EPOCH),
+            "1970-01-01T00:00:00Z"
+        );
+    }
+
+    #[test]
+    fn oauth_error_display_messages_cover_variants() {
+        assert_eq!(
+            XaiOauthError::AuthorizationPending.to_string(),
+            "authorization pending"
+        );
+        assert_eq!(
+            XaiOauthError::SlowDown.to_string(),
+            "slow down (increase poll interval)"
+        );
+        assert_eq!(XaiOauthError::Expired.to_string(), "device code expired");
+        assert_eq!(XaiOauthError::AccessDenied.to_string(), "access denied");
+        assert_eq!(
+            XaiOauthError::Oauth("bad".into()).to_string(),
+            "OAuth error: bad"
+        );
+    }
+
     /// Live smoke against auth.x.ai (skipped if FORGE_SKIP_NETWORK=1).
     #[test]
     fn live_device_code_start() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
         if std::env::var("FORGE_SKIP_NETWORK").is_ok() {
             return;
         }
@@ -425,6 +535,7 @@ mod tests {
     /// Document that OAuth uses ureq (no nested Tokio). Network optional.
     #[test]
     fn http_stack_is_ureq_not_reqwest_blocking() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
         // Compile-time / dependency choice: post_form uses ureq::Agent.
         // Runtime smoke: start_device_code must not panic (network may fail offline).
         if std::env::var("FORGE_SKIP_NETWORK").is_ok() {
