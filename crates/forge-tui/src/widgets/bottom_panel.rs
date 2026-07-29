@@ -1,7 +1,10 @@
 use crate::activity::ActivityFeed;
 use crate::theme;
 use crate::widgets::BusyPhase;
-use crate::{validation_command_text, ValidationSnapshot, ValidationStatus};
+use crate::{
+    validation_command_text, CargoTestSummary, ValidationParseState, ValidationSnapshot,
+    ValidationStatus, MAX_FAILED_DISPLAY,
+};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
@@ -206,10 +209,23 @@ fn validation_lines(validation: &ValidationSnapshot) -> Vec<Line<'_>> {
             ));
         }
         ValidationStatus::Passed | ValidationStatus::Failed | ValidationStatus::Cancelled => {
-            if let Some(command) = &validation.command {
+            if validation.cargo_summary.parse_state == ValidationParseState::Parsed
+                || validation.cargo_summary.parse_state == ValidationParseState::Partial
+            {
+                lines.extend(cargo_summary_lines(
+                    validation.display_status(),
+                    &validation.cargo_summary,
+                ));
+            } else {
+                if let Some(command) = &validation.command {
+                    lines.push(Line::styled(
+                        validation_command_text(command),
+                        theme::text(),
+                    ));
+                }
                 lines.push(Line::styled(
-                    validation_command_text(command),
-                    theme::text(),
+                    generic_completed_line(validation),
+                    theme::muted(),
                 ));
             }
             if validation.stale {
@@ -235,6 +251,87 @@ fn validation_lines(validation: &ValidationSnapshot) -> Vec<Line<'_>> {
             theme::muted(),
         ));
     }
+    lines
+}
+
+fn generic_completed_line(validation: &ValidationSnapshot) -> String {
+    if validation
+        .command
+        .as_ref()
+        .is_some_and(crate::is_cargo_test_command)
+    {
+        if validation.status == ValidationStatus::Passed {
+            "Cargo test completed successfully · detailed test counts unavailable".into()
+        } else {
+            "Cargo test failed · detailed test counts unavailable".into()
+        }
+    } else {
+        "View full output in Terminal".into()
+    }
+}
+
+fn cargo_summary_lines<'a>(status: &'a str, summary: &'a CargoTestSummary) -> Vec<Line<'a>> {
+    let mut lines = Vec::new();
+    let counts = if summary.truncated {
+        format!(
+            "At least {} passed{}{}",
+            summary.counts.passed,
+            if summary.counts.failed > 0 {
+                format!(" · {} failed", summary.counts.failed)
+            } else {
+                String::new()
+            },
+            if summary.counts.ignored > 0 {
+                format!(" · {} ignored", summary.counts.ignored)
+            } else {
+                String::new()
+            }
+        )
+    } else {
+        format!(
+            "{} passed{}{}",
+            summary.counts.passed,
+            if summary.counts.failed > 0 {
+                format!(" · {} failed", summary.counts.failed)
+            } else {
+                String::new()
+            },
+            if summary.counts.ignored > 0 {
+                format!(" · {} ignored", summary.counts.ignored)
+            } else {
+                String::new()
+            }
+        )
+    };
+    lines.push(Line::styled(counts, theme::text()));
+    if let Some(duration) = summary.duration_secs {
+        lines.push(Line::styled(format!("{duration:.1}s"), theme::muted()));
+    } else if status == "Passed" {
+        lines.push(Line::styled("Completed", theme::muted()));
+    }
+    if !summary.failed_tests.is_empty() {
+        lines.push(Line::styled("Failed tests:", theme::muted()));
+        for name in summary.failed_tests.iter().take(MAX_FAILED_DISPLAY) {
+            lines.push(Line::styled(format!("- {name}"), theme::text()));
+        }
+        if summary.hidden_failed_tests > 0 {
+            lines.push(Line::styled(
+                format!(
+                    "{} of {} failed tests shown",
+                    MAX_FAILED_DISPLAY,
+                    MAX_FAILED_DISPLAY + summary.hidden_failed_tests
+                ),
+                theme::muted(),
+            ));
+        }
+    }
+    if summary.truncated {
+        lines.push(Line::styled(
+            "Output was truncated; counts may be incomplete",
+            theme::muted(),
+        ));
+    }
+    lines.push(Line::styled("View full output", theme::muted()));
     lines
 }
 
@@ -311,7 +408,8 @@ fn activity_lines(activity: &ActivityFeed) -> Vec<Line<'_>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ValidationSnapshot;
+    use crate::validation::CargoTestCounts;
+    use crate::{CargoTestSummary, ValidationParseState, ValidationSnapshot};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
@@ -422,5 +520,99 @@ mod tests {
             let rendered = rendered_text(model, false);
             assert!(rendered.contains(tab.label()));
         }
+    }
+
+    #[test]
+    fn renders_parsed_passed_summary() {
+        let activity = ActivityFeed::default();
+        let state = BottomPanelState {
+            open: true,
+            focused: false,
+            active: BottomPanelTab::Tests,
+        };
+        let mut validation = ValidationSnapshot::default();
+        validation.status = ValidationStatus::Passed;
+        validation.cargo_summary = CargoTestSummary {
+            parse_state: ValidationParseState::Parsed,
+            counts: CargoTestCounts {
+                passed: 142,
+                ignored: 3,
+                ..Default::default()
+            },
+            duration_secs: Some(8.4),
+            ..Default::default()
+        };
+        let model = BottomPanelModel {
+            state: &state,
+            busy_phase: &BusyPhase::Idle,
+            activity: &activity,
+            validation: &validation,
+            terminal_title: None,
+            terminal_content: "",
+            terminal_truncated: false,
+        };
+        let rendered = rendered_text(model, false);
+        assert!(rendered.contains("142 passed · 3 ignored"));
+        assert!(rendered.contains("8.4s"));
+    }
+
+    #[test]
+    fn renders_parsed_failed_names() {
+        let activity = ActivityFeed::default();
+        let state = BottomPanelState {
+            open: true,
+            focused: false,
+            active: BottomPanelTab::Tests,
+        };
+        let mut validation = ValidationSnapshot::default();
+        validation.status = ValidationStatus::Failed;
+        validation.cargo_summary = CargoTestSummary {
+            parse_state: ValidationParseState::Parsed,
+            counts: CargoTestCounts {
+                passed: 138,
+                failed: 4,
+                ignored: 2,
+                ..Default::default()
+            },
+            failed_tests: vec!["parser::tests::handles_unicode".into()],
+            duration_secs: Some(8.4),
+            ..Default::default()
+        };
+        let model = BottomPanelModel {
+            state: &state,
+            busy_phase: &BusyPhase::Idle,
+            activity: &activity,
+            validation: &validation,
+            terminal_title: None,
+            terminal_content: "",
+            terminal_truncated: false,
+        };
+        let rendered = rendered_text(model, false);
+        assert!(rendered.contains("138 passed · 4 failed · 2 ignored"));
+        assert!(rendered.contains("Failed tests:"));
+        assert!(rendered.contains("parser::tests::handles_unicode"));
+    }
+
+    #[test]
+    fn renders_generic_non_cargo_validation() {
+        let activity = ActivityFeed::default();
+        let state = BottomPanelState {
+            open: true,
+            focused: false,
+            active: BottomPanelTab::Tests,
+        };
+        let mut validation = ValidationSnapshot::default();
+        validation.status = ValidationStatus::Passed;
+        let model = BottomPanelModel {
+            state: &state,
+            busy_phase: &BusyPhase::Idle,
+            activity: &activity,
+            validation: &validation,
+            terminal_title: None,
+            terminal_content: "",
+            terminal_truncated: false,
+        };
+        let rendered = rendered_text(model, false);
+        assert!(rendered.contains("View full output in Terminal"));
     }
 }

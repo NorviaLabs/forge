@@ -41,7 +41,10 @@ pub use overlays::{
     Key as OverlayKey, Overlay, OverlayAction,
 };
 pub use sidebar::SidebarModel;
-pub use validation::{validation_command_text, ValidationSnapshot, ValidationStatus};
+pub use validation::{
+    is_cargo_test_command, validation_command_text, CargoTestSummary, ValidationParseState,
+    ValidationSnapshot, ValidationStatus, MAX_FAILED_DISPLAY,
+};
 pub use widgets::{
     classify_operator_error, session_chrome_lines, BusyPhase, FeedbackModel, FeedbackSeverity,
     FooterModel, InputModel, StatusModel,
