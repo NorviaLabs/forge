@@ -3673,7 +3673,6 @@ Reply with ONLY the commit message line.\n\n\
                 SourceViewerWidget {
                     viewer: &mut self.source_viewer,
                     focused: self.focus.block == FocusBlock::Workspace,
-                    mode_label: self.workspace_mode.mode_label(self.focus.mode),
                 },
                 regions.chat,
             );
@@ -3881,13 +3880,6 @@ Reply with ONLY the commit message line.\n\n\
                 attachment: attachment_label.as_deref(),
                 focused: self.focus.mode == FocusMode::Navigation
                     && self.focus.block == FocusBlock::Composer,
-                mode_label: if self.focus.mode == FocusMode::Navigation
-                    && self.focus.block == FocusBlock::Composer
-                {
-                    "COMPOSER"
-                } else {
-                    "Chat"
-                },
             },
             regions.input,
         );

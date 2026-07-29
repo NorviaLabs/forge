@@ -247,7 +247,6 @@ pub struct InputBar<'a> {
     /// Optional file-attachment label shown above the prompt line.
     pub attachment: Option<&'a str>,
     pub focused: bool,
-    pub mode_label: &'a str,
 }
 
 impl Widget for InputBar<'_> {
@@ -501,7 +500,6 @@ mod tests {
                     model: &m,
                     attachment: None,
                     focused: true,
-                    mode_label: "INPUT",
                 },
                 f.area(),
             );
@@ -532,7 +530,6 @@ mod tests {
                     model: &m,
                     attachment: None,
                     focused: true,
-                    mode_label: "INPUT",
                 },
                 f.area(),
             );
@@ -558,7 +555,6 @@ mod tests {
                     model: &m,
                     attachment: None,
                     focused: true,
-                    mode_label: "INPUT",
                 },
                 f.area(),
             );
@@ -596,7 +592,6 @@ mod tests {
                     model: &m,
                     attachment: None,
                     focused: false,
-                    mode_label: "NAV",
                 },
                 f.area(),
             );
@@ -631,7 +626,6 @@ mod tests {
                     model: &m,
                     attachment: Some("file.txt"),
                     focused: true,
-                    mode_label: "INPUT",
                 },
                 f.area(),
             );
