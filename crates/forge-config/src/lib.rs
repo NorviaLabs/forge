@@ -166,6 +166,19 @@ fn default_mcp_transport() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TuiConfig {}
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct CommandConfig {
+    pub executable: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ValidationConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<CommandConfig>,
+}
+
 /// Phase 9 — `[tools.web_search]` (WEB-01).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -307,6 +320,8 @@ pub struct Config {
     pub mcp: McpSection,
     #[serde(default)]
     pub tui: TuiConfig,
+    #[serde(default)]
+    pub validation: ValidationConfig,
     /// Phase 9 tool settings.
     #[serde(default)]
     pub tools: ToolsConfig,
@@ -336,6 +351,7 @@ impl Default for Config {
             journal: JournalConfig::default(),
             mcp: McpSection::default(),
             tui: TuiConfig::default(),
+            validation: ValidationConfig::default(),
             tools: ToolsConfig::default(),
             resolved_workspace: cwd,
         }
@@ -415,6 +431,7 @@ struct ConfigFile {
     journal: Option<JournalConfig>,
     mcp: Option<McpSection>,
     tui: Option<TuiConfig>,
+    validation: Option<ValidationConfig>,
     tools: Option<ToolsConfigFile>,
 }
 
@@ -479,6 +496,9 @@ impl ConfigFile {
         }
         if let Some(tui) = self.tui {
             cfg.tui = tui;
+        }
+        if let Some(validation) = self.validation {
+            cfg.validation = validation;
         }
         if let Some(tools) = self.tools {
             if let Some(ws) = tools.web_search {

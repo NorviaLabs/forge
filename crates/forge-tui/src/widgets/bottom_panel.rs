@@ -1,6 +1,7 @@
 use crate::activity::ActivityFeed;
 use crate::theme;
 use crate::widgets::BusyPhase;
+use crate::{validation_command_text, ValidationSnapshot, ValidationStatus};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
@@ -83,6 +84,10 @@ pub struct BottomPanelModel<'a> {
     pub state: &'a BottomPanelState,
     pub busy_phase: &'a BusyPhase,
     pub activity: &'a ActivityFeed,
+    pub validation: &'a ValidationSnapshot,
+    pub terminal_title: Option<&'a str>,
+    pub terminal_content: &'a str,
+    pub terminal_truncated: bool,
 }
 
 pub struct BottomPanel<'a> {
@@ -145,26 +150,117 @@ impl Widget for BottomPanel<'_> {
         let inner = block.inner(area);
         block.render(area, buf);
         let lines = match self.model.state.active {
-            BottomPanelTab::Tests => vec![
-                Line::styled("No validation run yet", theme::text()),
-                Line::styled("Captured command output is in Terminal.", theme::muted()),
-            ],
+            BottomPanelTab::Tests => validation_lines(self.model.validation),
             BottomPanelTab::Diagnostics => vec![
                 Line::styled("No diagnostics", theme::text()),
                 Line::styled("Compiler and tool output is in Terminal.", theme::muted()),
             ],
-            BottomPanelTab::Terminal => terminal_lines(self.model.busy_phase, self.model.activity),
+            BottomPanelTab::Terminal => terminal_lines(
+                self.model.busy_phase,
+                self.model.activity,
+                self.model.terminal_title,
+                self.model.terminal_content,
+                self.model.terminal_truncated,
+            ),
             BottomPanelTab::Activity => activity_lines(self.model.activity),
         };
         Paragraph::new(lines).render(inner, buf);
     }
 }
 
-fn terminal_lines<'a>(busy_phase: &'a BusyPhase, activity: &'a ActivityFeed) -> Vec<Line<'a>> {
+fn validation_lines(validation: &ValidationSnapshot) -> Vec<Line<'_>> {
+    let mut lines = Vec::new();
+    lines.push(Line::from(vec![
+        Span::styled("Validation ", theme::muted()),
+        Span::styled(validation.display_status(), theme::text()),
+    ]));
+    match validation.status {
+        ValidationStatus::NotConfigured => {
+            lines.push(Line::styled(
+                "Set [validation].command in forge.toml.",
+                theme::muted(),
+            ));
+        }
+        ValidationStatus::NotRun => {
+            if let Some(command) = &validation.command {
+                lines.push(Line::styled(
+                    validation_command_text(command),
+                    theme::text(),
+                ));
+            }
+            lines.push(Line::styled(
+                "Enter to run · raw output in Terminal",
+                theme::muted(),
+            ));
+        }
+        ValidationStatus::Running => {
+            if let Some(command) = &validation.command {
+                lines.push(Line::styled(
+                    validation_command_text(command),
+                    theme::text(),
+                ));
+            }
+            lines.push(Line::styled(
+                "Running… · Enter cancels when focused",
+                theme::muted(),
+            ));
+        }
+        ValidationStatus::Passed | ValidationStatus::Failed | ValidationStatus::Cancelled => {
+            if let Some(command) = &validation.command {
+                lines.push(Line::styled(
+                    validation_command_text(command),
+                    theme::text(),
+                ));
+            }
+            if validation.stale {
+                lines.push(Line::styled(
+                    "Workspace changed after that run.",
+                    theme::muted(),
+                ));
+            }
+        }
+    }
+    if let Some(duration) = validation.duration {
+        lines.push(Line::styled(
+            format!("Duration: {:?}", duration),
+            theme::muted(),
+        ));
+    }
+    if let Some(code) = validation.exit_code {
+        lines.push(Line::styled(format!("Exit: {code}"), theme::muted()));
+    }
+    if let Some(output_ref) = &validation.output_ref {
+        lines.push(Line::styled(
+            format!("Output: {output_ref}"),
+            theme::muted(),
+        ));
+    }
+    lines
+}
+
+fn terminal_lines<'a>(
+    busy_phase: &'a BusyPhase,
+    activity: &'a ActivityFeed,
+    terminal_title: Option<&'a str>,
+    terminal_content: &'a str,
+    terminal_truncated: bool,
+) -> Vec<Line<'a>> {
     let mut lines = vec![Line::from(vec![
         Span::styled("Command output view", theme::text()),
         Span::styled(" · existing captured output only", theme::muted()),
     ])];
+    if let Some(title) = terminal_title {
+        lines.push(Line::styled(title.to_string(), theme::text()));
+    }
+    if !terminal_content.is_empty() {
+        for line in terminal_content.lines().take(3) {
+            lines.push(Line::styled(line.to_string(), theme::muted()));
+        }
+        if terminal_truncated {
+            lines.push(Line::styled("Output truncated", theme::muted()));
+        }
+        return lines;
+    }
     if let BusyPhase::Tool { name } = busy_phase {
         lines.push(Line::from(vec![
             Span::styled("running ", theme::muted()),
@@ -215,6 +311,7 @@ fn activity_lines(activity: &ActivityFeed) -> Vec<Line<'_>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ValidationSnapshot;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
@@ -289,6 +386,10 @@ mod tests {
             state: &state,
             busy_phase: &BusyPhase::Idle,
             activity: &activity,
+            validation: &ValidationSnapshot::default(),
+            terminal_title: None,
+            terminal_content: "",
+            terminal_truncated: false,
         };
 
         let rendered = rendered_text(model, true);
@@ -313,6 +414,10 @@ mod tests {
                 state: &state,
                 busy_phase: &BusyPhase::Idle,
                 activity: &activity,
+                validation: &ValidationSnapshot::default(),
+                terminal_title: None,
+                terminal_content: "",
+                terminal_truncated: false,
             };
             let rendered = rendered_text(model, false);
             assert!(rendered.contains(tab.label()));
