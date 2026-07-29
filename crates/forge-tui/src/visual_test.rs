@@ -672,6 +672,61 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn diff_tab_loads_changes_with_files_hidden() {
+        let (dir, mut app) = app().await;
+        let workspace = dir.path().join("repo");
+        fs::create_dir_all(&workspace).unwrap();
+        Command::new("git")
+            .arg("init")
+            .current_dir(&workspace)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(&workspace)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Forge Test"])
+            .current_dir(&workspace)
+            .output()
+            .unwrap();
+        fs::write(workspace.join("tracked.txt"), "x").unwrap();
+        Command::new("git")
+            .args(["add", "tracked.txt"])
+            .current_dir(&workspace)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(&workspace)
+            .output()
+            .unwrap();
+        fs::write(workspace.join("tracked.txt"), "changed").unwrap();
+
+        app.session = rebuild_session(dir.path(), &workspace).await;
+        app.runtime.cwd = workspace.clone();
+        app.file_explorer = crate::file_explorer::FileExplorer::new(Some(workspace));
+        app.files_visible = false;
+        app.workspace_mode = WorkspaceMode::Diff;
+
+        let backend = TestBackend::new(120, 40);
+        let mut term = Terminal::new(backend).unwrap();
+        while app.file_explorer.git_status.loading {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            term.draw(|f| app.draw(f)).unwrap();
+        }
+
+        term.draw(|f| app.draw(f)).unwrap();
+        let text = buffer_text(&term);
+        assert!(text.contains("CHANGES"), "missing diff inventory:\n{text}");
+        assert!(
+            text.contains("M tracked.txt"),
+            "missing changed file:\n{text}"
+        );
+    }
+
     async fn rebuild_session(dir: &std::path::Path, workspace: &std::path::Path) -> AgentSession {
         let model = Arc::new(MockModelClient::script(vec![ModelResponse {
             text: "ok".into(),
