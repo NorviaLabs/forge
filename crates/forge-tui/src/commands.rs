@@ -36,6 +36,8 @@ pub enum SlashCommand {
     File {
         path: Option<String>,
     },
+    /// Toggle the Files pane.
+    ToggleFiles,
     /// Disconnect from the current provider and clear stored credentials.
     Disconnect {
         profile_id: Option<String>,
@@ -93,8 +95,14 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
         }
         "copy" => Ok(SlashCommand::Copy),
         "clear" => Ok(SlashCommand::Clear),
-        "file" | "files" | "open" => Ok(SlashCommand::File {
+        "file" | "open" => Ok(SlashCommand::File {
             path: parts.next().map(|s| s.to_string()),
+        }),
+        "files" => Ok(match parts.next() {
+            None => SlashCommand::ToggleFiles,
+            Some(path) => SlashCommand::File {
+                path: Some(path.to_string()),
+            },
         }),
         "sync" => Ok(SlashCommand::Sync),
         "refresh" => Ok(SlashCommand::Refresh),
@@ -137,6 +145,16 @@ mod tests {
         assert_eq!(parse_slash("/clear").unwrap().unwrap(), SlashCommand::Clear);
         assert_eq!(
             parse_slash("/file README.md").unwrap().unwrap(),
+            SlashCommand::File {
+                path: Some("README.md".into())
+            }
+        );
+        assert_eq!(
+            parse_slash("/files").unwrap().unwrap(),
+            SlashCommand::ToggleFiles
+        );
+        assert_eq!(
+            parse_slash("/files README.md").unwrap().unwrap(),
             SlashCommand::File {
                 path: Some("README.md".into())
             }
