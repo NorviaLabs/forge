@@ -771,6 +771,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn external_editor_resume_survives_resize_before_redraw() {
+        let (dir, mut app) = app().await;
+        let workspace = dir.path().join("repo");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(workspace.join("x.rs"), "fn main() {}\n").unwrap();
+        app.session = rebuild_session(dir.path(), &workspace).await;
+        app.runtime.cwd = workspace.clone();
+        app.source_viewer.open(&workspace, &workspace.join("x.rs"));
+        app.workspace_mode = WorkspaceMode::Editor;
+
+        let backend = TestBackend::new(80, 24);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| app.draw(f)).unwrap();
+
+        let backend = TestBackend::new(60, 16);
+        let mut resized = Terminal::new(backend).unwrap();
+        resized.autoresize().unwrap();
+        resized.clear().unwrap();
+        resized.draw(|f| app.draw(f)).unwrap();
+
+        assert!(!app.source_viewer.lines.is_empty());
+    }
+
+    #[tokio::test]
     async fn load_failure_shows_unable_to_load() {
         let (dir, mut app) = app().await;
         let workspace = dir.path().join("repo");

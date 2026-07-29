@@ -1988,8 +1988,7 @@ impl TuiApp {
         let status = match cmd.status() {
             Ok(s) => s,
             Err(e) => {
-                // Re-enter TUI mode so the user sees the error message.
-                let _ = crate::terminal::reinit_terminal();
+                let _ = self.resume_after_external_editor(terminal.as_deref_mut());
                 self.set_feedback(
                     FeedbackSeverity::Warn,
                     &EditorError::SpawnFailed(e).to_string(),
@@ -1997,9 +1996,6 @@ impl TuiApp {
                 return Ok(());
             }
         };
-
-        // 7. Re-enter TUI terminal mode.
-        let _ = crate::terminal::reinit_terminal();
 
         // 8. Report non-zero exit.
         if let Some(code) = status.code() {
@@ -2012,8 +2008,24 @@ impl TuiApp {
             }
         }
 
+        let _ = self.resume_after_external_editor(terminal.as_deref_mut());
+
         // 9. Refresh the active file and Git status.
         self.refresh_post_editor();
+        Ok(())
+    }
+
+    fn resume_after_external_editor(
+        &mut self,
+        terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        crate::terminal::reinit_terminal()?;
+        crate::terminal::clear_terminal()?;
+        if let Some(term) = terminal {
+            term.autoresize()?;
+            term.clear()?;
+            term.draw(|f| self.draw(f))?;
+        }
         Ok(())
     }
 
@@ -7314,4 +7326,16 @@ mod tests {
         // Should not crash; feedback set because tool is active.
         assert!(!app.pending_external_editor);
     }
+
+    #[tokio::test]
+    async fn external_editor_resume_draws_after_terminal_reinit() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.source_viewer.status = crate::source_viewer::ViewerStatus::Ok;
+        app.source_viewer.path = Some(PathBuf::from("/tmp/fake.txt"));
+        app.pending_external_editor = true;
+
+        let result = app.resume_after_external_editor(None);
+        assert!(result.is_ok());
+    }
+
 }
