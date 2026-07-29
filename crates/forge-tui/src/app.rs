@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::io::{self, stdout};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant, SystemTime};
 
 use crossterm::event::{
@@ -25,6 +26,7 @@ use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 use ratatui::Terminal;
+use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde_json::json;
 use thiserror::Error;
 
@@ -76,6 +78,11 @@ struct TerminalCapture {
     title: Option<String>,
     content: String,
     truncated: bool,
+}
+
+#[derive(Debug, Clone)]
+struct FileChangeEvent {
+    path: PathBuf,
 }
 
 #[derive(Debug)]
@@ -484,6 +491,9 @@ pub struct TuiApp {
     pub workspace_mode: WorkspaceMode,
     /// Read-only source viewer state for the Editor workspace tab.
     pub source_viewer: SourceViewer,
+    file_watcher: Option<RecommendedWatcher>,
+    file_change_rx: Receiver<FileChangeEvent>,
+    file_change_tx: Sender<FileChangeEvent>,
     pub bottom_panel: BottomPanelState,
     pub validation: ValidationSnapshot,
     pub files_visible: bool,
@@ -539,6 +549,7 @@ impl TuiApp {
             .clone()
             .map(ValidationSnapshot::configured)
             .unwrap_or_default();
+        let (file_change_tx, file_change_rx) = mpsc::channel();
         let mut app = Self {
             session,
             input,
@@ -582,6 +593,9 @@ impl TuiApp {
             tool_expanded: false,
             workspace_mode: WorkspaceMode::default(),
             source_viewer: SourceViewer::new(),
+            file_watcher: None,
+            file_change_rx,
+            file_change_tx,
             bottom_panel: BottomPanelState::default(),
             validation,
             files_visible: false,
@@ -608,8 +622,50 @@ impl TuiApp {
             validation_abort: None,
             last_editor_height: 24,
         };
+        app.init_file_watcher();
         app.normalize_restored_validation();
         app.restore_saved_auth().apply_connection_chrome()
+    }
+
+    fn init_file_watcher(&mut self) {
+        let tx = self.file_change_tx.clone();
+        let mut watcher = match RecommendedWatcher::new(
+            move |result: notify::Result<notify::Event>| {
+                if let Ok(event) = result {
+                    if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)) {
+                        for path in event.paths {
+                            let _ = tx.send(FileChangeEvent { path });
+                        }
+                    }
+                }
+            },
+            Config::default(),
+        ) {
+            Ok(watcher) => watcher,
+            Err(_) => return,
+        };
+        let _ = watcher.watch(self.session.workspace_root(), RecursiveMode::Recursive);
+        self.file_watcher = Some(watcher);
+    }
+
+    fn poll_file_changes(&mut self) {
+        let mut refreshed = false;
+        loop {
+            match self.file_change_rx.try_recv() {
+                Ok(change) => {
+                    if let Some(path) = &self.source_viewer.path {
+                        if change.path == *path {
+                            self.refresh_post_editor();
+                            refreshed = true;
+                        }
+                    }
+                }
+                Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
+            }
+        }
+        if refreshed {
+            self.notices.clear();
+        }
     }
 
     fn normalize_restored_validation(&mut self) {
@@ -5152,6 +5208,7 @@ async fn run_loop(
     app: &mut TuiApp,
 ) -> Result<(), TuiError> {
     while !app.should_quit {
+        app.poll_file_changes();
         app.poll_validation();
         app.tick_toast();
         app.tick_notices();
