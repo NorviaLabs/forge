@@ -774,7 +774,36 @@ mod tests {
     use super::*;
     use crate::auth::OauthTokens;
     use crate::openai::openai_profile;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
     use tempfile::tempdir;
+
+    fn mock_http(responses: Vec<(u16, &'static str, Vec<(&'static str, &'static str)>)>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            for (status, body, headers) in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut buf = [0_u8; 2048];
+                let _ = stream.read(&mut buf);
+                let mut response = format!(
+                    "HTTP/1.1 {status} test\r\ncontent-length: {}\r\n",
+                    body.len()
+                );
+                for (name, value) in headers {
+                    response.push_str(name);
+                    response.push_str(": ");
+                    response.push_str(value);
+                    response.push_str("\r\n");
+                }
+                response.push_str("connection: close\r\n\r\n");
+                response.push_str(body);
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+        });
+        format!("http://{addr}")
+    }
 
     #[test]
     fn normalize_model_id_variants() {
@@ -1118,6 +1147,110 @@ mod tests {
         assert!(!filter_openai_chat_ish("ft:gpt-4.1-mini:org:custom"));
         assert!(!filter_openai_chat_ish("omni-moderation-latest"));
         assert!(filter_openai_chat_ish("gpt-4.1-mini"));
+    }
+
+    #[test]
+    fn fetch_remote_models_uses_profile_specific_http_shapes() {
+        let mut openai = openai_profile();
+        openai.default_base_url = Some(mock_http(vec![(
+            200,
+            r#"{"data":[{"id":"gpt-4.1-mini"},{"id":"text-embedding-3-small"}]}"#,
+            vec![],
+        )]));
+        assert_eq!(
+            fetch_remote_models(&openai, Some("sk-test")).unwrap(),
+            vec!["openai/gpt-4.1-mini"]
+        );
+
+        let mut go = crate::opencode_go::opencode_go_profile();
+        go.default_base_url = Some(mock_http(vec![(
+            200,
+            r#"{"data":[{"id":"gpt-4.1-mini"}]}"#,
+            vec![],
+        )]));
+        assert_eq!(
+            fetch_remote_models(&go, Some("go-test")).unwrap(),
+            vec!["opencode-go/gpt-4.1-mini"]
+        );
+
+        let mut zen = crate::opencode_zen::opencode_zen_profile();
+        zen.default_base_url = Some(mock_http(vec![(
+            200,
+            r#"{"models":["claude-sonnet-4"]}"#,
+            vec![],
+        )]));
+        assert_eq!(
+            fetch_remote_models(&zen, Some("zen-test")).unwrap(),
+            vec!["opencode-zen/claude-sonnet-4"]
+        );
+
+        let mut xai = crate::xai::xai_grok_profile();
+        xai.default_base_url = Some(mock_http(vec![(
+            200,
+            r#"{"data":[{"slug":"grok-code-fast"}]}"#,
+            vec![],
+        )]));
+        assert_eq!(
+            fetch_remote_models(&xai, Some("xai-token")).unwrap(),
+            vec!["xai/grok-code-fast"]
+        );
+    }
+
+    #[test]
+    fn fetch_remote_models_covers_anthropic_and_ollama_fallbacks() {
+        let mut anthropic = crate::anthropic::anthropic_profile();
+        anthropic.default_base_url = Some(mock_http(vec![
+            (400, "query rejected", vec![]),
+            (
+                200,
+                r#"{"data":[{"id":"claude-sonnet-4-20250514"}]}"#,
+                vec![],
+            ),
+        ]));
+        assert_eq!(
+            fetch_remote_models(&anthropic, Some("sk-ant-test")).unwrap(),
+            vec!["anthropic/claude-sonnet-4-20250514"]
+        );
+
+        let mut ollama = crate::ollama::ollama_profile();
+        ollama.default_base_url = Some(mock_http(vec![(
+            200,
+            r#"{"models":[{"name":"qwen2.5-coder:latest"}]}"#,
+            vec![],
+        )]));
+        assert_eq!(
+            fetch_remote_models(&ollama, None).unwrap(),
+            vec!["ollama/qwen2.5-coder:latest"]
+        );
+
+        let mut ollama_fallback = crate::ollama::ollama_profile();
+        ollama_fallback.default_base_url = Some(mock_http(vec![
+            (200, r#"{"models":[]}"#, vec![]),
+            (200, r#"{"data":[{"id":"llama3.2"}]}"#, vec![]),
+        ]));
+        assert_eq!(
+            fetch_remote_models(&ollama_fallback, None).unwrap(),
+            vec!["ollama/llama3.2"]
+        );
+    }
+
+    #[test]
+    fn http_get_json_ids_reports_redirect_and_json_errors() {
+        let base = mock_http(vec![(
+            302,
+            "",
+            vec![("Location", "http://127.0.0.1:9/models")],
+        )]);
+        let err = http_get_json_ids(&format!("{base}/models"), &[]).unwrap_err();
+        assert!(err.contains("catalog GET"), "{err}");
+
+        let base = mock_http(vec![(200, "{not-json", vec![])]);
+        let err = http_get_json_ids(&format!("{base}/models"), &[]).unwrap_err();
+        assert!(err.contains("catalog JSON"), "{err}");
+
+        let base = mock_http(vec![(400, "bad request body", vec![])]);
+        let err = http_get_json_ids(&format!("{base}/models"), &[]).unwrap_err();
+        assert!(err.contains("HTTP 400 bad request body"), "{err}");
     }
 
     #[test]
