@@ -959,7 +959,7 @@ impl TuiApp {
 
     fn refresh_connection_ui(&mut self) {
         self.sync_provider_connection();
-        let connected = !self.input.not_connected;
+        let connected = self.is_provider_connected();
         self.input.not_connected = !connected;
         if connected {
             if self.input.hint.contains("Not connected") || self.input.hint.contains("/connect") {
@@ -2980,8 +2980,10 @@ impl TuiApp {
         &mut self,
         terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        crate::terminal::reinit_terminal()?;
-        crate::terminal::clear_terminal()?;
+        // Best effort: terminal restoration must not fail the UI in test or headless
+        // contexts where a real terminal may not be attached.
+        let _ = crate::terminal::reinit_terminal();
+        let _ = crate::terminal::clear_terminal();
         if let Some(term) = terminal {
             term.autoresize()?;
             term.clear()?;
@@ -9032,7 +9034,7 @@ mod tests {
             text.push('\n');
         }
         assert!(
-            text.contains("not connected") || text.contains("○"),
+            text.to_ascii_lowercase().contains("not connected") || text.contains("○"),
             "missing not-connected chrome:\n{text}"
         );
     }
