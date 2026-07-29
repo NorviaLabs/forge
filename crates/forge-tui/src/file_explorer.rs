@@ -119,6 +119,14 @@ impl FileExplorer {
         }
     }
 
+    pub fn refresh_workspace(&mut self) {
+        let root_path = self.root_path.clone();
+        if let Some(root) = self.root.as_mut() {
+            refresh_loaded_directories(root_path.as_deref(), root);
+        }
+        self.refresh_git_status();
+    }
+
     pub fn refresh_selected(&mut self) {
         let selected = self.selected_path.clone();
         let root_path = self.root_path.clone();
@@ -308,6 +316,32 @@ fn find_node_mut<'a>(node: &'a mut FileNode, path: &Path) -> Option<&'a mut File
     node.children
         .iter_mut()
         .find_map(|child| find_node_mut(child, path))
+}
+
+fn refresh_loaded_directories(root: Option<&Path>, node: &mut FileNode) {
+    if node.kind != FileKind::Directory || !node.loaded {
+        return;
+    }
+    refresh_directory(root, node);
+}
+
+fn refresh_directory(root: Option<&Path>, node: &mut FileNode) {
+    let expanded = node.expanded;
+    let loaded_children: Vec<PathBuf> = node
+        .children
+        .iter()
+        .filter(|child| child.kind == FileKind::Directory && child.loaded)
+        .map(|child| child.path.clone())
+        .collect();
+    load_children(root, node);
+    node.expanded = expanded;
+
+    for path in loaded_children {
+        if let Some(child) = node.children.iter_mut().find(|child| child.path == path) {
+            child.expanded = true;
+            refresh_directory(root, child);
+        }
+    }
 }
 
 fn load_children(root: Option<&Path>, node: &mut FileNode) {
@@ -599,6 +633,27 @@ mod tests {
         explorer.refresh_git_status();
         explorer.git_status.poll();
         assert_eq!(explorer.visible_nodes().len(), before);
+    }
+
+    #[test]
+    fn workspace_refresh_reloads_tree_and_preserves_expanded_directories() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("src")).unwrap();
+        fs::write(root.path().join("src/lib.rs"), "").unwrap();
+        let mut explorer = FileExplorer::new(Some(root.path().to_path_buf()));
+        explorer.selected_path = Some(root.path().join("src").canonicalize().unwrap());
+        explorer.expand_selected();
+
+        fs::write(root.path().join("src/main.rs"), "").unwrap();
+        fs::write(root.path().join("README.md"), "").unwrap();
+        explorer.refresh_workspace();
+        let visible = explorer.visible_nodes();
+
+        assert!(visible.iter().any(|node| node.display_name == "README.md"));
+        assert!(visible.iter().any(|node| node.display_name == "main.rs"));
+        assert!(visible
+            .iter()
+            .any(|node| node.display_name == "src" && node.expanded));
     }
 
     #[test]

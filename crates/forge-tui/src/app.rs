@@ -691,22 +691,23 @@ impl TuiApp {
     }
 
     fn poll_file_changes(&mut self) {
-        let mut refreshed = false;
+        let mut active_file_changed = false;
+        let mut workspace_changed = false;
         loop {
             match self.file_change_rx.try_recv() {
                 Ok(change) => {
+                    workspace_changed = true;
                     if let Some(path) = &self.source_viewer.path {
                         if change.path == *path {
-                            self.refresh_post_editor();
-                            refreshed = true;
+                            active_file_changed = true;
                         }
                     }
                 }
                 Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
             }
         }
-        if refreshed {
-            self.notices.clear();
+        if workspace_changed {
+            self.refresh_after_filesystem_change(active_file_changed);
         }
     }
 
@@ -723,7 +724,15 @@ impl TuiApp {
     }
 
     fn note_workspace_changed(&mut self) {
-        self.file_explorer.refresh_git_status();
+        self.file_explorer.refresh_workspace();
+    }
+
+    fn refresh_after_filesystem_change(&mut self, active_file_changed: bool) {
+        if active_file_changed {
+            self.refresh_active_source_viewer();
+            self.notices.clear();
+        }
+        self.note_workspace_changed();
     }
 
     // Intentionally keep the conversation window clean: only real chat (user/assistant)
@@ -2465,6 +2474,24 @@ impl TuiApp {
     /// Called after the external editor exits. Reloads the file, refreshes
     /// syntax highlighting, search state, and Git markers.
     fn refresh_post_editor(&mut self) {
+        self.refresh_active_source_viewer();
+        self.note_workspace_changed();
+
+        // Show a compact notice.
+        let gs = &self.file_explorer.git_status;
+        let changed = gs.status.len();
+        let gs_text = if changed == 0 {
+            "No repository changes detected".into()
+        } else if changed == 1 {
+            "1 file changed".into()
+        } else {
+            format!("{changed} files changed")
+        };
+        self.notices.clear();
+        self.push_notice(vec!["Returned from external editor".into(), gs_text]);
+    }
+
+    fn refresh_active_source_viewer(&mut self) {
         let root = self.session.workspace_root().to_path_buf();
         let path = self.source_viewer.path.clone();
         let old_line = self.source_viewer.current_line;
@@ -2491,22 +2518,6 @@ impl TuiApp {
         if !search_query.is_empty() {
             self.source_viewer.update_search_query(&search_query);
         }
-
-        // Refresh Git status and age validation.
-        self.note_workspace_changed();
-
-        // Show a compact notice.
-        let gs = &self.file_explorer.git_status;
-        let changed = gs.status.len();
-        let gs_text = if changed == 0 {
-            "No repository changes detected".into()
-        } else if changed == 1 {
-            "1 file changed".into()
-        } else {
-            format!("{changed} files changed")
-        };
-        self.notices.clear();
-        self.push_notice(vec!["Returned from external editor".into(), gs_text]);
     }
 
     /// Drive `/sync` work with a terminal handle available for intermediate redraws.
@@ -5551,6 +5562,22 @@ mod tests {
             .is_some_and(|record| record.state == RunState::Cancelled));
         assert!(!app.pending_validation);
         assert!(app.run_rx.is_none());
+    }
+
+    #[tokio::test]
+    async fn file_change_event_refreshes_git_status() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.file_explorer.git_status = crate::git_status::GitStatusCache::new();
+        assert!(!app.file_explorer.git_status.loading);
+
+        app.file_change_tx
+            .send(FileChangeEvent {
+                path: app.session.workspace_root().join("changed.txt"),
+            })
+            .unwrap();
+        app.poll_file_changes();
+
+        assert!(app.file_explorer.git_status.loading);
     }
 
     #[tokio::test]
