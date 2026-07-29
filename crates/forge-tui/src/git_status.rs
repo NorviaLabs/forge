@@ -62,6 +62,7 @@ pub struct GitStatusCache {
     /// Last refresh error, if any.
     pub error: Option<String>,
     pending: Option<Receiver<Result<HashMap<PathBuf, GitStatusKind>, String>>>,
+    revision: u64,
 }
 
 impl GitStatusCache {
@@ -71,6 +72,7 @@ impl GitStatusCache {
             loading: false,
             error: None,
             pending: None,
+            revision: 0,
         }
     }
 
@@ -80,6 +82,7 @@ impl GitStatusCache {
     pub fn start_refresh(&mut self, root: PathBuf) {
         self.loading = true;
         self.error = None;
+        self.revision = self.revision.wrapping_add(1);
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let _ = tx.send(load_git_status(&root));
@@ -128,6 +131,10 @@ impl GitStatusCache {
         }
         files.sort_by(|a, b| a.path.cmp(&b.path));
         files
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// Returns the unstaged unified diff for one path.

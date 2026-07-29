@@ -53,11 +53,14 @@ use crate::sidebar::{InspectorView, SidebarModel, SidebarWidget};
 use crate::source_viewer::{SourceViewer, SourceViewerWidget};
 use crate::terminal::TerminalGuard;
 use crate::theme;
+use crate::validation::ValidationSnapshot;
 use crate::widgets::{
     classify_operator_error, BottomPanel, BottomPanelModel, BottomPanelState, BottomPanelTab,
     BusyPhase, FeedbackBar, FeedbackModel, FeedbackSeverity, FooterBar, FooterModel, InputBar,
     InputModel, StatusBar, StatusModel,
 };
+use crate::ValidationStatus;
+use forge_config::CommandConfig;
 use ratatui::widgets::Clear;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -66,6 +69,23 @@ pub enum WorkspaceMode {
     Chat,
     Editor,
     Diff,
+}
+
+#[derive(Debug, Clone, Default)]
+struct TerminalCapture {
+    title: Option<String>,
+    content: String,
+    truncated: bool,
+}
+
+#[derive(Debug)]
+enum ValidationEvent {
+    Output(Vec<u8>),
+    Finished {
+        exit_code: Option<i32>,
+        success: bool,
+    },
+    SpawnFailed(String),
 }
 
 impl WorkspaceMode {
@@ -248,6 +268,7 @@ pub struct TuiRuntimeConfig {
     pub cwd: PathBuf,
     pub version: String,
     pub startup_notices: Vec<String>,
+    pub validation_command: Option<CommandConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -434,6 +455,7 @@ pub struct TuiApp {
     pending_context_reset: bool,
     /// External-editor request queued for the event loop (terminal suspend/resume).
     pending_external_editor: bool,
+    pending_validation: bool,
     /// Active-file context attachment for the next user message.
     pending_attachment: Option<crate::file_context::FileAttachment>,
     /// Additional user messages waiting to run after the current turn (FIFO).
@@ -463,6 +485,7 @@ pub struct TuiApp {
     /// Read-only source viewer state for the Editor workspace tab.
     pub source_viewer: SourceViewer,
     pub bottom_panel: BottomPanelState,
+    pub validation: ValidationSnapshot,
     pub files_visible: bool,
     pub file_explorer: FileExplorer,
     /// Authoritative keyboard ownership. Legacy component `focused` flags are
@@ -493,6 +516,9 @@ pub struct TuiApp {
     model_cost_cache: Option<(String, Option<forge_connect::CatalogCost>)>,
     footer_limits_cache: Option<FooterLimitsCache>,
     footer_limits_rx: Option<std::sync::mpsc::Receiver<(String, FooterLimits)>>,
+    terminal_capture: TerminalCapture,
+    validation_rx: Option<std::sync::mpsc::Receiver<ValidationEvent>>,
+    validation_abort: Option<tokio::task::JoinHandle<()>>,
 }
 
 #[derive(Debug, Clone)]
@@ -508,7 +534,12 @@ impl TuiApp {
         input.hint = "Describe a task…".into();
         let startup_notices = runtime.startup_notices.clone();
         let workspace_root = session.workspace_root().to_path_buf();
-        Self {
+        let validation = runtime
+            .validation_command
+            .clone()
+            .map(ValidationSnapshot::configured)
+            .unwrap_or_default();
+        let mut app = Self {
             session,
             input,
             overlay: None,
@@ -538,6 +569,7 @@ impl TuiApp {
             pending_hitl_decision: None,
             pending_context_reset: false,
             pending_external_editor: false,
+            pending_validation: false,
             pending_attachment: None,
             message_queue: MessageQueue::new(),
             queue_selected: None,
@@ -551,6 +583,7 @@ impl TuiApp {
             workspace_mode: WorkspaceMode::default(),
             source_viewer: SourceViewer::new(),
             bottom_panel: BottomPanelState::default(),
+            validation,
             files_visible: false,
             file_explorer: FileExplorer::new(Some(workspace_root)),
             focus: FocusState::default(),
@@ -570,10 +603,32 @@ impl TuiApp {
             model_cost_cache: None,
             footer_limits_cache: None,
             footer_limits_rx: None,
+            terminal_capture: TerminalCapture::default(),
+            validation_rx: None,
+            validation_abort: None,
             last_editor_height: 24,
+        };
+        app.normalize_restored_validation();
+        app.restore_saved_auth().apply_connection_chrome()
+    }
+
+    fn normalize_restored_validation(&mut self) {
+        if matches!(self.validation.status, ValidationStatus::Running) {
+            self.validation.finish(
+                ValidationStatus::Cancelled,
+                None,
+                std::time::SystemTime::now(),
+            );
         }
-        .restore_saved_auth()
-        .apply_connection_chrome()
+        self.pending_validation = false;
+        self.validation_rx = None;
+        self.validation_abort = None;
+    }
+
+    fn note_workspace_changed(&mut self) {
+        self.file_explorer.refresh_git_status();
+        self.validation
+            .update_staleness(self.file_explorer.git_status.revision());
     }
 
     // Intentionally keep the conversation window clean: only real chat (user/assistant)
@@ -1827,6 +1882,211 @@ impl TuiApp {
         );
     }
 
+    fn run_validation(&mut self) {
+        let Some(command) = self.validation.command.clone() else {
+            self.validation.status = ValidationStatus::NotConfigured;
+            return;
+        };
+        if matches!(self.validation.status, ValidationStatus::Running) {
+            return;
+        }
+        self.pending_validation = true;
+        self.validation.start(
+            self.workspace_revision_marker(),
+            Some("Terminal".into()),
+            std::time::SystemTime::now(),
+        );
+        self.busy_phase = BusyPhase::Tool {
+            name: "validation".into(),
+        };
+        self.status_message = format!(
+            "validation: {}",
+            crate::validation::validation_command_text(&command)
+        );
+    }
+
+    fn cancel_validation(&mut self) {
+        if matches!(self.validation.status, ValidationStatus::Running) {
+            self.pending_validation = false;
+            if let Some(handle) = self.validation_abort.take() {
+                handle.abort();
+            }
+            self.validation_rx = None;
+            self.validation.finish(
+                ValidationStatus::Cancelled,
+                None,
+                std::time::SystemTime::now(),
+            );
+            self.busy_phase = BusyPhase::Idle;
+        }
+    }
+
+    pub async fn drain_pending_validation(
+        &mut self,
+        mut terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
+    ) -> Result<(), TuiError> {
+        if !self.pending_validation || !matches!(self.validation.status, ValidationStatus::Running)
+        {
+            return Ok(());
+        }
+        self.pending_validation = false;
+        let Some(command) = self.validation.command.clone() else {
+            self.validation.status = ValidationStatus::NotConfigured;
+            self.busy_phase = BusyPhase::Idle;
+            return Ok(());
+        };
+        if let Some(term) = terminal.as_deref_mut() {
+            let _ = term.draw(|f| self.draw(f));
+        }
+        self.terminal_capture.title = Some(format!(
+            "validation · {}",
+            crate::validation::validation_command_text(&command)
+        ));
+        self.terminal_capture.content.clear();
+        self.terminal_capture.truncated = false;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let workspace = self.session.workspace_root().to_path_buf();
+        let executable = command.executable.clone();
+        let args = command.args.clone();
+        self.validation_rx = Some(rx);
+        self.validation_abort = Some(tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+            let mut cmd = tokio::process::Command::new(&executable);
+            cmd.args(&args)
+                .current_dir(workspace)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            match cmd.spawn() {
+                Ok(mut child) => {
+                    let mut stdout = child.stdout.take();
+                    let mut stderr = child.stderr.take();
+                    let tx_out = tx.clone();
+                    let stdout_task = tokio::spawn(async move {
+                        if let Some(mut stream) = stdout.take() {
+                            let mut buf = [0u8; 1024];
+                            loop {
+                                match stream.read(&mut buf).await {
+                                    Ok(0) => break,
+                                    Ok(n) => {
+                                        let _ =
+                                            tx_out.send(ValidationEvent::Output(buf[..n].to_vec()));
+                                    }
+                                    Err(_) => break,
+                                }
+                            }
+                        }
+                    });
+                    let tx_err = tx.clone();
+                    let stderr_task = tokio::spawn(async move {
+                        if let Some(mut stream) = stderr.take() {
+                            let mut buf = [0u8; 1024];
+                            loop {
+                                match stream.read(&mut buf).await {
+                                    Ok(0) => break,
+                                    Ok(n) => {
+                                        let _ =
+                                            tx_err.send(ValidationEvent::Output(buf[..n].to_vec()));
+                                    }
+                                    Err(_) => break,
+                                }
+                            }
+                        }
+                    });
+                    let status = child.wait().await;
+                    let _ = stdout_task.await;
+                    let _ = stderr_task.await;
+                    match status {
+                        Ok(status) => {
+                            let _ = tx.send(ValidationEvent::Finished {
+                                exit_code: status.code(),
+                                success: status.success(),
+                            });
+                        }
+                        Err(error) => {
+                            let _ = tx.send(ValidationEvent::SpawnFailed(error.to_string()));
+                        }
+                    }
+                }
+                Err(error) => {
+                    let _ = tx.send(ValidationEvent::SpawnFailed(error.to_string()));
+                }
+            }
+        }));
+        Ok(())
+    }
+
+    fn poll_validation(&mut self) {
+        let Some(rx) = self.validation_rx.take() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(ValidationEvent::Output(chunk)) => {
+                self.append_terminal_output(&chunk);
+                self.validation_rx = Some(rx);
+            }
+            Ok(ValidationEvent::Finished { exit_code, success }) => {
+                self.validation_abort = None;
+                self.busy_phase = BusyPhase::Idle;
+                let completed_at = std::time::SystemTime::now();
+                if success {
+                    self.validation
+                        .finish(ValidationStatus::Passed, exit_code, completed_at);
+                    self.push_activity(
+                        ActivityKind::Tool,
+                        FeedbackSeverity::Ok,
+                        "validation passed",
+                    );
+                } else {
+                    self.validation
+                        .finish(ValidationStatus::Failed, exit_code, completed_at);
+                    self.push_activity(
+                        ActivityKind::Tool,
+                        FeedbackSeverity::Warn,
+                        "validation failed",
+                    );
+                }
+            }
+            Ok(ValidationEvent::SpawnFailed(error)) => {
+                self.validation_abort = None;
+                self.busy_phase = BusyPhase::Idle;
+                self.validation.finish(
+                    ValidationStatus::Failed,
+                    None,
+                    std::time::SystemTime::now(),
+                );
+                self.terminal_capture.content = error.clone();
+                self.report_error(&format!("validation launch failed: {error}"));
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                self.validation_rx = Some(rx);
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.validation_abort = None;
+                self.busy_phase = BusyPhase::Idle;
+                self.validation.finish(
+                    ValidationStatus::Failed,
+                    None,
+                    std::time::SystemTime::now(),
+                );
+            }
+        }
+    }
+
+    fn append_terminal_output(&mut self, chunk: &[u8]) {
+        const MAX_CAPTURE: usize = 16_000;
+        self.terminal_capture
+            .content
+            .push_str(&String::from_utf8_lossy(chunk));
+        if self.terminal_capture.content.len() > MAX_CAPTURE {
+            self.terminal_capture.content.truncate(MAX_CAPTURE);
+            self.terminal_capture.truncated = true;
+        }
+    }
+
+    fn workspace_revision_marker(&self) -> u64 {
+        self.file_explorer.git_status.revision()
+    }
+
     fn queue_context_reset(&mut self) {
         if self.busy
             || self.pending_prompt.is_some()
@@ -2056,8 +2316,8 @@ impl TuiApp {
             self.source_viewer.update_search_query(&search_query);
         }
 
-        // Refresh Git status.
-        self.file_explorer.refresh_git_status();
+        // Refresh Git status and age validation.
+        self.note_workspace_changed();
 
         // Show a compact notice.
         let gs = &self.file_explorer.git_status;
@@ -2491,6 +2751,8 @@ Reply with ONLY the commit message line.\n\n\
     }
 
     pub fn draw(&mut self, frame: &mut ratatui::Frame) {
+        self.validation
+            .update_staleness(self.file_explorer.git_status.revision());
         let area = frame.area();
         if is_too_small(area) {
             self.focus.block = FocusBlock::Workspace;
@@ -2732,6 +2994,7 @@ Reply with ONLY the commit message line.\n\n\
             sidebar.git_status_loading = gs.loading;
             sidebar.git_status_error = gs.error.is_some();
             sidebar.files_changed = Some(gs.status.len());
+            sidebar.validation = Some(self.validation.display_status().to_string());
             sidebar.elapsed = self
                 .turn_started
                 .or(self.thinking_started)
@@ -2752,6 +3015,10 @@ Reply with ONLY the commit message line.\n\n\
                     state: &self.bottom_panel,
                     busy_phase: &self.busy_phase,
                     activity: &self.activity,
+                    validation: &self.validation,
+                    terminal_title: self.terminal_capture.title.as_deref(),
+                    terminal_content: &self.terminal_capture.content,
+                    terminal_truncated: self.terminal_capture.truncated,
                 },
                 focused: self.focus.block == FocusBlock::BottomPanel,
             },
@@ -3437,6 +3704,20 @@ Reply with ONLY the commit message line.\n\n\
                     self.bottom_panel.next_tab();
                     true
                 }
+                KeyCode::Enter if self.bottom_panel.active == BottomPanelTab::Tests => {
+                    if matches!(self.validation.status, ValidationStatus::Running) {
+                        self.cancel_validation();
+                    } else {
+                        self.run_validation();
+                    }
+                    true
+                }
+                KeyCode::Char('r') if self.bottom_panel.active == BottomPanelTab::Tests => {
+                    if !matches!(self.validation.status, ValidationStatus::Running) {
+                        self.run_validation();
+                    }
+                    true
+                }
                 KeyCode::Esc => {
                     self.escape_navigation();
                     true
@@ -3543,7 +3824,7 @@ Reply with ONLY the commit message line.\n\n\
         self.workspace_mode = next;
         if next == WorkspaceMode::Editor {
             self.source_viewer.refresh(self.session.workspace_root());
-            self.file_explorer.refresh_git_status();
+            self.note_workspace_changed();
         }
         self.normalize_focus();
     }
@@ -4298,7 +4579,7 @@ Reply with ONLY the commit message line.\n\n\
                     }
                 }
                 Ok(SlashCommand::Refresh) => {
-                    self.file_explorer.refresh_git_status();
+                    self.note_workspace_changed();
                     self.status_message = "Refreshing git status...".into();
                 }
                 Ok(SlashCommand::Edit) => {
@@ -4604,7 +4885,7 @@ Reply with ONLY the commit message line.\n\n\
                     match out {
                         ApplyOutcome::Done(_) | ApplyOutcome::Hitl(_) => {
                             outcome_err = None;
-                            self.file_explorer.refresh_git_status();
+                            self.note_workspace_changed();
                             break 'turns;
                         }
                         ApplyOutcome::Continue => {
@@ -4866,6 +5147,7 @@ async fn run_loop(
     app: &mut TuiApp,
 ) -> Result<(), TuiError> {
     while !app.should_quit {
+        app.poll_validation();
         app.tick_toast();
         app.tick_notices();
         app.drain_auto_hitl().await?;
@@ -4900,6 +5182,10 @@ async fn run_loop(
             app.drain_pending_external_editor(Some(terminal)).await?;
             continue;
         }
+        if app.pending_validation {
+            app.drain_pending_validation(Some(terminal)).await?;
+            continue;
+        }
 
         if event::poll(Duration::from_millis(200))? {
             // Read the ready event, then drain the rest of the queue so a paste
@@ -4919,6 +5205,7 @@ async fn run_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use forge_config::CommandConfig;
     use forge_core::LoopConfig;
     use forge_model::MockModelClient;
     use forge_tools::ToolRegistry;
@@ -4953,6 +5240,107 @@ mod tests {
         (dir, session)
     }
 
+    #[tokio::test]
+    async fn validation_run_only_from_tests_panel_focus() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.validation = ValidationSnapshot::configured(CommandConfig {
+            executable: "true".into(),
+            args: vec![],
+        });
+
+        app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert!(!matches!(app.validation.status, ValidationStatus::Running));
+
+        app.bottom_panel.open_tab(BottomPanelTab::Tests);
+        app.focus_block(FocusBlock::BottomPanel);
+        app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert!(matches!(app.validation.status, ValidationStatus::Running));
+    }
+
+    #[tokio::test]
+    async fn validation_cancel_from_tests_panel() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.validation = ValidationSnapshot::configured(CommandConfig {
+            executable: "true".into(),
+            args: vec![],
+        });
+        app.bottom_panel.open_tab(BottomPanelTab::Tests);
+        app.focus_block(FocusBlock::BottomPanel);
+        app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert!(matches!(app.validation.status, ValidationStatus::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn restored_running_validation_becomes_cancelled() {
+        let (_dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "mock".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("."),
+                version: "test".into(),
+                startup_notices: Vec::new(),
+                validation_command: Some(CommandConfig {
+                    executable: "true".into(),
+                    args: vec![],
+                }),
+            },
+        );
+        app.validation.status = ValidationStatus::Running;
+        app.normalize_restored_validation();
+        assert!(matches!(app.validation.status, ValidationStatus::Cancelled));
+        assert!(!app.pending_validation);
+        assert!(app.validation_rx.is_none());
+    }
+
+    #[tokio::test]
+    async fn workspace_change_marks_completed_validation_stale() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.validation = ValidationSnapshot::configured(CommandConfig {
+            executable: "true".into(),
+            args: vec![],
+        });
+        app.validation.finish(
+            ValidationStatus::Passed,
+            Some(0),
+            std::time::SystemTime::now(),
+        );
+        app.validation.repo_generation = app.file_explorer.git_status.revision();
+        app.note_workspace_changed();
+        assert_eq!(app.validation.display_status(), "Stale");
+    }
+
+    #[tokio::test]
+    async fn ui_navigation_does_not_mark_validation_stale() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.validation = ValidationSnapshot::configured(CommandConfig {
+            executable: "true".into(),
+            args: vec![],
+        });
+        app.validation.finish(
+            ValidationStatus::Passed,
+            Some(0),
+            std::time::SystemTime::now(),
+        );
+        app.validation.repo_generation = app.file_explorer.git_status.revision();
+        app.bottom_panel.open_tab(BottomPanelTab::Tests);
+        app.focus_block(FocusBlock::BottomPanel);
+        app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert_eq!(app.validation.display_status(), "Passed");
+    }
+
     async fn focus_test_app() -> (TempDir, TuiApp) {
         let (dir, session) = test_session().await;
         let app = TuiApp::new(
@@ -4963,6 +5351,7 @@ mod tests {
                 cwd: dir.path().to_path_buf(),
                 version: "test".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         (dir, app)
@@ -5275,6 +5664,7 @@ mod tests {
                 cwd: dir.path().to_path_buf(),
                 version: "test".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         app.splash_dismissed = true;
@@ -5318,6 +5708,7 @@ mod tests {
                 cwd: dir.path().to_path_buf(),
                 version: "test".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         app.splash_dismissed = true;
@@ -5417,6 +5808,7 @@ mod tests {
                 cwd: dir.path().to_path_buf(),
                 version: "0.12.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         app.dispatch_line(&format!("/resume {previous_id}"))
@@ -5449,6 +5841,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.12.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
 
@@ -5480,6 +5873,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.12.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         app.busy = true;
@@ -5511,6 +5905,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.12.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         app.busy = true;
@@ -5535,6 +5930,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.12.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         app.input.set_text("draft");
@@ -5564,6 +5960,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.12.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
 
@@ -5586,6 +5983,7 @@ mod tests {
                 cwd: dir.path().to_path_buf(),
                 version: "0.12.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         app.input.set_text("draft");
@@ -5617,6 +6015,7 @@ mod tests {
                 cwd: dir.path().to_path_buf(),
                 version: "0.12.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         app.input.set_text("draft");
@@ -5641,6 +6040,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.12.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         app.handle_key(press(KeyCode::F(1), KeyModifiers::NONE))
@@ -5663,6 +6063,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.12.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         // Simulate messages enqueued while processing.
@@ -5690,6 +6091,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.12.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         app.enqueue_user_message("a".into());
@@ -5718,6 +6120,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.12.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         app.connect_store = CredentialStore::new(credential_path.clone());
@@ -5739,6 +6142,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.12.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         restarted.connect_store = CredentialStore::new(credential_path);
@@ -5759,6 +6163,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.12.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
@@ -5786,6 +6191,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.12.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
@@ -5875,6 +6281,7 @@ mod tests {
                 cwd: dir.path().to_path_buf(),
                 version: "0.12.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         app.dispatch_line("/sync").await.unwrap();
@@ -5910,6 +6317,7 @@ mod tests {
                 cwd: PathBuf::from("/tmp"),
                 version: "0.4.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         app.dispatch_line("hi").await.unwrap();
@@ -5939,6 +6347,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.4.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         app.dispatch_line("/status").await.unwrap();
@@ -5957,6 +6366,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.4.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         app.dispatch_line("hi").await.unwrap();
@@ -5988,6 +6398,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.4.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         app.dispatch_line("/quit").await.unwrap();
@@ -6027,6 +6438,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.6.1".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         let _store_dir = tempfile::TempDir::new().unwrap();
@@ -6055,6 +6467,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.6.1".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
@@ -6090,6 +6503,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.6.1".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
@@ -6121,6 +6535,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.6.1".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
@@ -6159,6 +6574,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.6.1".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
@@ -6188,6 +6604,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.6.1".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
@@ -6234,6 +6651,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.6.1".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         app.connect_store = CredentialStore::new(cred_dir.path().join("c.toml"));
@@ -6263,6 +6681,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.7.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         let enter = KeyEvent {
@@ -6299,6 +6718,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.7.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         app.history.push("alpha");
@@ -6417,6 +6837,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.8.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         app.handle_key(press(KeyCode::Char('/'), KeyModifiers::NONE))
@@ -6446,6 +6867,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.8.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         for c in "/status".chars() {
@@ -6474,6 +6896,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.8.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         app.handle_key(press(KeyCode::Char('k'), KeyModifiers::CONTROL))
@@ -6493,6 +6916,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "test".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         assert!(app.sidebar_visible);
@@ -6527,6 +6951,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "test".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         assert_eq!(app.inspector_view, InspectorView::Task);
@@ -6553,6 +6978,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.8.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         for c in "/connect list".chars() {
@@ -6584,6 +7010,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.8.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         for c in "/res".chars() {
@@ -6614,6 +7041,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.8.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         for c in "/connect".chars() {
@@ -6638,6 +7066,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.8.0".into(),
                 startup_notices: vec!["mcp: failed".into()],
+                validation_command: None,
             },
         );
 
@@ -6656,6 +7085,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.8.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         // Partial type; suggestions include /connect and /status.
@@ -6710,6 +7140,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.8.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         app.handle_key(press(KeyCode::Char('/'), KeyModifiers::NONE))
@@ -6754,6 +7185,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.8.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         for c in "/sta".chars() {
@@ -6831,6 +7263,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.11.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         // Override credential store with empty temp file so connection check fails.
@@ -6876,6 +7309,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.11.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         assert!(app.is_provider_connected());
@@ -6896,6 +7330,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.11.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         app.connect_profile = None;
@@ -6936,6 +7371,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.10.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         let chrome = app.refresh_status_model();
@@ -6972,6 +7408,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.10.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         // Width 60: no sidebar per layout MIN_WIDTH 80
@@ -7004,6 +7441,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.10.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         for c in "/status".chars() {
@@ -7046,6 +7484,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.10.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         app.report_error("upstream returned 429 rate limit exceeded");
@@ -7084,6 +7523,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.10.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         app.report_error("429 rate limit");
@@ -7115,6 +7555,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.10.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         app.push_activity(
@@ -7150,6 +7591,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.10.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         app.busy = true;
@@ -7178,6 +7620,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.10.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         app.dispatch_line("hello").await.unwrap();
@@ -7206,6 +7649,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.10.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         for c in "/status".chars() {
@@ -7368,6 +7812,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.10.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         assert!(!app.pending_external_editor);
@@ -7392,6 +7837,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.10.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         app.pending_external_editor = true;
@@ -7411,6 +7857,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.10.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         app.source_viewer.status = crate::source_viewer::ViewerStatus::Binary;
@@ -7432,6 +7879,7 @@ mod tests {
                 cwd: PathBuf::from("."),
                 version: "0.10.0".into(),
                 startup_notices: Vec::new(),
+                validation_command: None,
             },
         );
         app.busy_phase = BusyPhase::Tool {

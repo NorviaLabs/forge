@@ -17,6 +17,7 @@ mod sidebar;
 mod source_viewer;
 mod terminal;
 mod theme;
+mod validation;
 #[cfg(test)]
 mod visual_test;
 mod widgets;
@@ -40,6 +41,7 @@ pub use overlays::{
     Key as OverlayKey, Overlay, OverlayAction,
 };
 pub use sidebar::SidebarModel;
+pub use validation::{validation_command_text, ValidationSnapshot, ValidationStatus};
 pub use widgets::{
     classify_operator_error, session_chrome_lines, BusyPhase, FeedbackModel, FeedbackSeverity,
     FooterModel, InputModel, StatusModel,
