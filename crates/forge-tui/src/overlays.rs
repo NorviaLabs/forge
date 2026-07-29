@@ -147,6 +147,10 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
             desc: "Browse and read one file (readonly)".into(),
         },
         PaletteItem {
+            cmd: "/files".into(),
+            desc: "Toggle the Files pane".into(),
+        },
+        PaletteItem {
             cmd: "/sync".into(),
             desc: "Commit + push (message from changeset)".into(),
         },
