@@ -76,3 +76,56 @@ pub struct ConnectStatus {
     pub key_source: Option<KeySource>,
     pub connected_profile_ids: Vec<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn profile(auth_mode: AuthMode, default_models: Vec<String>) -> ConnectProfile {
+        ConnectProfile {
+            id: "demo".into(),
+            title: "Demo".into(),
+            description: "Demo profile".into(),
+            auth_mode,
+            api_key_env: vec!["DEMO_KEY".into()],
+            default_base_url: Some("https://example.test".into()),
+            default_models,
+            models_dev_providers: vec![],
+            auth_url: None,
+            model_provider_prefix: "demo".into(),
+        }
+    }
+
+    #[test]
+    fn profile_helpers_reflect_auth_mode_and_default_model() {
+        let api = profile(
+            AuthMode::ApiKey {
+                tui_always_prompt: true,
+            },
+            vec!["demo/model-a".into(), "demo/model-b".into()],
+        );
+        assert_eq!(api.default_model(), Some("demo/model-a"));
+        assert!(api.needs_tui_api_key_prompt());
+        assert!(!api.rejects_api_key_cli());
+
+        let oauth = profile(
+            AuthMode::Oauth {
+                device_code: true,
+                system_browser: false,
+                auth_server: "https://issuer.example".into(),
+            },
+            vec![],
+        );
+        assert_eq!(oauth.default_model(), None);
+        assert!(!oauth.needs_tui_api_key_prompt());
+        assert!(oauth.rejects_api_key_cli());
+    }
+
+    #[test]
+    fn key_source_labels_are_stable() {
+        assert_eq!(KeySource::Env.as_str(), "env");
+        assert_eq!(KeySource::File.as_str(), "file");
+        assert_eq!(KeySource::Provided.as_str(), "provided");
+        assert_eq!(KeySource::Oauth.as_str(), "oauth");
+    }
+}

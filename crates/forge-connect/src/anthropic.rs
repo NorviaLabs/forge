@@ -114,6 +114,28 @@ Create a key at https://console.anthropic.com/settings/keys."
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
+    fn mock_server(statuses: Vec<u16>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            for status in statuses {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut buf = [0_u8; 1024];
+                let _ = stream.read(&mut buf);
+                let body = r#"{"ok":true}"#;
+                let response = format!(
+                    "HTTP/1.1 {status} test\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+        });
+        format!("http://{addr}/")
+    }
 
     #[test]
     fn profile_shape() {
@@ -133,5 +155,30 @@ mod tests {
     fn empty_key_rejected_without_network() {
         let err = verify_api_key("   ", DEFAULT_BASE_URL).unwrap_err();
         assert_eq!(err, "API key is empty");
+    }
+
+    #[test]
+    fn verify_models_endpoint_accepts_success_client_error_and_rejects_auth_or_server() {
+        assert!(verify_api_key("sk-ant-valid-key-for-tests", &mock_server(vec![200])).is_ok());
+        assert!(verify_api_key("sk-ant-valid-key-for-tests", &mock_server(vec![400])).is_ok());
+
+        let err =
+            verify_api_key("sk-ant-valid-key-for-tests", &mock_server(vec![403])).unwrap_err();
+        assert!(err.contains("unauthorized"), "{err}");
+        assert!(!err.contains("sk-ant-valid"));
+
+        let err =
+            verify_api_key("sk-ant-valid-key-for-tests", &mock_server(vec![500])).unwrap_err();
+        assert!(err.contains("status code 500"), "{err}");
+    }
+
+    #[test]
+    fn verify_falls_back_to_messages_endpoint_on_missing_models_route() {
+        assert!(verify_api_key("sk-ant-valid-key-for-tests", &mock_server(vec![404, 400])).is_ok());
+
+        let err =
+            verify_api_key("sk-ant-valid-key-for-tests", &mock_server(vec![404, 401])).unwrap_err();
+        assert!(err.contains("unauthorized"), "{err}");
+        assert!(!err.contains("sk-ant-valid"));
     }
 }

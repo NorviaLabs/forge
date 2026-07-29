@@ -66,6 +66,26 @@ Create a key at https://platform.openai.com/api-keys."
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
+    fn mock_server(status: u16) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0_u8; 1024];
+            let _ = stream.read(&mut buf);
+            let body = r#"{"data":[]}"#;
+            let response = format!(
+                "HTTP/1.1 {status} test\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+        format!("http://{addr}/")
+    }
 
     #[test]
     fn profile_shape() {
@@ -85,5 +105,22 @@ mod tests {
     fn empty_key_rejected_without_network() {
         let err = verify_api_key("   ", DEFAULT_BASE_URL).unwrap_err();
         assert_eq!(err, "API key is empty");
+    }
+
+    #[test]
+    fn verifies_success_with_trimmed_base_url() {
+        let base = mock_server(200);
+        assert!(verify_api_key("sk-valid-key-for-tests", &base).is_ok());
+    }
+
+    #[test]
+    fn verify_reports_auth_and_server_statuses_without_secret() {
+        let err = verify_api_key("sk-valid-key-for-tests", &mock_server(401)).unwrap_err();
+        assert!(err.contains("HTTP 401"), "{err}");
+        assert!(!err.contains("sk-valid"));
+
+        let err = verify_api_key("sk-valid-key-for-tests", &mock_server(500)).unwrap_err();
+        assert!(err.contains("HTTP 500"), "{err}");
+        assert!(!err.contains("sk-valid"));
     }
 }
