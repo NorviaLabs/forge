@@ -80,7 +80,10 @@ fn language_icon_for_name(name: &str) -> Option<&'static str> {
     if matches!(lower.as_str(), "package.json" | "package-lock.json") {
         return Some("");
     }
-    if matches!(lower.as_str(), "go.mod" | "go.sum" | "go.work" | "go.work.sum") {
+    if matches!(
+        lower.as_str(),
+        "go.mod" | "go.sum" | "go.work" | "go.work.sum"
+    ) {
         return Some("");
     }
     if matches!(lower.as_str(), "dockerfile") || lower.starts_with("dockerfile.") {
