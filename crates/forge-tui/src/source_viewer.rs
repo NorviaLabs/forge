@@ -830,14 +830,6 @@ pub struct SourceViewerWidget<'a> {
 impl Widget for SourceViewerWidget<'_> {
     fn render(mut self, area: Rect, buf: &mut Buffer) {
         let block = Block::default()
-            .title(Span::styled(
-                self.title(),
-                if self.focused {
-                    theme::brand()
-                } else {
-                    theme::muted()
-                },
-            ))
             .borders(Borders::ALL)
             .border_style(if self.focused {
                 theme::brand()
@@ -901,14 +893,6 @@ impl Widget for SourceViewerWidget<'_> {
 }
 
 impl SourceViewerWidget<'_> {
-    fn title(&self) -> String {
-        let mut title = format!(" Editor · {} ", self.mode_label);
-        if let Some(notice) = &self.viewer.notice {
-            title.push_str(&format!("· {notice} "));
-        }
-        title
-    }
-
     fn render_message(&self, area: Rect, buf: &mut Buffer, heading: &str, body: &str) {
         let lines: Vec<Line> = std::iter::once(Line::styled(heading, theme::brand()))
             .chain(body.lines().map(Line::raw))
