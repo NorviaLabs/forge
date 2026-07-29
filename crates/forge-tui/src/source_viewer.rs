@@ -854,7 +854,6 @@ fn detect_highlight_language(rel_path: &str, content: &str) -> (Option<String>, 
 pub struct SourceViewerWidget<'a> {
     pub viewer: &'a mut SourceViewer,
     pub focused: bool,
-    pub mode_label: &'a str,
 }
 
 impl Widget for SourceViewerWidget<'_> {
@@ -1114,7 +1113,6 @@ mod tests {
         SourceViewerWidget {
             viewer,
             focused: true,
-            mode_label: "NAV",
         }
         .render(area, &mut buf);
         let mut text = String::new();

@@ -607,7 +607,6 @@ mod tests {
                 SourceViewerWidget {
                     viewer: &mut app.source_viewer,
                     focused: false,
-                    mode_label: "NAV",
                 },
                 f.area(),
             );
