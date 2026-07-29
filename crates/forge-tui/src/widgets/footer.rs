@@ -45,7 +45,7 @@ impl Default for FooterModel {
             ctx_pct: 0.0,
             connected: false,
             connect_profile: None,
-            hints: "Enter send · ⇧Enter newline · Esc leave input · ? help".into(),
+            hints: "Enter send · ⇧Enter newline · Esc leave input · F1 help".into(),
             usage_summary: String::new(),
             usage: String::new(),
             weekly_limit: String::new(),
