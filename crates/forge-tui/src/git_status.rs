@@ -10,7 +10,9 @@ use ratatui::style::Style;
 pub enum GitStatusKind {
     Modified,
     Added,
+    Deleted,
     Untracked,
+    Ignored,
     Conflicted,
 }
 
@@ -26,7 +28,9 @@ impl GitStatusKind {
         match self {
             Self::Modified => "M",
             Self::Added => "A",
+            Self::Deleted => "D",
             Self::Untracked => "?",
+            Self::Ignored => "!",
             Self::Conflicted => "U",
         }
     }
@@ -37,7 +41,9 @@ impl GitStatusKind {
         match self {
             Self::Modified => crate::theme::info(),
             Self::Added => crate::theme::ok(),
+            Self::Deleted => crate::theme::danger(),
             Self::Untracked => crate::theme::muted(),
+            Self::Ignored => crate::theme::dim(),
             Self::Conflicted => crate::theme::danger(),
         }
     }
@@ -47,7 +53,8 @@ impl GitStatusKind {
             Self::Conflicted => 3,
             Self::Added => 2,
             Self::Modified => 1,
-            Self::Untracked => 0,
+            Self::Deleted => 1,
+            Self::Untracked | Self::Ignored => 0,
         };
         rank(self) > rank(other)
     }
@@ -233,13 +240,16 @@ fn classify_status(xy: &str) -> Option<GitStatusKind> {
         return Some(GitStatusKind::Untracked);
     }
     if x == '!' || y == '!' {
-        return None;
+        return Some(GitStatusKind::Ignored);
     }
     if xy == "DD" || xy == "AU" || xy == "UA" || xy == "DU" || xy == "UD" || x == 'U' || y == 'U' {
         return Some(GitStatusKind::Conflicted);
     }
     if x == 'A' || y == 'A' {
         return Some(GitStatusKind::Added);
+    }
+    if x == 'D' || y == 'D' {
+        return Some(GitStatusKind::Deleted);
     }
     if x == 'M' || y == 'M' || x == 'R' || y == 'R' || x == 'T' || y == 'T' || x == 'C' || y == 'C'
     {
@@ -260,7 +270,7 @@ mod tests {
         assert_eq!(classify_status("A "), Some(GitStatusKind::Added));
         assert_eq!(classify_status("??"), Some(GitStatusKind::Untracked));
         assert_eq!(classify_status("U "), Some(GitStatusKind::Conflicted));
-        assert_eq!(classify_status("!!"), None);
+        assert_eq!(classify_status("!!"), Some(GitStatusKind::Ignored));
     }
 
     #[test]

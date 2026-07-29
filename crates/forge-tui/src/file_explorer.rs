@@ -3,8 +3,11 @@ use std::path::{Path, PathBuf};
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
+
+use forge_config::FileIconMode;
 
 use crate::git_status::{GitStatusCache, GitStatusKind};
 use crate::theme;
@@ -15,6 +18,226 @@ const HIDDEN_DIRS: &[&str] = &[".git", "target", ".forge"];
 pub enum FileKind {
     Directory,
     File,
+    Symlink,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileCategory {
+    Default,
+    Source,
+    Config,
+    Document,
+    Data,
+    Image,
+    Binary,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SemanticRole {
+    Directory,
+    FileDefault,
+    FileSource,
+    FileConfig,
+    FileDocument,
+    FileData,
+    FileImage,
+    FileBinary,
+    Symlink,
+    GitAdded,
+    GitModified,
+    GitDeleted,
+    GitUntracked,
+    GitIgnored,
+}
+
+impl SemanticRole {
+    fn style(self) -> Style {
+        match self {
+            Self::Directory => theme::directory(),
+            Self::FileDefault => theme::file_default(),
+            Self::FileSource => theme::file_source(),
+            Self::FileConfig => theme::file_config(),
+            Self::FileDocument => theme::file_document(),
+            Self::FileData => theme::file_data(),
+            Self::FileImage => theme::file_image(),
+            Self::FileBinary => theme::file_binary(),
+            Self::Symlink => theme::symlink(),
+            Self::GitAdded => theme::git_added(),
+            Self::GitModified => theme::git_modified(),
+            Self::GitDeleted => theme::git_deleted(),
+            Self::GitUntracked => theme::git_untracked(),
+            Self::GitIgnored => theme::git_ignored(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileAppearance {
+    pub icon: &'static str,
+    pub icon_role: SemanticRole,
+    pub text_role: SemanticRole,
+    pub status_role: Option<SemanticRole>,
+    pub category: FileCategory,
+}
+
+pub struct FileAppearanceResolver;
+
+impl FileAppearanceResolver {
+    pub fn resolve(
+        name: &str,
+        kind: FileKind,
+        git_status: Option<GitStatusKind>,
+    ) -> FileAppearance {
+        let (category, text_role) = match kind {
+            FileKind::Directory => (FileCategory::Default, SemanticRole::Directory),
+            FileKind::Symlink => (FileCategory::Default, SemanticRole::Symlink),
+            FileKind::Unknown => (FileCategory::Default, SemanticRole::FileDefault),
+            FileKind::File => category_for_name(name),
+        };
+        let icon_role = match kind {
+            FileKind::Directory => SemanticRole::Directory,
+            FileKind::Symlink => SemanticRole::Symlink,
+            _ => text_role,
+        };
+        FileAppearance {
+            icon: icon_for(kind, category),
+            icon_role,
+            text_role,
+            status_role: git_status.map(git_role),
+            category,
+        }
+    }
+}
+
+fn git_role(status: GitStatusKind) -> SemanticRole {
+    match status {
+        GitStatusKind::Modified => SemanticRole::GitModified,
+        GitStatusKind::Added => SemanticRole::GitAdded,
+        GitStatusKind::Deleted => SemanticRole::GitDeleted,
+        GitStatusKind::Untracked => SemanticRole::GitUntracked,
+        GitStatusKind::Ignored => SemanticRole::GitIgnored,
+        GitStatusKind::Conflicted => SemanticRole::GitDeleted,
+    }
+}
+
+fn icon_for(kind: FileKind, category: FileCategory) -> &'static str {
+    match kind {
+        FileKind::Directory => "▣",
+        FileKind::Symlink => "~",
+        FileKind::Unknown => "·",
+        FileKind::File => match category {
+            FileCategory::Source => "λ",
+            FileCategory::Config => "◇",
+            FileCategory::Document => "¶",
+            FileCategory::Data => "□",
+            FileCategory::Image => "◆",
+            FileCategory::Binary => "■",
+            FileCategory::Default => "·",
+        },
+    }
+}
+
+fn category_for_name(name: &str) -> (FileCategory, SemanticRole) {
+    let lower = name.to_ascii_lowercase();
+    if is_source_special(&lower) {
+        return (FileCategory::Source, SemanticRole::FileSource);
+    }
+    if is_config_special(&lower) {
+        return (FileCategory::Config, SemanticRole::FileConfig);
+    }
+    if is_document_special(&lower) {
+        return (FileCategory::Document, SemanticRole::FileDocument);
+    }
+    if is_git_special(&lower) {
+        return (FileCategory::Config, SemanticRole::GitIgnored);
+    }
+    let ext = Path::new(name)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())
+        .unwrap_or_default();
+    match ext.as_str() {
+        "rs" | "js" | "jsx" | "mjs" | "cjs" | "ts" | "tsx" | "mts" | "cts" | "py" | "pyi"
+        | "go" | "java" | "c" | "cc" | "cpp" | "cxx" | "hh" | "hpp" | "hxx" | "h" | "sh"
+        | "bash" | "zsh" | "fish" => (FileCategory::Source, SemanticRole::FileSource),
+        "json" | "jsonc" | "yaml" | "yml" | "toml" | "ini" | "cfg" | "conf" | "env" => {
+            (FileCategory::Config, SemanticRole::FileConfig)
+        }
+        "md" | "markdown" | "rst" | "txt" => (FileCategory::Document, SemanticRole::FileDocument),
+        "csv" | "tsv" | "xml" | "sql" | "parquet" => (FileCategory::Data, SemanticRole::FileData),
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "ico" => {
+            (FileCategory::Image, SemanticRole::FileImage)
+        }
+        "jar" => (FileCategory::Binary, SemanticRole::FileBinary),
+        _ => (FileCategory::Default, SemanticRole::FileDefault),
+    }
+}
+
+fn is_source_special(lower: &str) -> bool {
+    matches!(
+        lower,
+        "cargo.toml"
+            | "cargo.lock"
+            | "rust-toolchain"
+            | "rust-toolchain.toml"
+            | "package.json"
+            | "package-lock.json"
+            | "pnpm-lock.yaml"
+            | "yarn.lock"
+            | "tsconfig.json"
+            | "pyproject.toml"
+            | "requirements.txt"
+            | "pipfile"
+            | "pipfile.lock"
+            | "poetry.lock"
+            | "uv.lock"
+            | "go.mod"
+            | "go.sum"
+            | "go.work"
+            | "go.work.sum"
+            | "pom.xml"
+            | "build.gradle"
+            | "build.gradle.kts"
+            | "settings.gradle"
+            | "settings.gradle.kts"
+            | "gradle.properties"
+            | "dockerfile"
+            | "cmakelists.txt"
+            | "meson.build"
+            | "makefile"
+            | "justfile"
+    ) || lower.starts_with("dockerfile.")
+}
+
+fn is_config_special(lower: &str) -> bool {
+    lower == ".editorconfig"
+        || lower == ".env"
+        || lower.starts_with(".env.")
+        || matches!(
+            lower,
+            "docker-compose.yml"
+                | "docker-compose.yaml"
+                | "compose.yml"
+                | "compose.yaml"
+                | "taskfile.yml"
+                | "taskfile.yaml"
+        )
+}
+
+fn is_document_special(lower: &str) -> bool {
+    matches!(lower, "readme" | "changelog" | "contributing" | "license")
+        || lower.starts_with("readme.")
+        || lower.starts_with("changelog.")
+        || lower.starts_with("contributing.")
+        || lower.starts_with("license.")
+}
+
+fn is_git_special(lower: &str) -> bool {
+    matches!(
+        lower,
+        ".gitignore" | ".gitattributes" | ".gitmodules" | ".gitkeep"
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -85,18 +308,20 @@ pub struct FileExplorer {
     pub selected_path: Option<PathBuf>,
     pub scroll: usize,
     pub focused: bool,
+    pub icon_mode: FileIconMode,
     root_path: Option<PathBuf>,
     pub git_status: GitStatusCache,
 }
 
 impl FileExplorer {
-    pub fn new(root_path: Option<PathBuf>) -> Self {
+    pub fn new(root_path: Option<PathBuf>, icon_mode: FileIconMode) -> Self {
         let root_path = root_path.map(|p| p.canonicalize().unwrap_or(p));
         let mut explorer = Self {
             root: root_path.clone().map(FileNode::root),
             selected_path: root_path.clone(),
             scroll: 0,
             focused: false,
+            icon_mode,
             root_path: root_path.clone(),
             git_status: GitStatusCache::new(),
         };
@@ -243,7 +468,7 @@ impl FileExplorer {
     pub fn selected_file_path(&self) -> Option<PathBuf> {
         let path = self.selected_path.as_ref()?;
         self.find(path)
-            .filter(|node| node.kind == FileKind::File)
+            .filter(|node| matches!(node.kind, FileKind::File | FileKind::Symlink))
             .map(|_| path.clone())
     }
 
@@ -380,8 +605,12 @@ fn read_children(root: Option<&Path>, dir: &Path) -> Result<Vec<FileNode>, Strin
         }
         let kind = if file_type.is_dir() {
             FileKind::Directory
-        } else {
+        } else if file_type.is_symlink() {
+            FileKind::Symlink
+        } else if file_type.is_file() {
             FileKind::File
+        } else {
+            FileKind::Unknown
         };
         children.push(FileNode::child(path, kind));
     }
@@ -402,7 +631,7 @@ pub fn safe_path(root: &Path, path: &Path) -> Result<PathBuf, String> {
 fn should_hide(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
-        .is_some_and(|name| HIDDEN_DIRS.contains(&name) || name.starts_with('.'))
+        .is_some_and(|name| HIDDEN_DIRS.contains(&name))
 }
 
 fn sort_nodes(nodes: &mut [FileNode]) {
@@ -410,6 +639,59 @@ fn sort_nodes(nodes: &mut [FileNode]) {
         (a.kind != FileKind::Directory, a.display_name.to_lowercase())
             .cmp(&(b.kind != FileKind::Directory, b.display_name.to_lowercase()))
     });
+}
+
+fn explorer_row_line(
+    prefix: &str,
+    marker: &str,
+    name: &str,
+    kind: FileKind,
+    selected: bool,
+    panel_focused: bool,
+    status: Option<GitStatusKind>,
+    icon_mode: FileIconMode,
+) -> Line<'static> {
+    let appearance = FileAppearanceResolver::resolve(name, kind, status);
+    let selection_style = selected.then(|| {
+        if panel_focused {
+            theme::selection_active()
+        } else {
+            theme::selection_inactive()
+        }
+    });
+    let style_for = |role: SemanticRole| selection_style.unwrap_or_else(|| role.style());
+    let mut spans = vec![Span::styled(
+        format!("{prefix}{marker} "),
+        selection_style.unwrap_or_default(),
+    )];
+    if let Some(status) = status {
+        spans.push(Span::styled(
+            format!("{} ", status.marker()),
+            selection_style.unwrap_or_else(|| {
+                appearance
+                    .status_role
+                    .map(SemanticRole::style)
+                    .unwrap_or_else(|| status.style())
+            }),
+        ));
+    }
+    if icon_mode == FileIconMode::Unicode {
+        spans.push(Span::styled(
+            format!("{} ", appearance.icon),
+            style_for(appearance.icon_role),
+        ));
+    }
+    let display_name = if selected {
+        format!("› {name}")
+    } else {
+        name.to_string()
+    };
+    spans.push(Span::styled(display_name, style_for(appearance.text_role)));
+    let mut line = Line::from(spans);
+    if let Some(style) = selection_style {
+        line.style = style;
+    }
+    line
 }
 
 pub struct FileExplorerWidget<'a> {
@@ -473,36 +755,24 @@ impl Widget for FileExplorerWidget<'_> {
                         FileKind::Directory if node.loading => "…",
                         FileKind::Directory if node.expanded => "▾",
                         FileKind::Directory => "▸",
-                        FileKind::File => " ",
+                        FileKind::File | FileKind::Symlink | FileKind::Unknown => " ",
                     };
                     let prefix = "  ".repeat(node.depth);
-                    let status = if node.kind == FileKind::File {
+                    let status = if matches!(node.kind, FileKind::File | FileKind::Symlink) {
                         self.explorer.git_status_for(&node.path)
                     } else {
                         None
                     };
-                    let mut spans = vec![Span::raw(format!("{prefix}{marker} "))];
-                    if let Some(status) = status {
-                        spans.push(Span::styled(
-                            format!("{} ", status.marker()),
-                            status.style(),
-                        ));
-                    }
-                    let name = if selected {
-                        format!("› {}", node.display_name)
-                    } else {
-                        node.display_name.clone()
-                    };
-                    spans.push(Span::raw(name));
-                    let mut line = Line::from(spans);
-                    if selected {
-                        line.style = if self.focused {
-                            theme::selected_row()
-                        } else {
-                            theme::muted()
-                        };
-                    }
-                    lines.push(line);
+                    lines.push(explorer_row_line(
+                        &prefix,
+                        marker,
+                        &node.display_name,
+                        node.kind,
+                        selected,
+                        self.focused,
+                        status,
+                        self.explorer.icon_mode,
+                    ));
                     if let Some(error) = &node.error {
                         lines.push(Line::styled(
                             format!("{prefix}  Unable to read this directory"),
@@ -548,6 +818,190 @@ impl Widget for FileExplorerWidget<'_> {
 mod tests {
     use super::*;
 
+    fn appearance(name: &str) -> FileAppearance {
+        FileAppearanceResolver::resolve(name, FileKind::File, None)
+    }
+
+    #[test]
+    fn resolver_covers_entry_kinds_and_unicode_names() {
+        assert_eq!(
+            FileAppearanceResolver::resolve("src", FileKind::Directory, None).text_role,
+            SemanticRole::Directory
+        );
+        assert_eq!(
+            appearance("file.unknown").text_role,
+            SemanticRole::FileDefault
+        );
+        assert_eq!(appearance(".env").text_role, SemanticRole::FileConfig);
+        assert_eq!(
+            FileAppearanceResolver::resolve("link", FileKind::Symlink, None).text_role,
+            SemanticRole::Symlink
+        );
+        assert_eq!(
+            FileAppearanceResolver::resolve("fifo", FileKind::Unknown, None).icon,
+            "·"
+        );
+        assert_eq!(appearance("雪.rs").text_role, SemanticRole::FileSource);
+    }
+
+    #[test]
+    fn resolver_covers_language_and_special_mappings() {
+        for name in [
+            "lib.rs",
+            "Cargo.toml",
+            "app.js",
+            "view.tsx",
+            "main.py",
+            "go.mod",
+            "Main.java",
+            "main.c",
+            "thing.CPP",
+            "header.h",
+            "script.sh",
+            "package.json",
+            "pom.xml",
+            "build.gradle.kts",
+        ] {
+            assert_eq!(appearance(name).category, FileCategory::Source, "{name}");
+        }
+        assert_eq!(appearance("header.h").text_role, SemanticRole::FileSource);
+    }
+
+    #[test]
+    fn resolver_covers_file_categories() {
+        for name in ["CMakeLists.txt", "Dockerfile", "Makefile"] {
+            assert_eq!(appearance(name).category, FileCategory::Source, "{name}");
+        }
+        assert_eq!(appearance("README.md").category, FileCategory::Document);
+        assert_eq!(appearance(".gitignore").text_role, SemanticRole::GitIgnored);
+        assert_eq!(appearance(".env").category, FileCategory::Config);
+        assert_eq!(appearance("data.csv").category, FileCategory::Data);
+        assert_eq!(appearance("image.PNG").category, FileCategory::Image);
+    }
+
+    #[test]
+    fn special_filenames_precede_extensions() {
+        assert_eq!(appearance("Cargo.toml").category, FileCategory::Source);
+        assert_eq!(appearance("plain.toml").category, FileCategory::Config);
+    }
+
+    #[test]
+    fn row_style_precedence_keeps_selection_strongest() {
+        let selected = explorer_row_line(
+            "",
+            " ",
+            "lib.rs",
+            FileKind::File,
+            true,
+            true,
+            Some(GitStatusKind::Modified),
+            FileIconMode::Unicode,
+        );
+        assert_eq!(selected.style, theme::selection_active());
+        let inactive = explorer_row_line(
+            "",
+            " ",
+            "x",
+            FileKind::Unknown,
+            true,
+            false,
+            None,
+            FileIconMode::Unicode,
+        );
+        assert_eq!(inactive.style, theme::selection_inactive());
+        let unselected = explorer_row_line(
+            "",
+            " ",
+            "new.rs",
+            FileKind::File,
+            false,
+            true,
+            Some(GitStatusKind::Added),
+            FileIconMode::Unicode,
+        );
+        assert_eq!(unselected.style, Style::default());
+        assert_eq!(
+            selected.spans.last().unwrap().style,
+            theme::selection_active()
+        );
+    }
+
+    #[test]
+    fn row_rendering_supports_icons_off_and_markers() {
+        let with_icon = explorer_row_line(
+            "",
+            " ",
+            "long_filename.rs",
+            FileKind::File,
+            false,
+            false,
+            Some(GitStatusKind::Modified),
+            FileIconMode::Unicode,
+        );
+        let text: String = with_icon
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(text.starts_with("  M λ long_filename.rs"));
+        assert_eq!(with_icon.spans[2].width(), 2);
+
+        let without_icon = explorer_row_line(
+            "",
+            " ",
+            "long_filename.rs",
+            FileKind::File,
+            false,
+            false,
+            Some(GitStatusKind::Modified),
+            FileIconMode::Off,
+        );
+        let text: String = without_icon
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(text, "  M long_filename.rs");
+    }
+
+    #[test]
+    fn row_rendering_handles_symlink_hidden_unicode_and_narrow_width() {
+        let line = explorer_row_line(
+            "",
+            " ",
+            "雪.py",
+            FileKind::Symlink,
+            false,
+            false,
+            None,
+            FileIconMode::Unicode,
+        );
+        let text: String = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(text, "  ~ 雪.py");
+        assert!(line.width() > 4);
+
+        let hidden = explorer_row_line(
+            "",
+            " ",
+            ".env",
+            FileKind::File,
+            false,
+            false,
+            None,
+            FileIconMode::Unicode,
+        );
+        let text: String = hidden
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(text.contains("◇ .env"));
+    }
+
     #[test]
     fn sort_directories_before_files_case_insensitive() {
         let mut nodes = vec![
@@ -566,7 +1020,10 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         fs::create_dir(root.path().join("src")).unwrap();
         fs::write(root.path().join("src/lib.rs"), "").unwrap();
-        let mut explorer = FileExplorer::new(Some(root.path().to_path_buf()));
+        let mut explorer = FileExplorer::new(
+            Some(root.path().to_path_buf()),
+            forge_config::FileIconMode::Unicode,
+        );
         assert_eq!(explorer.visible_nodes().len(), 2);
         explorer.selected_path = Some(root.path().join("src").canonicalize().unwrap());
         explorer.expand_selected();
@@ -580,7 +1037,10 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         fs::write(root.path().join("a"), "").unwrap();
         fs::write(root.path().join("b"), "").unwrap();
-        let mut explorer = FileExplorer::new(Some(root.path().to_path_buf()));
+        let mut explorer = FileExplorer::new(
+            Some(root.path().to_path_buf()),
+            forge_config::FileIconMode::Unicode,
+        );
         explorer.move_selection(1);
         assert_eq!(explorer.selected_relative_path().as_deref(), Some("a"));
         explorer.move_selection(99);
@@ -606,7 +1066,10 @@ mod tests {
         fs::write(root.path().join("a.txt"), "").unwrap();
         fs::create_dir(root.path().join("src")).unwrap();
 
-        let explorer = FileExplorer::new(Some(root.path().to_path_buf()));
+        let explorer = FileExplorer::new(
+            Some(root.path().to_path_buf()),
+            forge_config::FileIconMode::Unicode,
+        );
         let root_node = explorer.root.as_ref().expect("root missing");
         assert!(root_node.loaded);
         assert!(!root_node.loading);
@@ -617,7 +1080,10 @@ mod tests {
     #[test]
     fn genuinely_empty_root_shows_empty_state() {
         let root = tempfile::tempdir().unwrap();
-        let explorer = FileExplorer::new(Some(root.path().to_path_buf()));
+        let explorer = FileExplorer::new(
+            Some(root.path().to_path_buf()),
+            forge_config::FileIconMode::Unicode,
+        );
         let root_node = explorer.root.as_ref().expect("root missing");
         assert!(root_node.loaded);
         assert!(root_node.children.is_empty());
@@ -628,7 +1094,10 @@ mod tests {
     fn git_status_refresh_does_not_clear_tree() {
         let root = tempfile::tempdir().unwrap();
         fs::write(root.path().join("a.txt"), "").unwrap();
-        let mut explorer = FileExplorer::new(Some(root.path().to_path_buf()));
+        let mut explorer = FileExplorer::new(
+            Some(root.path().to_path_buf()),
+            forge_config::FileIconMode::Unicode,
+        );
         let before = explorer.visible_nodes().len();
         explorer.refresh_git_status();
         explorer.git_status.poll();
@@ -640,7 +1109,10 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         fs::create_dir(root.path().join("src")).unwrap();
         fs::write(root.path().join("src/lib.rs"), "").unwrap();
-        let mut explorer = FileExplorer::new(Some(root.path().to_path_buf()));
+        let mut explorer = FileExplorer::new(
+            Some(root.path().to_path_buf()),
+            forge_config::FileIconMode::Unicode,
+        );
         explorer.selected_path = Some(root.path().join("src").canonicalize().unwrap());
         explorer.expand_selected();
 
@@ -661,7 +1133,10 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         fs::create_dir(root.path().join("src")).unwrap();
         fs::write(root.path().join("src/lib.rs"), "").unwrap();
-        let mut explorer = FileExplorer::new(Some(root.path().to_path_buf()));
+        let mut explorer = FileExplorer::new(
+            Some(root.path().to_path_buf()),
+            forge_config::FileIconMode::Unicode,
+        );
         explorer.selected_path = Some(root.path().join("src").canonicalize().unwrap());
         explorer.expand_selected();
         explorer.collapse_selected();
@@ -682,7 +1157,10 @@ mod tests {
         fs::create_dir(root.path().join("src")).unwrap();
         fs::write(root.path().join("src/lib.rs"), "").unwrap();
         fs::write(root.path().join("root.txt"), "").unwrap();
-        let mut explorer = FileExplorer::new(Some(root.path().to_path_buf()));
+        let mut explorer = FileExplorer::new(
+            Some(root.path().to_path_buf()),
+            forge_config::FileIconMode::Unicode,
+        );
         explorer.selected_path = Some(root.path().join("src").canonicalize().unwrap());
         explorer.expand_selected();
         assert_eq!(explorer.visible_nodes().len(), 4);
@@ -697,7 +1175,10 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         fs::create_dir(root.path().join("src")).unwrap();
         fs::write(root.path().join("src/lib.rs"), "").unwrap();
-        let mut explorer = FileExplorer::new(Some(root.path().to_path_buf()));
+        let mut explorer = FileExplorer::new(
+            Some(root.path().to_path_buf()),
+            forge_config::FileIconMode::Unicode,
+        );
         explorer.selected_path = Some(root.path().join("src/lib.rs").canonicalize().unwrap());
         fs::remove_file(root.path().join("src/lib.rs")).unwrap();
 
@@ -722,6 +1203,7 @@ mod tests {
             selected_path: Some(PathBuf::from("/tmp/forge-test-root")),
             scroll: 0,
             focused: false,
+            icon_mode: FileIconMode::Unicode,
             root_path: Some(PathBuf::from("/tmp/forge-test-root")),
             git_status: GitStatusCache::new(),
         };

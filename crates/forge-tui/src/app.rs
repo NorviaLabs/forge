@@ -61,7 +61,7 @@ use crate::widgets::{
     BusyPhase, FeedbackBar, FeedbackModel, FeedbackSeverity, FooterBar, FooterModel, InputBar,
     InputModel, StatusBar, StatusModel,
 };
-use forge_config::CommandConfig;
+use forge_config::{CommandConfig, FileIconMode};
 use ratatui::widgets::Clear;
 
 use crate::{MAX_RECENT_RUNS, RUN_HISTORY_VERSION};
@@ -277,6 +277,7 @@ pub struct TuiRuntimeConfig {
     pub version: String,
     pub startup_notices: Vec<String>,
     pub validation_command: Option<CommandConfig>,
+    pub file_icons: FileIconMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -544,6 +545,7 @@ impl TuiApp {
         let mut input = InputModel::default();
         input.hint = "Describe a task…".into();
         let startup_notices = runtime.startup_notices.clone();
+        let file_icons = runtime.file_icons;
         let workspace_root = session.workspace_root().to_path_buf();
         let run = RunStateModel::new(workspace_root.clone(), runtime.validation_command.clone());
         let (file_change_tx, file_change_rx) = mpsc::channel();
@@ -596,7 +598,7 @@ impl TuiApp {
             bottom_panel: BottomPanelState::default(),
             run,
             files_visible: false,
-            file_explorer: FileExplorer::new(Some(workspace_root)),
+            file_explorer: FileExplorer::new(Some(workspace_root), file_icons),
             focus: FocusState::default(),
             sidebar_visible: true,
             inspector_view: InspectorView::default(),
@@ -5547,6 +5549,7 @@ mod tests {
                     executable: "true".into(),
                     args: vec![],
                 }),
+                file_icons: FileIconMode::Unicode,
             },
         );
         app.run.draft.command_input = "true".into();
@@ -5599,6 +5602,7 @@ mod tests {
                 version: "test".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         (dir, app)
@@ -5965,6 +5969,7 @@ mod tests {
                 version: "test".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         app.splash_dismissed = true;
@@ -6009,6 +6014,7 @@ mod tests {
                 version: "test".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         app.splash_dismissed = true;
@@ -6109,6 +6115,7 @@ mod tests {
                 version: "0.12.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         app.dispatch_line(&format!("/resume {previous_id}"))
@@ -6142,6 +6149,7 @@ mod tests {
                 version: "0.12.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
 
@@ -6174,6 +6182,7 @@ mod tests {
                 version: "0.12.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         app.busy = true;
@@ -6206,6 +6215,7 @@ mod tests {
                 version: "0.12.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         app.busy = true;
@@ -6231,6 +6241,7 @@ mod tests {
                 version: "0.12.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         app.input.set_text("draft");
@@ -6261,6 +6272,7 @@ mod tests {
                 version: "0.12.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
 
@@ -6284,6 +6296,7 @@ mod tests {
                 version: "0.12.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         app.input.set_text("draft");
@@ -6316,6 +6329,7 @@ mod tests {
                 version: "0.12.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         app.input.set_text("draft");
@@ -6341,6 +6355,7 @@ mod tests {
                 version: "0.12.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         app.handle_key(press(KeyCode::F(1), KeyModifiers::NONE))
@@ -6364,6 +6379,7 @@ mod tests {
                 version: "0.12.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         // Simulate messages enqueued while processing.
@@ -6392,6 +6408,7 @@ mod tests {
                 version: "0.12.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         app.enqueue_user_message("a".into());
@@ -6421,6 +6438,7 @@ mod tests {
                 version: "0.12.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         app.connect_store = CredentialStore::new(credential_path.clone());
@@ -6443,6 +6461,7 @@ mod tests {
                 version: "0.12.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         restarted.connect_store = CredentialStore::new(credential_path);
@@ -6464,6 +6483,7 @@ mod tests {
                 version: "0.12.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
@@ -6492,6 +6512,7 @@ mod tests {
                 version: "0.12.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
@@ -6582,6 +6603,7 @@ mod tests {
                 version: "0.12.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         app.dispatch_line("/sync").await.unwrap();
@@ -6618,6 +6640,7 @@ mod tests {
                 version: "0.4.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         app.dispatch_line("hi").await.unwrap();
@@ -6648,6 +6671,7 @@ mod tests {
                 version: "0.4.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         app.dispatch_line("/status").await.unwrap();
@@ -6667,6 +6691,7 @@ mod tests {
                 version: "0.4.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         app.dispatch_line("hi").await.unwrap();
@@ -6699,6 +6724,7 @@ mod tests {
                 version: "0.4.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         app.dispatch_line("/quit").await.unwrap();
@@ -6739,6 +6765,7 @@ mod tests {
                 version: "0.6.1".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         let _store_dir = tempfile::TempDir::new().unwrap();
@@ -6768,6 +6795,7 @@ mod tests {
                 version: "0.6.1".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
@@ -6804,6 +6832,7 @@ mod tests {
                 version: "0.6.1".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
@@ -6836,6 +6865,7 @@ mod tests {
                 version: "0.6.1".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
@@ -6875,6 +6905,7 @@ mod tests {
                 version: "0.6.1".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
@@ -6905,6 +6936,7 @@ mod tests {
                 version: "0.6.1".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
@@ -6952,6 +6984,7 @@ mod tests {
                 version: "0.6.1".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         app.connect_store = CredentialStore::new(cred_dir.path().join("c.toml"));
@@ -6982,6 +7015,7 @@ mod tests {
                 version: "0.7.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         let enter = KeyEvent {
@@ -7019,6 +7053,7 @@ mod tests {
                 version: "0.7.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         app.history.push("alpha");
@@ -7138,6 +7173,7 @@ mod tests {
                 version: "0.8.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         app.handle_key(press(KeyCode::Char('/'), KeyModifiers::NONE))
@@ -7168,6 +7204,7 @@ mod tests {
                 version: "0.8.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         for c in "/status".chars() {
@@ -7197,6 +7234,7 @@ mod tests {
                 version: "0.8.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         app.handle_key(press(KeyCode::Char('k'), KeyModifiers::CONTROL))
@@ -7217,6 +7255,7 @@ mod tests {
                 version: "test".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         assert!(app.sidebar_visible);
@@ -7252,6 +7291,7 @@ mod tests {
                 version: "test".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         assert_eq!(app.inspector_view, InspectorView::Task);
@@ -7279,6 +7319,7 @@ mod tests {
                 version: "0.8.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         for c in "/connect list".chars() {
@@ -7311,6 +7352,7 @@ mod tests {
                 version: "0.8.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         for c in "/res".chars() {
@@ -7342,6 +7384,7 @@ mod tests {
                 version: "0.8.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         for c in "/connect".chars() {
@@ -7367,6 +7410,7 @@ mod tests {
                 version: "0.8.0".into(),
                 startup_notices: vec!["mcp: failed".into()],
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
 
@@ -7386,6 +7430,7 @@ mod tests {
                 version: "0.8.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         // Partial type; suggestions include /connect and /status.
@@ -7441,6 +7486,7 @@ mod tests {
                 version: "0.8.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         app.handle_key(press(KeyCode::Char('/'), KeyModifiers::NONE))
@@ -7486,6 +7532,7 @@ mod tests {
                 version: "0.8.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         for c in "/sta".chars() {
@@ -7564,6 +7611,7 @@ mod tests {
                 version: "0.11.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         // Override credential store with empty temp file so connection check fails.
@@ -7610,6 +7658,7 @@ mod tests {
                 version: "0.11.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         assert!(app.is_provider_connected());
@@ -7631,6 +7680,7 @@ mod tests {
                 version: "0.11.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         app.connect_profile = None;
@@ -7672,6 +7722,7 @@ mod tests {
                 version: "0.10.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         let chrome = app.refresh_status_model();
@@ -7709,6 +7760,7 @@ mod tests {
                 version: "0.10.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         // Width 60: no sidebar per layout MIN_WIDTH 80
@@ -7742,6 +7794,7 @@ mod tests {
                 version: "0.10.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         for c in "/status".chars() {
@@ -7785,6 +7838,7 @@ mod tests {
                 version: "0.10.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         app.report_error("upstream returned 429 rate limit exceeded");
@@ -7824,6 +7878,7 @@ mod tests {
                 version: "0.10.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         app.report_error("429 rate limit");
@@ -7856,6 +7911,7 @@ mod tests {
                 version: "0.10.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         app.push_activity(
@@ -7892,6 +7948,7 @@ mod tests {
                 version: "0.10.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         app.busy = true;
@@ -7921,6 +7978,7 @@ mod tests {
                 version: "0.10.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         app.dispatch_line("hello").await.unwrap();
@@ -7950,6 +8008,7 @@ mod tests {
                 version: "0.10.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         for c in "/status".chars() {
@@ -8113,6 +8172,7 @@ mod tests {
                 version: "0.10.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         assert!(!app.pending_external_editor);
@@ -8138,6 +8198,7 @@ mod tests {
                 version: "0.10.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         app.pending_external_editor = true;
@@ -8158,6 +8219,7 @@ mod tests {
                 version: "0.10.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         app.source_viewer.status = crate::source_viewer::ViewerStatus::Binary;
@@ -8180,6 +8242,7 @@ mod tests {
                 version: "0.10.0".into(),
                 startup_notices: Vec::new(),
                 validation_command: None,
+                file_icons: FileIconMode::Unicode,
             },
         );
         app.busy_phase = BusyPhase::Tool {
