@@ -26,6 +26,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 use ratatui::Terminal;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use thiserror::Error;
 
@@ -77,6 +78,7 @@ pub enum WorkspaceMode {
 }
 
 const WORKSPACE_HISTORY_LIMIT: usize = 32;
+const UI_STATE_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum WorkspaceView {
@@ -149,6 +151,42 @@ impl WorkspaceNavigation {
         self.history.clear();
         self.current = WorkspaceView::Conversation;
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+enum FilesVisibility {
+    Open,
+    Closed,
+}
+
+impl Default for FilesVisibility {
+    fn default() -> Self {
+        Self::Closed
+    }
+}
+
+impl FilesVisibility {
+    fn from_open(open: bool) -> Self {
+        if open {
+            Self::Open
+        } else {
+            Self::Closed
+        }
+    }
+
+    fn is_open(self) -> bool {
+        matches!(self, Self::Open)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RepositoryUiState {
+    #[serde(default)]
+    version: u32,
+    #[serde(default)]
+    repository_or_workspace_id: String,
+    #[serde(default)]
+    files_visibility: FilesVisibility,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -822,6 +860,7 @@ impl TuiApp {
         };
         app.init_file_watcher();
         app.load_run_history();
+        app.load_ui_state();
         app.normalize_restored_run();
         app.restore_saved_auth().apply_connection_chrome()
     }
@@ -830,6 +869,10 @@ impl TuiApp {
         self.session
             .workspace_root()
             .join(".forge/run-history.json")
+    }
+
+    fn ui_state_path(&self) -> PathBuf {
+        self.session.workspace_root().join(".forge/ui-state.json")
     }
 
     fn load_run_history(&mut self) {
@@ -864,6 +907,45 @@ impl TuiApp {
             });
         if let Err(error) = result {
             self.run.error = Some(format!("could not persist recent runs: {error}"));
+        }
+    }
+
+    fn repository_or_workspace_id(&self) -> String {
+        self.session.workspace_root().display().to_string()
+    }
+
+    fn load_ui_state(&mut self) {
+        let Ok(text) = fs::read_to_string(self.ui_state_path()) else {
+            return;
+        };
+        let Ok(state) = serde_json::from_str::<RepositoryUiState>(&text) else {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                "workspace UI state is malformed; using default Files visibility",
+            );
+            return;
+        };
+        if state.version == UI_STATE_VERSION
+            && state.repository_or_workspace_id == self.repository_or_workspace_id()
+        {
+            self.files_visible = state.files_visibility.is_open();
+        }
+    }
+
+    fn save_ui_state(&mut self) {
+        let path = self.ui_state_path();
+        let state = RepositoryUiState {
+            version: UI_STATE_VERSION,
+            repository_or_workspace_id: self.repository_or_workspace_id(),
+            files_visibility: FilesVisibility::from_open(self.files_visible),
+        };
+        let result = fs::create_dir_all(path.parent().unwrap_or_else(|| Path::new(".")))
+            .and_then(|_| fs::write(&path, serde_json::to_vec_pretty(&state).unwrap_or_default()));
+        if let Err(error) = result {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                format!("could not persist Files visibility: {error}"),
+            );
         }
     }
 
@@ -4379,6 +4461,7 @@ Reply with ONLY the commit message line.\n\n\
 
     fn toggle_files_panel(&mut self) {
         self.files_visible = !self.files_visible;
+        self.save_ui_state();
         if self.files_visible {
             self.focus_block(FocusBlock::Files);
         } else {
@@ -4605,20 +4688,20 @@ Reply with ONLY the commit message line.\n\n\
             }
             FocusMode::Navigation => match self.focus.block {
                 FocusBlock::Composer => {
-                    "Enter send · ⇧Enter newline · Esc return · Tab complete · Type chat · ? help"
+                    "Enter send · ⇧Enter newline · Ctrl+E files · Esc return · Tab complete · ? help"
                         .into()
                 }
                 FocusBlock::Files => {
                     "Enter open · n/N new · R rename · d delete · r refresh · ? help".into()
                 }
                 FocusBlock::Workspace => {
-                    "Tab / Shift+Tab blocks · Alt+← back · Alt+→ review changes · Type chat · ? help".into()
+                    "Ctrl+E files · Tab / Shift+Tab blocks · Alt+← back · Alt+→ review changes · Type chat · ? help".into()
                 }
                 FocusBlock::Inspector => {
-                    "Tab / Shift+Tab blocks · ⇧← / ⇧→ switch inspector tab · Type chat · ? help".into()
+                    "Ctrl+E files · Tab / Shift+Tab blocks · ⇧← / ⇧→ inspector · Type chat · ? help".into()
                 }
                 FocusBlock::BottomPanel => {
-                    "Tab / Shift+Tab blocks · ⇧← / ⇧→ switch bottom tab · Type chat · ? help".into()
+                    "Ctrl+E files · Tab / Shift+Tab blocks · ⇧← / ⇧→ bottom · Type chat · ? help".into()
                 }
             },
         }
@@ -4819,6 +4902,7 @@ Reply with ONLY the commit message line.\n\n\
         ));
         text.push_str("Global\n");
         text.push_str("• Tab / Shift+Tab  Move between visible blocks\n");
+        text.push_str("• Ctrl+E  Toggle Files\n");
         text.push_str("• ?  Help\n");
         text.push_str("• Esc  Leave one interaction level\n\n");
         text.push_str("Active block\n");
@@ -6141,6 +6225,9 @@ Reply with ONLY the commit message line.\n\n\
                         self.open_file_explorer(None, None);
                     }
                 }
+                Ok(SlashCommand::ToggleFiles) => {
+                    self.toggle_files_panel();
+                }
                 Ok(SlashCommand::Disconnect { profile_id }) => {
                     let msg = self.disconnect_auth(profile_id.as_deref())?;
                     self.open_connect_picker();
@@ -6796,6 +6883,11 @@ mod tests {
     /// Returns (journal_workspace_guard, session). Keep the TempDir until the test ends.
     async fn test_session() -> (TempDir, AgentSession) {
         let dir = TempDir::new().unwrap();
+        let session = session_for_workspace(dir.path()).await;
+        (dir, session)
+    }
+
+    async fn session_for_workspace(workspace: &Path) -> AgentSession {
         let model = Arc::new(MockModelClient::script(vec![ModelResponse {
             text: "hello tui".into(),
             tool_calls: vec![],
@@ -6805,8 +6897,8 @@ mod tests {
         let session = AgentSession::create(
             LoopConfig {
                 max_turns: 4,
-                workspace: dir.path().to_path_buf(),
-                journal_dir: dir.path().join("j"),
+                workspace: workspace.to_path_buf(),
+                journal_dir: workspace.join("j"),
                 enable_context_lifecycle: true,
                 enable_governance: true,
 
@@ -6817,7 +6909,7 @@ mod tests {
         )
         .await
         .unwrap();
-        (dir, session)
+        session
     }
 
     #[tokio::test]
@@ -7479,6 +7571,174 @@ mod tests {
             app.workspace_navigation.current,
             WorkspaceView::Conversation
         );
+    }
+
+    #[tokio::test]
+    async fn files_visibility_renders_independently_in_each_workspace_view() {
+        let (dir, mut app) = focus_test_app().await;
+        let path = dir.path().join("main.rs");
+        fs::write(&path, "fn main() {}\n").unwrap();
+
+        for view in [
+            WorkspaceView::Conversation,
+            WorkspaceView::File(path.clone()),
+            WorkspaceView::Diff(DiffCommandContext::Current),
+        ] {
+            app.files_visible = true;
+            app.navigate_to_workspace_view(view.clone());
+            let rendered = render_app_text(&mut app, 160, 50);
+            assert!(
+                rendered.contains("FILES"),
+                "Files should render for {view:?} when preference is open:\n{rendered}"
+            );
+
+            app.files_visible = false;
+            let rendered = render_app_text(&mut app, 160, 50);
+            assert!(
+                !rendered.contains("FILES"),
+                "Files should not render for {view:?} when preference is closed:\n{rendered}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn files_visibility_auto_collapses_and_restores_without_mutating_preference() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.files_visible = true;
+        app.focus_block(FocusBlock::Files);
+
+        let narrow = render_app_text(&mut app, 80, 24);
+        assert!(!narrow.contains("FILES"), "{narrow}");
+        assert!(app.files_visible, "auto-collapse must not persist close");
+        assert_eq!(app.focus.block, FocusBlock::Workspace);
+
+        let wide = render_app_text(&mut app, 160, 50);
+        assert!(wide.contains("FILES"), "{wide}");
+        assert!(app.files_visible);
+    }
+
+    #[tokio::test]
+    async fn files_explicit_close_remains_closed_after_resizing() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.files_visible = true;
+        app.execute_semantic_command(SemanticCommand::ToggleFiles)
+            .await
+            .unwrap();
+
+        assert!(!app.files_visible);
+        let narrow = render_app_text(&mut app, 80, 24);
+        let wide = render_app_text(&mut app, 160, 50);
+        assert!(!narrow.contains("FILES"), "{narrow}");
+        assert!(!wide.contains("FILES"), "{wide}");
+    }
+
+    #[tokio::test]
+    async fn files_visibility_persists_per_repository() {
+        let (dir, mut app) = focus_test_app().await;
+        app.execute_semantic_command(SemanticCommand::ToggleFiles)
+            .await
+            .unwrap();
+        assert!(app.files_visible);
+
+        let session = session_for_workspace(dir.path()).await;
+        let restored = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "mock".into(),
+                provider: "mock".into(),
+                cwd: dir.path().to_path_buf(),
+                version: "test".into(),
+                startup_notices: Vec::new(),
+                validation_command: None,
+                file_icons: FileIconMode::Unicode,
+            },
+        );
+        assert!(restored.files_visible);
+
+        let (_other_dir, other) = focus_test_app().await;
+        assert!(
+            !other.files_visible,
+            "Files preference must not leak across repositories"
+        );
+    }
+
+    #[tokio::test]
+    async fn old_or_malformed_ui_state_migrates_safely_to_default() {
+        let (dir, _app) = focus_test_app().await;
+        let state_path = dir.path().join(".forge/ui-state.json");
+        fs::create_dir_all(state_path.parent().unwrap()).unwrap();
+        fs::write(&state_path, r#"{"files_visible":true}"#).unwrap();
+
+        let session = session_for_workspace(dir.path()).await;
+        let app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "mock".into(),
+                provider: "mock".into(),
+                cwd: dir.path().to_path_buf(),
+                version: "test".into(),
+                startup_notices: Vec::new(),
+                validation_command: None,
+                file_icons: FileIconMode::Unicode,
+            },
+        );
+
+        assert!(!app.files_visible);
+    }
+
+    #[tokio::test]
+    async fn files_toggle_is_reachable_from_global_palette_dispatch() {
+        let (_dir, mut app) = focus_test_app().await;
+        assert!(!app.files_visible);
+
+        app.execute_semantic_command(SemanticCommand::DispatchSlash {
+            origin: SlashCommandOrigin::GlobalPalette,
+            line: "/files".into(),
+        })
+        .await
+        .unwrap();
+
+        assert!(app.files_visible);
+        assert_eq!(app.focus.block, FocusBlock::Files);
+    }
+
+    #[tokio::test]
+    async fn opening_file_does_not_open_closed_files_preference() {
+        let (dir, mut app) = focus_test_app().await;
+        let path = dir.path().join("main.rs");
+        fs::write(&path, "fn main() {}\n").unwrap();
+        app.files_visible = false;
+
+        app.execute_semantic_command(SemanticCommand::OpenFile(path.clone()))
+            .await
+            .unwrap();
+
+        assert!(!app.files_visible);
+        assert_eq!(app.workspace_navigation.current, WorkspaceView::File(path));
+    }
+
+    #[tokio::test]
+    async fn responsive_sizes_render_without_panic_and_follow_files_policy() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.files_visible = true;
+        app.splash_dismissed = true;
+        for (width, height, expect_files) in [
+            (80, 24, false),
+            (120, 40, true),
+            (160, 50, true),
+            (240, 60, true),
+        ] {
+            let rendered = render_app_text(&mut app, width, height);
+            assert!(
+                rendered.contains("Describe a task"),
+                "composer should remain reachable at {width}x{height}:\n{rendered}"
+            );
+            assert_eq!(
+                rendered.contains("FILES"),
+                expect_files,
+                "unexpected Files visibility at {width}x{height}:\n{rendered}"
+            );
+        }
     }
 
     #[tokio::test]
