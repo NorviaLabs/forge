@@ -82,6 +82,7 @@ impl GitStatusCache {
     pub fn start_refresh(&mut self, root: PathBuf) {
         self.loading = true;
         self.error = None;
+        self.status.clear();
         self.revision = self.revision.wrapping_add(1);
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
