@@ -86,7 +86,27 @@ mod tests {
         handle_connect_action, needs_tui_api_key_prompt, ConnectAction, ConnectError,
     };
     use crate::store::CredentialStore;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
     use tempfile::tempdir;
+
+    fn mock_server(status: u16) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0_u8; 1024];
+            let _ = stream.read(&mut buf);
+            let body = r#"{"data":[]}"#;
+            let response = format!(
+                "HTTP/1.1 {status} test\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+        format!("http://{addr}/")
+    }
 
     #[test]
     fn profile_always_prompts_for_api_key() {
@@ -185,5 +205,18 @@ mod tests {
             .default_models
             .iter()
             .any(|m| m.starts_with("openrouter/")));
+    }
+
+    #[test]
+    fn verify_accepts_success_and_reports_failures_without_secret() {
+        assert!(verify_api_key("go-valid-key-for-tests", &mock_server(200)).is_ok());
+
+        let err = verify_api_key("go-valid-key-for-tests", &mock_server(403)).unwrap_err();
+        assert!(err.contains("HTTP 403"), "{err}");
+        assert!(!err.contains("go-valid"));
+
+        let err = verify_api_key("go-valid-key-for-tests", &mock_server(503)).unwrap_err();
+        assert!(err.contains("HTTP 503"), "{err}");
+        assert!(!err.contains("go-valid"));
     }
 }
