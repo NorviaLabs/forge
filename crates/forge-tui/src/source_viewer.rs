@@ -339,6 +339,36 @@ impl SourceViewer {
         }
     }
 
+    pub fn reconcile_renamed_path(&mut self, root: &Path, old_path: &Path, new_path: &Path) {
+        if self.path.as_deref() != Some(old_path) {
+            return;
+        }
+        self.path = Some(new_path.to_path_buf());
+        self.rel_path = pathdiff::diff_paths(new_path, root)
+            .unwrap_or_else(|| new_path.to_path_buf())
+            .display()
+            .to_string();
+        self.refresh(root);
+    }
+
+    pub fn reconcile_deleted_path(&mut self, deleted_path: &Path) {
+        if self.path.as_deref() != Some(deleted_path) {
+            return;
+        }
+        self.status = ViewerStatus::NotFound;
+        self.lines.clear();
+        self.size_bytes = 0;
+        self.modified = None;
+        self.preview = false;
+        self.language_label = None;
+        self.highlight_disabled = false;
+        self.highlighted_lines.clear();
+        self.notice = Some("File moved to Trash or deleted".into());
+        self.search.open = false;
+        self.search.matches.clear();
+        self.jump.open = false;
+    }
+
     pub fn move_cursor_vertical(&mut self, delta: isize, page_height: usize) {
         if delta.abs() >= page_height as isize {
             // Page-style movement already sized to the viewport.
