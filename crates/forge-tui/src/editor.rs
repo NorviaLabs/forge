@@ -118,4 +118,32 @@ mod tests {
     fn argument_splitting_rejects_unclosed_quotes() {
         assert!(split_editor_value("code --wait '").is_none());
     }
+
+    #[test]
+    fn argument_splitting_handles_escapes_and_nested_quotes() {
+        let result = split_editor_value(r#"code a\ b "quoted 'inner'" --flag"#);
+        assert_eq!(
+            result,
+            Some((
+                "code".into(),
+                vec![
+                    "a b".to_string(),
+                    "quoted 'inner'".to_string(),
+                    "--flag".to_string()
+                ]
+            ))
+        );
+        assert!(split_editor_value(r#"code \"#).is_none());
+    }
+
+    #[test]
+    fn editor_error_display_messages_are_actionable() {
+        assert!(EditorError::NotConfigured
+            .to_string()
+            .contains("Set VISUAL or EDITOR"));
+        let err =
+            EditorError::SpawnFailed(std::io::Error::new(std::io::ErrorKind::NotFound, "missing"));
+        assert!(err.to_string().contains("Unable to start editor"));
+        assert!(err.to_string().contains("missing"));
+    }
 }

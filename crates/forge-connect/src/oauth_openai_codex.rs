@@ -210,3 +210,91 @@ where
         _ => Err(serde::de::Error::custom("invalid interval")),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::Deserialize;
+
+    #[derive(Deserialize)]
+    struct IntervalFixture {
+        #[serde(deserialize_with = "number_from_string_or_number")]
+        interval: u64,
+    }
+
+    #[test]
+    fn parse_tokens_accepts_success_and_preserves_previous_refresh() {
+        let tokens = OpenAiCodexOauthClient::parse_tokens(
+            200,
+            r#"{"access_token":"access","expires_in":3600}"#,
+            Some("old-refresh"),
+        )
+        .unwrap();
+        assert_eq!(tokens.access_token, "access");
+        assert_eq!(tokens.refresh_token.as_deref(), Some("old-refresh"));
+        assert!(tokens.expires_at.is_some());
+
+        let tokens = OpenAiCodexOauthClient::parse_tokens(
+            201,
+            r#"{"access_token":"access","refresh_token":"new-refresh","expires_in":1}"#,
+            Some("old-refresh"),
+        )
+        .unwrap();
+        assert_eq!(tokens.refresh_token.as_deref(), Some("new-refresh"));
+    }
+
+    #[test]
+    fn parse_tokens_rejects_http_json_and_empty_access_token_errors() {
+        assert!(matches!(
+            OpenAiCodexOauthClient::parse_tokens(400, "bad", None),
+            Err(OpenAiCodexOauthError::Token(message)) if message.contains("HTTP 400")
+        ));
+        assert!(matches!(
+            OpenAiCodexOauthClient::parse_tokens(200, "not-json", None),
+            Err(OpenAiCodexOauthError::Token(message)) if message.contains("expected")
+        ));
+        assert!(matches!(
+            OpenAiCodexOauthClient::parse_tokens(
+                200,
+                r#"{"access_token":"   ","expires_in":1}"#,
+                None,
+            ),
+            Err(OpenAiCodexOauthError::Token(message)) if message == "empty access token"
+        ));
+    }
+
+    #[test]
+    fn device_code_response_accepts_numeric_or_string_interval() {
+        let numeric: DeviceCodeResponse =
+            serde_json::from_str(r#"{"device_auth_id":"device","user_code":"user","interval":2}"#)
+                .unwrap();
+        assert_eq!(numeric.interval, 2);
+
+        let string: DeviceCodeResponse = serde_json::from_str(
+            r#"{"device_auth_id":"device","user_code":"user","interval":"3"}"#,
+        )
+        .unwrap();
+        assert_eq!(string.interval, 3);
+    }
+
+    #[test]
+    fn interval_deserializer_rejects_invalid_shapes() {
+        let fixture: IntervalFixture = serde_json::from_str(r#"{"interval":4}"#).unwrap();
+        assert_eq!(fixture.interval, 4);
+        assert!(serde_json::from_str::<IntervalFixture>(r#"{"interval":{}}"#).is_err());
+        assert!(serde_json::from_str::<IntervalFixture>(r#"{"interval":"nope"}"#).is_err());
+        assert!(serde_json::from_str::<IntervalFixture>(r#"{"interval":-1}"#).is_err());
+    }
+
+    #[test]
+    fn oauth_error_display_messages_are_stable() {
+        assert_eq!(
+            OpenAiCodexOauthError::Pending.to_string(),
+            "authorization pending"
+        );
+        assert_eq!(OpenAiCodexOauthError::SlowDown.to_string(), "slow down");
+        assert!(OpenAiCodexOauthError::Device("x".into())
+            .to_string()
+            .contains("device authorization failed"));
+    }
+}

@@ -760,6 +760,28 @@ model = "claude-sonnet"
             migrate_model_id("claude", Some("anthropic")),
             "anthropic/claude"
         );
+        assert_eq!(migrate_model_id("gpt-5", None), "gpt-5");
+    }
+
+    #[test]
+    fn provider_parse_accepts_legacy_aliases_and_reports_canonical_names() {
+        for (raw, prefix, migrated) in [
+            ("native", None, false),
+            ("litellm", None, false),
+            ("openai_compatible", Some("openai"), true),
+            ("openai-compatible", Some("openai"), true),
+            ("openai", Some("openai"), true),
+            ("anthropic", Some("anthropic"), true),
+            ("xai", Some("xai"), true),
+            ("grok", Some("xai"), true),
+        ] {
+            let parsed = ModelProviderKind::parse_with_migration(raw).unwrap();
+            assert_eq!(parsed.kind, ModelProviderKind::Native);
+            assert_eq!(parsed.model_prefix, prefix);
+            assert_eq!(parsed.migrated_from_native, migrated);
+        }
+        assert_eq!(ModelProviderKind::Mock.as_str(), "mock");
+        assert_eq!(ModelProviderKind::Native.as_str(), "native");
     }
 
     #[test]
@@ -836,6 +858,20 @@ model = "from-file"
     }
 
     #[test]
+    fn journal_dir_keeps_absolute_path() {
+        let _g = EnvGuard::clear_forge_env();
+        let dir = tempdir().unwrap();
+        let journal = dir.path().join("absolute-journal");
+        let cfg = Config::load(ConfigOverrides {
+            workspace: Some(dir.path().to_path_buf()),
+            journal_path: Some(journal.display().to_string()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(cfg.journal_dir(), journal);
+    }
+
+    #[test]
     fn web_search_defaults_to_enabled_mock() {
         let _g = EnvGuard::clear_forge_env();
         let cfg = Config::load(ConfigOverrides::default()).unwrap();
@@ -883,6 +919,31 @@ max_query_chars = 200
     }
 
     #[test]
+    fn web_search_toml_clamps_minimums_and_allows_empty_api_key_env() {
+        let _g = EnvGuard::clear_forge_env();
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("forge.toml");
+        fs::write(
+            &path,
+            r#"
+[tools.web_search]
+api_key_env = ""
+max_results = 0
+max_query_chars = 0
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load(ConfigOverrides {
+            config_path: Some(path),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(cfg.tools.web_search.max_results, 1);
+        assert_eq!(cfg.tools.web_search.max_query_chars, 1);
+        assert!(cfg.tools.web_search.resolved_api_key_env().is_none());
+    }
+
+    #[test]
     fn web_search_env_overrides() {
         let g = EnvGuard::clear_forge_env();
         g.set("FORGE_WEB_SEARCH_ENABLED", "false");
@@ -893,6 +954,21 @@ max_query_chars = 200
         assert_eq!(cfg.tools.web_search.provider, WebSearchProvider::Mock);
         assert_eq!(cfg.tools.web_search.max_results, 2);
         assert!(!cfg.tools.web_search.should_register());
+    }
+
+    #[test]
+    fn web_search_env_overrides_limits_and_key_options() {
+        let g = EnvGuard::clear_forge_env();
+        g.set("FORGE_WEB_SEARCH_API_KEY_ENV", "SEARCH_KEY");
+        g.set("FORGE_WEB_SEARCH_MAX_RESULTS", "0");
+        g.set("FORGE_WEB_SEARCH_TIMEOUT_MS", "1234");
+        g.set("FORGE_WEB_SEARCH_REQUIRE_KEY", "off");
+        let cfg = Config::load(ConfigOverrides::default()).unwrap();
+        let ws = cfg.tools.web_search;
+        assert_eq!(ws.api_key_env.as_deref(), Some("SEARCH_KEY"));
+        assert_eq!(ws.max_results, 1);
+        assert_eq!(ws.timeout_ms, 1234);
+        assert!(!ws.require_key);
     }
 
     #[test]

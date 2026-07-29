@@ -137,6 +137,18 @@ pub fn classify_operator_error(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn render_feedback(model: &FeedbackModel, width: u16) -> String {
+        let area = Rect::new(0, 0, width, 1);
+        let mut terminal = Terminal::new(TestBackend::new(width, 1)).unwrap();
+        terminal
+            .draw(|frame| frame.render_widget(FeedbackBar { model }, area))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        (0..width).map(|x| buf[(x, 0)].symbol()).collect()
+    }
 
     #[test]
     fn classify_rate_limit() {
@@ -172,5 +184,31 @@ mod tests {
     fn empty_feedback() {
         assert!(FeedbackModel::default().is_empty());
         assert!(!FeedbackModel::error("x").is_empty());
+    }
+
+    #[test]
+    fn constructors_set_expected_severity() {
+        assert_eq!(FeedbackModel::info("i").severity, FeedbackSeverity::Info);
+        assert_eq!(FeedbackModel::warn("w").severity, FeedbackSeverity::Warn);
+        assert_eq!(FeedbackModel::error("e").severity, FeedbackSeverity::Error);
+        assert_eq!(FeedbackModel::ok("o").severity, FeedbackSeverity::Ok);
+    }
+
+    #[test]
+    fn render_skips_empty_and_truncates_long_messages() {
+        let empty = FeedbackModel::default();
+        assert!(render_feedback(&empty, 10).trim().is_empty());
+
+        let long = FeedbackModel::warn("abcdefghijklmnopqrstuvwxyz");
+        let rendered = render_feedback(&long, 10);
+        assert!(rendered.contains("! abcdef"));
+        assert!(rendered.contains("...") || rendered.contains("…"));
+    }
+
+    #[test]
+    fn classify_timeout_and_generic_errors() {
+        assert!(classify_operator_error("request timed out").contains("timed out"));
+        assert_eq!(classify_operator_error(""), "Operation failed.");
+        assert!(classify_operator_error("boom").contains("boom"));
     }
 }

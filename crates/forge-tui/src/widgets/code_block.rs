@@ -150,10 +150,27 @@ pub fn parse_markdown_code_block(markdown: &str) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::style::Color;
+    use ratatui::Terminal;
+
+    fn render_text(widget: CodeBlock<'_>, width: u16, height: u16) -> String {
+        let area = Rect::new(0, 0, width, height);
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| frame.render_widget(widget, area))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        (0..height)
+            .map(|y| (0..width).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 
     #[test]
     fn parse_fence() {
         assert_eq!(extract_lang_from_fence("```rust"), Some("rust"));
+        assert_eq!(extract_lang_from_fence("```  js  "), Some("js"));
         assert_eq!(extract_lang_from_fence("```"), None);
     }
 
@@ -165,5 +182,32 @@ mod tests {
         assert_eq!(blocks.len(), 2);
         assert_eq!(blocks[0].0, "```rust");
         assert_eq!(blocks[1].0, "```python");
+    }
+
+    #[test]
+    fn parse_markdown_blocks_ignores_unclosed_block() {
+        let blocks = parse_markdown_code_block("before\n```rust\nfn main() {}");
+        assert!(blocks.is_empty());
+    }
+
+    #[test]
+    fn renders_plain_code_with_and_without_border() {
+        let bordered = render_text(
+            CodeBlock::new("let x = 1;\nlet y = 2;").style(Style::default().fg(Color::Blue)),
+            24,
+            4,
+        );
+        assert!(bordered.contains("let x = 1;"));
+        assert!(bordered.contains("let y = 2;"));
+
+        let borderless = render_text(CodeBlock::new("plain").borderless(), 12, 2);
+        assert!(borderless.contains("plain"));
+    }
+
+    #[test]
+    fn renders_highlighted_code_language_path() {
+        let rendered = render_text(CodeBlock::new("fn main() {}").language("rust"), 24, 3);
+        assert!(rendered.contains("fn"));
+        assert!(rendered.contains("main"));
     }
 }

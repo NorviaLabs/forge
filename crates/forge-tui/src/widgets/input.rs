@@ -596,4 +596,72 @@ mod tests {
             "expected inverted block cursor on character under caret"
         );
     }
+
+    #[test]
+    fn renders_mode_label_and_connection_hint() {
+        let m = InputModel {
+            not_connected: true,
+            hint: "type here".into(),
+            ..Default::default()
+        };
+        let backend = TestBackend::new(48, 5);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| {
+            f.render_widget(
+                InputBar {
+                    model: &m,
+                    attachment: None,
+                    focused: false,
+                    mode_label: "NAV",
+                },
+                f.area(),
+            );
+        })
+        .unwrap();
+        let buf = term.backend().buffer();
+        let rendered: String = (0..buf.area().height)
+            .map(|y| {
+                (0..buf.area().width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("Chat · NAV"));
+        assert!(rendered.contains("not connected /connect required"));
+    }
+
+    #[test]
+    fn renders_history_and_multiline_mode_indicators() {
+        let m = InputModel {
+            text: "line1\nline2".into(),
+            history_browse: true,
+            ..Default::default()
+        };
+        let backend = TestBackend::new(48, 5);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| {
+            f.render_widget(
+                InputBar {
+                    model: &m,
+                    attachment: Some("file.txt"),
+                    focused: true,
+                    mode_label: "INPUT",
+                },
+                f.area(),
+            );
+        })
+        .unwrap();
+        let buf = term.backend().buffer();
+        let rendered: String = (0..buf.area().height)
+            .map(|y| {
+                (0..buf.area().width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("history"));
+        assert!(rendered.contains("file.txt"));
+    }
 }

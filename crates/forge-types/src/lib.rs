@@ -293,4 +293,60 @@ mod tests {
         let back: SessionStatus = serde_json::from_str(&j).unwrap();
         assert_eq!(back, SessionStatus::Running);
     }
+
+    #[test]
+    fn message_new_initializes_empty_optional_fields() {
+        let message = Message::new(MessageRole::Assistant, "hello");
+        assert_eq!(message.role, MessageRole::Assistant);
+        assert_eq!(message.content, "hello");
+        assert!(message.tool_call_id.is_none());
+        assert!(message.name.is_none());
+        assert!(message.thinking.is_none());
+        assert!(message.thinking_duration_secs.is_none());
+        assert!(message.tool_calls.is_empty());
+    }
+
+    #[test]
+    fn principal_helpers_set_expected_shapes() {
+        let local = Principal::local_dev();
+        assert_eq!(local.id, "local-dev");
+        assert_eq!(local.roles, vec!["admin"]);
+        assert_eq!(local.scopes, vec!["*"]);
+        assert_eq!(local.surface, "tui");
+
+        let restricted = Principal::restricted("cli");
+        assert_eq!(restricted.id, "restricted-cli");
+        assert_eq!(restricted.roles, vec!["restricted"]);
+        assert!(restricted.scopes.is_empty());
+        assert_eq!(restricted.surface, "cli");
+    }
+
+    #[test]
+    fn tool_validation_error_displays_clear_message() {
+        let err = ToolValidationError {
+            tool: "read_file".into(),
+            path: "/args/path".into(),
+            message: "missing".into(),
+            schema_hint: Some("string".into()),
+        };
+        assert_eq!(
+            err.to_string(),
+            "tool `read_file` validation failed at /args/path: missing"
+        );
+    }
+
+    #[test]
+    fn progress_document_new_initializes_session_and_goal() {
+        let session_id = Uuid::new_v4();
+        let doc = ProgressDocument::new(session_id, "ship coverage");
+        assert_eq!(doc.version, 1);
+        assert_eq!(doc.goal, "ship coverage");
+        assert!(doc.completed.is_empty());
+        assert!(doc.in_progress.is_empty());
+        assert!(doc.blockers.is_empty());
+        assert!(doc.next_actions.is_empty());
+        assert!(doc.workspace_ref.is_empty());
+        assert_eq!(doc.session_id, session_id.to_string());
+        assert!(!doc.updated_at.is_empty());
+    }
 }

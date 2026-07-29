@@ -310,4 +310,74 @@ mod tests {
         assert_eq!(token_cost(1_000_000, cost.input), 3.0);
         assert_eq!(token_cost(2_000_000, cost.output), 30.0);
     }
+
+    #[test]
+    fn provider_cost_report_covers_static_provider_messages() {
+        for (profile, expected) in [
+            ("anthropic", "Anthropic API"),
+            ("xai", "xAI API"),
+            ("opencode_go", "OpenCode"),
+            ("opencode_zen", "OpenCode"),
+            ("ollama", "Ollama"),
+            ("custom", "custom"),
+        ] {
+            let report =
+                provider_cost_report(profile, "unknown", 0, 0, &CredentialStore::user_default())
+                    .unwrap();
+            assert!(
+                report.iter().any(|line| line.contains(expected)),
+                "missing {expected} in {report:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn models_dev_provider_and_title_cover_known_profiles() {
+        assert_eq!(models_dev_provider("openai"), Some("openai"));
+        assert_eq!(models_dev_provider("anthropic"), Some("anthropic"));
+        assert_eq!(models_dev_provider("xai"), Some("xai"));
+        assert_eq!(models_dev_provider("opencode_go"), Some("opencode-go"));
+        assert_eq!(models_dev_provider("opencode_zen"), Some("opencode"));
+        assert_eq!(models_dev_provider("ollama"), None);
+
+        assert_eq!(provider_title("openai"), "OpenAI API");
+        assert_eq!(provider_title("anthropic"), "Anthropic API");
+        assert_eq!(provider_title("xai"), "xAI API");
+        assert_eq!(provider_title("opencode_go"), "OpenCode Go");
+        assert_eq!(provider_title("opencode_zen"), "OpenCode Zen");
+        assert_eq!(provider_title("unknown"), "Provider");
+    }
+
+    #[test]
+    fn codex_usage_handles_limit_reached_unlimited_and_missing_details() {
+        let usage = serde_json::json!({
+            "plan_type": "team",
+            "rate_limit": {
+                "limit_reached": true,
+                "primary_window": { "used_percent": 125.0 },
+                "secondary_window": { "used_percent": "41.5", "reset_after_seconds": 59 }
+            },
+            "credits": { "unlimited": true }
+        });
+        let report = format_codex_usage(&usage);
+        assert!(report.iter().any(|line| line.contains("0% remaining")));
+        assert!(report.iter().any(|line| line == "Status: limit reached"));
+        assert!(report.iter().any(|line| line == "Credits: unlimited"));
+
+        let sparse = format_codex_usage(&serde_json::json!({}));
+        assert_eq!(sparse[0], "Provider: OpenAI Codex (unknown plan)");
+        assert!(sparse[1].contains("not included"));
+    }
+
+    #[test]
+    fn number_and_duration_formatting_handles_edges() {
+        assert_eq!(number_text(&serde_json::json!(12.0)).unwrap(), "12");
+        assert_eq!(number_text(&serde_json::json!(12.25)).unwrap(), "12.2");
+        assert_eq!(number_text(&serde_json::json!("7.5")).unwrap(), "7.5");
+        assert!(number_text(&serde_json::json!("")).is_none());
+
+        assert_eq!(format_duration(59), "0m");
+        assert_eq!(format_duration(3_660), "1h 1m");
+        assert_eq!(format_duration(90_000), "1d 1h");
+    }
 }

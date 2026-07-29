@@ -1555,7 +1555,22 @@ mod tests {
     use super::*;
     use crate::commands::{parse_slash, SlashCommand};
     use forge_types::HitlPayload;
+    use ratatui::widgets::Widget;
     use serde_json::json;
+
+    fn render_text(overlay: &Overlay) -> String {
+        let area = Rect::new(0, 0, 100, 48);
+        let mut buf = Buffer::empty(area);
+        OverlayWidget { overlay }.render(area, &mut buf);
+        let mut text = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                text.push_str(buf[(x, y)].symbol());
+            }
+            text.push('\n');
+        }
+        text
+    }
 
     #[test]
     fn welcome_starts_onboarding() {
@@ -1945,6 +1960,340 @@ mod tests {
                 .map(|item| item.id.as_str())
                 .collect::<Vec<_>>(),
             ["anthropic", "openai", "xai"]
+        );
+    }
+
+    #[test]
+    fn model_picker_filters_moves_providers_and_focuses_current_model() {
+        let mut overlay = Overlay::model_open_with(vec![
+            ModelItem {
+                provider: "native".into(),
+                model: "openai/gpt-5".into(),
+                profile_id: Some("openai".into()),
+                source: forge_connect::CatalogSource::Live,
+            },
+            ModelItem {
+                provider: "native".into(),
+                model: "anthropic/claude-sonnet".into(),
+                profile_id: Some("anthropic".into()),
+                source: forge_connect::CatalogSource::Registry,
+            },
+            ModelItem {
+                provider: "native".into(),
+                model: "ollama/llama3".into(),
+                profile_id: Some("ollama".into()),
+                source: forge_connect::CatalogSource::Default,
+            },
+        ]);
+
+        overlay.focus_model("ollama/llama3");
+        let Overlay::Model {
+            provider_selected,
+            model_selected,
+            current_model,
+            providers,
+            ..
+        } = &overlay
+        else {
+            panic!("expected model overlay");
+        };
+        assert_eq!(providers[*provider_selected], "ollama");
+        assert_eq!(*model_selected, 0);
+        assert_eq!(current_model, "ollama/llama3");
+
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Left),
+            OverlayAction::None
+        );
+        let Overlay::Model {
+            provider_selected,
+            model_selected,
+            providers,
+            ..
+        } = &overlay
+        else {
+            panic!("expected model overlay");
+        };
+        assert_eq!(providers[*provider_selected], "anthropic");
+        assert_eq!(*model_selected, 0);
+
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Char('g')),
+            OverlayAction::None
+        );
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::RunCommand("/model g".into())
+        );
+    }
+
+    #[test]
+    fn empty_pickers_and_lists_ignore_selection_and_enter() {
+        let mut effort = Overlay::Effort {
+            model: "unknown/model".into(),
+            selected: 0,
+            current: ReasoningEffort::Auto,
+            default: ReasoningEffort::Auto,
+            items: vec![],
+        };
+        assert_eq!(
+            handle_overlay_key(&mut effort, Key::Down),
+            OverlayAction::None
+        );
+        assert_eq!(
+            handle_overlay_key(&mut effort, Key::Enter),
+            OverlayAction::None
+        );
+
+        let mut slash = Overlay::slash_open("definitely-not-a-command");
+        assert_eq!(
+            handle_overlay_key(&mut slash, Key::Down),
+            OverlayAction::None
+        );
+        assert_eq!(
+            handle_overlay_key(&mut slash, Key::Enter),
+            OverlayAction::None
+        );
+
+        let mut connect = Overlay::connect_picker(vec![]);
+        assert_eq!(
+            handle_overlay_key(&mut connect, Key::Down),
+            OverlayAction::None
+        );
+        assert_eq!(
+            handle_overlay_key(&mut connect, Key::Enter),
+            OverlayAction::None
+        );
+
+        let mut resume = Overlay::resume_picker(vec![]);
+        assert_eq!(
+            handle_overlay_key(&mut resume, Key::Up),
+            OverlayAction::None
+        );
+        assert_eq!(
+            handle_overlay_key(&mut resume, Key::Enter),
+            OverlayAction::None
+        );
+
+        let mut files = Overlay::file_explorer("/", vec![], None);
+        assert_eq!(
+            handle_overlay_key(&mut files, Key::Down),
+            OverlayAction::None
+        );
+        assert_eq!(
+            handle_overlay_key(&mut files, Key::Enter),
+            OverlayAction::None
+        );
+    }
+
+    #[test]
+    fn picker_selection_wraps_in_both_directions() {
+        let mut overlay = Overlay::resume_picker(vec![
+            ResumeSessionItem {
+                id: "one".into(),
+                modified: "now".into(),
+            },
+            ResumeSessionItem {
+                id: "two".into(),
+                modified: "then".into(),
+            },
+        ]);
+
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Up),
+            OverlayAction::None
+        );
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::RunCommand("/resume two".into())
+        );
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Down),
+            OverlayAction::None
+        );
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::RunCommand("/resume one".into())
+        );
+    }
+
+    #[test]
+    fn overlay_widget_renders_help_effort_status_and_turn_limit() {
+        let help = render_text(&Overlay::Help);
+        assert!(help.contains("Forge is an AI coding agent"));
+        assert!(help.contains("⇧← / ⇧→"));
+
+        let effort = render_text(&Overlay::effort_open("openai/gpt-5", ReasoningEffort::High));
+        assert!(effort.contains("Reasoning effort"));
+        assert!(effort.contains("Model: openai/gpt-5"));
+        assert!(effort.contains("Esc close"));
+
+        let status = render_text(&Overlay::StatusReport {
+            title: "Status".into(),
+            lines: vec!["one".into(), "two".into()],
+        });
+        assert!(status.contains("Status"));
+        assert!(status.contains("one"));
+        assert!(status.contains("two"));
+
+        let turn_limit = render_text(&Overlay::turn_limit(64));
+        assert!(turn_limit.contains("Turn limit reached"));
+        assert!(turn_limit.contains("64 model steps"));
+        assert!(turn_limit.contains("[n/Esc] Stop"));
+    }
+
+    #[test]
+    fn overlay_widget_renders_hitl_collapsed_and_expanded() {
+        let payload = HitlPayload {
+            call_id: "call-1".into(),
+            tool: "write".into(),
+            args_redacted: json!({"path": "src/main.rs"}),
+            reason: "Edit requires approval".into(),
+        };
+        let collapsed = render_text(&Overlay::hitl(payload.clone()));
+        assert!(collapsed.contains("Approval required"));
+        assert!(collapsed.contains("write  src/main.rs"));
+        assert!(collapsed.contains("[v] View policy details"));
+
+        let expanded = render_text(&Overlay::Hitl {
+            payload,
+            expanded: true,
+        });
+        assert!(expanded.contains("details"));
+        assert!(expanded.contains("Tool: write"));
+        assert!(expanded.contains("Secrets are not shown"));
+    }
+
+    #[test]
+    fn overlay_widget_renders_slash_and_model_empty_states() {
+        let slash = render_text(&Overlay::slash_open("sync"));
+        assert!(slash.contains("/ sync"));
+        assert!(slash.contains("/sync"));
+        assert!(slash.contains("Commit + push"));
+
+        let empty_model = render_text(&Overlay::model_open_with(vec![]));
+        assert!(empty_model.contains("Models · all · 0/0"));
+        assert!(empty_model.contains("No connected provider models"));
+
+        let mut filtered_model = Overlay::model_open_with(vec![ModelItem {
+            provider: "native".into(),
+            model: "openai/gpt-5".into(),
+            profile_id: Some("openai".into()),
+            source: forge_connect::CatalogSource::Registry,
+        }]);
+        handle_overlay_key(&mut filtered_model, Key::Char('z'));
+        let text = render_text(&filtered_model);
+        assert!(text.contains("/model z"));
+        assert!(text.contains("No models match"));
+    }
+
+    #[test]
+    fn overlay_widget_renders_connect_and_resume_variants() {
+        let mut api = Overlay::connect_api_key(
+            "opencode_go",
+            "OpenCode Go",
+            Some("https://example.test/key".into()),
+            Some("OPENCODE_API_KEY".into()),
+        );
+        handle_overlay_key(&mut api, Key::Paste("sk-secret".into()));
+        let api_text = render_text(&api);
+        assert!(api_text.contains("Connect with API key"));
+        assert!(api_text.contains("OpenCode Go"));
+        assert!(api_text.contains("9 chars"));
+        assert!(api_text.contains("[e] Use OPENCODE_API_KEY"));
+        assert!(!api_text.contains("sk-secret"));
+
+        let oauth = render_text(&Overlay::connect_oauth(
+            "xai",
+            "xAI Grok",
+            "Open the browser code",
+        ));
+        assert!(oauth.contains("Sign in"));
+        assert!(oauth.contains("Open the browser code"));
+        assert!(oauth.contains("Enter check now"));
+
+        let picker = render_text(&Overlay::connect_picker(vec![
+            ConnectProfileItem {
+                id: "ollama".into(),
+                title: "Ollama".into(),
+                auth_mode: "api_key".into(),
+                auth_url: None,
+                connected: true,
+            },
+            ConnectProfileItem {
+                id: "xai".into(),
+                title: "xAI Grok".into(),
+                auth_mode: "oauth".into(),
+                auth_url: None,
+                connected: false,
+            },
+        ]));
+        assert!(picker.contains("Choose a provider"));
+        assert!(picker.contains("Ollama"));
+        assert!(picker.contains("connected"));
+        assert!(picker.contains("Sign in"));
+
+        let resume = render_text(&Overlay::resume_picker(vec![ResumeSessionItem {
+            id: "session-123".into(),
+            modified: "2026-07-29 05:00".into(),
+        }]));
+        assert!(resume.contains("Resume a session"));
+        assert!(resume.contains("session-123"));
+    }
+
+    #[test]
+    fn overlay_widget_renders_file_explorer_and_viewer() {
+        let explorer = render_text(&Overlay::file_explorer(
+            "/workspace",
+            vec![
+                FileExplorerItem {
+                    name: "src".into(),
+                    path: "/workspace/src".into(),
+                    is_dir: true,
+                },
+                FileExplorerItem {
+                    name: "README.md".into(),
+                    path: "/workspace/README.md".into(),
+                    is_dir: false,
+                },
+            ],
+            Some("unable to read".into()),
+        ));
+        assert!(explorer.contains("File explorer"));
+        assert!(explorer.contains("/workspace"));
+        assert!(explorer.contains("src"));
+        assert!(explorer.contains("unable to read"));
+
+        let mut viewer = Overlay::file_viewer("/workspace/README.md", "line 1\nline 2\nline 3");
+        handle_overlay_key(&mut viewer, Key::Down);
+        let text = render_text(&viewer);
+        assert!(text.contains("/workspace/README.md"));
+        assert!(text.contains("readonly"));
+        assert!(text.contains("line 2"));
+        assert!(text.contains("←/Backspace back"));
+    }
+
+    #[test]
+    fn hitl_command_and_risk_summaries_cover_special_tools() {
+        assert_eq!(
+            hitl_command("bash", &json!({"command": "cargo test"})),
+            "$ cargo test"
+        );
+        assert_eq!(
+            hitl_command("edit", &json!({"path": "src/lib.rs", "old": "a"})),
+            "edit  src/lib.rs"
+        );
+        assert_eq!(
+            hitl_risk_summary("git", &json!({"command": "push origin main"})),
+            "This pushes changes to a remote repository."
+        );
+        assert_eq!(
+            hitl_risk_summary("npm_install", &json!({})),
+            "This installs or modifies system packages."
+        );
+        assert_eq!(
+            hitl_risk_summary("sql", &json!({})),
+            "This executes a database query."
         );
     }
 }

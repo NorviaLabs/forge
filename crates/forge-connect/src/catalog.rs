@@ -772,6 +772,7 @@ pub fn normalize_model_id(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::OauthTokens;
     use crate::openai::openai_profile;
     use tempfile::tempdir;
 
@@ -803,6 +804,29 @@ mod tests {
     }
 
     #[test]
+    fn cache_handles_missing_malformed_clear_and_ttl_clamp() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("nested").join("catalog.toml");
+        let cache = ModelCatalogCache::new(path.clone()).with_ttl(0);
+
+        assert_eq!(cache.path(), path.as_path());
+        assert_eq!(cache.get_cached("openai"), Vec::<String>::new());
+        assert!(!cache.is_fresh("openai"));
+        assert!(!cache.registry_is_fresh());
+
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "not = [valid toml").unwrap();
+        assert_eq!(cache.get_cached("openai"), Vec::<String>::new());
+
+        cache.put("openai", vec!["openai/gpt-test".into()]).unwrap();
+        assert_eq!(cache.get_cached("openai"), vec!["openai/gpt-test"]);
+        assert!(cache.is_fresh("openai"));
+        cache.clear_profile("openai").unwrap();
+        assert_eq!(cache.get_cached("openai"), Vec::<String>::new());
+        assert!(!cache.is_fresh("openai"));
+    }
+
+    #[test]
     fn registry_cost_roundtrip() {
         let dir = tempdir().unwrap();
         let cache = ModelCatalogCache::new(dir.path().join("c.toml"));
@@ -826,6 +850,32 @@ mod tests {
                 output: 8.0,
             })
         );
+        assert_eq!(
+            cache.get_registry_cached("openai"),
+            vec!["openai/gpt-test".to_string()]
+        );
+        assert!(cache.registry_is_fresh());
+    }
+
+    #[test]
+    fn catalog_cost_and_models_dev_filter_handle_missing_fields() {
+        assert_eq!(models_dev_cost(&serde_json::json!({})), None);
+        assert_eq!(
+            models_dev_cost(&serde_json::json!({
+                "cost": { "input": 1.25, "output": 9.5 }
+            })),
+            Some(CatalogCost {
+                input: 1.25,
+                output: 9.5,
+            })
+        );
+        assert!(!models_dev_model_is_agent_compatible(&serde_json::json!({
+            "tool_call": true,
+            "modalities": { "output": ["image"] }
+        })));
+        assert!(!models_dev_model_is_agent_compatible(&serde_json::json!({
+            "tool_call": true
+        })));
     }
 
     #[test]
@@ -878,6 +928,29 @@ mod tests {
     }
 
     #[test]
+    fn picker_deduplicates_across_profiles_and_preserves_first_owner() {
+        let dir = tempdir().unwrap();
+        let cache = ModelCatalogCache::new(dir.path().join("c.toml"));
+        let store = CredentialStore::new(dir.path().join("k.toml"));
+        let mut first = openai_profile();
+        first.id = "first".into();
+        first.default_models = vec!["shared/model".into(), "first/only".into()];
+        let mut second = openai_profile();
+        second.id = "second".into();
+        second.default_models = vec!["shared/model".into(), "second/only".into()];
+
+        let entries = models_for_picker(&[first, second], &store, &cache, false);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            ["shared/model", "first/only", "second/only"]
+        );
+        assert_eq!(entries[0].profile_id, "first");
+    }
+
+    #[test]
     fn codex_does_not_use_public_registry_rows() {
         let dir = tempdir().unwrap();
         let cache = ModelCatalogCache::new(dir.path().join("c.toml"));
@@ -910,6 +983,26 @@ mod tests {
     }
 
     #[test]
+    fn codex_cli_cache_parser_ignores_bad_or_empty_rows() {
+        assert_eq!(
+            parse_codex_cli_cached_model_ids(&serde_json::json!({ "models": "bad" })),
+            Vec::<String>::new()
+        );
+        let body = serde_json::json!({
+            "models": [
+                {"slug": "", "visibility": "list", "priority": 1},
+                {"visibility": "list", "priority": 2},
+                {"slug": "late", "visibility": "list"},
+                {"slug": "early", "visibility": "list", "priority": 0}
+            ]
+        });
+        assert_eq!(
+            parse_codex_cli_cached_model_ids(&body),
+            vec!["early", "late"]
+        );
+    }
+
+    #[test]
     fn reads_codex_cli_cache_file() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("models_cache.json");
@@ -919,6 +1012,12 @@ mod tests {
         )
         .unwrap();
         assert_eq!(codex_cli_cached_model_ids_at(&path), vec!["gpt-5.6-sol"]);
+        assert_eq!(
+            codex_cli_cached_model_ids_at(&dir.path().join("missing.json")),
+            Vec::<String>::new()
+        );
+        fs::write(&path, "{not json").unwrap();
+        assert_eq!(codex_cli_cached_model_ids_at(&path), Vec::<String>::new());
     }
 
     #[test]
@@ -951,6 +1050,27 @@ mod tests {
     }
 
     #[test]
+    fn parse_openai_style_ids_accepts_models_strings_slugs_and_rejects_bad_shape() {
+        let via_models = serde_json::json!({
+            "models": [
+                "raw-model",
+                { "slug": "slug-model" },
+                { "id": "id-model" },
+                { "ignored": true }
+            ]
+        });
+        assert_eq!(
+            parse_openai_style_model_ids(&via_models).unwrap(),
+            vec!["raw-model", "slug-model", "id-model"]
+        );
+        assert!(
+            parse_openai_style_model_ids(&serde_json::json!({ "items": [] }))
+                .unwrap_err()
+                .contains("missing data[]")
+        );
+    }
+
+    #[test]
     fn parse_codex_catalog_slugs() {
         let value = serde_json::json!({
             "models": [
@@ -976,6 +1096,7 @@ mod tests {
             parse_ollama_model_names(&value),
             vec!["qwen2.5-coder:latest", "qwen2.5-coder:3b"]
         );
+        assert!(parse_ollama_model_names(&serde_json::json!({ "models": "bad" })).is_empty());
     }
 
     #[test]
@@ -991,6 +1112,99 @@ mod tests {
     #[test]
     fn openai_filter_drops_embeddings() {
         assert!(!filter_openai_chat_ish("text-embedding-3-small"));
+        assert!(!filter_openai_chat_ish("whisper-1"));
+        assert!(!filter_openai_chat_ish("tts-1"));
+        assert!(!filter_openai_chat_ish("dall-e-3"));
+        assert!(!filter_openai_chat_ish("ft:gpt-4.1-mini:org:custom"));
+        assert!(!filter_openai_chat_ish("omni-moderation-latest"));
         assert!(filter_openai_chat_ish("gpt-4.1-mini"));
+    }
+
+    #[test]
+    fn map_prefix_trims_sorts_deduplicates_and_preserves_namespaced_ids() {
+        assert_eq!(
+            map_prefix(
+                "openai",
+                vec![" z ".into(), "a".into(), "openai/a".into(), "a".into()],
+                |_| true
+            ),
+            vec!["openai/a", "openai/z"]
+        );
+        assert_eq!(
+            map_prefix("openai", vec!["keep".into(), "drop".into()], |id| id
+                == "keep"),
+            vec!["openai/keep"]
+        );
+    }
+
+    #[test]
+    fn credential_for_catalog_uses_store_and_filters_fixture_oauth_tokens() {
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("k.toml"));
+
+        let api_profile = openai_profile();
+        store.set_api_key(&api_profile.id, "sk-file").unwrap();
+        assert_eq!(
+            credential_for_catalog(&api_profile, &store),
+            Some("sk-file".into())
+        );
+
+        let oauth_profile = crate::xai::xai_grok_profile();
+        store
+            .set_oauth(
+                &oauth_profile.id,
+                OauthTokens {
+                    access_token: "fixture-access-token".into(),
+                    refresh_token: None,
+                    expires_at: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(credential_for_catalog(&oauth_profile, &store), None);
+
+        store
+            .set_oauth(
+                &oauth_profile.id,
+                OauthTokens {
+                    access_token: "real-access-token".into(),
+                    refresh_token: Some("refresh".into()),
+                    expires_at: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            credential_for_catalog(&oauth_profile, &store),
+            Some("real-access-token".into())
+        );
+    }
+
+    #[test]
+    fn fetch_remote_models_reports_missing_credentials_and_unknown_profiles_before_network() {
+        assert_eq!(
+            fetch_remote_models(&openai_profile(), None).unwrap_err(),
+            "OpenAI API key required for catalog"
+        );
+        assert_eq!(
+            fetch_remote_models(&crate::anthropic::anthropic_profile(), None).unwrap_err(),
+            "Anthropic API key required for catalog"
+        );
+        assert_eq!(
+            fetch_remote_models(&crate::opencode_go::opencode_go_profile(), None).unwrap_err(),
+            "OpenCode Go API key required for catalog"
+        );
+        assert_eq!(
+            fetch_remote_models(&crate::opencode_zen::opencode_zen_profile(), None).unwrap_err(),
+            "OpenCode Zen API key required for catalog"
+        );
+        assert_eq!(
+            fetch_remote_models(&crate::xai::xai_grok_profile(), None).unwrap_err(),
+            "xAI OAuth token required for catalog"
+        );
+
+        let mut unknown = openai_profile();
+        unknown.id = "unknown".into();
+        assert!(fetch_remote_models(&unknown, Some("key"))
+            .unwrap_err()
+            .contains("no remote catalog implemented"));
     }
 }

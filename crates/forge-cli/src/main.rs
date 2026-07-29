@@ -168,3 +168,30 @@ async fn open_session(
     }
     Ok((session, startup_notices))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn cli_resume_parses_session_id() {
+        let session_id = SessionId::new_v4();
+        let cli = Cli::try_parse_from(["forge", "--resume", &session_id.to_string()]).unwrap();
+        assert_eq!(cli.resume, Some(session_id));
+    }
+
+    #[tokio::test]
+    async fn open_session_with_mock_model_builds_a_session_without_notices() {
+        let temp = TempDir::new().unwrap();
+        let mut cfg = Config::default();
+        cfg.model.provider = forge_config::ModelProviderKind::Mock;
+        cfg.model.model = "mock".into();
+        cfg.resolved_workspace = temp.path().to_path_buf();
+        cfg.workspace_root = Some(temp.path().display().to_string());
+
+        let (session, notices) = open_session(&cfg, None).await.unwrap();
+        assert!(notices.is_empty());
+        assert_eq!(session.session_id.to_string().len(), 36);
+    }
+}
