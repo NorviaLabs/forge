@@ -1712,8 +1712,8 @@ mod tests {
         ok.start_search();
         ok.update_search_query("missing");
         let text = render_viewer(&mut ok);
-        assert!(text.contains("Editor · NAV"));
         assert!(text.contains("src/lib.rs"));
+        assert!(text.contains("line 1 of 1"));
         assert!(text.contains("rust"));
         assert!(text.contains("Search: missing"));
         assert!(text.contains("No matches"));
