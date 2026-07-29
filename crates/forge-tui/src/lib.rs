@@ -8,6 +8,7 @@ mod editor;
 mod effort;
 mod file_context;
 mod file_explorer;
+mod file_ops;
 mod git_status;
 mod history;
 mod layout;
