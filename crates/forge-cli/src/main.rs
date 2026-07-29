@@ -67,6 +67,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         version: env!("CARGO_PKG_VERSION").into(),
         startup_notices,
         validation_command: cfg.validation.command.clone(),
+        file_icons: cfg.tui.file_icons,
     };
     let summary = run_tui(session, runtime)
         .await
