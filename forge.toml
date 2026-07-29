@@ -3,3 +3,6 @@ id = "playwright"
 transport = "stdio"
 command = "npx"
 args = ["-y", "@playwright/mcp@latest"]
+
+[validation]
+command = { executable = "cargo", args = ["test", "--workspace", "--all-targets", "--locked"] }
