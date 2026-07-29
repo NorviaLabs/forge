@@ -1,25 +1,30 @@
-//! Color tokens from ui.md design language (TUI-01).
+//! Color tokens from the Forge TUI design system.
 
 use ratatui::style::{Color, Modifier, Style};
 
-pub const ACCENT: Color = Color::Rgb(61, 214, 198); // teal
-pub const ACCENT_2: Color = Color::Rgb(110, 168, 254); // blue info
-pub const OK: Color = Color::Rgb(63, 185, 80);
-pub const WARN: Color = Color::Rgb(227, 179, 65);
-pub const DANGER: Color = Color::Rgb(248, 81, 73);
-pub const TOOL: Color = Color::Rgb(210, 168, 255);
-pub const MUTED: Color = Color::Rgb(139, 155, 176);
-pub const DIM: Color = Color::Rgb(92, 107, 126);
-pub const TEXT: Color = Color::Rgb(230, 237, 243);
-pub const BORDER: Color = Color::Rgb(38, 48, 62);
-pub const PANEL: Color = Color::Rgb(16, 22, 29);
-pub const PANEL_ALT: Color = Color::Rgb(20, 28, 37);
-pub const HISTORY_BG: Color = Color::Rgb(27, 38, 52);
-pub const USER_BG: Color = Color::Rgb(14, 19, 25);
-pub const RESPONSE_BG: Color = Color::Rgb(17, 24, 32);
-pub const DIFF_ADD_BG: Color = Color::Rgb(22, 50, 36);
-pub const DIFF_REMOVE_BG: Color = Color::Rgb(58, 30, 32);
-pub const DIFF_HUNK_BG: Color = Color::Rgb(24, 38, 55);
+pub const CANVAS: Color = Color::Rgb(24, 23, 22);
+pub const CANVAS_DEEP: Color = Color::Rgb(17, 17, 16);
+pub const ACCENT: Color = Color::Rgb(83, 214, 227);
+pub const ACCENT_2: Color = Color::Rgb(125, 168, 245);
+pub const OK: Color = Color::Rgb(97, 207, 139);
+pub const WARN: Color = Color::Rgb(229, 185, 79);
+pub const DANGER: Color = Color::Rgb(239, 112, 120);
+pub const TOOL: Color = Color::Rgb(132, 231, 239);
+pub const MUTED: Color = Color::Rgb(145, 139, 130);
+pub const DIM: Color = Color::Rgb(111, 106, 99);
+pub const TEXT: Color = Color::Rgb(242, 239, 232);
+pub const TEXT_STRONG: Color = Color::Rgb(255, 255, 255);
+pub const BORDER: Color = Color::Rgb(69, 65, 60);
+pub const BORDER_MUTED: Color = Color::Rgb(53, 50, 47);
+pub const PANEL: Color = Color::Rgb(35, 33, 31);
+pub const PANEL_ALT: Color = Color::Rgb(44, 41, 38);
+pub const SELECTED_BG: Color = Color::Rgb(42, 58, 60);
+pub const HISTORY_BG: Color = SELECTED_BG;
+pub const USER_BG: Color = CANVAS_DEEP;
+pub const RESPONSE_BG: Color = CANVAS;
+pub const DIFF_ADD_BG: Color = Color::Rgb(41, 75, 55);
+pub const DIFF_REMOVE_BG: Color = Color::Rgb(91, 44, 49);
+pub const DIFF_HUNK_BG: Color = Color::Rgb(45, 63, 97);
 
 pub fn brand() -> Style {
     Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
@@ -63,6 +68,10 @@ pub fn code_punctuation() -> Style {
 
 pub fn border() -> Style {
     Style::default().fg(BORDER)
+}
+
+pub fn border_muted() -> Style {
+    Style::default().fg(BORDER_MUTED)
 }
 
 pub fn panel() -> Style {
@@ -135,8 +144,8 @@ pub fn focused_selection_style() -> Style {
 /// Explicit bg — bare REVERSED is unreliable across terminals.
 pub fn selected_row() -> Style {
     Style::default()
-        .fg(PANEL)
-        .bg(ACCENT)
+        .fg(TEXT_STRONG)
+        .bg(SELECTED_BG)
         .add_modifier(Modifier::BOLD)
 }
 
@@ -166,9 +175,9 @@ mod tests {
 
     #[test]
     fn selected_and_caret_use_background() {
-        assert_eq!(selected_row().bg, Some(ACCENT));
+        assert_eq!(selected_row().bg, Some(SELECTED_BG));
         assert_eq!(caret().bg, Some(TEXT));
-        assert_eq!(selected_row().fg, Some(PANEL));
+        assert_eq!(selected_row().fg, Some(TEXT_STRONG));
     }
 
     #[test]

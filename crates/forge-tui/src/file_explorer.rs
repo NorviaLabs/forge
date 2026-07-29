@@ -387,9 +387,9 @@ impl Widget for FileExplorerWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         self.explorer.git_status.poll();
         let title = if self.focused {
-            " Files · NAV "
+            " FILES · NAV "
         } else {
-            " Files "
+            " FILES "
         };
         let block = Block::default()
             .title(Span::styled(
@@ -404,7 +404,7 @@ impl Widget for FileExplorerWidget<'_> {
             .border_style(if self.focused {
                 theme::brand()
             } else {
-                theme::border()
+                theme::border_muted()
             });
         let inner = block.inner(area);
         block.render(area, buf);
@@ -454,10 +454,19 @@ impl Widget for FileExplorerWidget<'_> {
                             status.style(),
                         ));
                     }
-                    spans.push(Span::raw(node.display_name.clone()));
+                    let name = if selected {
+                        format!("› {}", node.display_name)
+                    } else {
+                        node.display_name.clone()
+                    };
+                    spans.push(Span::raw(name));
                     let mut line = Line::from(spans);
                     if selected {
-                        line.style = theme::brand();
+                        line.style = if self.focused {
+                            theme::selected_row()
+                        } else {
+                            theme::muted()
+                        };
                     }
                     lines.push(line);
                     if let Some(error) = &node.error {

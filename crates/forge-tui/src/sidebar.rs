@@ -135,23 +135,23 @@ pub struct SidebarWidget<'a> {
 impl Widget for SidebarWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let title = if self.focused {
-            " Inspector · NAV "
+            " INSPECTOR · NAV "
         } else {
-            " Inspector "
+            " INSPECTOR "
         };
         let block = Block::default()
             .borders(Borders::LEFT)
             .border_style(if self.focused {
                 theme::brand()
             } else {
-                theme::border()
+                theme::border_muted()
             })
             .title(Span::styled(
                 title,
                 if self.focused {
                     theme::brand()
                 } else {
-                    theme::dim()
+                    theme::muted()
                 },
             ))
             .style(theme::panel_alt());
@@ -177,9 +177,13 @@ impl SidebarWidget<'_> {
     fn tabs(&self) -> Line<'static> {
         let tab = |view, label| {
             let style = if self.view == view {
-                theme::brand()
+                if self.focused {
+                    theme::brand().add_modifier(ratatui::style::Modifier::UNDERLINED)
+                } else {
+                    theme::text().add_modifier(ratatui::style::Modifier::BOLD)
+                }
             } else {
-                theme::dim()
+                theme::muted()
             };
             Span::styled(label, style)
         };
@@ -550,7 +554,7 @@ mod tests {
             focused: true,
         };
         let text = render_lines(&widget);
-        assert!(text.contains("Inspector"));
+        assert!(text.contains("INSPECTOR"));
         assert!(text.contains("CONTEXT"), "{text}");
         assert!(text.contains("openai/gpt-5"), "{text}");
         assert!(text.contains("100%"), "{text}");
