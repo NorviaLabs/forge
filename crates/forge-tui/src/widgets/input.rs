@@ -603,6 +603,8 @@ mod tests {
         })
         .unwrap();
         let buf = term.backend().buffer();
+        let border = &buf[(0, 0)];
+        assert_eq!(border.style().fg, Some(theme::WARN));
         let rendered: String = (0..buf.area().height)
             .map(|y| {
                 (0..buf.area().width)
@@ -611,8 +613,7 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(rendered.contains("Chat · NAV"));
-        assert!(rendered.contains("not connected /connect required"));
+        assert!(rendered.contains("type here"));
     }
 
     #[test]
@@ -637,6 +638,15 @@ mod tests {
         })
         .unwrap();
         let buf = term.backend().buffer();
+        let mut saw_history_bg = false;
+        for y in 0..buf.area().height {
+            for x in 0..buf.area().width {
+                if buf[(x, y)].style().bg == Some(theme::HISTORY_BG) {
+                    saw_history_bg = true;
+                }
+            }
+        }
+        assert!(saw_history_bg);
         let rendered: String = (0..buf.area().height)
             .map(|y| {
                 (0..buf.area().width)
@@ -645,7 +655,6 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(rendered.contains("history"));
         assert!(rendered.contains("file.txt"));
     }
 }
