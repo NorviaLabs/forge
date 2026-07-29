@@ -268,6 +268,20 @@ enum RunCommandTarget {
     Id(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ActivitySummaryAction {
+    OpenRun(String),
+    ReviewChanges,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ActivitySummaryModel {
+    label: String,
+    action_label: Option<&'static str>,
+    action: Option<ActivitySummaryAction>,
+    kind: BannerKind,
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SlashCommandOrigin {
@@ -293,6 +307,7 @@ enum SemanticCommand {
     OpenSlashCommands,
     OpenGlobalCommandPalette,
     OpenHelp,
+    ActivateActivitySummary,
     SelectEntry(PathBuf),
     MoveFileSelection(isize),
     ExpandSelectedDirectory,
@@ -582,6 +597,7 @@ struct ConversationRenderKey {
     chat_event_start: usize,
     busy: bool,
     busy_phase: String,
+    activity_summary: Option<(String, Option<&'static str>, BannerKind)>,
     tool_expanded: bool,
     splash_dismissed: bool,
     slash_mode: bool,
@@ -2593,6 +2609,11 @@ impl TuiApp {
         self.pending_validation = true;
         self.busy_phase = BusyPhase::Tool { name: "run".into() };
         self.status_message = format!("run: {}", invocation.summary());
+        self.push_activity(
+            ActivityKind::Run,
+            FeedbackSeverity::Info,
+            format!("run started: {}", invocation.summary()),
+        );
     }
 
     fn rerun_current(&mut self) {
@@ -2653,6 +2674,11 @@ impl TuiApp {
             }
         }
         if let Some(record) = cancelled {
+            self.push_activity(
+                ActivityKind::Run,
+                FeedbackSeverity::Warn,
+                format!("run cancelled: {}", record.invocation.summary()),
+            );
             self.run.remember(record);
             self.save_run_history();
         }
@@ -2780,6 +2806,7 @@ impl TuiApp {
             }
             Ok(RunEvent::Finished { exit_code, success }) => {
                 self.run_abort = None;
+                self.pending_validation = false;
                 self.busy_phase = BusyPhase::Idle;
                 if let Some(mut record) = self.run.current.take() {
                     record.state = if success {
@@ -2795,12 +2822,26 @@ impl TuiApp {
                             .and_then(|end| end.duration_since(start).ok())
                     });
                     self.run.current = Some(record.clone());
+                    self.push_activity(
+                        ActivityKind::Run,
+                        if success {
+                            FeedbackSeverity::Ok
+                        } else {
+                            FeedbackSeverity::Error
+                        },
+                        if success {
+                            format!("run succeeded: {}", record.invocation.summary())
+                        } else {
+                            format!("run failed: {}", record.invocation.summary())
+                        },
+                    );
                     self.run.remember(record);
                     self.save_run_history();
                 }
             }
             Ok(RunEvent::SpawnFailed(error)) => {
                 self.run_abort = None;
+                self.pending_validation = false;
                 self.busy_phase = BusyPhase::Idle;
                 if let Some(mut record) = self.run.current.take() {
                     record.state = RunState::StartFailed;
@@ -2812,6 +2853,11 @@ impl TuiApp {
                             .and_then(|end| end.duration_since(start).ok())
                     });
                     self.run.current = Some(record.clone());
+                    self.push_activity(
+                        ActivityKind::Run,
+                        FeedbackSeverity::Error,
+                        format!("run failed to start: {}", record.invocation.summary()),
+                    );
                     self.run.remember(record);
                     self.save_run_history();
                 }
@@ -2823,10 +2869,17 @@ impl TuiApp {
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.run_abort = None;
+                self.pending_validation = false;
                 self.busy_phase = BusyPhase::Idle;
                 if let Some(record) = self.run.current.as_mut() {
                     record.state = RunState::CaptureFailed;
                     record.finished_at = Some(std::time::SystemTime::now());
+                    let summary = record.invocation.summary();
+                    self.push_activity(
+                        ActivityKind::Run,
+                        FeedbackSeverity::Error,
+                        format!("run capture failed: {summary}"),
+                    );
                 }
             }
         }
@@ -3468,6 +3521,86 @@ Reply with ONLY the commit message line.\n\n\
         }
     }
 
+    fn activity_summary(&self) -> Option<ActivitySummaryModel> {
+        // Approval is represented by the blocking overlay, not a background summary.
+        if self.overlay.is_some() || self.session.pending_hitl.is_some() {
+            return None;
+        }
+
+        if let Some(record) = self.run.current.as_ref() {
+            let command = record.invocation.summary();
+            if matches!(
+                record.state,
+                RunState::Failed | RunState::StartFailed | RunState::CaptureFailed
+            ) {
+                return Some(ActivitySummaryModel {
+                    label: format!("Run failed: {command}"),
+                    action_label: Some("Inspect"),
+                    action: Some(ActivitySummaryAction::OpenRun(record.id.clone())),
+                    kind: BannerKind::Error,
+                });
+            }
+            if matches!(record.state, RunState::Queued | RunState::Running) {
+                return Some(ActivitySummaryModel {
+                    label: format!("Running {command}"),
+                    action_label: Some("View output"),
+                    action: Some(ActivitySummaryAction::OpenRun(record.id.clone())),
+                    kind: BannerKind::Info,
+                });
+            }
+        }
+
+        let changes = self.file_explorer.git_status.status.len();
+        if changes > 0 {
+            let files = if changes == 1 { "file" } else { "files" };
+            return Some(ActivitySummaryModel {
+                label: format!("{changes} {files} changed"),
+                action_label: Some("Review"),
+                action: Some(ActivitySummaryAction::ReviewChanges),
+                kind: BannerKind::Info,
+            });
+        }
+
+        if self.busy && matches!(self.busy_phase, BusyPhase::Model) {
+            return Some(ActivitySummaryModel {
+                label: "Forge is thinking".into(),
+                action_label: None,
+                action: None,
+                kind: BannerKind::Info,
+            });
+        }
+
+        None
+    }
+
+    fn activity_summary_cache_key(&self) -> Option<(String, Option<&'static str>, BannerKind)> {
+        self.activity_summary()
+            .map(|summary| (summary.label, summary.action_label, summary.kind))
+    }
+
+    fn activity_summary_command(&self) -> Option<SemanticCommand> {
+        match self.activity_summary()?.action? {
+            ActivitySummaryAction::OpenRun(id) => {
+                Some(SemanticCommand::OpenRun(RunCommandTarget::Id(id)))
+            }
+            ActivitySummaryAction::ReviewChanges => {
+                Some(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
+            }
+        }
+    }
+
+    fn activate_activity_summary(&mut self) {
+        match self.activity_summary().and_then(|summary| summary.action) {
+            Some(ActivitySummaryAction::OpenRun(id)) => {
+                self.navigate_to_workspace_view(WorkspaceView::Run(id));
+            }
+            Some(ActivitySummaryAction::ReviewChanges) => {
+                self.navigate_to_workspace_view(WorkspaceView::Diff(DiffCommandContext::Current));
+            }
+            None => {}
+        }
+    }
+
     fn repo_header(&self) -> RepoHeaderCache {
         let repo_name = self
             .runtime
@@ -3680,6 +3813,8 @@ Reply with ONLY the commit message line.\n\n\
             &self.session.messages[self.chat_message_start.min(self.session.messages.len())..];
         let visible_events =
             &self.session.events[self.chat_event_start.min(self.session.events.len())..];
+        let activity_summary = self.activity_summary();
+        let activity_summary_key = self.activity_summary_cache_key();
         let key = ConversationRenderKey {
             session_id: self.session.session_id,
             width: regions.chat.width,
@@ -3700,6 +3835,7 @@ Reply with ONLY the commit message line.\n\n\
             chat_event_start: self.chat_event_start,
             busy: self.busy,
             busy_phase: self.busy_phase.label(),
+            activity_summary: activity_summary_key,
             tool_expanded: self.tool_expanded,
             splash_dismissed: self.splash_dismissed,
             slash_mode,
@@ -3727,12 +3863,18 @@ Reply with ONLY the commit message line.\n\n\
                     self.session.loaded_skills_count(),
                 );
             }
+            if let Some(summary) = activity_summary {
+                conv =
+                    conv.with_activity_summary(summary.label, summary.action_label, summary.kind);
+            }
             conv = conv.with_queued_messages(
                 self.message_queue.iter().cloned().collect::<Vec<_>>(),
                 self.queue_selected,
             );
             if let BusyPhase::Tool { name } = &self.busy_phase {
-                conv = conv.with_running_tool(name.clone());
+                if name != "run" {
+                    conv = conv.with_running_tool(name.clone());
+                }
             }
             if let Some(payload) = &self.session.pending_hitl {
                 let args = payload
@@ -4874,6 +5016,13 @@ Reply with ONLY the commit message line.\n\n\
                     Some(SemanticCommand::GoBack)
                 }
             }
+            KeyCode::Enter
+                if key.modifiers.is_empty()
+                    && self.current_workspace_is_conversation()
+                    && self.activity_summary_command().is_some() =>
+            {
+                Some(SemanticCommand::ActivateActivitySummary)
+            }
             KeyCode::Enter if key.modifiers.is_empty() && self.current_workspace_is_run() => {
                 Some(SemanticCommand::RunOrCancel)
             }
@@ -5086,6 +5235,7 @@ Reply with ONLY the commit message line.\n\n\
             SemanticCommand::OpenGlobalCommandPalette => {
                 self.overlay = Some(Overlay::slash_open(""));
             }
+            SemanticCommand::ActivateActivitySummary => self.activate_activity_summary(),
             SemanticCommand::SelectEntry(path) => {
                 if self
                     .file_explorer
@@ -6789,6 +6939,23 @@ mod tests {
         (dir, app)
     }
 
+    fn render_app_text(app: &mut TuiApp, width: u16, height: u16) -> String {
+        use ratatui::backend::TestBackend;
+
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let area = buffer.area();
+        let mut text = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                text.push_str(buffer[(x, y)].symbol());
+            }
+            text.push('\n');
+        }
+        text
+    }
+
     #[tokio::test]
     async fn focus_starts_on_composer_block() {
         let (_dir, app) = focus_test_app().await;
@@ -7342,6 +7509,265 @@ mod tests {
             .current
             .as_ref()
             .is_some_and(|record| record.id == id && record.state == RunState::Running));
+    }
+
+    #[tokio::test]
+    async fn run_start_updates_activity_without_navigating_from_conversation() {
+        let (_dir, mut app) = focus_test_app().await;
+        let before = app.workspace_navigation.clone();
+        app.run.draft.command_input = "true".into();
+
+        app.run_current_draft();
+
+        assert_eq!(app.workspace_navigation, before);
+        assert!(app
+            .run
+            .current
+            .as_ref()
+            .is_some_and(|record| record.state == RunState::Running));
+        assert!(app
+            .activity
+            .all()
+            .iter()
+            .any(|item| item.kind == ActivityKind::Run && item.summary.contains("run started")));
+        let summary = app.activity_summary().expect("run summary");
+        assert_eq!(summary.label, "Running true");
+        assert_eq!(summary.action_label, Some("View output"));
+
+        let rendered = render_app_text(&mut app, 100, 30);
+        assert!(rendered.contains("Running true"), "{rendered}");
+        assert_eq!(rendered.matches("View output").count(), 1, "{rendered}");
+        assert!(
+            !rendered.contains("Running validation"),
+            "run must not also render the old running tool card:\n{rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_start_while_in_file_does_not_hijack_workspace() {
+        let (dir, mut app) = focus_test_app().await;
+        let path = dir.path().join("main.rs");
+        fs::write(&path, "fn main() {}\n").unwrap();
+        app.execute_semantic_command(SemanticCommand::OpenFile(path.clone()))
+            .await
+            .unwrap();
+        let before = app.workspace_navigation.clone();
+
+        app.run.draft.command_input = "true".into();
+        app.run_current_draft();
+
+        assert_eq!(app.workspace_navigation, before);
+        assert_eq!(app.workspace_navigation.current, WorkspaceView::File(path));
+        assert!(app
+            .activity
+            .all()
+            .iter()
+            .any(|item| item.kind == ActivityKind::Run));
+    }
+
+    #[tokio::test]
+    async fn run_failure_while_in_diff_updates_summary_without_navigation() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.run.draft.command_input = "false".into();
+        app.run_current_draft();
+        let run_id = app.run.current.as_ref().unwrap().id.clone();
+        app.execute_semantic_command(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
+            .await
+            .unwrap();
+        let before = app.workspace_navigation.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.run_rx = Some(rx);
+
+        tx.send(RunEvent::Finished {
+            exit_code: Some(1),
+            success: false,
+        })
+        .unwrap();
+        app.poll_run();
+
+        assert_eq!(app.workspace_navigation, before);
+        assert!(app
+            .run
+            .current
+            .as_ref()
+            .is_some_and(|record| record.id == run_id && record.state == RunState::Failed));
+        assert!(app
+            .activity
+            .all()
+            .iter()
+            .any(|item| item.kind == ActivityKind::Run
+                && item.severity == FeedbackSeverity::Error
+                && item.summary.contains("run failed")));
+        assert_eq!(
+            app.activity_summary_command(),
+            Some(SemanticCommand::OpenRun(RunCommandTarget::Id(run_id)))
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_streaming_while_viewing_file_does_not_navigate() {
+        let (dir, mut app) = focus_test_app().await;
+        let path = dir.path().join("main.rs");
+        fs::write(&path, "fn main() {}\n").unwrap();
+        app.execute_semantic_command(SemanticCommand::OpenFile(path.clone()))
+            .await
+            .unwrap();
+        let before = app.workspace_navigation.clone();
+
+        app.busy = true;
+        app.busy_phase = BusyPhase::Model;
+        app.pending_prompt = None;
+        app.stream_preview = "partial answer".into();
+        let rendered = render_app_text(&mut app, 100, 30);
+
+        assert_eq!(app.workspace_navigation, before);
+        assert_eq!(app.workspace_navigation.current, WorkspaceView::File(path));
+        assert!(rendered.contains("fn main()"), "{rendered}");
+        assert!(
+            !rendered.contains("partial answer"),
+            "File view should remain primary while streaming:\n{rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_thinking_keeps_composer_usable() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.busy = true;
+        app.busy_phase = BusyPhase::Model;
+        app.stream_thinking = "planning".into();
+        app.focus_block(FocusBlock::Composer);
+
+        app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
+            .await
+            .unwrap();
+
+        assert_eq!(app.input.text, "x");
+        assert_eq!(
+            app.workspace_navigation.current,
+            WorkspaceView::Conversation
+        );
+        let summary = app.activity_summary().expect("thinking summary");
+        assert_eq!(summary.label, "Forge is thinking");
+    }
+
+    #[tokio::test]
+    async fn activity_summary_priority_renders_one_actionable_row() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.file_explorer
+            .git_status
+            .status
+            .insert(PathBuf::from("changed.rs"), GitStatusKind::Modified);
+        app.busy = true;
+        app.busy_phase = BusyPhase::Model;
+        app.run.draft.command_input = "cargo test".into();
+        app.run_current_draft();
+
+        let rendered = render_app_text(&mut app, 100, 30);
+        assert!(rendered.contains("Running cargo test"), "{rendered}");
+        assert_eq!(rendered.matches("View output").count(), 1, "{rendered}");
+        assert!(
+            !rendered.contains("files changed · Review"),
+            "Run summary must outrank changes:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("Forge is thinking"),
+            "Run summary must outrank thinking:\n{rendered}"
+        );
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.run_rx = Some(rx);
+        tx.send(RunEvent::Finished {
+            exit_code: Some(1),
+            success: false,
+        })
+        .unwrap();
+        app.poll_run();
+
+        let rendered = render_app_text(&mut app, 100, 30);
+        assert!(rendered.contains("Run failed: cargo test"), "{rendered}");
+        assert_eq!(rendered.matches("Inspect").count(), 1, "{rendered}");
+        assert!(
+            !rendered.contains("Running cargo test"),
+            "Failure summary must replace active-run summary:\n{rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn summary_action_opens_expected_workspace_view() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.run.draft.command_input = "true".into();
+        app.run_current_draft();
+        let id = app.run.current.as_ref().unwrap().id.clone();
+        app.focus_block(FocusBlock::Workspace);
+
+        app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .unwrap();
+
+        assert_eq!(app.workspace_navigation.current, WorkspaceView::Run(id));
+    }
+
+    #[tokio::test]
+    async fn changes_summary_action_uses_review_changes_command() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.file_explorer
+            .git_status
+            .status
+            .insert(PathBuf::from("changed.rs"), GitStatusKind::Modified);
+
+        assert_eq!(
+            app.activity_summary_command(),
+            Some(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
+        );
+        app.execute_semantic_command(SemanticCommand::ActivateActivitySummary)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            app.workspace_navigation.current,
+            WorkspaceView::Diff(DiffCommandContext::Current)
+        );
+    }
+
+    #[tokio::test]
+    async fn approval_overlay_preserves_underlying_workspace() {
+        let (dir, mut app) = focus_test_app().await;
+        let path = dir.path().join("main.rs");
+        fs::write(&path, "fn main() {}\n").unwrap();
+        app.execute_semantic_command(SemanticCommand::OpenFile(path.clone()))
+            .await
+            .unwrap();
+        let before = app.workspace_navigation.clone();
+        app.session.pending_hitl = Some(forge_types::HitlPayload {
+            call_id: "1".into(),
+            tool: "bash".into(),
+            args_redacted: json!({"command": "cargo test"}),
+            reason: "test approval".into(),
+        });
+
+        app.maybe_open_hitl();
+
+        assert!(matches!(app.overlay, Some(Overlay::Hitl { .. })));
+        assert_eq!(app.workspace_navigation, before);
+        assert!(app.activity_summary().is_none());
+        assert_eq!(app.workspace_navigation.current, WorkspaceView::File(path));
+    }
+
+    #[tokio::test]
+    async fn run_activity_history_remains_available_in_activity_panel() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.run.draft.command_input = "true".into();
+        app.run_current_draft();
+        app.open_bottom_panel(Some(BottomPanelTab::Activity));
+
+        let rendered = render_app_text(&mut app, 100, 30);
+
+        assert!(rendered.contains("Run"), "{rendered}");
+        assert!(rendered.contains("run started: true"), "{rendered}");
+        assert_eq!(
+            app.workspace_navigation.current,
+            WorkspaceView::Conversation
+        );
     }
 
     #[tokio::test]
