@@ -1,10 +1,7 @@
 use crate::activity::ActivityFeed;
 use crate::theme;
 use crate::widgets::BusyPhase;
-use crate::{
-    validation_command_text, CargoTestSummary, ValidationParseState, ValidationSnapshot,
-    ValidationStatus, MAX_FAILED_DISPLAY,
-};
+use crate::{RunExecutionMode, RunState, RunStateModel};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
@@ -12,23 +9,18 @@ use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BottomPanelTab {
-    Tests,
+    Run,
     Diagnostics,
     Terminal,
     Activity,
 }
 
 impl BottomPanelTab {
-    pub const ALL: [Self; 4] = [
-        Self::Tests,
-        Self::Diagnostics,
-        Self::Terminal,
-        Self::Activity,
-    ];
+    pub const ALL: [Self; 4] = [Self::Run, Self::Diagnostics, Self::Terminal, Self::Activity];
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Tests => "Tests",
+            Self::Run => "Run",
             Self::Diagnostics => "Diagnostics",
             Self::Terminal => "Terminal",
             Self::Activity => "Activity",
@@ -87,7 +79,7 @@ pub struct BottomPanelModel<'a> {
     pub state: &'a BottomPanelState,
     pub busy_phase: &'a BusyPhase,
     pub activity: &'a ActivityFeed,
-    pub validation: &'a ValidationSnapshot,
+    pub run: &'a RunStateModel,
     pub terminal_title: Option<&'a str>,
     pub terminal_content: &'a str,
     pub terminal_truncated: bool,
@@ -153,7 +145,7 @@ impl Widget for BottomPanel<'_> {
         let inner = block.inner(area);
         block.render(area, buf);
         let lines = match self.model.state.active {
-            BottomPanelTab::Tests => validation_lines(self.model.validation),
+            BottomPanelTab::Run => run_lines(self.model.run),
             BottomPanelTab::Diagnostics => vec![
                 Line::styled("No diagnostics", theme::text()),
                 Line::styled("Compiler and tool output is in Terminal.", theme::muted()),
@@ -171,168 +163,117 @@ impl Widget for BottomPanel<'_> {
     }
 }
 
-fn validation_lines(validation: &ValidationSnapshot) -> Vec<Line<'_>> {
-    let mut lines = Vec::new();
-    lines.push(Line::from(vec![
-        Span::styled("Validation ", theme::muted()),
-        Span::styled(validation.display_status(), theme::text()),
-    ]));
-    match validation.status {
-        ValidationStatus::NotConfigured => {
+fn run_lines(run: &RunStateModel) -> Vec<Line<'_>> {
+    let mut lines = vec![Line::from(vec![
+        Span::styled("RUN ", theme::muted()),
+        Span::styled(
+            if run.editing { "editing" } else { "manual" },
+            theme::text(),
+        ),
+    ])];
+    if let Some(error) = run.error.as_ref() {
+        lines.push(Line::styled(format!("Error: {error}"), theme::warn()));
+    }
+    lines.push(Line::styled(
+        format!("> {}", run.draft.command_input),
+        theme::text(),
+    ));
+    lines.push(Line::styled(
+        format!("Directory: {}", run.draft.working_directory.display()),
+        theme::muted(),
+    ));
+    lines.push(Line::styled(
+        format!("Mode: {}", mode_label(run.draft.execution_mode)),
+        theme::muted(),
+    ));
+    match run.draft.invocation() {
+        Ok(invocation) => {
+            lines.push(Line::styled("Invocation preview", theme::muted()));
             lines.push(Line::styled(
-                "Set [validation].command in forge.toml.",
-                theme::muted(),
+                format!("  Executable: {}", invocation.executable),
+                theme::text(),
             ));
-        }
-        ValidationStatus::NotRun => {
-            if let Some(command) = &validation.command {
+            lines.push(Line::styled(
+                format!("  Arguments:  {:?}", invocation.arguments),
+                theme::text(),
+            ));
+            if invocation.execution_mode == RunExecutionMode::Shell {
                 lines.push(Line::styled(
-                    validation_command_text(command),
+                    format!(
+                        "  Shell command: {}",
+                        invocation.shell_command.unwrap_or_default()
+                    ),
                     theme::text(),
                 ));
             }
-            lines.push(Line::styled(
-                "Enter to run · raw output in Terminal",
-                theme::muted(),
-            ));
-        }
-        ValidationStatus::Running => {
-            if let Some(command) = &validation.command {
-                lines.push(Line::styled(
-                    validation_command_text(command),
-                    theme::text(),
-                ));
-            }
-            lines.push(Line::styled(
-                "Running… · Enter cancels when focused",
-                theme::muted(),
-            ));
-        }
-        ValidationStatus::Passed | ValidationStatus::Failed | ValidationStatus::Cancelled => {
-            if validation.cargo_summary.parse_state == ValidationParseState::Parsed
-                || validation.cargo_summary.parse_state == ValidationParseState::Partial
-            {
-                lines.extend(cargo_summary_lines(
-                    validation.display_status(),
-                    &validation.cargo_summary,
-                ));
+            let env = if invocation.environment_delta.is_empty() {
+                "inherited".into()
             } else {
-                if let Some(command) = &validation.command {
-                    lines.push(Line::styled(
-                        validation_command_text(command),
-                        theme::text(),
-                    ));
-                }
-                lines.push(Line::styled(
-                    generic_completed_line(validation),
-                    theme::muted(),
-                ));
-            }
-            if validation.stale {
-                lines.push(Line::styled(
-                    "Workspace changed after that run.",
-                    theme::muted(),
-                ));
-            }
+                format!(
+                    "inherited + {} overrides",
+                    invocation.environment_delta.len()
+                )
+            };
+            lines.push(Line::styled(format!("  Environment: {env}"), theme::text()));
+            lines.push(Line::styled("  Source: Manual", theme::text()));
         }
+        Err(error) => lines.push(Line::styled(
+            format!("Preview unavailable: {error}"),
+            theme::warn(),
+        )),
     }
-    if let Some(duration) = validation.duration {
+    if let Some(current) = run.current.as_ref() {
         lines.push(Line::styled(
-            format!("Duration: {:?}", duration),
-            theme::muted(),
+            format!(
+                "Current: {} · {} · {:?}",
+                state_label(&current.state),
+                current.invocation.summary(),
+                current.provenance
+            ),
+            theme::text(),
         ));
-    }
-    if let Some(code) = validation.exit_code {
-        lines.push(Line::styled(format!("Exit: {code}"), theme::muted()));
-    }
-    if let Some(output_ref) = &validation.output_ref {
-        lines.push(Line::styled(
-            format!("Output: {output_ref}"),
-            theme::muted(),
-        ));
-    }
-    lines
-}
-
-fn generic_completed_line(validation: &ValidationSnapshot) -> String {
-    if validation
-        .command
-        .as_ref()
-        .is_some_and(crate::is_cargo_test_command)
-    {
-        if validation.status == ValidationStatus::Passed {
-            "Cargo test completed successfully · detailed test counts unavailable".into()
-        } else {
-            "Cargo test failed · detailed test counts unavailable".into()
+        if let Some(code) = current.exit_status {
+            lines.push(Line::styled(format!("Exit status: {code}"), theme::muted()));
         }
-    } else {
-        "View full output in Terminal".into()
     }
-}
-
-fn cargo_summary_lines<'a>(status: &'a str, summary: &'a CargoTestSummary) -> Vec<Line<'a>> {
-    let mut lines = Vec::new();
-    let counts = if summary.truncated {
-        format!(
-            "At least {} passed{}{}",
-            summary.counts.passed,
-            if summary.counts.failed > 0 {
-                format!(" · {} failed", summary.counts.failed)
-            } else {
-                String::new()
-            },
-            if summary.counts.ignored > 0 {
-                format!(" · {} ignored", summary.counts.ignored)
-            } else {
-                String::new()
-            }
-        )
-    } else {
-        format!(
-            "{} passed{}{}",
-            summary.counts.passed,
-            if summary.counts.failed > 0 {
-                format!(" · {} failed", summary.counts.failed)
-            } else {
-                String::new()
-            },
-            if summary.counts.ignored > 0 {
-                format!(" · {} ignored", summary.counts.ignored)
-            } else {
-                String::new()
-            }
-        )
-    };
-    lines.push(Line::styled(counts, theme::text()));
-    if let Some(duration) = summary.duration_secs {
-        lines.push(Line::styled(format!("{duration:.1}s"), theme::muted()));
-    } else if status == "Passed" {
-        lines.push(Line::styled("Completed", theme::muted()));
-    }
-    if !summary.failed_tests.is_empty() {
-        lines.push(Line::styled("Failed tests:", theme::muted()));
-        for name in summary.failed_tests.iter().take(MAX_FAILED_DISPLAY) {
-            lines.push(Line::styled(format!("- {name}"), theme::text()));
-        }
-        if summary.hidden_failed_tests > 0 {
+    if !run.recent.is_empty() || !run.legacy.is_empty() {
+        lines.push(Line::styled("Recent", theme::muted()));
+        for record in run.recent.iter().chain(run.legacy.iter()).take(3) {
             lines.push(Line::styled(
                 format!(
-                    "{} of {} failed tests shown",
-                    MAX_FAILED_DISPLAY,
-                    MAX_FAILED_DISPLAY + summary.hidden_failed_tests
+                    "  {} · {} · {:?}",
+                    state_label(&record.state),
+                    record.invocation.summary(),
+                    record.provenance
                 ),
-                theme::muted(),
+                theme::text(),
             ));
         }
     }
-    if summary.truncated {
-        lines.push(Line::styled(
-            "Output was truncated; counts may be incomplete",
-            theme::muted(),
-        ));
-    }
-    lines.push(Line::styled("View full output", theme::muted()));
+    lines.push(Line::styled(
+        "i edit command · d dir · m mode · Enter run/cancel · r rerun · e edit rerun",
+        theme::muted(),
+    ));
     lines
+}
+
+fn mode_label(mode: RunExecutionMode) -> &'static str {
+    match mode {
+        RunExecutionMode::Direct => "direct",
+        RunExecutionMode::Shell => "shell",
+    }
+}
+
+fn state_label(state: &RunState) -> &'static str {
+    match state {
+        RunState::Queued => "Queued",
+        RunState::Running => "Running",
+        RunState::Succeeded => "Succeeded",
+        RunState::Failed => "Failed",
+        RunState::Cancelled => "Cancelled",
+        RunState::StartFailed => "Could not start",
+        RunState::CaptureFailed => "Capture failed",
+    }
 }
 
 fn terminal_lines<'a>(
@@ -408,10 +349,10 @@ fn activity_lines(activity: &ActivityFeed) -> Vec<Line<'_>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::validation::CargoTestCounts;
-    use crate::{CargoTestSummary, ValidationParseState, ValidationSnapshot};
+    use crate::RunStateModel;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+    use std::path::PathBuf;
 
     fn rendered_text(model: BottomPanelModel<'_>, focused: bool) -> String {
         let area = Rect::new(0, 0, 80, 8);
@@ -430,6 +371,12 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    fn run_model() -> RunStateModel {
+        let mut run = RunStateModel::new(PathBuf::from("/repo"), None);
+        run.draft.command_input = "cargo test -p forge-tui".into();
+        run
     }
 
     #[test]
@@ -467,7 +414,7 @@ mod tests {
         let mut state = BottomPanelState::default();
         state.active = BottomPanelTab::Activity;
         state.next_tab();
-        assert_eq!(state.active, BottomPanelTab::Tests);
+        assert_eq!(state.active, BottomPanelTab::Run);
         state.previous_tab();
         assert_eq!(state.active, BottomPanelTab::Activity);
     }
@@ -484,7 +431,7 @@ mod tests {
             state: &state,
             busy_phase: &BusyPhase::Idle,
             activity: &activity,
-            validation: &ValidationSnapshot::default(),
+            run: &run_model(),
             terminal_title: None,
             terminal_content: "",
             terminal_truncated: false,
@@ -503,7 +450,7 @@ mod tests {
         let state = BottomPanelState {
             open: true,
             focused: false,
-            active: BottomPanelTab::Tests,
+            active: BottomPanelTab::Run,
         };
         for tab in BottomPanelTab::ALL {
             let mut state = state.clone();
@@ -512,7 +459,7 @@ mod tests {
                 state: &state,
                 busy_phase: &BusyPhase::Idle,
                 activity: &activity,
-                validation: &ValidationSnapshot::default(),
+                run: &run_model(),
                 terminal_title: None,
                 terminal_content: "",
                 terminal_truncated: false,
@@ -523,96 +470,74 @@ mod tests {
     }
 
     #[test]
-    fn renders_parsed_passed_summary() {
+    fn renders_run_invocation_preview() {
         let activity = ActivityFeed::default();
         let state = BottomPanelState {
             open: true,
             focused: false,
-            active: BottomPanelTab::Tests,
+            active: BottomPanelTab::Run,
         };
-        let mut validation = ValidationSnapshot::default();
-        validation.status = ValidationStatus::Passed;
-        validation.cargo_summary = CargoTestSummary {
-            parse_state: ValidationParseState::Parsed,
-            counts: CargoTestCounts {
-                passed: 142,
-                ignored: 3,
-                ..Default::default()
-            },
-            duration_secs: Some(8.4),
-            ..Default::default()
-        };
+        let run = run_model();
         let model = BottomPanelModel {
             state: &state,
             busy_phase: &BusyPhase::Idle,
             activity: &activity,
-            validation: &validation,
+            run: &run,
             terminal_title: None,
             terminal_content: "",
             terminal_truncated: false,
         };
         let rendered = rendered_text(model, false);
-        assert!(rendered.contains("142 passed · 3 ignored"));
-        assert!(rendered.contains("8.4s"));
+        assert!(rendered.contains("Invocation preview"));
+        assert!(rendered.contains("Executable: cargo"));
+        assert!(rendered.contains("test"));
     }
 
     #[test]
-    fn renders_parsed_failed_names() {
+    fn renders_shell_mode_preview() {
         let activity = ActivityFeed::default();
         let state = BottomPanelState {
             open: true,
             focused: false,
-            active: BottomPanelTab::Tests,
+            active: BottomPanelTab::Run,
         };
-        let mut validation = ValidationSnapshot::default();
-        validation.status = ValidationStatus::Failed;
-        validation.cargo_summary = CargoTestSummary {
-            parse_state: ValidationParseState::Parsed,
-            counts: CargoTestCounts {
-                passed: 138,
-                failed: 4,
-                ignored: 2,
-                ..Default::default()
-            },
-            failed_tests: vec!["parser::tests::handles_unicode".into()],
-            duration_secs: Some(8.4),
-            ..Default::default()
-        };
+        let mut run = run_model();
+        run.draft.command_input = "echo hi | wc".into();
+        run.draft.execution_mode = RunExecutionMode::Shell;
         let model = BottomPanelModel {
             state: &state,
             busy_phase: &BusyPhase::Idle,
             activity: &activity,
-            validation: &validation,
+            run: &run,
             terminal_title: None,
             terminal_content: "",
             terminal_truncated: false,
         };
         let rendered = rendered_text(model, false);
-        assert!(rendered.contains("138 passed · 4 failed · 2 ignored"));
-        assert!(rendered.contains("Failed tests:"));
-        assert!(rendered.contains("parser::tests::handles_unicode"));
+        assert!(rendered.contains("Mode: shell"));
+        assert!(rendered.contains("Shell command: echo hi | wc"));
     }
 
     #[test]
-    fn renders_generic_non_cargo_validation() {
+    fn renders_direct_mode_shell_syntax_error() {
         let activity = ActivityFeed::default();
         let state = BottomPanelState {
             open: true,
             focused: false,
-            active: BottomPanelTab::Tests,
+            active: BottomPanelTab::Run,
         };
-        let mut validation = ValidationSnapshot::default();
-        validation.status = ValidationStatus::Passed;
+        let mut run = run_model();
+        run.draft.command_input = "echo hi | wc".into();
         let model = BottomPanelModel {
             state: &state,
             busy_phase: &BusyPhase::Idle,
             activity: &activity,
-            validation: &validation,
+            run: &run,
             terminal_title: None,
             terminal_content: "",
             terminal_truncated: false,
         };
         let rendered = rendered_text(model, false);
-        assert!(rendered.contains("View full output in Terminal"));
+        assert!(rendered.contains("Direct mode does not evaluate shell syntax"));
     }
 }
