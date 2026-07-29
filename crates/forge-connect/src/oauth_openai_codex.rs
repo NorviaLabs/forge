@@ -1,5 +1,7 @@
 //! OpenAI Codex device authorization used directly by Forge.
 
+use std::io::Read;
+
 use serde::Deserialize;
 use thiserror::Error;
 
@@ -29,6 +31,12 @@ pub enum OpenAiCodexOauthError {
 pub struct OpenAiCodexOauthClient;
 
 impl OpenAiCodexOauthClient {
+    fn response_body(response: ureq::Response) -> String {
+        let mut body = String::new();
+        let _ = response.into_reader().read_to_string(&mut body);
+        body
+    }
+
     fn post_json(
         url: &str,
         body: serde_json::Value,
@@ -38,12 +46,9 @@ impl OpenAiCodexOauthClient {
             &format!("forge/{}", env!("CARGO_PKG_VERSION")),
         );
         match request.send_json(body) {
-            Ok(response) => Ok((
-                response.status(),
-                response.into_string().unwrap_or_default(),
-            )),
+            Ok(response) => Ok((response.status(), Self::response_body(response))),
             Err(ureq::Error::Status(status, response)) => {
-                Ok((status, response.into_string().unwrap_or_default()))
+                Ok((status, Self::response_body(response)))
             }
             Err(error) => Err(OpenAiCodexOauthError::Http(error.to_string())),
         }
@@ -57,12 +62,9 @@ impl OpenAiCodexOauthClient {
                 &format!("forge/{}", env!("CARGO_PKG_VERSION")),
             );
         match request.send_form(form) {
-            Ok(response) => Ok((
-                response.status(),
-                response.into_string().unwrap_or_default(),
-            )),
+            Ok(response) => Ok((response.status(), Self::response_body(response))),
             Err(ureq::Error::Status(status, response)) => {
-                Ok((status, response.into_string().unwrap_or_default()))
+                Ok((status, Self::response_body(response)))
             }
             Err(error) => Err(OpenAiCodexOauthError::Http(error.to_string())),
         }
@@ -218,6 +220,7 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
+    use std::time::Duration;
 
     #[derive(Deserialize)]
     struct IntervalFixture {
@@ -230,13 +233,44 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            let mut buf = [0_u8; 2048];
-            let _ = stream.read(&mut buf);
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut buf = [0_u8; 1024];
+            loop {
+                let Ok(n) = stream.read(&mut buf) else {
+                    break;
+                };
+                if n == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buf[..n]);
+                let Some(header_end) = request.windows(4).position(|w| w == b"\r\n\r\n") else {
+                    continue;
+                };
+                let headers = String::from_utf8_lossy(&request[..header_end]);
+                let content_len = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.split_once(':').and_then(|(name, value)| {
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                    })
+                    .unwrap_or(0);
+                if request.len() >= header_end + 4 + content_len {
+                    break;
+                }
+            }
+            let reason = if status < 400 { "OK" } else { "Bad Request" };
             let response = format!(
-                "HTTP/1.1 {status} test\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                body.len()
+                "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n{body}",
+                body.as_bytes().len()
             );
             stream.write_all(response.as_bytes()).unwrap();
+            stream.flush().unwrap();
         });
         format!("http://{addr}/token")
     }
