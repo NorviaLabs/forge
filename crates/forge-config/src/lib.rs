@@ -163,14 +163,50 @@ fn default_mcp_transport() -> String {
     "stdio".into()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct TuiConfig {}
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum FileIconMode {
+    #[default]
+    Unicode,
+    Off,
+}
+
+impl FileIconMode {
+    pub fn parse(s: &str) -> Result<Self, ConfigError> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "unicode" => Ok(Self::Unicode),
+            "off" => Ok(Self::Off),
+            other => Err(ConfigError::Message(format!(
+                "invalid file_icons `{other}` (expected unicode | off)"
+            ))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TuiConfig {
+    #[serde(default)]
+    pub file_icons: FileIconMode,
+}
+
+impl Default for TuiConfig {
+    fn default() -> Self {
+        Self {
+            file_icons: FileIconMode::Unicode,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct CommandConfig {
     pub executable: String,
     #[serde(default)]
     pub args: Vec<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct TuiConfigFile {
+    file_icons: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -430,7 +466,7 @@ struct ConfigFile {
     model: Option<ModelConfigFile>,
     journal: Option<JournalConfig>,
     mcp: Option<McpSection>,
-    tui: Option<TuiConfig>,
+    tui: Option<TuiConfigFile>,
     validation: Option<ValidationConfig>,
     tools: Option<ToolsConfigFile>,
 }
@@ -495,7 +531,11 @@ impl ConfigFile {
             cfg.mcp = mcp;
         }
         if let Some(tui) = self.tui {
-            cfg.tui = tui;
+            if let Some(file_icons) = tui.file_icons {
+                if let Ok(mode) = FileIconMode::parse(&file_icons) {
+                    cfg.tui.file_icons = mode;
+                }
+            }
         }
         if let Some(validation) = self.validation {
             cfg.validation = validation;
