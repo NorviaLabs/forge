@@ -3421,14 +3421,7 @@ Reply with ONLY the commit message line.\n\n\
         buf: &mut ratatui::buffer::Buffer,
     ) {
         let mut spans = vec![
-            Span::styled(
-                format!(
-                    "{} · {}",
-                    self.workspace_mode.label(),
-                    self.workspace_mode.mode_label(self.focus.mode)
-                ),
-                theme::brand(),
-            ),
+            Span::styled(self.workspace_mode.mode_label(self.focus.mode), theme::brand()),
             Span::raw("  "),
         ];
         spans.extend(WorkspaceMode::ALL.into_iter().flat_map(|mode| {
