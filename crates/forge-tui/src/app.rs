@@ -2994,6 +2994,7 @@ Reply with ONLY the commit message line.\n\n\
             let header = self.repo_header();
             sidebar.repo_name = header.repo_name;
             sidebar.branch = header.branch;
+            self.file_explorer.git_status.poll();
             let gs = &self.file_explorer.git_status;
             sidebar.git_status_loading = gs.loading;
             sidebar.git_status_error = gs.error.is_some();
