@@ -283,6 +283,28 @@ mod tests {
     use super::*;
     use ratatui::buffer::Buffer;
 
+    fn status_model(status: SessionStatus, busy: bool, busy_phase: BusyPhase) -> StatusModel {
+        StatusModel {
+            status,
+            session_short: "abc".into(),
+            model: "openai/gpt-5".into(),
+            provider: "native".into(),
+            effort: "auto".into(),
+            ctx_pct: 0.32,
+            busy,
+            busy_phase,
+            connect_profile: None,
+            provider_connected: true,
+            web_search_label: None,
+            tools_visible: 0,
+            prompt_cache_hits: 0,
+            prompt_cache_writes: 0,
+            repo_name: None,
+            branch: None,
+            dirty: false,
+        }
+    }
+
     #[test]
     fn hitl_label() {
         let m = StatusModel {
@@ -484,5 +506,121 @@ mod tests {
         let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
         assert!(rendered.contains("Forge"));
         assert!(rendered.contains("Idle"));
+    }
+
+    #[test]
+    fn current_state_label_covers_status_and_busy_phase_branches() {
+        assert_eq!(
+            status_model(SessionStatus::Completed, false, BusyPhase::Idle).current_state_label(),
+            "Completed"
+        );
+        assert_eq!(
+            status_model(SessionStatus::Failed, false, BusyPhase::Idle).current_state_label(),
+            "Failed"
+        );
+        assert_eq!(
+            status_model(SessionStatus::Running, true, BusyPhase::Idle).current_state_label(),
+            "Idle"
+        );
+        assert_eq!(
+            status_model(SessionStatus::Running, true, BusyPhase::Connect).current_state_label(),
+            "Waiting for you"
+        );
+        assert_eq!(
+            status_model(
+                SessionStatus::Running,
+                true,
+                BusyPhase::Tool {
+                    name: "read_file".into()
+                }
+            )
+            .current_state_label(),
+            "Exploring"
+        );
+        assert_eq!(
+            status_model(
+                SessionStatus::Running,
+                true,
+                BusyPhase::Tool { name: "git".into() }
+            )
+            .current_state_label(),
+            "Validating"
+        );
+        assert_eq!(
+            status_model(
+                SessionStatus::Running,
+                true,
+                BusyPhase::Tool {
+                    name: "custom".into()
+                }
+            )
+            .current_state_label(),
+            "Implementing"
+        );
+        assert_eq!(
+            status_model(
+                SessionStatus::Running,
+                true,
+                BusyPhase::Other("git sync".into())
+            )
+            .current_state_label(),
+            "Validating"
+        );
+        assert_eq!(BusyPhase::Tool { name: "git".into() }.label(), "tool:git");
+        assert_eq!(BusyPhase::Connect.label(), "connect");
+        assert_eq!(BusyPhase::Other("phase".into()).label(), "phase");
+    }
+
+    #[test]
+    fn status_label_and_truncation_cover_edge_cases() {
+        let busy = status_model(
+            SessionStatus::Running,
+            true,
+            BusyPhase::Other(String::new()),
+        );
+        assert!(busy
+            .status_label_with_busy_detail(None)
+            .0
+            .contains("running"));
+        assert!(busy
+            .status_label_with_busy_detail(Some("custom detail"))
+            .0
+            .contains("custom detail"));
+
+        assert_eq!(
+            status_model(SessionStatus::Running, false, BusyPhase::Idle)
+                .status_label()
+                .0,
+            "Idle"
+        );
+        assert_eq!(
+            status_model(SessionStatus::Completed, false, BusyPhase::Idle)
+                .status_label()
+                .0,
+            "Completed"
+        );
+        assert_eq!(
+            status_model(SessionStatus::Failed, false, BusyPhase::Idle)
+                .status_label()
+                .0,
+            "Failed"
+        );
+
+        assert_eq!(StatusModel::truncate_model("abcdef", 3), "abc");
+        assert_eq!(StatusModel::truncate_middle("abcdef", 4), "abcd");
+        assert_eq!(StatusModel::truncate_middle("abcdef", 5), "ab…ef");
+
+        let mut m = status_model(SessionStatus::Running, false, BusyPhase::Idle);
+        assert_eq!(m.repo_branch_label(), None);
+        m.repo_name = Some("forge".into());
+        assert_eq!(m.repo_branch_label().as_deref(), Some("forge"));
+    }
+
+    #[test]
+    fn status_bar_handles_zero_sized_area() {
+        let m = status_model(SessionStatus::Running, false, BusyPhase::Idle);
+        let area = Rect::new(0, 0, 0, 0);
+        let mut buf = Buffer::empty(area);
+        StatusBar { model: &m }.render(area, &mut buf);
     }
 }
