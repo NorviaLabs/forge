@@ -327,18 +327,18 @@ fn refresh_loaded_directories(root: Option<&Path>, node: &mut FileNode) {
 
 fn refresh_directory(root: Option<&Path>, node: &mut FileNode) {
     let expanded = node.expanded;
-    let loaded_children: Vec<PathBuf> = node
+    let loaded_children: Vec<(PathBuf, bool)> = node
         .children
         .iter()
         .filter(|child| child.kind == FileKind::Directory && child.loaded)
-        .map(|child| child.path.clone())
+        .map(|child| (child.path.clone(), child.expanded))
         .collect();
     load_children(root, node);
     node.expanded = expanded;
 
-    for path in loaded_children {
+    for (path, expanded) in loaded_children {
         if let Some(child) = node.children.iter_mut().find(|child| child.path == path) {
-            child.expanded = true;
+            child.expanded = expanded;
             refresh_directory(root, child);
         }
     }
@@ -654,6 +654,26 @@ mod tests {
         assert!(visible
             .iter()
             .any(|node| node.display_name == "src" && node.expanded));
+    }
+
+    #[test]
+    fn workspace_refresh_preserves_collapsed_loaded_directories() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("src")).unwrap();
+        fs::write(root.path().join("src/lib.rs"), "").unwrap();
+        let mut explorer = FileExplorer::new(Some(root.path().to_path_buf()));
+        explorer.selected_path = Some(root.path().join("src").canonicalize().unwrap());
+        explorer.expand_selected();
+        explorer.collapse_selected();
+
+        fs::write(root.path().join("src/main.rs"), "").unwrap();
+        explorer.refresh_workspace();
+        let visible = explorer.visible_nodes();
+
+        assert!(visible
+            .iter()
+            .any(|node| node.display_name == "src" && !node.expanded));
+        assert!(!visible.iter().any(|node| node.display_name == "main.rs"));
     }
 
     #[test]
