@@ -2997,6 +2997,7 @@ Reply with ONLY the commit message line.\n\n\
                 files,
             );
         }
+        self.file_explorer.git_status.poll();
 
         let stream_wait = if self.busy && self.pending_prompt.is_none() {
             let elapsed = if !self.stream_thinking.is_empty() {
@@ -3175,7 +3176,6 @@ Reply with ONLY the commit message line.\n\n\
             let header = self.repo_header();
             sidebar.repo_name = header.repo_name;
             sidebar.branch = header.branch;
-            self.file_explorer.git_status.poll();
             let gs = &self.file_explorer.git_status;
             sidebar.git_status_loading = gs.loading;
             sidebar.git_status_error = gs.error.is_some();
@@ -4061,6 +4061,9 @@ Reply with ONLY the commit message line.\n\n\
 
     fn select_workspace_tab(&mut self, next: WorkspaceMode) {
         self.workspace_mode = next;
+        if next != WorkspaceMode::Chat {
+            self.focus_block(FocusBlock::Workspace);
+        }
         if next == WorkspaceMode::Editor {
             self.source_viewer.refresh(self.session.workspace_root());
             self.note_workspace_changed();
@@ -5752,6 +5755,28 @@ mod tests {
 
         assert_eq!(app.focus.block, FocusBlock::Composer);
         assert_eq!(app.input.text, "x");
+    }
+
+    #[tokio::test]
+    async fn switching_to_diff_focuses_workspace_for_navigation() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.select_workspace_tab(WorkspaceMode::Diff);
+        app.file_explorer
+            .git_status
+            .status
+            .insert(std::path::PathBuf::from("a.txt"), GitStatusKind::Modified);
+        app.file_explorer
+            .git_status
+            .status
+            .insert(std::path::PathBuf::from("b.txt"), GitStatusKind::Modified);
+
+        app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
+            .await
+            .unwrap();
+
+        assert_eq!(app.workspace_mode, WorkspaceMode::Diff);
+        assert_eq!(app.focus.block, FocusBlock::Workspace);
+        assert_eq!(app.diff_selected, 1);
     }
 
     #[tokio::test]
