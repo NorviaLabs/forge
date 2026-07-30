@@ -9,26 +9,48 @@ pub(crate) enum PollResult {
     Complete(OauthTokens),
 }
 
+use thiserror::Error;
+
+/// An OAuth device-code step failed.
+///
+/// Previously `Result<_, String>`: the provider clients already return typed
+/// errors, and their `Display` was flattened here. This keeps the wording while
+/// letting callers see the category.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum OauthError {
+    /// A provider OAuth client reported a failure.
+    #[error("{0}")]
+    Provider(String),
+    /// The profile is not configured for OAuth.
+    #[error("profile `{0}` is not OAuth")]
+    NotOauth(String),
+    /// No structured category applies.
+    #[error("{0}")]
+    Message(String),
+}
+
 pub(crate) struct OauthDispatcher;
 
 impl OauthDispatcher {
-    pub(crate) fn start(profile: &ConnectProfile) -> Result<OauthPending, String> {
+    pub(crate) fn start(profile: &ConnectProfile) -> Result<OauthPending, OauthError> {
         if profile.id == crate::openai_codex::PROFILE_ID {
-            return OpenAiCodexOauthClient::start_device_code().map_err(|error| error.to_string());
+            return OpenAiCodexOauthClient::start_device_code()
+                .map_err(|error| OauthError::Provider(error.to_string()));
         }
 
         Self::xai_client(profile)?
             .start_device_code(&profile.id)
-            .map_err(|error| error.to_string())
+            .map_err(|error| OauthError::Provider(error.to_string()))
     }
 
-    pub(crate) fn poll(pending: &OauthPending) -> Result<PollResult, String> {
+    pub(crate) fn poll(pending: &OauthPending) -> Result<PollResult, OauthError> {
         if pending.profile_id == crate::openai_codex::PROFILE_ID {
             return match OpenAiCodexOauthClient::poll_token_once(pending) {
                 Ok(tokens) => Ok(PollResult::Complete(tokens)),
                 Err(OpenAiCodexOauthError::Pending) => Ok(PollResult::Pending),
                 Err(OpenAiCodexOauthError::SlowDown) => Ok(PollResult::SlowDown),
-                Err(error) => Err(error.to_string()),
+                Err(error) => Err(OauthError::Provider(error.to_string())),
             };
         }
 
@@ -41,27 +63,27 @@ impl OauthDispatcher {
             Ok(tokens) => Ok(PollResult::Complete(tokens)),
             Err(XaiOauthError::AuthorizationPending) => Ok(PollResult::Pending),
             Err(XaiOauthError::SlowDown) => Ok(PollResult::SlowDown),
-            Err(error) => Err(error.to_string()),
+            Err(error) => Err(OauthError::Provider(error.to_string())),
         }
     }
 
     pub(crate) fn refresh(
         profile: &ConnectProfile,
         refresh_token: &str,
-    ) -> Result<OauthTokens, String> {
+    ) -> Result<OauthTokens, OauthError> {
         if profile.id == crate::openai_codex::PROFILE_ID {
             return OpenAiCodexOauthClient::refresh(refresh_token)
-                .map_err(|error| error.to_string());
+                .map_err(|error| OauthError::Provider(error.to_string()));
         }
 
         Self::xai_client(profile)?
             .refresh_access_token(refresh_token)
-            .map_err(|error| error.to_string())
+            .map_err(|error| OauthError::Provider(error.to_string()))
     }
 
-    fn xai_client(profile: &ConnectProfile) -> Result<XaiOauthClient, String> {
+    fn xai_client(profile: &ConnectProfile) -> Result<XaiOauthClient, OauthError> {
         let crate::auth::AuthMode::Oauth { auth_server, .. } = &profile.auth_mode else {
-            return Err(format!("profile `{}` is not OAuth", profile.id));
+            return Err(OauthError::NotOauth(profile.id.clone()));
         };
         let client = XaiOauthClient::from_env();
         if profile.id == crate::xai::PROFILE_ID {
@@ -105,6 +127,7 @@ mod tests {
         );
         assert!(OauthDispatcher::xai_client(&profile)
             .unwrap_err()
+            .to_string()
             .contains("not OAuth"));
     }
 

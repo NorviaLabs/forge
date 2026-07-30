@@ -28,22 +28,26 @@ pub fn openai_codex_profile() -> ConnectProfile {
     }
 }
 
-pub(crate) fn account_id_from_token(token: &str) -> Result<String, String> {
+pub(crate) fn account_id_from_token(token: &str) -> Result<String, crate::verify::VerifyError> {
+    use crate::verify::VerifyError;
+    const INVALID: &str = "OpenAI returned an invalid access token";
     let payload = token
         .split('.')
         .nth(1)
-        .ok_or_else(|| "OpenAI returned an invalid access token".to_string())?;
+        .ok_or(VerifyError::MalformedToken(INVALID))?;
     let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(payload)
-        .map_err(|_| "OpenAI returned an invalid access token".to_string())?;
-    let value: serde_json::Value = serde_json::from_slice(&decoded)
-        .map_err(|_| "OpenAI returned an invalid access token".to_string())?;
+        .map_err(|_| VerifyError::MalformedToken(INVALID))?;
+    let value: serde_json::Value =
+        serde_json::from_slice(&decoded).map_err(|_| VerifyError::MalformedToken(INVALID))?;
     value
         .pointer("/https:~1~1api.openai.com~1auth/chatgpt_account_id")
         .and_then(|v| v.as_str())
         .filter(|v| !v.trim().is_empty())
         .map(str::to_string)
-        .ok_or_else(|| "OpenAI token does not include a ChatGPT account".to_string())
+        .ok_or(VerifyError::MalformedToken(
+            "OpenAI token does not include a ChatGPT account",
+        ))
 }
 
 #[cfg(test)]

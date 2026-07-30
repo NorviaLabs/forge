@@ -2518,7 +2518,8 @@ impl TuiApp {
                 }
             }
             Err(ConnectError::OauthDevicePending(pending)) => {
-                self.show_oauth_pending(pending);
+                // Payload is boxed so `ConnectError` stays small in every `Result`.
+                self.show_oauth_pending(*pending);
             }
             Err(e) => {
                 let error = e.to_string();
