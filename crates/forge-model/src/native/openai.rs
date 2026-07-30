@@ -341,9 +341,9 @@ fn apply_reasoning_effort(body: &mut Value, model: &str, reasoning_effort: Optio
 }
 
 async fn response_error(response: reqwest::Response) -> ModelError {
-    let status = response.status();
+    let status = response.status().as_u16();
     let detail = response.text().await.unwrap_or_default();
-    ModelError::Provider(format!("HTTP {status}: {detail}"))
+    ModelError::ProviderStatus { status, detail }
 }
 
 #[cfg(test)]

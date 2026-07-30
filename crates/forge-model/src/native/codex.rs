@@ -51,14 +51,17 @@ pub(super) async fn complete(
         .await
         .map_err(|error| ModelError::Transport(error.to_string()))?;
     if !response.status().is_success() {
-        let status = response.status();
+        let status = response.status().as_u16();
         let detail = response.text().await.unwrap_or_default();
-        if status == reqwest::StatusCode::UNAUTHORIZED {
-            return Err(ModelError::Provider(
-                "Forge's Codex login expired. Run `/connect openai_codex` again.".into(),
-            ));
+        if status == reqwest::StatusCode::UNAUTHORIZED.as_u16() {
+            // Bespoke guidance, unchanged, but tagged with the status so callers can
+            // see this is an auth failure without matching on the wording.
+            return Err(ModelError::ProviderAuth {
+                status,
+                message: "Forge's Codex login expired. Run `/connect openai_codex` again.".into(),
+            });
         }
-        return Err(ModelError::Provider(format!("HTTP {status}: {detail}")));
+        return Err(ModelError::ProviderStatus { status, detail });
     }
 
     let reverse_aliases: BTreeMap<String, String> = aliases
