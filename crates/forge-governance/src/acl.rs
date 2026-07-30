@@ -73,4 +73,14 @@ mod tests {
         assert!(p.is_allowed(&pr, "read_file", SideEffectClass::Read));
         assert!(!p.is_allowed(&pr, "bash", SideEffectClass::Exec));
     }
+
+    /// A policy with no rules at all denies by default rather than allowing —
+    /// distinct from `allow_all()`, which explicitly adds an allow-`*` rule.
+    #[test]
+    fn empty_policy_denies_by_default() {
+        let p = AclPolicy::new();
+        let pr = Principal::local_dev();
+        assert!(!p.is_allowed(&pr, "read_file", SideEffectClass::Read));
+        assert!(!p.is_allowed(&pr, "anything", SideEffectClass::Exec));
+    }
 }
