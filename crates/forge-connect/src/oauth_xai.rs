@@ -373,49 +373,30 @@ pub fn try_open_browser(url: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
+    use crate::test_env::EnvGuard;
 
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    const OAUTH_ISSUER_ENV: &[&str] = &[
+        "FORGE_XAI_OAUTH_ISSUER",
+        "GROK_OAUTH2_ISSUER",
+        "FORGE_XAI_OAUTH_CLIENT_ID",
+        "GROK_OAUTH2_CLIENT_ID",
+        "FORGE_XAI_OAUTH_SCOPES",
+        "GROK_OAUTH2_SCOPES",
+    ];
 
-    struct EnvGuard {
-        saved: Vec<(&'static str, Option<String>)>,
-        _lock: std::sync::MutexGuard<'static, ()>,
-    }
-
-    impl EnvGuard {
-        fn set_forge_and_grok_values() -> Self {
-            let lock = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-            let keys = [
-                "FORGE_XAI_OAUTH_ISSUER",
-                "GROK_OAUTH2_ISSUER",
-                "FORGE_XAI_OAUTH_CLIENT_ID",
-                "GROK_OAUTH2_CLIENT_ID",
-                "FORGE_XAI_OAUTH_SCOPES",
-                "GROK_OAUTH2_SCOPES",
-            ];
-            let saved = keys
-                .into_iter()
-                .map(|key| (key, std::env::var(key).ok()))
-                .collect::<Vec<_>>();
-            std::env::set_var("FORGE_XAI_OAUTH_ISSUER", "https://issuer.example/");
-            std::env::set_var("GROK_OAUTH2_ISSUER", "https://fallback.example/");
-            std::env::set_var("FORGE_XAI_OAUTH_CLIENT_ID", "forge-client");
-            std::env::set_var("GROK_OAUTH2_CLIENT_ID", "grok-client");
-            std::env::set_var("FORGE_XAI_OAUTH_SCOPES", "scope-a");
-            std::env::set_var("GROK_OAUTH2_SCOPES", "scope-b");
-            Self { saved, _lock: lock }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            for (key, value) in self.saved.drain(..) {
-                match value {
-                    Some(value) => std::env::set_var(key, value),
-                    None => std::env::remove_var(key),
-                }
-            }
-        }
+    /// Populate both the Forge and Grok fallback variables so precedence can be
+    /// asserted. Previously backed by a lock private to this module; it now shares
+    /// the crate-wide one, so there is a single lock covering every test in the
+    /// crate that touches the environment.
+    fn set_forge_and_grok_values() -> EnvGuard {
+        let guard = EnvGuard::new(OAUTH_ISSUER_ENV);
+        guard.set("FORGE_XAI_OAUTH_ISSUER", "https://issuer.example/");
+        guard.set("GROK_OAUTH2_ISSUER", "https://fallback.example/");
+        guard.set("FORGE_XAI_OAUTH_CLIENT_ID", "forge-client");
+        guard.set("GROK_OAUTH2_CLIENT_ID", "grok-client");
+        guard.set("FORGE_XAI_OAUTH_SCOPES", "scope-a");
+        guard.set("GROK_OAUTH2_SCOPES", "scope-b");
+        guard
     }
 
     #[test]
@@ -442,7 +423,7 @@ mod tests {
 
     #[test]
     fn from_env_trims_issuer_and_prefers_forge_over_grok_env() {
-        let _guard = EnvGuard::set_forge_and_grok_values();
+        let _guard = set_forge_and_grok_values();
 
         let client = XaiOauthClient::from_env();
         assert_eq!(client.issuer, "https://issuer.example");
@@ -508,7 +489,7 @@ mod tests {
     /// Live smoke against auth.x.ai (skipped if FORGE_SKIP_NETWORK=1).
     #[test]
     fn live_device_code_start() {
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let _guard = EnvGuard::new(OAUTH_ISSUER_ENV);
         if std::env::var("FORGE_SKIP_NETWORK").is_ok() {
             return;
         }
@@ -535,7 +516,7 @@ mod tests {
     /// Document that OAuth uses ureq (no nested Tokio). Network optional.
     #[test]
     fn http_stack_is_ureq_not_reqwest_blocking() {
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let _guard = EnvGuard::new(OAUTH_ISSUER_ENV);
         // Compile-time / dependency choice: post_form uses ureq::Agent.
         // Runtime smoke: start_device_code must not panic (network may fail offline).
         if std::env::var("FORGE_SKIP_NETWORK").is_ok() {
