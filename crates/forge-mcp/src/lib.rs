@@ -17,6 +17,7 @@ use tokio::sync::Mutex;
 use tracing::warn;
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum McpError {
     #[error("io: {0}")]
     Io(#[from] std::io::Error),

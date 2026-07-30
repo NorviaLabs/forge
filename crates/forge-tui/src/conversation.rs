@@ -418,6 +418,10 @@ impl ConversationModel {
                         });
                     }
                 }
+                // `MessageRole` is `#[non_exhaustive]`. A role this build cannot present is
+                // skipped rather than rendered under another role: misattributing authorship
+                // in the transcript is worse than omitting one message.
+                _ => {}
             }
         }
         let mut latest_progress = None;
