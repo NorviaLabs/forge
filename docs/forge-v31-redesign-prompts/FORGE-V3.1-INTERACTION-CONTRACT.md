@@ -1,7 +1,7 @@
 # Forge V3.1 Interaction Contract
 
 **Owners:** Elena Park — Product & UX; Arjun Mehta — Technology & Engineering  
-**Status:** Proposed final interaction contract before implementation
+**Status:** Implemented contract for the current V3.1 shell
 
 ---
 

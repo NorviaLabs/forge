@@ -128,9 +128,9 @@ Type a task and press **Enter**, e.g. `Explain the layout of this crate`.
 
 ## TUI slash commands
 
-The full-screen TUI keeps session identity, provider/model, context usage, and connection state in the top status bar. On wide terminals, the sidebar also shows the active session, registered tools, and recent activity. Tool results render as compact cards with expandable detail; validation failures explicitly report that no side effects were applied.
+The full-screen TUI uses one contextual workspace: Conversation, File, Review changes, or Run. Files, Inspector, and Bottom surfaces are independent supporting panes; narrow terminals collapse supporting panes before the active workspace. The top status bar owns repository identity, branch, connection, and current activity. Tool results render as compact cards with expandable detail; validation failures explicitly report that no side effects were applied.
 
-Context compaction and session resume report their before/after or recovery state in the transcript, feedback strip, notices, and activity feed. HITL decisions are made through the approval modal; they are not slash commands.
+Context compaction and session resume report their before/after or recovery state in the transcript, feedback strip, notices, and activity feed. HITL decisions are made through the approval modal; they are not slash commands. Background Run and agent activity update the activity summary without taking over the current workspace.
 
 Slash commands can be typed directly in the textbox or discovered with **Ctrl+K**:
 
@@ -156,6 +156,13 @@ Slash commands can be typed directly in the textbox or discovered with **Ctrl+K*
 |-----|--------|
 | **Enter** | Send message (or enqueue while agent is busy) |
 | **Ctrl+K** | Open the command palette |
+| **Ctrl+E** | Toggle Files |
+| **Ctrl+B** | Toggle Inspector |
+| **Ctrl+P** | Toggle Bottom surface |
+| **Alt+Left** | Back |
+| **Alt+Right** | Review changes |
+| **Alt+1** | Open current Run output |
+| **Alt+2 / Alt+3 / Alt+4** | Open Diagnostics / Terminal / Activity |
 | **/** + **Tab** | Complete slash command suggestions |
 | **↑ / ↓** | Recall prior input lines (when not in the suggest list) |
 | **Ctrl+Up / Ctrl+Down** | Select a queued message |
@@ -166,6 +173,11 @@ Slash commands can be typed directly in the textbox or discovered with **Ctrl+K*
 Mouse interactions are enabled by default. To keep terminal-native mouse
 selection instead, set `[tui] mouse_capture = false` in `forge.toml`; all
 workflows remain keyboard-accessible.
+
+Current mouse support is intentionally scoped to click-to-focus, file selection,
+directory chevrons, visible controls, wheel scrolling, and safe double-click
+activation for file/folder rows. Forge does not support drag-and-drop, pane
+resizing, right-click context menus, multi-selection, or in-app text selection.
 
 **Reasoning effort at startup**
 

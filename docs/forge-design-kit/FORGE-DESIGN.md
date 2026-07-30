@@ -80,16 +80,17 @@ layout:
     - Workspace
     - Inspector
     - BottomPanel
-  workspace-tabs:
-    - Chat
-    - Editor
+  workspace-views:
+    - Conversation
+    - File
     - Diff
+    - Run
   inspector-tabs:
     - Task
     - Context
     - Runtime
   bottom-tabs:
-    - Tests
+    - Run
     - Diagnostics
     - Terminal
     - Activity
@@ -268,8 +269,8 @@ Forge inherits the user's terminal font. Never bundle or require a font.
 | Application title | Bold + primary text | `FORGE` |
 | Active block title | Bold + accent | `EDITOR · NAV` |
 | Inactive block title | Normal + muted | `FILES` |
-| Active tab | Bold + primary or accent underline | `Diff` |
-| Inactive tab | Muted | `Chat` |
+| Active supporting tab | Bold + primary or accent underline | `Activity` |
+| Inactive supporting tab | Muted | `Diagnostics` |
 | Primary content | Primary text | Assistant response, source code |
 | Supporting content | Body text | Metadata, descriptions |
 | Utility content | Muted | Keys, timestamps, token counts |
@@ -281,9 +282,9 @@ Do not use size as a hierarchy mechanism; terminal font size is controlled by th
 ### 7.1 Four top-level blocks
 
 1. **Files** — repository navigation and Git markers.
-2. **Workspace** — Chat, Editor and Diff.
+2. **Workspace** — the active contextual view: Conversation, File, Diff or Run.
 3. **Inspector** — Task, Context and Runtime.
-4. **Bottom panel** — Tests, Diagnostics, Terminal and Activity.
+4. **Bottom panel** — Run, Diagnostics, Terminal and Activity.
 
 The centre Workspace is always primary. Auxiliary blocks support it and should collapse before the Workspace becomes unusably narrow.
 
@@ -542,7 +543,7 @@ The bottom panel is an interactive block, not a passive status bar.
 - Opening it gives it focus.
 - Tab strip is visible and uses the common Shift+Arrow grammar.
 - Terminal means captured command output unless an interactive shell is actually implemented.
-- Tests and Diagnostics have truthful empty states.
+- Run and Diagnostics have truthful empty states.
 - Activity should summarise events rather than repeat the Chat transcript.
 - Closing restores previous focus.
 
@@ -686,8 +687,8 @@ Forge should remove secondary information before reducing legibility.
 At `80 × 24`, users must still be able to:
 
 - identify active block and mode
-- move between blocks and tabs
-- type and send Chat input
+- move between visible blocks and supporting tabs
+- type and send Composer input
 - inspect a file
 - inspect a diff
 - read and answer an approval
@@ -726,7 +727,7 @@ At `80 × 24`, users must still be able to:
 - Do not fill active panels with bright cyan.
 - Do not use colour as the only status signal.
 - Do not show every internal event at equal visual weight.
-- Do not let Chat input act as a fallback key sink.
+- Do not let Composer input act as a fallback key sink.
 - Do not advertise a shortcut that is not reachable.
 - Do not display repeated `Not available` fields.
 - Do not call captured output an interactive terminal.
@@ -775,11 +776,11 @@ Footer and help surfaces should derive from this metadata where practical.
 Maintain rendering snapshots for:
 
 - each active top-level block
-- each Workspace tab
-- Chat `NAV` and `INPUT`
+- each Workspace view
+- Conversation `NAV` and Composer `INPUT`
 - search and jump modes
 - approval modal
-- selected tab inside inactive block
+- selected supporting-surface tab inside inactive block
 - wide, medium and `80 × 24`
 - limited-colour fallback
 - long Unicode paths and labels
@@ -807,7 +808,7 @@ Before merging a Forge UI change, answer:
 
 - Which block owns the next keypress?
 - Is that ownership visually obvious?
-- Is the selected tab distinct from focused block?
+- Is the selected supporting-surface tab distinct from focused block?
 - Are `NAV`, `INPUT` or transient modes truthful?
 - Do displayed shortcuts work in this context?
 - Is important content readable without colour?
