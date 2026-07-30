@@ -447,6 +447,8 @@ mod tests {
 
     #[test]
     fn test_highlight_to_lines() {
+        // Populates the process-global highlight cache; see `cache::lock_cache`.
+        let _guard = crate::cache::lock_cache();
         let code = "fn main() { 42 }";
         let lines = highlight_to_lines("rust", code, &HighlightTheme::default());
         assert_eq!(lines.len(), 1);
@@ -455,6 +457,7 @@ mod tests {
 
     #[test]
     fn light_theme_uses_distinct_colours() {
+        let _guard = crate::cache::lock_cache();
         let theme = HighlightTheme::light();
         assert_ne!(theme.default, theme.comment);
         let lines = highlight_to_lines("rust", "fn main() {}", &theme);

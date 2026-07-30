@@ -57,6 +57,11 @@ fn strip_protocol_markers(text: &str) -> String {
         if let Some(end) = after.find('}') {
             rest = &after[end + 1..];
         } else {
+            // Unterminated marker, e.g. model output truncated mid-annotation.
+            // Rewind to the marker so the tail is emitted exactly once: the
+            // prefix was already pushed above, so leaving `rest` untouched
+            // would duplicate it.
+            rest = &rest[start..];
             break;
         }
     }
@@ -1880,5 +1885,248 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(resumed.status, SessionStatus::Interrupted);
+    }
+
+    /// A session with no scripted model turns; enough to exercise state helpers
+    /// that never reach the provider.
+    async fn idle_session(dir: &std::path::Path) -> AgentSession {
+        AgentSession::create(
+            base_cfg(dir),
+            Arc::new(MockModelClient::script(vec![])),
+            ToolRegistry::new(),
+        )
+        .await
+        .unwrap()
+    }
+
+    fn assistant_with_tool_call(name: &str) -> Message {
+        let mut m = Message::new(MessageRole::Assistant, "calling");
+        m.tool_calls = vec![ToolCall {
+            id: "c1".into(),
+            name: name.into(),
+            arguments: json!({}),
+        }];
+        m
+    }
+
+    #[test]
+    fn strip_protocol_markers_removes_confidence_annotations() {
+        assert_eq!(strip_protocol_markers("done \\confidence{0.9}"), "done");
+        assert_eq!(
+            strip_protocol_markers("a \\confidence{0.1}b \\confidence{0.2}c"),
+            "a b c"
+        );
+        assert_eq!(strip_protocol_markers("\\confidence{0.5}only"), "only");
+        assert_eq!(strip_protocol_markers("  plain  "), "plain");
+    }
+
+    /// Regression: an unterminated marker used to duplicate the text before it,
+    /// because `rest` was not rewound before breaking out of the scan.
+    #[test]
+    fn unterminated_confidence_marker_is_kept_verbatim_once() {
+        assert_eq!(
+            strip_protocol_markers("keep \\confidence{oops"),
+            "keep \\confidence{oops"
+        );
+        assert_eq!(
+            strip_protocol_markers("a \\confidence{0.1}b \\confidence{trunc"),
+            "a b \\confidence{trunc"
+        );
+    }
+
+    #[tokio::test]
+    async fn current_turn_has_tool_activity_stops_at_the_user_boundary() {
+        let dir = tempdir().unwrap();
+        let mut s = idle_session(dir.path()).await;
+
+        // No messages at all: nothing to scan.
+        s.messages.clear();
+        assert!(!s.current_turn_has_tool_activity());
+
+        // Only plain assistant text since the last user message.
+        s.messages = vec![
+            Message::new(MessageRole::User, "hi"),
+            Message::new(MessageRole::Assistant, "hello"),
+        ];
+        assert!(!s.current_turn_has_tool_activity());
+
+        // An assistant turn carrying tool calls counts as activity.
+        s.messages = vec![
+            Message::new(MessageRole::User, "hi"),
+            assistant_with_tool_call("read_file"),
+        ];
+        assert!(s.current_turn_has_tool_activity());
+
+        // Tool activity from a *previous* turn must not leak into this one:
+        // the scan walks backwards and stops at the newer user message.
+        s.messages = vec![
+            Message::new(MessageRole::User, "first"),
+            assistant_with_tool_call("read_file"),
+            Message::new(MessageRole::Tool, "contents"),
+            Message::new(MessageRole::User, "second"),
+            Message::new(MessageRole::Assistant, "plain reply"),
+        ];
+        assert!(!s.current_turn_has_tool_activity());
+    }
+
+    #[tokio::test]
+    async fn finalize_turn_failure_keeps_the_first_summary() {
+        let dir = tempdir().unwrap();
+        let mut s = idle_session(dir.path()).await;
+
+        s.finalize_turn_failure("first failure", "cat_a")
+            .await
+            .unwrap();
+        assert_eq!(s.status, SessionStatus::Failed);
+        let after_first = s.messages.len();
+
+        // Idempotent: a second failure must not append another marker message
+        // or overwrite the original summary.
+        s.finalize_turn_failure("second failure", "cat_b")
+            .await
+            .unwrap();
+        assert_eq!(s.messages.len(), after_first);
+        let markers: Vec<&str> = s
+            .messages
+            .iter()
+            .filter(|m| m.content.starts_with(TURN_FAILED_MARKER))
+            .map(|m| m.content.as_str())
+            .collect();
+        assert_eq!(markers.len(), 1);
+        assert!(markers[0].contains("first failure"));
+        assert!(!markers[0].contains("second failure"));
+    }
+
+    #[tokio::test]
+    async fn fail_max_turns_records_a_step_limit_failure() {
+        let dir = tempdir().unwrap();
+        let mut s = idle_session(dir.path()).await;
+
+        s.fail_max_turns().await.unwrap();
+
+        assert_eq!(s.status, SessionStatus::Failed);
+        let marker = s
+            .messages
+            .iter()
+            .find(|m| m.content.starts_with(TURN_FAILED_MARKER))
+            .expect("a turn_failed marker should be recorded");
+        assert!(marker.content.contains("step limit"));
+        assert!(s
+            .events
+            .iter()
+            .any(|e| e.kind == "turn_failed" && e.detail.starts_with("max_turns:")));
+    }
+
+    #[tokio::test]
+    async fn prepare_model_step_resets_context_when_over_threshold() {
+        let dir = tempdir().unwrap();
+        let mut s = idle_session(dir.path()).await;
+
+        // Shrink the window so the messages below cross the reset ratio.
+        s.context.config.capacity_tokens = 32;
+        s.messages = vec![
+            Message::new(MessageRole::User, "x".repeat(400)),
+            Message::new(MessageRole::Assistant, "y".repeat(400)),
+        ];
+        assert!(s.context.should_reset(&s.messages));
+
+        let request = s.prepare_model_step(3).await.unwrap();
+
+        assert!(s
+            .events
+            .iter()
+            .any(|e| e.kind == "context_reset" && e.detail == "threshold"));
+        // The handoff replaces the whole conversation with a two-message
+        // restart: a system prompt carrying the progress document, then a
+        // user turn telling the model to continue.
+        assert_eq!(s.messages.len(), 2);
+        assert_eq!(s.messages[0].role, MessageRole::System);
+        assert!(s.messages[0].content.contains("# Context Handoff"));
+        assert_eq!(s.messages[1].role, MessageRole::User);
+        assert!(s.messages[1].content.starts_with("Continue the task."));
+        // The padded turns are gone as standalone messages.
+        assert!(!s
+            .messages
+            .iter()
+            .any(|m| m.content == "x".repeat(400) || m.content == "y".repeat(400)));
+        assert!(!request.messages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn prepare_model_step_leaves_a_small_context_alone() {
+        let dir = tempdir().unwrap();
+        let mut s = idle_session(dir.path()).await;
+        s.messages = vec![Message::new(MessageRole::User, "short")];
+
+        s.prepare_model_step(1).await.unwrap();
+
+        assert!(!s.events.iter().any(|e| e.kind == "context_reset"));
+        assert_eq!(s.messages.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn context_reset_ratio_and_journal_cursor_are_exposed() {
+        let dir = tempdir().unwrap();
+        let mut s = idle_session(dir.path()).await;
+
+        s.context.config.reset_usage_ratio = 0.75;
+        assert!((s.context_reset_ratio() - 0.75).abs() < f64::EPSILON);
+
+        let before = s.journal_cursor().await.unwrap();
+        s.append_user_message("advance the journal").await.unwrap();
+        let after = s.journal_cursor().await.unwrap();
+        assert!(
+            after > before,
+            "cursor should advance after a journalled append ({before} -> {after})"
+        );
+    }
+
+    #[tokio::test]
+    async fn token_usage_report_buckets_tool_messages_separately() {
+        let dir = tempdir().unwrap();
+        let mut s = idle_session(dir.path()).await;
+
+        let mut thinking_turn = Message::new(MessageRole::Assistant, "answer");
+        thinking_turn.thinking = Some("pondering at some length".into());
+
+        s.messages = vec![
+            Message::new(MessageRole::System, "system preamble"),
+            Message::new(MessageRole::User, "a question"),
+            thinking_turn,
+            Message::new(MessageRole::Tool, "tool output one"),
+            Message::new(MessageRole::Tool, "tool output two"),
+        ];
+
+        let report = s.token_usage_report();
+
+        assert_eq!(report.tool_message_count, 2);
+        assert!(report.tool_tokens_est > 0);
+        assert!(report.system_tokens_est > 0);
+        assert!(report.user_tokens_est > 0);
+        assert!(report.assistant_tokens_est > 0);
+        assert!(
+            report.thinking_in_context_est > 0,
+            "assistant thinking should be counted in the context estimate"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_only_tool_failure_is_journalled_without_a_tool_message() {
+        let dir = tempdir().unwrap();
+        let mut s = idle_session(dir.path()).await;
+        let before = s.messages.len();
+        let mut budget = ValidationBudget::default();
+
+        let call = ToolCall {
+            id: "c1".into(),
+            name: "no_such_tool".into(),
+            arguments: json!({}),
+        };
+        // A failing call must not surface as tool output in the conversation,
+        // but it still has to be journalled for replay.
+        s.run_one_tool_exec_only(&call, &mut budget).await.unwrap();
+
+        assert_eq!(s.messages.len(), before);
+        assert!(s.journal_cursor().await.unwrap() > 0);
     }
 }
