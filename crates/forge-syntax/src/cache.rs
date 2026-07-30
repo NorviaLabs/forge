@@ -197,13 +197,20 @@ pub fn clear_highlight_cache() {
 
 /// Serialises every test that touches the process-global cache.
 ///
-/// The cache tests clear it and then assert on absolute counters, so any test
+/// The cache tests clear it and then assert on what it retains, so any test
 /// that reaches [`cached_or_compute`] must hold this guard — including the ones
 /// that reach it indirectly through [`crate::highlight::highlight_to_lines`],
 /// which are in a different module but the same test binary. This mirrors the
 /// repo's established pattern for process-global state (`lock_env` in
 /// `editor.rs`, `ScopedEnvGuard` in `app.rs`). Poisoning is recovered rather
 /// than propagated so a single failing test does not cascade into the rest.
+///
+/// The guard only covers tests that actually take it, so it is a convention and
+/// not an invariant: a new test anywhere in the crate that highlights something
+/// without it will mutate this state concurrently. Absolute counter assertions
+/// (`entries == 2`, `hits == 1`) are therefore best avoided here — assert on the
+/// behaviour of the specific keys under test, and keep counter checks to bounds
+/// that hold regardless of what else is in the cache.
 #[cfg(test)]
 pub(crate) fn lock_cache() -> MutexGuard<'static, ()> {
     static GUARD: Mutex<()> = Mutex::new(());
@@ -232,8 +239,11 @@ mod tests {
         });
 
         assert_eq!(first, second);
+        // The non-recomputing closure above is the real assertion. Counters are
+        // shared with the rest of the crate, so only lower bounds are safe.
         let stats = highlight_cache_stats();
-        assert_eq!((stats.hits, stats.misses), (1, 1));
+        assert!(stats.hits >= 1, "the second lookup should have hit");
+        assert!(stats.misses >= 1, "the first lookup should have missed");
     }
 
     #[test]
@@ -250,7 +260,21 @@ mod tests {
         let got = cached_or_compute("rust", "fn a() {}", &light, || lines_of("light"));
 
         assert_eq!(got, lines_of("light"), "theme must not alias");
-        assert_eq!(highlight_cache_stats().entries, 2);
+        // Both keys must be retained independently. Re-looking each up without
+        // recomputing proves that more precisely than an entry count, and does
+        // not depend on what else shares the cache.
+        assert_eq!(
+            cached_or_compute("rust", "fn a() {}", &dark, || panic!(
+                "dark entry should still be cached"
+            )),
+            lines_of("dark")
+        );
+        assert_eq!(
+            cached_or_compute("rust", "fn a() {}", &light, || panic!(
+                "light entry should still be cached"
+            )),
+            lines_of("light")
+        );
     }
 
     #[test]
@@ -263,7 +287,20 @@ mod tests {
         let got = cached_or_compute("python", "x", &theme, || lines_of("as-python"));
 
         assert_eq!(got, lines_of("as-python"));
-        assert_eq!(highlight_cache_stats().entries, 2);
+        // Same reasoning as the theme case: prove both keys are retained and
+        // distinct rather than counting entries in a shared cache.
+        assert_eq!(
+            cached_or_compute("rust", "x", &theme, || panic!(
+                "rust entry should still be cached"
+            )),
+            lines_of("as-rust")
+        );
+        assert_eq!(
+            cached_or_compute("python", "x", &theme, || panic!(
+                "python entry should still be cached"
+            )),
+            lines_of("as-python")
+        );
     }
 
     #[test]
@@ -296,12 +333,23 @@ mod tests {
         let theme = HighlightTheme::default();
         let huge = "x".repeat(MAX_BYTES + 1);
 
-        let got = cached_or_compute("rust", "big", &theme, || lines_of(&huge));
-
+        let mut computes = 0usize;
+        let got = cached_or_compute("rust", "big", &theme, || {
+            computes += 1;
+            lines_of(&huge)
+        });
         assert_eq!(got, lines_of(&huge), "caller still gets its result");
+
+        // Not retained: a second lookup of the same key must recompute. This
+        // replaces an `entries == 0` check, which observed insertions made
+        // concurrently by other tests sharing the process-global cache.
+        let again = cached_or_compute("rust", "big", &theme, || {
+            computes += 1;
+            lines_of(&huge)
+        });
+        assert_eq!(again, lines_of(&huge));
         assert_eq!(
-            highlight_cache_stats().entries,
-            0,
+            computes, 2,
             "an entry larger than the budget must not be stored"
         );
     }
