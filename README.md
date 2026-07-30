@@ -163,7 +163,9 @@ Slash commands can be typed directly in the textbox or discovered with **Ctrl+K*
 | **Page Up / Page Down** | Scroll the conversation |
 | **Ctrl+C** | Quit Forge |
 
-You can copy visible output with your terminal's normal mouse selection.
+Mouse interactions are enabled by default. To keep terminal-native mouse
+selection instead, set `[tui] mouse_capture = false` in `forge.toml`; all
+workflows remain keyboard-accessible.
 
 **Reasoning effort at startup**
 
