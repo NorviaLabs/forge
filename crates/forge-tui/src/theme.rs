@@ -128,10 +128,6 @@ pub fn tool_success_style() -> Style {
     ok().add_modifier(Modifier::BOLD)
 }
 
-pub fn tool_failure_style() -> Style {
-    danger().add_modifier(Modifier::BOLD)
-}
-
 pub fn metadata_style() -> Style {
     muted()
 }

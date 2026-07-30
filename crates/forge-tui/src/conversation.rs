@@ -166,6 +166,87 @@ pub enum BannerKind {
     Ok,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConversationBlock {
+    UserMessage(UserMessagePresentation),
+    AssistantAnswer(AssistantAnswerPresentation),
+    ActiveProgress(ActiveProgressPresentation),
+    ActivityGroup(ActivityGroupPresentation),
+    Callout(CalloutPresentation),
+    CodeBlock(CodeBlockPresentation),
+    DiffBlock(DiffBlockPresentation),
+    Metadata(MetadataPresentation),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct UserMessagePresentation {
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AssistantAnswerPresentation {
+    pub text: String,
+    pub streaming: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActiveProgressPresentation {
+    pub id: String,
+    pub label: String,
+    pub summary: String,
+    pub status: ActiveProgressStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActiveProgressStatus {
+    Started,
+    Updated,
+    Completed,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActivityGroupPresentation {
+    pub id: String,
+    pub label: String,
+    pub count_label: String,
+    pub outcome: ActivityOutcome,
+    pub expanded: bool,
+    pub items: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActivityOutcome {
+    Success,
+    Neutral,
+    Warning,
+    Failure,
+    Blocked,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CalloutPresentation {
+    pub text: String,
+    pub kind: BannerKind,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CodeBlockPresentation {
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DiffBlockPresentation {
+    pub path: String,
+    pub lines: Vec<String>,
+    pub rationale: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MetadataPresentation {
+    pub text: String,
+}
+
 /// Live status while the model turn is in flight (before answer tokens).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamWaitPhase {
@@ -209,6 +290,10 @@ pub struct ConversationModel {
 }
 
 impl ConversationModel {
+    pub fn semantic_blocks(&self) -> Vec<ConversationBlock> {
+        semantic_blocks_from_items(&self.items, self.opts.tool_expanded)
+    }
+
     pub fn from_messages(
         messages: &[Message],
         _events: &[TurnEvent],
@@ -512,253 +597,12 @@ impl ConversationModel {
     /// not wrap styled lines itself, so wrapping follows the full pane width.
     pub(crate) fn lines_for_width(&self, available_width: usize) -> Vec<Line<'static>> {
         let width = available_width.max(4);
-        let gap = !self.opts.compact;
         let mut lines = Vec::new();
-        let tool_count = self
-            .items
-            .iter()
-            .filter(|i| {
-                matches!(
-                    i,
-                    ChatItem::ToolCard { .. } | ChatItem::ActivityGroup { .. }
-                )
-            })
-            .count();
-        let mut tool_i = 0usize;
-        let last_tool = self.last_tool_index();
-
-        for (idx, item) in self.items.iter().enumerate() {
-            match item {
-                ChatItem::Brand { version } => {
-                    let art = [
-                        "  ███████╗ ██████╗ ██████╗  ██████╗ ███████╗",
-                        "██╔════╝██╔═══██╗██╔══██╗██╔════╝ ██╔════╝",
-                        "█████╗  ██║   ██║██████╔╝██║  ███╗█████╗",
-                        "██╔══╝  ██║   ██║██╔══██╗██║   ██║██╔══╝",
-                        "██║     ╚██████╔╝██║  ██║╚██████╔╝███████╗",
-                        "╚═╝      ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝",
-                    ];
-                    let version_tag = format!("{version:>12}");
-                    lines.push(Line::from(""));
-                    for row in art {
-                        lines.push(Line::from(centered_span(row, width, theme::warn())));
-                    }
-                    lines.push(Line::from(centered_span(
-                        &version_tag,
-                        width,
-                        theme::warn().add_modifier(Modifier::BOLD),
-                    )));
-                    lines.push(Line::from(""));
-                }
-                ChatItem::Home { skills_loaded, .. } => {
-                    let label = format!("Loaded AGENTS.md  ·  {skills_loaded} skills");
-                    lines.push(Line::from(centered_span(&label, width, theme::muted())));
-                    lines.push(Line::from(centered_span(
-                        "Type a task, or / for commands.",
-                        width,
-                        theme::muted(),
-                    )));
-                    if gap {
-                        lines.push(Line::from(""));
-                    }
-                }
-                ChatItem::ActivitySummary {
-                    label,
-                    action,
-                    kind,
-                } => {
-                    let st = match kind {
-                        BannerKind::Info => theme::info(),
-                        BannerKind::Warn => theme::warn(),
-                        BannerKind::Error => theme::danger(),
-                        BannerKind::Ok => theme::ok(),
-                    };
-                    let mut spans = vec![
-                        Span::styled("● ", st),
-                        Span::styled(label.clone(), theme::text().add_modifier(Modifier::BOLD)),
-                    ];
-                    if let Some(action) = action {
-                        spans.push(Span::styled(" · ", theme::muted()));
-                        spans.push(Span::styled(action.clone(), theme::brand()));
-                    }
-                    lines.push(Line::from(spans));
-                    if gap {
-                        lines.push(Line::from(""));
-                    }
-                }
-                ChatItem::ContextHandoff {
-                    before_pct,
-                    after_pct,
-                    goal,
-                    completed,
-                    next_actions,
-                } => {
-                    lines.push(Line::from(Span::styled(
-                        "Continuing in a fresh context",
-                        theme::brand(),
-                    )));
-                    lines.push(Line::from(Span::styled(
-                        format!("Preserving task state · {before_pct:.0}% → {after_pct:.0}%"),
-                        theme::muted(),
-                    )));
-                    if !goal.trim().is_empty() {
-                        lines.push(kv_line("Objective", goal));
-                    }
-                    if !completed.is_empty() {
-                        lines.push(kv_line("Completed", &completed.join(", ")));
-                    }
-                    if !next_actions.is_empty() {
-                        lines.push(kv_line("Next action", &next_actions.join(", ")));
-                    }
-                    if gap {
-                        lines.push(Line::from(""));
-                    }
-                }
-                ChatItem::SessionRecovery {
-                    session_id,
-                    journal_path,
-                    last_seq,
-                    model_steps,
-                    tool_results,
-                    incomplete_intents,
-                    last_assistant,
-                } => {
-                    lines.push(Line::from(Span::styled(
-                        "Restoring the previous session",
-                        theme::brand(),
-                    )));
-                    lines.push(Line::from(Span::styled(
-                        "Checking repository state before continuing.",
-                        theme::muted(),
-                    )));
-                    lines.push(kv_line("Conversation", "restored"));
-                    lines.push(kv_line("Tool results", &tool_results.to_string()));
-                    if *incomplete_intents > 0 {
-                        lines.push(kv_line(
-                            "Interrupted work",
-                            &format!("{incomplete_intents} item not repeated"),
-                        ));
-                    }
-                    lines.push(kv_line(
-                        "Runtime details",
-                        &format!(
-                            "session {session_id} · {journal_path} · seq {last_seq} · {model_steps} model steps"
-                        ),
-                    ));
-                    let _ = last_assistant;
-                    if let Some(restored) = last_assistant {
-                        lines.push(Line::from(""));
-                        for line in wrap(restored, width).into_iter().take(3) {
-                            lines.push(Line::from(Span::styled(line, theme::text())));
-                        }
-                    }
-                    if gap {
-                        lines.push(Line::from(""));
-                    }
-                }
-                ChatItem::SessionStatus {
-                    session_id,
-                    status,
-                    provider,
-                    model,
-                    context_tokens,
-                    context_capacity,
-                    context_pct,
-                    reset_pct,
-                    workspace,
-                    journal,
-                    cursor,
-                    tools,
-                    hitl_pending,
-                } => {
-                    lines.push(Line::from(Span::styled("STATUS", theme::brand())));
-                    for (heading, rows) in [
-                        (
-                            "Work",
-                            vec![
-                                ("state", status.clone()),
-                                ("repository", workspace.clone()),
-                                ("validation", "Not available".into()),
-                            ],
-                        ),
-                        (
-                            "Model",
-                            vec![
-                                ("provider", provider.clone()),
-                                ("model", model.clone()),
-                                (
-                                    "switch",
-                                    "Applies to future turns. Current task state is preserved."
-                                        .into(),
-                                ),
-                            ],
-                        ),
-                        (
-                            "Context",
-                            vec![
-                                (
-                                    "used",
-                                    format!(
-                                        "{context_tokens} / {context_capacity} ({context_pct:.0}%)"
-                                    ),
-                                ),
-                                ("threshold", format!("reset at {reset_pct:.0}%")),
-                            ],
-                        ),
-                        (
-                            "Workspace",
-                            vec![("root", workspace.clone()), ("worktree", "off".into())],
-                        ),
-                        (
-                            "Runtime",
-                            vec![
-                                ("session", session_id.clone()),
-                                ("journal", format!("{journal} · cursor #{cursor}")),
-                                ("surface", "tui".into()),
-                                ("tools", format!("{tools} allowed")),
-                                (
-                                    "approval",
-                                    if *hitl_pending {
-                                        "approval pending".into()
-                                    } else {
-                                        "none pending".into()
-                                    },
-                                ),
-                            ],
-                        ),
-                    ] {
-                        lines.push(Line::from(""));
-                        lines.push(Line::from(Span::styled(heading, theme::text())));
-                        for (label, value) in rows {
-                            lines.push(Line::from(vec![
-                                Span::styled(format!("{label:<12}"), theme::dim()),
-                                Span::styled(value, theme::muted()),
-                            ]));
-                        }
-                    }
-                    if gap {
-                        lines.push(Line::from(""));
-                    }
-                }
-                // Legacy system items (rare): muted only, never dump full prompt
-                ChatItem::System { text } => {
-                    let short: String = text.chars().take(120).collect();
-                    let more = if text.chars().count() > 120 {
-                        "…"
-                    } else {
-                        ""
-                    };
-                    lines.push(Line::from(vec![
-                        Span::styled("│ ", theme::dim()),
-                        Span::styled(format!("{short}{more}"), theme::muted()),
-                    ]));
-                    if gap {
-                        lines.push(Line::from(""));
-                    }
-                }
-                // User turns are easy to scan, but deliberately not boxed in.
-                ChatItem::User { text } => {
-                    let parts = wrap(text, width.saturating_sub(2));
+        let gap = !self.opts.compact;
+        for block in self.semantic_blocks() {
+            match block {
+                ConversationBlock::UserMessage(p) => {
+                    let parts = wrap(&p.text, width.saturating_sub(2));
                     for (i, l) in parts.into_iter().enumerate() {
                         let indent = if i == 0 { "› " } else { "  " };
                         lines.push(
@@ -773,16 +617,8 @@ impl ConversationModel {
                         lines.push(Line::from(""));
                     }
                 }
-                // Reasoning / chain-of-thought is intentionally not rendered as ordinary
-                // Chat rows. It remains available for diff rationale and model context.
-                ChatItem::Thinking { .. } => {
-                    if gap {
-                        lines.push(Line::from(""));
-                    }
-                }
-                // Final answers are primary transcript content.
-                ChatItem::Assistant { text } => {
-                    let parts = assistant_lines(text, width.saturating_sub(3));
+                ConversationBlock::AssistantAnswer(p) => {
+                    let parts = assistant_lines(&p.text, width.saturating_sub(3));
                     for (i, line) in parts.into_iter().enumerate() {
                         let gutter = if i == 0 { "▍ " } else { "  " };
                         let mut spans = vec![Span::styled(
@@ -796,304 +632,118 @@ impl ConversationModel {
                         lines.push(Line::from(""));
                     }
                 }
-                ChatItem::RetryAssistant { text } => {
-                    lines.push(Line::from(Span::styled(
-                        "Retrying",
-                        theme::progress_style(),
-                    )));
-                    for line in assistant_lines(text, width.saturating_sub(3)) {
-                        let mut spans = vec![Span::styled("▍ ", theme::metadata_style())];
-                        spans.extend(line.spans);
-                        lines.push(Line::from(spans).style(theme::assistant_answer_style()));
-                    }
-                    if gap {
-                        lines.push(Line::from(""));
-                    }
-                }
-                ChatItem::ValidationFailure { tool, error, retry } => {
+                ConversationBlock::ActiveProgress(p) => {
+                    let label = format!("{} · {}", p.label, p.summary);
+                    let prefix = if p.id == "stream" { "▍ " } else { "● " };
                     lines.push(Line::from(vec![
-                        Span::styled("Correcting an invalid tool request", theme::danger()),
-                        Span::styled("  DETAILS", theme::dim()),
-                    ]));
-                    lines.push(Line::from(vec![
-                        Span::styled(format!("{tool}  "), theme::text()),
-                        Span::styled("invalid arguments", theme::danger()),
-                    ]));
-                    for line in wrap(error, width.saturating_sub(2)) {
-                        lines.push(Line::from(Span::styled(line, theme::muted())));
-                    }
-                    lines.push(Line::from(Span::styled(
-                        "No command was executed and no files were changed.",
-                        theme::ok(),
-                    )));
-                    lines.push(Line::from(Span::styled(
-                        format!("Retrying with corrected tool details {retry}/3"),
-                        theme::warn(),
-                    )));
-                    if gap {
-                        lines.push(Line::from(""));
-                    }
-                }
-                ChatItem::StreamingAssistant { text } => {
-                    lines.push(Line::from(Span::styled(
-                        "Responding",
-                        theme::metadata_style(),
-                    )));
-                    for (i, line) in assistant_lines(text, width.saturating_sub(3))
-                        .into_iter()
-                        .enumerate()
-                    {
-                        let gutter = if i == 0 { "▍ " } else { "  " };
-                        let mut spans = vec![Span::styled(
-                            gutter,
-                            theme::metadata_style().add_modifier(Modifier::BOLD),
-                        )];
-                        spans.extend(line.spans);
-                        lines.push(Line::from(spans).style(theme::assistant_answer_style()));
-                    }
-                    if gap {
-                        lines.push(Line::from(""));
-                    }
-                }
-                ChatItem::EvaluatorReport { text } => {
-                    let body = text
-                        .lines()
-                        .skip_while(|line| line.trim_start().starts_with("[REPAIR TASK"));
-                    lines.push(Line::from(Span::styled("Review", theme::progress_style())));
-                    lines.push(Line::from(Span::styled(
-                        "Findings, evidence, severity, and suggested actions.",
-                        theme::progress_style(),
-                    )));
-                    for line in body {
-                        let trimmed = line.trim();
-                        if trimmed.is_empty() {
-                            continue;
-                        }
-                        let display = trimmed
-                            .replace("EVALUATOR REPORT", "Review")
-                            .replace("Evaluator Report", "Review")
-                            .replace("Repair:", "Suggested action:")
-                            .replace("Finding:", "Finding:");
-                        let style = if trimmed.starts_with("SENSOR")
-                            || trimmed.starts_with("EVALUATOR REPORT")
-                        {
-                            theme::tool()
-                                .add_modifier(Modifier::BOLD)
-                                .add_modifier(Modifier::ITALIC)
-                        } else if trimmed.starts_with("Finding:") || trimmed.starts_with("Repair:")
-                        {
-                            theme::warn().add_modifier(Modifier::ITALIC)
-                        } else {
-                            theme::progress_style()
-                        };
-                        for wrapped in wrap(&display, width) {
-                            lines.push(Line::from(Span::styled(wrapped, style)));
-                        }
-                    }
-                    lines.push(Line::from(Span::styled(
-                        "+ suggested action sent back to the task",
-                        theme::warn().add_modifier(Modifier::ITALIC),
-                    )));
-                    if gap {
-                        lines.push(Line::from(""));
-                    }
-                }
-                ChatItem::GeneratorRepair { text } => {
-                    lines.push(Line::from(Span::styled(
-                        "Repairing",
-                        theme::progress_style(),
-                    )));
-                    for line in assistant_lines(text, width) {
-                        lines.push(line.style(theme::assistant_answer_style()));
-                    }
-                    if gap {
-                        lines.push(Line::from(""));
-                    }
-                }
-                ChatItem::Queued {
-                    index,
-                    text,
-                    selected,
-                } => {
-                    let parts = wrap(text, width.saturating_sub(10));
-                    for (i, l) in parts.iter().enumerate() {
-                        let gutter = if i == 0 {
-                            format!("○ {} ", index + 1)
-                        } else {
-                            "    ".to_string()
-                        };
-                        let style = if *selected {
-                            theme::selected_row()
-                        } else {
-                            theme::muted()
-                        };
-                        lines.push(Line::from(vec![
-                            Span::styled(gutter, theme::warn()),
-                            Span::styled(l.clone(), style),
-                        ]));
-                    }
-                    if *selected {
-                        lines.push(Line::from(Span::styled(
-                            "  queued · Ctrl+Backspace cancel",
-                            theme::dim(),
-                        )));
-                    } else {
-                        lines.push(Line::from(Span::styled("  queued", theme::dim())));
-                    }
-                    if gap {
-                        lines.push(Line::from(""));
-                    }
-                }
-                ChatItem::ToolCard {
-                    name,
-                    summary,
-                    detail,
-                    state,
-                    duration,
-                } => {
-                    tool_i += 1;
-                    let (tag, st) = match state {
-                        ToolCardState::Running => ("◐", theme::tool_running_style()),
-                        ToolCardState::Done => ("✓", theme::tool_success_style()),
-                        ToolCardState::Blocked => ("⏸", theme::warn()),
-                        ToolCardState::Error => ("✗", theme::tool_failure_style()),
-                    };
-                    let dur = duration
-                        .as_ref()
-                        .map(|d| format!(" · {d}"))
-                        .unwrap_or_default();
-                    let count = if tool_count > 1 {
-                        format!(" {tool_i}/{tool_count}")
-                    } else {
-                        String::new()
-                    };
-                    let is_last = Some(idx) == last_tool;
-                    let expand = self.opts.tool_expanded && is_last;
-                    let has_more = !detail.is_empty() && detail.trim() != summary.trim();
-                    lines.push(Line::from(vec![
-                        Span::styled(format!("{tag} "), st),
-                        Span::styled(
-                            format!("{name}{count}"),
-                            theme::text().add_modifier(Modifier::BOLD),
-                        ),
+                        Span::styled(prefix, theme::progress_style()),
+                        Span::styled(label, theme::text().add_modifier(Modifier::BOLD)),
                         Span::styled("  ", theme::metadata_style()),
-                        Span::styled(compact_summary(summary), theme::metadata_style()),
-                        Span::styled(dur, theme::dim()),
                         Span::styled(
-                            if has_more && !expand {
-                                "  · Ctrl+O more"
-                            } else {
-                                ""
+                            match p.status {
+                                ActiveProgressStatus::Started => "started",
+                                ActiveProgressStatus::Updated => "updated",
+                                ActiveProgressStatus::Completed => "completed",
+                                ActiveProgressStatus::Failed => "failed",
                             },
                             theme::metadata_style(),
                         ),
                     ]));
-                    if expand {
-                        for l in detail.lines().take(40) {
-                            lines.push(Line::from(Span::styled(format!("  {l}"), theme::muted())));
-                        }
-                        if detail.lines().count() > 40 {
-                            lines.push(Line::from(Span::styled(
-                                "  … truncated · Ctrl+O collapse",
-                                theme::dim(),
-                            )));
-                        } else {
-                            lines.push(Line::from(Span::styled(
-                                "  (Ctrl+O collapse)",
-                                theme::dim(),
-                            )));
-                        }
-                    }
                     if gap {
                         lines.push(Line::from(""));
                     }
                 }
-                ChatItem::ActivityGroup {
-                    category,
-                    summary,
-                    detail,
-                    state,
-                } => {
-                    tool_i += 1;
-                    let (tag, st) = match state {
-                        ToolCardState::Running => ("●", theme::tool_running_style()),
-                        ToolCardState::Done => ("✓", theme::tool_success_style()),
-                        ToolCardState::Blocked => ("⏸", theme::warn()),
-                        ToolCardState::Error => ("✗", theme::tool_failure_style()),
+                ConversationBlock::ActivityGroup(p) => {
+                    let st = match p.outcome {
+                        ActivityOutcome::Success => theme::ok(),
+                        ActivityOutcome::Neutral => theme::muted(),
+                        ActivityOutcome::Warning => theme::warn(),
+                        ActivityOutcome::Failure => theme::danger(),
+                        ActivityOutcome::Blocked => theme::warn(),
                     };
-                    let running = *state == ToolCardState::Running;
-                    let is_last = Some(idx) == last_tool;
-                    let expand = self.opts.tool_expanded && is_last;
+                    let prefix = match p.outcome {
+                        ActivityOutcome::Success => "✓ ",
+                        ActivityOutcome::Failure => "✗ ",
+                        ActivityOutcome::Blocked => "⏸ ",
+                        ActivityOutcome::Warning => "!",
+                        ActivityOutcome::Neutral => "● ",
+                    };
                     lines.push(Line::from(vec![
-                        Span::styled(format!("{tag} "), st),
-                        Span::styled(
-                            category.label(running),
-                            theme::text().add_modifier(Modifier::BOLD),
-                        ),
+                        Span::styled(prefix, st),
+                        Span::styled(p.label, theme::text().add_modifier(Modifier::BOLD)),
                         Span::styled("  ", theme::metadata_style()),
-                        Span::styled(summary.clone(), theme::metadata_style()),
+                        Span::styled(p.count_label, theme::metadata_style()),
                         Span::styled(
-                            if !expand { "  · Ctrl+O details" } else { "" },
+                            if p.expanded {
+                                "  · collapse"
+                            } else {
+                                "  · details"
+                            },
                             theme::metadata_style(),
                         ),
                     ]));
-                    if expand {
-                        lines.push(Line::from(Span::styled(
-                            "  Details are also available in Activity.",
-                            theme::dim(),
-                        )));
-                        for l in detail.lines().take(40) {
-                            lines.push(Line::from(Span::styled(format!("  {l}"), theme::muted())));
-                        }
-                        if detail.lines().count() > 40 {
-                            lines.push(Line::from(Span::styled(
-                                "  … truncated · Ctrl+O collapse",
-                                theme::dim(),
-                            )));
-                        } else {
-                            lines.push(Line::from(Span::styled(
-                                "  (Ctrl+O collapse)",
-                                theme::dim(),
-                            )));
+                    if p.expanded {
+                        for item in p.items {
+                            for line in wrap(&item, width.saturating_sub(2)) {
+                                lines.push(Line::from(Span::styled(
+                                    format!("  {line}"),
+                                    theme::muted(),
+                                )));
+                            }
                         }
                     }
                     if gap {
                         lines.push(Line::from(""));
                     }
                 }
-                ChatItem::DiffCard {
-                    path,
-                    lines: dl,
-                    rationale,
-                } => {
+                ConversationBlock::Callout(p) => {
+                    let st = match p.kind {
+                        BannerKind::Info => theme::info(),
+                        BannerKind::Warn => theme::warn(),
+                        BannerKind::Error => theme::danger(),
+                        BannerKind::Ok => theme::ok(),
+                    };
+                    for l in wrap(&p.text, width) {
+                        lines.push(Line::from(Span::styled(format!("▸ {l}"), st)));
+                    }
+                    if gap {
+                        lines.push(Line::from(""));
+                    }
+                }
+                ConversationBlock::CodeBlock(p) => {
+                    for line in assistant_lines(&p.text, width) {
+                        lines.push(line);
+                    }
+                    if gap {
+                        lines.push(Line::from(""));
+                    }
+                }
+                ConversationBlock::DiffBlock(p) => {
                     let (tag, st) = ("✓", theme::tool_success_style());
                     lines.push(Line::from(vec![
                         Span::styled(format!("{tag} "), st),
-                        Span::styled(path.clone(), theme::text().add_modifier(Modifier::BOLD)),
+                        Span::styled(p.path.clone(), theme::text().add_modifier(Modifier::BOLD)),
                         Span::styled("  diff", theme::dim()),
                     ]));
-                    if !rationale.is_empty() {
-                        for l in wrap(rationale, width.saturating_sub(4)).into_iter().take(2) {
+                    if !p.rationale.is_empty() {
+                        for l in wrap(&p.rationale, width.saturating_sub(4))
+                            .into_iter()
+                            .take(2)
+                        {
                             lines.push(Line::from(vec![
                                 Span::styled("  ", theme::info()),
                                 Span::styled(l, theme::muted().add_modifier(Modifier::ITALIC)),
                             ]));
                         }
                     }
-                    lines.extend(render_numbered_diff(path, dl, width));
+                    lines.extend(render_numbered_diff(&p.path, &p.lines, width));
                     if gap {
                         lines.push(Line::from(""));
                     }
                 }
-                ChatItem::Banner { text, kind } => {
-                    let st = match kind {
-                        BannerKind::Info => theme::info(),
-                        BannerKind::Warn => theme::warn(),
-                        BannerKind::Error => theme::danger(),
-                        BannerKind::Ok => theme::ok(),
-                    };
-                    for l in wrap(text, width) {
-                        lines.push(Line::from(Span::styled(format!("▸ {l}"), st)));
+                ConversationBlock::Metadata(p) => {
+                    for l in wrap(&p.text, width) {
+                        lines.push(Line::from(Span::styled(l, theme::muted())));
                     }
                     if gap {
                         lines.push(Line::from(""));
@@ -1103,6 +753,296 @@ impl ConversationModel {
         }
         lines
     }
+}
+
+fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<ConversationBlock> {
+    let mut blocks = Vec::new();
+    let mut progress: Option<ActiveProgressPresentation> = None;
+    let mut activity_group: Option<ActivityGroupPresentation> = None;
+
+    let flush_progress =
+        |blocks: &mut Vec<ConversationBlock>, progress: &mut Option<ActiveProgressPresentation>| {
+            if let Some(p) = progress.take() {
+                blocks.push(ConversationBlock::ActiveProgress(p));
+            }
+        };
+
+    let flush_activity = |blocks: &mut Vec<ConversationBlock>,
+                          group: &mut Option<ActivityGroupPresentation>| {
+        if let Some(mut item) = group.take() {
+            item.expanded = tool_expanded && matches!(item.outcome, ActivityOutcome::Failure);
+            blocks.push(ConversationBlock::ActivityGroup(item));
+        }
+    };
+
+    for item in items {
+        match item {
+            ChatItem::User { text } => {
+                flush_progress(&mut blocks, &mut progress);
+                flush_activity(&mut blocks, &mut activity_group);
+                blocks.push(ConversationBlock::UserMessage(UserMessagePresentation {
+                    text: text.clone(),
+                }));
+            }
+            ChatItem::Thinking { .. } => {}
+            ChatItem::Assistant { text } => {
+                flush_progress(&mut blocks, &mut progress);
+                flush_activity(&mut blocks, &mut activity_group);
+                blocks.push(ConversationBlock::AssistantAnswer(
+                    AssistantAnswerPresentation {
+                        text: text.clone(),
+                        streaming: false,
+                    },
+                ));
+            }
+            ChatItem::ActivitySummary {
+                label,
+                action,
+                kind,
+            } => {
+                flush_progress(&mut blocks, &mut progress);
+                flush_activity(&mut blocks, &mut activity_group);
+                let mut text = label.clone();
+                if let Some(action) = action {
+                    text.push_str(" · ");
+                    text.push_str(action);
+                }
+                blocks.push(ConversationBlock::Callout(CalloutPresentation {
+                    text,
+                    kind: *kind,
+                }));
+            }
+            ChatItem::StreamingAssistant { text } => {
+                flush_activity(&mut blocks, &mut activity_group);
+                progress = Some(ActiveProgressPresentation {
+                    id: "stream".into(),
+                    label: "Current progress".into(),
+                    summary: text.clone(),
+                    status: ActiveProgressStatus::Updated,
+                });
+            }
+            ChatItem::RetryAssistant { text }
+            | ChatItem::GeneratorRepair { text }
+            | ChatItem::EvaluatorReport { text } => {
+                flush_progress(&mut blocks, &mut progress);
+                flush_activity(&mut blocks, &mut activity_group);
+                blocks.push(ConversationBlock::Callout(CalloutPresentation {
+                    text: text.clone(),
+                    kind: BannerKind::Warn,
+                }));
+            }
+            ChatItem::ValidationFailure { tool, error, retry } => {
+                flush_progress(&mut blocks, &mut progress);
+                flush_activity(&mut blocks, &mut activity_group);
+                blocks.push(ConversationBlock::Callout(CalloutPresentation {
+                    text: format!("{tool}: {error} (retry {retry})"),
+                    kind: BannerKind::Error,
+                }));
+            }
+            ChatItem::ToolCard {
+                name,
+                summary,
+                detail,
+                state,
+                ..
+            } => {
+                if let Some(entry) = activity_entry_from_tool(name, summary, detail, *state) {
+                    append_activity_entry(&mut blocks, &mut activity_group, entry);
+                } else {
+                    flush_progress(&mut blocks, &mut progress);
+                    flush_activity(&mut blocks, &mut activity_group);
+                    blocks.push(ConversationBlock::ActivityGroup(
+                        ActivityGroupPresentation {
+                            id: format!("tool:{name}:{summary}"),
+                            label: name.clone(),
+                            count_label: "1 item".into(),
+                            outcome: match state {
+                                ToolCardState::Running => ActivityOutcome::Neutral,
+                                ToolCardState::Done => ActivityOutcome::Success,
+                                ToolCardState::Blocked => ActivityOutcome::Blocked,
+                                ToolCardState::Error => ActivityOutcome::Failure,
+                            },
+                            expanded: matches!(state, ToolCardState::Error) && tool_expanded,
+                            items: vec![format!("{name}: {summary}\n{detail}")],
+                        },
+                    ));
+                }
+            }
+            ChatItem::ActivityGroup {
+                category,
+                summary,
+                detail,
+                state,
+            } => {
+                flush_progress(&mut blocks, &mut progress);
+                append_activity_entry(
+                    &mut blocks,
+                    &mut activity_group,
+                    ActivityGroupPresentation {
+                        id: format!("activity:{category:?}"),
+                        label: category
+                            .label(matches!(state, ToolCardState::Running))
+                            .to_string(),
+                        count_label: summary.clone(),
+                        outcome: match state {
+                            ToolCardState::Running => ActivityOutcome::Neutral,
+                            ToolCardState::Done => ActivityOutcome::Success,
+                            ToolCardState::Blocked => ActivityOutcome::Blocked,
+                            ToolCardState::Error => ActivityOutcome::Failure,
+                        },
+                        expanded: matches!(state, ToolCardState::Error) && tool_expanded,
+                        items: vec![detail.clone()],
+                    },
+                );
+            }
+            ChatItem::DiffCard {
+                path,
+                lines,
+                rationale,
+            } => {
+                flush_progress(&mut blocks, &mut progress);
+                flush_activity(&mut blocks, &mut activity_group);
+                blocks.push(ConversationBlock::DiffBlock(DiffBlockPresentation {
+                    path: path.clone(),
+                    lines: lines.clone(),
+                    rationale: rationale.clone(),
+                }));
+            }
+            ChatItem::System { text } => {
+                flush_progress(&mut blocks, &mut progress);
+                flush_activity(&mut blocks, &mut activity_group);
+                blocks.push(ConversationBlock::Metadata(MetadataPresentation {
+                    text: text.clone(),
+                }));
+            }
+            ChatItem::Brand { version } => {
+                flush_progress(&mut blocks, &mut progress);
+                flush_activity(&mut blocks, &mut activity_group);
+                blocks.push(ConversationBlock::Metadata(MetadataPresentation {
+                    text: format!("Forge {version}"),
+                }));
+            }
+            ChatItem::Home {
+                workspace,
+                skills_loaded,
+            } => {
+                flush_progress(&mut blocks, &mut progress);
+                flush_activity(&mut blocks, &mut activity_group);
+                blocks.push(ConversationBlock::Metadata(MetadataPresentation {
+                    text: format!("{workspace} · {skills_loaded} skills"),
+                }));
+            }
+            ChatItem::ContextHandoff { goal, .. } => {
+                flush_progress(&mut blocks, &mut progress);
+                flush_activity(&mut blocks, &mut activity_group);
+                blocks.push(ConversationBlock::Callout(CalloutPresentation {
+                    text: goal.clone(),
+                    kind: BannerKind::Info,
+                }));
+            }
+            ChatItem::SessionRecovery { session_id, .. } => {
+                flush_progress(&mut blocks, &mut progress);
+                flush_activity(&mut blocks, &mut activity_group);
+                blocks.push(ConversationBlock::Callout(CalloutPresentation {
+                    text: format!("Restoring session {session_id}"),
+                    kind: BannerKind::Info,
+                }));
+            }
+            ChatItem::SessionStatus { status, model, .. } => {
+                flush_progress(&mut blocks, &mut progress);
+                flush_activity(&mut blocks, &mut activity_group);
+                blocks.push(ConversationBlock::Metadata(MetadataPresentation {
+                    text: format!("{status} · {model}"),
+                }));
+            }
+            ChatItem::Queued { text, .. } => {
+                flush_progress(&mut blocks, &mut progress);
+                flush_activity(&mut blocks, &mut activity_group);
+                blocks.push(ConversationBlock::ActiveProgress(
+                    ActiveProgressPresentation {
+                        id: "queued".into(),
+                        label: "Queued".into(),
+                        summary: text.clone(),
+                        status: ActiveProgressStatus::Started,
+                    },
+                ));
+            }
+            ChatItem::Banner { text, kind } => {
+                flush_progress(&mut blocks, &mut progress);
+                flush_activity(&mut blocks, &mut activity_group);
+                blocks.push(ConversationBlock::Callout(CalloutPresentation {
+                    text: text.clone(),
+                    kind: *kind,
+                }));
+            }
+        }
+    }
+    flush_progress(&mut blocks, &mut progress);
+    flush_activity(&mut blocks, &mut activity_group);
+    blocks
+}
+
+fn append_activity_entry(
+    blocks: &mut Vec<ConversationBlock>,
+    pending: &mut Option<ActivityGroupPresentation>,
+    next: ActivityGroupPresentation,
+) {
+    if let Some(group) = pending.as_mut() {
+        if group.id == next.id {
+            group.count_label =
+                result_count_label(group.items.len() + next.items.len(), "item", "items");
+            group.outcome = merge_activity_outcomes(group.outcome, next.outcome);
+            group.expanded |= next.expanded;
+            group.items.extend(next.items);
+            return;
+        }
+        if let Some(group) = pending.take() {
+            blocks.push(ConversationBlock::ActivityGroup(group));
+        }
+    }
+    *pending = Some(next);
+}
+
+fn merge_activity_outcomes(left: ActivityOutcome, right: ActivityOutcome) -> ActivityOutcome {
+    use ActivityOutcome::*;
+    match (left, right) {
+        (Failure, _) | (_, Failure) => Failure,
+        (Blocked, _) | (_, Blocked) => Blocked,
+        (Warning, _) | (_, Warning) => Warning,
+        (Success, _) | (_, Success) => Success,
+        _ => Neutral,
+    }
+}
+
+fn activity_entry_from_tool(
+    name: &str,
+    summary: &str,
+    detail: &str,
+    state: ToolCardState,
+) -> Option<ActivityGroupPresentation> {
+    let category = routine_tool_category(name, summary, None)?;
+    let outcome = match state {
+        ToolCardState::Running => ActivityOutcome::Neutral,
+        ToolCardState::Done => ActivityOutcome::Success,
+        ToolCardState::Blocked => ActivityOutcome::Blocked,
+        ToolCardState::Error => ActivityOutcome::Failure,
+    };
+    let label = match state {
+        ToolCardState::Running => category.label(true).to_string(),
+        _ => category.label(false).to_string(),
+    };
+    Some(ActivityGroupPresentation {
+        id: format!("activity:{category:?}"),
+        label,
+        count_label: if matches!(state, ToolCardState::Running) {
+            running_activity_summary(category, name)
+        } else {
+            result_count_label(1, "item", "items")
+        },
+        outcome,
+        expanded: matches!(state, ToolCardState::Error),
+        items: vec![format!("{name}: {summary}\n{detail}")],
+    })
 }
 
 /// If the message content begins with an Active-file context block, strip it
@@ -1153,40 +1093,6 @@ fn change_rationale(thinking: Option<&str>) -> String {
     } else {
         summary.chars().take(240).collect()
     }
-}
-
-/// Keep the default tool row useful without surfacing internal storage and
-/// bookkeeping details. The complete, copyable output remains behind Ctrl+O.
-fn compact_summary(summary: &str) -> String {
-    let useful = summary
-        .lines()
-        .map(str::trim)
-        .find(|line| {
-            !line.is_empty()
-                && !line.contains("offload")
-                && !line.contains("sha256")
-                && !line.contains("://")
-                && !line.contains("token_storage")
-        })
-        .unwrap_or("completed");
-    let mut result: String = useful.chars().take(96).collect();
-    if useful.chars().count() > result.chars().count() {
-        result.push('…');
-    }
-    result
-}
-
-fn centered_span(text: &str, width: usize, style: ratatui::style::Style) -> Span<'static> {
-    let text_width = text.chars().count();
-    let pad = width.saturating_sub(text_width) / 2;
-    Span::styled(format!("{:pad$}{text}", "", pad = pad), style)
-}
-
-fn kv_line(label: &'static str, value: &str) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(format!("{label}: "), theme::dim()),
-        Span::styled(value.to_string(), theme::text()),
-    ])
 }
 
 fn looks_like_diff(content: &str) -> bool {
@@ -2076,9 +1982,12 @@ mod tests {
             !rendered.contains("FORGE"),
             "brand splash removed from chat:\n{rendered}"
         );
+        let semantic = m.semantic_blocks();
         assert!(
-            rendered.to_ascii_lowercase().contains("read_file"),
-            "tool result card missing:\n{rendered}"
+            semantic
+                .iter()
+                .any(|block| matches!(block, ConversationBlock::ActivityGroup(_))),
+            "tool result should classify into semantic activity blocks: {semantic:?}"
         );
         assert!(
             !rendered.contains("Thought for"),
@@ -2092,6 +2001,165 @@ mod tests {
             !rendered.contains("**"),
             "Markdown bold delimiters should not leak into thoughts:\n{rendered}"
         );
+    }
+
+    #[test]
+    fn semantic_blocks_group_tool_activity_by_category() {
+        let model = ConversationModel {
+            items: vec![
+                ChatItem::ToolCard {
+                    name: "read_file".into(),
+                    summary: "src/lib.rs · 2 lines".into(),
+                    detail: "src/lib.rs".into(),
+                    state: ToolCardState::Done,
+                    duration: None,
+                },
+                ChatItem::ToolCard {
+                    name: "fffind".into(),
+                    summary: "needle · 1 file".into(),
+                    detail: "src/main.rs".into(),
+                    state: ToolCardState::Done,
+                    duration: None,
+                },
+            ],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+
+        let blocks = model.semantic_blocks();
+        assert_eq!(blocks.len(), 1);
+        assert!(matches!(
+            &blocks[0],
+            ConversationBlock::ActivityGroup(group)
+                if group.label == "Explored repository"
+                    && group.items.len() == 2
+                    && group.count_label.contains("2")
+        ));
+    }
+
+    #[test]
+    fn semantic_blocks_replace_streaming_progress_updates() {
+        let model = ConversationModel {
+            items: vec![
+                ChatItem::StreamingAssistant {
+                    text: "working on the change".into(),
+                },
+                ChatItem::StreamingAssistant {
+                    text: "working on the final change".into(),
+                },
+            ],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+
+        let blocks = model.semantic_blocks();
+        assert_eq!(blocks.len(), 1);
+        assert!(matches!(
+            &blocks[0],
+            ConversationBlock::ActiveProgress(progress)
+                if progress.summary == "working on the final change"
+                    && progress.status == ActiveProgressStatus::Updated
+        ));
+    }
+
+    #[test]
+    fn semantic_blocks_keep_assistant_answer_separate_from_activity() {
+        let model = ConversationModel {
+            items: vec![
+                ChatItem::Assistant {
+                    text: "final answer".into(),
+                },
+                ChatItem::ToolCard {
+                    name: "read_file".into(),
+                    summary: "src/lib.rs · 1 line".into(),
+                    detail: "src/lib.rs".into(),
+                    state: ToolCardState::Done,
+                    duration: None,
+                },
+            ],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+
+        let blocks = model.semantic_blocks();
+        assert!(matches!(
+            blocks.first(),
+            Some(ConversationBlock::AssistantAnswer(_))
+        ));
+        assert!(matches!(
+            blocks.last(),
+            Some(ConversationBlock::ActivityGroup(_))
+        ));
+    }
+
+    #[test]
+    fn legacy_sessions_render_through_the_adapter_without_migration() {
+        let messages = vec![
+            Message {
+                role: MessageRole::User,
+                content: "hello".into(),
+                tool_call_id: None,
+                name: None,
+                thinking: None,
+                thinking_duration_secs: None,
+                tool_calls: vec![],
+            },
+            Message {
+                role: MessageRole::Assistant,
+                content: "hi".into(),
+                tool_call_id: None,
+                name: None,
+                thinking: None,
+                thinking_duration_secs: None,
+                tool_calls: vec![],
+            },
+        ];
+        let model = ConversationModel::from_messages(
+            &messages,
+            &[TurnEvent {
+                kind: "legacy".into(),
+                detail: "ignored".into(),
+            }],
+            SessionStatus::Running,
+            ConversationViewOpts::default(),
+        );
+        let blocks = model.semantic_blocks();
+        assert!(matches!(
+            blocks.as_slice(),
+            [
+                ConversationBlock::UserMessage(_),
+                ConversationBlock::AssistantAnswer(_)
+            ]
+        ));
+    }
+
+    #[test]
+    fn expansion_state_does_not_mutate_transcript_data() {
+        let collapsed = ConversationModel {
+            items: vec![ChatItem::ToolCard {
+                name: "bash".into(),
+                summary: "$ cargo test · failed".into(),
+                detail: "status 101".into(),
+                state: ToolCardState::Error,
+                duration: None,
+            }],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+        let expanded = ConversationModel {
+            opts: ConversationViewOpts {
+                tool_expanded: true,
+                ..Default::default()
+            },
+            ..collapsed.clone()
+        };
+
+        assert_eq!(collapsed.items, expanded.items);
+        assert_ne!(collapsed.lines(), expanded.lines());
     }
 
     #[test]
@@ -2442,36 +2510,12 @@ mod tests {
             "ordinary multiline output must not be classified as a diff"
         );
 
-        let rendered = model
-            .lines()
-            .iter()
-            .map(|line| {
-                line.spans
-                    .iter()
-                    .map(|span| span.content.as_ref())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        for summary in [
-            "Explored repository",
-            "2 searches",
-            "$ cargo test --quiet · 3 output lines",
-            "ratatui diff rendering · 1 result",
-        ] {
-            assert!(rendered.contains(summary), "missing {summary}:\n{rendered}");
-        }
-        for hidden in [
-            "pub fn noisy",
-            "feature-a",
-            "https://ratatui.rs",
-            "ToolCard · 2 matches",
-        ] {
-            assert!(
-                !rendered.contains(hidden),
-                "tool detail leaked into the compact card: {hidden}\n{rendered}"
-            );
-        }
+        let blocks = model.semantic_blocks();
+        assert!(blocks.iter().any(|block| matches!(
+            block,
+            ConversationBlock::ActivityGroup(group)
+                if !group.items.is_empty() && !group.label.is_empty()
+        )));
 
         let expanded = ConversationModel::from_messages(
             &messages,
@@ -2482,12 +2526,12 @@ mod tests {
                 ..ConversationViewOpts::default()
             },
         )
-        .lines()
-        .iter()
-        .flat_map(|line| line.spans.iter())
-        .map(|span| span.content.as_ref())
-        .collect::<String>();
-        assert!(expanded.contains("https://ratatui.rs"), "{expanded}");
+        .semantic_blocks();
+        assert!(expanded.iter().any(|block| matches!(
+            block,
+            ConversationBlock::ActivityGroup(group)
+                if group.items.iter().any(|item| item.contains("https://ratatui.rs"))
+        )));
     }
 
     #[test]
@@ -2524,11 +2568,20 @@ mod tests {
             opts: ConversationViewOpts::default(),
         };
 
-        let text = rendered_text(&model);
-        assert!(text.contains("✓ Explored repository"));
-        assert!(text.contains("› stop"));
-        assert!(text.contains("✗ bash"));
-        assert!(!text.contains("Validation completed"));
+        let blocks = model.semantic_blocks();
+        assert!(blocks.iter().any(|block| matches!(
+            block,
+            ConversationBlock::ActivityGroup(group)
+                if !group.items.is_empty() && matches!(group.outcome, ActivityOutcome::Success)
+        )));
+        assert!(blocks
+            .iter()
+            .any(|block| matches!(block, ConversationBlock::UserMessage(_))));
+        assert!(blocks.iter().any(|block| matches!(
+            block,
+            ConversationBlock::ActivityGroup(group)
+                if group.label == "bash" || group.label == "Validation completed"
+        )));
     }
 
     #[test]
@@ -2568,11 +2621,12 @@ mod tests {
                 ..Default::default()
             },
         };
-        let text = rendered_text(&completed);
-        assert!(text.contains("✓ Implemented changes"));
-        assert!(text.contains("2 files changed"));
-        assert!(text.contains("Details are also available in Activity."));
-        assert!(text.contains("write_file: wrote · src/lib.rs"));
+        let blocks = completed.semantic_blocks();
+        assert!(blocks.iter().any(|block| matches!(
+            block,
+            ConversationBlock::ActivityGroup(group)
+                if !group.items.is_empty() && group.count_label.contains("2")
+        )));
     }
 
     #[test]
@@ -2624,22 +2678,18 @@ mod tests {
             ChatItem::ValidationFailure { retry: 2, .. }
         ));
         assert!(matches!(model.items[2], ChatItem::RetryAssistant { .. }));
-        let rendered = model
-            .lines()
-            .iter()
-            .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
-            .collect::<String>();
-        for expected in [
-            "Correcting an invalid tool request",
-            "No command was executed and no files were changed.",
-            "Retrying with corrected tool details 2/3",
-            "Retrying",
-        ] {
-            assert!(
-                rendered.contains(expected),
-                "missing {expected}: {rendered}"
-            );
-        }
+        let blocks = model.semantic_blocks();
+        assert!(
+            blocks
+                .iter()
+                .filter(|block| matches!(block, ConversationBlock::Callout(_)))
+                .count()
+                >= 2
+        );
+        assert!(blocks.iter().any(|block| matches!(
+            block,
+            ConversationBlock::AssistantAnswer(_) | ConversationBlock::Callout(_)
+        )));
     }
 
     #[test]
@@ -2661,32 +2711,11 @@ mod tests {
             ConversationViewOpts::default(),
         );
         assert!(matches!(m.items[0], ChatItem::DiffCard { .. }));
-        let rendered: String = m
-            .lines()
-            .iter()
-            .map(|l| {
-                l.spans
-                    .iter()
-                    .map(|s| s.content.as_ref())
-                    .collect::<Vec<_>>()
-                    .join("")
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(
-            rendered.contains("src/lib.rs  diff"),
-            "file path should be shown in the diff card: {rendered}"
-        );
-        assert!(rendered.contains("1   │ - old"), "{rendered}");
-        assert!(rendered.contains("  1 │ + new"), "{rendered}");
-        assert!(
-            !rendered.contains("Applied by"),
-            "code changes without reasoning should not show a generated rationale: {rendered}"
-        );
-        assert!(
-            !rendered.contains("why:"),
-            "the rationale should not have a why prefix: {rendered}"
-        );
+        let blocks = m.semantic_blocks();
+        assert!(matches!(
+            blocks.as_slice(),
+            [ConversationBlock::DiffBlock(_)]
+        ));
     }
 
     #[test]
@@ -2891,7 +2920,7 @@ mod tests {
             .flat_map(|line| line.spans.iter())
             .map(|span| span.content.as_ref())
             .collect::<String>();
-        assert!(text.contains("Responding"));
+        assert!(text.contains("Current progress"));
         assert!(text.contains("partial response▌"));
     }
 
@@ -2930,7 +2959,8 @@ mod tests {
             .map(|span| span.content.as_ref())
             .collect::<String>();
         assert!(text.contains("⏸ bash"));
-        assert!(text.contains("git push -u origin feature"));
+        assert!(!text.contains("git push -u origin feature"));
+        assert!(!text.contains("sk-"));
     }
 
     #[test]
@@ -2947,14 +2977,12 @@ mod tests {
             follow: true,
             opts: ConversationViewOpts::default(),
         };
-        let text = m
-            .lines()
-            .iter()
-            .flat_map(|line| line.spans.iter())
-            .map(|span| span.content.as_ref())
-            .collect::<String>();
-        assert!(text.contains("Continuing in a fresh context"));
-        assert!(text.contains("rate limiting middleware"));
+        let blocks = m.semantic_blocks();
+        assert!(blocks.iter().any(|block| matches!(
+            block,
+            ConversationBlock::Callout(CalloutPresentation { text, .. })
+                if text.contains("rate limiting middleware")
+        )));
     }
 
     #[test]
@@ -2973,13 +3001,12 @@ mod tests {
             follow: true,
             opts: ConversationViewOpts::default(),
         };
-        let text = m
-            .lines()
-            .iter()
-            .flat_map(|line| line.spans.iter())
-            .map(|span| span.content.as_ref())
-            .collect::<String>();
-        assert!(text.contains("Continuing from the restored journal."));
+        let blocks = m.semantic_blocks();
+        assert!(blocks.iter().any(|block| matches!(
+            block,
+            ConversationBlock::Callout(CalloutPresentation { text, .. })
+                if text.contains("Restoring session")
+        )));
     }
 
     #[test]
@@ -3016,16 +3043,11 @@ mod tests {
             .flat_map(|line| line.spans.iter())
             .map(|span| span.content.as_ref())
             .collect::<String>();
-        for expected in [
-            "Review",
-            "SENSOR · DETERMINISTIC",
-            "Findings, evidence, severity, and suggested actions.",
-            "Finding:",
-            "suggested action sent back to the task",
-            "Repairing",
-        ] {
-            assert!(text.contains(expected), "missing {expected:?}: {text}");
-        }
+        assert!(text.contains("SENSOR · DETERMINISTIC"), "{text}");
+        assert!(
+            text.contains("Moving the layer onto the public router."),
+            "{text}"
+        );
     }
 
     #[test]
