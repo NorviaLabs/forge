@@ -632,3 +632,248 @@ impl TuiApp {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use forge_core::{AgentSession, LoopConfig};
+    use forge_model::MockModelClient;
+    use forge_tools::ToolRegistry;
+    use forge_types::ModelResponse;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    async fn app() -> (TempDir, TuiApp) {
+        let dir = TempDir::new().unwrap();
+        let model = Arc::new(MockModelClient::script(vec![ModelResponse {
+            text: "ok".into(),
+            tool_calls: vec![],
+            usage: None,
+            thinking: None,
+        }]));
+        let session = AgentSession::create(
+            LoopConfig {
+                max_turns: 4,
+                workspace: dir.path().to_path_buf(),
+                journal_dir: dir.path().join("j"),
+                enable_context_lifecycle: true,
+                enable_governance: true,
+                ..Default::default()
+            },
+            model,
+            ToolRegistry::new(),
+        )
+        .await
+        .unwrap();
+        let app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "mock".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("/tmp"),
+                version: "forge test".into(),
+                startup_notices: Vec::new(),
+                validation_command: None,
+                file_icons: forge_config::FileIconMode::Unicode,
+                mouse_capture: true,
+                theme: forge_config::Theme::default(),
+            },
+        );
+        (dir, app)
+    }
+
+    /// Focus the composer in navigation mode, which is what `handle_key` needs
+    /// before it will route a press to the chat composer.
+    fn focus_composer(app: &mut TuiApp) {
+        app.focus.mode = FocusMode::Navigation;
+        app.focus.block = FocusBlock::Composer;
+    }
+
+    fn press(code: KeyCode) -> event::KeyEvent {
+        event::KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn press_with(code: KeyCode, modifiers: KeyModifiers) -> event::KeyEvent {
+        event::KeyEvent::new(code, modifiers)
+    }
+
+    #[test]
+    fn printable_chat_char_accepts_plain_and_shifted_characters() {
+        assert_eq!(
+            TuiApp::printable_chat_char(press(KeyCode::Char('a'))),
+            Some('a')
+        );
+        // SHIFT is the one modifier that still yields a printable character.
+        assert_eq!(
+            TuiApp::printable_chat_char(press_with(KeyCode::Char('A'), KeyModifiers::SHIFT)),
+            Some('A')
+        );
+        assert_eq!(
+            TuiApp::printable_chat_char(press(KeyCode::Char(' '))),
+            Some(' ')
+        );
+        assert_eq!(
+            TuiApp::printable_chat_char(press(KeyCode::Char('é'))),
+            Some('é')
+        );
+    }
+
+    #[test]
+    fn printable_chat_char_rejects_control_combinations_and_non_chars() {
+        // Any modifier other than SHIFT means the press is a chord, not text.
+        for m in [
+            KeyModifiers::CONTROL,
+            KeyModifiers::ALT,
+            KeyModifiers::SUPER,
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        ] {
+            assert_eq!(
+                TuiApp::printable_chat_char(press_with(KeyCode::Char('a'), m)),
+                None,
+                "modifier {m:?} should not produce text"
+            );
+        }
+        // Control characters and non-character keys are never text.
+        assert_eq!(
+            TuiApp::printable_chat_char(press(KeyCode::Char('\u{1}'))),
+            None
+        );
+        assert_eq!(TuiApp::printable_chat_char(press(KeyCode::Enter)), None);
+        assert_eq!(TuiApp::printable_chat_char(press(KeyCode::Up)), None);
+    }
+
+    #[tokio::test]
+    async fn release_events_are_ignored_but_arrow_repeats_are_honoured() {
+        let (_dir, mut app) = app().await;
+        focus_composer(&mut app);
+
+        // A key release must not type anything.
+        let mut release = press(KeyCode::Char('x'));
+        release.kind = KeyEventKind::Release;
+        app.handle_key(release).await.unwrap();
+        assert_eq!(app.input.text, "");
+
+        // Auto-repeat of a printable key is also dropped...
+        let mut repeat_char = press(KeyCode::Char('x'));
+        repeat_char.kind = KeyEventKind::Repeat;
+        app.handle_key(repeat_char).await.unwrap();
+        assert_eq!(app.input.text, "");
+
+        // ...but arrow auto-repeat is allowed through, so held arrows still
+        // scroll and move selections. It reaches the composer and is consumed
+        // without inserting text.
+        app.input.text = "ab".into();
+        app.input.cursor = 2;
+        let mut repeat_left = press(KeyCode::Left);
+        repeat_left.kind = KeyEventKind::Repeat;
+        app.handle_key(repeat_left).await.unwrap();
+        assert_eq!(
+            app.input.cursor, 1,
+            "held Left should keep moving the cursor"
+        );
+    }
+
+    #[tokio::test]
+    async fn typing_into_the_composer_inserts_and_dismisses_the_splash() {
+        let (_dir, mut app) = app().await;
+        focus_composer(&mut app);
+        assert!(!app.splash_dismissed);
+
+        for c in "hi".chars() {
+            app.handle_key(press(KeyCode::Char(c))).await.unwrap();
+        }
+
+        assert_eq!(app.input.text, "hi");
+        assert!(
+            app.splash_dismissed,
+            "first typed character should dismiss the splash"
+        );
+    }
+
+    #[tokio::test]
+    async fn composer_editing_keys_move_and_delete() {
+        let (_dir, mut app) = app().await;
+        focus_composer(&mut app);
+        for c in "abc".chars() {
+            app.handle_key(press(KeyCode::Char(c))).await.unwrap();
+        }
+        assert_eq!(app.input.text, "abc");
+        assert_eq!(app.input.cursor, 3);
+
+        app.handle_key(press(KeyCode::Backspace)).await.unwrap();
+        assert_eq!(app.input.text, "ab");
+
+        app.handle_key(press(KeyCode::Left)).await.unwrap();
+        assert_eq!(app.input.cursor, 1);
+        app.handle_key(press(KeyCode::Right)).await.unwrap();
+        assert_eq!(app.input.cursor, 2);
+    }
+
+    #[tokio::test]
+    async fn shifted_arrows_are_swallowed_without_moving_the_cursor() {
+        let (_dir, mut app) = app().await;
+        focus_composer(&mut app);
+        app.input.text = "abc".into();
+        app.input.cursor = 2;
+
+        // Shift+arrow is reserved for selection, which the composer does not
+        // implement; it must be consumed rather than falling through to
+        // focus cycling or global handling.
+        app.handle_key(press_with(KeyCode::Left, KeyModifiers::SHIFT))
+            .await
+            .unwrap();
+        assert_eq!(app.input.cursor, 2);
+        app.handle_key(press_with(KeyCode::Right, KeyModifiers::SHIFT))
+            .await
+            .unwrap();
+        assert_eq!(app.input.cursor, 2);
+        assert_eq!(app.input.text, "abc");
+    }
+
+    #[tokio::test]
+    async fn status_report_overlay_closes_on_enter() {
+        let (_dir, mut app) = app().await;
+        focus_composer(&mut app);
+        app.overlay = Some(Overlay::StatusReport {
+            title: "Status".into(),
+            lines: vec!["all good".into()],
+        });
+
+        app.handle_key(press(KeyCode::Enter)).await.unwrap();
+
+        assert!(app.overlay.is_none(), "Enter should dismiss the report");
+        assert_eq!(app.input.text, "", "Enter must not type into the composer");
+    }
+
+    #[tokio::test]
+    async fn status_report_overlay_closes_and_keeps_the_typed_character() {
+        let (_dir, mut app) = app().await;
+        focus_composer(&mut app);
+        app.overlay = Some(Overlay::StatusReport {
+            title: "Status".into(),
+            lines: vec!["all good".into()],
+        });
+
+        // Typing over the report dismisses it and keeps the keystroke, so the
+        // character is not silently swallowed by the dismissal.
+        app.handle_key(press(KeyCode::Char('h'))).await.unwrap();
+
+        assert!(app.overlay.is_none());
+        assert_eq!(app.input.text, "h");
+    }
+
+    #[tokio::test]
+    async fn typing_with_a_non_composer_focus_still_reaches_the_composer() {
+        let (_dir, mut app) = app().await;
+        // Focus something other than the composer; a printable key should fall
+        // through to `type_to_compose`, which refocuses and inserts.
+        app.focus.mode = FocusMode::Navigation;
+        app.focus.block = FocusBlock::Workspace;
+
+        app.handle_key(press(KeyCode::Char('z'))).await.unwrap();
+
+        assert_eq!(app.input.text, "z");
+        assert_eq!(app.focus.block, FocusBlock::Composer);
+    }
+}
