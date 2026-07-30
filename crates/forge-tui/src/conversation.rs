@@ -1,6 +1,8 @@
 //! Conversation view model (TUI-02) — polished chat, thinking, tools, diffs.
 
 use crate::theme;
+use crate::user_message_gutter;
+use forge_config::Theme;
 use forge_core::{AgentSession, TurnEvent, TURN_FAILED_MARKER};
 use forge_syntax::highlight_to_lines;
 use forge_types::{Message, MessageRole, SessionStatus, ToolCall};
@@ -635,17 +637,13 @@ impl ConversationModel {
         for block in self.semantic_blocks() {
             match block {
                 ConversationBlock::UserMessage(p) => {
-                    let parts = wrap(&p.text, width.saturating_sub(2));
-                    for (i, l) in parts.into_iter().enumerate() {
-                        let indent = if i == 0 { "› " } else { "  " };
-                        lines.push(
-                            Line::from(vec![
-                                Span::styled(indent, theme::metadata_style()),
-                                Span::styled(l, theme::user_message_style()),
-                            ])
-                            .style(theme::user_message()),
-                        );
-                    }
+                    lines.extend(user_message_gutter::render_user_message_lines(
+                        &p.text,
+                        width,
+                        Theme::default(),
+                        false,
+                        wrap,
+                    ));
                     if gap {
                         lines.push(Line::from(""));
                     }
@@ -1801,7 +1799,7 @@ fn redact_tool_output(content: &str) -> String {
     }
 }
 
-fn wrap(s: &str, width: usize) -> Vec<String> {
+pub(crate) fn wrap(s: &str, width: usize) -> Vec<String> {
     if s.is_empty() {
         return vec![String::new()];
     }
@@ -2663,7 +2661,7 @@ mod tests {
     }
 
     #[test]
-    fn user_messages_render_without_prompt_marker() {
+    fn user_messages_render_with_continuous_gutter() {
         let msgs = vec![Message {
             role: MessageRole::User,
             content: "hello world".into(),
@@ -2679,6 +2677,7 @@ mod tests {
             SessionStatus::Running,
             ConversationViewOpts::default(),
         );
+        let glyph = crate::user_message_gutter::gutter_glyph(forge_config::Theme::default(), false);
         let rendered = m
             .lines()
             .iter()
@@ -2690,10 +2689,18 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(rendered.starts_with("› hello world"), "{rendered}");
+        assert!(
+            rendered.starts_with(&format!("{glyph} hello world")),
+            "{rendered}"
+        );
         let first = m.lines().into_iter().next().expect("operator turn");
         assert_eq!(first.style.bg, None);
-        assert!(!rendered.contains("❯"), "{rendered}");
+        assert_eq!(
+            first.spans[0].style.fg,
+            Some(theme::USER_MESSAGE_GUTTER_DARK)
+        );
+        assert_eq!(first.spans[2].style.fg, Some(theme::TEXT));
+        assert!(!rendered.contains('›'), "{rendered}");
         assert!(rendered.contains("hello world"), "{rendered}");
     }
 
