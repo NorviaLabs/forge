@@ -64,6 +64,38 @@ pub struct JumpState {
     pub pre_top: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileIdentity {
+    len: u64,
+    modified: Option<SystemTime>,
+    #[cfg(unix)]
+    dev: u64,
+    #[cfg(unix)]
+    ino: u64,
+}
+
+impl FileIdentity {
+    fn from_metadata(meta: &fs::Metadata) -> Option<Self> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            return Some(Self {
+                len: meta.len(),
+                modified: meta.modified().ok(),
+                dev: meta.dev(),
+                ino: meta.ino(),
+            });
+        }
+        #[cfg(not(unix))]
+        {
+            Some(Self {
+                len: meta.len(),
+                modified: meta.modified().ok(),
+            })
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SourceViewer {
     /// Canonical absolute path of the open file, if any.
@@ -87,6 +119,9 @@ pub struct SourceViewer {
     pub preview: bool,
     /// Last modified time observed for change detection.
     modified: Option<SystemTime>,
+    /// Best-effort file identity from the last successful load. Unix uses
+    /// device/inode; other platforms fall back to size/mtime.
+    identity: Option<FileIdentity>,
     /// Transient notice shown after a refresh.
     pub notice: Option<String>,
     /// Detected language label, shown in the header when known.
@@ -124,6 +159,7 @@ impl Default for SourceViewer {
             size_bytes: 0,
             preview: false,
             modified: None,
+            identity: None,
             notice: None,
             language_label: None,
             highlight_disabled: false,
@@ -181,6 +217,7 @@ impl SourceViewer {
             Ok(meta) => {
                 self.size_bytes = meta.len();
                 self.modified = meta.modified().ok();
+                self.identity = FileIdentity::from_metadata(&meta);
             }
             Err(err) => {
                 self.status = ViewerStatus::Error(format!("{err}"));
@@ -287,7 +324,6 @@ impl SourceViewer {
 
         if !path.exists() {
             self.status = ViewerStatus::NotFound;
-            self.lines.clear();
             self.size_bytes = 0;
             self.modified = None;
             self.preview = false;
@@ -356,7 +392,6 @@ impl SourceViewer {
             return;
         }
         self.status = ViewerStatus::NotFound;
-        self.lines.clear();
         self.size_bytes = 0;
         self.modified = None;
         self.preview = false;
@@ -367,6 +402,42 @@ impl SourceViewer {
         self.search.open = false;
         self.search.matches.clear();
         self.jump.open = false;
+    }
+
+    pub fn reconcile_external_rename_if_same_identity(
+        &mut self,
+        root: &Path,
+        new_path: &Path,
+    ) -> bool {
+        let Some(old_path) = self.path.clone() else {
+            return false;
+        };
+        if old_path == new_path || old_path.exists() {
+            return false;
+        }
+        let Some(old_identity) = self.identity.clone() else {
+            return false;
+        };
+        let Ok(meta) = fs::metadata(new_path) else {
+            return false;
+        };
+        if FileIdentity::from_metadata(&meta).as_ref() != Some(&old_identity) {
+            return false;
+        }
+        let old_top = self.top_line;
+        let old_current = self.current_line;
+        let old_h = self.h_scroll;
+        self.path = Some(new_path.to_path_buf());
+        self.rel_path = pathdiff::diff_paths(new_path, root)
+            .unwrap_or_else(|| new_path.to_path_buf())
+            .display()
+            .to_string();
+        self.refresh(root);
+        self.top_line = old_top.min(self.lines.len().saturating_sub(1));
+        self.current_line = old_current.min(self.lines.len().saturating_sub(1));
+        self.h_scroll = old_h;
+        self.notice = Some("File renamed externally".into());
+        true
     }
 
     pub fn move_cursor_vertical(&mut self, delta: isize, page_height: usize) {
@@ -911,7 +982,12 @@ impl Widget for SourceViewerWidget<'_> {
                 );
             }
             ViewerStatus::NotFound => {
-                self.render_message(inner, buf, "File no longer exists", &self.viewer.rel_path);
+                self.render_message(
+                    inner,
+                    buf,
+                    "File no longer exists",
+                    &format!("{}\nBack · Locate in Files", self.viewer.rel_path),
+                );
             }
             ViewerStatus::Error(ref err) => {
                 self.render_message(inner, buf, "Unable to open file", err);
@@ -1278,10 +1354,14 @@ mod tests {
 
         let mut viewer = SourceViewer::new();
         viewer.open(root.path(), &path);
+        let opened = viewer.path.clone();
+        assert_eq!(viewer.lines, vec!["hi"]);
         fs::remove_file(&path).unwrap();
         viewer.refresh(root.path());
 
         assert_eq!(viewer.status, ViewerStatus::NotFound);
+        assert_eq!(viewer.path, opened);
+        assert_eq!(viewer.lines, vec!["hi"]);
         assert!(viewer.notice.is_some());
     }
 
