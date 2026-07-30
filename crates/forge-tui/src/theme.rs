@@ -378,8 +378,8 @@ mod tests {
 
     #[test]
     fn conversation_background_is_distinct_from_panel() {
-        assert_ne!(user_message().bg, assistant_message().bg);
-        assert_ne!(assistant_message().bg, Some(PANEL));
+        assert_eq!(user_message().bg, None);
+        assert_eq!(assistant_message().bg, None);
     }
 
     #[test]
