@@ -18,10 +18,28 @@ pub enum StoreError {
     Toml(String),
     #[error("credentials file permissions too open (expected 0600)")]
     InsecurePermissions,
+    /// The file declares a schema newer than this build understands. Refusing is
+    /// deliberate: silently mis-reading a newer token layout would look like a
+    /// missing credential and prompt the user to re-authenticate needlessly.
+    #[error(
+        "credentials file declares schema version {found}, but this build understands up to {supported}; upgrade forge to read it"
+    )]
+    UnsupportedSchemaVersion { found: u32, supported: u32 },
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+/// Highest `credentials.toml` schema version this build can read.
+///
+/// A file with no `version` key predates versioning and is read as version 1 —
+/// the shape those files already have — so existing credentials keep loading.
+pub const CREDENTIALS_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 struct CredentialsFile {
+    /// On-disk schema version. Declared first because TOML requires scalar keys
+    /// to precede tables, and `keys`/`oauth` below serialise as tables.
+    /// Absent in files written before versioning; `save` always writes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    version: Option<u32>,
     /// profile_id → api key (ApiKey profiles)
     #[serde(default)]
     keys: BTreeMap<String, String>,
@@ -192,10 +210,26 @@ impl CredentialStore {
             }
         }
         let text = fs::read_to_string(&self.path).map_err(|e| StoreError::Io(e.to_string()))?;
-        toml::from_str(&text).map_err(|e| StoreError::Toml(e.to_string()))
+        let file: CredentialsFile =
+            toml::from_str(&text).map_err(|e| StoreError::Toml(e.to_string()))?;
+        // A file with no `version` predates versioning and is read as v1.
+        if let Some(found) = file.version {
+            if found > CREDENTIALS_SCHEMA_VERSION {
+                return Err(StoreError::UnsupportedSchemaVersion {
+                    found,
+                    supported: CREDENTIALS_SCHEMA_VERSION,
+                });
+            }
+        }
+        Ok(file)
     }
 
     fn save(&self, file: &CredentialsFile) -> Result<(), StoreError> {
+        // Stamp the current version on every write so a future build can tell
+        // what layout it is reading instead of guessing.
+        let mut file = file.clone();
+        file.version = Some(CREDENTIALS_SCHEMA_VERSION);
+        let file = &file;
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent).map_err(|e| StoreError::Io(e.to_string()))?;
         }
@@ -360,5 +394,82 @@ mod tests {
         assert_eq!(r.0, "from-env");
         assert_eq!(r.1, KeySource::Env);
         std::env::remove_var("FORGE_TEST_XAI_KEY");
+    }
+
+    /// The regression that matters most here: an existing `credentials.toml` has
+    /// no `version` key, and it must keep loading. A failure locks users out of
+    /// stored tokens and looks like a missing credential.
+    #[test]
+    fn credentials_without_a_version_key_still_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("credentials.toml");
+        std::fs::write(&path, "[keys]\nopenai = \"sk-existing\"\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let store = CredentialStore::new(path);
+        assert_eq!(
+            store.get_api_key("openai").unwrap(),
+            Some("sk-existing".to_string()),
+            "an unversioned credentials file must keep loading"
+        );
+    }
+
+    /// A newer file is refused rather than mis-read. Silently failing to find a
+    /// token would prompt a needless re-authentication.
+    #[test]
+    fn credentials_from_a_newer_build_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("credentials.toml");
+        let future = CREDENTIALS_SCHEMA_VERSION + 1;
+        std::fs::write(
+            &path,
+            format!("version = {future}\n[keys]\nopenai = \"x\"\n"),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let store = CredentialStore::new(path);
+        let err = store.get_api_key("openai").unwrap_err();
+        // Matched on the variant rather than compared for equality, so this test
+        // does not depend on StoreError deriving PartialEq.
+        assert!(
+            matches!(
+                err,
+                StoreError::UnsupportedSchemaVersion { found: f, supported }
+                    if f == future && supported == CREDENTIALS_SCHEMA_VERSION
+            ),
+            "expected an unsupported-version error, got {err:?}"
+        );
+    }
+
+    /// Writing stamps the version, and it round-trips alongside a populated
+    /// `[keys]` table — which also pins that the scalar is emitted before the
+    /// table, as TOML requires.
+    #[test]
+    fn saving_stamps_the_version_and_round_trips_with_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("credentials.toml");
+        let store = CredentialStore::new(path.clone());
+        store.set_api_key("openai", "sk-written").unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains(&format!("version = {CREDENTIALS_SCHEMA_VERSION}")),
+            "save must stamp the schema version, got:\n{text}"
+        );
+        assert!(
+            text.find("version").unwrap() < text.find("[keys]").unwrap(),
+            "the version scalar must precede the [keys] table, got:\n{text}"
+        );
+        assert_eq!(
+            store.get_api_key("openai").unwrap(),
+            Some("sk-written".to_string())
+        );
     }
 }
