@@ -155,7 +155,6 @@ async fn open_session(
         enable_context_lifecycle: true,
         enable_governance: true,
         web_search: cfg.tools.web_search.clone(),
-        ..Default::default()
     };
 
     let mut session = AgentSession::create(loop_cfg, model, tools)

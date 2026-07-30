@@ -188,6 +188,7 @@ pub fn user_message_style() -> Style {
     user_message().fg(palette(active()).text)
 }
 
+#[cfg(test)]
 pub fn user_message_gutter_style() -> Style {
     user_message_gutter_style_for(active())
 }

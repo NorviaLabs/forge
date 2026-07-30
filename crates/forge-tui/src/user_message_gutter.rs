@@ -20,18 +20,18 @@ pub enum GutterRole {
 }
 
 /// Decorative gutter glyph for the active theme.
-pub fn gutter_glyph(theme: Theme, force_fallback: bool) -> &'static str {
+///
+/// `_theme` is currently unused: every theme shares the same glyph set. It is
+/// kept in the signature so theme-specific glyphs can be introduced without
+/// touching every call site.
+pub fn gutter_glyph(_theme: Theme, force_fallback: bool) -> &'static str {
     if force_fallback {
         return gutter_fallback_glyph();
     }
-    match theme {
-        _ => {
-            if glyph_display_width(PRIMARY_GLYPH) == 1 {
-                PRIMARY_GLYPH
-            } else {
-                gutter_fallback_glyph()
-            }
-        }
+    if glyph_display_width(PRIMARY_GLYPH) == 1 {
+        PRIMARY_GLYPH
+    } else {
+        gutter_fallback_glyph()
     }
 }
 
@@ -91,6 +91,7 @@ pub fn render_user_message_lines(
 }
 
 /// Strip a decorative gutter prefix from one rendered display row.
+#[cfg(test)]
 pub fn strip_rendered_line_prefix<'a>(line: &'a str, glyph: &str) -> &'a str {
     let Some(rest) = line.strip_prefix(glyph) else {
         return line;
@@ -99,11 +100,13 @@ pub fn strip_rendered_line_prefix<'a>(line: &'a str, glyph: &str) -> &'a str {
 }
 
 /// Map a display column within a wrapped row to a message-text column.
+#[cfg(test)]
 pub fn display_column_to_content(display_col: usize, glyph: &str) -> usize {
     display_col.saturating_sub(gutter_prefix_width(glyph))
 }
 
 /// Map a message-text column to a display column for hit testing.
+#[cfg(test)]
 pub fn content_column_to_display(content_col: usize, glyph: &str) -> usize {
     content_col.saturating_add(gutter_prefix_width(glyph))
 }
@@ -592,11 +595,7 @@ mod tests {
                 .filter(|line| !line_plain(line).is_empty())
                 .all(|line| line_plain(line).starts_with(glyph)),
             "{label}: missing gutter:\n{}",
-            lines
-                .iter()
-                .map(|line| line_plain(line))
-                .collect::<Vec<_>>()
-                .join("\n")
+            lines.iter().map(line_plain).collect::<Vec<_>>().join("\n")
         );
 
         let area = Rect::new(0, 0, width as u16, 12);

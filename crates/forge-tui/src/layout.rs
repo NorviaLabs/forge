@@ -86,6 +86,7 @@ pub fn split_areas_with_side_panels(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn split_areas_with_chrome(
     area: Rect,
     feedback_h: u16,
@@ -174,6 +175,7 @@ pub fn split_areas_with_chrome(
 }
 
 /// Estimate composer content width for wrapping before the layout split runs.
+#[cfg(test)]
 pub fn estimate_composer_content_width(area: Rect, show_files: bool, show_sidebar: bool) -> usize {
     let content_width = (u32::from(area.width) * CONTENT_WIDTH_PERCENT / 100) as u16;
     let show_files = show_files && content_width >= 110;
