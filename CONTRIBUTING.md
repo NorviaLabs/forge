@@ -13,7 +13,7 @@ Forge is alpha software. Interfaces and behavior may change quickly, but changes
 
 ## Development setup
 
-Install Git and Rust 1.86 or newer, then clone the repository:
+Install Git and Rust 1.97.1 or newer, then clone the repository:
 
 ```sh
 git clone https://github.com/NorviaLabs/forge.git
