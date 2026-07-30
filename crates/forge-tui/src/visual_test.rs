@@ -160,8 +160,8 @@ mod tests {
             "permanent workspace tabs should be gone:\n{text}"
         );
         assert!(
-            text.contains("Type a task"),
-            "missing conversation home:\n{text}"
+            text.contains("Describe a task…"),
+            "missing composer prompt:\n{text}"
         );
     }
 
@@ -377,18 +377,14 @@ mod tests {
         term.draw(|f| app.draw(f)).unwrap();
         let text = buffer_text(&term);
 
-        for expected in ["Describe a task…", "Loaded AGENTS.md"] {
+        for expected in ["Describe a task…", "forge 0.8.0"] {
             assert!(text.contains(expected), "missing {expected:?}:\n{text}");
         }
         assert!(
             !text.contains("Context"),
             "default shell should not show inspector context:\n{text}"
         );
-        assert!(text.contains("forge 0.8.0"), "missing version:\n{text}");
-        assert!(
-            text.contains("██████"),
-            "missing yellow banner art:\n{text}"
-        );
+        assert!(text.contains("Forge"), "missing branding:\n{text}");
         assert!(
             !text.contains("Waiting for your first message."),
             "stale copy:\n{text}"
