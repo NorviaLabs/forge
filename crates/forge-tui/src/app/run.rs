@@ -668,3 +668,74 @@ Reply with ONLY the commit message line.\n\n\
             || self.run.recent.iter().any(|record| record.id == id)
     }
 }
+
+pub(super) fn truncate_one_line(s: &str, max: usize) -> String {
+    let t = s.lines().next().unwrap_or(s).trim();
+    if t.chars().count() <= max {
+        t.to_string()
+    } else {
+        format!(
+            "{}…",
+            t.chars().take(max.saturating_sub(1)).collect::<String>()
+        )
+    }
+}
+
+/// Deterministic commit subject from `git diff --cached --name-status` when no LLM is available.
+pub(super) fn heuristic_commit_message(name_status: &str) -> String {
+    let mut added = 0usize;
+    let mut modified = 0usize;
+    let mut deleted = 0usize;
+    let mut names: Vec<String> = Vec::new();
+    for line in name_status.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let mut parts = line.split_whitespace();
+        let code = parts.next().unwrap_or("");
+        let path = parts.next().unwrap_or("").to_string();
+        if path.is_empty() {
+            continue;
+        }
+        let base = path.rsplit('/').next().unwrap_or(path.as_str()).to_string();
+        if names.len() < 3 && !names.iter().any(|n| n == &base) {
+            names.push(base);
+        }
+        match code.chars().next().unwrap_or(' ') {
+            'A' => added += 1,
+            'D' => deleted += 1,
+            'M' | 'R' | 'C' | 'T' => modified += 1,
+            _ => modified += 1,
+        }
+    }
+    if names.is_empty() {
+        return "Update project files".into();
+    }
+    let list = names.join(", ");
+    let verb = if added > 0 && modified == 0 && deleted == 0 {
+        "Add"
+    } else if deleted > 0 && added == 0 && modified == 0 {
+        "Remove"
+    } else if modified > 0 && added == 0 && deleted == 0 {
+        "Update"
+    } else {
+        "Change"
+    };
+    format!("{verb} {list}")
+}
+
+#[cfg(test)]
+mod sync_helpers_tests {
+    use super::heuristic_commit_message;
+
+    #[test]
+    fn heuristic_from_name_status() {
+        let msg = heuristic_commit_message("A\tfoo.rs\nM\tbar.rs\n");
+        assert!(msg.contains("foo.rs") || msg.contains("bar.rs"), "{msg}");
+        assert!(
+            msg.starts_with("Change") || msg.starts_with("Update") || msg.starts_with("Add"),
+            "{msg}"
+        );
+    }
+}

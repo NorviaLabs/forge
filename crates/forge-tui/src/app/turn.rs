@@ -5,11 +5,11 @@
 //! chrome. The queue methods decide which prompt runs next, and the thinking
 //! timers record how long a turn spent reasoning.
 //!
-//! Human-in-the-loop approval is deliberately left in `app.rs`: it is
-//! safety-critical and under active change, so moving it would invite conflicts.
-//! Methods are moved verbatim.
+//! Human-in-the-loop approval is in `app/approvals.rs`. Methods are moved verbatim.
 
 use super::*;
+
+use super::shell::drain_events;
 
 impl TuiApp {
     /// Close the thinking clock. Prefer wall time from first thinking token;

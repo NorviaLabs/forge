@@ -7,6 +7,8 @@
 
 use super::*;
 
+use super::util::{rebase_path, relative_display};
+
 impl TuiApp {
     pub(super) fn reconcile_open_file_external_rename(&mut self) -> bool {
         let Some(open_path) = self.source_viewer.path.clone() else {

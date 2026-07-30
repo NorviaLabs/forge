@@ -17,6 +17,8 @@
 
 use super::*;
 
+use super::util::relative_display;
+
 impl TuiApp {
     pub(super) fn push_notice(&mut self, lines: Vec<String>) {
         self.notices = lines;
@@ -474,5 +476,44 @@ impl TuiApp {
         }
 
         cached_limits.unwrap_or_default()
+    }
+}
+
+/// How long a cached repo header stays fresh before a background refresh starts.
+/// Branch and dirty state change on human timescales, not frame timescales.
+const REPO_HEADER_TTL: Duration = Duration::from_secs(2);
+
+/// Read the repo header by shelling out to git. Runs on a worker thread only —
+/// never call this from the render path.
+pub(super) fn load_repo_header(cwd: &Path) -> RepoHeaderCache {
+    let repo_name = cwd
+        .file_name()
+        .and_then(|value| value.to_str())
+        .map(str::to_string);
+
+    let branch = std::process::Command::new("git")
+        .args(["branch", "--show-current"])
+        .current_dir(cwd)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty());
+
+    let dirty = std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(cwd)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|text| !text.trim().is_empty())
+        .unwrap_or(false);
+
+    RepoHeaderCache {
+        repo_name,
+        branch,
+        dirty,
     }
 }
