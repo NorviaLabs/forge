@@ -21,7 +21,9 @@ use forge_connect::{
 };
 use forge_core::{AgentSession, ApplyOutcome, LoopError};
 use forge_tools::{GitTool, Tool, ToolContext};
-use forge_types::{HitlDecision, HitlPayload, ModelStreamEvent, ProgressDocument};
+use forge_types::{
+    HitlDecision, HitlPayload, Message, MessageRole, ModelStreamEvent, ProgressDocument,
+};
 use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use ratatui::backend::CrosstermBackend;
 use ratatui::text::{Line, Span};
@@ -232,6 +234,7 @@ enum RunEvent {
         success: bool,
     },
     SpawnFailed(String),
+    CaptureFailed(String),
 }
 
 /// The spatially stable keyboard regions.  This is intentionally small:
@@ -399,6 +402,7 @@ enum SemanticCommand {
     OpenBottomPanel(BottomPanelTab),
     RefreshFiles,
     RefreshEditor,
+    RefreshDiff,
     BeginCreateFile,
     BeginCreateDirectory,
     BeginRename,
@@ -455,6 +459,12 @@ struct PendingDoubleClick {
 }
 
 const DOUBLE_CLICK_THRESHOLD: Duration = Duration::from_millis(400);
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct DiffSnapshot {
+    paths: Vec<PathBuf>,
+    stale: bool,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TabNavCommand {
@@ -829,6 +839,7 @@ pub struct TuiApp {
     hit_regions: Vec<HitRegion>,
     frame_generation: u64,
     pending_double_click: Option<PendingDoubleClick>,
+    diff_snapshot: DiffSnapshot,
     run_rx: Option<std::sync::mpsc::Receiver<RunEvent>>,
     run_abort: Option<tokio::task::JoinHandle<()>>,
 }
@@ -922,6 +933,7 @@ impl TuiApp {
             hit_regions: Vec::new(),
             frame_generation: 0,
             pending_double_click: None,
+            diff_snapshot: DiffSnapshot::default(),
             run_rx: None,
             run_abort: None,
             last_editor_height: 24,
@@ -1105,12 +1117,41 @@ impl TuiApp {
 
     fn note_workspace_changed(&mut self) {
         self.clear_pending_double_click();
+        self.mark_diff_stale_if_reviewing();
         self.file_explorer.refresh_workspace();
     }
 
+    fn current_changed_paths(&self) -> Vec<PathBuf> {
+        self.file_explorer
+            .git_status
+            .changed_files()
+            .into_iter()
+            .map(|file| file.path)
+            .collect()
+    }
+
+    fn capture_diff_snapshot(&mut self) {
+        self.diff_snapshot.paths = self.current_changed_paths();
+        self.diff_snapshot.stale = false;
+    }
+
+    fn mark_diff_stale_if_reviewing(&mut self) {
+        if self.current_workspace_is_diff() {
+            self.diff_snapshot.stale = true;
+        }
+    }
+
+    fn refresh_diff_review(&mut self) {
+        self.file_explorer.refresh_git_status();
+        self.capture_diff_snapshot();
+    }
+
     fn refresh_after_filesystem_change(&mut self, active_file_changed: bool) {
+        let renamed_open_file = self.reconcile_open_file_external_rename();
         if active_file_changed {
             self.refresh_active_source_viewer();
+            self.notices.clear();
+        } else if renamed_open_file {
             self.notices.clear();
         }
         if self.focus.block == FocusBlock::Files && self.focus.mode == FocusMode::Navigation {
@@ -1118,6 +1159,46 @@ impl TuiApp {
         } else {
             self.note_workspace_changed();
         }
+    }
+
+    fn reconcile_open_file_external_rename(&mut self) -> bool {
+        let Some(open_path) = self.source_viewer.path.clone() else {
+            return false;
+        };
+        if open_path.exists() {
+            return false;
+        }
+        let Some(parent) = open_path.parent() else {
+            return false;
+        };
+        let Ok(entries) = fs::read_dir(parent) else {
+            return false;
+        };
+        let root = self.session.workspace_root().to_path_buf();
+        let old_line = self.source_viewer.current_line;
+        let old_top = self.source_viewer.top_line;
+        for entry in entries.flatten() {
+            let candidate = entry.path();
+            if candidate == open_path || !candidate.is_file() {
+                continue;
+            }
+            if self
+                .source_viewer
+                .reconcile_external_rename_if_same_identity(&root, &candidate)
+            {
+                let workspace_path = candidate.canonicalize().unwrap_or(candidate);
+                self.source_viewer.current_line =
+                    old_line.min(self.source_viewer.lines.len().saturating_sub(1));
+                self.source_viewer.top_line =
+                    old_top.min(self.source_viewer.lines.len().saturating_sub(1));
+                self.workspace_navigation
+                    .replace_view(WorkspaceView::File(workspace_path));
+                self.workspace_mode = WorkspaceMode::Editor;
+                self.set_feedback(FeedbackSeverity::Info, "Open file was renamed externally");
+                return true;
+            }
+        }
+        false
     }
 
     // Intentionally keep the conversation window clean: only real chat (user/assistant)
@@ -1514,6 +1595,31 @@ impl TuiApp {
         self.activity
             .push(ActivityKind::Error, FeedbackSeverity::Error, msg);
         self.busy_phase = BusyPhase::Idle;
+    }
+
+    fn record_interrupted_stream(&mut self, error: &str) {
+        let text = self.stream_preview.trim_end().to_string();
+        if !text.is_empty() {
+            self.session.messages.push(Message {
+                role: MessageRole::Assistant,
+                content: format!("{text}\n\n[Interrupted: {error}]"),
+                tool_call_id: None,
+                name: None,
+                thinking: (!self.stream_thinking.trim().is_empty())
+                    .then(|| self.stream_thinking.clone()),
+                thinking_duration_secs: self.thought_secs,
+                tool_calls: Vec::new(),
+            });
+        }
+        self.set_feedback(
+            FeedbackSeverity::Warn,
+            "Response interrupted · Retry or Continue",
+        );
+        self.push_activity(
+            ActivityKind::Model,
+            FeedbackSeverity::Warn,
+            format!("response interrupted: {error}"),
+        );
     }
 
     /// Drop ephemeral error UI (call on new user turn / Esc).
@@ -2925,7 +3031,7 @@ impl TuiApp {
                                         let _ = tx_out.send(RunEvent::Output(buf[..n].to_vec()));
                                     }
                                     Err(error) => {
-                                        let _ = tx_out.send(RunEvent::SpawnFailed(format!(
+                                        let _ = tx_out.send(RunEvent::CaptureFailed(format!(
                                             "output capture failed: {error}"
                                         )));
                                         break;
@@ -2945,7 +3051,7 @@ impl TuiApp {
                                         let _ = tx_err.send(RunEvent::Output(buf[..n].to_vec()));
                                     }
                                     Err(error) => {
-                                        let _ = tx_err.send(RunEvent::SpawnFailed(format!(
+                                        let _ = tx_err.send(RunEvent::CaptureFailed(format!(
                                             "output capture failed: {error}"
                                         )));
                                         break;
@@ -3045,6 +3151,31 @@ impl TuiApp {
                 }
                 self.terminal_capture.content = error.clone();
                 self.report_error(&format!("run launch failed: {error}"));
+            }
+            Ok(RunEvent::CaptureFailed(error)) => {
+                self.run_abort = None;
+                self.pending_validation = false;
+                self.busy_phase = BusyPhase::Idle;
+                if let Some(mut record) = self.run.current.take() {
+                    record.state = RunState::CaptureFailed;
+                    record.spawn_error = Some(error.clone());
+                    record.finished_at = Some(std::time::SystemTime::now());
+                    record.duration = record.started_at.and_then(|start| {
+                        record
+                            .finished_at
+                            .and_then(|end| end.duration_since(start).ok())
+                    });
+                    self.run.current = Some(record.clone());
+                    self.push_activity(
+                        ActivityKind::Run,
+                        FeedbackSeverity::Error,
+                        format!("run capture failed: {}", record.invocation.summary()),
+                    );
+                    self.run.remember(record);
+                    self.save_run_history();
+                }
+                self.terminal_capture.content = error.clone();
+                self.report_error(&format!("run output capture failed: {error}"));
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {
                 self.run_rx = Some(rx);
@@ -3352,10 +3483,7 @@ impl TuiApp {
                 self.source_viewer.top_line =
                     old_top.min(self.source_viewer.lines.len().saturating_sub(1));
             } else {
-                // File was deleted — show that in the viewer.
-                self.source_viewer.path = None;
-                self.source_viewer.status = crate::source_viewer::ViewerStatus::NotFound;
-                self.source_viewer.lines.clear();
+                self.source_viewer.refresh(&root);
             }
         }
 
@@ -4618,7 +4746,7 @@ Reply with ONLY the commit message line.\n\n\
         buf: &mut ratatui::buffer::Buffer,
     ) {
         let gs = &self.file_explorer.git_status;
-        if gs.loading {
+        if gs.loading && !self.diff_snapshot.stale {
             Paragraph::new("Loading changes…")
                 .style(theme::muted())
                 .alignment(ratatui::layout::Alignment::Center)
@@ -4630,7 +4758,7 @@ Reply with ONLY the commit message line.\n\n\
                 .render(area, buf);
             return;
         }
-        if gs.error.is_some() {
+        if gs.error.is_some() && !self.diff_snapshot.stale {
             Paragraph::new("Changes unavailable\n\nGit status could not be read.\nThe rest of Forge remains usable.")
                 .style(theme::muted())
                 .alignment(ratatui::layout::Alignment::Center)
@@ -4642,7 +4770,7 @@ Reply with ONLY the commit message line.\n\n\
                 .render(area, buf);
             return;
         }
-        if gs.status.is_empty() {
+        if gs.status.is_empty() && !self.diff_snapshot.stale {
             Paragraph::new("No changes\n\nThe working tree is clean.")
                 .style(theme::muted())
                 .alignment(ratatui::layout::Alignment::Center)
@@ -4656,23 +4784,36 @@ Reply with ONLY the commit message line.\n\n\
         }
 
         let changed = gs.changed_files();
-        let selected = self.diff_selected.min(changed.len().saturating_sub(1));
-        let selected_path = changed.get(selected).map(|f| &f.path);
+        let review_paths = if self.diff_snapshot.stale && !self.diff_snapshot.paths.is_empty() {
+            self.diff_snapshot.paths.clone()
+        } else {
+            changed.iter().map(|f| f.path.clone()).collect()
+        };
+        let selected = self.diff_selected.min(review_paths.len().saturating_sub(1));
+        let selected_path = review_paths.get(selected);
 
         let mut lines = vec![Line::from(Span::styled("CHANGES", theme::brand()))];
+        if self.diff_snapshot.stale {
+            lines.push(Line::styled(
+                "Stale review · changes updated externally · press r to Refresh",
+                theme::warn(),
+            ));
+            lines.push(Line::styled(
+                "Apply disabled until refresh.",
+                theme::muted(),
+            ));
+        }
         lines.push(Line::from(""));
 
-        for (i, f) in changed.iter().enumerate() {
+        for (i, path) in review_paths.iter().enumerate() {
             let marker = if i == selected { "▶ " } else { "  " };
-            let path = f.path.display().to_string();
-            let status = if f.unstaged == Some(GitStatusKind::Modified) {
-                "M"
-            } else if f.unstaged == Some(GitStatusKind::Added) {
-                "A"
-            } else {
-                "?"
-            };
-            lines.push(Line::from(format!("{marker}{status} {path}")));
+            let status = changed
+                .iter()
+                .find(|file| file.path == *path)
+                .and_then(|file| file.unstaged)
+                .map(GitStatusKind::marker)
+                .unwrap_or("!");
+            lines.push(Line::from(format!("{marker}{status} {}", path.display())));
         }
 
         lines.push(Line::from(""));
@@ -4745,6 +4886,26 @@ Reply with ONLY the commit message line.\n\n\
             ));
             if let Some(code) = record.exit_status {
                 lines.push(Line::styled(format!("Exit status: {code}"), theme::muted()));
+            }
+            if record.state == RunState::StartFailed {
+                lines.push(Line::styled(
+                    format!("Executable: {}", record.invocation.executable),
+                    theme::muted(),
+                ));
+                lines.push(Line::styled(
+                    format!("Arguments: {:?}", record.invocation.arguments),
+                    theme::muted(),
+                ));
+                lines.push(Line::styled(
+                    format!(
+                        "Directory: {}",
+                        record.invocation.working_directory.display()
+                    ),
+                    theme::muted(),
+                ));
+                if let Some(error) = record.spawn_error.as_deref() {
+                    lines.push(Line::styled(format!("Cause: {error}"), theme::danger()));
+                }
             }
         } else {
             lines.push(Line::styled("Run is no longer available.", theme::warn()));
@@ -5415,6 +5576,9 @@ Reply with ONLY the commit message line.\n\n\
             KeyCode::Down if key.modifiers.is_empty() && self.current_workspace_is_diff() => {
                 Some(SemanticCommand::SelectNextChange)
             }
+            KeyCode::Char('r') if key.modifiers.is_empty() && self.current_workspace_is_diff() => {
+                Some(SemanticCommand::RefreshDiff)
+            }
             KeyCode::Esc if key.modifiers.is_empty() => {
                 if self.current_workspace_is_conversation() {
                     Some(SemanticCommand::CancelCurrentInteraction)
@@ -5595,6 +5759,7 @@ Reply with ONLY the commit message line.\n\n\
                 }
             }
             SemanticCommand::ReviewChanges(DiffCommandContext::Current) => {
+                self.capture_diff_snapshot();
                 self.navigate_to_workspace_view(WorkspaceView::Diff(DiffCommandContext::Current))
             }
             SemanticCommand::OpenRun(target) => match target {
@@ -5726,7 +5891,11 @@ Reply with ONLY the commit message line.\n\n\
             SemanticCommand::RefreshEditor => {
                 self.source_viewer.refresh(self.session.workspace_root());
                 self.file_explorer.refresh_git_status();
+                if self.current_workspace_is_diff() {
+                    self.refresh_diff_review();
+                }
             }
+            SemanticCommand::RefreshDiff => self.refresh_diff_review(),
             SemanticCommand::BeginCreateFile => {
                 self.open_explorer_name_dialog(ExplorerNameAction::CreateFile)
             }
@@ -6778,7 +6947,11 @@ Reply with ONLY the commit message line.\n\n\
                     }
                 }
                 Ok(SlashCommand::Refresh) => {
-                    self.note_workspace_changed();
+                    if self.current_workspace_is_diff() {
+                        self.refresh_diff_review();
+                    } else {
+                        self.note_workspace_changed();
+                    }
                     self.status_message = "Refreshing git status...".into();
                 }
                 Ok(SlashCommand::Edit) => {
@@ -6966,6 +7139,11 @@ Reply with ONLY the commit message line.\n\n\
                             }
                             self.stream_thinking.push_str(&text);
                         }
+                        ModelStreamEvent::Error { message } => {
+                            handle.abort();
+                            outcome_err = Some(message);
+                            break 'turns;
+                        }
                         _ => {}
                     }
                 }
@@ -6988,6 +7166,11 @@ Reply with ONLY the commit message line.\n\n\
                                         self.turn_started.or_else(|| Some(Instant::now()));
                                 }
                                 self.stream_thinking.push_str(&text);
+                            }
+                            ModelStreamEvent::Error { message } => {
+                                handle.abort();
+                                outcome_err = Some(message);
+                                break 'turns;
                             }
                             _ => {}
                         }
@@ -7106,17 +7289,20 @@ Reply with ONLY the commit message line.\n\n\
         let turn_limit_reached = outcome_err.is_none()
             && self.session.status != forge_types::SessionStatus::Completed
             && self.session.status != forge_types::SessionStatus::AwaitingHitl;
+        let interrupted_partial = outcome_err
+            .as_ref()
+            .filter(|_| !self.stream_preview.trim().is_empty())
+            .cloned();
 
         self.busy = false;
         self.busy_phase = BusyPhase::Idle;
-        self.stream_preview.clear();
-        self.stream_thinking.clear();
-        self.turn_started = None;
-        self.thinking_started = None;
-        // Keep thought_secs on the message; clear live field
-        self.thought_secs = None;
 
         if turn_limit_reached {
+            self.stream_preview.clear();
+            self.stream_thinking.clear();
+            self.turn_started = None;
+            self.thinking_started = None;
+            self.thought_secs = None;
             self.overlay = Some(Overlay::turn_limit(max_turns));
             self.last_exit = ExitCode::Success;
             self.set_feedback(
@@ -7129,10 +7315,24 @@ Reply with ONLY the commit message line.\n\n\
                 "turn limit reached",
             );
         } else if let Some(e) = outcome_err {
-            self.report_error(&e);
+            if let Some(interrupted) = interrupted_partial {
+                self.record_interrupted_stream(&interrupted);
+            } else {
+                self.report_error(&e);
+            }
+            self.stream_preview.clear();
+            self.stream_thinking.clear();
+            self.turn_started = None;
+            self.thinking_started = None;
+            self.thought_secs = None;
             self.last_exit = ExitCode::Failed;
             // Leave queue intact so the operator can fix and continue.
         } else if self.session.pending_hitl.is_some() {
+            self.stream_preview.clear();
+            self.stream_thinking.clear();
+            self.turn_started = None;
+            self.thinking_started = None;
+            self.thought_secs = None;
             if let Some(ref p) = self.session.pending_hitl {
                 self.open_hitl_overlay(p.clone());
             }
@@ -7141,6 +7341,11 @@ Reply with ONLY the commit message line.\n\n\
             self.push_activity(ActivityKind::Hitl, FeedbackSeverity::Warn, "hitl waiting");
             // Do not auto-dequeue until HITL is resolved.
         } else {
+            self.stream_preview.clear();
+            self.stream_thinking.clear();
+            self.turn_started = None;
+            self.thinking_started = None;
+            self.thought_secs = None;
             if saw_thinking {
                 self.persist_turn_thinking_duration(turn_thought_secs);
             }
@@ -7450,7 +7655,7 @@ mod tests {
     use super::*;
     use forge_config::CommandConfig;
     use forge_core::LoopConfig;
-    use forge_model::MockModelClient;
+    use forge_model::{MockModelClient, ModelClient};
     use forge_tools::ToolRegistry;
     use forge_types::{Message, MessageRole, ModelResponse};
     use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
@@ -7486,6 +7691,27 @@ mod tests {
         .await
         .unwrap();
         session
+    }
+
+    async fn session_for_workspace_with_model(
+        workspace: &Path,
+        model: Arc<dyn ModelClient>,
+    ) -> AgentSession {
+        AgentSession::create(
+            LoopConfig {
+                max_turns: 4,
+                workspace: workspace.to_path_buf(),
+                journal_dir: workspace.join("j"),
+                enable_context_lifecycle: true,
+                enable_governance: true,
+
+                ..Default::default()
+            },
+            model,
+            ToolRegistry::new(),
+        )
+        .await
+        .unwrap()
     }
 
     #[tokio::test]
@@ -8999,6 +9225,390 @@ mod tests {
             app.activity_summary_command(),
             Some(SemanticCommand::OpenRun(RunCommandTarget::Id(run_id)))
         );
+    }
+
+    #[tokio::test]
+    async fn edge_run_cancel_preserves_output_and_navigation() {
+        let (_dir, mut app) = focus_test_app().await;
+        let before = app.workspace_navigation.clone();
+        app.run.draft.command_input = "long-running".into();
+        app.run_current_draft();
+        app.append_terminal_output(b"partial output\n");
+
+        app.cancel_run();
+
+        let record = app.run.current.as_ref().expect("current run");
+        assert_eq!(record.state, RunState::Cancelled);
+        assert_eq!(record.exit_status, None);
+        assert!(app.terminal_capture.content.contains("partial output"));
+        assert_eq!(app.workspace_navigation, before);
+        assert!(app
+            .run
+            .recent
+            .iter()
+            .any(|run| run.state == RunState::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn edge_run_spawn_failure_shows_invocation_without_exit_code() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.run.draft.command_input = "definitely-missing-forge-command --flag".into();
+        app.run_current_draft();
+        let run_id = app.run.current.as_ref().unwrap().id.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.run_rx = Some(rx);
+
+        tx.send(RunEvent::SpawnFailed("No such file or directory".into()))
+            .unwrap();
+        app.poll_run();
+        app.execute_semantic_command(SemanticCommand::OpenRun(RunCommandTarget::Id(run_id)))
+            .await
+            .unwrap();
+
+        let record = app.run.current.as_ref().expect("current run");
+        assert_eq!(record.state, RunState::StartFailed);
+        assert_eq!(record.exit_status, None);
+        assert_eq!(
+            record.invocation.executable,
+            "definitely-missing-forge-command"
+        );
+        assert_eq!(record.invocation.arguments, vec!["--flag"]);
+        assert!(record.spawn_error.as_deref().unwrap().contains("No such"));
+
+        let rendered = render_app_text(&mut app, 100, 30);
+        assert!(rendered.contains("Could not start"), "{rendered}");
+        assert!(
+            rendered.contains("Executable: definitely-missing-forge-command"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("Arguments: [\"--flag\"]"), "{rendered}");
+        assert!(rendered.contains("Directory:"), "{rendered}");
+        assert!(
+            rendered.contains("Cause: No such file or directory"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("e edit rerun"), "{rendered}");
+        assert!(!rendered.contains("Exit status:"), "{rendered}");
+    }
+
+    #[tokio::test]
+    async fn edge_network_stream_interruption_preserves_partial_response() {
+        let dir = TempDir::new().unwrap();
+        let session = session_for_workspace_with_model(
+            dir.path(),
+            Arc::new(MockModelClient::stream_error(
+                vec!["partial ".into(), "answer".into()],
+                "network connection lost",
+            )),
+        )
+        .await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "mock".into(),
+                provider: "mock".into(),
+                cwd: dir.path().to_path_buf(),
+                version: "test".into(),
+                startup_notices: Vec::new(),
+                validation_command: None,
+                file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
+            },
+        );
+        let file = dir.path().join("open.rs");
+        fs::write(&file, "fn main() {}\n").unwrap();
+        app.execute_semantic_command(SemanticCommand::OpenFile(file))
+            .await
+            .unwrap();
+        let before = app.workspace_navigation.clone();
+
+        app.dispatch_line("hello").await.unwrap();
+        app.drain_pending_prompt(None).await.unwrap();
+
+        assert_eq!(app.workspace_navigation, before);
+        assert!(!app.busy);
+        app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert_eq!(app.input.text, "x");
+        assert!(app.feedback.text.contains("Retry or Continue"));
+        assert!(app.session.messages.iter().any(|message| {
+            message.role == MessageRole::Assistant
+                && message.content.contains("partial answer")
+                && message.content.contains("Interrupted")
+        }));
+    }
+
+    #[tokio::test]
+    async fn edge_open_file_external_rename_updates_path_when_identity_matches() {
+        let (dir, mut app) = focus_test_app().await;
+        let old = dir.path().join("old.rs");
+        let new = dir.path().join("new.rs");
+        fs::write(&old, "fn main() {}\nline2\nline3\n").unwrap();
+        app.execute_semantic_command(SemanticCommand::OpenFile(old.clone()))
+            .await
+            .unwrap();
+        app.source_viewer.current_line = 2;
+        app.source_viewer.top_line = 1;
+        fs::rename(&old, &new).unwrap();
+
+        app.file_change_tx
+            .send(FileChangeEvent { path: new.clone() })
+            .unwrap();
+        app.poll_file_changes();
+
+        let new = new.canonicalize().unwrap();
+        assert_eq!(app.source_viewer.path.as_deref(), Some(new.as_path()));
+        assert_eq!(app.workspace_navigation.current, WorkspaceView::File(new));
+        assert_eq!(app.source_viewer.current_line, 2);
+        assert_eq!(app.source_viewer.top_line, 1);
+        assert_eq!(
+            app.source_viewer.notice.as_deref(),
+            Some("File renamed externally")
+        );
+    }
+
+    #[tokio::test]
+    async fn edge_open_file_external_delete_keeps_file_view_and_buffer() {
+        let (dir, mut app) = focus_test_app().await;
+        let path = dir.path().join("gone.rs");
+        fs::write(&path, "fn main() {}\n").unwrap();
+        app.execute_semantic_command(SemanticCommand::OpenFile(path.clone()))
+            .await
+            .unwrap();
+        let opened = app.source_viewer.path.clone().unwrap();
+        let lines = app.source_viewer.lines.clone();
+        fs::remove_file(&path).unwrap();
+
+        app.file_change_tx
+            .send(FileChangeEvent {
+                path: opened.clone(),
+            })
+            .unwrap();
+        app.poll_file_changes();
+
+        assert_eq!(app.workspace_navigation.current, WorkspaceView::File(path));
+        assert_eq!(app.source_viewer.path.as_deref(), Some(opened.as_path()));
+        assert_eq!(
+            app.source_viewer.status,
+            crate::source_viewer::ViewerStatus::NotFound
+        );
+        assert_eq!(app.source_viewer.lines, lines);
+        let rendered = render_app_text(&mut app, 100, 30);
+        assert!(rendered.contains("File no longer exists"), "{rendered}");
+        assert!(rendered.contains("Back"), "{rendered}");
+        assert!(rendered.contains("Locate"), "{rendered}");
+    }
+
+    #[tokio::test]
+    async fn edge_diff_becomes_stale_and_refresh_clears_it() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.file_explorer
+            .git_status
+            .status
+            .insert(PathBuf::from("one.rs"), GitStatusKind::Modified);
+        app.execute_semantic_command(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
+            .await
+            .unwrap();
+        app.diff_selected = 0;
+        app.file_explorer
+            .git_status
+            .status
+            .insert(PathBuf::from("two.rs"), GitStatusKind::Added);
+
+        app.note_workspace_changed();
+        assert!(app.diff_snapshot.stale);
+        assert_eq!(app.diff_selected, 0);
+        let rendered = render_app_text(&mut app, 100, 30);
+        assert!(rendered.contains("Stale review"), "{rendered}");
+        assert!(
+            rendered.contains("Apply disabled until refresh"),
+            "{rendered}"
+        );
+        assert_eq!(
+            app.semantic_command_for_workspace_key(press(KeyCode::Char('r'), KeyModifiers::NONE)),
+            Some(SemanticCommand::RefreshDiff)
+        );
+
+        app.execute_semantic_command(SemanticCommand::RefreshDiff)
+            .await
+            .unwrap();
+        assert!(!app.diff_snapshot.stale);
+        assert_eq!(app.diff_selected, 0);
+    }
+
+    #[tokio::test]
+    async fn edge_approval_at_80x24_keeps_required_fields_and_actions() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.open_hitl_overlay(direct_hitl_payload("call-1", "src/main.rs"));
+
+        let rendered = render_app_text(&mut app, 80, 24);
+        assert!(rendered.contains("Approval required"), "{rendered}");
+        assert!(rendered.contains("Direct"), "{rendered}");
+        assert!(rendered.contains("read_file"), "{rendered}");
+        assert!(rendered.contains("Working directory"), "{rendered}");
+        assert!(rendered.contains("test approval"), "{rendered}");
+        assert!(rendered.contains("Allow once"), "{rendered}");
+        assert!(rendered.contains("Deny"), "{rendered}");
+        assert!(
+            rendered.contains("Remember this exact Direct invocation"),
+            "{rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn edge_mouse_disabled_keeps_keyboard_workflow_and_no_mouse_hint() {
+        let (dir, mut app) = focus_test_app().await;
+        let path = dir.path().join("main.rs");
+        fs::write(&path, "fn main() {}\n").unwrap();
+        app.runtime.mouse_capture = false;
+        app.files_visible = true;
+        app.file_explorer.refresh_workspace();
+        let canonical = path.canonicalize().unwrap();
+        app.file_explorer.selected_path = Some(canonical.clone());
+        app.focus_block(FocusBlock::Files);
+
+        app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            app.workspace_navigation.current,
+            WorkspaceView::File(canonical)
+        );
+        let rendered = render_app_text(&mut app, 100, 30);
+        assert!(
+            !rendered.to_ascii_lowercase().contains("mouse"),
+            "mouse-disabled mode should not reserve mouse-specific hints:\n{rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn edge_hit_target_invalidated_cancels_double_click_state() {
+        let (dir, mut app) = focus_test_app().await;
+        let path = dir.path().join("main.rs");
+        fs::write(&path, "fn main() {}\n").unwrap();
+        app.file_explorer.refresh_workspace();
+        app.files_visible = true;
+        draw_app(&mut app, 120, 30);
+        let canonical = path.canonicalize().unwrap();
+        let (x, y) = hit_point_for_path(
+            &app,
+            |target, path| matches!(target, HitTarget::FileEntry(p) if p == path),
+            &canonical,
+        );
+
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), x, y))
+            .await
+            .unwrap();
+        assert!(app.pending_double_click.is_some());
+        app.invalidate_hit_regions();
+        assert!(app.pending_double_click.is_none());
+        draw_app(&mut app, 120, 30);
+        let (x, y) = hit_point_for_path(
+            &app,
+            |target, path| matches!(target, HitTarget::FileEntry(p) if p == path),
+            &canonical,
+        );
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), x, y))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            app.workspace_navigation.current,
+            WorkspaceView::Conversation
+        );
+    }
+
+    #[tokio::test]
+    async fn edge_end_to_end_recovery_flow_mouse_enabled_and_disabled() {
+        for mouse_capture in [true, false] {
+            let (dir, mut app) = focus_test_app().await;
+            app.runtime.mouse_capture = mouse_capture;
+            let path = dir.path().join("flow.rs");
+            fs::write(&path, "fn flow() {}\n").unwrap();
+
+            app.file_explorer
+                .git_status
+                .status
+                .insert(PathBuf::from("flow.rs"), GitStatusKind::Modified);
+            assert_eq!(
+                app.workspace_navigation.current,
+                WorkspaceView::Conversation
+            );
+
+            app.execute_semantic_command(SemanticCommand::OpenFile(path.clone()))
+                .await
+                .unwrap();
+            assert_eq!(
+                app.workspace_navigation.current,
+                WorkspaceView::File(path.clone())
+            );
+
+            app.execute_semantic_command(SemanticCommand::ReviewChanges(
+                DiffCommandContext::Current,
+            ))
+            .await
+            .unwrap();
+            assert_eq!(
+                app.workspace_navigation.current,
+                WorkspaceView::Diff(DiffCommandContext::Current)
+            );
+
+            app.run.draft.command_input = "cargo test".into();
+            app.run_current_draft();
+            let run_id = app.run.current.as_ref().unwrap().id.clone();
+            let (tx, rx) = std::sync::mpsc::channel();
+            app.run_rx = Some(rx);
+            tx.send(RunEvent::Finished {
+                exit_code: Some(101),
+                success: false,
+            })
+            .unwrap();
+            app.poll_run();
+            assert_eq!(
+                app.workspace_navigation.current,
+                WorkspaceView::Diff(DiffCommandContext::Current)
+            );
+
+            app.execute_semantic_command(SemanticCommand::ActivateActivitySummary)
+                .await
+                .unwrap();
+            assert_eq!(
+                app.workspace_navigation.current,
+                WorkspaceView::Run(run_id.clone())
+            );
+            app.execute_semantic_command(SemanticCommand::GoBack)
+                .await
+                .unwrap();
+            assert_eq!(
+                app.workspace_navigation.current,
+                WorkspaceView::Diff(DiffCommandContext::Current)
+            );
+
+            fs::write(&path, "fn flow() {}\nfn changed() {}\n").unwrap();
+            app.file_explorer
+                .git_status
+                .status
+                .insert(PathBuf::from("extra.rs"), GitStatusKind::Added);
+            app.file_change_tx
+                .send(FileChangeEvent { path: path.clone() })
+                .unwrap();
+            app.poll_file_changes();
+            assert!(app.diff_snapshot.stale);
+
+            app.execute_semantic_command(SemanticCommand::RefreshDiff)
+                .await
+                .unwrap();
+            assert!(!app.diff_snapshot.stale);
+            app.execute_semantic_command(SemanticCommand::GoHome)
+                .await
+                .unwrap();
+            assert_eq!(
+                app.workspace_navigation.current,
+                WorkspaceView::Conversation
+            );
+        }
     }
 
     #[tokio::test]
