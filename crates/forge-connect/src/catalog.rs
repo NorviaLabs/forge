@@ -779,7 +779,10 @@ mod tests {
     use std::thread;
     use tempfile::tempdir;
 
-    fn mock_http(responses: Vec<(u16, &'static str, Vec<(&'static str, &'static str)>)>) -> String {
+    /// (status, body, extra headers)
+    type MockResponse = (u16, &'static str, Vec<(&'static str, &'static str)>);
+
+    fn mock_http(responses: Vec<MockResponse>) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         thread::spawn(move || {

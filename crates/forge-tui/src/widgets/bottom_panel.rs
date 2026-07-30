@@ -414,8 +414,10 @@ mod tests {
 
     #[test]
     fn tabs_wrap_across_the_full_cycle() {
-        let mut state = BottomPanelState::default();
-        state.active = BottomPanelTab::Activity;
+        let mut state = BottomPanelState {
+            active: BottomPanelTab::Activity,
+            ..Default::default()
+        };
         state.next_tab();
         assert_eq!(state.active, BottomPanelTab::Run);
         state.previous_tab();
