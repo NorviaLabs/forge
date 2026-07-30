@@ -864,6 +864,13 @@ pub struct TuiApp {
     model_cost_cache: Option<(String, Option<forge_connect::CatalogCost>)>,
     footer_limits_cache: Option<FooterLimitsCache>,
     footer_limits_rx: Option<std::sync::mpsc::Receiver<(String, FooterLimits)>>,
+    /// Last known repo header. Refreshed off-thread by `poll_repo_header`; the
+    /// render path only ever reads it, never derives it.
+    repo_header: RepoHeaderCache,
+    repo_header_rx: Option<std::sync::mpsc::Receiver<RepoHeaderCache>>,
+    repo_header_refreshed_at: Instant,
+    /// Directory the cached header describes, so a cwd change invalidates it.
+    repo_header_cwd: PathBuf,
     terminal_capture: TerminalCapture,
     hit_regions: Vec<HitRegion>,
     frame_generation: u64,
@@ -880,6 +887,45 @@ pub(crate) struct RepoHeaderCache {
     pub(crate) dirty: bool,
 }
 
+/// How long a cached repo header stays fresh before a background refresh starts.
+/// Branch and dirty state change on human timescales, not frame timescales.
+const REPO_HEADER_TTL: Duration = Duration::from_secs(2);
+
+/// Read the repo header by shelling out to git. Runs on a worker thread only —
+/// never call this from the render path.
+fn load_repo_header(cwd: &Path) -> RepoHeaderCache {
+    let repo_name = cwd
+        .file_name()
+        .and_then(|value| value.to_str())
+        .map(str::to_string);
+
+    let branch = std::process::Command::new("git")
+        .args(["branch", "--show-current"])
+        .current_dir(cwd)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty());
+
+    let dirty = std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(cwd)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|text| !text.trim().is_empty())
+        .unwrap_or(false);
+
+    RepoHeaderCache {
+        repo_name,
+        branch,
+        dirty,
+    }
+}
+
 impl TuiApp {
     pub fn new(session: AgentSession, runtime: TuiRuntimeConfig) -> Self {
         crate::theme::set_active(runtime.theme);
@@ -890,6 +936,10 @@ impl TuiApp {
         let workspace_root = session.workspace_root().to_path_buf();
         let run = RunStateModel::new(workspace_root.clone(), runtime.validation_command.clone());
         let (file_change_tx, file_change_rx) = mpsc::channel();
+        // One synchronous read at startup so the first frame shows the real branch
+        // instead of blanking until the first background refresh lands.
+        let repo_header_cwd = runtime.cwd.clone();
+        let repo_header = load_repo_header(&repo_header_cwd);
         let mut app = Self {
             session,
             input,
@@ -959,6 +1009,10 @@ impl TuiApp {
             model_cost_cache: None,
             footer_limits_cache: None,
             footer_limits_rx: None,
+            repo_header,
+            repo_header_rx: None,
+            repo_header_refreshed_at: Instant::now(),
+            repo_header_cwd: repo_header_cwd.clone(),
             terminal_capture: TerminalCapture::default(),
             hit_regions: Vec::new(),
             frame_generation: 0,
@@ -4078,39 +4132,57 @@ Reply with ONLY the commit message line.\n\n\
         }
     }
 
+    /// Read the cached repo header. This is a plain field read: it must never
+    /// spawn a subprocess, because callers sit on the render path.
     fn repo_header(&self) -> RepoHeaderCache {
-        let repo_name = self
-            .runtime
-            .cwd
-            .file_name()
-            .and_then(|value| value.to_str())
-            .map(str::to_string);
+        self.repo_header.clone()
+    }
 
-        let branch = std::process::Command::new("git")
-            .args(["branch", "--show-current"])
-            .current_dir(&self.runtime.cwd)
-            .output()
-            .ok()
-            .filter(|output| output.status.success())
-            .and_then(|output| String::from_utf8(output.stdout).ok())
-            .map(|text| text.trim().to_string())
-            .filter(|text| !text.is_empty());
-
-        let dirty = std::process::Command::new("git")
-            .args(["status", "--porcelain"])
-            .current_dir(&self.runtime.cwd)
-            .output()
-            .ok()
-            .filter(|output| output.status.success())
-            .and_then(|output| String::from_utf8(output.stdout).ok())
-            .map(|text| !text.trim().is_empty())
-            .unwrap_or(false);
-
-        RepoHeaderCache {
-            repo_name,
-            branch,
-            dirty,
+    /// Advance the off-thread repo-header refresh. Non-blocking and safe to call
+    /// from the render loop, matching `GitStatusCache::poll`.
+    ///
+    /// The previous value is retained while a refresh is in flight and when a
+    /// refresh fails, so the header never blanks mid-update (FORGE-DESIGN 9.7).
+    fn poll_repo_header(&mut self) {
+        // A cwd change makes the cached header describe the wrong directory, so
+        // read through synchronously: the next frame must be correct, and this
+        // only happens on a workspace switch, never frame to frame.
+        if self.repo_header_cwd != self.runtime.cwd {
+            self.repo_header_cwd = self.runtime.cwd.clone();
+            self.repo_header = load_repo_header(&self.repo_header_cwd);
+            self.repo_header_refreshed_at = Instant::now();
+            // Drop any refresh still in flight for the previous directory.
+            self.repo_header_rx = None;
+            return;
         }
+
+        if let Some(rx) = self.repo_header_rx.take() {
+            match rx.try_recv() {
+                Ok(header) => {
+                    self.repo_header = header;
+                    self.repo_header_refreshed_at = Instant::now();
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    self.repo_header_rx = Some(rx);
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    // Keep the last known header; retry after the next TTL window.
+                    self.repo_header_refreshed_at = Instant::now();
+                }
+            }
+            return;
+        }
+
+        if self.repo_header_refreshed_at.elapsed() < REPO_HEADER_TTL {
+            return;
+        }
+
+        let cwd = self.runtime.cwd.clone();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(load_repo_header(&cwd));
+        });
+        self.repo_header_rx = Some(rx);
     }
 
     #[cfg(test)]
@@ -4409,6 +4481,10 @@ Reply with ONLY the commit message line.\n\n\
     }
 
     pub fn draw(&mut self, frame: &mut ratatui::Frame) {
+        // Advance the off-thread repo-header refresh. Cheap (a `try_recv` plus an
+        // elapsed check); every draw path funnels through here, including the
+        // streaming and `drain_pending_*` loops that bypass `run_loop`'s polls.
+        self.poll_repo_header();
         let area = frame.area();
         if is_too_small(area) {
             self.focus.block = FocusBlock::Workspace;
@@ -8073,6 +8149,110 @@ mod tests {
 
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal.draw(|frame| app.draw(frame)).unwrap();
+    }
+
+    /// `repo_header()` must be a pure read of the cached field. If someone
+    /// reintroduces the `git` subprocess into it, the sentinel is overwritten by
+    /// real repo data and this fails — which is the point.
+    #[tokio::test]
+    async fn repo_header_reads_cache_without_shelling_out() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.repo_header = RepoHeaderCache {
+            repo_name: Some("sentinel-repo".into()),
+            branch: Some("sentinel-branch".into()),
+            dirty: true,
+        };
+
+        let header = app.repo_header();
+
+        assert_eq!(header.repo_name.as_deref(), Some("sentinel-repo"));
+        assert_eq!(header.branch.as_deref(), Some("sentinel-branch"));
+        assert!(header.dirty);
+    }
+
+    /// Drawing must not derive the header either — several draws in a row leave
+    /// the cached sentinel untouched, proving the render path only reads it.
+    #[tokio::test]
+    async fn drawing_does_not_rederive_repo_header() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.repo_header = RepoHeaderCache {
+            repo_name: Some("sentinel-repo".into()),
+            branch: Some("sentinel-branch".into()),
+            dirty: true,
+        };
+        // Keep the TTL from firing a background refresh during the assertions.
+        app.repo_header_refreshed_at = Instant::now();
+
+        for _ in 0..3 {
+            draw_app(&mut app, 120, 40);
+        }
+
+        assert_eq!(app.repo_header.branch.as_deref(), Some("sentinel-branch"));
+    }
+
+    /// FORGE-DESIGN 9.7: do not clear visible Git information during a refresh.
+    /// A dropped sender (failed refresh) must leave the last known header intact.
+    #[tokio::test]
+    async fn failed_repo_header_refresh_keeps_last_known_value() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.repo_header = RepoHeaderCache {
+            repo_name: Some("kept-repo".into()),
+            branch: Some("kept-branch".into()),
+            dirty: true,
+        };
+        let (tx, rx) = mpsc::channel::<RepoHeaderCache>();
+        drop(tx); // simulate a refresh worker that died
+        app.repo_header_rx = Some(rx);
+
+        app.poll_repo_header();
+
+        assert_eq!(app.repo_header.branch.as_deref(), Some("kept-branch"));
+        assert_eq!(app.repo_header.repo_name.as_deref(), Some("kept-repo"));
+        assert!(app.repo_header.dirty);
+        assert!(app.repo_header_rx.is_none());
+    }
+
+    /// Changing the working directory must invalidate the cached header on the
+    /// very next poll, so the header never describes the previous directory.
+    #[tokio::test]
+    async fn cwd_change_refreshes_repo_header_immediately() {
+        let (dir, mut app) = focus_test_app().await;
+        app.repo_header = RepoHeaderCache {
+            repo_name: Some("stale-repo".into()),
+            branch: Some("stale-branch".into()),
+            dirty: true,
+        };
+
+        let moved = dir.path().join("elsewhere");
+        std::fs::create_dir_all(&moved).unwrap();
+        app.runtime.cwd = moved.clone();
+        app.poll_repo_header();
+
+        assert_eq!(app.repo_header_cwd, moved);
+        assert_eq!(app.repo_header.repo_name.as_deref(), Some("elsewhere"));
+        // Plain directory, no git metadata: no branch, and not reported dirty.
+        assert!(app.repo_header.branch.is_none());
+        assert!(!app.repo_header.dirty);
+    }
+
+    /// An in-flight refresh that has not produced a value yet must be retained
+    /// rather than dropped, and must not disturb the current header.
+    #[tokio::test]
+    async fn pending_repo_header_refresh_is_retained() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.repo_header = RepoHeaderCache {
+            repo_name: Some("kept-repo".into()),
+            branch: Some("kept-branch".into()),
+            dirty: false,
+        };
+        let (tx, rx) = mpsc::channel::<RepoHeaderCache>();
+        app.repo_header_rx = Some(rx);
+
+        app.poll_repo_header();
+
+        assert!(app.repo_header_rx.is_some(), "pending refresh must survive");
+        assert_eq!(app.repo_header.branch.as_deref(), Some("kept-branch"));
+        drop(tx);
     }
 
     #[tokio::test]
