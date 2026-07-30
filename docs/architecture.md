@@ -46,6 +46,12 @@ The product sits in the agentic stack as follows:
 10. TUI: history, inline slash + Tab, feedback strip, session chrome, activity feed  
 11. Built-in tools: `read_file`, `write_file`, `apply_patch`, `bash`, `fffind`, `ffgrep`, **`git`** (allowlisted subcommands), **`web_search`** (mock fixture default; live backends with API keys)
 12. **Skills**: optional `SKILL.md` packs from global/project skill dirs injected into the system prompt  
+
+Task lifecycle status is semantic session state, not transcript text. On reload,
+terminal states (`Completed`, `Failed`, `Cancelled`, `Interrupted`) are replayed
+from the journal. Legacy or stale `Running` sessions without a live executor are
+marked `Interrupted`; sessions without reliable task lifecycle metadata remain
+neutral/ready rather than guessed from assistant wording.
  
 
 ### Non-goals

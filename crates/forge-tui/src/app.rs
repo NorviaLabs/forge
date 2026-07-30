@@ -65,7 +65,7 @@ use crate::theme;
 use crate::widgets::{
     classify_operator_error, BottomPanel, BottomPanelModel, BottomPanelState, BottomPanelTab,
     BusyPhase, FeedbackBar, FeedbackModel, FeedbackSeverity, FooterBar, FooterModel, InputBar,
-    InputModel, StatusBar, StatusModel,
+    InputModel, StatusBar, StatusModel, TurnLifecycle,
 };
 use forge_config::{CommandConfig, FileIconMode};
 use ratatui::widgets::Clear;
@@ -515,6 +515,31 @@ pub struct ExitSummary {
     pub exit_code: ExitCode,
     pub session_id: String,
     pub token_usage: Option<String>,
+}
+
+fn failure_category_label(category: &str) -> String {
+    match category {
+        "validation_exhausted" => "Tool retries exhausted".into(),
+        "no_final_answer" => "Turn incomplete".into(),
+        "max_turns" => "Step limit reached".into(),
+        other => {
+            // Keep only short snake_case categories; never raw payloads.
+            let cleaned = other.replace('_', " ");
+            if cleaned.chars().count() <= 28
+                && cleaned
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == ' ')
+            {
+                let mut chars = cleaned.chars();
+                match chars.next() {
+                    Some(c) => format!("{}{}", c.to_uppercase(), chars.as_str()),
+                    None => "Failed".into(),
+                }
+            } else {
+                "Failed".into()
+            }
+        }
+    }
 }
 
 fn format_exit_token_usage(report: &forge_core::TokenUsageReport) -> String {
@@ -1054,6 +1079,11 @@ impl TuiApp {
                         EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)
                     ) {
                         for path in event.paths {
+                            // Journal/progress/ui-state under .forge churn constantly
+                            // during exploration and must not thrash the Files tree.
+                            if path_is_under_dot_forge(&path) {
+                                continue;
+                            }
                             let _ = tx.send(FileChangeEvent { path });
                         }
                     }
@@ -1105,6 +1135,30 @@ impl TuiApp {
         self.clear_pending_double_click();
         self.mark_diff_stale_if_reviewing();
         self.file_explorer.refresh_workspace();
+    }
+
+    fn tool_may_mutate_workspace(name: &str) -> bool {
+        matches!(name, "write_file" | "apply_patch" | "bash" | "git" | "run")
+    }
+
+    fn maybe_note_workspace_changed_from_recent_tools(&mut self) {
+        // Only the latest assistant step matters — older writes already refreshed the tree.
+        let mutated = self
+            .session
+            .messages
+            .iter()
+            .rev()
+            .find(|message| message.role == MessageRole::Assistant)
+            .map(|message| {
+                message
+                    .tool_calls
+                    .iter()
+                    .any(|call| Self::tool_may_mutate_workspace(&call.name))
+            })
+            .unwrap_or(false);
+        if mutated {
+            self.note_workspace_changed();
+        }
     }
 
     fn current_changed_paths(&self) -> Vec<PathBuf> {
@@ -3781,6 +3835,9 @@ Reply with ONLY the commit message line.\n\n\
         } else {
             id
         };
+        let turn_cancelled = !self.busy
+            && (self.last_exit == ExitCode::Canceled
+                || self.session.status == forge_types::SessionStatus::Cancelled);
         StatusModel {
             status: self.session.status,
             session_short: short,
@@ -3800,10 +3857,72 @@ Reply with ONLY the commit message line.\n\n\
             branch: repo.branch.clone(),
             dirty: repo.dirty,
             resource: self.workspace_resource_label(),
+            // Workspace secondary metadata only — never overall task lifecycle.
             activity: self.workspace_activity_label(),
-            // Cancel is terminal only after the busy turn ends with Canceled exit.
-            turn_cancelled: !self.busy && self.last_exit == ExitCode::Canceled,
+            turn_cancelled,
+            progress_description: self.header_progress_description(),
+            failure_category: self.header_failure_category(),
+            waiting_detail: self.header_waiting_detail(),
         }
+    }
+
+    /// Typed progress for the header while Working. Structured sources only.
+    fn header_progress_description(&self) -> Option<String> {
+        if !self.busy {
+            return None;
+        }
+        // Prefer durable progress.json in_progress when present.
+        if let Ok(text) = std::fs::read_to_string(self.runtime.cwd.join(".forge/progress.json")) {
+            if let Ok(doc) = serde_json::from_str::<ProgressDocument>(&text) {
+                let step = doc.in_progress.trim();
+                if !step.is_empty() {
+                    return Some(step.to_string());
+                }
+            }
+        }
+        self.busy_phase.progress_description()
+    }
+
+    fn header_waiting_detail(&self) -> Option<String> {
+        if self.session.pending_hitl.is_some()
+            || self.session.status == forge_types::SessionStatus::AwaitingHitl
+        {
+            return Some("Approval required".into());
+        }
+        if self.busy && matches!(self.busy_phase, BusyPhase::Connect) {
+            return Some("Your input required".into());
+        }
+        None
+    }
+
+    fn header_failure_category(&self) -> Option<String> {
+        if self.session.status != forge_types::SessionStatus::Failed {
+            return None;
+        }
+        // Prefer the latest structured turn_failed event category.
+        for event in self.session.events.iter().rev() {
+            if event.kind == "turn_failed" || event.kind == "validation_exhausted" {
+                let detail = event.detail.as_str();
+                let category = detail.split(':').next().unwrap_or(detail).trim();
+                return Some(failure_category_label(category));
+            }
+        }
+        for message in self.session.messages.iter().rev() {
+            if message.role != MessageRole::Assistant {
+                continue;
+            }
+            if let Some(rest) = message.content.strip_prefix(forge_core::TURN_FAILED_MARKER) {
+                let summary = rest.trim();
+                if summary.contains("repeated invalid tool") {
+                    return Some("Tool retries exhausted".into());
+                }
+                if summary.contains("couldn't complete this turn") {
+                    return Some("Turn incomplete".into());
+                }
+                return None;
+            }
+        }
+        None
     }
 
     fn workspace_resource_label(&self) -> Option<String> {
@@ -3853,7 +3972,8 @@ Reply with ONLY the commit message line.\n\n\
                 if changes > 0 {
                     Some(format!("{changes} changes · Review"))
                 } else {
-                    self.busy_status_detail()
+                    // Do not mirror task lifecycle/progress into secondary activity.
+                    None
                 }
             }
         }
@@ -6794,11 +6914,31 @@ Reply with ONLY the commit message line.\n\n\
                         Ok(_report) => {
                             self.overlay = None;
                             self.notices.clear();
-                            self.status_message = "session resumed".into();
-                            self.set_feedback(
-                                FeedbackSeverity::Ok,
-                                "session restored · ready for the next action",
-                            );
+                            self.busy = false;
+                            self.busy_phase = BusyPhase::Idle;
+                            self.last_exit = match self.session.status {
+                                forge_types::SessionStatus::Failed => ExitCode::Failed,
+                                forge_types::SessionStatus::AwaitingHitl => ExitCode::AwaitingHitl,
+                                forge_types::SessionStatus::Cancelled => ExitCode::Canceled,
+                                _ => ExitCode::Success,
+                            };
+                            // Stale Running with no live runtime becomes Interrupted.
+                            if let Err(error) = self.session.mark_interrupted_if_stale().await {
+                                self.report_error(&error.to_string());
+                            }
+                            if self.session.status == forge_types::SessionStatus::Interrupted {
+                                self.status_message = "session interrupted".into();
+                                self.set_feedback(
+                                    FeedbackSeverity::Warn,
+                                    "previous task interrupted · ready for a new request",
+                                );
+                            } else {
+                                self.status_message = "session resumed".into();
+                                self.set_feedback(
+                                    FeedbackSeverity::Ok,
+                                    "session restored · ready for the next action",
+                                );
+                            }
                             self.push_toast(format!("resumed {session_id}"));
                             self.push_activity(
                                 ActivityKind::System,
@@ -7173,6 +7313,7 @@ Reply with ONLY the commit message line.\n\n\
                         self.thinking_started = None;
                         self.thought_secs = None;
                         self.last_exit = ExitCode::Canceled;
+                        let _ = self.session.mark_cancelled().await;
                         return Ok(());
                     }
                 }
@@ -7243,7 +7384,7 @@ Reply with ONLY the commit message line.\n\n\
                     match out {
                         ApplyOutcome::Done(_) | ApplyOutcome::Hitl(_) => {
                             outcome_err = None;
-                            self.note_workspace_changed();
+                            self.maybe_note_workspace_changed_from_recent_tools();
                             break 'turns;
                         }
                         ApplyOutcome::Continue => {
@@ -7291,8 +7432,16 @@ Reply with ONLY the commit message line.\n\n\
                 "turn limit reached",
             );
         } else if let Some(e) = outcome_err {
+            let was_cancel = e == "interrupted";
             if let Some(interrupted) = interrupted_partial {
                 self.record_interrupted_stream(&interrupted);
+            } else if was_cancel {
+                self.push_toast("cancelled");
+                self.push_activity(
+                    ActivityKind::System,
+                    FeedbackSeverity::Info,
+                    "turn cancelled",
+                );
             } else {
                 self.report_error(&e);
             }
@@ -7301,7 +7450,14 @@ Reply with ONLY the commit message line.\n\n\
             self.turn_started = None;
             self.thinking_started = None;
             self.thought_secs = None;
-            self.last_exit = ExitCode::Failed;
+            if was_cancel {
+                self.last_exit = ExitCode::Canceled;
+                if let Err(err) = self.session.mark_cancelled().await {
+                    self.report_error(&err.to_string());
+                }
+            } else {
+                self.last_exit = ExitCode::Failed;
+            }
             // Leave queue intact so the operator can fix and continue.
         } else if self.session.pending_hitl.is_some() {
             self.stream_preview.clear();
@@ -7480,6 +7636,11 @@ fn centered_capped_rect_for_mouse(
         width,
         height,
     }
+}
+
+fn path_is_under_dot_forge(path: &Path) -> bool {
+    path.components()
+        .any(|component| component.as_os_str() == ".forge")
 }
 
 fn rect_contains(area: ratatui::layout::Rect, x: u16, y: u16) -> bool {
@@ -8066,6 +8227,16 @@ mod tests {
             .visible_nodes()
             .iter()
             .any(|node| node.display_name == "Cargo.toml"));
+    }
+
+    #[test]
+    fn forge_runtime_paths_are_ignored_by_file_watcher_filter() {
+        assert!(path_is_under_dot_forge(Path::new(".forge/progress.json")));
+        assert!(path_is_under_dot_forge(Path::new(
+            "/tmp/repo/.forge/sessions/x.db"
+        )));
+        assert!(!path_is_under_dot_forge(Path::new("src/app.rs")));
+        assert!(!path_is_under_dot_forge(Path::new("/tmp/repo/src/lib.rs")));
     }
 
     #[tokio::test]
@@ -12246,8 +12417,136 @@ mod tests {
             resource: None,
             activity: None,
             turn_cancelled: false,
+            progress_description: None,
+            failure_category: None,
+            waiting_detail: None,
         };
-        assert_eq!(m.status_label().0, "Idle");
+        assert_eq!(m.status_label().0, "Ready");
+    }
+
+    #[tokio::test]
+    async fn header_status_follows_session_lifecycle() {
+        let (dir, session) = test_session().await;
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "mock".into(),
+                provider: "mock".into(),
+                cwd: dir.path().to_path_buf(),
+                version: "test".into(),
+                startup_notices: Vec::new(),
+                validation_command: None,
+                file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
+            },
+        );
+
+        let ready = app.refresh_status_model();
+        assert_eq!(ready.turn_lifecycle(), TurnLifecycle::Ready);
+        assert!(ready.status_label().0.contains("Ready"));
+
+        app.busy = true;
+        app.busy_phase = BusyPhase::Tool {
+            name: "read_file".into(),
+        };
+        let working = app.refresh_status_model();
+        assert_eq!(working.turn_lifecycle(), TurnLifecycle::Working);
+        assert!(working.status_label().0.contains("Working"));
+        assert!(
+            working.status_label().0.contains("Reading files"),
+            "{:?}",
+            working.status_label().0
+        );
+
+        app.busy = false;
+        app.busy_phase = BusyPhase::Idle;
+        app.session.status = forge_types::SessionStatus::Completed;
+        assert_eq!(
+            app.refresh_status_model().turn_lifecycle(),
+            TurnLifecycle::Completed
+        );
+
+        app.session.status = forge_types::SessionStatus::Failed;
+        assert_eq!(
+            app.refresh_status_model().turn_lifecycle(),
+            TurnLifecycle::Failed
+        );
+
+        app.session.status = forge_types::SessionStatus::Cancelled;
+        assert_eq!(
+            app.refresh_status_model().turn_lifecycle(),
+            TurnLifecycle::Cancelled
+        );
+
+        app.session.status = forge_types::SessionStatus::Interrupted;
+        assert_eq!(
+            app.refresh_status_model().turn_lifecycle(),
+            TurnLifecycle::Interrupted
+        );
+
+        app.session.status = forge_types::SessionStatus::AwaitingHitl;
+        app.session.pending_hitl = Some(direct_hitl_payload("h", "x.txt"));
+        let waiting = app.refresh_status_model();
+        assert_eq!(waiting.turn_lifecycle(), TurnLifecycle::Waiting);
+        assert!(waiting.status_label().0.contains("Approval required"));
+    }
+
+    #[tokio::test]
+    async fn header_status_switches_with_selected_session() {
+        let dir = TempDir::new().unwrap();
+        let mut completed = session_for_workspace_with_model(
+            dir.path(),
+            Arc::new(MockModelClient::script(vec![ModelResponse {
+                text: "done-a".into(),
+                tool_calls: vec![],
+                usage: None,
+                thinking: None,
+            }])),
+        )
+        .await;
+        completed.run_user_message("a").await.unwrap();
+        assert_eq!(completed.status, forge_types::SessionStatus::Completed);
+        let id_a = completed.session_id;
+
+        let running =
+            session_for_workspace_with_model(dir.path(), Arc::new(MockModelClient::script(vec![])))
+                .await;
+        let id_b = running.session_id;
+
+        let mut app = TuiApp::new(
+            completed,
+            TuiRuntimeConfig {
+                model_label: "mock".into(),
+                provider: "mock".into(),
+                cwd: dir.path().to_path_buf(),
+                version: "test".into(),
+                startup_notices: Vec::new(),
+                validation_command: None,
+                file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
+            },
+        );
+        assert!(app
+            .refresh_status_model()
+            .status_label()
+            .0
+            .contains("Completed"));
+
+        app.session.resume_session(id_b).await.unwrap();
+        assert_eq!(app.session.status, forge_types::SessionStatus::Interrupted);
+        assert!(app
+            .refresh_status_model()
+            .status_label()
+            .0
+            .contains("Interrupted"));
+
+        app.session.resume_session(id_a).await.unwrap();
+        assert_eq!(app.session.status, forge_types::SessionStatus::Completed);
+        assert!(app
+            .refresh_status_model()
+            .status_label()
+            .0
+            .contains("Completed"));
     }
 
     #[tokio::test]
