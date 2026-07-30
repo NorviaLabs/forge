@@ -1763,7 +1763,9 @@ fn assistant_lines(text: &str, width: usize) -> Vec<Line<'static>> {
                 processed = format!("**{}**", rest);
             } else if let Some(rest) = processed.strip_prefix("## ") {
                 processed = format!("**{}**", rest);
-            } else if let Some(rest) = processed.strip_prefix("- ") || processed.strip_prefix("* ") {
+            } else if let Some(rest) = processed.strip_prefix("- ") {
+                processed = format!("• {}", rest);
+            } else if let Some(rest) = processed.strip_prefix("* ") {
                 processed = format!("• {}", rest);
             }
             let wrapped = wrap(&processed, width);
