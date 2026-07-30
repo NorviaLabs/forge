@@ -1848,15 +1848,7 @@ fn assistant_lines(text: &str, width: usize) -> Vec<Line<'static>> {
         let trimmed = raw.trim_start();
         if let Some(fence) = trimmed.strip_prefix("```") {
             if fenced {
-                if !code_block_lines.is_empty() {
-                    let code = code_block_lines.join("\n");
-                    let theme = theme::syntax_theme();
-                    let highlighted = highlight_to_lines(&language, &code, &theme);
-                    for line_segments in highlighted {
-                        out.push(Line::from(render_highlighted_line(&line_segments)));
-                    }
-                    code_block_lines.clear();
-                }
+                push_code_block(&mut out, &language, &mut code_block_lines);
                 out.push(Line::from(Span::styled(
                     "  ```".to_string(),
                     theme::code_punctuation(),
@@ -1896,10 +1888,39 @@ fn assistant_lines(text: &str, width: usize) -> Vec<Line<'static>> {
         }
     }
 
+    // A streaming answer can end mid-block, before its closing fence arrives.
+    // Render what has been received rather than discarding it: the opening fence
+    // is already on screen, so dropping the body renders an empty code block and
+    // the answer looks like the model produced nothing.
+    //
+    // No synthetic closing fence is emitted — the block genuinely is not closed,
+    // and inventing a terminator would misrepresent the message.
+    push_code_block(&mut out, &language, &mut code_block_lines);
+
     if out.is_empty() {
         out.push(Line::from(String::new()));
     }
     out
+}
+
+/// Render an accumulated fenced code block into `out` and clear the accumulator.
+///
+/// Shared by the closing-fence path and the end-of-text path so a partial block
+/// renders identically to a complete one.
+fn push_code_block(
+    out: &mut Vec<Line<'static>>,
+    language: &str,
+    code_block_lines: &mut Vec<String>,
+) {
+    if code_block_lines.is_empty() {
+        return;
+    }
+    let code = code_block_lines.join("\n");
+    let theme = theme::syntax_theme();
+    for line_segments in highlight_to_lines(language, &code, &theme) {
+        out.push(Line::from(render_highlighted_line(&line_segments)));
+    }
+    code_block_lines.clear();
 }
 
 fn render_md_line(line: &str) -> Vec<Span<'static>> {
@@ -3185,6 +3206,89 @@ mod tests {
         assert_eq!(
             added.spans.iter().map(|span| span.width()).sum::<usize>(),
             40
+        );
+    }
+
+    /// Text of every rendered line, for asserting on content rather than styling.
+    fn lines_text(lines: &[Line<'static>]) -> String {
+        lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// A streaming answer arrives without its closing fence for as long as the
+    /// model is still writing the block. The body must still render: the opening
+    /// fence is already on screen, so dropping it shows an empty code block.
+    #[test]
+    fn unterminated_fence_still_renders_its_code() {
+        let streaming = "Here is the function:\n\n```rust\npub fn alpha() -> usize { 41 }\npub fn beta() -> usize { 42 }";
+
+        let text = lines_text(&assistant_lines(streaming, 80));
+
+        assert!(
+            text.contains("```rust"),
+            "opening fence should render:\n{text}"
+        );
+        assert!(
+            text.contains("alpha"),
+            "partial code should render:\n{text}"
+        );
+        assert!(text.contains("beta"), "partial code should render:\n{text}");
+        assert!(
+            !text.contains("  ```\n") && !text.ends_with("  ```"),
+            "no closing fence should be invented for an unterminated block:\n{text}"
+        );
+    }
+
+    /// The partial block is highlighted, not dumped as plain text, so it does not
+    /// visibly restyle itself when the closing fence finally arrives.
+    #[test]
+    fn unterminated_fence_is_highlighted_like_a_closed_one() {
+        let open = "```rust\npub fn alpha() -> usize { 41 }";
+        let closed = "```rust\npub fn alpha() -> usize { 41 }\n```";
+
+        let open_lines = assistant_lines(open, 80);
+        let closed_lines = assistant_lines(closed, 80);
+
+        // Find the code line in each rendering and compare span structure.
+        let code_of = |lines: &[Line<'static>]| {
+            lines
+                .iter()
+                .find(|l| lines_text(std::slice::from_ref(*l)).contains("alpha"))
+                .expect("code line present")
+                .clone()
+        };
+        let open_code = code_of(&open_lines);
+        let closed_code = code_of(&closed_lines);
+
+        assert!(
+            open_code.spans.len() > 1,
+            "partial code should be tokenised, not one plain span: {:?}",
+            open_code.spans
+        );
+        assert_eq!(
+            open_code.spans.len(),
+            closed_code.spans.len(),
+            "partial and closed blocks should highlight identically"
+        );
+    }
+
+    /// Regression guard for the original defect shape: a message whose only
+    /// content is an unterminated block must not render as an empty block.
+    #[test]
+    fn unterminated_fence_is_not_an_empty_block() {
+        let text = lines_text(&assistant_lines("```rust\nlet x = 1;", 80));
+
+        assert!(
+            text.contains("let x = 1;"),
+            "an unterminated block must not render empty:\n{text}"
         );
     }
 
