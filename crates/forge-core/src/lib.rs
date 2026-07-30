@@ -42,6 +42,10 @@ fn assemble_system_prompt(agents_md: &str, skills: &[(String, String)]) -> Strin
     prompt
 }
 
+/// Durable marker for a terminal turn failure summary in session messages.
+/// Presentation maps this to TurnFailure; it is never a user-facing answer.
+pub const TURN_FAILED_MARKER: &str = "[forge.turn_failed]";
+
 /// Remove structural protocol control markers from final-answer text before
 /// persistence. Not phrase filtering — only known control envelopes.
 fn strip_protocol_markers(text: &str) -> String {
@@ -635,10 +639,18 @@ impl AgentSession {
         }
 
         if last.tool_calls.is_empty() {
-            // Successful completion requires a committed final answer when the
-            // model produced neither tools nor durable text (thinking-only is not success).
-            if final_text.is_empty() && !has_thinking {
-                // Empty completion: still mark done (idle/no-op responses).
+            if final_text.is_empty() {
+                // No durable final answer. If the turn already did tool/validation
+                // work, this is a failed terminal state — not silent success.
+                if self.current_turn_has_tool_activity() {
+                    self.finalize_turn_failure(
+                        "Forge couldn't complete this turn.",
+                        "no_final_answer",
+                    )
+                    .await?;
+                    return Ok(ApplyOutcome::Done(last));
+                }
+                // Idle / no-op response with no tools: still complete cleanly.
             }
             self.status = SessionStatus::Completed;
             self.journal
@@ -655,12 +667,80 @@ impl AgentSession {
                 if let Some(pause) = self.run_one_tool(call, &mut budget).await? {
                     return Ok(ApplyOutcome::Hitl(pause));
                 }
+                // Retry exhaustion is a terminal failure — do not Continue the loop.
+                if self.status == SessionStatus::Failed {
+                    return Ok(ApplyOutcome::Done(last.clone()));
+                }
             }
             Ok(ApplyOutcome::Continue)
         }
         .await;
         self.validation_budget = budget;
         tool_result
+    }
+
+    /// True when the open user turn already has tool or validation activity.
+    fn current_turn_has_tool_activity(&self) -> bool {
+        for m in self.messages.iter().rev() {
+            match m.role {
+                MessageRole::User => return false,
+                MessageRole::Tool => return true,
+                MessageRole::Assistant if !m.tool_calls.is_empty() => return true,
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// Persist a concise terminal failure and mark the session failed.
+    pub async fn finalize_turn_failure(
+        &mut self,
+        summary: &str,
+        category: &str,
+    ) -> Result<(), LoopError> {
+        if self.status == SessionStatus::Failed {
+            // Idempotent: keep the first failure summary.
+            if self
+                .messages
+                .iter()
+                .any(|m| m.content.starts_with(TURN_FAILED_MARKER))
+            {
+                return Ok(());
+            }
+        }
+        let summary = summary.trim();
+        let content = format!("{TURN_FAILED_MARKER}{summary}");
+        self.messages.push(Message {
+            role: MessageRole::Assistant,
+            content: content.clone(),
+            tool_call_id: None,
+            name: None,
+            thinking: None,
+            thinking_duration_secs: None,
+            tool_calls: vec![],
+        });
+        self.events.push(TurnEvent {
+            kind: "turn_failed".into(),
+            detail: format!("{category}: {summary}"),
+        });
+        self.status = SessionStatus::Failed;
+        let response = ModelResponse {
+            text: content,
+            tool_calls: vec![],
+            usage: None,
+            thinking: None,
+        };
+        self.journal
+            .append_model_response(
+                self.session_id,
+                serde_json::to_value(&response)
+                    .map_err(|error| LoopError::Other(error.to_string()))?,
+            )
+            .await?;
+        self.journal
+            .append_status(self.session_id, SessionStatus::Failed)
+            .await?;
+        Ok(())
     }
 
     /// Run until no tool calls, max turns, or HITL pause.
@@ -707,11 +787,11 @@ impl AgentSession {
 
     /// Mark the session failed after exhausting turns.
     pub async fn fail_max_turns(&mut self) -> Result<(), LoopError> {
-        self.status = SessionStatus::Failed;
-        self.journal
-            .append_status(self.session_id, SessionStatus::Failed)
-            .await?;
-        Ok(())
+        self.finalize_turn_failure(
+            "Forge couldn't complete this turn within the step limit.",
+            "max_turns",
+        )
+        .await
     }
 
     /// Drive the agent loop after the user message is already appended.
@@ -904,8 +984,14 @@ impl AgentSession {
                 if is_budget {
                     self.events.push(TurnEvent {
                         kind: "validation_exhausted".into(),
-                        detail: output.content,
+                        detail: output.content.clone(),
                     });
+                    // Terminal failure: stop the turn instead of activity-only hang.
+                    self.finalize_turn_failure(
+                        "Forge couldn't complete this turn after repeated invalid tool calls.",
+                        "validation_exhausted",
+                    )
+                    .await?;
                 }
             }
         }
@@ -1284,6 +1370,7 @@ mod tests {
             name: "read_file".into(),
             arguments: json!({"path": "README.md", "offset": "1arglimit\">50"}),
         };
+        // Four invalid attempts across model steps → budget exhausts → terminal failure.
         let model = Arc::new(MockModelClient::script(vec![
             ModelResponse {
                 text: "".into(),
@@ -1309,8 +1396,50 @@ mod tests {
                 usage: None,
                 thinking: None,
             },
+        ]));
+        let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        let _ = s.run_user_message("read it").await.unwrap();
+        assert_eq!(s.status, SessionStatus::Failed);
+        assert!(
+            s.messages
+                .iter()
+                .any(|m| m.content.starts_with(TURN_FAILED_MARKER)),
+            "expected durable failure summary: {:?}",
+            s.messages
+        );
+        assert!(
+            s.events.iter().any(|e| e.kind == "turn_failed"),
+            "expected turn_failed event"
+        );
+        assert!(
+            s.messages.iter().any(|m| {
+                m.role == MessageRole::Tool
+                    && m.content.contains("validation retry budget exceeded")
+            }) || s.events.iter().any(|e| e.kind == "validation_exhausted"),
+            "expected budget exhaustion signal"
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_final_after_tools_is_terminal_failure_not_success() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("f.txt"), "data").unwrap();
+        let model = Arc::new(MockModelClient::script(vec![
             ModelResponse {
-                text: "Could not read the file with valid arguments.".into(),
+                text: "".into(),
+                tool_calls: vec![ToolCall {
+                    id: "1".into(),
+                    name: "read_file".into(),
+                    arguments: json!({"path": "f.txt"}),
+                }],
+                usage: None,
+                thinking: None,
+            },
+            // Model ends with no answer after tools.
+            ModelResponse {
+                text: "".into(),
                 tool_calls: vec![],
                 usage: None,
                 thinking: None,
@@ -1319,15 +1448,12 @@ mod tests {
         let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
             .await
             .unwrap();
-        let r = s.run_user_message("read it").await.unwrap();
-        assert!(!r.text.is_empty());
-        let exhausted = s.messages.iter().any(|m| {
-            m.role == MessageRole::Tool && m.content.contains("validation retry budget exceeded")
-        });
-        assert!(
-            exhausted || s.events.iter().any(|e| e.kind == "validation_exhausted"),
-            "expected budget exhaustion signal in messages/events"
-        );
+        let _ = s.run_user_message("read it").await.unwrap();
+        assert_eq!(s.status, SessionStatus::Failed);
+        assert!(s
+            .messages
+            .iter()
+            .any(|m| m.content.starts_with(TURN_FAILED_MARKER)));
     }
 
     #[tokio::test]
