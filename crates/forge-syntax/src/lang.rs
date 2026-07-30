@@ -233,6 +233,7 @@ mod tests {
             ("pyi", SyntaxLanguage::Python, "python"),
             ("go", SyntaxLanguage::Go, "go"),
             ("golang", SyntaxLanguage::Go, "go"),
+            ("json", SyntaxLanguage::Json, "json"),
             ("html", SyntaxLanguage::Html, "html"),
             ("htm", SyntaxLanguage::Html, "html"),
             ("css", SyntaxLanguage::Css, "css"),
@@ -263,6 +264,13 @@ mod tests {
         assert_eq!(
             detect_language("#!/bin/sh\necho x").unwrap(),
             SyntaxLanguage::Bash
+        );
+        // A shebang that names neither python nor a shell falls through the
+        // shebang checks entirely (no early return) rather than defaulting
+        // to Bash just because the line started with `#!`.
+        assert_eq!(
+            detect_language("#!/usr/bin/env node\nconsole.log('x')").unwrap(),
+            SyntaxLanguage::Unknown
         );
         assert_eq!(
             detect_language("<!DOCTYPE html><html></html>").unwrap(),
