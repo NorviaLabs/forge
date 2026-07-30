@@ -29,7 +29,7 @@ pub fn split_areas(area: Rect) -> LayoutRegions {
 }
 
 pub fn split_areas_ex(area: Rect, feedback_h: u16) -> LayoutRegions {
-    split_areas_full(area, feedback_h, 3, true, 0)
+    split_areas_full(area, feedback_h, 3, false, 0)
 }
 
 /// Full layout control: input height, optional sidebar, queue strip height.
@@ -52,7 +52,7 @@ pub fn split_areas_with_bottom_panel(
     queue_h: u16,
     bottom_panel_h: u16,
 ) -> LayoutRegions {
-    split_areas_with_side_panels(
+    split_areas_with_chrome(
         area,
         feedback_h,
         input_h,
@@ -60,9 +60,11 @@ pub fn split_areas_with_bottom_panel(
         show_sidebar,
         queue_h,
         bottom_panel_h,
+        0,
     )
 }
 
+#[allow(dead_code)]
 pub fn split_areas_with_side_panels(
     area: Rect,
     feedback_h: u16,
@@ -71,6 +73,28 @@ pub fn split_areas_with_side_panels(
     show_sidebar: bool,
     queue_h: u16,
     bottom_panel_h: u16,
+) -> LayoutRegions {
+    split_areas_with_chrome(
+        area,
+        feedback_h,
+        input_h,
+        show_files,
+        show_sidebar,
+        queue_h,
+        bottom_panel_h,
+        0,
+    )
+}
+
+pub fn split_areas_with_chrome(
+    area: Rect,
+    feedback_h: u16,
+    input_h: u16,
+    show_files: bool,
+    show_sidebar: bool,
+    queue_h: u16,
+    bottom_panel_h: u16,
+    footer_h: u16,
 ) -> LayoutRegions {
     let content_width = (u32::from(area.width) * CONTENT_WIDTH_PERCENT / 100) as u16;
     let content_area = Rect {
@@ -82,7 +106,8 @@ pub fn split_areas_with_side_panels(
     let fb = feedback_h.min(2);
     let input_h = input_h.clamp(3, 8);
     let qh = queue_h.min(8);
-    let fixed_h = 1 + fb + qh + input_h + 1;
+    let footer_h = footer_h.min(1);
+    let fixed_h = 1 + fb + qh + input_h + footer_h;
     let requested_panel_h = bottom_panel_h.min(8);
     let panel_h = if content_area.height >= fixed_h + requested_panel_h + 10 {
         requested_panel_h
@@ -92,13 +117,13 @@ pub fn split_areas_with_side_panels(
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),       // status
-            Constraint::Min(3),          // main
-            Constraint::Length(panel_h), // bottom panel
-            Constraint::Length(fb),      // feedback
-            Constraint::Length(qh),      // message queue
-            Constraint::Length(input_h), // input (multi-line)
-            Constraint::Length(1),       // footer metadata
+            Constraint::Length(1),        // status
+            Constraint::Min(3),           // main
+            Constraint::Length(panel_h),  // bottom panel
+            Constraint::Length(fb),       // feedback
+            Constraint::Length(qh),       // message queue
+            Constraint::Length(input_h),  // input (multi-line)
+            Constraint::Length(footer_h), // contextual hint
         ])
         .split(content_area);
 
@@ -160,16 +185,14 @@ mod tests {
     fn wide_layout_uses_95_percent_width_for_chat() {
         let area = Rect::new(0, 0, 120, 40);
         let r = split_areas(area);
-        assert!(r.sidebar.is_some());
         assert_eq!(r.status, Rect::new(3, 0, 114, 1));
-        assert_eq!(r.chat, Rect::new(3, 1, 86, 35));
-        assert_eq!(r.sidebar, Some(Rect::new(89, 1, 28, 35)));
-        assert_eq!(r.footer.height, 1);
+        assert_eq!(r.chat, Rect::new(3, 1, 114, 36));
+        assert!(r.sidebar.is_none());
+        assert_eq!(r.footer.height, 0);
         assert_eq!(r.input.height, 3);
         assert_eq!(r.bottom_panel.height, 0);
         assert_eq!(r.feedback.height, 0);
         assert_eq!(r.queue.height, 0);
-        assert_eq!(r.footer.y + r.footer.height, area.height);
     }
 
     #[test]
@@ -178,7 +201,7 @@ mod tests {
         let r = split_areas_with_bottom_panel(area, 0, 3, true, 0, 20);
         assert_eq!(r.bottom_panel.height, 8);
         assert_eq!(r.input.height, 3);
-        assert_eq!(r.footer.y + r.footer.height, area.height);
+        assert_eq!(r.footer.height, 0);
     }
 
     #[test]
@@ -194,12 +217,21 @@ mod tests {
         let area = Rect::new(0, 0, 200, 40);
         let r = split_areas(area);
         assert_eq!(r.status, Rect::new(5, 0, 190, 1));
-        assert_eq!(r.chat, Rect::new(5, 1, 156, 35));
-        assert_eq!(r.sidebar, Some(Rect::new(161, 1, 34, 35)));
+        assert_eq!(r.chat, Rect::new(5, 1, 190, 36));
+        assert!(r.sidebar.is_none());
         assert_eq!(r.input.x, 5);
         assert_eq!(r.input.width, 190);
         assert_eq!(r.footer.x, 5);
         assert_eq!(r.footer.width, 190);
+        assert_eq!(r.footer.height, 0);
+    }
+
+    #[test]
+    fn contextual_hint_row_is_explicit() {
+        let area = Rect::new(0, 0, 120, 40);
+        let r = split_areas_with_chrome(area, 0, 3, false, false, 0, 0, 1);
+        assert_eq!(r.footer.height, 1);
+        assert_eq!(r.footer.y + r.footer.height, area.height);
     }
 
     #[test]
@@ -232,15 +264,15 @@ mod tests {
         let area = Rect::new(0, 0, 120, 40);
         let r = split_areas_full(area, 0, 3, false, 0);
         assert!(r.sidebar.is_none());
-        assert_eq!(r.chat, Rect::new(3, 1, 114, 35));
+        assert_eq!(r.chat, Rect::new(3, 1, 114, 36));
     }
 
     #[test]
     fn files_panel_reserves_bounded_left_space() {
         let area = Rect::new(0, 0, 120, 40);
         let r = split_areas_with_side_panels(area, 0, 3, true, false, 0, 0);
-        assert_eq!(r.files, Some(Rect::new(3, 1, 24, 35)));
-        assert_eq!(r.chat, Rect::new(27, 1, 90, 35));
+        assert_eq!(r.files, Some(Rect::new(3, 1, 24, 36)));
+        assert_eq!(r.chat, Rect::new(27, 1, 90, 36));
         assert!(r.sidebar.is_none());
     }
 

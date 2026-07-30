@@ -95,53 +95,35 @@ impl Widget for BottomPanel<'_> {
         if area.height == 0 || !self.model.state.open {
             return;
         }
-        let style = if self.focused {
-            theme::brand()
-        } else {
-            theme::muted()
-        };
         let title = Line::from(
-            vec![Span::styled(
-                if self.focused {
-                    " BOTTOM · NAV ".to_string()
-                } else {
-                    " BOTTOM ".to_string()
-                },
-                style,
-            )]
-            .into_iter()
-            .chain(
-                BottomPanelTab::ALL
-                    .into_iter()
-                    .enumerate()
-                    .flat_map(|(idx, tab)| {
-                        let tab_style = if tab == self.model.state.active {
-                            if self.focused {
-                                theme::brand().add_modifier(ratatui::style::Modifier::UNDERLINED)
-                            } else {
-                                theme::text().add_modifier(ratatui::style::Modifier::BOLD)
-                            }
+            BottomPanelTab::ALL
+                .into_iter()
+                .enumerate()
+                .flat_map(|(idx, tab)| {
+                    let tab_style = if tab == self.model.state.active {
+                        if self.focused {
+                            theme::brand().add_modifier(ratatui::style::Modifier::UNDERLINED)
                         } else {
-                            theme::muted()
-                        };
-                        [
-                            Span::styled(format!(" {} {} ", idx + 1, tab.label()), tab_style),
-                            Span::styled(" ", theme::muted()),
-                        ]
-                    })
-                    .collect::<Vec<_>>(),
-            )
-            .collect::<Vec<_>>(),
+                            theme::text().add_modifier(ratatui::style::Modifier::BOLD)
+                        }
+                    } else {
+                        theme::muted()
+                    };
+                    [
+                        Span::styled(format!(" {} {} ", idx + 1, tab.label()), tab_style),
+                        Span::styled(" ", theme::muted()),
+                    ]
+                })
+                .collect::<Vec<_>>(),
         );
         let block = Block::default()
-            .borders(Borders::ALL)
+            .borders(Borders::TOP)
             .border_style(if self.focused {
                 theme::brand()
             } else {
                 theme::border_muted()
             })
-            .title(title)
-            .title_bottom(Line::from("⇧←/⇧→ tab · Esc back · Ctrl+P close"));
+            .title(title);
         let inner = block.inner(area);
         block.render(area, buf);
         let lines = match self.model.state.active {
@@ -420,7 +402,7 @@ mod tests {
     }
 
     #[test]
-    fn renders_active_tab_and_focus_state_in_title() {
+    fn renders_purpose_tabs_without_bottom_label_or_shortcut_manual() {
         let activity = ActivityFeed::default();
         let state = BottomPanelState {
             open: true,
@@ -438,9 +420,12 @@ mod tests {
         };
 
         let rendered = rendered_text(model, true);
-        assert!(rendered.contains("BOTTOM · NAV"));
-        assert!(rendered.contains("⇧←/⇧→ tab"));
-        assert!(rendered.contains("Ctrl+P close"));
+        assert!(rendered.contains("Diagnostics"));
+        assert!(rendered.contains("Run"));
+        assert!(rendered.contains("Terminal"));
+        assert!(rendered.contains("Activity"));
+        assert!(!rendered.contains("BOTTOM"));
+        assert!(!rendered.contains("Ctrl+P close"));
     }
 
     #[test]
