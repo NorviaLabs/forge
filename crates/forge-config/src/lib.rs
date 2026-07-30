@@ -19,7 +19,25 @@ pub enum ConfigError {
     InvalidProvider(String),
     #[error("{0}")]
     Message(String),
+    /// The file declares a schema newer than this build understands. Refusing is
+    /// deliberate: TOML deserialisation ignores unknown keys, so parsing a newer
+    /// file would silently drop whatever this build does not recognise.
+    #[error(
+        "{path} declares config schema version {found}, but this build understands up to {supported}; upgrade forge to read it"
+    )]
+    UnsupportedSchemaVersion {
+        path: String,
+        found: u32,
+        supported: u32,
+    },
 }
+
+/// Highest `forge.toml` schema version this build can read.
+///
+/// A file with no `version` key predates versioning and is read as version 1,
+/// which is the shape those files already have. Bump this only when the layout
+/// changes in a way older builds cannot safely ignore.
+pub const CONFIG_SCHEMA_VERSION: u32 = 1;
 
 /// Native Rust is the production backend; mock is offline CI only.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -575,6 +593,17 @@ fn resolve_project_config(
 fn merge_file(cfg: &mut Config, path: &Path, scope: ConfigScope) -> Result<(), ConfigError> {
     let text = fs::read_to_string(path)?;
     let partial: ConfigFile = toml::from_str(&text)?;
+    // Check before applying: a file from a newer build may carry keys this one
+    // would silently discard, so refuse rather than load a partial config.
+    if let Some(found) = partial.version {
+        if found > CONFIG_SCHEMA_VERSION {
+            return Err(ConfigError::UnsupportedSchemaVersion {
+                path: path.display().to_string(),
+                found,
+                supported: CONFIG_SCHEMA_VERSION,
+            });
+        }
+    }
     partial.apply(cfg, scope);
     Ok(())
 }
@@ -582,6 +611,8 @@ fn merge_file(cfg: &mut Config, path: &Path, scope: ConfigScope) -> Result<(), C
 /// TOML-facing shape (same fields as Config minus resolved_workspace).
 #[derive(Debug, Default, Deserialize)]
 struct ConfigFile {
+    /// On-disk schema version. Absent in files written before versioning.
+    version: Option<u32>,
     workspace_root: Option<String>,
     model: Option<ModelConfigFile>,
     journal: Option<JournalConfig>,
@@ -824,6 +855,60 @@ fn resolve_workspace(from_cfg: &Option<String>, from_cli: Option<&Path>, cwd: &P
 
 #[cfg(test)]
 mod tests {
+    /// Files written before versioning have no `version` key. They must keep
+    /// loading unchanged — this is the compatibility guarantee, not a nicety.
+    #[test]
+    fn config_without_a_version_key_still_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("forge.toml");
+        std::fs::write(
+            &path,
+            "[model]\nprovider = \"native\"\nmodel = \"anthropic/sonnet-5\"\n",
+        )
+        .unwrap();
+        let mut cfg = Config::default();
+        merge_file(&mut cfg, &path, ConfigScope::Trusted).expect("unversioned config must load");
+        assert_eq!(cfg.model.model, "anthropic/sonnet-5");
+    }
+
+    /// An explicit current version is accepted.
+    #[test]
+    fn config_with_the_current_version_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("forge.toml");
+        std::fs::write(
+            &path,
+            format!("version = {CONFIG_SCHEMA_VERSION}\n[model]\nmodel = \"anthropic/sonnet-5\"\n"),
+        )
+        .unwrap();
+        let mut cfg = Config::default();
+        merge_file(&mut cfg, &path, ConfigScope::Trusted).unwrap();
+        assert_eq!(cfg.model.model, "anthropic/sonnet-5");
+    }
+
+    /// A newer file is refused rather than silently truncated: TOML drops unknown
+    /// keys, so loading it would apply a partial config with no warning.
+    #[test]
+    fn config_from_a_newer_build_is_refused_not_truncated() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("forge.toml");
+        let future = CONFIG_SCHEMA_VERSION + 1;
+        std::fs::write(
+            &path,
+            format!("version = {future}\n[model]\nmodel = \"from-the-future\"\n"),
+        )
+        .unwrap();
+        let mut cfg = Config::default();
+        let err = merge_file(&mut cfg, &path, ConfigScope::Trusted).unwrap_err();
+        assert!(
+            matches!(err, ConfigError::UnsupportedSchemaVersion { found, .. } if found == future),
+            "expected an unsupported-version error, got {err:?}"
+        );
+        assert_ne!(
+            cfg.model.model, "from-the-future",
+            "a refused file must not have been partially applied"
+        );
+    }
     use super::*;
     use std::io::Write;
     use std::sync::Mutex;
