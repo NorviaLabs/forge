@@ -5,6 +5,7 @@ use std::fs;
 use std::io::{self, stdout};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use crossterm::event::{
@@ -745,7 +746,9 @@ struct ConversationRenderKey {
 
 struct ConversationRenderCache {
     key: ConversationRenderKey,
-    lines: Vec<Line<'static>>,
+    /// Shared so the render path can hold the lines without copying them. A
+    /// frame clones the handle, not the ~940KB of `Line`/`Span` data behind it.
+    lines: Arc<Vec<Line<'static>>>,
 }
 
 #[allow(dead_code)]
@@ -4657,7 +4660,7 @@ Reply with ONLY the commit message line.\n\n\
             let width = regions.chat.width.saturating_sub(2) as usize;
             self.conversation_cache = Some(ConversationRenderCache {
                 key,
-                lines: conv.lines_for_width(width),
+                lines: Arc::new(conv.lines_for_width(width)),
             });
         }
         let width = regions.chat.width.saturating_sub(2) as usize;
@@ -4677,7 +4680,10 @@ Reply with ONLY the commit message line.\n\n\
             .conversation_cache
             .as_ref()
             .expect("conversation cache populated");
-        let cached_lines = cached.lines.clone();
+        // Clones the shared handle, not the line data. This exists so the
+        // immutable borrow of `conversation_cache` ends before
+        // `register_activity_summary_region` takes `&mut self` below.
+        let cached_lines = Arc::clone(&cached.lines);
         match self.workspace_navigation.current.clone() {
             WorkspaceView::Conversation => {
                 let conversation_area = ratatui::layout::Rect {
@@ -11194,10 +11200,8 @@ mod tests {
         app.splash_dismissed = true;
         let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
         terminal.draw(|frame| app.draw(frame)).unwrap();
-        app.conversation_cache
-            .as_mut()
-            .unwrap()
-            .lines
+        Arc::get_mut(&mut app.conversation_cache.as_mut().unwrap().lines)
+            .expect("cache handle is unshared between frames")
             .reserve(1_000);
         let cached_capacity = app.conversation_cache.as_ref().unwrap().lines.capacity();
 
@@ -11244,10 +11248,8 @@ mod tests {
         app.stream_preview = "first chunk".into();
         let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
         terminal.draw(|frame| app.draw(frame)).unwrap();
-        app.conversation_cache
-            .as_mut()
-            .unwrap()
-            .lines
+        Arc::get_mut(&mut app.conversation_cache.as_mut().unwrap().lines)
+            .expect("cache handle is unshared between frames")
             .reserve(1_000);
         let cached_capacity = app.conversation_cache.as_ref().unwrap().lines.capacity();
 
@@ -11270,6 +11272,31 @@ mod tests {
         assert!(
             !rendered.contains("historical completed thinking"),
             "{rendered}"
+        );
+    }
+
+    /// A cache hit must share the cached line buffer, not copy it. Pointer
+    /// identity is a direct check: the previous code deep-copied every `Line` and
+    /// `Span` on every frame, so the allocation would differ here.
+    #[tokio::test]
+    async fn cache_hit_shares_transcript_lines_without_copying() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.splash_dismissed = true;
+        app.session.messages.push(forge_types::Message::new(
+            forge_types::MessageRole::Assistant,
+            "cached transcript body",
+        ));
+        draw_app(&mut app, 100, 30);
+        let first = Arc::clone(&app.conversation_cache.as_ref().unwrap().lines);
+
+        // Typing does not change the render key, so this is a cache hit.
+        app.input.insert('x');
+        draw_app(&mut app, 100, 30);
+        let second = Arc::clone(&app.conversation_cache.as_ref().unwrap().lines);
+
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "a cache hit must reuse the same line allocation, not clone it"
         );
     }
 
