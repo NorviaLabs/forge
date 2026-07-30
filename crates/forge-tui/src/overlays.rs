@@ -1121,7 +1121,7 @@ fn hitl_risk_summary(tool: &str, args: &serde_json::Value) -> &'static str {
             if args
                 .get("command")
                 .and_then(|v| v.as_str())
-                .map_or(false, |s| s.starts_with("push")) =>
+                .is_some_and(|s| s.starts_with("push")) =>
         {
             "This pushes changes to a remote repository."
         }

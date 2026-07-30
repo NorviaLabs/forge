@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::io::{self, stdout};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant, SystemTime};
 
 use crossterm::event::{
@@ -67,7 +67,7 @@ use crate::user_message_gutter::{gutter_glyph, gutter_prefix_width};
 use crate::widgets::{
     classify_operator_error, BottomPanel, BottomPanelModel, BottomPanelState, BottomPanelTab,
     BusyPhase, FeedbackBar, FeedbackModel, FeedbackSeverity, FooterBar, FooterModel, InputBar,
-    InputModel, StatusBar, StatusModel, TurnLifecycle,
+    InputModel, StatusBar, StatusModel,
 };
 use forge_config::{CommandConfig, FileIconMode};
 
@@ -149,16 +149,11 @@ impl WorkspaceNavigation {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 enum FilesVisibility {
     Open,
+    #[default]
     Closed,
-}
-
-impl Default for FilesVisibility {
-    fn default() -> Self {
-        Self::Closed
-    }
 }
 
 impl FilesVisibility {
@@ -1132,17 +1127,12 @@ impl TuiApp {
     fn poll_file_changes(&mut self) {
         let mut active_file_changed = false;
         let mut workspace_changed = false;
-        loop {
-            match self.file_change_rx.try_recv() {
-                Ok(change) => {
-                    workspace_changed = true;
-                    if let Some(path) = &self.source_viewer.path {
-                        if change.path == *path {
-                            active_file_changed = true;
-                        }
-                    }
+        while let Ok(change) = self.file_change_rx.try_recv() {
+            workspace_changed = true;
+            if let Some(path) = &self.source_viewer.path {
+                if change.path == *path {
+                    active_file_changed = true;
                 }
-                Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
             }
         }
         if workspace_changed {
@@ -2336,7 +2326,7 @@ impl TuiApp {
         if let Some(ref att) = self.pending_attachment {
             self.set_feedback(
                 FeedbackSeverity::Info,
-                &format!("File attached · {}", att.label()),
+                format!("File attached · {}", att.label()),
             );
         }
     }
@@ -3047,7 +3037,7 @@ impl TuiApp {
 
     pub async fn drain_pending_validation(
         &mut self,
-        mut terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
+        terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
     ) -> Result<(), TuiError> {
         if !self.pending_validation
             || !self
@@ -3063,7 +3053,7 @@ impl TuiApp {
             return Ok(());
         };
         let invocation = record.invocation.clone();
-        if let Some(term) = terminal.as_deref_mut() {
+        if let Some(term) = terminal {
             let _ = term.draw(|f| self.draw(f));
         }
         self.terminal_capture.title = Some(format!("run · {}", invocation.summary()));
@@ -3315,7 +3305,7 @@ impl TuiApp {
         };
         self.push_notice(vec![self.status_message.clone()]);
         self.busy_phase = BusyPhase::Idle;
-        if let Some(term) = terminal.as_deref_mut() {
+        if let Some(term) = terminal {
             let _ = term.draw(|f| self.draw(f));
         }
         Ok(())
@@ -3402,7 +3392,7 @@ impl TuiApp {
         self.status_message = "Continuing in a fresh context".into();
         self.notices.clear();
         self.busy_phase = BusyPhase::Idle;
-        if let Some(term) = terminal.as_deref_mut() {
+        if let Some(term) = terminal {
             let _ = term.draw(|f| self.draw(f));
         }
         Ok(())
@@ -3454,7 +3444,7 @@ impl TuiApp {
             None => {
                 self.set_feedback(
                     FeedbackSeverity::Warn,
-                    &EditorError::NotConfigured.to_string(),
+                    EditorError::NotConfigured.to_string(),
                 );
                 return Ok(());
             }
@@ -3481,7 +3471,7 @@ impl TuiApp {
                 let _ = self.resume_after_external_editor(terminal.as_deref_mut());
                 self.set_feedback(
                     FeedbackSeverity::Warn,
-                    &EditorError::SpawnFailed(e).to_string(),
+                    EditorError::SpawnFailed(e).to_string(),
                 );
                 return Ok(());
             }
@@ -3498,7 +3488,7 @@ impl TuiApp {
             }
         }
 
-        let _ = self.resume_after_external_editor(terminal.as_deref_mut());
+        let _ = self.resume_after_external_editor(terminal);
 
         // 9. Refresh the active file and Git status.
         self.refresh_post_editor();
@@ -3985,18 +3975,16 @@ Reply with ONLY the commit message line.\n\n\
                 .as_ref()
                 .filter(|record| record.id == *id)
                 .map(|record| {
-                    format!(
-                        "{}",
-                        match record.state {
-                            RunState::Queued => "Queued",
-                            RunState::Running => "Running",
-                            RunState::Succeeded => "Succeeded",
-                            RunState::Failed => "Failed",
-                            RunState::Cancelled => "Cancelled",
-                            RunState::StartFailed => "Could not start",
-                            RunState::CaptureFailed => "Capture failed",
-                        }
-                    )
+                    (match record.state {
+                        RunState::Queued => "Queued",
+                        RunState::Running => "Running",
+                        RunState::Succeeded => "Succeeded",
+                        RunState::Failed => "Failed",
+                        RunState::Cancelled => "Cancelled",
+                        RunState::StartFailed => "Could not start",
+                        RunState::CaptureFailed => "Capture failed",
+                    })
+                    .to_string()
                 }),
             _ => {
                 let changes = self.file_explorer.git_status.status.len();
@@ -4125,6 +4113,7 @@ Reply with ONLY the commit message line.\n\n\
         }
     }
 
+    #[cfg(test)]
     fn busy_status_detail(&self) -> Option<String> {
         self.busy.then(|| {
             let label = if !self.stream_thinking.is_empty() && self.stream_preview.is_empty() {
@@ -5884,8 +5873,6 @@ Reply with ONLY the commit message line.\n\n\
         self.input.history_browse = false;
         if self.busy && !line.trim_start().starts_with('/') {
             self.enqueue_user_message(line);
-        } else if line.trim_start().starts_with('/') {
-            self.dispatch_line(&line).await?;
         } else {
             self.dispatch_line(&line).await?;
         }
@@ -6926,7 +6913,6 @@ Reply with ONLY the commit message line.\n\n\
                 format!("No connected provider matches `{target_prefix}`."),
                 "Use /connect, or pick a model from the current provider catalog.".into(),
             ]);
-            return;
         } else {
             self.apply_model_selection("native", &model_id);
             self.open_effort_picker_for_model(&model_id);
@@ -7184,7 +7170,7 @@ Reply with ONLY the commit message line.\n\n\
                         final_line = format!("{}\n\n{}", ctx, final_line);
                     }
                     Err(e) => {
-                        self.set_feedback(FeedbackSeverity::Warn, &e.to_string());
+                        self.set_feedback(FeedbackSeverity::Warn, e.to_string());
                     }
                 }
             }
@@ -7872,6 +7858,7 @@ async fn run_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widgets::status::TurnLifecycle;
     use forge_config::CommandConfig;
     use forge_core::LoopConfig;
     use forge_model::{MockModelClient, ModelClient};

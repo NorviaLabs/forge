@@ -440,6 +440,6 @@ mod tests {
         let mut map = HashMap::new();
         map.insert(PathBuf::from("dirty.txt"), GitStatusKind::Modified);
         // A file not present in the status map is considered clean.
-        assert!(map.get(Path::new("clean.txt")).is_none());
+        assert!(!map.contains_key(Path::new("clean.txt")));
     }
 }

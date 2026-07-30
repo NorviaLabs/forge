@@ -684,10 +684,8 @@ fn read_children(root: Option<&Path>, dir: &Path) -> Result<Vec<FileNode>, Strin
             continue;
         }
         let file_type = entry.file_type().map_err(|error| error.to_string())?;
-        if file_type.is_symlink() {
-            if safe_path(root, &path).is_err() {
-                continue;
-            }
+        if file_type.is_symlink() && safe_path(root, &path).is_err() {
+            continue;
         }
         let kind = if file_type.is_dir() {
             FileKind::Directory
@@ -727,6 +725,7 @@ fn sort_nodes(nodes: &mut [FileNode]) {
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn explorer_row_line(
     prefix: &str,
     marker: &str,

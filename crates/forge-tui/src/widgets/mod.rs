@@ -8,4 +8,4 @@ pub use bottom_panel::{BottomPanel, BottomPanelModel, BottomPanelState, BottomPa
 pub use feedback::{classify_operator_error, FeedbackBar, FeedbackModel, FeedbackSeverity};
 pub use footer::{FooterBar, FooterModel};
 pub use input::{InputBar, InputModel};
-pub use status::{session_chrome_lines, BusyPhase, StatusBar, StatusModel, TurnLifecycle};
+pub use status::{session_chrome_lines, BusyPhase, StatusBar, StatusModel};

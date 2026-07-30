@@ -429,7 +429,7 @@ impl Widget for StatusBar<'_> {
 
         if let Some(repo) = self.model.repo_branch_label() {
             if room_for_repo > sep_len {
-                let available_repo = room_for_repo.saturating_sub(sep_len).max(0);
+                let available_repo = room_for_repo.saturating_sub(sep_len);
                 if available_repo >= 4 {
                     let repo = StatusModel::truncate_middle(&repo, available_repo);
                     let needed = sep_len + repo.chars().count();

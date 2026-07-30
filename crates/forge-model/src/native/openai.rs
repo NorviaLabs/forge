@@ -238,9 +238,9 @@ fn consume_event(
         }
         if let Some(name) = raw_call.pointer("/function/name").and_then(Value::as_str) {
             // Prefer full name replacement; only append true deltas.
-            if call.name.is_empty() {
-                call.name = name.into();
-            } else if name.starts_with(&call.name) && name.len() > call.name.len() {
+            if call.name.is_empty()
+                || (name.starts_with(&call.name) && name.len() > call.name.len())
+            {
                 call.name = name.into();
             } else if !call.name.contains(name) && !name.contains(&call.name) {
                 call.name.push_str(name);
