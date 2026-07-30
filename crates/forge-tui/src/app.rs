@@ -1614,12 +1614,9 @@ impl TuiApp {
             .or_else(|| connected.first())
             .cloned();
         if let Some(profile) = chosen {
-            // Refresh and inject provider credentials.
+            // Refresh and inject provider credentials into the client only.
             let _ = svc.ensure_oauth_fresh(&profile.id);
             if let Ok(pairs) = svc.provider_env_for_profile(&profile.id) {
-                for (k, v) in &pairs {
-                    std::env::set_var(k, v);
-                }
                 self.session.apply_provider_env(&pairs);
             }
             self.connect_profile = Some(profile.id.clone());
@@ -2581,10 +2578,10 @@ impl TuiApp {
         };
         match svc.provider_env_for_profile(profile_id) {
             Ok(pairs) if !pairs.is_empty() => {
-                for (k, v) in &pairs {
-                    // Keep process env and the active native client in sync.
-                    std::env::set_var(k, v);
-                }
+                // Given to the client only. `NativeModelClient::injected_or_env`
+                // reads the injected map ahead of the process environment, so
+                // exporting these as well changed nothing for the client — it
+                // only made every child process inherit them.
                 self.session.apply_provider_env(&pairs);
             }
             Ok(_) => {}
