@@ -11,6 +11,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ContextError {
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
