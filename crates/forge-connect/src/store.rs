@@ -10,12 +10,21 @@ use thiserror::Error;
 use crate::auth::OauthTokens;
 use crate::profile::KeySource;
 
-#[derive(Debug, Error, PartialEq, Eq)]
+/// A credential-store operation failed.
+///
+/// `Io` and the TOML variants carry their source rather than a flattened string,
+/// so a caller can distinguish a missing file from a permissions problem. The
+/// `PartialEq` derive is gone because `std::io::Error` does not implement it;
+/// nothing compared these values.
+#[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum StoreError {
     #[error("io: {0}")]
-    Io(String),
+    Io(#[from] std::io::Error),
     #[error("toml: {0}")]
-    Toml(String),
+    TomlDe(#[from] toml::de::Error),
+    #[error("toml: {0}")]
+    TomlSer(#[from] toml::ser::Error),
     #[error("credentials file permissions too open (expected 0600)")]
     InsecurePermissions,
     /// The file declares a schema newer than this build understands. Refusing is
@@ -209,9 +218,8 @@ impl CredentialStore {
                 }
             }
         }
-        let text = fs::read_to_string(&self.path).map_err(|e| StoreError::Io(e.to_string()))?;
-        let file: CredentialsFile =
-            toml::from_str(&text).map_err(|e| StoreError::Toml(e.to_string()))?;
+        let text = fs::read_to_string(&self.path)?;
+        let file: CredentialsFile = toml::from_str(&text)?;
         // A file with no `version` predates versioning and is read as v1.
         if let Some(found) = file.version {
             if found > CREDENTIALS_SCHEMA_VERSION {
@@ -231,15 +239,15 @@ impl CredentialStore {
         file.version = Some(CREDENTIALS_SCHEMA_VERSION);
         let file = &file;
         if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).map_err(|e| StoreError::Io(e.to_string()))?;
+            fs::create_dir_all(parent)?;
         }
-        let text = toml::to_string_pretty(file).map_err(|e| StoreError::Toml(e.to_string()))?;
-        fs::write(&self.path, text).map_err(|e| StoreError::Io(e.to_string()))?;
+        let text = toml::to_string_pretty(file)?;
+        fs::write(&self.path, text)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let perms = fs::Permissions::from_mode(0o600);
-            fs::set_permissions(&self.path, perms).map_err(|e| StoreError::Io(e.to_string()))?;
+            fs::set_permissions(&self.path, perms)?;
         }
         Ok(())
     }
