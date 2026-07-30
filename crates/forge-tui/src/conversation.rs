@@ -296,7 +296,7 @@ impl ConversationModel {
 
     pub fn from_messages(
         messages: &[Message],
-        _events: &[TurnEvent],
+        events: &[TurnEvent],
         status: SessionStatus,
         opts: ConversationViewOpts,
     ) -> Self {
@@ -398,6 +398,14 @@ impl ConversationModel {
                         });
                     }
                 }
+            }
+        }
+        for event in events {
+            if status == SessionStatus::Running && (event.kind == "progress" || event.kind == "thinking") {
+                items.push(ChatItem::Thinking {
+                    text: event.detail.clone(),
+                    duration_secs: None,
+                });
             }
         }
         items = group_routine_activity(items);
@@ -618,16 +626,9 @@ impl ConversationModel {
                     }
                 }
                 ConversationBlock::AssistantAnswer(p) => {
-                    let parts = assistant_lines(&p.text, width.saturating_sub(3));
-                    for (i, line) in parts.into_iter().enumerate() {
-                        let mut spans = vec![];
-                        if i == 0 {
-                            spans.push(Span::styled("Forge ", theme::muted()));
-                        } else {
-                            spans.push(Span::styled("     ", theme::muted()));
-                        }
-                        spans.extend(line.spans);
-                        lines.push(Line::from(spans).style(theme::assistant_answer_style()));
+                    let parts = assistant_lines(&p.text, width);
+                    for line in parts {
+                        lines.push(line.style(theme::assistant_answer_style()));
                     }
                     if gap {
                         lines.push(Line::from(""));
@@ -785,7 +786,16 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
                     text: text.clone(),
                 }));
             }
-            ChatItem::Thinking { .. } => {}
+            ChatItem::Thinking { text, .. } => {
+                flush_progress(&mut blocks, &mut progress);
+                flush_activity(&mut blocks, &mut activity_group);
+                blocks.push(ConversationBlock::ActiveProgress(ActiveProgressPresentation {
+                    id: "thinking".into(),
+                    label: "Thinking".into(),
+                    summary: text.clone(),
+                    status: ActiveProgressStatus::Updated,
+                }));
+            }
             ChatItem::Assistant { text } => {
                 flush_progress(&mut blocks, &mut progress);
                 flush_activity(&mut blocks, &mut activity_group);

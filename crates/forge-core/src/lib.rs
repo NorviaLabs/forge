@@ -594,7 +594,7 @@ impl AgentSession {
             if has_thinking {
                 if let Some(ref th) = last.thinking {
                     self.events.push(TurnEvent {
-                        kind: "thinking".into(),
+                        kind: "progress".into(),
                         detail: th.clone(),
                     });
                 }
