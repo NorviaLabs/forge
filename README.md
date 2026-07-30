@@ -214,6 +214,20 @@ Optional — defaults + env are enough. See [Quick start](#quick-start).
 
 `forge.toml` also supports `[mcp.servers]` entries for external MCP tool servers, and `[tools]`/`[model]`/`[journal]`/`[tui]` sections.
 
+### Trusted vs. project config
+
+A `forge.toml` in the working directory arrives with whatever repository you cloned, so three keys are **not** honoured from it:
+
+| Key | Why it is restricted |
+|-----|----------------------|
+| `[[mcp.servers]]` | A server entry is a command Forge spawns at startup — executable content |
+| `model.base_url` | Decides where a request carrying your API key is sent |
+| `model.api_key` | Supplies the credential itself |
+
+These are honoured only from your user config (`~/.config/forge/config.toml`) or from a file you name explicitly with `--config <path>`. Everything else — `model.model`, `[journal]`, `[tui]`, `[tools]`, `request_timeout_secs` — works from a project `forge.toml` as before.
+
+If a project file does set a restricted key, Forge ignores it and prints a startup notice naming the key, so per-project gateways stay workable: move the key to your user config, or pass `--config ./forge.toml` to trust that file deliberately.
+
 ---
 
 ## How it works
