@@ -232,16 +232,56 @@ fn consume_event(
         let index = raw_call.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
         let call = tool_calls.entry(index).or_default();
         if let Some(id) = raw_call.get("id").and_then(Value::as_str) {
-            call.id = id.into();
+            if call.id.is_empty() {
+                call.id = id.into();
+            }
         }
         if let Some(name) = raw_call.pointer("/function/name").and_then(Value::as_str) {
-            call.name.push_str(name);
+            // Prefer full name replacement; only append true deltas.
+            if call.name.is_empty() {
+                call.name = name.into();
+            } else if name.starts_with(&call.name) && name.len() > call.name.len() {
+                call.name = name.into();
+            } else if !call.name.contains(name) && !name.contains(&call.name) {
+                call.name.push_str(name);
+            }
         }
-        if let Some(arguments) = raw_call
-            .pointer("/function/arguments")
-            .and_then(Value::as_str)
-        {
-            call.arguments.push_str(arguments);
+        if let Some(arguments) = raw_call.pointer("/function/arguments") {
+            accumulate_tool_arguments(&mut call.arguments, arguments);
+        }
+    }
+}
+
+/// Assemble streamed tool arguments without concatenating complete JSON snapshots.
+fn accumulate_tool_arguments(acc: &mut String, fragment: &Value) {
+    match fragment {
+        Value::String(s) => {
+            if s.is_empty() {
+                return;
+            }
+            // Provider sent a full JSON object snapshot as a string (not a delta).
+            if let (Ok(_), Ok(Value::Object(_))) = (
+                serde_json::from_str::<Value>(acc),
+                serde_json::from_str::<Value>(s),
+            ) {
+                if !acc.is_empty() {
+                    *acc = s.clone();
+                    return;
+                }
+            }
+            acc.push_str(s);
+        }
+        Value::Object(_) | Value::Array(_) => {
+            // Non-delta providers may emit already-parsed argument objects.
+            *acc = fragment.to_string();
+        }
+        Value::Null => {}
+        other => {
+            // Numbers/bools as sole argument value are invalid for tools; keep as text for
+            // finalize to reject with a clear protocol error.
+            if acc.is_empty() {
+                *acc = other.to_string();
+            }
         }
     }
 }
@@ -375,6 +415,83 @@ mod tests {
         let calls = finalize_tool_calls(calls).unwrap();
         assert_eq!(calls[0].name, "bash");
         assert_eq!(calls[0].arguments["command"], "ls");
+    }
+
+    #[test]
+    fn accumulates_read_file_offset_limit_without_concat() {
+        let mut text = String::new();
+        let mut thinking = String::new();
+        let mut calls = BTreeMap::new();
+        let mut usage = None;
+        // Streamed JSON fragments must keep offset and limit as distinct fields.
+        for frag in [
+            r#"{"path":"README.md","offset":"#,
+            "1",
+            r#","limit":"#,
+            "100",
+            "}",
+        ] {
+            consume_event(
+                &json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"read_file","arguments":frag}}]}}]}),
+                &mut text,
+                &mut thinking,
+                &mut calls,
+                &mut usage,
+                None,
+            );
+        }
+        let calls = finalize_tool_calls(calls).unwrap();
+        assert_eq!(calls[0].name, "read_file");
+        assert_eq!(calls[0].arguments["path"], "README.md");
+        assert_eq!(calls[0].arguments["offset"], 1);
+        assert_eq!(calls[0].arguments["limit"], 100);
+    }
+
+    #[test]
+    fn full_argument_object_snapshot_replaces_instead_of_concat() {
+        let mut acc = String::new();
+        accumulate_tool_arguments(&mut acc, &json!({"path": "a", "offset": 1}));
+        accumulate_tool_arguments(&mut acc, &json!({"path": "a", "offset": 1, "limit": 100}));
+        let parsed: Value = serde_json::from_str(&acc).unwrap();
+        assert_eq!(parsed["offset"], 1);
+        assert_eq!(parsed["limit"], 100);
+        assert!(acc.matches("offset").count() == 1);
+    }
+
+    #[test]
+    fn interleaved_tool_call_indexes_stay_isolated() {
+        let mut text = String::new();
+        let mut thinking = String::new();
+        let mut calls = BTreeMap::new();
+        let mut usage = None;
+        consume_event(
+            &json!({"choices":[{"delta":{"tool_calls":[
+                {"index":0,"id":"a","function":{"name":"read_file","arguments":"{\"path\":\"a\",\"offset\":"}},
+                {"index":1,"id":"b","function":{"name":"read_file","arguments":"{\"path\":\"b\",\"offset\":"}}
+            ]}}]}),
+            &mut text,
+            &mut thinking,
+            &mut calls,
+            &mut usage,
+            None,
+        );
+        consume_event(
+            &json!({"choices":[{"delta":{"tool_calls":[
+                {"index":0,"function":{"arguments":"1,\"limit\":100}"}},
+                {"index":1,"function":{"arguments":"2,\"limit\":50}"}}
+            ]}}]}),
+            &mut text,
+            &mut thinking,
+            &mut calls,
+            &mut usage,
+            None,
+        );
+        let calls = finalize_tool_calls(calls).unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].arguments["offset"], 1);
+        assert_eq!(calls[0].arguments["limit"], 100);
+        assert_eq!(calls[1].arguments["offset"], 2);
+        assert_eq!(calls[1].arguments["limit"], 50);
     }
 
     #[tokio::test]

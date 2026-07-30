@@ -107,7 +107,11 @@ impl ToolRegistry {
             .ok_or_else(|| ToolError::Unknown(name.to_string()))?;
 
         if let Err(ve) = validate_args(name, &tool.input_schema(), &args) {
-            budget.record_failure(name).map_err(ToolError::Execution)?;
+            let signature =
+                crate::validation::validation_error_signature(name, &ve.path, &ve.message);
+            budget
+                .record_failure_with_signature(name, Some(&signature))
+                .map_err(ToolError::Execution)?;
             return Err(ToolError::Validation(ve));
         }
 
