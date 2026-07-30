@@ -175,6 +175,14 @@ fn request_body(
                         }),
                 );
             }
+            // `MessageRole` is `#[non_exhaustive]`. Carry an unrecognised future role
+            // through as user content: never fabricate system/assistant authority for a
+            // role this transport does not understand, and never silently drop content.
+            _ => input.push(json!({
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": message.content}]
+            })),
         }
     }
     let tools: Vec<Value> = req

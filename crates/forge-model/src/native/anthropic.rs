@@ -164,6 +164,13 @@ fn messages_body(req: &ModelRequest) -> (String, Vec<Value>) {
                 }));
                 messages.push(json!({"role": "assistant", "content": content}));
             }
+            // `MessageRole` is `#[non_exhaustive]`. Carry an unrecognised future role
+            // through as user content: never fabricate system/assistant authority for a
+            // role this transport does not understand, and never silently drop content.
+            _ => messages.push(json!({
+                "role": "user",
+                "content": message.content
+            })),
         }
     }
     (system.join("\n\n"), messages)

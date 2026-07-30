@@ -19,6 +19,7 @@ use thiserror::Error;
 pub type StreamEventTx = std::sync::mpsc::Sender<ModelStreamEvent>;
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ModelError {
     #[error("http error: {0}")]
     Http(String),

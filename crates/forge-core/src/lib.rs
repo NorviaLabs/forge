@@ -65,6 +65,7 @@ fn strip_protocol_markers(text: &str) -> String {
 }
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum LoopError {
     #[error(transparent)]
     Journal(#[from] forge_durable::JournalError),
@@ -169,6 +170,7 @@ pub struct TokenUsageReport {
 
 /// Result of applying one model response inside the agent loop.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum ApplyOutcome {
     /// No tool calls — turn finished.
     Done(ModelResponse),
@@ -482,6 +484,10 @@ impl AgentSession {
                     tool_tokens_est = tool_tokens_est.saturating_add(n);
                     tool_message_count = tool_message_count.saturating_add(1);
                 }
+                // `MessageRole` is `#[non_exhaustive]`. Count an unrecognised future role
+                // toward the user bucket so the context budget total stays accurate instead
+                // of silently under-counting the window.
+                _ => user_tokens_est = user_tokens_est.saturating_add(n),
             }
         }
         let context_tokens_est =
@@ -789,6 +795,9 @@ impl AgentSession {
             | SessionStatus::Failed
             | SessionStatus::Cancelled
             | SessionStatus::Interrupted => Ok(()),
+            // `SessionStatus` is `#[non_exhaustive]`. Leave an unrecognised status untouched
+            // rather than forcing it to Interrupted.
+            _ => Ok(()),
         }
     }
 

@@ -23,6 +23,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ToolError {
     #[error(transparent)]
     Validation(#[from] ToolValidationError),

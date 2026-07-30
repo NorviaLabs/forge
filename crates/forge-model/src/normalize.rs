@@ -177,6 +177,9 @@ pub fn forge_messages_to_wire(messages: &[Message]) -> Vec<Value> {
                 MessageRole::User => "user",
                 MessageRole::Assistant => "assistant",
                 MessageRole::Tool => "tool",
+                // `MessageRole` is `#[non_exhaustive]`; map an unrecognised future role to
+                // user rather than escalating it to system/assistant.
+                _ => "user",
             };
             let mut obj = json!({
                 "role": role,
