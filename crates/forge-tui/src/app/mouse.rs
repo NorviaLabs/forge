@@ -451,3 +451,25 @@ impl TuiApp {
         Ok(())
     }
 }
+
+fn centered_capped_rect_for_mouse(
+    area: ratatui::layout::Rect,
+    max_width: u16,
+    max_height: u16,
+) -> ratatui::layout::Rect {
+    let width = area.width.min(max_width).max(1);
+    let height = area.height.min(max_height).max(1);
+    ratatui::layout::Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    }
+}
+
+fn rect_contains(area: ratatui::layout::Rect, x: u16, y: u16) -> bool {
+    x >= area.x
+        && y >= area.y
+        && x < area.x.saturating_add(area.width)
+        && y < area.y.saturating_add(area.height)
+}

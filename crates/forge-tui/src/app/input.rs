@@ -633,6 +633,22 @@ impl TuiApp {
     }
 }
 
+fn map_key(key: event::KeyEvent) -> OverlayKey {
+    match key.code {
+        KeyCode::Esc => OverlayKey::Esc,
+        KeyCode::Enter => OverlayKey::Enter,
+        KeyCode::Tab => OverlayKey::Tab,
+        KeyCode::BackTab => OverlayKey::BackTab,
+        KeyCode::Up => OverlayKey::Up,
+        KeyCode::Down => OverlayKey::Down,
+        KeyCode::Left => OverlayKey::Left,
+        KeyCode::Right => OverlayKey::Right,
+        KeyCode::Backspace => OverlayKey::Backspace,
+        KeyCode::Char(c) => OverlayKey::Char(c),
+        _ => OverlayKey::Other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
