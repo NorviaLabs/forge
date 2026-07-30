@@ -620,11 +620,12 @@ impl ConversationModel {
                 ConversationBlock::AssistantAnswer(p) => {
                     let parts = assistant_lines(&p.text, width.saturating_sub(3));
                     for (i, line) in parts.into_iter().enumerate() {
-                        let gutter = if i == 0 { "▍ " } else { "  " };
-                        let mut spans = vec![Span::styled(
-                            gutter,
-                            theme::metadata_style().add_modifier(Modifier::BOLD),
-                        )];
+                        let mut spans = vec![];
+                        if i == 0 {
+                            spans.push(Span::styled("Forge ", theme::muted()));
+                        } else {
+                            spans.push(Span::styled("     ", theme::muted()));
+                        }
                         spans.extend(line.spans);
                         lines.push(Line::from(spans).style(theme::assistant_answer_style()));
                     }

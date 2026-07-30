@@ -94,11 +94,11 @@ pub fn panel_alt() -> Style {
 }
 
 pub fn user_message() -> Style {
-    Style::default().bg(palette(Theme::default()).user_bg)
+    Style::default()
 }
 
 pub fn assistant_message() -> Style {
-    Style::default().bg(palette(Theme::default()).response_bg)
+    Style::default()
 }
 
 pub fn diff_add() -> Style {
