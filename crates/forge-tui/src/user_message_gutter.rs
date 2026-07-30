@@ -25,7 +25,6 @@ pub fn gutter_glyph(theme: Theme, force_fallback: bool) -> &'static str {
         return gutter_fallback_glyph();
     }
     match theme {
-        Theme::Ansi => gutter_fallback_glyph(),
         _ => {
             if glyph_display_width(PRIMARY_GLYPH) == 1 {
                 PRIMARY_GLYPH
@@ -380,7 +379,7 @@ mod tests {
 
     #[test]
     fn theme_matrix_keeps_gutter_blue_and_text_neutral() {
-        for theme in [Theme::Dark, Theme::Light, Theme::System, Theme::Ansi] {
+        for theme in [Theme::Dark, Theme::Light, Theme::System] {
             let lines =
                 render_user_message_lines("hello", 40, theme, false, crate::conversation::wrap);
             let gutter_fg = lines[0].spans[0].style.fg;
@@ -576,10 +575,10 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_ansi_fallback_gutter() {
-        let glyph = gutter_glyph(Theme::Ansi, false);
+    fn snapshot_forced_fallback_gutter() {
+        let glyph = gutter_glyph(Theme::Dark, true);
         let lines =
-            render_user_message_lines("hello", 40, Theme::Ansi, false, crate::conversation::wrap);
+            render_user_message_lines("hello", 40, Theme::Dark, true, crate::conversation::wrap);
         assert_eq!(lines[0].spans[0].content, glyph);
         assert_ne!(glyph, PRIMARY_GLYPH);
     }

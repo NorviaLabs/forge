@@ -1,6 +1,7 @@
 //! Overlays: HITL, slash palette, model picker (TUI-04).
 
 use crate::{effort::ReasoningEffort, theme};
+use forge_config::Theme;
 use forge_types::HitlPayload;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -72,6 +73,11 @@ pub enum Overlay {
     ResumePicker {
         selected: usize,
         items: Vec<ResumeSessionItem>,
+    },
+    Theme {
+        selected: usize,
+        current: Theme,
+        items: Vec<Theme>,
     },
     FileExplorer {
         cwd: String,
@@ -232,6 +238,10 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
         PaletteItem {
             cmd: "/model".into(),
             desc: "Switch model for future turns".into(),
+        },
+        PaletteItem {
+            cmd: "/theme".into(),
+            desc: "Switch presentation theme".into(),
         },
         PaletteItem {
             cmd: "/compact".into(),
@@ -492,6 +502,19 @@ impl Overlay {
         Self::ResumePicker { selected: 0, items }
     }
 
+    pub fn theme_open(current: Theme) -> Self {
+        let items = Theme::ALL.to_vec();
+        let selected = items
+            .iter()
+            .position(|theme| *theme == current)
+            .unwrap_or(0);
+        Self::Theme {
+            selected,
+            current,
+            items,
+        }
+    }
+
     pub fn file_explorer(
         cwd: impl Into<String>,
         items: Vec<FileExplorerItem>,
@@ -573,6 +596,15 @@ impl Overlay {
                 *selected = ((*selected as i32 + delta).rem_euclid(n)) as usize;
             }
             Self::ResumePicker {
+                selected, items, ..
+            } => {
+                if items.is_empty() {
+                    return;
+                }
+                let n = items.len() as i32;
+                *selected = ((*selected as i32 + delta).rem_euclid(n)) as usize;
+            }
+            Self::Theme {
                 selected, items, ..
             } => {
                 if items.is_empty() {
@@ -674,6 +706,7 @@ pub enum OverlayAction {
         model: String,
     },
     SelectEffort(ReasoningEffort),
+    SelectTheme(Theme),
     /// Submit API key from ConnectApiKey overlay
     ConnectSubmitKey {
         profile_id: String,
@@ -778,6 +811,7 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                         cmd.as_str(),
                         "/connect"
                             | "/model"
+                            | "/theme"
                             | "/disconnect"
                             | "/quit"
                             | "/compact"
@@ -862,6 +896,13 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                     OverlayAction::None
                 }
             }
+            Overlay::Theme {
+                selected, items, ..
+            } => items
+                .get(*selected)
+                .copied()
+                .map(OverlayAction::SelectTheme)
+                .unwrap_or(OverlayAction::None),
             Overlay::FileExplorer {
                 selected, items, ..
             } => {
@@ -1751,6 +1792,46 @@ impl Widget for OverlayWidget<'_> {
                     )
                     .render(r, buf);
             }
+            Overlay::Theme {
+                selected,
+                current,
+                items,
+            } => {
+                let r = centered_rect(54, 16, area);
+                let list_items: Vec<ListItem> = items
+                    .iter()
+                    .enumerate()
+                    .map(|(index, choice)| {
+                        let marker = if index == *selected { "▶ " } else { "  " };
+                        let current = if *choice == *current {
+                            " · current"
+                        } else {
+                            ""
+                        };
+                        let style = if index == *selected {
+                            theme::focused_selection_style()
+                        } else {
+                            theme::text()
+                        };
+                        ListItem::new(Span::styled(
+                            format!("{marker}{} ({}){current}", choice.title(), choice.label()),
+                            style,
+                        ))
+                    })
+                    .collect();
+                List::new(list_items)
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_style(theme::border())
+                            .style(theme::panel())
+                            .title(Span::styled(
+                                " Theme · ↑↓ select · Enter apply ",
+                                theme::brand(),
+                            )),
+                    )
+                    .render(r, buf);
+            }
             Overlay::FileExplorer {
                 cwd,
                 selected,
@@ -2447,6 +2528,16 @@ mod tests {
         assert_eq!(
             handle_overlay_key(&mut files, Key::Enter),
             OverlayAction::None
+        );
+    }
+
+    #[test]
+    fn theme_picker_selects_choice() {
+        let mut overlay = Overlay::theme_open(Theme::Dark);
+        handle_overlay_key(&mut overlay, Key::Down);
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::SelectTheme(Theme::Light)
         );
     }
 

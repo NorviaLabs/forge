@@ -2,6 +2,21 @@
 
 use forge_config::Theme;
 use ratatui::style::{Color, Modifier, Style};
+use std::cell::Cell;
+
+thread_local! {
+    static ACTIVE_THEME: Cell<Theme> = const { Cell::new(Theme::Dark) };
+}
+
+/// Install the configured palette for this TUI session (call once at startup).
+pub fn set_active(theme: Theme) {
+    ACTIVE_THEME.with(|t| t.set(theme));
+}
+
+/// Active palette from `[tui] theme` in `forge.toml`.
+pub fn active() -> Theme {
+    ACTIVE_THEME.with(|t| t.get())
+}
 
 pub const CANVAS: Color = Color::Rgb(24, 23, 22);
 pub const CANVAS_DEEP: Color = Color::Rgb(17, 17, 16);
@@ -41,44 +56,44 @@ pub const LIGHT_DIFF_HUNK: Color = Color::Rgb(220, 230, 255);
 
 pub fn brand() -> Style {
     Style::default()
-        .fg(palette(Theme::default()).accent)
+        .fg(palette(active()).accent)
         .add_modifier(Modifier::BOLD)
 }
 
 pub fn muted() -> Style {
-    Style::default().fg(palette(Theme::default()).muted)
+    Style::default().fg(palette(active()).muted)
 }
 
 pub fn dim() -> Style {
-    Style::default().fg(palette(Theme::default()).dim)
+    Style::default().fg(palette(active()).dim)
 }
 
 pub fn text() -> Style {
-    Style::default().fg(palette(Theme::default()).text)
+    Style::default().fg(palette(active()).text)
 }
 
 pub fn ok() -> Style {
-    Style::default().fg(palette(Theme::default()).ok)
+    Style::default().fg(palette(active()).ok)
 }
 
 pub fn warn() -> Style {
-    Style::default().fg(palette(Theme::default()).warn)
+    Style::default().fg(palette(active()).warn)
 }
 
 pub fn danger() -> Style {
-    Style::default().fg(palette(Theme::default()).danger)
+    Style::default().fg(palette(active()).danger)
 }
 
 pub fn info() -> Style {
-    Style::default().fg(palette(Theme::default()).info)
+    Style::default().fg(palette(active()).info)
 }
 
 pub fn tool() -> Style {
-    Style::default().fg(palette(Theme::default()).tool)
+    Style::default().fg(palette(active()).tool)
 }
 
 pub fn code_punctuation() -> Style {
-    Style::default().fg(palette(Theme::default()).muted)
+    Style::default().fg(palette(active()).muted)
 }
 
 pub fn border() -> Style {
@@ -90,11 +105,11 @@ pub fn border_muted() -> Style {
 }
 
 pub fn panel() -> Style {
-    Style::default().bg(palette(Theme::default()).panel)
+    Style::default().bg(palette(active()).panel)
 }
 
 pub fn panel_alt() -> Style {
-    Style::default().bg(palette(Theme::default()).panel_alt)
+    Style::default().bg(palette(active()).panel_alt)
 }
 
 pub fn user_message() -> Style {
@@ -106,33 +121,33 @@ pub fn assistant_message() -> Style {
 }
 
 pub fn diff_add() -> Style {
-    let p = palette(Theme::default());
+    let p = palette(active());
     Style::default().fg(p.ok).bg(p.diff_add)
 }
 
 pub fn diff_remove() -> Style {
-    let p = palette(Theme::default());
+    let p = palette(active());
     Style::default().fg(p.danger).bg(p.diff_remove)
 }
 
 pub fn diff_context() -> Style {
-    let p = palette(Theme::default());
+    let p = palette(active());
     Style::default().fg(p.muted).bg(p.panel_alt)
 }
 
 pub fn diff_hunk() -> Style {
-    let p = palette(Theme::default());
+    let p = palette(active());
     Style::default().fg(p.info).bg(p.diff_hunk)
 }
 
 // Transcript roles. Keep these semantic so widgets do not need to know the
 // palette and basic ANSI terminals still get hierarchy from modifiers/symbols.
 pub fn user_message_style() -> Style {
-    user_message().fg(palette(Theme::default()).text)
+    user_message().fg(palette(active()).text)
 }
 
 pub fn user_message_gutter_style() -> Style {
-    user_message_gutter_style_for(Theme::default())
+    user_message_gutter_style_for(active())
 }
 
 pub fn user_message_gutter_style_for(theme: Theme) -> Style {
@@ -140,7 +155,7 @@ pub fn user_message_gutter_style_for(theme: Theme) -> Style {
 }
 
 pub fn user_gutter_active_style() -> Style {
-    user_gutter_active_style_for(Theme::default())
+    user_gutter_active_style_for(active())
 }
 
 pub fn user_gutter_active_style_for(theme: Theme) -> Style {
@@ -149,7 +164,7 @@ pub fn user_gutter_active_style_for(theme: Theme) -> Style {
 
 pub fn assistant_answer_style() -> Style {
     assistant_message()
-        .fg(palette(Theme::default()).text)
+        .fg(palette(active()).text)
         .add_modifier(Modifier::BOLD)
 }
 
@@ -174,7 +189,7 @@ pub fn selection_active() -> Style {
 }
 
 pub fn selection_inactive() -> Style {
-    let p = palette(Theme::default());
+    let p = palette(active());
     Style::default().fg(p.text).bg(p.panel_alt)
 }
 
@@ -212,7 +227,7 @@ pub fn file_binary() -> Style {
 
 pub fn symlink() -> Style {
     Style::default()
-        .fg(palette(Theme::default()).accent)
+        .fg(palette(active()).accent)
         .add_modifier(Modifier::ITALIC)
 }
 
@@ -243,7 +258,7 @@ pub fn focused_selection_style() -> Style {
 /// Full-row selection (suggestion list, palette, connect picker).
 /// Explicit bg — bare REVERSED is unreliable across terminals.
 pub fn selected_row() -> Style {
-    let p = palette(Theme::default());
+    let p = palette(active());
     Style::default()
         .fg(p.text_strong)
         .bg(p.selection)
@@ -252,7 +267,7 @@ pub fn selected_row() -> Style {
 
 /// Input block cursor: solid inverted cell (bg fills the whole character cell).
 pub fn caret() -> Style {
-    let p = palette(Theme::default());
+    let p = palette(active());
     Style::default()
         .fg(p.panel)
         .bg(p.text)
@@ -261,7 +276,7 @@ pub fn caret() -> Style {
 
 /// History-recalled input (subtle highlight of the whole field text).
 pub fn history_active() -> Style {
-    let p = palette(Theme::default());
+    let p = palette(active());
     Style::default().fg(p.text).bg(p.selection)
 }
 
@@ -361,29 +376,6 @@ pub fn palette(theme: Theme) -> Palette {
             user_message_gutter: Color::Blue,
             user_gutter_active: Color::LightBlue,
         },
-        Theme::Ansi => Palette {
-            canvas: Color::Black,
-            text: Color::White,
-            muted: Color::Black,
-            dim: Color::Black,
-            accent: Color::Cyan,
-            ok: Color::Green,
-            warn: Color::Yellow,
-            danger: Color::Red,
-            info: Color::Blue,
-            tool: Color::Cyan,
-            selection: Color::Magenta,
-            diff_add: Color::Green,
-            diff_remove: Color::Red,
-            diff_hunk: Color::Blue,
-            panel: Color::Black,
-            panel_alt: Color::Black,
-            user_bg: Color::Black,
-            response_bg: Color::Black,
-            text_strong: Color::White,
-            user_message_gutter: Color::LightBlue,
-            user_gutter_active: Color::LightBlue,
-        },
     }
 }
 
@@ -462,5 +454,13 @@ mod tests {
         let p = palette(Theme::Light);
         assert_eq!(p.diff_add, LIGHT_DIFF_ADD);
         assert_eq!(p.diff_remove, LIGHT_DIFF_REMOVE);
+    }
+
+    #[test]
+    fn set_active_switches_palette() {
+        set_active(Theme::Light);
+        assert_eq!(text().fg, Some(LIGHT_TEXT));
+        set_active(Theme::Dark);
+        assert_eq!(text().fg, Some(TEXT));
     }
 }
