@@ -1,7 +1,7 @@
 //! Color tokens from the Forge TUI design system.
 
-use ratatui::style::{Color, Modifier, Style};
 use forge_config::Theme;
+use ratatui::style::{Color, Modifier, Style};
 
 pub const CANVAS: Color = Color::Rgb(24, 23, 22);
 pub const CANVAS_DEEP: Color = Color::Rgb(17, 17, 16);
@@ -36,7 +36,9 @@ pub const LIGHT_DIFF_REMOVE: Color = Color::Rgb(255, 223, 223);
 pub const LIGHT_DIFF_HUNK: Color = Color::Rgb(220, 230, 255);
 
 pub fn brand() -> Style {
-    Style::default().fg(palette(Theme::default()).accent).add_modifier(Modifier::BOLD)
+    Style::default()
+        .fg(palette(Theme::default()).accent)
+        .add_modifier(Modifier::BOLD)
 }
 
 pub fn muted() -> Style {
@@ -126,7 +128,9 @@ pub fn user_message_style() -> Style {
 }
 
 pub fn assistant_answer_style() -> Style {
-    assistant_message().fg(palette(Theme::default()).text).add_modifier(Modifier::BOLD)
+    assistant_message()
+        .fg(palette(Theme::default()).text)
+        .add_modifier(Modifier::BOLD)
 }
 
 pub fn progress_style() -> Style {
@@ -187,7 +191,9 @@ pub fn file_binary() -> Style {
 }
 
 pub fn symlink() -> Style {
-    Style::default().fg(palette(Theme::default()).accent).add_modifier(Modifier::ITALIC)
+    Style::default()
+        .fg(palette(Theme::default()).accent)
+        .add_modifier(Modifier::ITALIC)
 }
 
 pub fn git_added() -> Style {
