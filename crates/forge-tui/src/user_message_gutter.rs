@@ -61,11 +61,6 @@ pub fn gutter_style_for(theme: Theme, role: GutterRole) -> Style {
     }
 }
 
-/// Style for submitted user-message gutters.
-pub fn submitted_gutter_style_for(theme: Theme) -> Style {
-    gutter_style_for(theme, GutterRole::Submitted)
-}
-
 /// Build wrapped visual rows for a submitted user message.
 pub fn render_user_message_lines(
     text: &str,

@@ -1,6 +1,6 @@
 //! Wrapped visual-row layout for the active composer.
 
-use crate::user_message_gutter::{gutter_prefix_width, GUTTER_GAP};
+use crate::user_message_gutter::gutter_prefix_width;
 
 /// One wrapped visual row of composer content (byte range into the buffer).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -166,23 +166,6 @@ pub fn click_to_cursor(
     };
     let col = content_col.min(row.len());
     row.start + col
-}
-
-/// Layout rows and cursor position in one pass.
-pub fn layout_with_cursor(
-    text: &str,
-    cursor: usize,
-    content_width: usize,
-) -> (Vec<ComposerVisualRow>, usize, usize) {
-    let cursor = cursor.min(text.len());
-    let rows = build_visual_rows(text, content_width);
-    let (cursor_row, cursor_col) = locate_cursor_in_rows(&rows, cursor);
-    (rows, cursor_row, cursor_col)
-}
-
-/// Clamp a display click column to the first editable cell on a row.
-pub fn clamp_display_column_to_content(display_col: usize, prefix_width: usize) -> usize {
-    display_col.saturating_sub(prefix_width)
 }
 
 /// Screen column for the first editable character on a row.
