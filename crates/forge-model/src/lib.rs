@@ -134,6 +134,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mock_stream_error_emits_partial_deltas() {
+        let client =
+            MockModelClient::stream_error(vec!["partial ".into(), "answer".into()], "network lost");
+        let (tx, rx) = mpsc::channel();
+        let error = client
+            .complete_with_stream(
+                ModelRequest {
+                    messages: vec![],
+                    tools: vec![],
+                    model: "mock".into(),
+                    reasoning_effort: None,
+                    prompt_cache: true,
+                },
+                Some(tx),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("network lost"));
+        let deltas: String = rx
+            .try_iter()
+            .filter_map(|event| match event {
+                ModelStreamEvent::TextDelta { text } => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(deltas, "partial answer");
+    }
+
+    #[tokio::test]
     async fn mock_tool_call() {
         let client = MockModelClient::script(vec![ModelResponse {
             text: "".into(),
