@@ -1,0 +1,51 @@
+version: 2
+
+updates:
+  # Rust dependencies. Grouped so a routine patch sweep is one review rather
+  # than twenty, while major bumps stay separate because they need judgement.
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Asia/Kolkata
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+    labels:
+      - dependencies
+    groups:
+      cargo-patch-and-minor:
+        patterns:
+          - "*"
+        update-types:
+          - patch
+          - minor
+    ignore:
+      # Pinned exactly in Cargo.toml; a bump is a deliberate TUI change and
+      # should not arrive as an automated PR.
+      - dependency-name: ratatui
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
+
+  # Workflow actions. These are SHA-pinned, so this is the mechanism that keeps
+  # them current — without it, pinning silently freezes them forever.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Asia/Kolkata
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+    labels:
+      - dependencies
+      - ci
+    groups:
+      github-actions:
+        patterns:
+          - "*"
