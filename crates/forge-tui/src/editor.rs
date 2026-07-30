@@ -148,6 +148,14 @@ mod tests {
         assert!(err.to_string().contains("missing"));
     }
 
+    /// Serializes tests that mutate the process-global `VISUAL`/`EDITOR`
+    /// variables, since Rust runs tests in the same binary concurrently.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner())
+    }
+
     fn with_env(name: &str, value: Option<&str>, f: impl FnOnce()) {
         let previous = env::var_os(name);
         match value {
@@ -163,6 +171,7 @@ mod tests {
 
     #[test]
     fn resolve_editor_prefers_visual_then_editor() {
+        let _guard = lock_env();
         with_env("VISUAL", Some("nvim"), || {
             with_env("EDITOR", Some("vim"), || {
                 assert_eq!(resolve_editor(), Some(("nvim".into(), vec![])));
@@ -172,6 +181,7 @@ mod tests {
 
     #[test]
     fn resolve_editor_skips_empty_visual() {
+        let _guard = lock_env();
         with_env("VISUAL", Some("   "), || {
             with_env("EDITOR", Some("nano"), || {
                 assert_eq!(resolve_editor(), Some(("nano".into(), vec![])));
