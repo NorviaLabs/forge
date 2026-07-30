@@ -3801,6 +3801,8 @@ Reply with ONLY the commit message line.\n\n\
             dirty: repo.dirty,
             resource: self.workspace_resource_label(),
             activity: self.workspace_activity_label(),
+            // Cancel is terminal only after the busy turn ends with Canceled exit.
+            turn_cancelled: !self.busy && self.last_exit == ExitCode::Canceled,
         }
     }
 
@@ -12243,6 +12245,7 @@ mod tests {
             dirty: false,
             resource: None,
             activity: None,
+            turn_cancelled: false,
         };
         assert_eq!(m.status_label().0, "Idle");
     }
