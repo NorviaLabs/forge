@@ -1,0 +1,40 @@
+name: Audit
+
+# Dependency vulnerability scanning (RustSec advisory database).
+#
+# Deliberately NOT part of the `CI` workflow's required checks: the advisory
+# database changes independently of this repository, so a newly published
+# advisory would fail unrelated pull requests through no fault of their author.
+# Instead this runs on a schedule to catch new advisories, and on pull requests
+# only when dependency manifests change — cases where the author controls the
+# input.
+
+on:
+  schedule:
+    # Mondays, 06:17 UTC
+    - cron: '17 6 * * 1'
+  pull_request:
+    paths:
+      - '**/Cargo.toml'
+      - 'Cargo.lock'
+      - '.cargo/audit.toml'
+      - '.github/workflows/audit.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: cargo audit
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Audit dependencies
+        # Fails on vulnerabilities. Unmaintained/unsound advisories are
+        # reported but do not fail the job; see the PR description for why.
+        run: cargo audit
