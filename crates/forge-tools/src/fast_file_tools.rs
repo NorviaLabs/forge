@@ -348,4 +348,153 @@ mod tests {
         .unwrap();
         assert_eq!(rows, vec!["src/main.rs:1:hello world"]);
     }
+
+    /// Both `src/main.rs` and `src/lib.rs` match the pattern, but the path
+    /// filter keeps only one — the other must be skipped via `continue`
+    /// rather than included or causing an error.
+    #[test]
+    fn grep_filter_skips_non_matching_paths_when_others_match() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/main.rs"), "shared line\n").unwrap();
+        std::fs::write(dir.path().join("src/lib.rs"), "shared line\n").unwrap();
+
+        let rows = grep_workspace(
+            dir.path(),
+            Some("main"),
+            "shared",
+            Some(&FffModeArg::Plain),
+            10,
+        )
+        .unwrap();
+        assert_eq!(rows, vec!["src/main.rs:1:shared line"]);
+    }
+
+    #[test]
+    fn find_with_fff_returns_empty_without_scanning_when_max_results_is_zero() {
+        let dir = tempdir().unwrap();
+        assert_eq!(
+            find_with_fff(dir.path(), "anything", 0).unwrap(),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn grep_workspace_returns_empty_when_max_results_is_zero() {
+        let dir = tempdir().unwrap();
+        assert_eq!(
+            grep_workspace(dir.path(), None, "anything", None, 0).unwrap(),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn grep_workspace_returns_empty_for_blank_pattern() {
+        let dir = tempdir().unwrap();
+        assert_eq!(
+            grep_workspace(dir.path(), None, "   ", None, 10).unwrap(),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn grep_mode_maps_every_arg_variant_to_a_distinct_mode() {
+        // Fixture covers every `FffModeArg` variant with an outcome that
+        // cannot be confused with another arm.
+        assert_eq!(
+            grep_mode("plain text", Some(&FffModeArg::Plain)),
+            GrepMode::PlainText
+        );
+        assert_eq!(
+            grep_mode("plain text", Some(&FffModeArg::Regex)),
+            GrepMode::Regex
+        );
+        assert_eq!(
+            grep_mode("plain text", Some(&FffModeArg::Fuzzy)),
+            GrepMode::Fuzzy
+        );
+        // No explicit mode defaults to Plain, still auto-detecting regex literals.
+        assert_eq!(grep_mode("plain text", None), GrepMode::PlainText);
+    }
+
+    #[tokio::test]
+    async fn fff_find_tool_describes_itself_and_finds_files() {
+        let tool = FffFindTool::new(Arc::new(FastFileState::new()));
+        assert_eq!(
+            tool.description(),
+            "Find files in the workspace by path/name pattern."
+        );
+        assert_eq!(tool.side_effect_class(), SideEffectClass::Read);
+        assert!(tool.idempotent());
+
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("target.rs"), "fn f() {}\n").unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+
+        let out = tool
+            .call(&ctx, serde_json::json!({"query": "target.rs"}))
+            .await
+            .unwrap();
+        assert!(!out.is_error);
+        assert!(out.content.contains("target.rs"), "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn fff_find_tool_reports_no_matches() {
+        let tool = FffFindTool::new(Arc::new(FastFileState::new()));
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("present.rs"), "fn f() {}\n").unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+
+        let out = tool
+            .call(
+                &ctx,
+                serde_json::json!({"query": "totally-absent-xyz", "max_results": 5}),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error);
+        assert_eq!(out.content, "no matches found");
+    }
+
+    #[tokio::test]
+    async fn fff_grep_tool_describes_itself_and_finds_matches() {
+        let tool = FffGrepTool::new(Arc::new(FastFileState::new()));
+        assert_eq!(
+            tool.description(),
+            "Search file contents in the workspace. Supports plain text, regex, and fuzzy matching."
+        );
+        assert_eq!(tool.side_effect_class(), SideEffectClass::Read);
+        assert!(tool.idempotent());
+
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("note.txt"), "needle in haystack\n").unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+
+        let out = tool
+            .call(&ctx, serde_json::json!({"pattern": "needle"}))
+            .await
+            .unwrap();
+        assert!(!out.is_error);
+        assert!(
+            out.content.contains("needle in haystack"),
+            "{}",
+            out.content
+        );
+    }
+
+    #[tokio::test]
+    async fn fff_grep_tool_reports_no_matches() {
+        let tool = FffGrepTool::new(Arc::new(FastFileState::new()));
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("note.txt"), "unrelated content\n").unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+
+        let out = tool
+            .call(&ctx, serde_json::json!({"pattern": "totally-absent-xyz"}))
+            .await
+            .unwrap();
+        assert!(!out.is_error);
+        assert_eq!(out.content, "no matches found");
+    }
 }
