@@ -1727,7 +1727,6 @@ fn assistant_lines(text: &str, width: usize) -> Vec<Line<'static>> {
         let trimmed = raw.trim_start();
         if let Some(fence) = trimmed.strip_prefix("```") {
             if fenced {
-                // Process accumulated code block with tree-sitter
                 if !code_block_lines.is_empty() {
                     let code = code_block_lines.join("\n");
                     let theme = forge_syntax::HighlightTheme::default();
@@ -1759,9 +1758,17 @@ fn assistant_lines(text: &str, width: usize) -> Vec<Line<'static>> {
         if fenced {
             code_block_lines.push(raw.to_string());
         } else {
-            let wrapped = wrap(raw, width);
+            let mut processed = raw.to_string();
+            if let Some(rest) = processed.strip_prefix("# ") {
+                processed = format!("**{}**", rest);
+            } else if let Some(rest) = processed.strip_prefix("## ") {
+                processed = format!("**{}**", rest);
+            } else if let Some(rest) = processed.strip_prefix("- ") || processed.strip_prefix("* ") {
+                processed = format!("• {}", rest);
+            }
+            let wrapped = wrap(&processed, width);
             for line in wrapped {
-                out.push(Line::from(highlight_inline_code(&line)));
+                out.push(Line::from(render_md_line(&line)));
             }
         }
     }
@@ -1772,26 +1779,44 @@ fn assistant_lines(text: &str, width: usize) -> Vec<Line<'static>> {
     out
 }
 
-fn highlight_inline_code(line: &str) -> Vec<Span<'static>> {
+fn render_md_line(line: &str) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     let mut rest = line;
-    while let Some(start) = rest.find('`') {
-        if start > 0 {
-            spans.push(Span::styled(rest[..start].to_string(), theme::text()));
+    while !rest.is_empty() {
+        if let Some(start) = rest.find("**") {
+            if start > 0 {
+                spans.push(Span::styled(rest[..start].to_string(), theme::text()));
+            }
+            let after = &rest[start + 2..];
+            if let Some(end) = after.find("**") {
+                spans.push(Span::styled(
+                    after[..end].to_string(),
+                    theme::text().add_modifier(Modifier::BOLD),
+                ));
+                rest = &after[end + 2..];
+                continue;
+            }
+            spans.push(Span::styled("**".to_string() + after, theme::text()));
+            break;
+        } else if let Some(start) = rest.find('`') {
+            if start > 0 {
+                spans.push(Span::styled(rest[..start].to_string(), theme::text()));
+            }
+            let after = &rest[start + 1..];
+            if let Some(end) = after.find('`') {
+                spans.push(Span::styled(
+                    after[..end].to_string(),
+                    theme::tool().add_modifier(Modifier::BOLD),
+                ));
+                rest = &after[end + 1..];
+                continue;
+            }
+            spans.push(Span::styled("`".to_string() + after, theme::text()));
+            break;
+        } else {
+            spans.push(Span::styled(rest.to_string(), theme::text()));
+            break;
         }
-        let after = &rest[start + 1..];
-        let Some(end) = after.find('`') else {
-            spans.push(Span::styled(after.to_string(), theme::tool()));
-            return spans;
-        };
-        spans.push(Span::styled(
-            after[..end].to_string(),
-            theme::tool().add_modifier(Modifier::BOLD),
-        ));
-        rest = &after[end + 1..];
-    }
-    if !rest.is_empty() {
-        spans.push(Span::styled(rest.to_string(), theme::text()));
     }
     if spans.is_empty() {
         spans.push(Span::styled(String::new(), theme::text()));
