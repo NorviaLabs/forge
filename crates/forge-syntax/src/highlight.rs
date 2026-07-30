@@ -37,7 +37,9 @@ pub enum HighlightClass {
     Default,
 }
 
-#[derive(Debug, Clone, Copy)]
+// `Eq` + `Hash` let the theme participate in the highlight cache key, so a theme
+// switch cannot serve colours from the previous theme.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct HighlightTheme {
     pub comment: (u8, u8, u8),
     pub keyword: (u8, u8, u8),
@@ -352,7 +354,23 @@ pub fn parse_and_capture(
         .ok_or_else(|| "parse failed".to_string())
 }
 
+/// Highlight `code` into per-line styled segments.
+///
+/// Results are memoised on `(lang, code, theme)` — see [`crate::cache`]. The TUI
+/// re-renders identical code blocks on every resize, theme switch, scroll and
+/// busy-phase change, and tree-sitter is far too expensive to repeat for output
+/// that cannot have changed.
 pub fn highlight_to_lines(
+    lang: &str,
+    code: &str,
+    theme: &HighlightTheme,
+) -> Vec<Vec<HighlightedSegment>> {
+    crate::cache::cached_or_compute(lang, code, theme, || {
+        highlight_to_lines_uncached(lang, code, theme)
+    })
+}
+
+fn highlight_to_lines_uncached(
     lang: &str,
     code: &str,
     theme: &HighlightTheme,
