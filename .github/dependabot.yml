@@ -1,8 +1,18 @@
+# Dependabot version updates.
+#
+# Complements the `Audit` workflow: `cargo audit` tells us when a locked crate
+# has a known advisory, this opens the pull requests that move us off it.
+#
+# Note on MSRV: Dependabot has no awareness of `rust-version` (1.97.1). An
+# update that raises the minimum supported Rust version will be proposed
+# happily, and is caught only because CI pins the same toolchain. Treat a
+# Dependabot PR that fails to build as a possible MSRV bump, not a flaky job.
+
 version: 2
 
 updates:
-  # Rust dependencies. Grouped so a routine patch sweep is one review rather
-  # than twenty, while major bumps stay separate because they need judgement.
+  # Rust dependencies. Grouped so a routine sweep is one review rather than
+  # twenty, while major bumps stay separate because they need judgement.
   - package-ecosystem: cargo
     directory: "/"
     schedule:
@@ -10,12 +20,30 @@ updates:
       day: monday
       time: "06:00"
       timezone: Asia/Kolkata
+    # 523 crates are locked; without a cap and the groups below this is a firehose.
     open-pull-requests-limit: 5
     commit-message:
       prefix: "deps"
     labels:
       - dependencies
     groups:
+      # ratatui and crossterm must move together. `forge-tui` depends on
+      # crossterm directly while ratatui reaches it through `ratatui-crossterm`,
+      # so bumping either alone can leave two crossterm versions linked (which
+      # is already the case today: 0.28.1 direct, 0.29.0 via ratatui).
+      tui:
+        patterns:
+          - "ratatui*"
+          - "crossterm"
+      # Published as a set at matching versions; they should not drift apart.
+      # These also carry the transitive git2 and bincode advisories that
+      # `cargo audit` currently reports as warnings, so an upgrade here is
+      # the likely route to clearing them.
+      fff:
+        patterns:
+          - "fff-*"
+      # Everything else: bundle patch and minor bumps into one pull request.
+      # Major updates stay individual so they get reviewed on their own merits.
       cargo-patch-and-minor:
         patterns:
           - "*"
@@ -23,12 +51,13 @@ updates:
           - patch
           - minor
     ignore:
-      # Pinned exactly in Cargo.toml; a bump is a deliberate TUI change and
-      # should not arrive as an automated PR.
+      # ratatui is pinned exactly (`=0.30.0`) on purpose — 0.30 was a breaking
+      # API change and the upgrade should be deliberate. Patch releases within
+      # 0.30 are still proposed; minor and major are not.
       - dependency-name: ratatui
         update-types:
-          - version-update:semver-major
           - version-update:semver-minor
+          - version-update:semver-major
 
   # Workflow actions. These are SHA-pinned, so this is the mechanism that keeps
   # them current — without it, pinning silently freezes them forever.
