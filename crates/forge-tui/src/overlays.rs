@@ -5,7 +5,7 @@ use forge_types::HitlPayload;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Modifier;
-use ratatui::text::Span;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Widget};
 use std::path::Path;
 
@@ -25,6 +25,7 @@ pub enum Overlay {
     },
     Hitl {
         payload: HitlPayload,
+        approval: ApprovalOverlayState,
         /// Whether to show the expanded policy-details section.
         expanded: bool,
     },
@@ -121,6 +122,104 @@ pub struct ModelItem {
     pub profile_id: Option<String>,
     /// Whether this is account-verified or public registry metadata.
     pub source: forge_connect::CatalogSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalExecutionMode {
+    Direct,
+    Shell,
+}
+
+impl ApprovalExecutionMode {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Direct => "Direct",
+            Self::Shell => "Shell",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalFocusedAction {
+    AllowOnce,
+    RememberDirect,
+    Deny,
+}
+
+#[derive(Debug, Clone)]
+pub struct ApprovalOverlayState {
+    pub mode: ApprovalExecutionMode,
+    pub executable_or_shell: String,
+    pub arguments: Vec<String>,
+    pub shell_command: Option<String>,
+    pub working_directory: String,
+    pub environment_delta: String,
+    pub source: String,
+    pub remember_eligible: bool,
+    pub focused_action: ApprovalFocusedAction,
+}
+
+impl ApprovalOverlayState {
+    pub fn for_payload(payload: &HitlPayload, working_directory: impl Into<String>) -> Self {
+        let fallback_working_directory = working_directory.into();
+        let mode = approval_mode_for_tool(&payload.tool);
+        let executable_or_shell = approval_executable_for_tool(&payload.tool);
+        let arguments = approval_argument_vector(&payload.tool, &payload.args_redacted);
+        let shell_command = (mode == ApprovalExecutionMode::Shell)
+            .then(|| {
+                payload
+                    .args_redacted
+                    .get("command")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("")
+                    .to_owned()
+            })
+            .filter(|value| !value.is_empty());
+        let environment_delta = approval_environment_delta(&payload.args_redacted);
+        let remember_eligible = mode == ApprovalExecutionMode::Direct
+            && !contains_redacted_value(&payload.args_redacted)
+            && environment_delta != "[REDACTED]";
+
+        Self {
+            mode,
+            executable_or_shell,
+            arguments,
+            shell_command,
+            working_directory: approval_working_directory(
+                &payload.args_redacted,
+                fallback_working_directory,
+            ),
+            environment_delta,
+            source: "Agent suggestion".into(),
+            remember_eligible,
+            focused_action: ApprovalFocusedAction::AllowOnce,
+        }
+    }
+
+    fn focus_next(&mut self, delta: i32) {
+        let actions = self.actions();
+        if actions.is_empty() {
+            self.focused_action = ApprovalFocusedAction::AllowOnce;
+            return;
+        }
+        let current = actions
+            .iter()
+            .position(|action| *action == self.focused_action)
+            .unwrap_or(0);
+        let next = (current as i32 + delta).rem_euclid(actions.len() as i32) as usize;
+        self.focused_action = actions[next];
+    }
+
+    fn actions(&self) -> Vec<ApprovalFocusedAction> {
+        let mut actions = vec![
+            ApprovalFocusedAction::AllowOnce,
+            ApprovalFocusedAction::Deny,
+        ];
+        if self.remember_eligible {
+            actions.insert(1, ApprovalFocusedAction::RememberDirect);
+        }
+        actions
+    }
 }
 
 pub fn default_palette_items() -> Vec<PaletteItem> {
@@ -331,8 +430,17 @@ impl Overlay {
     }
 
     pub fn hitl(payload: HitlPayload) -> Self {
+        Self::hitl_with_working_directory(payload, "workspace")
+    }
+
+    pub fn hitl_with_working_directory(
+        payload: HitlPayload,
+        working_directory: impl Into<String>,
+    ) -> Self {
+        let approval = ApprovalOverlayState::for_payload(&payload, working_directory);
         Self::Hitl {
             payload,
+            approval,
             expanded: false,
         }
     }
@@ -551,7 +659,7 @@ pub enum OverlayAction {
     BeginOnboarding,
     /// Close HITL and approve/deny
     HitlApprove,
-    /// Approve and allow this tool for the rest of the session
+    /// Approve and remember this exact Direct invocation for this session.
     HitlApproveSession,
     HitlDeny,
     ContinueTurns,
@@ -592,13 +700,8 @@ pub enum OverlayAction {
 pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
     match key {
         Key::Esc if matches!(overlay, Overlay::TurnLimit { .. }) => OverlayAction::StopTurns,
-        Key::Esc => {
-            // HITL: Esc dismisses focus but does not approve/deny (design recommendation)
-            if matches!(overlay, Overlay::Hitl { .. }) {
-                return OverlayAction::Close;
-            }
-            OverlayAction::Close
-        }
+        Key::Esc if matches!(overlay, Overlay::Hitl { .. }) => OverlayAction::HitlDeny,
+        Key::Esc => OverlayAction::Close,
         Key::Up => {
             overlay.move_sel(-1);
             OverlayAction::None
@@ -608,6 +711,10 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             OverlayAction::None
         }
         Key::Left => {
+            if let Overlay::Hitl { approval, .. } = overlay {
+                approval.focus_next(-1);
+                return OverlayAction::None;
+            }
             if let Some(path) = match overlay {
                 Overlay::FileExplorer { cwd, .. } => parent_dir(cwd),
                 Overlay::FileViewer { path, .. } => parent_dir(path),
@@ -631,6 +738,10 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             OverlayAction::None
         }
         Key::Right => {
+            if let Overlay::Hitl { approval, .. } = overlay {
+                approval.focus_next(1);
+                return OverlayAction::None;
+            }
             if let Overlay::Model {
                 provider_selected,
                 model_selected,
@@ -764,7 +875,14 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                 }
             }
             Overlay::FileViewer { .. } => OverlayAction::None,
-            Overlay::Hitl { .. } => OverlayAction::None,
+            Overlay::Hitl { approval, .. } => match approval.focused_action {
+                ApprovalFocusedAction::AllowOnce => OverlayAction::HitlApprove,
+                ApprovalFocusedAction::RememberDirect if approval.remember_eligible => {
+                    OverlayAction::HitlApproveSession
+                }
+                ApprovalFocusedAction::RememberDirect => OverlayAction::None,
+                ApprovalFocusedAction::Deny => OverlayAction::HitlDeny,
+            },
         },
         // Use-env must NOT steal literal e/E from pasted API keys (keys almost always
         // contain those letters). Only when the field is still empty + env is available.
@@ -867,11 +985,31 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             .map(|path| OverlayAction::FilePick { path, is_dir: true })
             .unwrap_or(OverlayAction::None)
         }
+        Key::Tab if matches!(overlay, Overlay::Hitl { .. }) => {
+            if let Overlay::Hitl { approval, .. } = overlay {
+                approval.focus_next(1);
+            }
+            OverlayAction::None
+        }
+        Key::BackTab if matches!(overlay, Overlay::Hitl { .. }) => {
+            if let Overlay::Hitl { approval, .. } = overlay {
+                approval.focus_next(-1);
+            }
+            OverlayAction::None
+        }
         Key::Char('a') | Key::Char('A') if matches!(overlay, Overlay::Hitl { .. }) => {
             OverlayAction::HitlApprove
         }
         Key::Char('s') | Key::Char('S') if matches!(overlay, Overlay::Hitl { .. }) => {
-            OverlayAction::HitlApproveSession
+            if let Overlay::Hitl { approval, .. } = overlay {
+                if approval.remember_eligible {
+                    OverlayAction::HitlApproveSession
+                } else {
+                    OverlayAction::None
+                }
+            } else {
+                OverlayAction::None
+            }
         }
         Key::Char('d') | Key::Char('D') if matches!(overlay, Overlay::Hitl { .. }) => {
             OverlayAction::HitlDeny
@@ -920,6 +1058,7 @@ fn hitl_args(args: &serde_json::Value) -> String {
     value.chars().take(300).collect()
 }
 
+#[cfg(test)]
 fn hitl_risk_summary(tool: &str, args: &serde_json::Value) -> &'static str {
     // Deterministic consequence summary based on tool and argument metadata.
     // Keep these concise; the expanded policy details contain the full reason.
@@ -964,6 +1103,7 @@ fn hitl_risk_summary(tool: &str, args: &serde_json::Value) -> &'static str {
     }
 }
 
+#[cfg(test)]
 fn hitl_command(tool: &str, args: &serde_json::Value) -> String {
     let raw = hitl_args(args);
     if tool == "bash" {
@@ -979,6 +1119,209 @@ fn hitl_command(tool: &str, args: &serde_json::Value) -> String {
     }
 }
 
+fn approval_mode_for_tool(tool: &str) -> ApprovalExecutionMode {
+    match tool {
+        "bash" | "sh" | "cmd" | "powershell" | "shell" | "exec" => ApprovalExecutionMode::Shell,
+        _ => ApprovalExecutionMode::Direct,
+    }
+}
+
+fn approval_executable_for_tool(tool: &str) -> String {
+    match tool {
+        "bash" | "sh" | "cmd" | "powershell" | "shell" | "exec" => tool.to_owned(),
+        "git" | "go_git" => "git".into(),
+        other => other.to_owned(),
+    }
+}
+
+fn approval_argument_vector(tool: &str, args: &serde_json::Value) -> Vec<String> {
+    if approval_mode_for_tool(tool) == ApprovalExecutionMode::Shell {
+        return args
+            .get("command")
+            .and_then(|value| value.as_str())
+            .map(|command| vec![command.to_owned()])
+            .unwrap_or_default();
+    }
+    if matches!(tool, "git" | "go_git") {
+        let mut argv = Vec::new();
+        if let Some(subcommand) = args.get("subcommand").and_then(|value| value.as_str()) {
+            argv.push(subcommand.to_owned());
+        }
+        if let Some(extra) = args.get("args").and_then(|value| value.as_array()) {
+            argv.extend(
+                extra
+                    .iter()
+                    .filter_map(|value| value.as_str().map(str::to_owned)),
+            );
+        }
+        if !argv.is_empty() {
+            return argv;
+        }
+    }
+    vec![serde_json::to_string(args).unwrap_or_else(|_| "{}".into())]
+}
+
+fn approval_environment_delta(args: &serde_json::Value) -> String {
+    args.get("environment_delta")
+        .or_else(|| args.get("env_delta"))
+        .or_else(|| args.get("env"))
+        .map(|value| serde_json::to_string(value).unwrap_or_else(|_| "[unavailable]".into()))
+        .unwrap_or_else(|| "inherited".into())
+        .chars()
+        .take(300)
+        .collect()
+}
+
+fn approval_working_directory(args: &serde_json::Value, fallback: String) -> String {
+    args.get("working_directory")
+        .or_else(|| args.get("cwd"))
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned)
+        .unwrap_or(fallback)
+}
+
+fn contains_redacted_value(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::String(value) => value == "[REDACTED]",
+        serde_json::Value::Array(values) => values.iter().any(contains_redacted_value),
+        serde_json::Value::Object(values) => values.values().any(contains_redacted_value),
+        _ => false,
+    }
+}
+
+fn action_label(action: ApprovalFocusedAction) -> &'static str {
+    match action {
+        ApprovalFocusedAction::AllowOnce => "Allow once",
+        ApprovalFocusedAction::RememberDirect => "Remember exact Direct",
+        ApprovalFocusedAction::Deny => "Deny",
+    }
+}
+
+fn action_span(action: ApprovalFocusedAction, focused: ApprovalFocusedAction) -> Span<'static> {
+    let label = format!("[{}]", action_label(action));
+    let style = if action == focused {
+        theme::focused_selection_style()
+    } else if action == ApprovalFocusedAction::Deny {
+        theme::danger()
+    } else {
+        theme::text()
+    };
+    Span::styled(label, style)
+}
+
+fn approval_lines(payload: &HitlPayload, approval: &ApprovalOverlayState) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(Span::styled("Approval required", theme::warn())),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Mode: ", theme::muted()),
+            Span::styled(approval.mode.label().to_owned(), theme::text()),
+        ]),
+    ];
+    match approval.mode {
+        ApprovalExecutionMode::Direct => {
+            lines.push(Line::from(vec![
+                Span::styled("Executable: ", theme::muted()),
+                Span::styled(approval.executable_or_shell.clone(), theme::text()),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Arguments: ", theme::muted()),
+                Span::styled(format!("{:?}", approval.arguments), theme::text()),
+            ]));
+        }
+        ApprovalExecutionMode::Shell => {
+            lines.push(Line::from(vec![
+                Span::styled("Shell: ", theme::muted()),
+                Span::styled(approval.executable_or_shell.clone(), theme::text()),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Command: ", theme::muted()),
+                Span::styled(
+                    approval.shell_command.clone().unwrap_or_default(),
+                    theme::text(),
+                ),
+            ]));
+        }
+    }
+    lines.extend([
+        Line::from(vec![
+            Span::styled("Working directory: ", theme::muted()),
+            Span::styled(approval.working_directory.clone(), theme::text()),
+        ]),
+        Line::from(vec![
+            Span::styled("Environment delta: ", theme::muted()),
+            Span::styled(approval.environment_delta.clone(), theme::text()),
+        ]),
+        Line::from(vec![
+            Span::styled("Source: ", theme::muted()),
+            Span::styled(approval.source.clone(), theme::text()),
+        ]),
+        Line::from(vec![
+            Span::styled("Reason: ", theme::muted()),
+            Span::styled(payload.reason.clone(), theme::text()),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            action_span(ApprovalFocusedAction::AllowOnce, approval.focused_action),
+            Span::raw("  "),
+            action_span(ApprovalFocusedAction::Deny, approval.focused_action),
+        ]),
+    ]);
+    if approval.remember_eligible {
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            action_span(
+                ApprovalFocusedAction::RememberDirect,
+                approval.focused_action,
+            ),
+            Span::raw(" / s"),
+        ]));
+        lines.push(Line::from(
+            "Remember this exact Direct invocation in this workspace",
+        ));
+        lines.push(Line::from("for the remainder of this Forge session."));
+    } else if approval.mode == ApprovalExecutionMode::Shell {
+        lines.push(Line::from(""));
+        lines.push(Line::from("Shell-mode approvals are one-time only."));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from("Enter/a allow once · d/Esc deny · Tab move"));
+    lines.push(Line::from("v view details"));
+    lines
+}
+
+fn approval_detail_lines(
+    payload: &HitlPayload,
+    approval: &ApprovalOverlayState,
+) -> Vec<Line<'static>> {
+    vec![
+        Line::from(""),
+        Line::from(Span::styled("details", theme::warn())),
+        Line::from(vec![
+            Span::styled("Environment delta: ", theme::muted()),
+            Span::styled(approval.environment_delta.clone(), theme::text()),
+        ]),
+        Line::from(vec![
+            Span::styled("Source: ", theme::muted()),
+            Span::styled(approval.source.clone(), theme::text()),
+        ]),
+        Line::from(vec![
+            Span::styled("Tool: ", theme::muted()),
+            Span::styled(payload.tool.clone(), theme::text()),
+        ]),
+        Line::from(vec![
+            Span::styled("Args: ", theme::muted()),
+            Span::styled(hitl_args(&payload.args_redacted), theme::text()),
+        ]),
+        Line::from(vec![
+            Span::styled("Policy: ", theme::muted()),
+            Span::styled(payload.reason.clone(), theme::text()),
+        ]),
+        Line::from("Secrets are not shown."),
+    ]
+}
+
 fn parent_dir(path: &str) -> Option<String> {
     Path::new(path)
         .parent()
@@ -990,6 +1333,8 @@ fn parent_dir(path: &str) -> Option<String> {
 pub enum Key {
     Esc,
     Enter,
+    Tab,
+    BackTab,
     Up,
     Down,
     Left,
@@ -1144,29 +1489,18 @@ impl Widget for OverlayWidget<'_> {
                     )
                     .render(r, buf);
             }
-            Overlay::Hitl { payload, expanded } => {
-                let r = centered_rect(46, 36, area);
-                let cmd = hitl_command(&payload.tool, &payload.args_redacted);
-                let args = hitl_args(&payload.args_redacted);
-                let risk = hitl_risk_summary(&payload.tool, &payload.args_redacted);
-
-                let mut body = format!(
-                    "{}\n\n{}\n\n{}\n\n  [a] Approve once    [s] Allow for session\n  [d] Deny            [Esc] Dismiss\n",
-                    payload.reason, cmd, risk
-                );
+            Overlay::Hitl {
+                payload,
+                approval,
+                expanded,
+            } => {
+                let r = centered_capped_rect(area, 78, if *expanded { 30 } else { 22 });
+                let mut lines = approval_lines(payload, approval);
                 if *expanded {
-                    body.push_str(&format!(
-                        "\n━━━ details ━━━\nTool: {}\nArgs: {}\nPolicy: {}\n\n\
-Secrets are not shown. If Forge exits, restore this session to continue\n\
-without redoing completed steps.\n\
-                         ",
-                        payload.tool, args, payload.reason
-                    ));
-                } else {
-                    body.push_str("\n  [v] View policy details");
+                    lines.extend(approval_detail_lines(payload, approval));
                 }
 
-                Paragraph::new(body)
+                Paragraph::new(lines)
                     .wrap(ratatui::widgets::Wrap { trim: true })
                     .block(
                         Block::default()
@@ -1174,7 +1508,7 @@ without redoing completed steps.\n\
                             .border_style(theme::warn())
                             .style(theme::panel())
                             .title(Span::styled(
-                                format!(" Approval required · {} ", payload.tool),
+                                " Approval required ",
                                 theme::warn().add_modifier(Modifier::BOLD),
                             )),
                     )
@@ -1640,13 +1974,39 @@ mod tests {
         );
         assert_eq!(
             handle_overlay_key(&mut o, Key::Char('s')),
-            OverlayAction::HitlApproveSession
+            OverlayAction::None
         );
         assert_eq!(
             handle_overlay_key(&mut o, Key::Char('d')),
             OverlayAction::HitlDeny
         );
-        assert_eq!(handle_overlay_key(&mut o, Key::Esc), OverlayAction::Close);
+        assert_eq!(
+            handle_overlay_key(&mut o, Key::Esc),
+            OverlayAction::HitlDeny
+        );
+    }
+
+    #[test]
+    fn hitl_direct_remember_is_eligible_and_default_focus_allows_once() {
+        let mut o = Overlay::hitl(HitlPayload {
+            call_id: "1".into(),
+            tool: "git".into(),
+            args_redacted: json!({"subcommand": "push", "args": ["origin", "main"]}),
+            reason: "policy".into(),
+        });
+        assert_eq!(
+            handle_overlay_key(&mut o, Key::Enter),
+            OverlayAction::HitlApprove
+        );
+        assert_eq!(
+            handle_overlay_key(&mut o, Key::Char('s')),
+            OverlayAction::HitlApproveSession
+        );
+        handle_overlay_key(&mut o, Key::Tab);
+        assert_eq!(
+            handle_overlay_key(&mut o, Key::Enter),
+            OverlayAction::HitlApproveSession
+        );
     }
 
     #[test]
@@ -2156,13 +2516,19 @@ mod tests {
         };
         let collapsed = render_text(&Overlay::hitl(payload.clone()));
         assert!(collapsed.contains("Approval required"));
-        assert!(collapsed.contains("write  src/main.rs"));
-        assert!(collapsed.contains("[v] View policy details"));
+        assert!(collapsed.contains("Mode: Direct"));
+        assert!(collapsed.contains("Executable: write"));
+        assert!(collapsed.contains("Working directory: workspace"));
+        assert!(collapsed.contains("[Allow once]"));
+        assert!(collapsed.contains("[Deny]"));
+        assert!(collapsed.contains("Remember this exact Direct invocation in this workspace"));
+        assert!(collapsed.contains("v view details"));
 
-        let expanded = render_text(&Overlay::Hitl {
-            payload,
-            expanded: true,
-        });
+        let mut expanded_overlay = Overlay::hitl(payload);
+        if let Overlay::Hitl { expanded, .. } = &mut expanded_overlay {
+            *expanded = true;
+        }
+        let expanded = render_text(&expanded_overlay);
         assert!(expanded.contains("details"));
         assert!(expanded.contains("Tool: write"));
         assert!(expanded.contains("Secrets are not shown"));

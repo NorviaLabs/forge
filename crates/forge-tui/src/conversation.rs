@@ -318,7 +318,7 @@ impl ConversationModel {
         items = group_routine_activity(items);
         if status == SessionStatus::AwaitingHitl {
             items.push(ChatItem::Banner {
-                text: "Awaiting approval · a approve · s allow session · d deny · Esc dismiss"
+                text: "Awaiting approval · Enter/a allow once · s remember exact when eligible · d/Esc deny"
                     .into(),
                 kind: BannerKind::Warn,
             });
