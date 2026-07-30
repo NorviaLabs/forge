@@ -14,14 +14,39 @@ jobs:
     name: Test and format
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@46511b1c83438f0dd37c02d843619ece5a4abb5b # 1.97.1
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Lint
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Run tests
         run: cargo test --workspace --all-targets --locked
+
+  # Dependency advisories, duplicate/wildcard bans, and source allow-listing.
+  # Separate job so it reports independently of the test result and runs in
+  # parallel rather than adding to the critical path.
+  #
+  # This runs `cargo deny`, not `cargo audit`. `cargo audit` reads Cargo.lock
+  # without feature or target resolution, so it flags advisories against crates
+  # that are in the lockfile but never compiled. `deny.toml` sets `[graph]
+  # targets` and `all-features = false`, so `cargo deny` evaluates the real
+  # build graph. Policy and the rationale for each accepted advisory live in
+  # deny.toml.
+  deny:
+    name: Dependency audit
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@46511b1c83438f0dd37c02d843619ece5a4abb5b # 1.97.1
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      # Version-pinned rather than floating: a cargo-deny release that adds a
+      # lint would otherwise fail an unrelated pull request. Bumping this is a
+      # deliberate change, and dependabot does not manage it.
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --version 0.20.2 --locked
+      - name: Check advisories, bans and sources
+        run: cargo deny check advisories bans sources
