@@ -7,9 +7,9 @@ platform: terminal-ui
 framework: Ratatui
 summary: >-
   A terminal-native design system for Forge, an open human-agent development
-  workspace. It combines Warp's calm dark workspace hierarchy, OpenCode's
-  developer-first monospace clarity and semantic status language, Ollama's
-  restraint, and Forge's own cyan-and-yellow operational identity.
+  workspace. It combines calm workspace hierarchy, developer-first monospace
+  clarity, restrained semantic status language, and Forge's own cyan-and-yellow
+  operational identity.
 inspiration:
   warp:
     role: workspace hierarchy, warm dark surfaces, hairline depth, restraint
@@ -31,6 +31,7 @@ principles:
   - safe and read-only by default
   - colour reinforces meaning but never carries it alone
   - progressive disclosure instead of permanent noise
+  - the terminal font belongs to the user, not Forge
 colors:
   canvas: "#181716"
   canvas-deep: "#111110"
@@ -117,7 +118,30 @@ Forge is an open, terminal-native workspace for delegating development work to a
 
 The design should feel like a serious development instrument, not a chatbot placed inside a terminal and not a dashboard squeezed into character cells.
 
-This document is authoritative for Forge's TUI visual language. The reference DESIGN.md files are inspiration, not specifications. Do not copy their product identity, logos, wording, layouts or exact colour systems.
+This document is authoritative for Forge's TUI presentation language. The
+reference DESIGN.md files are inspiration, not specifications. Do not copy
+their product identity, logos, wording, layouts or exact colour systems.
+
+## 1.1 Contract Authority
+
+The implemented V3.1 interaction contract is authoritative for runtime
+behavior and screen structure. This document defines presentation rules only.
+If an older mockup or diagram conflicts with the implemented V3.1 model, the
+contract wins.
+
+### Superseded Pre-V3.1 Rules
+
+The following older rules are no longer authoritative:
+
+- Permanent Chat, Editor, and Diff tabs as the primary workspace model.
+- A permanent right-hand Inspector that must always occupy full height.
+- A permanent Bottom panel as the only place Run can appear.
+- A permanent shortcut footer or manual visible on every screen.
+- Duplicate status ownership across header, footer, sidebar, and workspace.
+- Layout diagrams that assume the shell is organized around tab chrome rather
+  than one contextual workspace.
+- Any rule that implies Forge controls the terminal font family, size, line
+  height, ligatures, or other font-rendering properties.
 
 ## 2. Design Character
 
@@ -254,6 +278,8 @@ Forge inherits the user's terminal font. Never bundle or require a font.
 ### Rules
 
 - Use monospace throughout.
+- Forge may only use terminal attributes: bold, dim, underline, foreground and
+  background.
 - Use bold sparingly for active labels, headings and consequences.
 - Use underline for links or explicit selected actions only.
 - Use dim only for genuinely secondary metadata and always test legibility.
@@ -261,6 +287,11 @@ Forge inherits the user's terminal font. Never bundle or require a font.
 - Use uppercase for compact structural labels only, such as `FILES`, `EDITOR`, `NAV` and `INPUT`.
 - Use sentence case for messages, explanations and actions.
 - Avoid decorative ASCII art inside the product chrome.
+- Decorative Unicode is allowed only when an ASCII fallback is available and
+  the meaning remains clear without it.
+
+Presentation hierarchy is documented in
+[`docs/design/CONVERSATION-PRESENTATION.md`](../design/CONVERSATION-PRESENTATION.md).
 
 ### Hierarchy in character cells
 
@@ -276,6 +307,9 @@ Forge inherits the user's terminal font. Never bundle or require a font.
 | Utility content | Muted | Keys, timestamps, token counts |
 
 Do not use size as a hierarchy mechanism; terminal font size is controlled by the user.
+
+Do not imply that Forge can control the terminal font family, size, line
+height, or ligatures.
 
 ## 7. Layout Model
 
@@ -326,6 +360,21 @@ Use a compact cell-based scale:
 - `4`: exceptional wide-layout breathing room.
 
 Avoid double-padding a bordered block and its inner component.
+
+### 7.6 Responsive Presentation
+
+- Preserve the current workspace first.
+- Preserve critical status or current action.
+- Collapse Files before the workspace.
+- Remove secondary metadata before removing primary content.
+- Truncate paths visually without mutating stored values.
+
+Track and verify at least these sizes:
+
+- `80×24`
+- `120×40`
+- `160×50`
+- `240×60`
 
 ## 8. Focus, Modes and Navigation
 
@@ -466,6 +515,14 @@ Rules:
 - Tool calls use concise verbs: `Read 4 files`, `Ran cargo test`, `Updated source_viewer.rs`.
 - Use colour only for result state, not every tool type.
 - Preserve exact commands and errors in details.
+- Group completed evidence by default and keep it available on demand.
+- Keep zero-result searches neutral unless they block progress.
+- Keep genuine failures visible.
+- Do not render a permanent progress narration stream.
+- Do not surround every message with a full-width box.
+
+The detailed transcript and activity hierarchy is documented in
+[`docs/design/CONVERSATION-PRESENTATION.md`](../design/CONVERSATION-PRESENTATION.md).
 
 ### 9.6 Chat composer
 
@@ -518,6 +575,85 @@ Rules:
 - Do not use large background fills for every changed line if foreground and gutter markers are sufficient.
 - Stale diff state must be explicit.
 - Unsupported staged, binary, untracked or conflicted states must be truthful.
+
+## 10. Theme Policy
+
+Forge supports four presentation themes:
+
+- `Forge Dark`
+- `Forge Light`
+- `System`
+- `ANSI fallback`
+
+Rules:
+
+- Themes are semantic token mappings, not arbitrary plugin formats.
+- `Forge Dark` is the default presentation theme when the terminal does not
+  provide a stronger system preference.
+- `Forge Light` preserves the same semantic hierarchy with lighter surfaces and
+  contrast-appropriate text.
+- `System` follows the terminal or platform default where available.
+- `ANSI fallback` is the minimum guarantee for limited-color terminals.
+- Theme choice must not change runtime semantics, navigation, persistence or
+  command availability.
+- Theme policy applies to conversation presentation, chrome, activity and code
+  rendering, but not to terminal font selection.
+
+### Theme wireframes
+
+Dark theme:
+
+```text
+┌─ FORGE ────────────────────────────────┐
+│ Conversation                           │
+│ Assistant answers stay dominant.       │
+└─────────────────────────────────────────┘
+```
+
+Light theme:
+
+```text
+┌─ FORGE ────────────────────────────────┐
+│ Conversation                           │
+│ Assistant answers stay dominant.       │
+└─────────────────────────────────────────┘
+```
+
+System / terminal-default theme:
+
+```text
+┌─ FORGE ────────────────────────────────┐
+│ Conversation                           │
+│ Assistant answers stay dominant.       │
+└─────────────────────────────────────────┘
+```
+
+80×24:
+
+```text
+FORGE
+Conversation
+Assistant answer
+Activity · collapsed
+Composer
+```
+
+## 11. Explicitly Superseded Structural Rules
+
+The following older structural assumptions are superseded by V3.1:
+
+- Chat is not a permanent top-level mode tab.
+- Editor is not a permanent top-level mode tab.
+- Diff is not a permanent top-level mode tab.
+- Files visibility is not owned by the workspace tab.
+- Bottom is not a mandatory, always-visible structural region.
+- The shell is not organized around a permanent shortcut manual.
+- The transcript does not need a box for every message.
+- The application must not imply that terminal typography can be configured
+  from inside Forge.
+
+These rules remain useful only as historical context or as render-time guidance
+when they do not conflict with the current contract.
 - Diff actions remain read-only unless explicitly expanded by a later product decision.
 
 ### 9.10 Inspector
