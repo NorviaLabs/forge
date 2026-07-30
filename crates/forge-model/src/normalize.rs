@@ -397,4 +397,133 @@ mod tests {
         }]);
         assert!(plain[0].get("reasoning_content").is_none());
     }
+
+    #[test]
+    fn thinking_is_read_from_every_supported_key() {
+        for key in ["reasoning_content", "reasoning", "thinking"] {
+            let message = json!({ "content": "hi", key: "deliberating" });
+            assert_eq!(
+                extract_thinking_from_message(&message).as_deref(),
+                Some("deliberating"),
+                "key {key:?} should supply thinking text"
+            );
+        }
+    }
+
+    #[test]
+    fn blank_or_absent_thinking_is_reported_as_none() {
+        assert_eq!(extract_thinking_from_message(&json!({})), None);
+        assert_eq!(
+            extract_thinking_from_message(&json!({"reasoning_content": ""})),
+            None
+        );
+        assert_eq!(
+            extract_thinking_from_message(&json!({"thinking_blocks": []})),
+            None
+        );
+    }
+
+    #[test]
+    fn thinking_blocks_are_concatenated_in_order() {
+        let message = json!({
+            "thinking_blocks": [
+                {"type": "thinking", "thinking": "first "},
+                {"type": "text", "text": "second"},
+                {"type": "redacted"},
+            ]
+        });
+        assert_eq!(
+            extract_thinking_from_message(&message).as_deref(),
+            Some("first second")
+        );
+    }
+
+    #[test]
+    fn content_to_text_normalises_every_wire_shape() {
+        assert_eq!(content_to_text(None), "");
+        assert_eq!(content_to_text(Some(&Value::Null)), "");
+        assert_eq!(content_to_text(Some(&json!("plain"))), "plain");
+        // Content-part arrays concatenate their text, with or without a type tag.
+        assert_eq!(
+            content_to_text(Some(&json!([{"text": "a"}, {"type": "text", "text": "b"}]))),
+            "ab"
+        );
+        // Parts carrying no usable text contribute nothing.
+        assert_eq!(content_to_text(Some(&json!([{"type": "image"}]))), "");
+        assert_eq!(
+            content_to_text(Some(&json!([{"type": "text", "text": 123}]))),
+            ""
+        );
+        // Anything else degrades to its JSON representation rather than being dropped.
+        assert_eq!(content_to_text(Some(&json!(42))), "42");
+    }
+
+    #[test]
+    fn parse_arguments_normalises_every_wire_shape() {
+        assert_eq!(parse_arguments(None).unwrap(), json!({}));
+        assert_eq!(parse_arguments(Some(&Value::Null)).unwrap(), json!({}));
+        assert_eq!(parse_arguments(Some(&json!(""))).unwrap(), json!({}));
+        assert_eq!(
+            parse_arguments(Some(&json!({"a": 1}))).unwrap(),
+            json!({"a": 1})
+        );
+        assert_eq!(
+            parse_arguments(Some(&json!(r#"{"a":1}"#))).unwrap(),
+            json!({"a": 1})
+        );
+        // A non-object, non-string value passes through untouched.
+        assert_eq!(
+            parse_arguments(Some(&json!([1, 2]))).unwrap(),
+            json!([1, 2])
+        );
+    }
+
+    #[test]
+    fn parse_arguments_rejects_malformed_json_strings() {
+        let err = parse_arguments(Some(&json!("{not json"))).unwrap_err();
+        assert!(
+            matches!(err, ModelError::Protocol(_)),
+            "expected a protocol error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn wire_messages_carry_tool_metadata_and_reasoning() {
+        let mut assistant = Message::new(MessageRole::Assistant, "working");
+        assistant.thinking = Some("pondering".into());
+        assistant.tool_calls = vec![ToolCall {
+            id: "c1".into(),
+            name: "read_file".into(),
+            arguments: json!({"path": "a.txt"}),
+        }];
+
+        let mut tool = Message::new(MessageRole::Tool, "contents");
+        tool.tool_call_id = Some("c1".into());
+        tool.name = Some("read_file".into());
+
+        let wire = forge_messages_to_wire(&[
+            Message::new(MessageRole::System, "sys"),
+            Message::new(MessageRole::User, "hi"),
+            assistant,
+            tool,
+        ]);
+
+        assert_eq!(wire[0]["role"], "system");
+        assert_eq!(wire[1]["role"], "user");
+
+        assert_eq!(wire[2]["role"], "assistant");
+        assert_eq!(wire[2]["reasoning_content"], "pondering");
+        assert_eq!(wire[2]["tool_calls"][0]["id"], "c1");
+        assert_eq!(wire[2]["tool_calls"][0]["type"], "function");
+        assert_eq!(wire[2]["tool_calls"][0]["function"]["name"], "read_file");
+        // Arguments are serialised as a JSON *string*, not a nested object.
+        assert_eq!(
+            wire[2]["tool_calls"][0]["function"]["arguments"],
+            r#"{"path":"a.txt"}"#
+        );
+
+        assert_eq!(wire[3]["role"], "tool");
+        assert_eq!(wire[3]["tool_call_id"], "c1");
+        assert_eq!(wire[3]["name"], "read_file");
+    }
 }
