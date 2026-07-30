@@ -480,4 +480,168 @@ mod tests {
             Some("sk-written".to_string())
         );
     }
+
+    #[test]
+    fn path_reports_the_backing_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("nested").join("credentials.toml");
+        let store = CredentialStore::new(path.clone());
+        assert_eq!(store.path(), path.as_path());
+    }
+
+    #[test]
+    fn save_creates_missing_parent_directories() {
+        let dir = tempdir().unwrap();
+        // Nothing has created `a/b` yet; writing a credential must not fail.
+        let store = CredentialStore::new(dir.path().join("a").join("b").join("c.toml"));
+        store.set_api_key("xai", "k").unwrap();
+        assert!(store.path().exists());
+        assert_eq!(store.get_api_key("xai").unwrap().as_deref(), Some("k"));
+    }
+
+    #[test]
+    fn clear_reports_false_when_there_was_nothing_to_remove() {
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+        assert!(!store.clear("absent").unwrap());
+    }
+
+    #[test]
+    fn clear_all_removes_every_kind_of_stored_state() {
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+
+        // Nothing stored yet, so there is nothing to clear.
+        assert!(!store.clear_all().unwrap());
+
+        store.set_api_key("xai", "k").unwrap();
+        store
+            .set_oauth(
+                "openai",
+                OauthTokens {
+                    access_token: "at".into(),
+                    refresh_token: None,
+                    expires_at: None,
+                },
+            )
+            .unwrap();
+        store.set_last_selection("xai", "xai/grok").unwrap();
+        store.set_last_effort("high").unwrap();
+
+        assert!(store.clear_all().unwrap());
+
+        assert!(store.get_api_key("xai").unwrap().is_none());
+        assert!(store.get_oauth("openai").unwrap().is_none());
+        assert_eq!(store.last_selection().unwrap(), None);
+        assert_eq!(store.last_effort().unwrap(), None);
+        assert!(store.list_profile_ids().unwrap().is_empty());
+        // Idempotent: a second call has nothing left to do.
+        assert!(!store.clear_all().unwrap());
+    }
+
+    #[test]
+    fn clear_all_reports_true_for_a_selection_with_no_credentials() {
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+        // Each of the five fields independently counts as state worth clearing;
+        // a recorded effort alone must still be reported as removed.
+        store.set_last_effort("low").unwrap();
+        assert!(store.clear_all().unwrap());
+    }
+
+    #[test]
+    fn list_profile_ids_merges_both_credential_kinds_sorted_and_deduped() {
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+        assert!(store.list_profile_ids().unwrap().is_empty());
+
+        store.set_api_key("zeta", "k").unwrap();
+        store.set_api_key("alpha", "k").unwrap();
+        store
+            .set_oauth(
+                "middle",
+                OauthTokens {
+                    access_token: "at".into(),
+                    refresh_token: None,
+                    expires_at: None,
+                },
+            )
+            .unwrap();
+        // `alpha` holds both an API key and OAuth tokens; it must appear once.
+        store
+            .set_oauth(
+                "alpha",
+                OauthTokens {
+                    access_token: "at".into(),
+                    refresh_token: None,
+                    expires_at: None,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            store.list_profile_ids().unwrap(),
+            vec![
+                "alpha".to_string(),
+                "middle".to_string(),
+                "zeta".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_key_prefers_the_environment_then_falls_back_to_the_file() {
+        const KEY: &str = "FORGE_TEST_STORE_RESOLVE_KEY";
+        let guard = crate::test_env::EnvGuard::new(&[KEY]);
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+        let names = vec![KEY.to_string()];
+
+        // Neither source has anything.
+        assert_eq!(resolve_key(&names, "xai", &store).unwrap(), None);
+
+        // File only.
+        store.set_api_key("xai", "from-file").unwrap();
+        assert_eq!(
+            resolve_key(&names, "xai", &store).unwrap(),
+            Some(("from-file".to_string(), KeySource::File))
+        );
+
+        // The environment wins when both are present.
+        guard.set(KEY, "from-env");
+        assert_eq!(
+            resolve_key(&names, "xai", &store).unwrap(),
+            Some(("from-env".to_string(), KeySource::Env))
+        );
+
+        // A blank environment value is ignored rather than masking the file.
+        guard.set(KEY, "   ");
+        assert_eq!(
+            resolve_key(&names, "xai", &store).unwrap(),
+            Some(("from-file".to_string(), KeySource::File))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn loading_a_world_readable_credentials_file_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+        store.set_api_key("xai", "secret").unwrap();
+
+        // 0600 is the expected mode and must still load.
+        std::fs::set_permissions(store.path(), std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(store.get_api_key("xai").unwrap().as_deref(), Some("secret"));
+
+        // Any group or other bit set means the secret is readable by another
+        // account, so the store refuses rather than silently continuing.
+        std::fs::set_permissions(store.path(), std::fs::Permissions::from_mode(0o644)).unwrap();
+        let err = store.get_api_key("xai").unwrap_err();
+        assert!(
+            matches!(err, StoreError::InsecurePermissions),
+            "expected InsecurePermissions, got {err:?}"
+        );
+        assert!(!err.to_string().contains("secret"));
+    }
 }
