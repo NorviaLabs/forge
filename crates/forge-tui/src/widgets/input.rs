@@ -404,7 +404,7 @@ impl Widget for InputBar<'_> {
         } else {
             theme::text()
         };
-        let theme = Theme::default();
+        let theme = crate::theme::active();
         let gutter_style = crate::user_message_gutter::gutter_style_for(theme, GutterRole::Active);
 
         let visible_rows = lines_area
@@ -884,7 +884,7 @@ mod tests {
 
     #[test]
     fn forced_fallback_gutter_renders_on_all_rows() {
-        let glyph = gutter_glyph(Theme::Ansi, false);
+        let glyph = gutter_glyph(Theme::Dark, true);
         assert_ne!(glyph, "▎");
         let model = InputModel {
             text: "one two three four five".into(),
@@ -897,9 +897,9 @@ mod tests {
             6,
             true,
             theme::text(),
-            gutter_style_for(Theme::Ansi, GutterRole::Active),
-            Theme::Ansi,
-            false,
+            gutter_style_for(Theme::Dark, GutterRole::Active),
+            Theme::Dark,
+            true,
         );
         assert!(lines.iter().all(|line| line_plain(line).starts_with(glyph)));
         assert!(gutter_prefix_width(glyph) >= 2);

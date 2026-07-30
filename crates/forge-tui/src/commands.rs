@@ -50,6 +50,10 @@ pub enum SlashCommand {
     Edit,
     /// Attach the current active file to the next user message.
     ContextFile,
+    /// Switch presentation theme (`dark`, `light`, `system`).
+    Theme {
+        name: Option<String>,
+    },
 }
 
 pub fn parse_slash(line: &str) -> Option<Result<SlashCommand, CommandError>> {
@@ -108,6 +112,9 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
         "refresh" => Ok(SlashCommand::Refresh),
         "edit" => Ok(SlashCommand::Edit),
         "context-file" | "context_file" | "cf" => Ok(SlashCommand::ContextFile),
+        "theme" => Ok(SlashCommand::Theme {
+            name: parts.next().map(|s| s.to_string()),
+        }),
         other => Err(CommandError::Unknown(other.to_string())),
     }
 }
@@ -231,6 +238,20 @@ mod tests {
     #[test]
     fn non_slash_is_none() {
         assert!(parse_slash("hello").is_none());
+    }
+
+    #[test]
+    fn parses_theme() {
+        assert_eq!(
+            parse_slash("/theme").unwrap().unwrap(),
+            SlashCommand::Theme { name: None }
+        );
+        assert_eq!(
+            parse_slash("/theme light").unwrap().unwrap(),
+            SlashCommand::Theme {
+                name: Some("light".into())
+            }
+        );
     }
 
     #[test]

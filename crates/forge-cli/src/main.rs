@@ -69,6 +69,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         validation_command: cfg.validation.command.clone(),
         file_icons: cfg.tui.file_icons,
         mouse_capture: cfg.tui.mouse_capture,
+        theme: cfg.tui.theme,
     };
     let summary = run_tui(session, runtime)
         .await
