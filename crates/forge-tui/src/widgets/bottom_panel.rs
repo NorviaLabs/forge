@@ -217,6 +217,26 @@ fn run_lines(run: &RunStateModel) -> Vec<Line<'_>> {
         if let Some(code) = current.exit_status {
             lines.push(Line::styled(format!("Exit status: {code}"), theme::muted()));
         }
+        if current.state == RunState::StartFailed {
+            lines.push(Line::styled(
+                format!("Executable: {}", current.invocation.executable),
+                theme::muted(),
+            ));
+            lines.push(Line::styled(
+                format!("Arguments: {:?}", current.invocation.arguments),
+                theme::muted(),
+            ));
+            lines.push(Line::styled(
+                format!(
+                    "Directory: {}",
+                    current.invocation.working_directory.display()
+                ),
+                theme::muted(),
+            ));
+            if let Some(error) = current.spawn_error.as_deref() {
+                lines.push(Line::styled(format!("Cause: {error}"), theme::danger()));
+            }
+        }
     }
     if !run.recent.is_empty() || !run.legacy.is_empty() {
         lines.push(Line::styled("Recent", theme::muted()));
