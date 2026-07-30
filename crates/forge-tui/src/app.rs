@@ -35,6 +35,7 @@ use thiserror::Error;
 
 use crate::activity::{ActivityFeed, ActivityKind};
 use crate::commands::{parse_slash, SlashCommand};
+use crate::composer_layout::ComposerLayoutCache;
 use crate::conversation::{
     format_elapsed_tenths, BannerKind, ChatItem, ConversationModel, ConversationViewOpts,
     StreamWaitPhase,
@@ -62,6 +63,7 @@ use crate::sidebar::{InspectorView, SidebarModel, SidebarWidget};
 use crate::source_viewer::{SourceViewer, SourceViewerWidget};
 use crate::terminal::TerminalGuard;
 use crate::theme;
+use crate::user_message_gutter::{gutter_glyph, gutter_prefix_width};
 use crate::widgets::{
     classify_operator_error, BottomPanel, BottomPanelModel, BottomPanelState, BottomPanelTab,
     BusyPhase, FeedbackBar, FeedbackModel, FeedbackSeverity, FooterBar, FooterModel, InputBar,
@@ -844,6 +846,7 @@ pub struct TuiApp {
     context_reset_snapshot: Option<(f64, f64)>,
     splash_dismissed: bool,
     conversation_cache: Option<ConversationRenderCache>,
+    composer_layout_cache: ComposerLayoutCache,
     model_cost_cache: Option<(String, Option<forge_connect::CatalogCost>)>,
     footer_limits_cache: Option<FooterLimitsCache>,
     footer_limits_rx: Option<std::sync::mpsc::Receiver<(String, FooterLimits)>>,
@@ -937,6 +940,7 @@ impl TuiApp {
             context_reset_snapshot: None,
             splash_dismissed: false,
             conversation_cache: None,
+            composer_layout_cache: ComposerLayoutCache::default(),
             model_cost_cache: None,
             footer_limits_cache: None,
             footer_limits_rx: None,
@@ -4405,8 +4409,8 @@ Reply with ONLY the commit message line.\n\n\
         }
         self.begin_hit_frame();
         let fb_h = if self.feedback.is_empty() { 0 } else { 1 };
-        let input_h = (self.input.visual_lines() + 2).clamp(3, 8);
         let slash_mode = self.overlay.is_none() && self.input.text.starts_with('/');
+        let input_h = (self.input.visual_lines() + 2).clamp(3, 8);
         let panel_h = if self.bottom_panel.open { 8 } else { 0 };
         let contextual_hint = self.contextual_hint();
         let hint_h = u16::from(contextual_hint.is_some());
@@ -4817,15 +4821,25 @@ Reply with ONLY the commit message line.\n\n\
             );
         }
 
-        let mut input = self.input.clone();
-        // Allow composing the next message while a turn runs; only dim slightly when busy.
-        input.dimmed = self.busy && self.input.text.is_empty();
-        input.not_connected = !connected;
         let attachment_label = self.pending_attachment.as_ref().map(|a| a.label());
+        let glyph = gutter_glyph(forge_config::Theme::default(), false);
+        let composer_content_width = regions
+            .input
+            .width
+            .saturating_sub(gutter_prefix_width(glyph) as u16)
+            .max(1) as usize;
+        let composer_rows = self.composer_layout_cache.rows(
+            self.input.layout_revision,
+            &self.input.text,
+            composer_content_width,
+        );
         frame.render_widget(
             InputBar {
-                model: &input,
+                model: &self.input,
+                rows: composer_rows,
                 attachment: attachment_label.as_deref(),
+                dimmed: self.busy && self.input.text.is_empty(),
+                not_connected: !connected,
                 focused: self.focus.mode == FocusMode::Navigation
                     && self.focus.block == FocusBlock::Composer,
             },
