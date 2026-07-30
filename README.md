@@ -3,7 +3,7 @@
 **Let the agent work hard — without wrecking your branch.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.86%2B-orange.svg)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/rust-1.97.1%2B-orange.svg)](https://www.rust-lang.org/)
 [![CI](https://github.com/NorviaLabs/forge/actions/workflows/ci.yml/badge.svg)](https://github.com/NorviaLabs/forge/actions/workflows/ci.yml)
 
 > **Alpha:** Expect bugs and breaking changes. Test in a disposable repository with committed or backed-up work, and read the [alpha testing guide](docs/alpha-testing.md) first.
@@ -54,7 +54,7 @@ Replace the example version and `<target>` with the downloaded release. Ensure `
 
 Alpha binaries are not yet code-signed or notarized. macOS may require you to approve Forge in **System Settings → Privacy & Security** after the first launch. Windows and Linux architectures other than x86_64 are not yet included.
 
-To build from source, install Rust 1.86 or newer and Git:
+To build from source, install Rust 1.97.1 or newer and Git:
 
 ```bash
 git clone https://github.com/NorviaLabs/forge.git
