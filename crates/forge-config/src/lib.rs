@@ -187,14 +187,21 @@ impl FileIconMode {
 pub struct TuiConfig {
     #[serde(default)]
     pub file_icons: FileIconMode,
+    #[serde(default = "default_mouse_capture")]
+    pub mouse_capture: bool,
 }
 
 impl Default for TuiConfig {
     fn default() -> Self {
         Self {
             file_icons: FileIconMode::Unicode,
+            mouse_capture: default_mouse_capture(),
         }
     }
+}
+
+fn default_mouse_capture() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -207,6 +214,7 @@ pub struct CommandConfig {
 #[derive(Debug, Default, Deserialize)]
 struct TuiConfigFile {
     file_icons: Option<String>,
+    mouse_capture: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -536,6 +544,9 @@ impl ConfigFile {
                     cfg.tui.file_icons = mode;
                 }
             }
+            if let Some(mouse_capture) = tui.mouse_capture {
+                cfg.tui.mouse_capture = mouse_capture;
+            }
         }
         if let Some(validation) = self.validation {
             cfg.validation = validation;
@@ -766,6 +777,8 @@ path = "my-sessions"
 id = "demo"
 command = "echo"
 args = ["hi"]
+[tui]
+mouse_capture = false
 "#,
             ws = dir.path().display()
         )
@@ -785,6 +798,7 @@ args = ["hi"]
         assert_eq!(cfg.mcp.servers.len(), 1);
         assert_eq!(cfg.mcp.servers[0].id, "demo");
         assert_eq!(cfg.resolved_workspace, dir.path());
+        assert!(!cfg.tui.mouse_capture);
     }
 
     #[test]
