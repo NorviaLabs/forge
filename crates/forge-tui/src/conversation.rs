@@ -1,7 +1,7 @@
 //! Conversation view model (TUI-02) — polished chat, thinking, tools, diffs.
 
 use crate::theme;
-use forge_core::{AgentSession, TurnEvent};
+use forge_core::{AgentSession, TurnEvent, TURN_FAILED_MARKER};
 use forge_syntax::highlight_to_lines;
 use forge_types::{Message, MessageRole, SessionStatus, ToolCall};
 use ratatui::buffer::Buffer;
@@ -337,6 +337,17 @@ impl ConversationModel {
                             // rendered as visible Chat rows by default.
                         }
                     }
+                    // Terminal failure summaries are durable assistant messages with a
+                    // structural marker — never treated as final answers.
+                    if let Some(summary) = m.content.strip_prefix(TURN_FAILED_MARKER) {
+                        if m.tool_calls.is_empty() && !summary.trim().is_empty() {
+                            items.push(ChatItem::Banner {
+                                text: summary.trim().to_string(),
+                                kind: BannerKind::Error,
+                            });
+                        }
+                        continue;
+                    }
                     // Final answer is durable content only. Thinking/reasoning never
                     // becomes AssistantAnswer (provenance: primary text channel).
                     let effective_text = sanitize_final_answer_text(&m.content);
@@ -361,18 +372,23 @@ impl ConversationModel {
                 // Tool results are not shown as chat messages (keeps the transcript clean).
                 MessageRole::Tool => {
                     let name = m.name.as_deref().unwrap_or("tool");
-                    if m.content.starts_with("Tool validation error:") {
+                    if m.content.starts_with("Tool validation error:")
+                        || m.content.contains("validation retry budget exceeded")
+                    {
                         validation_retry_pending = true;
                         let retry = validation_failures.entry(name.to_string()).or_default();
                         *retry += 1;
-                        items.push(ChatItem::ValidationFailure {
-                            tool: name.to_string(),
-                            error: m
-                                .content
-                                .trim_start_matches("Tool validation error: ")
-                                .trim_end_matches(" Please correct arguments.")
-                                .to_string(),
-                            retry: *retry,
+                        // Keep raw validator detail in activity evidence, not main transcript.
+                        let error = m
+                            .content
+                            .trim_start_matches("Tool validation error: ")
+                            .to_string();
+                        items.push(ChatItem::ToolCard {
+                            name: name.to_string(),
+                            summary: format!("invalid arguments · retry {retry}"),
+                            detail: error,
+                            state: ToolCardState::Error,
+                            duration: None,
                         });
                     } else if looks_like_diff(&m.content)
                         || looks_like_code_change(name, &m.content)
@@ -1012,8 +1028,8 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
 }
 
 /// Completed-turn composition: within each user turn, emit
-/// UserMessage → AssistantAnswer → ActivityGroup (not chronological tool→answer).
-/// ActiveProgress is kept only while no final answer exists yet in that turn.
+/// UserMessage → AssistantAnswer|TurnFailure → ActivityGroup.
+/// ActiveProgress is kept only while no terminal answer/failure exists yet.
 fn compose_turn_presentation(blocks: Vec<ConversationBlock>) -> Vec<ConversationBlock> {
     let mut out = Vec::with_capacity(blocks.len());
     let mut segment: Vec<ConversationBlock> = Vec::new();
@@ -1024,6 +1040,7 @@ fn compose_turn_presentation(blocks: Vec<ConversationBlock>) -> Vec<Conversation
         }
         let mut user = Vec::new();
         let mut answers = Vec::new();
+        let mut failures = Vec::new();
         let mut activity = Vec::new();
         let mut progress = Vec::new();
         let mut other = Vec::new();
@@ -1031,6 +1048,9 @@ fn compose_turn_presentation(blocks: Vec<ConversationBlock>) -> Vec<Conversation
             match block {
                 ConversationBlock::UserMessage(_) => user.push(block),
                 ConversationBlock::AssistantAnswer(_) => answers.push(block),
+                ConversationBlock::Callout(ref c) if matches!(c.kind, BannerKind::Error) => {
+                    failures.push(block)
+                }
                 ConversationBlock::ActivityGroup(_) | ConversationBlock::DiffBlock(_) => {
                     activity.push(block)
                 }
@@ -1043,12 +1063,20 @@ fn compose_turn_presentation(blocks: Vec<ConversationBlock>) -> Vec<Conversation
             let last = answers.pop().into_iter().collect::<Vec<_>>();
             answers = last;
         }
+        // One terminal failure summary per turn.
+        if failures.len() > 1 {
+            let last = failures.pop().into_iter().collect::<Vec<_>>();
+            failures = last;
+        }
         out.extend(user);
-        if answers.is_empty() {
+        let terminal = !answers.is_empty() || !failures.is_empty();
+        if !terminal {
             // Still streaming / waiting: progress may remain visible.
             out.extend(progress);
         }
+        // Success: answer before activity. Failure: summary before activity.
         out.extend(answers);
+        out.extend(failures);
         out.extend(activity);
         out.extend(other);
     };
@@ -2319,6 +2347,85 @@ mod tests {
     }
 
     #[test]
+    fn failed_turn_renders_failure_before_activity() {
+        let model = ConversationModel {
+            items: vec![
+                ChatItem::User {
+                    text: "Summarize this codebase".into(),
+                },
+                ChatItem::ToolCard {
+                    name: "read_file".into(),
+                    summary: "invalid arguments · retry 1".into(),
+                    detail: "offset type mismatch".into(),
+                    state: ToolCardState::Error,
+                    duration: None,
+                },
+                ChatItem::Banner {
+                    text: "Forge couldn't complete this turn after repeated invalid tool calls."
+                        .into(),
+                    kind: BannerKind::Error,
+                },
+            ],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+        let blocks = model.semantic_blocks();
+        assert!(matches!(
+            blocks.as_slice(),
+            [
+                ConversationBlock::UserMessage(_),
+                ConversationBlock::Callout(c),
+                ConversationBlock::ActivityGroup(_),
+            ] if matches!(c.kind, BannerKind::Error)
+                && c.text.contains("couldn't complete")
+        ));
+    }
+
+    #[test]
+    fn turn_failed_marker_is_not_an_assistant_answer() {
+        let messages = vec![
+            Message {
+                role: MessageRole::User,
+                content: "Summarize this codebase".into(),
+                tool_call_id: None,
+                name: None,
+                thinking: None,
+                thinking_duration_secs: None,
+                tool_calls: vec![],
+            },
+            Message {
+                role: MessageRole::Assistant,
+                content: format!("{TURN_FAILED_MARKER}Forge couldn't complete this turn."),
+                tool_call_id: None,
+                name: None,
+                thinking: None,
+                thinking_duration_secs: None,
+                tool_calls: vec![],
+            },
+        ];
+        let model = ConversationModel::from_messages(
+            &messages,
+            &[],
+            SessionStatus::Failed,
+            ConversationViewOpts::default(),
+        );
+        let blocks = model.semantic_blocks();
+        assert!(
+            !blocks
+                .iter()
+                .any(|b| matches!(b, ConversationBlock::AssistantAnswer(_))),
+            "failure marker must not render as answer: {blocks:?}"
+        );
+        assert!(blocks.iter().any(|b| matches!(
+            b,
+            ConversationBlock::Callout(c)
+                if matches!(c.kind, BannerKind::Error)
+                    && c.text.contains("couldn't complete")
+        )));
+    }
+
+    #[test]
     fn only_last_final_answer_per_turn_is_kept() {
         let model = ConversationModel {
             items: vec![
@@ -2663,7 +2770,11 @@ mod tests {
         );
         assert!(matches!(
             m.items.first(),
-            Some(ChatItem::ValidationFailure { tool, .. }) if tool == "read_file"
+            Some(ChatItem::ToolCard {
+                name,
+                state: ToolCardState::Error,
+                ..
+            }) if name == "read_file"
         ));
     }
 
@@ -2919,23 +3030,30 @@ mod tests {
             ConversationViewOpts::default(),
         );
         assert_eq!(model.items.len(), 3);
-        assert!(matches!(model.items[0], ChatItem::ValidationFailure { .. }));
+        assert!(matches!(
+            model.items[0],
+            ChatItem::ToolCard {
+                state: ToolCardState::Error,
+                ..
+            }
+        ));
         assert!(matches!(
             model.items[1],
-            ChatItem::ValidationFailure { retry: 2, .. }
+            ChatItem::ToolCard {
+                state: ToolCardState::Error,
+                summary: ref s,
+                ..
+            } if s.contains("retry 2")
         ));
         assert!(matches!(model.items[2], ChatItem::RetryAssistant { .. }));
         let blocks = model.semantic_blocks();
-        assert!(
-            blocks
-                .iter()
-                .filter(|block| matches!(block, ConversationBlock::Callout(_)))
-                .count()
-                >= 2
-        );
+        // Validator detail stays in activity evidence; retry assistant is a callout.
+        assert!(blocks
+            .iter()
+            .any(|block| matches!(block, ConversationBlock::ActivityGroup(_))));
         assert!(blocks.iter().any(|block| matches!(
             block,
-            ConversationBlock::AssistantAnswer(_) | ConversationBlock::Callout(_)
+            ConversationBlock::Callout(_) | ConversationBlock::AssistantAnswer(_)
         )));
     }
 
