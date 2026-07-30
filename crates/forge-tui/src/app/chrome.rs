@@ -589,7 +589,7 @@ pub(crate) fn footer_usage_summary_with_cost(
     )
 }
 
-pub(crate) fn footer_limits_from_report(lines: &[String]) -> FooterLimits {
+pub(super) fn footer_limits_from_report(lines: &[String]) -> FooterLimits {
     FooterLimits {
         usage: lines
             .iter()
@@ -610,7 +610,7 @@ pub(crate) fn footer_limits_from_report(lines: &[String]) -> FooterLimits {
 }
 
 #[allow(dead_code)]
-pub(crate) fn footer_usage_summary(
+pub(super) fn footer_usage_summary(
     report: &forge_core::TokenUsageReport,
     cost: Option<forge_connect::CatalogCost>,
     limits: &FooterLimits,

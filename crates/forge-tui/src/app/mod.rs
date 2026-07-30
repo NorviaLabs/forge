@@ -101,10 +101,11 @@ mod workspace;
 
 include!("types.inc.rs");
 
-pub(crate) use chrome::{
-    footer_limits_from_report, footer_usage_summary_with_cost, format_exit_token_usage,
-    recent_resume_sessions,
-};
+/// Only the in-crate tests reach these directly; the runtime paths call them
+/// from inside `chrome.rs`.
+#[cfg(test)]
+use chrome::{footer_limits_from_report, footer_usage_summary_with_cost};
+pub(crate) use chrome::{format_exit_token_usage, recent_resume_sessions};
 pub use shell::run_tui;
 
 impl TuiApp {
