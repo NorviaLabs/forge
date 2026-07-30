@@ -47,7 +47,7 @@ use crate::history::InputHistory;
 use crate::layout::is_too_small;
 #[cfg(test)]
 use crate::layout::split_areas_full;
-use crate::layout::split_areas_with_side_panels;
+use crate::layout::split_areas_with_chrome;
 use crate::msg_queue::MessageQueue;
 use crate::overlays::{
     centered_rect, filter_palette, handle_overlay_key, models_from_catalog, ApprovalExecutionMode,
@@ -251,7 +251,7 @@ impl FocusBlock {
             Self::Workspace => "CHAT",
             Self::Composer => "COMPOSER",
             Self::Inspector => "INSPECTOR",
-            Self::BottomPanel => "BOTTOM",
+            Self::BottomPanel => "PANEL",
         }
     }
 }
@@ -607,6 +607,7 @@ fn footer_limits_from_report(lines: &[String]) -> FooterLimits {
     }
 }
 
+#[allow(dead_code)]
 fn footer_usage_summary(
     report: &forge_core::TokenUsageReport,
     cost: Option<forge_connect::CatalogCost>,
@@ -621,6 +622,7 @@ fn footer_usage_summary(
     }
 }
 
+#[allow(dead_code)]
 fn footer_provider_id(provider: &str, connect_profile: Option<&str>) -> String {
     connect_profile.unwrap_or(provider).to_owned()
 }
@@ -669,6 +671,7 @@ struct ConversationRenderCache {
     lines: Vec<Line<'static>>,
 }
 
+#[allow(dead_code)]
 struct FooterLimitsCache {
     provider: String,
     fetched_at: Instant,
@@ -859,7 +862,7 @@ impl TuiApp {
             file_explorer: FileExplorer::new(Some(workspace_root), file_icons),
             explorer_dialog: None,
             focus: FocusState::default(),
-            sidebar_visible: true,
+            sidebar_visible: false,
             inspector_view: InspectorView::default(),
             diff_selected: 0,
             cancel_requested: false,
@@ -2533,6 +2536,7 @@ impl TuiApp {
         models_from_catalog(&entries)
     }
 
+    #[allow(dead_code)]
     fn active_model_cost(&mut self) -> Option<forge_connect::CatalogCost> {
         if let Some((model, cost)) = &self.model_cost_cache {
             if model == &self.runtime.model_label {
@@ -3841,6 +3845,7 @@ Reply with ONLY the commit message line.\n\n\
         matches!(self.workspace_navigation.current, WorkspaceView::Run(_))
     }
 
+    #[allow(dead_code)]
     fn footer_limits(&mut self, provider: &str) -> FooterLimits {
         if let Some(rx) = &self.footer_limits_rx {
             match rx.try_recv() {
@@ -3913,7 +3918,9 @@ Reply with ONLY the commit message line.\n\n\
         let input_h = (self.input.visual_lines() + 2).clamp(3, 8);
         let slash_mode = self.overlay.is_none() && self.input.text.starts_with('/');
         let panel_h = if self.bottom_panel.open { 8 } else { 0 };
-        let regions = split_areas_with_side_panels(
+        let contextual_hint = self.contextual_hint();
+        let hint_h = u16::from(contextual_hint.is_some());
+        let regions = split_areas_with_chrome(
             area,
             fb_h,
             input_h,
@@ -3921,6 +3928,7 @@ Reply with ONLY the commit message line.\n\n\
             !slash_mode && self.sidebar_visible,
             0,
             panel_h,
+            hint_h,
         );
         // Layout can hide a requested side/bottom panel. Focus must follow the
         // rendered geometry rather than leaving an invisible key owner behind.
@@ -4325,46 +4333,9 @@ Reply with ONLY the commit message line.\n\n\
             regions.input,
         );
 
-        let qn = self.message_queue.len();
-        let context = self.session.token_usage_report();
-        let busy_detail = self.busy_status_detail();
-        let (status_label, _) = status.status_label_with_busy_detail(busy_detail.as_deref());
-        let hints = if self.busy {
-            if qn > 0 {
-                "queue · Ctrl+Up/Down select · Ctrl+Backspace cancel".into()
-            } else {
-                "type + Enter to queue · Esc interrupt".into()
-            }
-        } else if self.session.pending_hitl.is_some() {
-            "a approve · s session · d deny".into()
-        } else if !connected {
-            "/connect to enable chat".into()
-        } else if qn > 0 {
-            "queue · Ctrl+Up/Down select · Ctrl+Backspace cancel".into()
-        } else {
-            self.footer_hints()
-        };
-        let footer_provider = footer_provider_id(
-            self.runtime.provider.as_str(),
-            status.connect_profile.as_deref(),
-        );
-        let model_cost = self.active_model_cost();
-        let footer_limits = self.footer_limits(footer_provider.as_str());
         let footer = FooterModel {
-            cwd: self.runtime.cwd.display().to_string(),
-            session_short: status.session_short,
-            status: status_label,
-            status_busy: status.busy,
-            provider: self.runtime.provider.clone(),
-            model: self.runtime.model_label.clone(),
-            effort: self.reasoning_effort.to_string(),
-            ctx_used: context.context_tokens_est,
-            ctx_total: context.context_capacity,
-            ctx_pct: status.ctx_pct,
-            connected: status.provider_connected,
-            connect_profile: status.connect_profile,
-            hints,
-            ..footer_usage_summary(&context, model_cost, &footer_limits)
+            hints: contextual_hint.unwrap_or_default(),
+            ..FooterModel::default()
         };
         frame.render_widget(FooterBar { model: &footer }, regions.footer);
 
@@ -4771,32 +4742,27 @@ Reply with ONLY the commit message line.\n\n\
         self.focus_block(FocusBlock::BottomPanel);
     }
 
-    fn footer_hints(&self) -> String {
+    fn contextual_hint(&self) -> Option<String> {
+        if self.explorer_dialog.is_some() {
+            return Some("Enter confirm · Esc cancel".into());
+        }
+        if let Some(overlay) = self.overlay.as_ref() {
+            return match overlay {
+                Overlay::Hitl { .. } => Some("Tab move · Enter allow once · Esc deny".into()),
+                Overlay::TurnLimit { .. } => Some("Enter confirm · Esc cancel".into()),
+                Overlay::ConnectApiKey { .. } => Some("Enter confirm · Esc cancel".into()),
+                Overlay::ConnectOauth { .. } => Some("Enter continue · Esc cancel".into()),
+                _ => None,
+            };
+        }
         match self.focus.mode {
             FocusMode::Transient(TransientOwner::SourceSearch) => {
-                "Enter next · ⇧Enter prev · Esc leave search · ? help".into()
+                Some("Enter next · ⇧Enter previous · Esc cancel".into())
             }
             FocusMode::Transient(TransientOwner::JumpToLine) => {
-                "Enter jump · Esc leave jump · ? help".into()
+                Some("Enter jump · Esc cancel".into())
             }
-            FocusMode::Navigation => match self.focus.block {
-                FocusBlock::Composer => {
-                    "Enter send · ⇧Enter newline · Ctrl+E files · Esc return · Tab complete · ? help"
-                        .into()
-                }
-                FocusBlock::Files => {
-                    "Enter open · n/N new · R rename · d delete · r refresh · ? help".into()
-                }
-                FocusBlock::Workspace => {
-                    "Ctrl+E files · Tab / Shift+Tab blocks · Alt+← back · Alt+→ review changes · Type chat · ? help".into()
-                }
-                FocusBlock::Inspector => {
-                    "Ctrl+E files · Tab / Shift+Tab blocks · ⇧← / ⇧→ inspector · Type chat · ? help".into()
-                }
-                FocusBlock::BottomPanel => {
-                    "Ctrl+E files · Tab / Shift+Tab blocks · ⇧← / ⇧→ bottom · Type chat · ? help".into()
-                }
-            },
+            FocusMode::Navigation => None,
         }
     }
 
@@ -7160,22 +7126,22 @@ mod tests {
         app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
             .await
             .unwrap();
-        assert_eq!(app.focus.block, FocusBlock::Inspector);
-        app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
-            .await
-            .unwrap();
         assert_eq!(app.focus.block, FocusBlock::BottomPanel);
         app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
             .await
             .unwrap();
         assert_eq!(app.focus.block, FocusBlock::Files);
+        app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert_eq!(app.focus.block, FocusBlock::Workspace);
 
         app.sidebar_visible = false;
         app.normalize_focus();
         app.handle_key(press(KeyCode::BackTab, KeyModifiers::NONE))
             .await
             .unwrap();
-        assert_eq!(app.focus.block, FocusBlock::BottomPanel);
+        assert_eq!(app.focus.block, FocusBlock::Files);
     }
 
     #[tokio::test]
@@ -7253,7 +7219,9 @@ mod tests {
             WorkspaceView::Diff(DiffCommandContext::Current)
         );
 
+        app.sidebar_visible = true;
         app.focus_block(FocusBlock::Inspector);
+        assert_eq!(app.focus.block, FocusBlock::Inspector);
         app.handle_key(press(KeyCode::Right, KeyModifiers::SHIFT))
             .await
             .unwrap();
@@ -9953,17 +9921,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn footer_hints_change_with_focus_context() {
+    async fn contextual_hint_appears_only_for_transient_or_blocking_state() {
         let (_dir, mut app) = focus_test_app().await;
-        assert!(app.footer_hints().contains("Enter send"));
+        assert!(app.contextual_hint().is_none());
 
         app.focus_block(FocusBlock::Workspace);
-        assert!(app.footer_hints().contains("Alt+← back"));
-        assert!(app.footer_hints().contains("Alt+→ review changes"));
-        assert!(app.footer_hints().contains("Type chat"));
+        assert!(app.contextual_hint().is_none());
 
         app.focus.mode = FocusMode::Transient(TransientOwner::SourceSearch);
-        assert!(app.footer_hints().contains("leave search"));
+        assert!(app
+            .contextual_hint()
+            .is_some_and(|hint| hint.contains("Esc cancel")));
+
+        app.focus.mode = FocusMode::Navigation;
+        app.overlay = Some(Overlay::turn_limit(4));
+        assert_eq!(
+            app.contextual_hint().as_deref(),
+            Some("Enter confirm · Esc cancel")
+        );
     }
 
     fn press(code: KeyCode, mods: KeyModifiers) -> event::KeyEvent {
@@ -10059,7 +10034,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ctrl_b_toggles_sidebar_preference_without_affecting_narrow_layout() {
+    async fn inspector_is_closed_by_default_and_opens_on_demand() {
         let (_dir, session) = test_session().await;
         let mut app = TuiApp::new(
             session,
@@ -10073,11 +10048,11 @@ mod tests {
                 file_icons: FileIconMode::Unicode,
             },
         );
-        assert!(app.sidebar_visible);
+        assert!(!app.sidebar_visible);
         app.handle_key(press(KeyCode::Char('b'), KeyModifiers::CONTROL))
             .await
             .unwrap();
-        assert!(!app.sidebar_visible);
+        assert!(app.sidebar_visible);
         assert!(split_areas_full(
             ratatui::layout::Rect::new(0, 0, 120, 30),
             0,
@@ -10086,7 +10061,11 @@ mod tests {
             0
         )
         .sidebar
-        .is_none());
+        .is_some());
+        app.handle_key(press(KeyCode::Char('b'), KeyModifiers::CONTROL))
+            .await
+            .unwrap();
+        assert!(!app.sidebar_visible);
         assert!(
             split_areas_full(ratatui::layout::Rect::new(0, 0, 80, 24), 0, 3, true, 0)
                 .sidebar
@@ -10095,7 +10074,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn inspector_view_shortcuts_cycle_without_hiding_sidebar() {
+    async fn inspector_view_shortcuts_cycle_without_opening_sidebar() {
         let (_dir, session) = test_session().await;
         let mut app = TuiApp::new(
             session,
@@ -10118,7 +10097,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(app.inspector_view, InspectorView::Task);
-        assert!(app.sidebar_visible);
+        assert!(!app.sidebar_visible);
     }
 
     #[tokio::test]
@@ -10556,10 +10535,9 @@ mod tests {
             }
             text.push('\n');
         }
-        assert!(text.contains("gpt-test"), "chrome missing model:\n{text}");
         assert!(
-            text.contains("in 0 · out 0 · total 0"),
-            "footer missing usage:\n{text}"
+            !text.contains("gpt-test") && !text.contains("in 0 · out 0 · total 0"),
+            "default chrome duplicated model or usage:\n{text}"
         );
     }
 
@@ -10593,8 +10571,12 @@ mod tests {
             text.push('\n');
         }
         assert!(
-            text.contains("mymodel") || text.contains("ctx") || text.contains("mock"),
-            "narrow frame missing identity:\n{text}"
+            text.contains("Forge"),
+            "narrow frame missing app identity:\n{text}"
+        );
+        assert!(
+            !text.contains("mymodel") && !text.contains("mock") && !text.contains("ctx"),
+            "narrow default chrome duplicated secondary metadata:\n{text}"
         );
     }
 
