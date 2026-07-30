@@ -3,6 +3,7 @@
 mod activity;
 mod app;
 mod commands;
+mod composer_layout;
 mod conversation;
 mod editor;
 mod effort;
