@@ -2,6 +2,7 @@
 
 use crate::lang::{get_parser, SyntaxLanguage};
 use std::ops::Range;
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct HighlightSpan {
@@ -360,11 +361,11 @@ pub fn parse_and_capture(
 /// re-renders identical code blocks on every resize, theme switch, scroll and
 /// busy-phase change, and tree-sitter is far too expensive to repeat for output
 /// that cannot have changed.
-pub fn highlight_to_lines(
-    lang: &str,
-    code: &str,
-    theme: &HighlightTheme,
-) -> Vec<Vec<HighlightedSegment>> {
+///
+/// Shared rather than owned: callers render the segments into their own styled
+/// spans and do not need to mutate them, so handing back an [`Arc`] avoids
+/// copying a `String` per token on every lookup. Borrow with `.iter()`.
+pub fn highlight_to_lines(lang: &str, code: &str, theme: &HighlightTheme) -> HighlightedLines {
     crate::cache::cached_or_compute(lang, code, theme, || {
         highlight_to_lines_uncached(lang, code, theme)
     })
@@ -432,7 +433,11 @@ fn highlight_to_lines_uncached(
         .collect()
 }
 
-type HighlightedSegment = (String, (u8, u8, u8), bool, bool);
+/// One styled run inside a highlighted line: text, RGB colour, bold, italic.
+pub type HighlightedSegment = (String, (u8, u8, u8), bool, bool);
+
+/// Highlighted lines, shared so a cache lookup does not copy every segment.
+pub type HighlightedLines = Arc<Vec<Vec<HighlightedSegment>>>;
 
 #[cfg(test)]
 mod tests {
