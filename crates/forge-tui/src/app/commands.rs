@@ -1,0 +1,923 @@
+//! Slash-command and semantic-command dispatch for [`TuiApp`].
+//!
+//! Split out of `app.rs` per #19. Key presses are turned into a
+//! `SemanticCommand` here, and `execute_semantic_command` and `dispatch_line`
+//! carry them out. Methods are moved verbatim — no signature, field access or
+//! logic changed.
+
+use super::*;
+
+impl TuiApp {
+    /// Filtered slash suggestions for the current textbox (empty if not in slash mode).
+    pub fn slash_suggestions(&self) -> Vec<PaletteItem> {
+        let t = self.input.text.trim();
+        if !t.starts_with('/') {
+            return Vec::new();
+        }
+        // Filter by text after leading `/`
+        let filter = t.trim_start_matches('/');
+        filter_palette(filter)
+    }
+
+    pub(super) fn clamp_slash_suggest(&mut self) {
+        let n = self.slash_suggestions().len();
+        if n == 0 {
+            self.slash_suggest_idx = 0;
+        } else {
+            self.slash_suggest_idx = self.slash_suggest_idx.min(n - 1);
+        }
+    }
+
+    pub(super) fn complete_slash_suggestion(&mut self) {
+        let items = self.slash_suggestions();
+        if items.is_empty() {
+            return;
+        }
+        let idx = self.slash_suggest_idx.min(items.len() - 1);
+        let cmd = items[idx].cmd.clone();
+        // If user already typed more than the bare cmd (has args), don't clobber args
+        let cur = self.input.text.trim();
+        if cur == cmd || cur.starts_with(&(cmd.clone() + " ")) {
+            return;
+        }
+        self.input.set_text(format!("{cmd} "));
+        self.slash_suggest_idx = 0;
+        self.clamp_slash_suggest();
+    }
+
+    pub(super) fn tab_nav_command(&self, key: event::KeyEvent) -> Option<TabNavCommand> {
+        let shifted = key.modifiers.contains(KeyModifiers::SHIFT);
+        let plain = !key.modifiers.contains(KeyModifiers::CONTROL)
+            && !key.modifiers.contains(KeyModifiers::ALT);
+        match key.code {
+            KeyCode::Left if shifted && plain => Some(TabNavCommand::PreviousTab),
+            KeyCode::Right if shifted && plain => Some(TabNavCommand::NextTab),
+            _ => None,
+        }
+    }
+
+    pub(super) fn semantic_command_for_global_key(
+        &self,
+        key: event::KeyEvent,
+    ) -> Option<SemanticCommand> {
+        match key.code {
+            KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => {
+                Some(SemanticCommand::GoBack)
+            }
+            KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => {
+                Some(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
+            }
+            KeyCode::Char('1') if key.modifiers.contains(KeyModifiers::ALT) => {
+                Some(SemanticCommand::OpenRun(RunCommandTarget::Current))
+            }
+            KeyCode::Char('2') if key.modifiers.contains(KeyModifiers::ALT) => Some(
+                SemanticCommand::OpenBottomPanel(BottomPanelTab::Diagnostics),
+            ),
+            KeyCode::Char('3') if key.modifiers.contains(KeyModifiers::ALT) => {
+                Some(SemanticCommand::OpenBottomPanel(BottomPanelTab::Terminal))
+            }
+            KeyCode::Char('4') if key.modifiers.contains(KeyModifiers::ALT) => {
+                Some(SemanticCommand::OpenBottomPanel(BottomPanelTab::Activity))
+            }
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(SemanticCommand::MoveQueueSelection(-1))
+            }
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(SemanticCommand::MoveQueueSelection(1))
+            }
+            KeyCode::Backspace if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(SemanticCommand::CancelSelectedQueueMessage)
+            }
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(SemanticCommand::QuitOrInterrupt)
+            }
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(SemanticCommand::Quit)
+            }
+            KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) && !self.busy => {
+                Some(SemanticCommand::OpenGlobalCommandPalette)
+            }
+            KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(SemanticCommand::ToggleToolDetails)
+            }
+            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(SemanticCommand::ToggleFiles)
+            }
+            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(SemanticCommand::ToggleInspector)
+            }
+            KeyCode::Char('[') if key.modifiers.contains(KeyModifiers::ALT) => {
+                Some(SemanticCommand::CycleInspectorTab { forward: false })
+            }
+            KeyCode::Char(']') if key.modifiers.contains(KeyModifiers::ALT) => {
+                Some(SemanticCommand::CycleInspectorTab { forward: true })
+            }
+            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(SemanticCommand::ToggleBottomPanel)
+            }
+            KeyCode::F(1) if self.overlay.is_none() => Some(SemanticCommand::OpenHelp),
+            _ => None,
+        }
+    }
+
+    pub(super) fn semantic_command_for_file_key(
+        &self,
+        key: event::KeyEvent,
+    ) -> Option<SemanticCommand> {
+        if !self.files_visible {
+            return None;
+        }
+        match key.code {
+            KeyCode::Esc if key.modifiers.is_empty() => {
+                Some(SemanticCommand::CancelCurrentInteraction)
+            }
+            KeyCode::Up if key.modifiers.is_empty() => Some(SemanticCommand::MoveFileSelection(-1)),
+            KeyCode::Down if key.modifiers.is_empty() => {
+                Some(SemanticCommand::MoveFileSelection(1))
+            }
+            KeyCode::Right if key.modifiers.is_empty() => {
+                Some(SemanticCommand::ExpandSelectedDirectory)
+            }
+            KeyCode::Left if key.modifiers.is_empty() => {
+                Some(SemanticCommand::CollapseSelectedDirectory)
+            }
+            KeyCode::Enter if key.modifiers.is_empty() => Some(SemanticCommand::OpenSelectedEntry),
+            KeyCode::Char('r') if key.modifiers.is_empty() => Some(SemanticCommand::RefreshFiles),
+            KeyCode::Char('n') if key.modifiers.is_empty() => {
+                Some(SemanticCommand::BeginCreateFile)
+            }
+            KeyCode::Char('N')
+                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+            {
+                Some(SemanticCommand::BeginCreateDirectory)
+            }
+            KeyCode::Char('R')
+                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+            {
+                Some(SemanticCommand::BeginRename)
+            }
+            KeyCode::Char('d') if key.modifiers.is_empty() => Some(SemanticCommand::RequestDelete),
+            _ => None,
+        }
+    }
+
+    fn semantic_command_for_editor_key(&self, key: event::KeyEvent) -> Option<SemanticCommand> {
+        if !self.current_workspace_is_file() {
+            return None;
+        }
+        match key.code {
+            KeyCode::Esc if key.modifiers.is_empty() => {
+                Some(SemanticCommand::CancelCurrentInteraction)
+            }
+            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(SemanticCommand::StartSourceSearch)
+            }
+            KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(SemanticCommand::StartJumpToLine)
+            }
+            KeyCode::Char('r') if key.modifiers.is_empty() => Some(SemanticCommand::RefreshEditor),
+            KeyCode::Char('e') if key.modifiers.is_empty() => {
+                Some(SemanticCommand::OpenExternalEditor)
+            }
+            KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(SemanticCommand::ToggleCurrentFileAttachment)
+            }
+            _ => None,
+        }
+    }
+
+    pub(super) fn semantic_command_for_workspace_key(
+        &self,
+        key: event::KeyEvent,
+    ) -> Option<SemanticCommand> {
+        match self.tab_nav_command(key) {
+            Some(TabNavCommand::PreviousTab) => {
+                return Some(SemanticCommand::GoBack);
+            }
+            Some(TabNavCommand::NextTab) => {
+                return Some(SemanticCommand::ReviewChanges(DiffCommandContext::Current));
+            }
+            None => {}
+        }
+        match key.code {
+            KeyCode::Up if key.modifiers.is_empty() && self.current_workspace_is_diff() => {
+                Some(SemanticCommand::SelectPreviousChange)
+            }
+            KeyCode::Down if key.modifiers.is_empty() && self.current_workspace_is_diff() => {
+                Some(SemanticCommand::SelectNextChange)
+            }
+            KeyCode::Char('r') if key.modifiers.is_empty() && self.current_workspace_is_diff() => {
+                Some(SemanticCommand::RefreshDiff)
+            }
+            KeyCode::Esc if key.modifiers.is_empty() => {
+                if self.current_workspace_is_conversation() {
+                    Some(SemanticCommand::CancelCurrentInteraction)
+                } else {
+                    Some(SemanticCommand::GoBack)
+                }
+            }
+            KeyCode::Enter
+                if key.modifiers.is_empty()
+                    && self.current_workspace_is_conversation()
+                    && self.activity_summary_command().is_some() =>
+            {
+                Some(SemanticCommand::ActivateActivitySummary)
+            }
+            KeyCode::Enter if key.modifiers.is_empty() && self.current_workspace_is_run() => {
+                Some(SemanticCommand::RunOrCancel)
+            }
+            KeyCode::Char('r') if key.modifiers.is_empty() && self.current_workspace_is_run() => {
+                Some(SemanticCommand::Rerun)
+            }
+            KeyCode::Char('e') if key.modifiers.is_empty() && self.current_workspace_is_run() => {
+                Some(SemanticCommand::EditAndRerun)
+            }
+            _ if self.current_workspace_is_file() => self.semantic_command_for_editor_key(key),
+            _ => None,
+        }
+    }
+
+    pub(super) fn semantic_command_for_inspector_key(
+        &self,
+        key: event::KeyEvent,
+    ) -> Option<SemanticCommand> {
+        match self.tab_nav_command(key) {
+            Some(TabNavCommand::PreviousTab) => {
+                Some(SemanticCommand::CycleInspectorTab { forward: false })
+            }
+            Some(TabNavCommand::NextTab) => {
+                Some(SemanticCommand::CycleInspectorTab { forward: true })
+            }
+            None => match key.code {
+                KeyCode::Esc if key.modifiers.is_empty() => {
+                    Some(SemanticCommand::CancelCurrentInteraction)
+                }
+                _ => None,
+            },
+        }
+    }
+
+    pub(super) fn semantic_command_for_bottom_panel_key(
+        &self,
+        key: event::KeyEvent,
+    ) -> Option<SemanticCommand> {
+        if !self.bottom_panel.open {
+            return None;
+        }
+        match self.tab_nav_command(key) {
+            Some(TabNavCommand::PreviousTab) => {
+                return Some(SemanticCommand::CycleBottomPanelTab { forward: false });
+            }
+            Some(TabNavCommand::NextTab) => {
+                return Some(SemanticCommand::CycleBottomPanelTab { forward: true });
+            }
+            None => {}
+        }
+        match key.code {
+            KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => {
+                Some(SemanticCommand::CycleBottomPanelTab { forward: false })
+            }
+            KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => {
+                Some(SemanticCommand::CycleBottomPanelTab { forward: true })
+            }
+            KeyCode::Enter if self.bottom_panel.active == BottomPanelTab::Run => {
+                Some(SemanticCommand::RunOrCancel)
+            }
+            KeyCode::Char('r') if self.bottom_panel.active == BottomPanelTab::Run => {
+                Some(SemanticCommand::Rerun)
+            }
+            KeyCode::Char('e') if self.bottom_panel.active == BottomPanelTab::Run => {
+                Some(SemanticCommand::EditAndRerun)
+            }
+            KeyCode::Char('m') if self.bottom_panel.active == BottomPanelTab::Run => {
+                Some(SemanticCommand::ToggleRunExecutionMode)
+            }
+            KeyCode::Char('i') if self.bottom_panel.active == BottomPanelTab::Run => {
+                Some(SemanticCommand::EditRunCommand)
+            }
+            KeyCode::Char('d') if self.bottom_panel.active == BottomPanelTab::Run => {
+                Some(SemanticCommand::EditRunDirectory)
+            }
+            KeyCode::Esc if key.modifiers.is_empty() => {
+                Some(SemanticCommand::CancelCurrentInteraction)
+            }
+            _ => None,
+        }
+    }
+
+    pub(super) fn semantic_command_for_composer_key(
+        &self,
+        key: event::KeyEvent,
+    ) -> Option<SemanticCommand> {
+        match key.code {
+            KeyCode::Esc if key.modifiers.is_empty() => {
+                Some(SemanticCommand::CancelCurrentInteraction)
+            }
+            KeyCode::Enter
+                if key.modifiers.contains(KeyModifiers::SHIFT)
+                    || key.modifiers.contains(KeyModifiers::ALT) =>
+            {
+                Some(SemanticCommand::InsertComposerNewline)
+            }
+            KeyCode::Enter if key.modifiers.is_empty() => Some(SemanticCommand::SubmitMessage),
+            KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(SemanticCommand::InsertComposerNewline)
+            }
+            _ => None,
+        }
+    }
+
+    pub(super) async fn execute_semantic_command(
+        &mut self,
+        command: SemanticCommand,
+    ) -> Result<bool, TuiError> {
+        match command {
+            SemanticCommand::GoHome => self.go_home_workspace(),
+            SemanticCommand::GoBack => self.go_back_workspace(),
+            SemanticCommand::PushView(view) => self.push_workspace_view(view),
+            SemanticCommand::ReplaceView(view) => self.replace_workspace_view(view),
+            SemanticCommand::CancelCurrentInteraction => self.escape_navigation(),
+            SemanticCommand::OpenFile(path) => {
+                if path.is_file() || path.is_symlink() {
+                    self.open_file_in_editor(&path);
+                } else {
+                    self.set_feedback(
+                        FeedbackSeverity::Warn,
+                        format!("File is no longer available: {}", path.display()),
+                    );
+                }
+            }
+            SemanticCommand::ReviewChanges(DiffCommandContext::Current) => {
+                self.capture_diff_snapshot();
+                self.navigate_to_workspace_view(WorkspaceView::Diff(DiffCommandContext::Current))
+            }
+            SemanticCommand::OpenRun(target) => match target {
+                RunCommandTarget::Current => {
+                    if let Some(id) = self.current_run_id() {
+                        self.navigate_to_workspace_view(WorkspaceView::Run(id));
+                    } else {
+                        self.open_bottom_panel(Some(BottomPanelTab::Run));
+                    }
+                }
+                RunCommandTarget::Id(id) => {
+                    if self.run_exists(&id) {
+                        self.navigate_to_workspace_view(WorkspaceView::Run(id));
+                    } else {
+                        self.set_feedback(
+                            FeedbackSeverity::Warn,
+                            format!("Run is no longer available: {id}"),
+                        );
+                    }
+                }
+            },
+            SemanticCommand::ToggleFiles => self.toggle_files_panel(),
+            SemanticCommand::CloseOverlay => {
+                self.overlay = None;
+                self.explorer_dialog = None;
+            }
+            SemanticCommand::FocusComposer => self.enter_chat_composer(),
+            SemanticCommand::FocusPane(block) => self.focus_block(block),
+            SemanticCommand::SubmitMessage => self.submit_composer_message().await?,
+            SemanticCommand::InsertComposerNewline => self.input.insert_newline(),
+            SemanticCommand::OpenSlashCommands => {
+                self.enter_chat_composer();
+                if self.input.text.is_empty() {
+                    self.input.insert('/');
+                    self.clamp_slash_suggest();
+                }
+            }
+            SemanticCommand::OpenHelp => {
+                self.overlay = Some(Overlay::welcome());
+                self.set_feedback(
+                    FeedbackSeverity::Info,
+                    "Help · press Enter to get started or Esc to dismiss",
+                );
+            }
+            SemanticCommand::OpenGlobalCommandPalette => {
+                self.overlay = Some(Overlay::slash_open(""));
+            }
+            SemanticCommand::ActivateActivitySummary => self.activate_activity_summary(),
+            SemanticCommand::SelectEntry(path) => {
+                if self
+                    .file_explorer
+                    .visible_nodes()
+                    .iter()
+                    .any(|node| node.path == path)
+                {
+                    self.file_explorer.selected_path = Some(path);
+                    if self.files_visible {
+                        self.focus_block(FocusBlock::Files);
+                    }
+                }
+            }
+            SemanticCommand::MoveFileSelection(delta) => self.file_explorer.move_selection(delta),
+            SemanticCommand::ExpandSelectedDirectory => self.file_explorer.expand_selected(),
+            SemanticCommand::CollapseSelectedDirectory => self.file_explorer.collapse_selected(),
+            SemanticCommand::ToggleDirectory(path) => {
+                if self.file_explorer.visible_nodes().iter().any(|node| {
+                    node.path == path && node.kind == crate::file_explorer::FileKind::Directory
+                }) {
+                    self.file_explorer.selected_path = Some(path);
+                    self.file_explorer.activate_selected();
+                }
+            }
+            SemanticCommand::OpenSelectedEntry | SemanticCommand::ConfirmCurrentInteraction => {
+                if let Some(path) = self.file_explorer.selected_file_path() {
+                    if path.is_file() || path.is_symlink() {
+                        self.open_file_in_editor(&path);
+                    } else {
+                        self.set_feedback(
+                            FeedbackSeverity::Warn,
+                            format!("File is no longer available: {}", path.display()),
+                        );
+                    }
+                } else {
+                    self.file_explorer.activate_selected();
+                }
+            }
+            SemanticCommand::DispatchSlash { origin, line } => {
+                match origin {
+                    SlashCommandOrigin::Composer | SlashCommandOrigin::GlobalPalette => {}
+                }
+                self.dispatch_line(&line).await?;
+            }
+            SemanticCommand::CycleFocus { forward } => self.cycle_focus_block(forward),
+            SemanticCommand::ToggleInspector => {
+                self.sidebar_visible = !self.sidebar_visible;
+                if self.sidebar_visible {
+                    self.focus_block(FocusBlock::Inspector);
+                } else {
+                    self.restore_focus_after_closing(FocusBlock::Inspector);
+                    self.normalize_focus();
+                }
+            }
+            SemanticCommand::CycleInspectorTab { forward } => {
+                self.inspector_view = if forward {
+                    self.inspector_view.next()
+                } else {
+                    self.inspector_view.previous()
+                };
+            }
+            SemanticCommand::ToggleBottomPanel => self.toggle_bottom_panel(),
+            SemanticCommand::CycleBottomPanelTab { forward } => {
+                if forward {
+                    self.bottom_panel.next_tab();
+                } else {
+                    self.bottom_panel.previous_tab();
+                }
+            }
+            SemanticCommand::OpenBottomPanel(tab) => self.open_bottom_panel(Some(tab)),
+            SemanticCommand::RefreshFiles => self.file_explorer.refresh_selected(),
+            SemanticCommand::RefreshEditor => {
+                self.source_viewer.refresh(self.session.workspace_root());
+                self.file_explorer.refresh_git_status();
+                if self.current_workspace_is_diff() {
+                    self.refresh_diff_review();
+                }
+            }
+            SemanticCommand::RefreshDiff => self.refresh_diff_review(),
+            SemanticCommand::BeginCreateFile => {
+                self.open_explorer_name_dialog(ExplorerNameAction::CreateFile)
+            }
+            SemanticCommand::BeginCreateDirectory => {
+                self.open_explorer_name_dialog(ExplorerNameAction::CreateDirectory)
+            }
+            SemanticCommand::BeginRename => {
+                self.open_explorer_name_dialog(ExplorerNameAction::Rename)
+            }
+            SemanticCommand::RequestDelete => self.open_explorer_delete_dialog(),
+            SemanticCommand::SelectPreviousChange => {
+                self.diff_selected = self.diff_selected.saturating_sub(1);
+            }
+            SemanticCommand::SelectNextChange => {
+                let count = self.file_explorer.git_status.changed_files().len();
+                self.diff_selected = self
+                    .diff_selected
+                    .saturating_add(1)
+                    .min(count.saturating_sub(1));
+            }
+            SemanticCommand::StartSourceSearch => {
+                self.source_viewer.start_search();
+                self.enter_transient(TransientOwner::SourceSearch);
+            }
+            SemanticCommand::StartJumpToLine => {
+                self.source_viewer.start_jump();
+                self.enter_transient(TransientOwner::JumpToLine);
+            }
+            SemanticCommand::OpenExternalEditor => self.pending_external_editor = true,
+            SemanticCommand::ToggleCurrentFileAttachment => self.toggle_file_attachment(),
+            SemanticCommand::ToggleToolDetails => self.tool_expanded = !self.tool_expanded,
+            SemanticCommand::MoveQueueSelection(delta) => self.move_queue_selection(delta),
+            SemanticCommand::CancelSelectedQueueMessage => self.cancel_selected_queue(),
+            SemanticCommand::QuitOrInterrupt => {
+                if self.busy {
+                    if self.cancel_requested {
+                        self.should_quit = true;
+                        self.last_exit = ExitCode::Canceled;
+                    } else {
+                        self.cancel_requested = true;
+                        self.push_toast("interrupt requested · Ctrl+C again to quit");
+                    }
+                } else {
+                    self.should_quit = true;
+                    self.last_exit = ExitCode::Canceled;
+                }
+            }
+            SemanticCommand::Quit => self.should_quit = true,
+            SemanticCommand::RunOrCancel => {
+                if self
+                    .run
+                    .current
+                    .as_ref()
+                    .is_some_and(|record| record.state == RunState::Running)
+                {
+                    self.cancel_run();
+                } else {
+                    self.run_current_draft();
+                }
+            }
+            SemanticCommand::Rerun => self.rerun_current(),
+            SemanticCommand::EditAndRerun => self.edit_and_rerun_current(),
+            SemanticCommand::ToggleRunExecutionMode => {
+                self.run.draft.execution_mode = match self.run.draft.execution_mode {
+                    RunExecutionMode::Direct => RunExecutionMode::Shell,
+                    RunExecutionMode::Shell => RunExecutionMode::Direct,
+                };
+            }
+            SemanticCommand::EditRunCommand => {
+                self.run.editing = true;
+                self.run.editing_directory = false;
+            }
+            SemanticCommand::EditRunDirectory => {
+                self.run.editing = true;
+                self.run.editing_directory = true;
+            }
+        }
+        Ok(true)
+    }
+
+    pub(super) fn handle_theme_command(&mut self, name: Option<&str>) {
+        if let Some(name) = name.filter(|name| !name.trim().is_empty()) {
+            match forge_config::Theme::parse_strict(name) {
+                Ok(theme) => self.apply_theme(theme, true),
+                Err(error) => self.set_feedback(FeedbackSeverity::Warn, error.to_string()),
+            }
+            return;
+        }
+        self.overlay = Some(Overlay::theme_open(crate::theme::active()));
+        self.status_message = "pick a theme".into();
+    }
+
+    async fn handle_model_command(&mut self, provider: Option<&str>, model: Option<&str>) {
+        if provider.is_none() && model.is_none() {
+            let items = self.model_picker_items(true);
+            let mut overlay = Overlay::model_open_with(items);
+            overlay.focus_model(&self.runtime.model_label);
+            self.overlay = Some(overlay);
+            self.status_message = "pick a model (live catalog when connected)".into();
+        }
+
+        let connected_prefix = self.connect_profile.as_deref().and_then(|id| {
+            self.connect_registry
+                .get(id)
+                .map(|profile| profile.model_provider_prefix.as_str())
+        });
+        let model_id = normalize_model_id(provider.unwrap_or(""), model, connected_prefix);
+        if model_id.trim().is_empty() {
+            self.set_feedback(FeedbackSeverity::Warn, "usage: /model <provider/model>");
+            return;
+        }
+        let target_prefix = Self::model_prefix(&model_id);
+        let matching_profile = self.connected_profile_for_model_prefix(target_prefix);
+        if matching_profile.is_none() {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                format!("connect `{target_prefix}` first before selecting {model_id}"),
+            );
+            self.push_notice(vec![
+                format!("No connected provider matches `{target_prefix}`."),
+                "Use /connect, or pick a model from the current provider catalog.".into(),
+            ]);
+        } else {
+            self.apply_model_selection("native", &model_id);
+            self.open_effort_picker_for_model(&model_id);
+        }
+    }
+
+    pub async fn dispatch_line(&mut self, line: &str) -> Result<(), TuiError> {
+        if let Some(cmd_res) = parse_slash(line) {
+            let slash_name = line.split_whitespace().next().unwrap_or("/");
+            self.push_activity(ActivityKind::Slash, FeedbackSeverity::Info, slash_name);
+            match cmd_res {
+                Ok(SlashCommand::Quit) => {
+                    self.should_quit = true;
+                    self.status_message = "quitting…".into();
+                }
+                Ok(SlashCommand::Compact) => {
+                    self.queue_context_reset();
+                    if cfg!(test) {
+                        let _ = self.drain_pending_context_reset(None).await;
+                    }
+                }
+                Ok(SlashCommand::Model { provider, model }) => {
+                    self.handle_model_command(provider.as_deref(), model.as_deref())
+                        .await
+                }
+                Ok(SlashCommand::ResumeList) => {
+                    match recent_resume_sessions(
+                        self.session.journal_dir(),
+                        self.session.session_id,
+                        10,
+                    ) {
+                        Ok(sessions) if sessions.is_empty() => {
+                            self.status_message = "no previous sessions".into();
+                            self.push_notice(vec![
+                                "No previous sessions found for this workspace.".into(),
+                            ]);
+                        }
+                        Ok(sessions) => {
+                            self.status_message = format!("{} resumable sessions", sessions.len());
+                            let items = sessions
+                                .into_iter()
+                                .map(|session| {
+                                    let timestamp: chrono::DateTime<chrono::Local> =
+                                        session.modified.into();
+                                    ResumeSessionItem {
+                                        id: session.id.to_string(),
+                                        modified: timestamp.format("%Y-%m-%d %H:%M").to_string(),
+                                    }
+                                })
+                                .collect();
+                            self.notices.clear();
+                            self.overlay = Some(Overlay::resume_picker(items));
+                        }
+                        Err(error) => {
+                            self.report_error(&format!("Could not list previous sessions: {error}"))
+                        }
+                    }
+                }
+                Ok(SlashCommand::Resume { session_id }) => {
+                    match self.session.resume_session(session_id).await {
+                        Ok(_report) => {
+                            self.overlay = None;
+                            self.notices.clear();
+                            self.busy = false;
+                            self.busy_phase = BusyPhase::Idle;
+                            self.last_exit = match self.session.status {
+                                forge_types::SessionStatus::Failed => ExitCode::Failed,
+                                forge_types::SessionStatus::AwaitingHitl => ExitCode::AwaitingHitl,
+                                forge_types::SessionStatus::Cancelled => ExitCode::Canceled,
+                                _ => ExitCode::Success,
+                            };
+                            // Stale Running with no live runtime becomes Interrupted.
+                            if let Err(error) = self.session.mark_interrupted_if_stale().await {
+                                self.report_error(&error.to_string());
+                            }
+                            if self.session.status == forge_types::SessionStatus::Interrupted {
+                                self.status_message = "session interrupted".into();
+                                self.set_feedback(
+                                    FeedbackSeverity::Warn,
+                                    "previous task interrupted · ready for a new request",
+                                );
+                            } else {
+                                self.status_message = "session resumed".into();
+                                self.set_feedback(
+                                    FeedbackSeverity::Ok,
+                                    "session restored · ready for the next action",
+                                );
+                            }
+                            self.push_toast(format!("resumed {session_id}"));
+                            self.push_activity(
+                                ActivityKind::System,
+                                FeedbackSeverity::Ok,
+                                format!("session resumed · {session_id}"),
+                            );
+                            self.ui_banners.clear();
+                            self.message_queue.clear();
+                            self.queue_selected = None;
+                            self.stream_preview.clear();
+                            self.stream_thinking.clear();
+                            self.chat_message_start = 0;
+                            self.chat_event_start = 0;
+                            self.chat_scroll = 0;
+                            self.chat_follow = true;
+                            self.hitl_session_allow.clear();
+                            self.maybe_open_hitl();
+                        }
+                        Err(error) => {
+                            self.report_error(&format!(
+                                "Could not resume session {session_id}: {error}"
+                            ));
+                        }
+                    }
+                }
+                Ok(SlashCommand::Copy) => {
+                    let last = self
+                        .session
+                        .messages
+                        .iter()
+                        .rev()
+                        .find(|m| {
+                            m.role == forge_types::MessageRole::Assistant && !m.content.is_empty()
+                        })
+                        .map(|m| m.content.clone());
+                    if let Some(text) = last {
+                        let ok = std::process::Command::new("pbcopy")
+                            .stdin(std::process::Stdio::piped())
+                            .spawn()
+                            .and_then(|mut c| {
+                                use std::io::Write;
+                                if let Some(mut sin) = c.stdin.take() {
+                                    sin.write_all(text.as_bytes())?;
+                                }
+                                c.wait()?;
+                                Ok(())
+                            })
+                            .is_ok()
+                            || std::process::Command::new("wl-copy")
+                                .arg(&text)
+                                .status()
+                                .map(|s| s.success())
+                                .unwrap_or(false);
+                        if ok {
+                            self.push_toast("copied last answer");
+                        } else {
+                            self.push_notice(vec![
+                                "Clipboard unavailable (pbcopy/wl-copy).".into(),
+                                text.chars().take(400).collect(),
+                            ]);
+                        }
+                    } else {
+                        self.push_toast("nothing to copy");
+                    }
+                }
+                Ok(SlashCommand::Clear) => {
+                    // Hide everything currently in the transcript without deleting session
+                    // context, so subsequent model turns still see the full conversation.
+                    self.chat_message_start = self.session.messages.len();
+                    self.chat_event_start = self.session.events.len();
+                    self.ui_banners.clear();
+                    self.notices.clear();
+                    self.clear_error_chrome();
+                    self.feedback = FeedbackModel::default();
+                    self.status_message.clear();
+                    self.toast = None;
+                    self.chat_scroll = 0;
+                    self.chat_follow = true;
+                }
+                Ok(SlashCommand::File { path }) => {
+                    if let Some(path) = path.as_deref() {
+                        match self.resolve_workspace_path(path) {
+                            Ok(resolved) if resolved.is_file() => {
+                                self.open_file_viewer(&resolved.display().to_string());
+                            }
+                            Ok(resolved) if resolved.is_dir() => {
+                                self.open_file_explorer(
+                                    Some(&resolved.display().to_string()),
+                                    None,
+                                );
+                            }
+                            Ok(_) => self.open_file_explorer(
+                                None,
+                                Some("Path is not a regular file or directory".into()),
+                            ),
+                            Err(err) => self.open_file_explorer(
+                                None,
+                                Some(format!("Could not open path: {err}")),
+                            ),
+                        }
+                    } else {
+                        self.open_file_explorer(None, None);
+                    }
+                }
+                Ok(SlashCommand::ToggleFiles) => {
+                    self.toggle_files_panel();
+                }
+                Ok(SlashCommand::Disconnect { profile_id }) => {
+                    let msg = self.disconnect_auth(profile_id.as_deref())?;
+                    self.open_connect_picker();
+                    self.status_message = msg;
+                }
+                Ok(SlashCommand::Connect(action)) => {
+                    self.handle_connect(action);
+                }
+                Ok(SlashCommand::Sync) => {
+                    self.queue_sync();
+                    // Unit tests call `dispatch_line` directly without the event loop;
+                    // run queued sync immediately in that case.
+                    if cfg!(test) {
+                        let _ = self.drain_pending_sync(None).await;
+                    }
+                }
+                Ok(SlashCommand::Refresh) => {
+                    if self.current_workspace_is_diff() {
+                        self.refresh_diff_review();
+                    } else {
+                        self.note_workspace_changed();
+                    }
+                    self.status_message = "Refreshing git status...".into();
+                }
+                Ok(SlashCommand::Edit) => {
+                    self.pending_external_editor = true;
+                }
+                Ok(SlashCommand::ContextFile) => {
+                    self.toggle_file_attachment();
+                }
+                Ok(SlashCommand::Theme { name }) => {
+                    self.handle_theme_command(name.as_deref());
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    self.set_feedback(FeedbackSeverity::Warn, msg.clone());
+                    self.notices.clear();
+                    self.push_toast(msg);
+                }
+            }
+            return Ok(());
+        }
+
+        // Queue user message — the event loop drains this so the YOU bubble paints
+        // before the model call, and so stream deltas can redraw each frame.
+        self.clear_error_chrome();
+
+        // Build the final message text, prepending file context if attached.
+        let mut final_line = line.to_string();
+        let attachment = self.pending_attachment.take();
+        if let Some(ref att) = attachment {
+            if let Some(p) = self.source_viewer.path.as_ref() {
+                match crate::file_context::build_attachment_text(
+                    p,
+                    att.cursor_line,
+                    &att.rel_path,
+                    150,
+                ) {
+                    Ok(ctx) => {
+                        final_line = format!("{}\n\n{}", ctx, final_line);
+                    }
+                    Err(e) => {
+                        self.set_feedback(FeedbackSeverity::Warn, e.to_string());
+                    }
+                }
+            }
+        }
+        // Re-apply credentials (with silent refresh) before each turn so sessions stay signed in.
+        if !self.auth_suspended {
+            if let Some(pid) = self.connect_profile.clone() {
+                self.apply_connect_credentials(&pid);
+            } else {
+                // Try restore mid-session if credentials appeared (e.g. /connect in another terminal)
+                let restored = {
+                    let svc = ConnectService {
+                        registry: &self.connect_registry,
+                        store: &self.connect_store,
+                        active_profile_id: None,
+                        active_model: None,
+                    };
+                    svc.connected_profiles().ok().and_then(|v| {
+                        v.iter()
+                            .find(|p| p.id == "xai")
+                            .cloned()
+                            .or_else(|| v.into_iter().next())
+                    })
+                };
+                if let Some(p) = restored {
+                    self.connect_profile = Some(p.id.clone());
+                    self.apply_connect_credentials(&p.id);
+                    if let Some(m) = p.default_model() {
+                        self.runtime.model_label = m.to_string();
+                        self.session.set_active_model(m);
+                    }
+                    self.refresh_connection_ui();
+                }
+            }
+        }
+
+        // Gate: no LLM chat without a live provider (slash commands already returned above).
+        if !self.is_provider_connected() {
+            self.input.set_text(line);
+            self.report_error(
+                "Not connected to an LLM provider. Run /connect (xAI Grok or OpenCode Go), then send again.",
+            );
+            self.refresh_connection_ui();
+            return Ok(());
+        }
+
+        self.pending_prompt = Some(final_line);
+        self.busy = true;
+        self.busy_phase = BusyPhase::Model;
+        self.turn_started = Some(Instant::now());
+        // A new user turn should always follow the live conversation tail.
+        // This also ensures its thinking block is visible after the user has
+        // previously scrolled up to inspect an older response.
+        self.chat_follow = true;
+        self.chat_scroll = 0;
+        self.stream_preview.clear();
+        self.stream_thinking.clear();
+        self.push_activity(
+            ActivityKind::Model,
+            FeedbackSeverity::Info,
+            "model call started",
+        );
+        Ok(())
+    }
+}
