@@ -1134,6 +1134,7 @@ impl TuiApp {
 
     fn refresh_after_filesystem_change(&mut self, active_file_changed: bool) {
         let renamed_open_file = self.reconcile_open_file_external_rename();
+        let renamed_notice = renamed_open_file.then(|| "File renamed externally".to_string());
         if active_file_changed {
             self.refresh_active_source_viewer();
             self.notices.clear();
@@ -1144,6 +1145,9 @@ impl TuiApp {
             self.file_explorer.refresh_git_status();
         } else {
             self.note_workspace_changed();
+        }
+        if let Some(notice) = renamed_notice {
+            self.source_viewer.notice = Some(notice);
         }
     }
 
