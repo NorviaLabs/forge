@@ -173,6 +173,23 @@ pub fn split_areas_with_chrome(
     }
 }
 
+/// Estimate composer content width for wrapping before the layout split runs.
+pub fn estimate_composer_content_width(area: Rect, show_files: bool, show_sidebar: bool) -> usize {
+    let content_width = (u32::from(area.width) * CONTENT_WIDTH_PERCENT / 100) as u16;
+    let show_files = show_files && content_width >= 110;
+    let show_sidebar = show_sidebar && content_width >= if show_files { 140 } else { 100 };
+    let mut main_width = content_width;
+    if show_files {
+        let file_width = (content_width / 5).clamp(24, 32);
+        main_width = main_width.saturating_sub(file_width);
+    }
+    if show_sidebar {
+        let sidebar_width = (content_width / 4).clamp(24, 34);
+        main_width = main_width.saturating_sub(sidebar_width);
+    }
+    main_width.saturating_sub(2).max(1) as usize
+}
+
 pub fn is_too_small(area: Rect) -> bool {
     area.width < 40 || area.height < MIN_HEIGHT
 }
@@ -180,6 +197,15 @@ pub fn is_too_small(area: Rect) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn estimate_composer_content_width_accounts_for_side_panels() {
+        let area = Rect::new(0, 0, 140, 40);
+        let wide = estimate_composer_content_width(area, true, true);
+        let narrow = estimate_composer_content_width(area, false, false);
+        assert!(wide < narrow);
+        assert!(wide >= 1);
+    }
 
     #[test]
     fn wide_layout_uses_95_percent_width_for_chat() {
