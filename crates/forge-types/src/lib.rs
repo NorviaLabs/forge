@@ -14,6 +14,10 @@ pub enum SessionStatus {
     Failed,
     /// Phase 2 HITL — reserved so journal can round-trip later.
     AwaitingHitl,
+    /// Operator or system cancelled the foreground task.
+    Cancelled,
+    /// Persisted as active, but no recoverable runtime remains.
+    Interrupted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -287,11 +291,20 @@ mod tests {
 
     #[test]
     fn session_status_roundtrip() {
-        let s = SessionStatus::Running;
-        let j = serde_json::to_string(&s).unwrap();
-        assert_eq!(j, "\"running\"");
-        let back: SessionStatus = serde_json::from_str(&j).unwrap();
-        assert_eq!(back, SessionStatus::Running);
+        let cases = [
+            (SessionStatus::Running, "\"running\""),
+            (SessionStatus::Completed, "\"completed\""),
+            (SessionStatus::Failed, "\"failed\""),
+            (SessionStatus::AwaitingHitl, "\"awaiting_hitl\""),
+            (SessionStatus::Cancelled, "\"cancelled\""),
+            (SessionStatus::Interrupted, "\"interrupted\""),
+        ];
+        for (status, wire) in cases {
+            let j = serde_json::to_string(&status).unwrap();
+            assert_eq!(j, wire);
+            let back: SessionStatus = serde_json::from_str(&j).unwrap();
+            assert_eq!(back, status);
+        }
     }
 
     #[test]

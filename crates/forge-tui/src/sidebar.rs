@@ -77,10 +77,12 @@ impl SidebarModel {
         let short = if id.len() > 8 { &id[..8] } else { &id };
         // Turn lifecycle only — not tool/activity phase names.
         let status = match session.status {
-            SessionStatus::Running => "Idle",
+            SessionStatus::Running => "Ready",
             SessionStatus::Completed => "Completed",
             SessionStatus::Failed => "Failed",
             SessionStatus::AwaitingHitl => "Waiting",
+            SessionStatus::Cancelled => "Cancelled",
+            SessionStatus::Interrupted => "Interrupted",
         };
         let mut tools = session.list_tools();
         tools.sort();
@@ -370,7 +372,8 @@ fn status_style(s: &str) -> ratatui::style::Style {
         "Failed" => theme::danger(),
         "Completed" => theme::ok(),
         "Working" => theme::info(),
-        "Cancelled" => theme::muted(),
+        "Cancelled" | "Ready" => theme::muted(),
+        "Interrupted" => theme::warn(),
         _ => theme::info(),
     }
 }

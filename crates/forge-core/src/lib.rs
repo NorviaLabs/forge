@@ -281,6 +281,8 @@ impl AgentSession {
         self.tool_ctx = ToolContext::new(active_root);
         self.context = context;
         self.token_usage = token_usage;
+        // Stale Running without a live executor is Interrupted, not eternal Working.
+        self.mark_interrupted_if_stale().await?;
         Ok(report)
     }
 
@@ -381,7 +383,7 @@ impl AgentSession {
             token_usage.record_response(response.usage.as_ref(), response.thinking.as_deref());
         }
 
-        Ok(Self {
+        let mut session = Self {
             session_id,
             status: state.status,
             messages,
@@ -402,7 +404,10 @@ impl AgentSession {
             enable_gov: loop_cfg.enable_governance,
             token_usage,
             validation_budget: ValidationBudget::with_default_max(),
-        })
+        };
+        // Legacy fallback: Running with no runtime becomes Interrupted (not guessed from text).
+        session.mark_interrupted_if_stale().await?;
+        Ok(session)
     }
 
     pub fn set_governance(&mut self, g: Governance) {
@@ -741,6 +746,50 @@ impl AgentSession {
             .append_status(self.session_id, SessionStatus::Failed)
             .await?;
         Ok(())
+    }
+
+    /// Persist operator/system cancellation of the foreground task.
+    pub async fn mark_cancelled(&mut self) -> Result<(), LoopError> {
+        if self.status == SessionStatus::Cancelled {
+            return Ok(());
+        }
+        self.status = SessionStatus::Cancelled;
+        self.pending_hitl = None;
+        self.journal
+            .append_status(self.session_id, SessionStatus::Cancelled)
+            .await?;
+        self.events.push(TurnEvent {
+            kind: "cancelled".into(),
+            detail: "foreground task cancelled".into(),
+        });
+        Ok(())
+    }
+
+    /// On resume/reload: a durable Running/AwaitingHitl task with no live runtime
+    /// cannot safely continue as Working. HITL remains Waiting; bare Running becomes
+    /// Interrupted. Legacy sessions with no terminal metadata stay Interrupted rather
+    /// than eternal Working. Completed/Failed/Cancelled are left untouched.
+    pub async fn mark_interrupted_if_stale(&mut self) -> Result<(), LoopError> {
+        match self.status {
+            SessionStatus::Running => {
+                // No active runtime after reload/resume.
+                self.status = SessionStatus::Interrupted;
+                self.journal
+                    .append_status(self.session_id, SessionStatus::Interrupted)
+                    .await?;
+                self.events.push(TurnEvent {
+                    kind: "interrupted".into(),
+                    detail: "stale running task has no recoverable runtime".into(),
+                });
+                Ok(())
+            }
+            // AwaitingHitl is still a recoverable waiting state (operator can decide).
+            SessionStatus::AwaitingHitl
+            | SessionStatus::Completed
+            | SessionStatus::Failed
+            | SessionStatus::Cancelled
+            | SessionStatus::Interrupted => Ok(()),
+        }
     }
 
     /// Run until no tool calls, max turns, or HITL pause.
@@ -1637,5 +1686,74 @@ mod tests {
         let report = s.token_usage_report();
         assert!(report.user_tokens_est >= 1);
         assert!(report.system_tokens_est >= 1);
+    }
+
+    #[tokio::test]
+    async fn mark_interrupted_if_stale_converts_running() {
+        let dir = tempdir().unwrap();
+        let model = Arc::new(MockModelClient::script(vec![ModelResponse {
+            text: "hi".into(),
+            tool_calls: vec![],
+            usage: None,
+            thinking: None,
+        }]));
+        let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        assert_eq!(s.status, SessionStatus::Running);
+        s.mark_interrupted_if_stale().await.unwrap();
+        assert_eq!(s.status, SessionStatus::Interrupted);
+        // Idempotent on terminal interrupted.
+        s.mark_interrupted_if_stale().await.unwrap();
+        assert_eq!(s.status, SessionStatus::Interrupted);
+    }
+
+    #[tokio::test]
+    async fn mark_cancelled_persists_terminal_state() {
+        let dir = tempdir().unwrap();
+        let model = Arc::new(MockModelClient::script(vec![ModelResponse {
+            text: "hi".into(),
+            tool_calls: vec![],
+            usage: None,
+            thinking: None,
+        }]));
+        let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        s.mark_cancelled().await.unwrap();
+        assert_eq!(s.status, SessionStatus::Cancelled);
+        let s2 = AgentSession::resume(
+            base_cfg(dir.path()),
+            Arc::new(MockModelClient::script(vec![])),
+            ToolRegistry::new(),
+            s.session_id,
+        )
+        .await
+        .unwrap();
+        assert_eq!(s2.status, SessionStatus::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn resume_running_session_becomes_interrupted() {
+        let dir = tempdir().unwrap();
+        let model = Arc::new(MockModelClient::script(vec![ModelResponse {
+            text: "partial".into(),
+            tool_calls: vec![],
+            usage: None,
+            thinking: None,
+        }]));
+        let s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        // Fresh session journal is Running with no completion event.
+        let resumed = AgentSession::resume(
+            base_cfg(dir.path()),
+            Arc::new(MockModelClient::script(vec![])),
+            ToolRegistry::new(),
+            s.session_id,
+        )
+        .await
+        .unwrap();
+        assert_eq!(resumed.status, SessionStatus::Interrupted);
     }
 }

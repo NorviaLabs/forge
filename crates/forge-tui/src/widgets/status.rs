@@ -24,6 +24,7 @@ pub enum BusyPhase {
 }
 
 impl BusyPhase {
+    /// Internal activity label (activity feed / diagnostics).
     pub fn label(&self) -> String {
         match self {
             Self::Idle => String::new(),
@@ -33,13 +34,55 @@ impl BusyPhase {
             Self::Other(s) => s.clone(),
         }
     }
+
+    /// Typed header progress description. Empty when none is safe to show.
+    pub fn progress_description(&self) -> Option<String> {
+        match self {
+            Self::Idle => None,
+            Self::Model => None,
+            Self::Connect => None,
+            Self::Other(s) => {
+                let s = s.trim();
+                if s.is_empty() {
+                    None
+                } else {
+                    Some(s.to_string())
+                }
+            }
+            Self::Tool { name } => Some(tool_progress_description(name)),
+        }
+    }
+}
+
+fn tool_progress_description(name: &str) -> String {
+    match name {
+        "read_file" => "Reading files".into(),
+        "write_file" | "apply_patch" => "Editing files".into(),
+        "fffind" | "fffind_files" => "Searching files".into(),
+        "ffgrep" | "ffgrep_files" => "Searching code".into(),
+        "bash" => "Running command".into(),
+        "git" => "Checking git".into(),
+        "web_search" => "Searching the web".into(),
+        other => {
+            let cleaned = other.replace('_', " ");
+            if cleaned.is_empty() {
+                "Running tool".into()
+            } else {
+                let mut chars = cleaned.chars();
+                match chars.next() {
+                    Some(c) => format!("{}{}", c.to_uppercase(), chars.as_str()),
+                    None => "Running tool".into(),
+                }
+            }
+        }
+    }
 }
 
 /// First-class turn lifecycle — separate from tool/activity status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TurnLifecycle {
     /// No active turn; ready for input.
-    Idle,
+    Ready,
     /// Agent turn in progress.
     Working,
     /// Blocked on human approval or connect.
@@ -50,24 +93,30 @@ pub enum TurnLifecycle {
     Failed,
     /// Operator cancelled the in-flight turn.
     Cancelled,
+    /// Persisted active task with no recoverable runtime.
+    Interrupted,
 }
 
 impl TurnLifecycle {
     /// Map authoritative session status + busy/cancel flags.
     /// Does not inspect activity rows or assistant text.
     pub fn from_session(status: SessionStatus, busy: bool, cancelled: bool) -> Self {
-        if cancelled {
+        // Explicit durable cancel wins even if a stale busy flag lingers.
+        if cancelled || status == SessionStatus::Cancelled {
             return Self::Cancelled;
         }
         match status {
             SessionStatus::AwaitingHitl => Self::Waiting,
             SessionStatus::Failed => Self::Failed,
             SessionStatus::Completed => Self::Completed,
+            SessionStatus::Interrupted => Self::Interrupted,
+            SessionStatus::Cancelled => Self::Cancelled,
             SessionStatus::Running => {
                 if busy {
                     Self::Working
                 } else {
-                    Self::Idle
+                    // Fresh / legacy Running with no live runtime is Ready, not Working.
+                    Self::Ready
                 }
             }
         }
@@ -75,34 +124,37 @@ impl TurnLifecycle {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Idle => "Idle",
+            Self::Ready => "Ready",
             Self::Working => "Working",
             Self::Waiting => "Waiting",
             Self::Completed => "Completed",
             Self::Failed => "Failed",
             Self::Cancelled => "Cancelled",
+            Self::Interrupted => "Interrupted",
         }
     }
 
     pub fn style(self) -> ratatui::style::Style {
         match self {
-            Self::Idle => theme::ok(),
+            Self::Ready => theme::muted(),
             Self::Working => theme::info().add_modifier(Modifier::BOLD),
             Self::Waiting => theme::warn().add_modifier(Modifier::BOLD),
             Self::Completed => theme::ok(),
             Self::Failed => theme::danger(),
             Self::Cancelled => theme::muted(),
+            Self::Interrupted => theme::warn(),
         }
     }
 
     pub fn symbol(self) -> &'static str {
         match self {
-            Self::Idle => "·",
-            Self::Working => "●",
+            Self::Ready => "",
+            Self::Working => "◌",
             Self::Waiting => "!",
             Self::Completed => "✓",
-            Self::Failed => "×",
-            Self::Cancelled => "–",
+            Self::Failed => "✗",
+            Self::Cancelled => "■",
+            Self::Interrupted => "!",
         }
     }
 }
@@ -115,6 +167,30 @@ fn spinner_frame() -> &'static str {
         .map(|d| d.as_millis())
         .unwrap_or(0);
     SPINNER[((ms / 80) as usize) % SPINNER.len()]
+}
+
+fn format_lifecycle_label(life: TurnLifecycle, detail: Option<&str>, animated: bool) -> String {
+    let glyph = match life {
+        TurnLifecycle::Working if animated => spinner_frame(),
+        other => other.symbol(),
+    };
+    let state = life.label();
+    let core = if glyph.is_empty() {
+        state.to_string()
+    } else {
+        format!("{glyph} {state}")
+    };
+    match detail.map(str::trim).filter(|d| !d.is_empty()) {
+        Some(detail)
+            if matches!(
+                life,
+                TurnLifecycle::Working | TurnLifecycle::Waiting | TurnLifecycle::Failed
+            ) =>
+        {
+            format!("{core} · {detail}")
+        }
+        _ => core,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -142,23 +218,41 @@ pub struct StatusModel {
     pub activity: Option<String>,
     /// Soft-cancel of the in-flight turn (Esc while busy) reached a terminal cancel.
     pub turn_cancelled: bool,
+    /// Typed progress description for Working (from structured busy phase / progress).
+    pub progress_description: Option<String>,
+    /// Safe concise failure category for Failed header detail (never raw errors).
+    pub failure_category: Option<String>,
+    /// Waiting reason detail when blocked on the operator.
+    pub waiting_detail: Option<String>,
 }
 
 impl StatusModel {
     pub fn status_label(&self) -> (String, ratatui::style::Style) {
-        self.status_label_with_busy_detail(None)
+        self.status_label_for_width(usize::MAX)
     }
 
     /// Overall turn lifecycle label (not tool/activity phase).
     pub fn turn_lifecycle(&self) -> TurnLifecycle {
+        // Connect-busy is waiting on the operator, not "Working".
+        if self.busy && matches!(self.busy_phase, BusyPhase::Connect) {
+            return TurnLifecycle::Waiting;
+        }
+        if self.waiting_detail.is_some()
+            && !self.busy
+            && matches!(
+                self.status,
+                SessionStatus::Running | SessionStatus::AwaitingHitl
+            )
+        {
+            return TurnLifecycle::Waiting;
+        }
+        if self.status == SessionStatus::AwaitingHitl {
+            return TurnLifecycle::Waiting;
+        }
         TurnLifecycle::from_session(self.status, self.busy, self.turn_cancelled)
     }
 
     pub fn current_state_label(&self) -> &'static str {
-        // Connect-busy is waiting on the operator, not "Working".
-        if self.busy && matches!(self.busy_phase, BusyPhase::Connect) {
-            return TurnLifecycle::Waiting.label();
-        }
         self.turn_lifecycle().label()
     }
 
@@ -178,30 +272,72 @@ impl StatusModel {
         Some(text)
     }
 
+    /// Detail text after the lifecycle label (progress / waiting / failure category).
+    pub fn status_detail(&self) -> Option<String> {
+        match self.turn_lifecycle() {
+            TurnLifecycle::Working => self
+                .progress_description
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .or_else(|| self.busy_phase.progress_description()),
+            TurnLifecycle::Waiting => self
+                .waiting_detail
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .or_else(|| {
+                    if matches!(self.busy_phase, BusyPhase::Connect) {
+                        Some("Your input required".into())
+                    } else if self.status == SessionStatus::AwaitingHitl {
+                        Some("Approval required".into())
+                    } else {
+                        None
+                    }
+                }),
+            TurnLifecycle::Failed => self
+                .failure_category
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string()),
+            _ => None,
+        }
+    }
+
     pub fn status_label_with_busy_detail(
         &self,
         busy_detail: Option<&str>,
     ) -> (String, ratatui::style::Style) {
-        let life = if self.busy && matches!(self.busy_phase, BusyPhase::Connect) {
-            TurnLifecycle::Waiting
-        } else {
-            self.turn_lifecycle()
-        };
-        // Working may include optional busy detail (elapsed), but lifecycle stays "Working".
-        if life == TurnLifecycle::Working {
-            let spin = spinner_frame();
-            let text = if let Some(detail) = busy_detail.filter(|d| !d.is_empty()) {
-                format!("{spin} Working · {detail}")
-            } else {
-                format!("{spin} Working")
-            };
-            return (text, life.style());
+        let life = self.turn_lifecycle();
+        let detail = busy_detail
+            .map(str::trim)
+            .filter(|d| !d.is_empty())
+            .map(|d| d.to_string())
+            .or_else(|| self.status_detail());
+        (
+            format_lifecycle_label(life, detail.as_deref(), true),
+            life.style(),
+        )
+    }
+
+    /// Width-aware lifecycle label. State label is never truncated.
+    pub fn status_label_for_width(&self, max_chars: usize) -> (String, ratatui::style::Style) {
+        let life = self.turn_lifecycle();
+        let detail = self.status_detail();
+        let with_detail = format_lifecycle_label(life, detail.as_deref(), true);
+        if with_detail.chars().count() <= max_chars {
+            return (with_detail, life.style());
         }
-        let text = match life {
-            TurnLifecycle::Waiting => "Waiting".to_string(),
-            other => other.label().to_string(),
-        };
-        (text, life.style())
+        let base = format_lifecycle_label(life, None, true);
+        if base.chars().count() <= max_chars {
+            return (base, life.style());
+        }
+        // Last resort: drop glyph, keep bare state text.
+        let bare = life.label().to_string();
+        (bare, life.style())
     }
 
     #[allow(dead_code)]
@@ -258,74 +394,99 @@ impl Widget for StatusBar<'_> {
         if area.height == 0 || area.width == 0 {
             return;
         }
+        // Priority: state label > product/workspace identity > progress description > secondary meta.
+        let width = area.width as usize;
+        let separators = "  ";
+        let sep_len = separators.chars().count();
+        let brand = "Forge";
+        let brand_len = brand.chars().count();
+
+        let life = self.model.turn_lifecycle();
+        let detail = self.model.status_detail();
+        let state_only = format_lifecycle_label(life, None, true);
+        let state_with_detail = format_lifecycle_label(life, detail.as_deref(), true);
+        let state_bare = life.label().to_string();
+
+        // Always reserve the state label; drop detail first under pressure.
+        let life_label = if brand_len + sep_len + state_with_detail.chars().count() <= width {
+            state_with_detail
+        } else if brand_len + sep_len + state_only.chars().count() <= width {
+            state_only
+        } else {
+            state_bare
+        };
+        let life_style = life.style();
+
         let mut spans = vec![Span::styled(
-            "Forge",
+            brand,
             theme::brand().add_modifier(Modifier::BOLD),
         )];
-        let repo = self.model.repo_branch_label();
-        let separators = "  ";
-        let mut used = spans[0].content.chars().count();
-        let activity = self
-            .model
-            .activity
-            .as_deref()
-            .filter(|value| !value.is_empty());
-        let activity_needed = activity
-            .map(|value| separators.chars().count() + value.chars().count())
-            .unwrap_or(0);
+        let mut used = brand_len;
 
-        if let Some(repo) = repo {
-            let reserve = activity_needed + separators.chars().count() + 8;
-            let available_repo = (area.width as usize)
-                .saturating_sub(used + separators.chars().count())
-                .saturating_sub(reserve)
-                .max(8);
-            let repo = StatusModel::truncate_middle(&repo, available_repo);
-            let needed = separators.chars().count() + repo.chars().count();
-            if used + needed <= area.width as usize {
-                spans.push(Span::raw(separators));
-                spans.push(Span::styled(repo, theme::text()));
-                used += needed;
+        // Ensure lifecycle fits even if we must drop brand-adjacent metadata.
+        let life_needed = sep_len + life_label.chars().count();
+        let room_for_repo = width.saturating_sub(used + life_needed);
+
+        if let Some(repo) = self.model.repo_branch_label() {
+            if room_for_repo > sep_len {
+                let available_repo = room_for_repo.saturating_sub(sep_len).max(0);
+                if available_repo >= 4 {
+                    let repo = StatusModel::truncate_middle(&repo, available_repo);
+                    let needed = sep_len + repo.chars().count();
+                    if used + needed + life_needed <= width {
+                        spans.push(Span::raw(separators));
+                        spans.push(Span::styled(repo, theme::text()));
+                        used += needed;
+                    }
+                }
             }
         }
 
+        // Recompute room after repo.
+        if used + life_needed <= width {
+            spans.push(Span::raw(separators));
+            spans.push(Span::styled(life_label, life_style));
+            used += life_needed;
+        } else if life_label.chars().count() <= width {
+            // Extremely narrow: prefer state over brand if somehow constrained.
+            spans.clear();
+            used = life_label.chars().count();
+            spans.push(Span::styled(life_label, life_style));
+        } else {
+            spans.push(Span::raw(separators));
+            spans.push(Span::styled(life.label().to_string(), life_style));
+            used = width;
+        }
+
+        // Optional resource (file/run view) only if leftover room remains.
         if let Some(resource) = self
             .model
             .resource
             .as_deref()
             .filter(|value| !value.is_empty())
         {
-            let reserve = activity_needed;
-            let available_resource = (area.width as usize)
-                .saturating_sub(used + separators.chars().count())
-                .saturating_sub(reserve)
-                .max(8);
-            let resource = StatusModel::truncate_middle(resource, available_resource);
-            let needed = separators.chars().count() + resource.chars().count();
-            if used + needed <= area.width as usize {
-                spans.push(Span::raw(separators));
-                spans.push(Span::styled(resource, theme::metadata_style()));
-                used += needed;
+            let available = width.saturating_sub(used + sep_len);
+            if available >= 4 {
+                let resource = StatusModel::truncate_middle(resource, available);
+                let needed = sep_len + resource.chars().count();
+                if used + needed <= width {
+                    spans.push(Span::raw(separators));
+                    spans.push(Span::styled(resource, theme::metadata_style()));
+                    used += needed;
+                }
             }
         }
 
-        // Turn lifecycle is always shown when space allows — separate from activity.
-        let (life_label, life_style) = self.model.status_label();
-        let life_needed = separators.chars().count() + life_label.chars().count();
-        let life_fits = used + life_needed + activity_needed <= area.width as usize
-            || used + life_needed <= area.width as usize;
-
-        if life_fits && used + life_needed <= area.width as usize {
-            spans.push(Span::raw(separators));
-            spans.push(Span::styled(life_label, life_style));
-            used += life_needed;
-        }
-
-        if let Some(activity) = activity {
-            let needed = separators.chars().count() + activity.chars().count();
-            if used + needed <= area.width as usize {
+        // Workspace activity is secondary metadata — never displaces lifecycle.
+        if let Some(activity) = self
+            .model
+            .activity
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            let needed = sep_len + activity.chars().count();
+            if used + needed <= width {
                 spans.push(Span::raw(separators));
-                // Workspace activity (diff/run counters) stays secondary to lifecycle.
                 spans.push(Span::styled(activity.to_string(), theme::metadata_style()));
             }
         }
@@ -387,6 +548,9 @@ mod tests {
             dirty: false,
             resource: None,
             activity: None,
+            progress_description: None,
+            failure_category: None,
+            waiting_detail: None,
         }
     }
 
@@ -413,8 +577,11 @@ mod tests {
             resource: None,
             activity: None,
             turn_cancelled: false,
+            progress_description: None,
+            failure_category: None,
+            waiting_detail: None,
         };
-        assert_eq!(m.status_label().0, "Waiting");
+        assert!(m.status_label().0.contains("Waiting"));
     }
 
     #[test]
@@ -440,6 +607,9 @@ mod tests {
             resource: None,
             activity: None,
             turn_cancelled: false,
+            progress_description: None,
+            failure_category: None,
+            waiting_detail: None,
         };
         // Busy detail is activity-level; lifecycle stays Working.
         assert!(m.status_label().0.contains("Working"));
@@ -469,6 +639,9 @@ mod tests {
             resource: None,
             activity: None,
             turn_cancelled: false,
+            progress_description: None,
+            failure_category: None,
+            waiting_detail: None,
         };
         let lines = session_chrome_lines(&m);
         assert!(lines.iter().any(|l| l.contains("provider=native")));
@@ -501,6 +674,9 @@ mod tests {
             resource: Some("src/app.rs".into()),
             activity: Some("2 changes · Review".into()),
             turn_cancelled: false,
+            progress_description: None,
+            failure_category: None,
+            waiting_detail: None,
         };
 
         assert_eq!(m.connect_profile.as_deref(), Some("openai-code"));
@@ -545,6 +721,9 @@ mod tests {
             resource: None,
             activity: None,
             turn_cancelled: false,
+            progress_description: None,
+            failure_category: None,
+            waiting_detail: None,
         };
         assert_eq!(m.current_state_label(), "Waiting");
     }
@@ -572,6 +751,9 @@ mod tests {
             resource: Some("src/app.rs".into()),
             activity: Some("2 changes · Review".into()),
             turn_cancelled: false,
+            progress_description: None,
+            failure_category: None,
+            waiting_detail: None,
         };
         let area = Rect::new(0, 0, 80, 1);
         let mut buf = Buffer::empty(area);
@@ -605,15 +787,18 @@ mod tests {
             branch: Some("main".into()),
             dirty: false,
             resource: None,
-            activity: Some("Idle".into()),
+            activity: Some("2 changes".into()),
             turn_cancelled: false,
+            progress_description: None,
+            failure_category: None,
+            waiting_detail: None,
         };
         let area = Rect::new(0, 0, 24, 1);
         let mut buf = Buffer::empty(area);
         StatusBar { model: &m }.render(area, &mut buf);
         let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
         assert!(rendered.contains("Forge"));
-        assert!(rendered.contains("Idle"));
+        assert!(rendered.contains("Ready"));
     }
 
     #[test]
@@ -657,7 +842,7 @@ mod tests {
         );
         assert_eq!(
             status_model(SessionStatus::Running, false, BusyPhase::Idle).current_state_label(),
-            "Idle"
+            "Ready"
         );
         let mut cancelled = status_model(SessionStatus::Running, false, BusyPhase::Idle);
         cancelled.turn_cancelled = true;
@@ -687,24 +872,20 @@ mod tests {
             .0
             .contains("Working"));
 
-        assert_eq!(
-            status_model(SessionStatus::Running, false, BusyPhase::Idle)
-                .status_label()
-                .0,
-            "Idle"
-        );
-        assert_eq!(
+        assert!(status_model(SessionStatus::Running, false, BusyPhase::Idle)
+            .status_label()
+            .0
+            .contains("Ready"));
+        assert!(
             status_model(SessionStatus::Completed, false, BusyPhase::Idle)
                 .status_label()
-                .0,
-            "Completed"
+                .0
+                .contains("Completed")
         );
-        assert_eq!(
-            status_model(SessionStatus::Failed, false, BusyPhase::Idle)
-                .status_label()
-                .0,
-            "Failed"
-        );
+        assert!(status_model(SessionStatus::Failed, false, BusyPhase::Idle)
+            .status_label()
+            .0
+            .contains("Failed"));
 
         assert_eq!(StatusModel::truncate_model("abcdef", 3), "abc");
         assert_eq!(StatusModel::truncate_middle("abcdef", 4), "abcd");
@@ -722,5 +903,126 @@ mod tests {
         let area = Rect::new(0, 0, 0, 0);
         let mut buf = Buffer::empty(area);
         StatusBar { model: &m }.render(area, &mut buf);
+    }
+
+    #[test]
+    fn ready_when_no_active_task() {
+        let m = status_model(SessionStatus::Running, false, BusyPhase::Idle);
+        assert_eq!(m.turn_lifecycle(), TurnLifecycle::Ready);
+        assert_eq!(m.current_state_label(), "Ready");
+        assert!(m.status_label().0.contains("Ready"));
+    }
+
+    #[test]
+    fn working_with_typed_progress_updates_in_place() {
+        let mut m = status_model(
+            SessionStatus::Running,
+            true,
+            BusyPhase::Tool {
+                name: "fffind".into(),
+            },
+        );
+        m.progress_description = Some("Searching files".into());
+        let label = m.status_label().0;
+        assert!(label.contains("Working"), "{label}");
+        assert!(label.contains("Searching files"), "{label}");
+        m.progress_description = Some("Reading README".into());
+        m.busy_phase = BusyPhase::Tool {
+            name: "read_file".into(),
+        };
+        let label = m.status_label().0;
+        assert!(label.contains("Reading README"), "{label}");
+        assert!(!label.contains("Searching files"), "{label}");
+    }
+
+    #[test]
+    fn waiting_for_approval_and_input() {
+        let m = status_model(SessionStatus::AwaitingHitl, false, BusyPhase::Idle);
+        assert_eq!(m.turn_lifecycle(), TurnLifecycle::Waiting);
+        assert!(m.status_label().0.contains("Waiting"));
+        assert!(m.status_label().0.contains("Approval required"));
+
+        let mut input = status_model(SessionStatus::Running, true, BusyPhase::Connect);
+        assert_eq!(input.turn_lifecycle(), TurnLifecycle::Waiting);
+        assert!(input.status_label().0.contains("Your input required"));
+        input.busy = false;
+        input.busy_phase = BusyPhase::Idle;
+        input.waiting_detail = Some("Your input required".into());
+        assert_eq!(input.turn_lifecycle(), TurnLifecycle::Waiting);
+    }
+
+    #[test]
+    fn terminal_states_map_structurally() {
+        assert_eq!(
+            status_model(SessionStatus::Completed, false, BusyPhase::Idle).turn_lifecycle(),
+            TurnLifecycle::Completed
+        );
+        assert_eq!(
+            status_model(SessionStatus::Failed, false, BusyPhase::Idle).turn_lifecycle(),
+            TurnLifecycle::Failed
+        );
+        assert_eq!(
+            status_model(SessionStatus::Cancelled, false, BusyPhase::Idle).turn_lifecycle(),
+            TurnLifecycle::Cancelled
+        );
+        assert_eq!(
+            status_model(SessionStatus::Interrupted, false, BusyPhase::Idle).turn_lifecycle(),
+            TurnLifecycle::Interrupted
+        );
+        let mut failed = status_model(SessionStatus::Failed, false, BusyPhase::Idle);
+        failed.failure_category = Some("Tool retries exhausted".into());
+        let label = failed.status_label().0;
+        assert!(label.contains("Failed"), "{label}");
+        assert!(label.contains("Tool retries exhausted"), "{label}");
+        assert!(!label.contains("validation"), "{label}");
+    }
+
+    #[test]
+    fn child_activity_failure_does_not_fail_header() {
+        let mut m = status_model(
+            SessionStatus::Running,
+            true,
+            BusyPhase::Other("Trying another approach".into()),
+        );
+        m.activity = Some("✗ read_file failed".into());
+        assert_eq!(m.turn_lifecycle(), TurnLifecycle::Working);
+        assert!(m.status_label().0.contains("Working"));
+        assert!(!m.status_label().0.contains("Failed"));
+    }
+
+    #[test]
+    fn narrow_width_keeps_state_label() {
+        let mut m = status_model(
+            SessionStatus::Running,
+            true,
+            BusyPhase::Tool {
+                name: "read_file".into(),
+            },
+        );
+        m.repo_name = Some("very-long-repository-name".into());
+        m.branch = Some("feature/extremely-long-branch-name".into());
+        m.progress_description = Some("Inspecting repository".into());
+        let area = Rect::new(0, 0, 80, 1);
+        let mut buf = Buffer::empty(area);
+        StatusBar { model: &m }.render(area, &mut buf);
+        let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
+        assert!(rendered.contains("Working"), "{rendered}");
+
+        let area = Rect::new(0, 0, 24, 1);
+        let mut buf = Buffer::empty(area);
+        StatusBar { model: &m }.render(area, &mut buf);
+        let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
+        assert!(rendered.contains("Working"), "{rendered}");
+        // Progress may be dropped; state remains intact.
+        assert!(!rendered.contains("Inspecting repository") || rendered.contains("Working"));
+    }
+
+    #[test]
+    fn cancelled_flag_and_durable_status_agree() {
+        let durable = status_model(SessionStatus::Cancelled, false, BusyPhase::Idle);
+        assert_eq!(durable.current_state_label(), "Cancelled");
+        let mut flag = status_model(SessionStatus::Running, false, BusyPhase::Idle);
+        flag.turn_cancelled = true;
+        assert_eq!(flag.current_state_label(), "Cancelled");
     }
 }
