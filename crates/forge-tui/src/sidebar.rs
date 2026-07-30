@@ -83,6 +83,9 @@ impl SidebarModel {
             SessionStatus::AwaitingHitl => "Waiting",
             SessionStatus::Cancelled => "Cancelled",
             SessionStatus::Interrupted => "Interrupted",
+            // `SessionStatus` is `#[non_exhaustive]`; label an unrecognised status honestly
+            // rather than guessing at a concrete one.
+            _ => "Unknown",
         };
         let mut tools = session.list_tools();
         tools.sort();

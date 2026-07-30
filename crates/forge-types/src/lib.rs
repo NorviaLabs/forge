@@ -8,6 +8,7 @@ pub type SessionId = Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum SessionStatus {
     Running,
     Completed,
@@ -22,6 +23,7 @@ pub enum SessionStatus {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum SideEffectClass {
     Read,
     Write,
@@ -32,6 +34,7 @@ pub enum SideEffectClass {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum MessageRole {
     System,
     User,
@@ -116,6 +119,7 @@ pub struct Usage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ModelStreamEvent {
     TextDelta {
         text: String,
@@ -158,6 +162,7 @@ pub struct ModelResponse {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum JournalEventType {
     SessionCreated,
     UserMessage,

@@ -7459,6 +7459,14 @@ Reply with ONLY the commit message line.\n\n\
                             }
                             continue;
                         }
+                        // `ApplyOutcome` is `#[non_exhaustive]`. Treat an outcome this
+                        // build does not recognise as terminal for the turn rather than
+                        // looping: an unknown outcome must not drive another model call.
+                        _ => {
+                            outcome_err = None;
+                            self.maybe_note_workspace_changed_from_recent_tools();
+                            break 'turns;
+                        }
                     }
                 }
                 Err(e) => {

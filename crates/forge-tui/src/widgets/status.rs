@@ -119,6 +119,9 @@ impl TurnLifecycle {
                     Self::Ready
                 }
             }
+            // `SessionStatus` is `#[non_exhaustive]`. Never render an unrecognised status as
+            // Ready or Working — that would imply a live runtime we cannot confirm.
+            _ => Self::Interrupted,
         }
     }
 

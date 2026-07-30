@@ -38,6 +38,7 @@ impl SearchSecrets {
 }
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum SearchError {
     #[error("missing API key")]
     MissingKey,
