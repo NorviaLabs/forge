@@ -2,7 +2,6 @@
 
 use crate::theme;
 use crate::user_message_gutter;
-use forge_config::Theme;
 use forge_core::{AgentSession, TurnEvent, TURN_FAILED_MARKER};
 use forge_syntax::highlight_to_lines;
 use forge_types::{Message, MessageRole, SessionStatus, ToolCall};
@@ -640,7 +639,7 @@ impl ConversationModel {
                     lines.extend(user_message_gutter::render_user_message_lines(
                         &p.text,
                         width,
-                        Theme::default(),
+                        crate::theme::active(),
                         false,
                         wrap,
                     ));
@@ -2677,7 +2676,7 @@ mod tests {
             SessionStatus::Running,
             ConversationViewOpts::default(),
         );
-        let glyph = crate::user_message_gutter::gutter_glyph(forge_config::Theme::default(), false);
+        let glyph = crate::user_message_gutter::gutter_glyph(crate::theme::active(), false);
         let rendered = m
             .lines()
             .iter()
