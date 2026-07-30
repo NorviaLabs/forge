@@ -41,7 +41,6 @@ pub const BORDER_MUTED: Color = Color::Rgb(53, 50, 47);
 pub const PANEL: Color = Color::Rgb(35, 33, 31);
 pub const PANEL_ALT: Color = Color::Rgb(44, 41, 38);
 pub const SELECTED_BG: Color = Color::Rgb(42, 58, 60);
-pub const HISTORY_BG: Color = SELECTED_BG;
 pub const USER_BG: Color = CANVAS_DEEP;
 pub const RESPONSE_BG: Color = CANVAS;
 pub const DIFF_ADD_BG: Color = Color::Rgb(41, 75, 55);
@@ -195,10 +194,6 @@ pub fn user_message_gutter_style() -> Style {
 
 pub fn user_message_gutter_style_for(theme: Theme) -> Style {
     user_message().fg(palette(theme).user_message_gutter)
-}
-
-pub fn user_gutter_active_style() -> Style {
-    user_gutter_active_style_for(active())
 }
 
 pub fn user_gutter_active_style_for(theme: Theme) -> Style {
@@ -438,8 +433,6 @@ pub fn palette(theme: Theme) -> Palette {
 mod tests {
     use super::*;
     use forge_config::Theme;
-    use ratatui::buffer::Buffer;
-    use ratatui::layout::Rect;
 
     #[test]
     fn tokens_are_distinct() {
