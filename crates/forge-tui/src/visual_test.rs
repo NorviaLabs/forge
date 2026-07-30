@@ -351,14 +351,20 @@ mod tests {
         term.draw(|f| app.draw(f)).unwrap();
         let text = buffer_text(&term);
         assert!(
-            text.contains("in 0 · out 0 · total 0"),
-            "missing footer usage:\n{text}"
+            !text.contains("in 0 · out 0 · total 0"),
+            "default shell should not duplicate footer usage:\n{text}"
         );
-        assert!(text.contains("Runtime"), "missing inspector:\n{text}");
-        assert!(text.contains("Recent"), "missing recent activity:\n{text}");
         assert!(
-            text.contains("model started"),
-            "missing activity item:\n{text}"
+            !text.contains("Runtime"),
+            "default shell should not show inspector:\n{text}"
+        );
+        assert!(
+            !text.contains("Recent"),
+            "default shell should not show activity panel:\n{text}"
+        );
+        assert!(
+            !text.contains("model started"),
+            "background activity should remain off default chrome:\n{text}"
         );
     }
 
@@ -370,9 +376,13 @@ mod tests {
         term.draw(|f| app.draw(f)).unwrap();
         let text = buffer_text(&term);
 
-        for expected in ["Describe a task…", "Context", "Loaded AGENTS.md"] {
+        for expected in ["Describe a task…", "Loaded AGENTS.md"] {
             assert!(text.contains(expected), "missing {expected:?}:\n{text}");
         }
+        assert!(
+            !text.contains("Context"),
+            "default shell should not show inspector context:\n{text}"
+        );
         assert!(text.contains("forge 0.8.0"), "missing version:\n{text}");
         assert!(
             text.contains("██████"),
