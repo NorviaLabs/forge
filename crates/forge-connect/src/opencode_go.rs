@@ -32,18 +32,18 @@ pub fn opencode_go_profile() -> ConnectProfile {
 
 /// Live-check an OpenCode Go API key against `GET {base}/models`.
 /// Returns Ok(()) on 200; never includes the key in error messages.
-pub fn verify_api_key(api_key: &str, base_url: &str) -> Result<(), String> {
+pub fn verify_api_key(api_key: &str, base_url: &str) -> Result<(), crate::verify::VerifyError> {
+    use crate::verify::VerifyError;
     let key = api_key.trim();
     if key.is_empty() {
-        return Err("API key is empty".into());
+        return Err(VerifyError::EmptyKey);
     }
     // Real Zen/Go keys are long; reject obvious placeholders without a network call.
     if key.len() < 16 {
-        return Err(format!(
-            "API key looks too short ({n} chars). Get a key from https://opencode.ai/auth \
-(OpenCode Zen → subscribe to Go → copy API key).",
-            n = key.len()
-        ));
+        return Err(VerifyError::KeyTooShort {
+            len: key.len(),
+            guidance: "Get a key from https://opencode.ai/auth (OpenCode Zen → subscribe to Go → copy API key).",
+        });
     }
     let base = base_url.trim().trim_end_matches('/');
     let url = format!("{base}/models");
@@ -55,26 +55,33 @@ pub fn verify_api_key(api_key: &str, base_url: &str) -> Result<(), String> {
         )
         .call()
         .map_err(|e| match e {
-            ureq::Error::Status(code, _) => format!(
-                "OpenCode Go rejected the API key (HTTP {code}). \
-Sign in at https://opencode.ai/auth, copy a fresh key, and reconnect."
-            ),
-            other => format!(
-                "Could not reach OpenCode Go to verify key ({other}). \
+            ureq::Error::Status(status, _) => VerifyError::Rejected {
+                provider: "OpenCode Go",
+                status,
+                guidance: "Sign in at https://opencode.ai/auth, copy a fresh key, and reconnect.",
+            },
+            other => VerifyError::Unreachable {
+                provider: "OpenCode Go",
+                message: format!(
+                    "Could not reach OpenCode Go to verify key ({other}). \
 Check network access to {base}."
-            ),
+                ),
+            },
         })?;
     let status = resp.status();
     if (200..300).contains(&status) {
         Ok(())
     } else if status == 401 || status == 403 {
-        Err("OpenCode Go rejected the API key (unauthorized). \
-Get a key from https://opencode.ai/auth and use `/connect opencode_go --key …` in the TUI."
-            .into())
+        Err(VerifyError::Unauthorized {
+            provider: "OpenCode Go",
+            guidance: "Get a key from https://opencode.ai/auth and use `/connect opencode_go --key …` in the TUI.",
+        })
     } else {
-        Err(format!(
-            "OpenCode Go key verification failed (HTTP {status}). Try again or check account status."
-        ))
+        Err(VerifyError::Status {
+            provider: "OpenCode Go",
+            status,
+            guidance: Some("Try again or check account status."),
+        })
     }
 }
 
@@ -183,13 +190,17 @@ mod tests {
 
     #[test]
     fn short_key_rejected_without_network() {
-        let err = verify_api_key("short", DEFAULT_BASE_URL).unwrap_err();
+        let err = verify_api_key("short", DEFAULT_BASE_URL)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("too short"), "{err}");
     }
 
     #[test]
     fn empty_key_rejected_without_network() {
-        let err = verify_api_key("   ", DEFAULT_BASE_URL).unwrap_err();
+        let err = verify_api_key("   ", DEFAULT_BASE_URL)
+            .unwrap_err()
+            .to_string();
         assert_eq!(err, "API key is empty");
     }
 
@@ -211,11 +222,15 @@ mod tests {
     fn verify_accepts_success_and_reports_failures_without_secret() {
         assert!(verify_api_key("go-valid-key-for-tests", &mock_server(200)).is_ok());
 
-        let err = verify_api_key("go-valid-key-for-tests", &mock_server(403)).unwrap_err();
+        let err = verify_api_key("go-valid-key-for-tests", &mock_server(403))
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("HTTP 403"), "{err}");
         assert!(!err.contains("go-valid"));
 
-        let err = verify_api_key("go-valid-key-for-tests", &mock_server(503)).unwrap_err();
+        let err = verify_api_key("go-valid-key-for-tests", &mock_server(503))
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("HTTP 503"), "{err}");
         assert!(!err.contains("go-valid"));
     }
