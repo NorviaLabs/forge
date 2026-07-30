@@ -762,13 +762,20 @@ mod tests {
     use crate::auth::AuthMode;
     use crate::profile::ConnectProfile;
     use crate::registry::ConnectRegistry;
-    use std::sync::{Mutex, OnceLock};
     use tempfile::tempdir;
 
-    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
-    }
+    use crate::test_env::EnvGuard;
+
+    /// Every variable these tests read or write. Named in one place so the guard
+    /// clears and restores the whole set, and so the lock covers the same keys
+    /// that `connect_api_key` consults.
+    const OAUTH_ENV: &[&str] = &[
+        "FORGE_CONNECT_OAUTH_FIXTURE",
+        "FORGE_CONNECT_OAUTH_STUB",
+        "FORGE_CONNECT_SKIP_VERIFY",
+        "FORGE_XAI_OAUTH_ACCESS_TOKEN",
+        "FORGE_XAI_OAUTH_REFRESH_TOKEN",
+    ];
 
     fn api_key_registry() -> ConnectRegistry {
         let mut r = ConnectRegistry::new();
@@ -1124,14 +1131,13 @@ mod tests {
 
     #[test]
     fn oauth_pending_without_fixture() {
-        let _guard = env_lock();
+        // The guard clears every key in OAUTH_ENV, so fixture connect is already
+        // off; only the stub flag needs setting.
+        let guard = EnvGuard::new(OAUTH_ENV);
+        guard.set("FORGE_CONNECT_OAUTH_STUB", "1");
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
         let reg = oauth_registry();
-        // Ensure fixture connect off; use stub device start (no network requirement).
-        std::env::remove_var("FORGE_CONNECT_OAUTH_FIXTURE");
-        std::env::remove_var("FORGE_XAI_OAUTH_ACCESS_TOKEN");
-        std::env::set_var("FORGE_CONNECT_OAUTH_STUB", "1");
         let mut svc = ConnectService {
             registry: &reg,
             store: &store,
@@ -1139,17 +1145,16 @@ mod tests {
             active_model: None,
         };
         let err = svc.connect("xai", None, false).unwrap_err();
-        std::env::remove_var("FORGE_CONNECT_OAUTH_STUB");
         assert!(matches!(err, ConnectError::OauthDevicePending(_)));
     }
 
     #[test]
     fn start_poll_and_complete_oauth_stub_paths_are_non_networked() {
-        let _guard = env_lock();
+        let guard = EnvGuard::new(OAUTH_ENV);
+        guard.set("FORGE_CONNECT_OAUTH_STUB", "1");
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
         let reg = oauth_registry();
-        std::env::set_var("FORGE_CONNECT_OAUTH_STUB", "1");
         let mut svc = ConnectService {
             registry: &reg,
             store: &store,
@@ -1157,7 +1162,6 @@ mod tests {
             active_model: None,
         };
         let pending = svc.start_oauth("xai").unwrap();
-        std::env::remove_var("FORGE_CONNECT_OAUTH_STUB");
         assert_eq!(pending.profile_id, "xai");
         assert!(pending.operator_instructions().contains("xAI"));
         assert!(svc.poll_oauth_once(&pending).is_err());
@@ -1173,10 +1177,7 @@ mod tests {
 
     #[test]
     fn connect_start_oauth_handles_non_oauth_stored_tokens_and_fixture_env() {
-        let _guard = env_lock();
-        std::env::remove_var("FORGE_CONNECT_OAUTH_FIXTURE");
-        std::env::remove_var("FORGE_XAI_OAUTH_ACCESS_TOKEN");
-        std::env::remove_var("FORGE_XAI_OAUTH_REFRESH_TOKEN");
+        let guard = EnvGuard::new(OAUTH_ENV);
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
         let api_reg = api_key_registry();
@@ -1211,9 +1212,8 @@ mod tests {
         assert!(oauth_svc.connect_start_oauth("xai").unwrap().is_ok());
 
         store.clear("xai").unwrap();
-        std::env::set_var("FORGE_CONNECT_OAUTH_FIXTURE", "1");
+        guard.set("FORGE_CONNECT_OAUTH_FIXTURE", "1");
         let fixture = oauth_svc.connect_start_oauth("xai").unwrap();
-        std::env::remove_var("FORGE_CONNECT_OAUTH_FIXTURE");
         assert!(fixture.is_ok());
         assert_eq!(
             store.get_oauth("xai").unwrap().unwrap().access_token,
