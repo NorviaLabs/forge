@@ -79,12 +79,12 @@ impl FileIdentity {
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
-            return Some(Self {
+            Some(Self {
                 len: meta.len(),
                 modified: meta.modified().ok(),
                 dev: meta.dev(),
                 ino: meta.ino(),
-            });
+            })
         }
         #[cfg(not(unix))]
         {
@@ -757,7 +757,7 @@ fn clip_spans(spans: &[Span<'static>], skip: usize, width: usize) -> Vec<Span<'s
             skipped += chars.len();
             continue;
         }
-        let start_in_span = if skipped < skip { skip - skipped } else { 0 };
+        let start_in_span = skip.saturating_sub(skipped);
         let available = chars.len() - start_in_span;
         let take = available.min(width - taken);
         if take > 0 {
@@ -821,7 +821,7 @@ fn apply_search_styles(
     let mut current_text = String::new();
     let mut current_style: Option<Style> = None;
     for (ch, style) in chars {
-        if current_style.map_or(true, |s| s != style) {
+        if current_style != Some(style) {
             if let Some(s) = current_style {
                 out.push(Span::styled(current_text, s));
             }

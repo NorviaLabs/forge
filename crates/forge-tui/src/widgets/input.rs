@@ -191,8 +191,7 @@ impl InputModel {
     /// Wrapped visual row count for a known composer width.
     pub fn visual_lines_for_width(&self, content_width: usize) -> u16 {
         crate::composer_layout::visual_row_count(&self.text, content_width.max(1))
-            .min(MAX_VISIBLE_ROWS)
-            .max(1) as u16
+            .clamp(1, MAX_VISIBLE_ROWS) as u16
     }
 
     /// Copyable buffer text — excludes decorative gutter presentation.
@@ -318,6 +317,7 @@ fn render_content_spans(
     spans
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_input_lines(
     model: &InputModel,
     rows: &[ComposerVisualRow],
