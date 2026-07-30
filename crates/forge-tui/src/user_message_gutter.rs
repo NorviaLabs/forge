@@ -10,6 +10,15 @@ const FALLBACK_GLYPH_PIPE: &str = "│";
 const FALLBACK_GLYPH_ASCII: &str = "|";
 pub const GUTTER_GAP: &str = " ";
 
+/// Which user-authored gutter role to render.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GutterRole {
+    /// Submitted transcript user messages (Prompt 12O).
+    Submitted,
+    /// Active composer input (Prompt 12P).
+    Active,
+}
+
 /// Decorative gutter glyph for the active theme.
 pub fn gutter_glyph(theme: Theme, force_fallback: bool) -> &'static str {
     if force_fallback {
@@ -46,8 +55,16 @@ pub fn gutter_prefix_width(glyph: &str) -> usize {
 }
 
 /// Style for the decorative gutter marker.
-pub fn gutter_style_for(theme: Theme) -> Style {
-    theme::user_message_gutter_style_for(theme)
+pub fn gutter_style_for(theme: Theme, role: GutterRole) -> Style {
+    match role {
+        GutterRole::Submitted => theme::user_message_gutter_style_for(theme),
+        GutterRole::Active => theme::user_gutter_active_style_for(theme),
+    }
+}
+
+/// Style for submitted user-message gutters.
+pub fn submitted_gutter_style_for(theme: Theme) -> Style {
+    gutter_style_for(theme, GutterRole::Submitted)
 }
 
 /// Build wrapped visual rows for a submitted user message.
@@ -62,7 +79,7 @@ pub fn render_user_message_lines(
     let prefix_width = gutter_prefix_width(glyph);
     let content_width = available_width.saturating_sub(prefix_width).max(1);
     let parts = wrap(text, content_width);
-    let gutter_style = gutter_style_for(theme);
+    let gutter_style = gutter_style_for(theme, GutterRole::Submitted);
     let text_style = theme::user_message_style();
     let block_style = theme::user_message();
 
