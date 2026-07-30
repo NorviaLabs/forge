@@ -907,28 +907,6 @@ impl AgentSession {
                 trace_id: None,
             });
             match decision {
-                PolicyDecision::Deny => {
-                    let output = ToolOutput {
-                        content: format!("denied by ACL: {}", call.name),
-                        is_error: true,
-                    };
-                    self.journal
-                        .append_tool_intent(self.session_id, call)
-                        .await?;
-                    self.journal
-                        .append_tool_result(self.session_id, call, &output)
-                        .await?;
-                    self.messages.push(Message {
-                        role: MessageRole::Tool,
-                        content: output.content,
-                        tool_call_id: Some(call.id.clone()),
-                        name: Some(call.name.clone()),
-                        thinking: None,
-                        thinking_duration_secs: None,
-                        tool_calls: vec![],
-                    });
-                    return Ok(None);
-                }
                 PolicyDecision::Hitl => {
                     let payload = HitlPayload {
                         call_id: call.id.clone(),
@@ -956,6 +934,32 @@ impl AgentSession {
                     }));
                 }
                 PolicyDecision::Allow => {}
+                // `PolicyDecision` is `#[non_exhaustive]`, so the denial path is the
+                // wildcard rather than a named `Deny`: this gate must fail CLOSED. An
+                // explicit deny and a decision this build does not recognise are both
+                // refused here, so neither can fall through to the execution below.
+                _ => {
+                    let output = ToolOutput {
+                        content: format!("denied by ACL: {}", call.name),
+                        is_error: true,
+                    };
+                    self.journal
+                        .append_tool_intent(self.session_id, call)
+                        .await?;
+                    self.journal
+                        .append_tool_result(self.session_id, call, &output)
+                        .await?;
+                    self.messages.push(Message {
+                        role: MessageRole::Tool,
+                        content: output.content,
+                        tool_call_id: Some(call.id.clone()),
+                        name: Some(call.name.clone()),
+                        thinking: None,
+                        thinking_duration_secs: None,
+                        tool_calls: vec![],
+                    });
+                    return Ok(None);
+                }
             }
         }
 
@@ -1063,15 +1067,19 @@ impl AgentSession {
         actor: &str,
     ) -> Result<(), LoopError> {
         let payload = self.pending_hitl.clone().ok_or(LoopError::NoPendingHitl)?;
-        let dec = match decision {
-            HitlDecision::Approve => "approve",
-            HitlDecision::Deny => "deny",
+        // `HitlDecision` is `#[non_exhaustive]`. Derive approval explicitly rather than
+        // testing `== Deny` below: a decision this build does not recognise must never
+        // be read as approval and reach execution. Fail closed.
+        let (dec, approved) = match decision {
+            HitlDecision::Approve => ("approve", true),
+            HitlDecision::Deny => ("deny", false),
+            _ => ("deny", false),
         };
         self.journal
             .append_hitl_resume(self.session_id, dec, actor)
             .await?;
 
-        if decision == HitlDecision::Deny {
+        if !approved {
             let output = ToolOutput {
                 content: format!("HITL denied by {actor}"),
                 is_error: true,
@@ -1117,7 +1125,13 @@ impl AgentSession {
             .unwrap_or(SideEffectClass::Meta);
         if self.enable_gov {
             let d = self.governance.authorize(&call, class);
-            if d == PolicyDecision::Deny {
+            // `PolicyDecision` is `#[non_exhaustive]`. Testing `== Deny` let every other
+            // verdict through, so an unrecognised one would execute. Decide explicitly:
+            // `Hitl` still proceeds because the operator already approved this call and
+            // re-requiring approval here would stall the turn; anything unrecognised is
+            // refused. Behaviour is unchanged for Allow, Hitl and Deny.
+            let refuse = !matches!(d, PolicyDecision::Allow | PolicyDecision::Hitl);
+            if refuse {
                 self.pending_hitl = None;
                 self.status = SessionStatus::Running;
                 return Err(LoopError::Other(
@@ -1623,6 +1637,108 @@ mod tests {
         let names = s.list_tools();
         assert!(!names.iter().any(|n| n == "bash"));
         assert!(names.iter().any(|n| n == "read_file"));
+    }
+
+    /// The ACL denial arm in `run_one_tool` is the trailing wildcard, so this pins the
+    /// behaviour: a denied tool is refused at execution time, not merely hidden from the
+    /// catalogue. `acl_hides_denied_tools` covers listing; this covers execution.
+    #[tokio::test]
+    async fn acl_denied_tool_call_is_refused_at_execution_time() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("secret.txt"), "SENTINEL-CONTENT").unwrap();
+        let model = Arc::new(MockModelClient::script(vec![
+            ModelResponse {
+                text: "".into(),
+                tool_calls: vec![ToolCall {
+                    id: "1".into(),
+                    name: "read_file".into(),
+                    arguments: json!({"path": "secret.txt"}),
+                }],
+                usage: None,
+                thinking: None,
+            },
+            ModelResponse {
+                text: "done".into(),
+                tool_calls: vec![],
+                usage: None,
+                thinking: None,
+            },
+        ]));
+        let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        let mut acl = AclPolicy::allow_all();
+        acl.deny("read_file".into());
+        s.set_governance(Governance::default().with_acl(acl));
+        s.run_user_message("read it").await.unwrap();
+
+        let tool_contents: Vec<&str> = s
+            .messages
+            .iter()
+            .filter(|m| m.role == MessageRole::Tool)
+            .map(|m| m.content.as_str())
+            .collect();
+        assert!(
+            tool_contents.iter().any(|c| c.contains("denied by ACL")),
+            "expected an ACL denial result, got {tool_contents:?}"
+        );
+        assert!(
+            !tool_contents.iter().any(|c| c.contains("SENTINEL-CONTENT")),
+            "a denied tool must never execute"
+        );
+    }
+
+    /// `resolve_hitl` derives approval explicitly rather than testing `== Deny`, so this
+    /// pins that an approval does **not** take the denial path. Together with
+    /// `hitl_pauses_on_git_push` (which covers deny) both branches are now exercised.
+    #[tokio::test]
+    async fn hitl_approve_does_not_take_the_denial_path() {
+        let dir = tempdir().unwrap();
+        let model = Arc::new(MockModelClient::script(vec![
+            ModelResponse {
+                text: "".into(),
+                tool_calls: vec![ToolCall {
+                    id: "1".into(),
+                    name: "bash".into(),
+                    // `bash` is in the default `hitl_tools`, and since #26 that requires
+                    // approval for *every* command, so a benign one is enough to reach
+                    // the gate. No need to shell out to git.
+                    arguments: json!({"command": "echo ok"}),
+                }],
+                usage: None,
+                thinking: None,
+            },
+            ModelResponse {
+                text: "done".into(),
+                tool_calls: vec![],
+                usage: None,
+                thinking: None,
+            },
+        ]));
+        let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        s.run_user_message("run it").await.unwrap();
+        assert_eq!(s.status, SessionStatus::AwaitingHitl);
+
+        s.resolve_hitl(HitlDecision::Approve, "test").await.unwrap();
+        assert_eq!(s.status, SessionStatus::Running);
+        assert!(s.pending_hitl.is_none());
+
+        let tool_contents: Vec<&str> = s
+            .messages
+            .iter()
+            .filter(|m| m.role == MessageRole::Tool)
+            .map(|m| m.content.as_str())
+            .collect();
+        assert!(
+            !tool_contents.iter().any(|c| c.contains("HITL denied")),
+            "approval must not be routed through the denial path, got {tool_contents:?}"
+        );
+        assert!(
+            !tool_contents.is_empty(),
+            "approval should reach execution and record a tool result"
+        );
     }
 
     #[tokio::test]

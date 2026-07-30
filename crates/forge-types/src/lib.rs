@@ -238,6 +238,7 @@ impl ProgressDocument {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum PolicyDecision {
     Allow,
     Deny,
@@ -277,6 +278,7 @@ impl Principal {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum HitlDecision {
     Approve,
     Deny,
