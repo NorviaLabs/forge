@@ -195,21 +195,30 @@ pub fn clear_highlight_cache() {
     guard.evictions = 0;
 }
 
+/// Serialises every test in this crate that touches the process-global cache.
+///
+/// The tests below clear the cache and then assert on absolute counters, so they
+/// must not interleave — with each other, or with any other test that reaches
+/// `cached_or_compute`. `highlight::highlight_to_lines` routes through this
+/// cache, so its tests must take this guard too; that is why the guard lives
+/// here at module scope rather than inside `mod tests`, where it was invisible
+/// to them.
+///
+/// Mirrors the repo's established pattern for process-global state (`lock_env`
+/// in `editor.rs`, `ScopedEnvGuard` and `lock_highlight_cache` in `app.rs`).
+/// Poisoning is recovered rather than propagated so a single failing test does
+/// not cascade into the rest.
+#[cfg(test)]
+pub(crate) fn lock_cache() -> MutexGuard<'static, ()> {
+    static GUARD: Mutex<()> = Mutex::new(());
+    GUARD
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The cache is process-global, so these tests must not interleave — each one
-    /// clears it and then asserts on absolute counters. This mirrors the repo's
-    /// established pattern for process-global state (`lock_env` in `editor.rs`,
-    /// `ScopedEnvGuard` in `app.rs`). Poisoning is recovered rather than
-    /// propagated so a single failing test does not cascade into the rest.
-    fn lock_cache() -> MutexGuard<'static, ()> {
-        static GUARD: Mutex<()> = Mutex::new(());
-        GUARD
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
 
     fn lines_of(text: &str) -> Lines {
         vec![vec![(text.to_string(), (1, 2, 3), false, false)]]
