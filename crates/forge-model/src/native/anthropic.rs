@@ -426,6 +426,11 @@ mod tests {
         config.model.api_key = Some("anthropic-secret".into());
         let client = NativeModelClient::from_config(&config).unwrap();
         let _ = client;
+        // Credential resolution consults injected values and the ambient
+        // environment before the configured key, so inject explicitly here.
+        // Without this the assertion below fails for any developer who has
+        // ANTHROPIC_API_KEY exported, because the ambient key is sent instead.
+        client.apply_provider_env(&[("ANTHROPIC_API_KEY".into(), "anthropic-secret".into())]);
         let (tx, rx) = std::sync::mpsc::channel();
         let request = ModelRequest {
             model: "anthropic/claude-sonnet-4-6".into(),
@@ -472,6 +477,10 @@ mod tests {
     #[tokio::test]
     async fn handles_missing_key_http_error_and_stream_error() {
         let client = NativeModelClient::from_config(&Config::default()).unwrap();
+        // `injected_or_env` discards empty values, so injecting an empty key
+        // masks an ambient ANTHROPIC_API_KEY and keeps the MissingApiKey
+        // assertion below deterministic.
+        client.apply_provider_env(&[("ANTHROPIC_API_KEY".into(), String::new())]);
         let request = ModelRequest {
             model: "anthropic/claude".into(),
             reasoning_effort: None,
@@ -489,6 +498,7 @@ mod tests {
         config.model.base_url = Some(format!("{base_url}/v1"));
         config.model.api_key = Some("bad".into());
         let client = NativeModelClient::from_config(&config).unwrap();
+        client.apply_provider_env(&[("ANTHROPIC_API_KEY".into(), "bad".into())]);
         assert!(client
             .complete(request)
             .await
