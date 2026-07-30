@@ -46,6 +46,7 @@ fn fff_grep_max() -> u32 {
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[non_exhaustive]
 pub enum FffModeArg {
     #[serde(rename = "plain")]
     Plain,
