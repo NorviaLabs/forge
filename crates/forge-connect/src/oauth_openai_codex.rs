@@ -238,10 +238,7 @@ mod tests {
                 .unwrap();
             let mut request = Vec::new();
             let mut buf = [0_u8; 1024];
-            loop {
-                let Ok(n) = stream.read(&mut buf) else {
-                    break;
-                };
+            while let Ok(n) = stream.read(&mut buf) {
                 if n == 0 {
                     break;
                 }
@@ -267,7 +264,7 @@ mod tests {
             let reason = if status < 400 { "OK" } else { "Bad Request" };
             let response = format!(
                 "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n{body}",
-                body.as_bytes().len()
+                body.len()
             );
             stream.write_all(response.as_bytes()).unwrap();
             stream.flush().unwrap();
