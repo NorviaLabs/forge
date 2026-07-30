@@ -813,7 +813,6 @@ args = ["hi"]
 mouse_capture = false
 theme = "light"
 "#,
-
             ws = dir.path().display()
         )
         .unwrap();
