@@ -442,4 +442,210 @@ mod tests {
         // A file not present in the status map is considered clean.
         assert!(!map.contains_key(Path::new("clean.txt")));
     }
+
+    #[test]
+    fn every_kind_has_a_distinct_marker() {
+        use GitStatusKind::*;
+        let pairs = [
+            (Modified, "M"),
+            (Added, "A"),
+            (Deleted, "D"),
+            (Untracked, "?"),
+            (Ignored, "!"),
+            (Conflicted, "U"),
+        ];
+        for (kind, expected) in pairs {
+            assert_eq!(kind.marker(), expected, "{kind:?} has the wrong marker");
+        }
+        let distinct: std::collections::HashSet<&str> =
+            pairs.iter().map(|(kind, _)| kind.marker()).collect();
+        assert_eq!(distinct.len(), pairs.len(), "markers must be unambiguous");
+    }
+
+    #[test]
+    fn style_follows_theme_semantics() {
+        use GitStatusKind::*;
+        assert_eq!(Modified.style(), crate::theme::info());
+        assert_eq!(Added.style(), crate::theme::ok());
+        assert_eq!(Deleted.style(), crate::theme::danger());
+        assert_eq!(Untracked.style(), crate::theme::muted());
+        assert_eq!(Ignored.style(), crate::theme::dim());
+        assert_eq!(Conflicted.style(), crate::theme::danger());
+    }
+
+    #[test]
+    fn severity_ranks_conflicts_above_adds_above_edits() {
+        use GitStatusKind::*;
+        assert!(Conflicted.is_more_severe(Added));
+        assert!(Added.is_more_severe(Modified));
+        assert!(Modified.is_more_severe(Untracked));
+        assert!(!Added.is_more_severe(Conflicted));
+        // Modified and Deleted share a rank, as do Untracked and Ignored.
+        assert!(!Modified.is_more_severe(Deleted));
+        assert!(!Deleted.is_more_severe(Modified));
+        assert!(!Untracked.is_more_severe(Ignored));
+    }
+
+    #[test]
+    fn poll_without_a_pending_refresh_is_a_noop() {
+        let mut cache = GitStatusCache::new();
+        cache.poll();
+        assert!(!cache.loading);
+        assert!(cache.error.is_none());
+        assert!(cache.status.is_empty());
+    }
+
+    #[test]
+    fn poll_records_a_refresh_error() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(Err("git exploded".to_string())).unwrap();
+        let mut cache = GitStatusCache::new();
+        cache.loading = true;
+        cache.pending = Some(rx);
+
+        cache.poll();
+
+        assert!(!cache.loading);
+        assert_eq!(cache.error.as_deref(), Some("git exploded"));
+        assert!(cache.status.is_empty());
+    }
+
+    #[test]
+    fn poll_reports_a_dropped_sender() {
+        let (tx, rx) =
+            std::sync::mpsc::channel::<Result<HashMap<PathBuf, GitStatusKind>, String>>();
+        drop(tx);
+        let mut cache = GitStatusCache::new();
+        cache.loading = true;
+        cache.pending = Some(rx);
+
+        cache.poll();
+
+        assert!(!cache.loading);
+        assert_eq!(
+            cache.error.as_deref(),
+            Some("Git status refresh disconnected")
+        );
+    }
+
+    #[test]
+    fn poll_retains_the_receiver_while_a_refresh_is_still_running() {
+        let (tx, rx) =
+            std::sync::mpsc::channel::<Result<HashMap<PathBuf, GitStatusKind>, String>>();
+        let mut cache = GitStatusCache::new();
+        cache.loading = true;
+        cache.pending = Some(rx);
+
+        // Nothing sent yet: the refresh stays in flight and the receiver is kept.
+        cache.poll();
+        assert!(cache.loading);
+        assert!(cache.pending.is_some());
+
+        let mut map = HashMap::new();
+        map.insert(PathBuf::from("late.txt"), GitStatusKind::Added);
+        tx.send(Ok(map)).unwrap();
+        cache.poll();
+
+        assert!(!cache.loading);
+        assert_eq!(cache.get(Path::new("late.txt")), Some(GitStatusKind::Added));
+    }
+
+    #[test]
+    fn revision_advances_once_per_refresh() {
+        let root = tempfile::tempdir().unwrap();
+        let mut cache = GitStatusCache::new();
+        assert_eq!(cache.revision(), 0);
+
+        cache.start_refresh(root.path().to_path_buf());
+        assert_eq!(cache.revision(), 1);
+        while cache.loading {
+            cache.poll();
+        }
+
+        cache.start_refresh(root.path().to_path_buf());
+        assert_eq!(cache.revision(), 2);
+        while cache.loading {
+            cache.poll();
+        }
+    }
+
+    #[test]
+    fn changed_files_are_sorted_and_reported_as_unstaged() {
+        let mut cache = GitStatusCache::new();
+        cache
+            .status
+            .insert(PathBuf::from("z.txt"), GitStatusKind::Added);
+        cache
+            .status
+            .insert(PathBuf::from("a.txt"), GitStatusKind::Modified);
+
+        let files = cache.changed_files();
+
+        assert_eq!(
+            files.iter().map(|f| f.path.clone()).collect::<Vec<_>>(),
+            vec![PathBuf::from("a.txt"), PathBuf::from("z.txt")]
+        );
+        assert_eq!(files[0].unstaged, Some(GitStatusKind::Modified));
+        assert!(files.iter().all(|f| f.staged.is_none()));
+    }
+
+    #[test]
+    fn classify_status_rejects_codes_that_are_not_two_chars() {
+        assert_eq!(classify_status(""), None);
+        assert_eq!(classify_status("M"), None);
+        assert_eq!(classify_status("MMM"), None);
+    }
+
+    #[test]
+    fn classify_status_maps_remaining_codes() {
+        assert_eq!(classify_status("D "), Some(GitStatusKind::Deleted));
+        assert_eq!(classify_status(" D"), Some(GitStatusKind::Deleted));
+        assert_eq!(classify_status("T "), Some(GitStatusKind::Modified));
+        assert_eq!(classify_status("C "), Some(GitStatusKind::Modified));
+        assert_eq!(classify_status("R "), Some(GitStatusKind::Modified));
+        assert_eq!(classify_status("DD"), Some(GitStatusKind::Conflicted));
+        assert_eq!(classify_status("AU"), Some(GitStatusKind::Conflicted));
+        assert_eq!(classify_status("UD"), Some(GitStatusKind::Conflicted));
+        // A clean entry and an unrecognised pair both classify as nothing.
+        assert_eq!(classify_status("  "), None);
+        assert_eq!(classify_status("XY"), None);
+    }
+
+    #[test]
+    fn parse_null_terminated_skips_malformed_records() {
+        // "M" is below the 3-byte "XY path" minimum and "ZZ x.txt" carries an
+        // unrecognised status pair. Both are skipped without failing the parse.
+        let map = parse_null_terminated(b"M\0ZZ x.txt\0M  good.txt\0").unwrap();
+        assert_eq!(map.len(), 1);
+        assert_eq!(
+            map.get(Path::new("good.txt")),
+            Some(&GitStatusKind::Modified)
+        );
+    }
+
+    #[test]
+    fn duplicate_paths_keep_the_more_severe_status() {
+        // The severity comparison must win regardless of the order git reports in.
+        let escalating = parse_null_terminated(b"M  dup.txt\0A  dup.txt\0").unwrap();
+        assert_eq!(
+            escalating.get(Path::new("dup.txt")),
+            Some(&GitStatusKind::Added)
+        );
+        let descending = parse_null_terminated(b"A  dup.txt\0M  dup.txt\0").unwrap();
+        assert_eq!(
+            descending.get(Path::new("dup.txt")),
+            Some(&GitStatusKind::Added)
+        );
+    }
+
+    #[test]
+    fn truncated_rename_record_falls_back_to_the_original_path() {
+        // A rename record whose second (new path) entry never arrives must not
+        // panic, and should fall back to the path carried by the first record.
+        let map = parse_null_terminated(b"R  only.txt").unwrap();
+        assert_eq!(
+            map.get(Path::new("only.txt")),
+            Some(&GitStatusKind::Modified)
+        );
+    }
 }
