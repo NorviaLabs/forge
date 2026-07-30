@@ -484,4 +484,156 @@ impl TuiApp {
             self.source_viewer.update_search_query(&search_query);
         }
     }
+    pub(super) fn render_explorer_dialog(
+        &self,
+        dialog: &ExplorerDialog,
+        area: ratatui::layout::Rect,
+        buf: &mut ratatui::buffer::Buffer,
+    ) {
+        let r = centered_rect(64, 34, area);
+        crate::theme::fill(r, buf, crate::theme::panel());
+        let mut lines = Vec::new();
+        let (title, border) = match dialog {
+            ExplorerDialog::Name { action, .. } => (
+                match action {
+                    ExplorerNameAction::CreateFile => " New File ",
+                    ExplorerNameAction::CreateDirectory => " New Folder ",
+                    ExplorerNameAction::Rename => " Rename ",
+                },
+                theme::brand(),
+            ),
+            ExplorerDialog::ConfirmDelete { permanent, .. } if *permanent => {
+                (" Permanent Delete ", theme::danger())
+            }
+            ExplorerDialog::ConfirmDelete { .. } => (" Delete ", theme::warn()),
+            ExplorerDialog::ConfirmCreate { .. } => (" Confirm Create ", theme::warn()),
+            ExplorerDialog::ConfirmRename { .. } => (" Confirm Rename ", theme::warn()),
+        };
+        match dialog {
+            ExplorerDialog::Name {
+                action,
+                parent,
+                input,
+                error,
+                ..
+            } => {
+                let label = match action {
+                    ExplorerNameAction::CreateFile => "Enter one file name:",
+                    ExplorerNameAction::CreateDirectory => "Enter one folder name:",
+                    ExplorerNameAction::Rename => "Enter the new name:",
+                };
+                lines.push(Line::styled(label, theme::text()));
+                lines.push(Line::styled(
+                    format!(
+                        "Parent: {}",
+                        relative_display(self.session.workspace_root(), parent)
+                    ),
+                    theme::muted(),
+                ));
+                lines.push(Line::from(""));
+                lines.push(Line::styled(format!("> {input}"), theme::text()));
+                if let Some(error) = error {
+                    lines.push(Line::from(""));
+                    lines.push(Line::styled(error.clone(), theme::danger()));
+                }
+                lines.push(Line::from(""));
+                lines.push(Line::styled("Enter confirm · Esc cancel", theme::muted()));
+            }
+            ExplorerDialog::ConfirmCreate { action, path, .. } => {
+                let what = if *action == ExplorerNameAction::CreateDirectory {
+                    "folder"
+                } else {
+                    "file"
+                };
+                lines.push(Line::styled(
+                    format!(
+                        "Create {what} \"{}\"?",
+                        relative_display(self.session.workspace_root(), path)
+                    ),
+                    theme::text(),
+                ));
+                lines.push(Line::from(""));
+                lines.push(Line::styled("Enter/y confirm · Esc cancel", theme::muted()));
+            }
+            ExplorerDialog::ConfirmRename { source, path, .. } => {
+                lines.push(Line::styled(
+                    format!(
+                        "Rename \"{}\"?",
+                        relative_display(self.session.workspace_root(), source)
+                    ),
+                    theme::text(),
+                ));
+                lines.push(Line::styled(
+                    format!(
+                        "To \"{}\"",
+                        relative_display(self.session.workspace_root(), path)
+                    ),
+                    theme::text(),
+                ));
+                lines.push(Line::from(""));
+                lines.push(Line::styled("Enter/y confirm · Esc cancel", theme::muted()));
+            }
+            ExplorerDialog::ConfirmDelete {
+                name,
+                kind,
+                non_empty,
+                permanent,
+                error,
+                ..
+            } => {
+                if let Some(error) = error {
+                    lines.push(Line::styled(error.clone(), theme::danger()));
+                    lines.push(Line::from(""));
+                    lines.push(Line::styled(
+                        "Press p to choose explicit permanent delete · Esc cancel",
+                        theme::muted(),
+                    ));
+                } else if *permanent {
+                    lines.push(Line::styled(
+                        format!("Permanently delete \"{name}\"?"),
+                        theme::danger(),
+                    ));
+                    lines.push(Line::styled(
+                        "This cannot be undone by Forge.",
+                        theme::danger(),
+                    ));
+                    lines.push(Line::from(""));
+                    lines.push(Line::styled(
+                        "Press D to permanently delete · Esc cancel",
+                        theme::muted(),
+                    ));
+                } else {
+                    let copy = match (kind, non_empty) {
+                        (EntryKind::Directory, true) => {
+                            format!("Move folder \"{name}\" and its contents to Trash?")
+                        }
+                        (EntryKind::Directory, false) => {
+                            format!("Move folder \"{name}\" to Trash?")
+                        }
+                        _ => format!("Move \"{name}\" to Trash?"),
+                    };
+                    lines.push(Line::styled(copy, theme::text()));
+                    lines.push(Line::from(""));
+                    if *non_empty {
+                        lines.push(Line::styled(
+                            "Press D to confirm · Esc cancel",
+                            theme::muted(),
+                        ));
+                    } else {
+                        lines.push(Line::styled("Enter/y confirm · Esc cancel", theme::muted()));
+                    }
+                }
+            }
+        }
+        Paragraph::new(lines)
+            .wrap(ratatui::widgets::Wrap { trim: true })
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(border)
+                    .style(theme::panel())
+                    .title(Span::styled(title, border)),
+            )
+            .render(r, buf);
+    }
 }

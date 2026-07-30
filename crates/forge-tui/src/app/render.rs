@@ -493,4 +493,215 @@ impl TuiApp {
             self.register_overlay_hit_regions(area);
         }
     }
+
+    fn render_diff_workspace(
+        &self,
+        area: ratatui::layout::Rect,
+        buf: &mut ratatui::buffer::Buffer,
+    ) {
+        let gs = &self.file_explorer.git_status;
+        if gs.loading && !self.diff_snapshot.stale {
+            Paragraph::new("Loading changes…")
+                .style(theme::muted())
+                .alignment(ratatui::layout::Alignment::Center)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(theme::muted())
+                        .style(theme::panel()),
+                )
+                .render(area, buf);
+            return;
+        }
+        if gs.error.is_some() && !self.diff_snapshot.stale {
+            Paragraph::new("Changes unavailable\n\nGit status could not be read.\nThe rest of Forge remains usable.")
+                .style(theme::muted())
+                .alignment(ratatui::layout::Alignment::Center)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(theme::muted())
+                        .style(theme::panel()),
+                )
+                .render(area, buf);
+            return;
+        }
+        if gs.status.is_empty() && !self.diff_snapshot.stale {
+            Paragraph::new("No changes\n\nThe working tree is clean.")
+                .style(theme::muted())
+                .alignment(ratatui::layout::Alignment::Center)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(theme::muted())
+                        .style(theme::panel()),
+                )
+                .render(area, buf);
+            return;
+        }
+
+        let changed = gs.changed_files();
+        let review_paths = if self.diff_snapshot.stale && !self.diff_snapshot.paths.is_empty() {
+            self.diff_snapshot.paths.clone()
+        } else {
+            changed.iter().map(|f| f.path.clone()).collect()
+        };
+        let selected = self.diff_selected.min(review_paths.len().saturating_sub(1));
+        let selected_path = review_paths.get(selected);
+
+        let mut lines = vec![Line::from(Span::styled("CHANGES", theme::brand()))];
+        if self.diff_snapshot.stale {
+            lines.push(Line::styled(
+                "Stale review · changes updated externally · press r to Refresh",
+                theme::warn(),
+            ));
+            lines.push(Line::styled(
+                "Apply disabled until refresh.",
+                theme::muted(),
+            ));
+        }
+        lines.push(Line::from(""));
+
+        for (i, path) in review_paths.iter().enumerate() {
+            let marker = if i == selected { "▶ " } else { "  " };
+            let status = changed
+                .iter()
+                .find(|file| file.path == *path)
+                .and_then(|file| file.unstaged)
+                .map(GitStatusKind::marker)
+                .unwrap_or("!");
+            lines.push(Line::from(format!("{marker}{status} {}", path.display())));
+        }
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled("UNSTAGED DIFF", theme::info())));
+
+        if let Some(path) = selected_path {
+            match gs.get_unstaged_diff(&self.runtime.cwd, path) {
+                Ok(diff) => {
+                    for line in diff.lines().take(20) {
+                        let style = if line.starts_with('+') {
+                            theme::ok()
+                        } else if line.starts_with('-') {
+                            theme::danger()
+                        } else if line.starts_with("@@") {
+                            theme::warn()
+                        } else {
+                            theme::muted()
+                        };
+                        lines.push(Line::styled(line.to_string(), style));
+                    }
+                }
+                Err(e) => {
+                    lines.push(Line::styled(
+                        format!("Unable to load diff: {}", e),
+                        theme::danger(),
+                    ));
+                }
+            }
+        } else {
+            lines.push(Line::from("No unstaged file selected."));
+        }
+
+        Paragraph::new(lines)
+            .style(theme::text())
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(theme::muted())
+                    .style(theme::panel()),
+            )
+            .render(area, buf);
+    }
+
+    fn render_run_workspace(
+        &self,
+        id: &str,
+        area: ratatui::layout::Rect,
+        buf: &mut ratatui::buffer::Buffer,
+    ) {
+        let current = self.run.current.as_ref().filter(|record| record.id == id);
+        let mut lines = Vec::new();
+        if let Some(record) = current {
+            lines.push(Line::from(vec![
+                Span::styled("Run ", theme::muted()),
+                Span::styled(record.invocation.summary(), theme::text()),
+            ]));
+            lines.push(Line::styled(
+                format!(
+                    "State: {}",
+                    match record.state {
+                        RunState::Queued => "Queued",
+                        RunState::Running => "Running",
+                        RunState::Succeeded => "Succeeded",
+                        RunState::Failed => "Failed",
+                        RunState::Cancelled => "Cancelled",
+                        RunState::StartFailed => "Could not start",
+                        RunState::CaptureFailed => "Capture failed",
+                    }
+                ),
+                theme::text(),
+            ));
+            if let Some(code) = record.exit_status {
+                lines.push(Line::styled(format!("Exit status: {code}"), theme::muted()));
+            }
+            if record.state == RunState::StartFailed {
+                lines.push(Line::styled(
+                    format!("Executable: {}", record.invocation.executable),
+                    theme::muted(),
+                ));
+                lines.push(Line::styled(
+                    format!("Arguments: {:?}", record.invocation.arguments),
+                    theme::muted(),
+                ));
+                lines.push(Line::styled(
+                    format!(
+                        "Directory: {}",
+                        record.invocation.working_directory.display()
+                    ),
+                    theme::muted(),
+                ));
+                if let Some(error) = record.spawn_error.as_deref() {
+                    lines.push(Line::styled(format!("Cause: {error}"), theme::danger()));
+                }
+            }
+        } else {
+            lines.push(Line::styled("Run is no longer available.", theme::warn()));
+        }
+        if !self.terminal_capture.content.is_empty() {
+            lines.push(Line::styled("Output", theme::muted()));
+            for line in self.terminal_capture.content.lines().take(12) {
+                lines.push(Line::styled(line.to_string(), theme::text()));
+            }
+            if self.terminal_capture.truncated {
+                lines.push(Line::styled("Output truncated", theme::muted()));
+            }
+        } else if let Some(record) = current {
+            lines.push(Line::styled(
+                format!(
+                    "Directory: {}",
+                    record.invocation.working_directory.display()
+                ),
+                theme::muted(),
+            ));
+        }
+        lines.push(Line::styled(
+            "Back · Enter cancel while running · r rerun · e edit rerun",
+            theme::muted(),
+        ));
+
+        Paragraph::new(lines)
+            .wrap(ratatui::widgets::Wrap { trim: true })
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(if self.focus.block == FocusBlock::Workspace {
+                        theme::brand()
+                    } else {
+                        theme::border_muted()
+                    })
+                    .title(Span::styled(" Run ", theme::brand())),
+            )
+            .render(area, buf);
+    }
 }
