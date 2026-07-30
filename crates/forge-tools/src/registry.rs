@@ -437,4 +437,14 @@ mod tests {
         let descriptors = reg.list_descriptors();
         assert_eq!(descriptors[0].name, "read_file");
     }
+
+    #[test]
+    fn default_registry_behaves_like_new() {
+        // `Default` is a thin wrapper over `new`; verify it produces the same
+        // empty, usable registry rather than assuming the delegation.
+        let reg = ToolRegistry::default();
+        assert!(reg.names().is_empty());
+        assert!(reg.list_descriptors().is_empty());
+        assert!(reg.get("read_file").is_none());
+    }
 }
