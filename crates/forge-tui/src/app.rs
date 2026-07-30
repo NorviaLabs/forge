@@ -7328,7 +7328,32 @@ Reply with ONLY the commit message line.\n\n\
                         _ => {}
                     }
                 }
-                // Redraw every tick so spinner and elapsed time stay current.
+                // Keep the terminal responsive while the current turn is streaming so
+                // the operator can type the next message and enqueue it with Enter.
+                //
+                // This runs BEFORE the repaint below. Draining afterwards meant a
+                // keystroke arriving during the 100ms sleep was not handled until the
+                // next iteration, and so was not painted until the iteration after
+                // that -- roughly 200ms plus two draws from keypress to glyph.
+                if terminal.is_some() {
+                    drain_events(self).await?;
+                    if self.should_quit {
+                        handle.abort();
+                        self.busy = false;
+                        self.busy_phase = BusyPhase::Idle;
+                        self.stream_preview.clear();
+                        self.stream_thinking.clear();
+                        self.turn_started = None;
+                        self.thinking_started = None;
+                        self.thought_secs = None;
+                        self.last_exit = ExitCode::Canceled;
+                        let _ = self.session.mark_cancelled().await;
+                        return Ok(());
+                    }
+                }
+
+                // Redraw every tick so spinner and elapsed time stay current, and so
+                // input drained above lands in this frame rather than the next one.
                 if let Some(term) = terminal.as_deref_mut() {
                     term.draw(|f| self.draw(f))?;
                 }
@@ -7362,25 +7387,6 @@ Reply with ONLY the commit message line.\n\n\
                         term.draw(|f| self.draw(f))?;
                     }
                     break;
-                }
-
-                // Keep the terminal responsive while the current turn is streaming so
-                // the operator can type the next message and enqueue it with Enter.
-                if terminal.is_some() {
-                    drain_events(self).await?;
-                    if self.should_quit {
-                        handle.abort();
-                        self.busy = false;
-                        self.busy_phase = BusyPhase::Idle;
-                        self.stream_preview.clear();
-                        self.stream_thinking.clear();
-                        self.turn_started = None;
-                        self.thinking_started = None;
-                        self.thought_secs = None;
-                        self.last_exit = ExitCode::Canceled;
-                        let _ = self.session.mark_cancelled().await;
-                        return Ok(());
-                    }
                 }
 
                 // ~10 Hz keeps the timer + spinner smooth without burning CPU
