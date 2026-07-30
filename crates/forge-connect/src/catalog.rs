@@ -20,6 +20,78 @@ pub const DEFAULT_TTL_SECS: u64 = 3600;
 pub const MODELS_DEV_TTL_SECS: u64 = 24 * 60 * 60;
 const MODELS_DEV_URL: &str = "https://models.dev/api.json";
 
+use thiserror::Error;
+
+/// A model-catalogue operation failed.
+///
+/// These operations previously returned `Result<_, String>`, so a caller could
+/// not tell an expired credential from a rate limit or an unreachable host
+/// without matching on message text. `status` is now structural.
+///
+/// `label` carries the operator-facing prefix each message already had, so
+/// `Display` output is unchanged.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum CatalogError {
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("toml: {0}")]
+    Serialize(#[from] toml::ser::Error),
+    /// A credential the caller did not supply is needed to list models.
+    #[error("{0}")]
+    CredentialRequired(String),
+    /// No remote catalogue is implemented for this profile.
+    #[error("no remote catalog implemented for profile `{0}`")]
+    UnsupportedProfile(String),
+    /// Server returned a non-success status.
+    #[error("{label}: HTTP {status}{}", .body.as_deref().map(|b| format!(" {b}")).unwrap_or_default())]
+    Http {
+        label: String,
+        status: u16,
+        body: Option<String>,
+    },
+    /// Could not reach the server.
+    #[error("{label}: {detail}")]
+    Transport { label: String, detail: String },
+    /// Reached the server but could not decode the response.
+    #[error("{label}: {detail}")]
+    Decode { label: String, detail: String },
+    #[error("{label}: too many redirects")]
+    TooManyRedirects { label: String },
+    /// No structured category applies. Kept deliberately narrow — nothing
+    /// branches on these, they are operator-facing detail only.
+    #[error("{0}")]
+    Message(String),
+}
+
+impl CatalogError {
+    /// HTTP status the server returned, when there was one.
+    pub fn status(&self) -> Option<u16> {
+        match self {
+            Self::Http { status, .. } => Some(*status),
+            _ => None,
+        }
+    }
+
+    /// The credential was refused — re-authenticating is the fix.
+    pub fn is_auth_failure(&self) -> bool {
+        match self {
+            Self::CredentialRequired(_) => true,
+            Self::Http { status, .. } => *status == 401 || *status == 403,
+            _ => false,
+        }
+    }
+
+    /// Transient — a retry may succeed without user action.
+    pub fn is_retryable(&self) -> bool {
+        match self {
+            Self::Transport { .. } => true,
+            Self::Http { status, .. } => *status == 429 || *status >= 500,
+            _ => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CatalogSource {
     /// Directly returned by the connected provider for this account.
@@ -106,12 +178,13 @@ impl ModelCatalogCache {
             .unwrap_or_default()
     }
 
-    fn save(&self, file: &CatalogFile) -> Result<(), String> {
+    fn save(&self, file: &CatalogFile) -> Result<(), CatalogError> {
         if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            fs::create_dir_all(parent)?;
         }
-        let text = toml::to_string_pretty(file).map_err(|e| e.to_string())?;
-        fs::write(&self.path, text).map_err(|e| e.to_string())
+        let text = toml::to_string_pretty(file)?;
+        fs::write(&self.path, text)?;
+        Ok(())
     }
 
     fn now_secs() -> u64 {
@@ -137,7 +210,7 @@ impl ModelCatalogCache {
             .unwrap_or_default()
     }
 
-    pub fn put(&self, profile_id: &str, models: Vec<String>) -> Result<(), String> {
+    pub fn put(&self, profile_id: &str, models: Vec<String>) -> Result<(), CatalogError> {
         let mut file = self.load();
         file.models.insert(profile_id.to_string(), models);
         file.fetched_at
@@ -145,7 +218,7 @@ impl ModelCatalogCache {
         self.save(&file)
     }
 
-    pub fn clear_profile(&self, profile_id: &str) -> Result<(), String> {
+    pub fn clear_profile(&self, profile_id: &str) -> Result<(), CatalogError> {
         let mut file = self.load();
         file.models.remove(profile_id);
         file.fetched_at.remove(profile_id);
@@ -174,7 +247,7 @@ impl ModelCatalogCache {
         &self,
         models: BTreeMap<String, Vec<String>>,
         costs: BTreeMap<String, CatalogCost>,
-    ) -> Result<(), String> {
+    ) -> Result<(), CatalogError> {
         let mut file = self.load();
         file.registry_models = models;
         file.registry_costs = costs;
@@ -189,15 +262,21 @@ impl ModelCatalogCache {
 pub fn refresh_models_dev_registry(
     profiles: &[ConnectProfile],
     cache: &ModelCatalogCache,
-) -> Result<usize, String> {
+) -> Result<usize, CatalogError> {
     let ua = format!("forge-connect/{}", env!("CARGO_PKG_VERSION"));
     let body: serde_json::Value = ureq::get(MODELS_DEV_URL)
         .set("User-Agent", &ua)
         .timeout(std::time::Duration::from_secs(10))
         .call()
-        .map_err(|e| format!("models.dev registry: {e}"))?
+        .map_err(|e| CatalogError::Transport {
+            label: "models.dev registry".into(),
+            detail: e.to_string(),
+        })?
         .into_json()
-        .map_err(|e| format!("models.dev registry JSON: {e}"))?;
+        .map_err(|e| CatalogError::Decode {
+            label: "models.dev registry JSON".into(),
+            detail: e.to_string(),
+        })?;
 
     let mut by_profile = BTreeMap::new();
     let mut costs = BTreeMap::new();
@@ -273,7 +352,7 @@ pub fn credential_for_catalog(profile: &ConnectProfile, store: &CredentialStore)
 pub fn fetch_remote_models(
     profile: &ConnectProfile,
     api_key: Option<&str>,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, CatalogError> {
     let base = profile
         .default_base_url
         .as_deref()
@@ -285,9 +364,11 @@ pub fn fetch_remote_models(
 
     match profile.id.as_str() {
         "openai_codex" => {
-            let token =
-                api_key.ok_or_else(|| "OpenAI Codex login required for catalog".to_string())?;
-            let account_id = crate::openai_codex::account_id_from_token(token)?;
+            let token = api_key.ok_or_else(|| {
+                CatalogError::CredentialRequired("OpenAI Codex login required for catalog".into())
+            })?;
+            let account_id = crate::openai_codex::account_id_from_token(token)
+                .map_err(|e| CatalogError::CredentialRequired(e.to_string()))?;
             let url = format!(
                 "{}/codex/models?client_version={}",
                 if base.is_empty() {
@@ -317,7 +398,9 @@ pub fn fetch_remote_models(
             }))
         }
         "openai" => {
-            let key = api_key.ok_or_else(|| "OpenAI API key required for catalog".to_string())?;
+            let key = api_key.ok_or_else(|| {
+                CatalogError::CredentialRequired("OpenAI API key required for catalog".into())
+            })?;
             let url = format!(
                 "{}/models",
                 if base.is_empty() {
@@ -336,8 +419,9 @@ pub fn fetch_remote_models(
             Ok(map_prefix(prefix, raw, filter_openai_chat_ish))
         }
         "anthropic" => {
-            let key =
-                api_key.ok_or_else(|| "Anthropic API key required for catalog".to_string())?;
+            let key = api_key.ok_or_else(|| {
+                CatalogError::CredentialRequired("Anthropic API key required for catalog".into())
+            })?;
             let b = if base.is_empty() {
                 "https://api.anthropic.com"
             } else {
@@ -357,8 +441,10 @@ pub fn fetch_remote_models(
             ) {
                 Ok(v) => v,
                 Err(e) => {
-                    // Retry without query params on strict servers.
-                    if e.contains("HTTP 400") {
+                    // Retry without query params on strict servers. This used to
+                    // match on "HTTP 400" inside the rendered message; the status
+                    // is now structural.
+                    if e.status() == Some(400) {
                         http_get_json_ids(
                             &url_plain,
                             &[
@@ -392,8 +478,9 @@ pub fn fetch_remote_models(
             }
         }
         "opencode_go" => {
-            let key =
-                api_key.ok_or_else(|| "OpenCode Go API key required for catalog".to_string())?;
+            let key = api_key.ok_or_else(|| {
+                CatalogError::CredentialRequired("OpenCode Go API key required for catalog".into())
+            })?;
             let b = if base.is_empty() {
                 crate::opencode_go::DEFAULT_BASE_URL
             } else {
@@ -411,8 +498,9 @@ pub fn fetch_remote_models(
             Ok(map_prefix("opencode-go", raw, |_| true))
         }
         "opencode_zen" => {
-            let key =
-                api_key.ok_or_else(|| "OpenCode Zen API key required for catalog".to_string())?;
+            let key = api_key.ok_or_else(|| {
+                CatalogError::CredentialRequired("OpenCode Zen API key required for catalog".into())
+            })?;
             let b = if base.is_empty() {
                 crate::opencode_zen::DEFAULT_BASE_URL
             } else {
@@ -429,7 +517,9 @@ pub fn fetch_remote_models(
             Ok(map_prefix("opencode-zen", raw, |_| true))
         }
         "xai" => {
-            let key = api_key.ok_or_else(|| "xAI OAuth token required for catalog".to_string())?;
+            let key = api_key.ok_or_else(|| {
+                CatalogError::CredentialRequired("xAI OAuth token required for catalog".into())
+            })?;
             let b = if base.is_empty() {
                 "https://api.x.ai/v1"
             } else {
@@ -445,9 +535,7 @@ pub fn fetch_remote_models(
             )?;
             Ok(map_prefix(prefix, raw, |_| true))
         }
-        other => Err(format!(
-            "no remote catalog implemented for profile `{other}`"
-        )),
+        other => Err(CatalogError::UnsupportedProfile(other.to_string())),
     }
 }
 
@@ -486,7 +574,7 @@ fn map_prefix(prefix: &str, raw: Vec<String>, keep: impl Fn(&str) -> bool) -> Ve
     out
 }
 
-fn http_get_json_ids(url: &str, headers: &[(&str, &str)]) -> Result<Vec<String>, String> {
+fn http_get_json_ids(url: &str, headers: &[(&str, &str)]) -> Result<Vec<String>, CatalogError> {
     // ureq's built-in redirect handling may drop auth headers on redirect in some cases.
     // We follow redirects manually to ensure credentials are preserved.
     let agent = ureq::AgentBuilder::new()
@@ -507,7 +595,11 @@ fn http_get_json_ids(url: &str, headers: &[(&str, &str)]) -> Result<Vec<String>,
                     cur = loc;
                     continue;
                 }
-                return Err(format!("catalog GET {cur}: HTTP {code} (missing Location)"));
+                return Err(CatalogError::Http {
+                    label: format!("catalog GET {cur}"),
+                    status: code,
+                    body: Some("(missing Location)".into()),
+                });
             }
             Err(ureq::Error::Status(code, r)) => {
                 // Best-effort include small body to help operator debug auth failures.
@@ -518,24 +610,39 @@ fn http_get_json_ids(url: &str, headers: &[(&str, &str)]) -> Result<Vec<String>,
                     .take(240)
                     .collect::<String>();
                 let body = body.trim().to_string();
-                if body.is_empty() {
-                    return Err(format!("catalog GET {cur}: HTTP {code}"));
-                }
-                return Err(format!("catalog GET {cur}: HTTP {code} {body}"));
+                return Err(CatalogError::Http {
+                    label: format!("catalog GET {cur}"),
+                    status: code,
+                    body: (!body.is_empty()).then_some(body),
+                });
             }
-            Err(e) => return Err(format!("catalog GET {cur}: {e}")),
+            Err(e) => {
+                return Err(CatalogError::Transport {
+                    label: format!("catalog GET {cur}"),
+                    detail: e.to_string(),
+                })
+            }
         };
 
         if !(200..300).contains(&resp.status()) {
-            return Err(format!("catalog GET {cur}: HTTP {}", resp.status()));
+            return Err(CatalogError::Http {
+                label: format!("catalog GET {cur}"),
+                status: resp.status(),
+                body: None,
+            });
         }
-        let body: serde_json::Value = resp.into_json().map_err(|e| format!("catalog JSON: {e}"))?;
+        let body: serde_json::Value = resp.into_json().map_err(|e| CatalogError::Decode {
+            label: "catalog JSON".into(),
+            detail: e.to_string(),
+        })?;
         return parse_openai_style_model_ids(&body);
     }
-    Err(format!("catalog GET {url}: too many redirects"))
+    Err(CatalogError::TooManyRedirects {
+        label: format!("catalog GET {url}"),
+    })
 }
 
-fn parse_openai_style_model_ids(body: &serde_json::Value) -> Result<Vec<String>, String> {
+fn parse_openai_style_model_ids(body: &serde_json::Value) -> Result<Vec<String>, CatalogError> {
     // OpenAI / Anthropic / OpenCode: { "data": [ { "id": "..." }, ... ] }
     if let Some(arr) = body.get("data").and_then(|d| d.as_array()) {
         let mut ids = Vec::new();
@@ -568,7 +675,9 @@ fn parse_openai_style_model_ids(body: &serde_json::Value) -> Result<Vec<String>,
         }
         return Ok(ids);
     }
-    Err("catalog response missing data[] models".into())
+    Err(CatalogError::Message(
+        "catalog response missing data[] models".into(),
+    ))
 }
 
 /// Read the account-scoped model list cached by the official Codex CLI.
@@ -618,18 +727,26 @@ fn parse_codex_cli_cached_model_ids(body: &serde_json::Value) -> Vec<String> {
     rows.into_iter().map(|(_, slug)| slug).collect()
 }
 
-fn http_get_ollama_names(url: &str, ua: &str) -> Result<Vec<String>, String> {
+fn http_get_ollama_names(url: &str, ua: &str) -> Result<Vec<String>, CatalogError> {
     let resp = ureq::get(url)
         .set("User-Agent", ua)
         .timeout(std::time::Duration::from_secs(10))
         .call()
-        .map_err(|e| format!("ollama tags: {e}"))?;
+        .map_err(|e| CatalogError::Transport {
+            label: "ollama tags".into(),
+            detail: e.to_string(),
+        })?;
     if !(200..300).contains(&resp.status()) {
-        return Err(format!("ollama tags: HTTP {}", resp.status()));
+        return Err(CatalogError::Http {
+            label: "ollama tags".into(),
+            status: resp.status(),
+            body: None,
+        });
     }
-    let body: serde_json::Value = resp
-        .into_json()
-        .map_err(|e| format!("ollama tags JSON: {e}"))?;
+    let body: serde_json::Value = resp.into_json().map_err(|e| CatalogError::Decode {
+        label: "ollama tags JSON".into(),
+        detail: e.to_string(),
+    })?;
     Ok(parse_ollama_model_names(&body))
 }
 
@@ -650,11 +767,14 @@ pub fn refresh_profile_catalog(
     profile: &ConnectProfile,
     store: &CredentialStore,
     cache: &ModelCatalogCache,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, CatalogError> {
     let key = credential_for_catalog(profile, store);
     let models = fetch_remote_models(profile, key.as_deref())?;
     if models.is_empty() {
-        return Err(format!("catalog for `{}` returned no models", profile.id));
+        return Err(CatalogError::Message(format!(
+            "catalog for `{}` returned no models",
+            profile.id
+        )));
     }
     cache.put(&profile.id, models.clone())?;
     Ok(models)
@@ -1098,6 +1218,7 @@ mod tests {
         assert!(
             parse_openai_style_model_ids(&serde_json::json!({ "items": [] }))
                 .unwrap_err()
+                .to_string()
                 .contains("missing data[]")
         );
     }
@@ -1244,15 +1365,21 @@ mod tests {
             "",
             vec![("Location", "http://127.0.0.1:9/models")],
         )]);
-        let err = http_get_json_ids(&format!("{base}/models"), &[]).unwrap_err();
+        let err = http_get_json_ids(&format!("{base}/models"), &[])
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("catalog GET"), "{err}");
 
         let base = mock_http(vec![(200, "{not-json", vec![])]);
-        let err = http_get_json_ids(&format!("{base}/models"), &[]).unwrap_err();
+        let err = http_get_json_ids(&format!("{base}/models"), &[])
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("catalog JSON"), "{err}");
 
         let base = mock_http(vec![(400, "bad request body", vec![])]);
-        let err = http_get_json_ids(&format!("{base}/models"), &[]).unwrap_err();
+        let err = http_get_json_ids(&format!("{base}/models"), &[])
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("HTTP 400 bad request body"), "{err}");
     }
 
@@ -1317,23 +1444,33 @@ mod tests {
     #[test]
     fn fetch_remote_models_reports_missing_credentials_and_unknown_profiles_before_network() {
         assert_eq!(
-            fetch_remote_models(&openai_profile(), None).unwrap_err(),
+            fetch_remote_models(&openai_profile(), None)
+                .unwrap_err()
+                .to_string(),
             "OpenAI API key required for catalog"
         );
         assert_eq!(
-            fetch_remote_models(&crate::anthropic::anthropic_profile(), None).unwrap_err(),
+            fetch_remote_models(&crate::anthropic::anthropic_profile(), None)
+                .unwrap_err()
+                .to_string(),
             "Anthropic API key required for catalog"
         );
         assert_eq!(
-            fetch_remote_models(&crate::opencode_go::opencode_go_profile(), None).unwrap_err(),
+            fetch_remote_models(&crate::opencode_go::opencode_go_profile(), None)
+                .unwrap_err()
+                .to_string(),
             "OpenCode Go API key required for catalog"
         );
         assert_eq!(
-            fetch_remote_models(&crate::opencode_zen::opencode_zen_profile(), None).unwrap_err(),
+            fetch_remote_models(&crate::opencode_zen::opencode_zen_profile(), None)
+                .unwrap_err()
+                .to_string(),
             "OpenCode Zen API key required for catalog"
         );
         assert_eq!(
-            fetch_remote_models(&crate::xai::xai_grok_profile(), None).unwrap_err(),
+            fetch_remote_models(&crate::xai::xai_grok_profile(), None)
+                .unwrap_err()
+                .to_string(),
             "xAI OAuth token required for catalog"
         );
 
@@ -1341,6 +1478,7 @@ mod tests {
         unknown.id = "unknown".into();
         assert!(fetch_remote_models(&unknown, Some("key"))
             .unwrap_err()
+            .to_string()
             .contains("no remote catalog implemented"));
     }
 }
