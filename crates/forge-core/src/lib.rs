@@ -201,6 +201,8 @@ pub struct AgentSession {
     enable_gov: bool,
     /// Cumulative provider token usage for this session.
     pub token_usage: SessionTokenUsage,
+    /// Validation failures within the current user turn (not persisted).
+    validation_budget: ValidationBudget,
 }
 
 impl AgentSession {
@@ -323,6 +325,7 @@ impl AgentSession {
             enable_context: loop_cfg.enable_context_lifecycle,
             enable_gov: loop_cfg.enable_governance,
             token_usage: SessionTokenUsage::default(),
+            validation_budget: ValidationBudget::with_default_max(),
         })
     }
 
@@ -394,6 +397,7 @@ impl AgentSession {
             enable_context: loop_cfg.enable_context_lifecycle,
             enable_gov: loop_cfg.enable_governance,
             token_usage,
+            validation_budget: ValidationBudget::with_default_max(),
         })
     }
 
@@ -550,6 +554,8 @@ impl AgentSession {
             self.context.goal = text.chars().take(200).collect();
         }
         self.status = SessionStatus::Running;
+        // Fresh validation budget for each user turn.
+        self.validation_budget = ValidationBudget::with_default_max();
         Ok(())
     }
 
@@ -641,13 +647,20 @@ impl AgentSession {
             return Ok(ApplyOutcome::Done(last));
         }
 
-        let mut budget = ValidationBudget::with_default_max();
-        for call in &last.tool_calls {
-            if let Some(pause) = self.run_one_tool(call, &mut budget).await? {
-                return Ok(ApplyOutcome::Hitl(pause));
+        // Budget spans the whole user turn so repeated invalid calls across
+        // model steps still exhaust instead of looping forever.
+        let mut budget = std::mem::take(&mut self.validation_budget);
+        let tool_result = async {
+            for call in &last.tool_calls {
+                if let Some(pause) = self.run_one_tool(call, &mut budget).await? {
+                    return Ok(ApplyOutcome::Hitl(pause));
+                }
             }
+            Ok(ApplyOutcome::Continue)
         }
-        Ok(ApplyOutcome::Continue)
+        .await;
+        self.validation_budget = budget;
+        tool_result
     }
 
     /// Run until no tool calls, max turns, or HITL pause.
@@ -842,7 +855,12 @@ impl AgentSession {
                 self.journal
                     .append_validation_failed(self.session_id, &call.name, &ve.to_string())
                     .await?;
-                let msg = format!("Tool validation error: {ve}. Please correct arguments.");
+                // Actionable, schema-derived feedback — no guessed corrected values.
+                let msg = format!(
+                    "Tool validation error: {ve}. \
+                     Do not concatenate fields. Use separate JSON properties with native types \
+                     (for example offset: 1, limit: 100 as integers)."
+                );
                 self.messages.push(Message {
                     role: MessageRole::Tool,
                     content: msg.clone(),
@@ -858,8 +876,17 @@ impl AgentSession {
                 });
             }
             Err(e) => {
+                let content = e.to_string();
+                let is_budget = content.contains("validation retry budget exceeded");
                 let output = ToolOutput {
-                    content: e.to_string(),
+                    content: if is_budget {
+                        format!(
+                            "{content}. Stop retrying this tool with the same invalid argument shape. \
+                             Either call it with valid structured JSON types or finish with a final answer."
+                        )
+                    } else {
+                        content
+                    },
                     is_error: true,
                 };
                 self.journal
@@ -867,13 +894,19 @@ impl AgentSession {
                     .await?;
                 self.messages.push(Message {
                     role: MessageRole::Tool,
-                    content: output.content,
+                    content: output.content.clone(),
                     tool_call_id: Some(call.id.clone()),
                     name: Some(call.name.clone()),
                     thinking: None,
                     thinking_duration_secs: None,
                     tool_calls: vec![],
                 });
+                if is_budget {
+                    self.events.push(TurnEvent {
+                        kind: "validation_exhausted".into(),
+                        detail: output.content,
+                    });
+                }
             }
         }
         Ok(None)
@@ -1178,6 +1211,123 @@ mod tests {
             .find(|m| m.role == MessageRole::Assistant)
             .unwrap();
         assert_eq!(assistant.tool_calls[0].id, "1");
+    }
+
+    #[tokio::test]
+    async fn malformed_read_file_offset_is_rejected_and_does_not_execute() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("README.md"), "hello\nworld\n").unwrap();
+        let model = Arc::new(MockModelClient::script(vec![
+            ModelResponse {
+                text: "".into(),
+                tool_calls: vec![ToolCall {
+                    id: "bad".into(),
+                    name: "read_file".into(),
+                    // Exact observed failure class — composite string must not be salvaged.
+                    arguments: json!({"path": "README.md", "offset": "1arglimit\">100"}),
+                }],
+                usage: None,
+                thinking: None,
+            },
+            ModelResponse {
+                text: "".into(),
+                tool_calls: vec![ToolCall {
+                    id: "ok".into(),
+                    name: "read_file".into(),
+                    arguments: json!({"path": "README.md", "offset": 1, "limit": 100}),
+                }],
+                usage: None,
+                thinking: None,
+            },
+            ModelResponse {
+                text: "Forge is a Rust workspace.".into(),
+                tool_calls: vec![],
+                usage: None,
+                thinking: None,
+            },
+        ]));
+        let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        let r = s.run_user_message("Summarize this codebase").await.unwrap();
+        assert_eq!(r.text, "Forge is a Rust workspace.");
+        let tool_msgs: Vec<_> = s
+            .messages
+            .iter()
+            .filter(|m| m.role == MessageRole::Tool)
+            .collect();
+        assert!(
+            tool_msgs.iter().any(|m| m.content.contains("validation")),
+            "expected validation rejection: {tool_msgs:?}"
+        );
+        assert!(
+            tool_msgs.iter().any(|m| m.content.contains("hello")),
+            "valid retry should execute and return file content: {tool_msgs:?}"
+        );
+        // Validation feedback may quote the bad value; execution must not have
+        // salvaged it into a successful read of the wrong slice.
+        assert!(
+            tool_msgs
+                .iter()
+                .filter(|m| m.content.contains("hello"))
+                .all(|m| !m.content.contains("validation")),
+            "successful tool result must not be a validation message"
+        );
+    }
+
+    #[tokio::test]
+    async fn repeated_malformed_read_file_exhausts_validation_budget() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("README.md"), "x\n").unwrap();
+        let bad = || ToolCall {
+            id: "bad".into(),
+            name: "read_file".into(),
+            arguments: json!({"path": "README.md", "offset": "1arglimit\">50"}),
+        };
+        let model = Arc::new(MockModelClient::script(vec![
+            ModelResponse {
+                text: "".into(),
+                tool_calls: vec![bad()],
+                usage: None,
+                thinking: None,
+            },
+            ModelResponse {
+                text: "".into(),
+                tool_calls: vec![bad()],
+                usage: None,
+                thinking: None,
+            },
+            ModelResponse {
+                text: "".into(),
+                tool_calls: vec![bad()],
+                usage: None,
+                thinking: None,
+            },
+            ModelResponse {
+                text: "".into(),
+                tool_calls: vec![bad()],
+                usage: None,
+                thinking: None,
+            },
+            ModelResponse {
+                text: "Could not read the file with valid arguments.".into(),
+                tool_calls: vec![],
+                usage: None,
+                thinking: None,
+            },
+        ]));
+        let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        let r = s.run_user_message("read it").await.unwrap();
+        assert!(!r.text.is_empty());
+        let exhausted = s.messages.iter().any(|m| {
+            m.role == MessageRole::Tool && m.content.contains("validation retry budget exceeded")
+        });
+        assert!(
+            exhausted || s.events.iter().any(|e| e.kind == "validation_exhausted"),
+            "expected budget exhaustion signal in messages/events"
+        );
     }
 
     #[tokio::test]
