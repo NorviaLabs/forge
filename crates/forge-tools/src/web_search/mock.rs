@@ -71,4 +71,30 @@ mod tests {
         assert_eq!(a.len(), 2);
         assert!(a[0].url.contains("hello-world"));
     }
+
+    #[test]
+    fn id_reports_mock() {
+        assert_eq!(MockSearchBackend.id(), "mock");
+    }
+
+    #[test]
+    fn slugify_falls_back_to_query_when_no_alphanumerics_survive() {
+        // Every character is stripped to `-` and then trimmed away entirely,
+        // so the slug would otherwise be empty.
+        assert_eq!(slugify("!!!"), "query");
+        assert_eq!(slugify("---"), "query");
+        assert_eq!(slugify(""), "query");
+    }
+
+    #[test]
+    fn slugify_lowercases_and_truncates() {
+        // Every non-alphanumeric maps to its own '-'; runs are not collapsed,
+        // so the comma and the space each contribute one separator. Leading
+        // and trailing separators are trimmed.
+        assert_eq!(slugify("Hello, World!"), "hello--world");
+        assert_eq!(slugify("simple"), "simple");
+        // Long inputs are cut to the 48-character cap.
+        let long = "a".repeat(100);
+        assert_eq!(slugify(&long), "a".repeat(48));
+    }
 }

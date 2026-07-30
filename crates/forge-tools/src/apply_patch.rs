@@ -444,6 +444,257 @@ mod tests {
             "actual\n"
         );
     }
+
+    #[test]
+    fn describes_itself() {
+        let tool = ApplyPatchTool;
+        assert_eq!(tool.name(), "apply_patch");
+        assert!(tool.description().contains("*** Begin Patch"));
+        assert_eq!(tool.side_effect_class(), SideEffectClass::Write);
+        let schema = tool.input_schema();
+        assert!(schema.get("properties").is_some(), "{schema}");
+    }
+
+    #[tokio::test]
+    async fn call_reports_deserialize_failure_for_non_string_patch() {
+        let dir = tempdir().unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+
+        let error = ApplyPatchTool
+            .call(&ctx, json!({"patch": 12345}))
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("invalid type"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn rejects_patch_missing_begin_or_end_markers() {
+        let dir = tempdir().unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let patch = "*** Add File: created.txt\n+created\n";
+
+        let error = ApplyPatchTool
+            .call(&ctx, json!({"patch": patch}))
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("Begin Patch"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn rejects_add_file_line_missing_plus_prefix() {
+        let dir = tempdir().unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let patch = "*** Begin Patch\n*** Add File: created.txt\nno-prefix\n*** End Patch";
+
+        let error = ApplyPatchTool
+            .call(&ctx, json!({"patch": patch}))
+            .await
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("add-file lines must start with `+`"),
+            "{error}"
+        );
+        assert!(!dir.path().join("created.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn rejects_update_file_content_not_starting_with_hunk_header() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("file.txt"), "one\n").unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let patch = "*** Begin Patch\n*** Update File: file.txt\nnot-a-hunk-header\n*** End Patch";
+
+        let error = ApplyPatchTool
+            .call(&ctx, json!({"patch": patch}))
+            .await
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("must begin with a `@@` hunk header"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_empty_hunk_line() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("file.txt"), "one\ntwo\n").unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        // A hunk line that is exactly empty is neither ` `, `+`, nor `-` prefixed.
+        let patch = "*** Begin Patch\n*** Update File: file.txt\n@@\n one\n\n-two\n*** End Patch";
+
+        let error = ApplyPatchTool
+            .call(&ctx, json!({"patch": patch}))
+            .await
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("hunk lines must start with ` `, `+`, or `-`"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_hunk_line_with_unrecognized_marker() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("file.txt"), "one\ntwo\n").unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let patch = "*** Begin Patch\n*** Update File: file.txt\n@@\n#bad\n*** End Patch";
+
+        let error = ApplyPatchTool
+            .call(&ctx, json!({"patch": patch}))
+            .await
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("hunk lines must start with ` `, `+`, or `-`"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_unknown_patch_directive() {
+        let dir = tempdir().unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let patch = "*** Begin Patch\n*** Rename File: a.txt\n*** End Patch";
+
+        let error = ApplyPatchTool
+            .call(&ctx, json!({"patch": patch}))
+            .await
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("unknown patch directive `*** Rename File: a.txt`"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_patch_with_no_file_changes() {
+        let dir = tempdir().unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let patch = "*** Begin Patch\n*** End Patch";
+
+        let error = ApplyPatchTool
+            .call(&ctx, json!({"patch": patch}))
+            .await
+            .unwrap_err();
+
+        assert!(
+            error.to_string().contains("patch contains no file changes"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_patch_that_touches_the_same_path_twice() {
+        let dir = tempdir().unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let patch =
+            "*** Begin Patch\n*** Add File: dup.txt\n+one\n*** Delete File: dup.txt\n*** End Patch";
+
+        let error = ApplyPatchTool
+            .call(&ctx, json!({"patch": patch}))
+            .await
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("patch changes `dup.txt` more than once"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_adding_a_file_that_already_exists() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("existing.txt"), "already here\n").unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let patch = "*** Begin Patch\n*** Add File: existing.txt\n+new content\n*** End Patch";
+
+        let error = ApplyPatchTool
+            .call(&ctx, json!({"patch": patch}))
+            .await
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("cannot add existing file `existing.txt`"),
+            "{error}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("existing.txt")).unwrap(),
+            "already here\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_deleting_a_file_that_does_not_exist() {
+        let dir = tempdir().unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let patch = "*** Begin Patch\n*** Delete File: missing.txt\n*** End Patch";
+
+        let error = ApplyPatchTool
+            .call(&ctx, json!({"patch": patch}))
+            .await
+            .unwrap_err();
+
+        assert!(
+            error.to_string().contains("cannot delete `missing.txt`"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn find_sequence_with_empty_needle_returns_clamped_start() {
+        let lines = vec!["a".to_string(), "b".to_string()];
+        assert_eq!(find_sequence(&lines, &[], 1), Some(1));
+        // A start position past the end of `lines` is clamped, not returned raw.
+        assert_eq!(find_sequence(&lines, &[], 50), Some(2));
+    }
+
+    #[test]
+    fn find_sequence_returns_none_when_needle_cannot_fit() {
+        let lines = vec!["a".to_string(), "b".to_string()];
+        let needle = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        assert_eq!(find_sequence(&lines, &needle, 0), None);
+
+        // Needle fits in `lines` overall but not from this late a start index.
+        let short_needle = vec!["b".to_string()];
+        assert_eq!(find_sequence(&lines, &short_needle, 5), None);
+    }
+
+    #[test]
+    fn find_sequence_locates_a_matching_run() {
+        let lines = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let needle = vec!["b".to_string(), "c".to_string()];
+        assert_eq!(find_sequence(&lines, &needle, 0), Some(1));
+    }
+
+    #[test]
+    fn join_patch_lines_returns_empty_string_for_no_lines() {
+        assert_eq!(join_patch_lines(&[]), "");
+    }
+
+    #[test]
+    fn join_patch_lines_joins_and_terminates_with_newline() {
+        assert_eq!(join_patch_lines(&["a", "b"]), "a\nb\n");
+    }
 }
 
 #[cfg(test)]

@@ -1158,6 +1158,85 @@ mod tests {
         assert_eq!(err.tool, "read_file");
     }
 
+    #[test]
+    fn read_file_describes_itself() {
+        let t = ReadFileTool;
+        assert_eq!(t.name(), "read_file");
+        assert_eq!(t.description(), "Read a text file from the workspace");
+        assert_eq!(t.side_effect_class(), SideEffectClass::Read);
+        assert!(t.idempotent());
+    }
+
+    #[tokio::test]
+    async fn read_file_reports_internal_deserialize_failure() {
+        let dir = tempdir().unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let error = ReadFileTool
+            .call(&ctx, json!({"path": 5}))
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("internal deserialize"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_file_offset_past_end_of_file_returns_empty() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("short.txt"), "one\ntwo\n").unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let out = ReadFileTool
+            .call(&ctx, json!({"path": "short.txt", "offset": 50}))
+            .await
+            .unwrap();
+        assert_eq!(out.content, "");
+    }
+
+    #[test]
+    fn write_file_describes_itself() {
+        let t = WriteFileTool;
+        assert_eq!(t.name(), "write_file");
+        assert_eq!(
+            t.description(),
+            "Write a text file in the workspace (creates parent dirs)"
+        );
+        assert_eq!(t.side_effect_class(), SideEffectClass::Write);
+    }
+
+    #[tokio::test]
+    async fn write_file_reports_deserialize_failure() {
+        let dir = tempdir().unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let error = WriteFileTool
+            .call(&ctx, json!({"path": "a.txt", "content": 5}))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("invalid type"), "{error}");
+    }
+
+    #[test]
+    fn bash_describes_itself() {
+        let t = BashTool;
+        assert_eq!(t.name(), "bash");
+        assert_eq!(
+            t.description(),
+            "Run a shell command in the workspace directory"
+        );
+        assert_eq!(t.side_effect_class(), SideEffectClass::Exec);
+    }
+
+    #[tokio::test]
+    async fn bash_reports_deserialize_failure() {
+        let dir = tempdir().unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let error = BashTool
+            .call(&ctx, json!({"command": 12345}))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("invalid type"), "{error}");
+    }
+
     /// Restores an environment variable on drop, so a test that has to touch the
     /// process environment does not leak into the rest of the suite.
     struct EnvVarGuard {
@@ -1631,6 +1710,28 @@ mod tests {
                 "`{subcommand}` is allowlisted but has no argument policy"
             );
         }
+    }
+
+    /// A subcommand with no policy entry falls through to `None`, matching the
+    /// intent that the allowlist is positive: anything not enumerated is
+    /// refused rather than silently permitted.
+    #[test]
+    fn git_policy_is_none_for_an_unlisted_subcommand() {
+        assert!(git_policy("daemon").is_none());
+        assert!(git_policy("").is_none());
+        assert!(!GIT_ALLOWED_SUBCOMMANDS.contains(&"daemon"));
+    }
+
+    /// `validate_git_args` is called directly here (bypassing `GitTool::call`'s
+    /// allowlist gate, as `reject`/`accept` already do above) to exercise its
+    /// own defence against an unlisted subcommand reaching the policy lookup.
+    #[test]
+    fn validate_git_args_reports_missing_policy_for_unlisted_subcommand() {
+        let message = reject("daemon", &[]);
+        assert!(
+            message.contains("no argument policy for subcommand `daemon`"),
+            "{message}"
+        );
     }
 
     /// End to end: the refusal happens before git is invoked, and nothing is
