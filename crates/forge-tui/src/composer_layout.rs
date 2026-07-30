@@ -292,6 +292,7 @@ mod tests {
         assert!(!copy_buffer(text).contains(glyph()));
     }
 
+    #[test]
     fn scroll_keeps_cursor_row_visible_with_tight_viewport() {
         assert_eq!(scroll_offset(4, 8, 4), 1);
         assert_eq!(scroll_offset(7, 8, 4), 4);
