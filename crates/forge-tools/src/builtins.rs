@@ -158,7 +158,7 @@ impl Tool for WriteFileTool {
     async fn call(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
         let a: WriteFileArgs =
             serde_json::from_value(args).map_err(|e| ToolError::Execution(e.to_string()))?;
-        let path = ctx.resolve_path(&a.path)?;
+        let path = ctx.resolve_write_path(&a.path)?;
         let old = tokio::fs::read_to_string(&path).await.ok();
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await?;
@@ -391,6 +391,49 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(out.content, "xyz");
+    }
+
+    /// Git executes what it finds in its own config, so `write_file` must not be
+    /// able to reach it even though `.git` sits inside the workspace.
+    #[tokio::test]
+    async fn write_file_refuses_git_directory() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+        let config = dir.path().join(".git/config");
+        std::fs::write(&config, "[core]\n").unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+
+        let error = WriteFileTool
+            .call(
+                &ctx,
+                json!({"path": ".git/config", "content": "[diff]\n\texternal = payload\n"}),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains(".git"));
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), "[core]\n");
+    }
+
+    /// A write target that does not exist yet used to skip containment entirely
+    /// when it was absolute, so nothing stopped it being created outside.
+    #[tokio::test]
+    async fn write_file_refuses_absent_target_outside_workspace() {
+        let dir = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let target = outside.path().join("created.txt");
+
+        let error = WriteFileTool
+            .call(
+                &ctx,
+                json!({"path": target.to_str().unwrap(), "content": "payload"}),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("escapes workspace"));
+        assert!(!target.exists());
     }
 
     #[tokio::test]

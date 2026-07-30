@@ -269,18 +269,42 @@ fn safe_patch_path(ctx: &ToolContext, path: &str) -> Result<PathBuf, ToolError> 
         return execution_error(format!("patch path `{path}` must be workspace-relative"));
     }
 
+    // A patch writes, and Git takes executable behaviour from its own config
+    // and hook files, so `.git` is off limits to this tool entirely.
+    if relative
+        .components()
+        .any(|component| matches!(component, Component::Normal(name) if name == ".git"))
+    {
+        return execution_error(format!(
+            "refusing to patch `{path}`: paths under `.git` are not writable by tools"
+        ));
+    }
+
     let target = ctx.workspace_root.join(relative);
     let root = ctx
         .workspace_root
         .canonicalize()
         .map_err(|error| ToolError::Execution(format!("cannot resolve workspace: {error}")))?;
+
+    // Walk with `symlink_metadata`, not `exists()`. `exists()` follows symlinks
+    // and so reports false for a *dangling* one, which stepped the walk past the
+    // link and left its target unchecked — a link committed in a repository
+    // could then redirect the write outside the workspace.
     let mut ancestor = target.as_path();
-    while !ancestor.exists() {
+    while ancestor.symlink_metadata().is_err() {
         ancestor = ancestor
             .parent()
             .ok_or_else(|| ToolError::Execution(format!("cannot resolve patch path `{path}`")))?;
     }
-    let canonical = ancestor.canonicalize()?;
+
+    // `canonicalize` resolves links, so an ancestor pointing outside the
+    // workspace is caught below and one pointing inside still works. A dangling
+    // link cannot be resolved, so it cannot be shown to be contained.
+    let canonical = ancestor.canonicalize().map_err(|_| {
+        ToolError::Execution(format!(
+            "patch path `{path}` resolves through a broken symlink"
+        ))
+    })?;
     if !canonical.starts_with(&root) {
         return execution_error(format!("patch path `{path}` escapes workspace"));
     }
@@ -419,6 +443,117 @@ mod tests {
             std::fs::read_to_string(dir.path().join("file.txt")).unwrap(),
             "actual\n"
         );
+    }
+}
+
+#[cfg(test)]
+mod path_confinement_tests {
+    use super::*;
+    use serde_json::json;
+    use tempfile::tempdir;
+
+    /// `safe_patch_path` already rejected absolute paths and every non-`Normal`
+    /// component, so the only way past it was a link the walk stepped over:
+    /// `exists()` reports false for a dangling symlink.
+    #[cfg(unix)]
+    #[test]
+    fn rejects_dangling_symlink_target() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(workspace.join("docs")).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        let escape_target = outside.join("absent.txt");
+        std::os::unix::fs::symlink(&escape_target, workspace.join("docs/latest")).unwrap();
+        let ctx = ToolContext::new(workspace);
+
+        let error = safe_patch_path(&ctx, "docs/latest").unwrap_err();
+        assert!(error.to_string().contains("symlink"));
+        assert!(!escape_target.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlinked_directory_escaping_the_workspace() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        let outside = dir.path().join("outside");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, workspace.join("linked")).unwrap();
+        let ctx = ToolContext::new(workspace);
+
+        let error = safe_patch_path(&ctx, "linked/new.txt").unwrap_err();
+        assert!(error.to_string().contains("escapes workspace"));
+    }
+
+    /// Symlinks are not inherently refused — only ones that cannot be shown to
+    /// stay inside the workspace. A link pointing within it still resolves.
+    #[cfg(unix)]
+    #[test]
+    fn still_allows_symlinked_directory_inside_the_workspace() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir_all(workspace.join("real")).unwrap();
+        std::os::unix::fs::symlink(workspace.join("real"), workspace.join("linked")).unwrap();
+        let ctx = ToolContext::new(workspace.clone());
+
+        assert_eq!(
+            safe_patch_path(&ctx, "linked/new.txt").unwrap(),
+            workspace.join("linked/new.txt")
+        );
+    }
+
+    #[test]
+    fn refuses_paths_under_git() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+
+        for path in [".git/config", ".git/hooks/pre-commit", "nested/.git/config"] {
+            let error = safe_patch_path(&ctx, path).unwrap_err();
+            assert!(
+                error.to_string().contains(".git"),
+                "expected `{path}` to be refused"
+            );
+        }
+    }
+
+    /// End-to-end: the tool reports the refusal and writes nothing.
+    #[tokio::test]
+    async fn patching_git_config_is_refused_end_to_end() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+        let config = dir.path().join(".git/config");
+        std::fs::write(&config, "[core]\n").unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let patch =
+            "*** Begin Patch\n*** Update File: .git/config\n@@\n-[core]\n+[diff]\n*** End Patch";
+
+        let result = ApplyPatchTool.call(&ctx, json!({"patch": patch})).await;
+
+        match result {
+            Ok(output) => assert!(output.is_error, "expected an error output"),
+            Err(error) => assert!(error.to_string().contains(".git")),
+        }
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), "[core]\n");
+    }
+
+    #[test]
+    fn still_allows_ordinary_new_and_existing_paths() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("existing.txt"), "hi\n").unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+
+        assert_eq!(
+            safe_patch_path(&ctx, "nested/deeper/new.txt").unwrap(),
+            dir.path().join("nested/deeper/new.txt")
+        );
+        assert_eq!(
+            safe_patch_path(&ctx, "existing.txt").unwrap(),
+            dir.path().join("existing.txt")
+        );
+        assert!(safe_patch_path(&ctx, ".gitignore").is_ok());
     }
 }
 
