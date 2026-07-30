@@ -652,4 +652,49 @@ mod tests {
         );
         assert!(parse_and_capture("definitely-not-a-language", "anything", "").is_err());
     }
+
+    #[test]
+    fn rust_raw_string_literal_is_classified_as_string() {
+        let code = "fn main() { let s = r\"raw\"; }";
+        let spans = highlight("rust", code, &HighlightTheme::default());
+        let raw = spans
+            .iter()
+            .find(|s| s.style.class == HighlightClass::String)
+            .expect("raw string literal should be classified as a String span");
+        assert!(raw.text(code).contains("raw"));
+    }
+
+    /// A blank line between statements carries no spans at all, which drives
+    /// `highlight_to_lines_uncached` through its `segments.is_empty()`
+    /// fallback for that one line while sibling lines still get real spans.
+    /// The line with `let y = x` also leaves unstyled text (` x`) after the
+    /// last span (`=`) before `line_end`, exercising the trailing-remainder
+    /// push for a non-blank line.
+    #[test]
+    fn highlight_to_lines_handles_blank_lines_and_trailing_unstyled_text() {
+        // Populates the process-global highlight cache; see `cache::lock_cache`.
+        let _guard = crate::cache::lock_cache();
+        let code = "fn main() {\n    let s = r\"raw\";\n\n    let y = x\n}\n";
+        let lines = highlight_to_lines("rust", code, &HighlightTheme::default());
+        // `code.lines()` yields 5 entries: the trailing "\n" does not add a 6th.
+        assert_eq!(lines.len(), 5);
+
+        // Blank line: exactly one segment, and it is the empty string (the
+        // `segments.is_empty()` fallback pushing the whole—empty—line span).
+        let blank = &lines[2];
+        assert_eq!(blank.len(), 1);
+        assert_eq!(blank[0].0, "");
+
+        // `    let y = x` has a keyword span ("let") and an operator span
+        // ("="), but the trailing " x" is unstyled and must still appear as
+        // its own trailing segment rather than being dropped.
+        let let_y_line = &lines[3];
+        let joined: String = let_y_line.iter().map(|seg| seg.0.as_str()).collect();
+        assert_eq!(joined, "    let y = x");
+        assert_eq!(
+            let_y_line.last().expect("line must have segments").0,
+            " x",
+            "unstyled text after the last span must be pushed as a trailing segment"
+        );
+    }
 }

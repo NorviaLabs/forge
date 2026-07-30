@@ -441,4 +441,135 @@ mod tests {
         }];
         assert!(eng.usage_ratio(&small) < 0.01);
     }
+
+    #[test]
+    fn maybe_offload_tool_content_passes_small_body_through_unchanged() {
+        let dir = tempdir().unwrap();
+        let eng = ContextEngine::new(dir.path().to_path_buf(), Uuid::new_v4());
+        let body = "small body".to_string();
+        let result = eng.maybe_offload_tool_content(body.clone()).unwrap();
+        assert_eq!(result, body, "small body must pass through untouched");
+    }
+
+    #[test]
+    fn maybe_offload_tool_content_replaces_large_body_with_in_context_summary() {
+        let dir = tempdir().unwrap();
+        let eng = ContextEngine::new(dir.path().to_path_buf(), Uuid::new_v4());
+        let big = "z".repeat(20_000);
+        let result = eng.maybe_offload_tool_content(big.clone()).unwrap();
+        assert_ne!(result, big, "large body must be replaced");
+        assert!(
+            result.contains("offloaded tool output"),
+            "expected offload summary, got: {result}"
+        );
+    }
+
+    #[test]
+    fn progress_path_is_absolute_when_configured_absolute() {
+        let dir = tempdir().unwrap();
+        let mut eng = ContextEngine::new(dir.path().to_path_buf(), Uuid::new_v4());
+        let absolute = dir.path().join("elsewhere/progress.json");
+        eng.config.progress_path = absolute.display().to_string();
+        assert_eq!(eng.progress_path(), absolute);
+    }
+
+    #[test]
+    fn progress_path_is_relative_to_workspace_by_default() {
+        let dir = tempdir().unwrap();
+        let eng = ContextEngine::new(dir.path().to_path_buf(), Uuid::new_v4());
+        assert_eq!(eng.progress_path(), dir.path().join(".forge/progress.json"));
+    }
+
+    #[test]
+    fn read_progress_returns_none_when_no_file_written_yet() {
+        let dir = tempdir().unwrap();
+        let eng = ContextEngine::new(dir.path().to_path_buf(), Uuid::new_v4());
+        assert!(eng.read_progress().unwrap().is_none());
+    }
+
+    #[test]
+    fn write_then_read_progress_round_trips() {
+        let dir = tempdir().unwrap();
+        let eng = ContextEngine::new(dir.path().to_path_buf(), Uuid::new_v4());
+        let doc = ProgressDocument::new(eng.session_id, "ship it");
+        eng.write_progress(&doc).unwrap();
+
+        let loaded = eng
+            .read_progress()
+            .unwrap()
+            .expect("progress file must exist");
+        assert_eq!(loaded.goal, "ship it");
+        assert_eq!(loaded.session_id, eng.session_id.to_string());
+    }
+
+    #[test]
+    fn load_agents_md_returns_empty_string_when_missing() {
+        let dir = tempdir().unwrap();
+        let eng = ContextEngine::new(dir.path().to_path_buf(), Uuid::new_v4());
+        assert_eq!(eng.load_agents_md(), "");
+    }
+
+    #[test]
+    fn load_agents_md_returns_file_contents_when_present() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("AGENTS.md"), "follow the rules").unwrap();
+        let eng = ContextEngine::new(dir.path().to_path_buf(), Uuid::new_v4());
+        assert_eq!(eng.load_agents_md(), "follow the rules");
+    }
+
+    /// When `goal` is left empty, `handoff_reset` falls back to the first
+    /// user message (truncated to 200 chars) instead of a blank goal.
+    #[test]
+    fn handoff_reset_falls_back_to_first_user_message_when_goal_is_empty() {
+        let dir = tempdir().unwrap();
+        let eng = ContextEngine::new(dir.path().to_path_buf(), Uuid::new_v4());
+        assert!(eng.goal.is_empty());
+        let messages = vec![
+            Message {
+                role: MessageRole::System,
+                content: "system setup, not a user goal".into(),
+                tool_call_id: None,
+                name: None,
+                thinking: None,
+                thinking_duration_secs: None,
+                tool_calls: vec![],
+            },
+            Message {
+                role: MessageRole::User,
+                content: "please refactor the parser".into(),
+                tool_call_id: None,
+                name: None,
+                thinking: None,
+                thinking_duration_secs: None,
+                tool_calls: vec![],
+            },
+        ];
+        let (doc, _new_msgs) = eng.handoff_reset(&messages, "ws", "prompt").unwrap();
+        assert_eq!(doc.goal, "please refactor the parser");
+    }
+
+    /// With no user message at all, the fallback is the literal string
+    /// `"continue task"` rather than an empty goal.
+    #[test]
+    fn handoff_reset_falls_back_to_continue_task_when_no_user_message_exists() {
+        let dir = tempdir().unwrap();
+        let eng = ContextEngine::new(dir.path().to_path_buf(), Uuid::new_v4());
+        let messages = vec![Message {
+            role: MessageRole::Assistant,
+            content: "no user turn here".into(),
+            tool_call_id: None,
+            name: None,
+            thinking: None,
+            thinking_duration_secs: None,
+            tool_calls: vec![],
+        }];
+        let (doc, _new_msgs) = eng.handoff_reset(&messages, "ws", "prompt").unwrap();
+        assert_eq!(doc.goal, "continue task");
+    }
+
+    #[test]
+    fn reduction_ratio_is_zero_for_zero_original_tokens() {
+        assert_eq!(reduction_ratio(0, 0), 0.0);
+        assert_eq!(reduction_ratio(0, 5), 0.0);
+    }
 }

@@ -559,4 +559,151 @@ mod tests {
         assert!(b > a);
         assert_eq!(j.last_seq().await.unwrap(), b);
     }
+
+    /// `directory()` must return the directory the journal's db file lives in,
+    /// not the db file path itself — callers use it to colocate sibling
+    /// session artifacts (e.g. offload files) with the journal.
+    #[tokio::test]
+    async fn directory_returns_the_parent_of_the_db_file() {
+        let dir = tempdir().unwrap();
+        let sid = new_session_id();
+        let j = Journal::open(dir.path(), sid).await.unwrap();
+        assert_eq!(j.directory(), dir.path());
+    }
+
+    #[tokio::test]
+    async fn append_validation_failed_is_recorded_and_replayed_as_an_event() {
+        let dir = tempdir().unwrap();
+        let sid = new_session_id();
+        let j = Journal::open(dir.path(), sid).await.unwrap();
+        j.append_validation_failed(sid, "bash", "missing required argument: command")
+            .await
+            .unwrap();
+
+        let state = j.replay(sid).await.unwrap();
+        assert_eq!(state.events.len(), 1);
+        let ev = &state.events[0];
+        assert_eq!(ev.event_type, JournalEventType::ToolValidationFailed);
+        assert_eq!(ev.payload["tool"], "bash");
+        assert_eq!(ev.payload["message"], "missing required argument: command");
+    }
+
+    #[tokio::test]
+    async fn append_model_request_is_recorded_verbatim() {
+        let dir = tempdir().unwrap();
+        let sid = new_session_id();
+        let j = Journal::open(dir.path(), sid).await.unwrap();
+        let meta = json!({"model": "mock-large", "prompt_tokens": 42});
+        j.append_model_request(sid, meta.clone()).await.unwrap();
+
+        let state = j.replay(sid).await.unwrap();
+        assert_eq!(state.events.len(), 1);
+        assert_eq!(state.events[0].event_type, JournalEventType::ModelRequest);
+        assert_eq!(state.events[0].payload, meta);
+    }
+
+    /// Default (no events) replays as `Running`; each explicit status must
+    /// round-trip to the matching `SessionStatus` variant, not just "some
+    /// status changed" — an N-arm enum written through one JSON shape, so
+    /// every variant gets its own journal to avoid later events masking an
+    /// earlier mis-wired arm.
+    #[tokio::test]
+    async fn append_status_updates_replayed_session_status() {
+        for status in [
+            SessionStatus::Completed,
+            SessionStatus::Failed,
+            SessionStatus::Cancelled,
+            SessionStatus::Interrupted,
+        ] {
+            let dir = tempdir().unwrap();
+            let sid = new_session_id();
+            let j = Journal::open(dir.path(), sid).await.unwrap();
+            j.append_status(sid, status).await.unwrap();
+            let state = j.replay(sid).await.unwrap();
+            assert_eq!(
+                state.status, status,
+                "status did not round-trip through replay"
+            );
+        }
+    }
+
+    /// `ModelResponse::text` may be empty while the turn still produced
+    /// content worth keeping in the reconstructed transcript — either
+    /// "thinking" text, tool calls, or both. Each shape below is a case in
+    /// the same `if` that decides whether to push an assistant `Message`,
+    /// so it must be tested with distinct, unambiguous fixtures: one where
+    /// only the `has_thinking` disjunct is true, one where only the
+    /// tool-calls disjunct is true, and one where the whole response is
+    /// empty and no message must be pushed at all.
+    #[tokio::test]
+    async fn replay_pushes_assistant_message_for_thinking_only_and_tool_calls_only_responses() {
+        let dir = tempdir().unwrap();
+        let sid = new_session_id();
+        let j = Journal::open(dir.path(), sid).await.unwrap();
+
+        let thinking_only = ModelResponse {
+            text: String::new(),
+            tool_calls: vec![],
+            usage: None,
+            thinking: Some("mulling it over".into()),
+        };
+        let tool_calls_only = ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "c-tc".into(),
+                name: "read_file".into(),
+                arguments: json!({"path": "a"}),
+            }],
+            usage: None,
+            thinking: None,
+        };
+        let fully_empty = ModelResponse {
+            text: String::new(),
+            tool_calls: vec![],
+            usage: None,
+            thinking: None,
+        };
+        // Whitespace-only thinking must be treated the same as absent
+        // thinking (trimmed empty), not as "has content".
+        let whitespace_thinking = ModelResponse {
+            text: String::new(),
+            tool_calls: vec![],
+            usage: None,
+            thinking: Some("   \n  ".into()),
+        };
+
+        for response in [
+            &thinking_only,
+            &tool_calls_only,
+            &fully_empty,
+            &whitespace_thinking,
+        ] {
+            j.append_model_response(sid, serde_json::to_value(response).unwrap())
+                .await
+                .unwrap();
+        }
+
+        let state = j.replay(sid).await.unwrap();
+        // All four ModelResponse events are always recorded for usage-metric
+        // bookkeeping, regardless of whether a message was pushed.
+        assert_eq!(state.model_responses.len(), 4);
+        // Only the thinking-only and tool-calls-only responses push a
+        // Message; fully-empty and whitespace-only-thinking do not.
+        assert_eq!(state.messages.len(), 2);
+
+        let thinking_message = &state.messages[0];
+        assert_eq!(thinking_message.role, MessageRole::Assistant);
+        assert_eq!(thinking_message.content, "");
+        assert_eq!(
+            thinking_message.thinking.as_deref(),
+            Some("mulling it over")
+        );
+        assert!(thinking_message.tool_calls.is_empty());
+
+        let tool_calls_message = &state.messages[1];
+        assert_eq!(tool_calls_message.role, MessageRole::Assistant);
+        assert!(tool_calls_message.thinking.is_none());
+        assert_eq!(tool_calls_message.tool_calls.len(), 1);
+        assert_eq!(tool_calls_message.tool_calls[0].id, "c-tc");
+    }
 }
