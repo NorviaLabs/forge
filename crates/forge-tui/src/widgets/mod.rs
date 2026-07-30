@@ -1,9 +1,7 @@
 pub mod bottom_panel;
-pub mod code_block;
 pub mod feedback;
 pub mod footer;
 pub mod input;
-pub mod queue;
 pub mod status;
 
 pub use bottom_panel::{BottomPanel, BottomPanelModel, BottomPanelState, BottomPanelTab};
