@@ -7,6 +7,8 @@ pub const CANVAS: Color = Color::Rgb(24, 23, 22);
 pub const CANVAS_DEEP: Color = Color::Rgb(17, 17, 16);
 pub const ACCENT: Color = Color::Rgb(83, 214, 227);
 pub const ACCENT_2: Color = Color::Rgb(125, 168, 245);
+pub const USER_MESSAGE_GUTTER_DARK: Color = Color::Rgb(96, 145, 220);
+pub const USER_MESSAGE_GUTTER_LIGHT: Color = Color::Rgb(37, 99, 175);
 pub const OK: Color = Color::Rgb(97, 207, 139);
 pub const WARN: Color = Color::Rgb(229, 185, 79);
 pub const DANGER: Color = Color::Rgb(239, 112, 120);
@@ -125,6 +127,14 @@ pub fn diff_hunk() -> Style {
 // palette and basic ANSI terminals still get hierarchy from modifiers/symbols.
 pub fn user_message_style() -> Style {
     user_message().fg(palette(Theme::default()).text)
+}
+
+pub fn user_message_gutter_style() -> Style {
+    user_message_gutter_style_for(Theme::default())
+}
+
+pub fn user_message_gutter_style_for(theme: Theme) -> Style {
+    user_message().fg(palette(theme).user_message_gutter)
 }
 
 pub fn assistant_answer_style() -> Style {
@@ -266,6 +276,7 @@ pub struct Palette {
     pub user_bg: Color,
     pub response_bg: Color,
     pub text_strong: Color,
+    pub user_message_gutter: Color,
 }
 
 pub fn palette(theme: Theme) -> Palette {
@@ -290,6 +301,7 @@ pub fn palette(theme: Theme) -> Palette {
             user_bg: USER_BG,
             response_bg: RESPONSE_BG,
             text_strong: TEXT_STRONG,
+            user_message_gutter: USER_MESSAGE_GUTTER_DARK,
         },
         Theme::Light => Palette {
             canvas: LIGHT_CANVAS,
@@ -311,6 +323,7 @@ pub fn palette(theme: Theme) -> Palette {
             user_bg: LIGHT_CANVAS,
             response_bg: LIGHT_CANVAS,
             text_strong: LIGHT_TEXT,
+            user_message_gutter: USER_MESSAGE_GUTTER_LIGHT,
         },
         Theme::System => Palette {
             canvas: Color::Reset,
@@ -332,6 +345,7 @@ pub fn palette(theme: Theme) -> Palette {
             user_bg: Color::Reset,
             response_bg: Color::Reset,
             text_strong: Color::White,
+            user_message_gutter: Color::Blue,
         },
         Theme::Ansi => Palette {
             canvas: Color::Black,
@@ -353,6 +367,7 @@ pub fn palette(theme: Theme) -> Palette {
             user_bg: Color::Black,
             response_bg: Color::Black,
             text_strong: Color::White,
+            user_message_gutter: Color::LightBlue,
         },
     }
 }
@@ -399,8 +414,18 @@ mod tests {
     }
 
     #[test]
-    fn basic_config() {
-        assert_eq!(Theme::default(), Theme::Dark);
+    fn user_message_gutter_style_uses_semantic_token() {
+        assert_eq!(
+            user_message_gutter_style().fg,
+            Some(USER_MESSAGE_GUTTER_DARK)
+        );
+    }
+
+    #[test]
+    fn user_message_gutter_is_distinct_from_info() {
+        let dark = palette(Theme::Dark);
+        assert_ne!(dark.user_message_gutter, dark.info);
+        assert_ne!(dark.user_message_gutter, dark.accent);
     }
 
     #[test]
