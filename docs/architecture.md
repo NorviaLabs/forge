@@ -1,893 +1,483 @@
 # Forge — Architecture
 
-**Version:** 0.13.0  
-**Status:** Aligned with shipped product  
-**Owner:** Mohit Ranka  
-**Last updated:** 25 Jul 2026  
-**Related PRD:** [prd.md](./prd.md)  
-**Related TUI UI:** [ui.md](./ui.md)  
-**Related designs:** [designs/README.md](./designs/README.md)  
+**Version:** 0.1.0-alpha.10
+**Status:** Describes the implementation as it stands. Planned-but-unbuilt work lives in [roadmap.md](./roadmap.md) and is not described here.
+**Owner:** Mohit Ranka
+**Last updated:** 30 Jul 2026
+**Related:** [prd.md](./prd.md) · [ui.md](./ui.md)
+
+> **How to read this document.** It describes what the code does today. Where the
+> implementation is partial, that is stated inline rather than smoothed over — see
+> [Durability](#7-durability) in particular. Anything not yet built is in
+> [roadmap.md](./roadmap.md); if a subsystem is named there and not here, it does
+> not exist in the codebase.
 
 ---
 
-## 1. Purpose
+## 1. What Forge is
 
-Forge is an open-source **AI coding agent harness**: loop control, context lifecycle, durable journal, tools (built-ins including **`git`**, `fffind`/`ffgrep`, `apply_patch`, MCP, `web_search`), governance hooks, and native Rust model transports. **Product surface:** full-screen TUI (`forge`).
+Forge is an **AI coding-agent harness**: a plan–act–observe loop, a typed tool bus,
+an event-sourced journal, context lifecycle management, a governance gate on the
+tool path, and native Rust transports to model providers.
 
-### How to read the diagrams
+The product surface is a single full-screen terminal application, `forge`, built on
+ratatui. There is one binary; the TUI is not optional and there is no daemon.
 
-High-level diagrams in this document use **Mermaid** (`flowchart`, `sequenceDiagram`). They illustrate **boundaries** (what sits outside the harness) and **user flows** (how a request moves through modules). They do not replace the prose steps or the Rust decisions table at the end.
+| Layer | Role |
+|-------|------|
+| **Model** | External reasoning engine — Anthropic, OpenAI, xAI Grok, OpenCode, Ollama, Codex subscriptions — reached through native HTTP/SSE transports |
+| **Harness** | Forge itself: loop, tools, context, journal, governance |
+| **Runtime** | The developer's machine. Tool execution is confined to the workspace; there is no container or eBPF isolation |
+| **Agent** | Model + harness + runtime, working a task end to end |
 
-| Convention | Meaning |
-|------------|---------|
-| Phase tags | Historical implementation phase labels |
-| Req IDs | e.g. `DUR-01`, `SEC-02` — map to [prd.md](./prd.md) |
-| No crate names in flow diagrams | Crate layout lives in §15 / architecture decisions |
+### Shipped capability
 
-The product sits in the agentic stack as follows:
+- Schema-validated tools via `serde` + `schemars`
+- Eight built-in tools: `read_file`, `write_file`, `apply_patch`, `bash`, `git`,
+  `fffind`, `ffgrep`, `web_search`
+- MCP client for stdio/HTTP tool servers, merged into the same registry
+- Event-sourced SQLite journal, written before every side effect
+- Context budgeting, payload offload, and handoff via `progress.json` / `AGENTS.md`
+- Governance gate: ACL filtering, approval prompts, redacted audit records
+- `/connect` profiles for API-key and OAuth providers, with a 0600 credential store
+- Skills: `SKILL.md` packs discovered from project and global directories
 
-| Layer | Role in Forge |
-|-------|----------------|
-| **Model** | External reasoning engine (Anthropic, OpenAI, xAI Grok, OpenCode, Ollama, and Codex subscriptions) via a unified native client |
-| **Harness** | Forge proper: plan–act–observe loop, tools, context, durability, security, feedback |
-| **Runtime** | Execution constraints: containers/microVMs, eBPF policy, host/CI process |
-| **Agent** | Complete system = model + Forge harness + runtime for end-to-end tasks |
-
-### Goals (shipped)
-
-1. Schema-validated tools (serde/schemars); high AI-codability  
-2. **MCP** tools in product path
-3. Event-sourced durable execution (SQLite journal) + crash resume  
-4. Context lifecycle: budgets, offload, handoff artifacts  
-6. Governance hooks: ACL filter, secret injection, audit, light sandbox  
-7. Surface: **TUI default**  
-8. Models: **native Rust HTTP/SSE transports** for all built-in live providers
-9. **`/connect`** for xAI Grok (OAuth) and OpenCode Go (API key)  
-10. TUI: history, inline slash + Tab, feedback strip, session chrome, activity feed  
-11. Built-in tools: `read_file`, `write_file`, `apply_patch`, `bash`, `fffind`, `ffgrep`, **`git`** (allowlisted subcommands), **`web_search`** (mock fixture default; live backends with API keys)
-12. **Skills**: optional `SKILL.md` packs from global/project skill dirs injected into the system prompt  
-
-Task lifecycle status is semantic session state, not transcript text. On reload,
-terminal states (`Completed`, `Failed`, `Cancelled`, `Interrupted`) are replayed
-from the journal. Legacy or stale `Running` sessions without a live executor are
-marked `Interrupted`; sessions without reliable task lifecycle metadata remain
-neutral/ready rather than guessed from assistant wording.
- 
-
-### Non-goals
+### Explicit non-goals
 
 | Non-goal | Rationale |
 |----------|-----------|
-| Training or replacing foundation models | Harness is scaffolding only |
-| Heavy DAG / role DSLs as the primary API | Prefer flat, typed function contracts |
-| IDE or messaging adapters | Keep the product focused on terminal workflows |
-| `forge repl` / `forge tui` / `--mock` product flags | TUI is default; mock is test-only via config env |
-| Dual native+worker production clients | One native Rust client |
-| Opaque execution without audit hooks | Governance audit records |
-
-Design index & status: [designs/README.md](./designs/README.md).
+| Training or serving models | The harness is scaffolding only |
+| Graph or role DSLs as the primary API | Flat typed tool contracts stay AI-codable |
+| IDE, chat, or CI adapters | The terminal is the product |
+| A second production model client | One native client; the mock is test-only |
+| Execution without an audit trail | Tool calls are journaled and audited |
 
 ---
 
-## 2. System context
+## 2. Crate layout
 
-### 2.1 External actors and systems
+Thirteen crates in one Cargo workspace. Line counts are approximate and included
+because the distribution is itself an architectural fact: two thirds of the
+codebase is terminal UI.
 
-Surfaces are interchangeable clients over one harness core. Externals are models, tools, identity/secrets, workspace, and durable storage.
-
-```mermaid
-flowchart TB
-  subgraph actors["Actors / surfaces"]
-    OP["Operator — TUI / CLI"]
-    CI["CI pipeline"]
-  end
-
-  subgraph forge["Forge harness"]
-    CORE["Core loop · tools · protocols"]
-    CTX["Context · handoffs"]
-    DUR["Durable journal · resume · HITL"]
-    GOV["Governance · ACL · vault inject"]
-    FB["Feedback — Generator / Evaluator"]
-    OBS["Observability — traces / metrics"]
-  end
-
-  subgraph externals["External systems"]
-    MDL["Model providers"]
-    MCP["MCP tool servers + built-ins"]
-    VAULT["Vault / IdP"]
-    SBX["Sandbox runtime<br/>container / eBPF Phase 2+"]
-    WS["Workspace FS<br/>AGENTS.md · progress.json · offload"]
-    JRN["Event journal store<br/>local or shared DB"]
-  end
-
-  OP --> CORE
-  CI --> CORE
-
-  CORE --> CTX
-  CORE --> DUR
-  CORE --> GOV
-  CORE --> FB
-  CORE --> OBS
-
-  CORE --> MDL
-  GOV --> VAULT
-  GOV --> MCP
-  GOV --> SBX
-  SBX --> WS
-  CTX --> WS
-  DUR --> JRN
-  OBS --> JRN
-```
-
-### 2.2 Trust boundaries
-
-Zones and what may cross each edge. Rules table below is normative.
-
-```mermaid
-flowchart LR
-  subgraph surface_zone["Surface zone"]
-    S["TUI"]
-  end
-
-  subgraph control_plane["Harness control plane"]
-    CP["Core · Context · Durable · Governance · Feedback"]
-  end
-
-  subgraph model_zone["Model zone"]
-    M["Provider APIs — TLS"]
-  end
-
-  subgraph tool_zone["Tool execution zone"]
-    T["Sandbox — least privilege"]
-  end
-
-  subgraph persist_zone["Persistence zone"]
-    P["Journal · audit · offload blobs"]
-  end
-
-  subgraph secrets_zone["Secrets zone"]
-    V["Vault / IdP — inject at call time only"]
-  end
-
-  S -->|"session requests<br/>no long-lived secrets in chat"| CP
-  CP -->|"prompts + tool schemas<br/>no raw credentials"| M
-  CP -->|"ACL-filtered tools<br/>schema-validated args"| T
-  CP -->|"record before side effect<br/>DUR-01"| P
-  V -->|"inject at model/tool call<br/>SEC-01"| CP
-  T -->|"scoped FS / network"| P
-```
-
-| Boundary | Rule |
-|----------|------|
-| Client surfaces → harness | Local process or CI session; no secrets stored via UI prompts |
-| Harness → model providers | TLS 1.3; credentials injected by gateway/proxy, **never** in model context |
-| Harness → MCP / tools | Dynamic ACL filter before tool listing; args schema-validated; audit logged |
-| Tool execution → host | Sandbox: non-root, restricted egress; stronger profiles Phase 2+ |
-| Harness → journal / audit | Append-only intent and results; redaction for secrets in default exports |
-
-### 2.3 Six harness primitives (mapped to modules)
-
-| Primitive | Owning module(s) |
-|-----------|------------------|
-| Loop control & orchestration | Core loop + Dual-sensor feedback |
-| Context engineering & window management | Context & workspace isolation engine |
-| State & persistence tracking | Durable execution engine + handoff artifacts |
-| Tool lifecycle & protocol routing | Declarative core & universal protocol layer |
-| Safety, governance & HITL | Zero-trust governance gateway |
-| Observability, verification & feedback | Dual-sensor feedback + OTEL |
-
----
-
-## 3. Package layout (logical modules)
-
-Five core modules from the PRD, plus thin surface adapters.
-
-| Package / module | Owns | Does not own |
-|------------------|------|--------------|
-| **`core`** — Declarative core & universal protocol | Tool registration (serde + schemars schemas), MCP bridge, model client abstraction, agent loop driver | UI widgets, vault backends, eBPF probes |
-| **`durable`** — Native durable execution engine | Append-only event journal, step records, replay/recovery, durable HITL wait states, session resume IDs | Prompt text assembly, tool side effects themselves |
-| **`context`** — Context & workspace | Token budgeting, payload offload URIs, compaction/reset policy, `progress.json` / `AGENTS.md` handoffs | Long-term enterprise IdP |
-| **`governance`** — Zero-trust gateway & sandbox | OAuth2 scope evaluation, secret vault injection, tool ACL filter, audit log records, sandbox/eBPF policy hooks | Model selection UX, Evaluator prompts |
-| **`feedback`** — Dual-sensor feedback | Generator/Evaluator orchestration, deterministic sensor runners (lint/test), repair task routing | Durable journal storage schema |
-| **`surfaces`** — Product adapter | TUI, status rendering | Business logic of tools or durability |
-| **`obs`** — Observability | OTEL spans/metrics (model, tool, step), OTLP export hooks | Business decisions |
+| Crate | LOC | Internal dependencies | Owns |
+|-------|----:|----------------------|------|
+| `forge-tui` | 33,189 | config, connect, core, model, syntax, tools, types | Full-screen TUI: chat, overlays, file explorer, diff and source views, model picker, `/connect` flow |
+| `forge-connect` | 6,085 | *none* | Provider profiles, credential store, model catalogue, cost lookup, OAuth device flows |
+| `forge-tools` | 2,985 | config, syntax, types | Built-in tools, the `Tool` trait, registry, workspace path confinement |
+| `forge-model` | 2,588 | config, types | `ModelClient`; native HTTP/SSE transports and wire normalisation; test mock |
+| `forge-core` | 1,884 | config, context, durable, governance, model, tools, types | Agent loop, session lifecycle, tool orchestration |
+| `forge-config` | 1,315 | types | `forge.toml` and env loading, provider migration, config trust layers |
+| `forge-syntax` | 760 | *none* | Tree-sitter highlighting for diff and code views |
+| `forge-durable` | 562 | types | SQLite event journal, append and replay |
+| `forge-governance` | 493 | types | ACL, approval policy, argument redaction, audit log |
+| `forge-mcp` | 475 | config, tools, types | MCP client and remote tool registration |
+| `forge-context` | 444 | types | Token budget, offload, handoff artefacts, skills loading |
+| `forge-types` | 372 | — | Shared session, tool, message and journal types |
+| `forge-cli` | 200 | 8 crates | The `forge` binary: startup wiring only |
 
 ### Dependency direction
 
 ```mermaid
 flowchart TB
-  SUR["surfaces"]
-  CORE["core"]
-  DUR["durable"]
-  CTX["context"]
-  GOV["governance"]
-  FB["feedback"]
-  OBS["obs"]
-  SBX["sandbox runtime"]
-  TYPES["types / schemas"]
+  CLI["forge-cli"]
+  TUI["forge-tui"]
+  CORE["forge-core"]
+  GOV["forge-governance"]
+  TOOLS["forge-tools"]
+  MODEL["forge-model"]
+  MCP["forge-mcp"]
+  CTX["forge-context"]
+  DUR["forge-durable"]
+  CONNECT["forge-connect"]
+  SYNTAX["forge-syntax"]
+  TYPES["forge-types"]
+  CONFIG["forge-config"]
 
-  SUR --> CORE
-  CORE --> DUR
-  CORE --> CTX
-  CTX --> DUR
+  CLI --> TUI
+  TUI --> CORE
   CORE --> GOV
-  GOV --> SBX
-  CORE --> FB
-  FB -->|"spawn Evaluator sessions"| CORE
-  SUR -.-> OBS
-  CORE -.-> OBS
-  DUR -.-> OBS
-  CTX -.-> OBS
-  GOV -.-> OBS
-  FB -.-> OBS
-  TYPES -.-> CORE
-  TYPES -.-> DUR
-  TYPES -.-> CTX
-  TYPES -.-> GOV
+  CORE --> TOOLS
+  CORE --> MODEL
+  CORE --> CTX
+  CORE --> DUR
+  MCP --> TOOLS
+  TUI -.->|"see note"| TOOLS
+  TUI -.->|"see note"| MODEL
+  TUI -.->|"see note"| CONNECT
+  TOOLS --> SYNTAX
+  TYPES --> CORE
+  TYPES --> TOOLS
+  TYPES --> MODEL
+  TYPES --> DUR
+  TYPES --> GOV
+  TYPES --> CTX
+  CONFIG --> CORE
 ```
 
-Solid edges are functional dependencies. Dotted edges into `obs` mean modules emit telemetry; `obs` does not own business decisions. Shared types flow outward only.
+The graph is acyclic. `forge-types` is a thin shared vocabulary — 372 lines, no
+dependencies of its own — and everything except `forge-connect` and `forge-syntax`
+uses it.
 
-**Rules:**
+**Two things about this graph are worth stating plainly rather than leaving to be
+discovered:**
 
-1. `surfaces` must not call MCP servers or model APIs directly—only via `core`.  
-2. Side effects (tools, model calls) execute only **after** `durable` has journaled the intent (DUR-01).  
-3. `governance` is on the tool path: list/filter → authorize → inject secrets → execute → audit.  
-4. `context` is the only module that may rewrite conversation payloads for the next model call.  
-5. `feedback` may start isolated sessions (clean Evaluator context) through `core`, not by mutating Generator history in place.  
-6. No circular imports; shared types live in a thin `types` / schema package.
+**`forge-tui` reaches past `forge-core`.** It depends directly on `forge-tools`,
+`forge-model` and `forge-connect` (the dotted edges above). Concretely: it builds
+`ModelRequest` values itself, and it invokes the `git` tool directly for
+surface-local commands such as `/sync`, without going through the agent loop. Those
+invocations therefore do not pass the governance gate and are not journaled. That is
+a deliberate choice — a keystroke-initiated `git status` is an operator action, not
+an agent action — but it means **the governance gate is a chokepoint for
+model-initiated tool calls only**, not for everything the process can do. See
+[§6](#6-governance).
+
+**`forge-connect` shares no types.** It is the only substantial crate with zero
+internal dependencies, not even `forge-types`. It hands credentials to
+`forge-model` as environment-variable pairs rather than through a typed interface,
+so the coupling between the two is by string agreement and is not checked by the
+compiler. The reason is the sync/async split described in [§9](#9-the-syncasync-split).
 
 ---
 
-## 4. Core concepts
+## 3. Core concepts
 
-### 4.1 Session
+### Session
 
-A **session** is a durable unit of agent work (one interactive chat or one CI job).
+A session is one durable unit of agent work, backed by its own SQLite journal at
+`.forge/sessions/{uuid}.db`.
 
-| Field / concern | Description |
-|-----------------|-------------|
-| `session_id` | Stable ID for resume across process restarts |
-| `surface` | `tui` |
-| `model_config` | Provider + model id (single config switch) |
-| `workspace_root` | Primary repo / working directory; **defaults to process cwd** if unset |
-
-| `role` | Generator \| Evaluator \| (future specialized roles) |
-| `journal_cursor` | Last committed event sequence number |
-| `context_budget` | Token capacity and current usage estimate |
-| `acl_principal` | Identity/role/scopes for tool filtering |
-| `status` | `running` \| `awaiting_hitl` \| `completed` \| `failed` \| `compacted` |
-
-**Lifecycle:** create → (optional recover from journal) → plan–act–observe loop → terminal state. HITL pauses set `awaiting_hitl` without holding compute (DUR-03).
-
-### 4.2 Tools
-
-| Aspect | Design |
-|--------|--------|
-| **Contract** | Each tool: name, description, serde/schemars input type, typed output serialization (CORE-01) |
-| **Registry** | In-process built-ins + MCP-discovered tools, merged then ACL-filtered (SEC-02) |
-| **Built-ins (coding default)** | `read_file`, `write_file`, `apply_patch`, `bash`, `fffind`, `ffgrep`, **`git`** (allowlisted subcommands: status, diff, log, add, commit, push, …); subject to sandbox policy |
-| **Built-ins (web)** | **`web_search`** — public web query via pluggable backends (`network` class); keys from env/vault only ([web-search-tool.md](./designs/web-search-tool.md)) |
-| **MCP** | Stdio/HTTP MCP servers for external integrations (CORE-02) |
-| **Validation** | Invalid args → structured error + automatic validation retry prompt to the model |
-| **Execution path** | Journal intent → ACL/sandbox → inject credentials → run → journal result → context ingest (or offload) |
-
-### 4.3 LLM stream events (adapter layer)
-
-Normalized events from any provider stream (provider-agnostic):
-
-| Event | Meaning |
+| Field | Meaning |
 |-------|---------|
-| `text_delta` | Assistant text chunk |
-| `tool_call_start` / `tool_call_delta` / `tool_call_end` | Structured tool invocation |
-| `usage` | Token usage (prompt/completion) for budgeting |
-| `message_end` | Turn complete |
-| `error` | Provider/transport failure |
+| `session_id` | Stable UUID; the journal filename |
+| `workspace_root` | Working directory; defaults to process cwd |
+| `status` | `Running` \| `AwaitingHitl` \| `Completed` \| `Failed` \| `Cancelled` \| `Interrupted` |
+| `messages` | Active conversation window |
+| `pending_hitl` | Set while a tool call awaits approval |
 
-Adapters map vendor streams → this envelope so `core` and `surfaces` never branch on provider.
+Task status is semantic session state, not inferred from transcript text. On reload,
+terminal states replay from the journal; a stale `Running` session with no live
+executor becomes `Interrupted` rather than appearing to still be working.
 
-`NativeModelClient` routes provider/model ids into OpenAI-compatible, Anthropic Messages, or Codex Responses transports and maps their streams into this envelope. The agent loop never branches on vendor strings.
+### Tools
 
-### 4.4 Agent events (UI / surface layer)
+Every tool implements one trait in `forge-tools`:
 
-Events surfaces consume (may be projected from journal + live stream):
-
-| Event | Meaning |
-|-------|---------|
-| `session_status` | Status transitions including HITL wait |
-| `assistant_delta` | Display streaming text |
-| `tool_started` / `tool_finished` | Tool visibility with redacted args |
-| `context_lifecycle` | Offload, compaction, or hard reset/handoff |
-| `evaluator_report` | Structured failure/repair from Evaluator |
-| `trace_link` | Correlation id for OTEL |
-
-### 4.5 Event journal (durable)
-
-Append-only log (SQLite single-node; Postgres multi-instance):
-
-| Record types | Phase | Purpose |
-|--------------|-------|---------|
-| `session_created`, `user_message`, `model_*`, `tool_*`, `tool_validation_failed`, `state_patch`, `session_status` | **1** | Core journal ([durable-execution.md](./designs/durable-execution.md)) |
-| `hitl_wait` / `hitl_resume` | **2** | Durable HITL ([durable-hitl.md](./designs/durable-hitl.md)) |
-| `context_reset` | **2** | Handoff ([context-lifecycle.md](./designs/context-lifecycle.md)) |
-
-Envelope + Phase 1 replay: [designs/durable-execution.md](./designs/durable-execution.md).
-
-**Replay rule:** On restart, rebuild in-memory session; for completed `tool_intent`s, return cached `tool_result` without re-execution; do not re-call LLM for completed model steps (DUR-02).
-
-### 4.6 Handoff artifacts
-
-| Artifact | Role |
-|----------|------|
-| `progress.json` | Machine-readable goal, completed steps, blockers, next actions |
-| `AGENTS.md` | Project memory / operator instructions loaded into fresh context |
-| Git history | Authoritative workspace state across resets |
-
-At ~80% context capacity: write handoff → clear active window → re-init with progress + workspace only (CTX-02). Large tool payloads (> configurable token threshold) become file URIs (CTX-01).
-
-### 4.7 Generator vs. Evaluator
-
-| Agent | Context | Tools | Output |
-|-------|---------|-------|--------|
-| **Generator** | Task + workspace + progress | Implementation tools (edit, bash, etc.) | Artifacts / code changes |
-| **Evaluator** | Clean window; criteria + artifact pointers | Lint/test runners, optional browser automation | Structured bug/repair reports |
-
-Harness routes Evaluator failures back to Generator as repair tasks until criteria pass (EVAL-01). Pattern is optional per run config (decaying scaffolding).
-
----
-
-## 5. Runtime flows
-
-### 5.1 Process bootstrap
-
-```mermaid
-flowchart TD
-  A[Load config: model, journal, ACL, surface] --> B[Init observability + governance clients]
-  B --> C{Resume session_id?}
-  C -->|yes| D[Open journal + replay to cursor]
-  C -->|no| E[Create journal + session]
-  D --> F[Mount workspace]
-  E --> F
-  F --> G[Register built-ins · discover MCP · ACL filter]
-  G --> H[Load AGENTS.md + progress.json]
-  H --> I[Bind surface: TUI]
-  I --> J[Accept loop or single-shot job]
-```
-
-1. Load configuration (model provider switch, journal backend, ACL policy, surface mode).  
-2. Initialize OTEL (if enabled), governance clients (vault/IdP when configured).  
-3. Open or create event journal; if `session_id` resume → **replay** to restore state.  
-4. Mount workspace.  
-5. Discover MCP tools; apply ACL filter; register built-ins.  
-6. Load `AGENTS.md` / last `progress.json` into context assembler.  
-7. Bind surface (TUI) and enter accept-loop.
-
-### 5.2 One user message (happy path)
-
-Interactive operator path (TUI or equivalent). Journal-before-side-effect applies to model and tools (`DUR-01`).
-
-```mermaid
-sequenceDiagram
-  participant S as Surface
-  participant C as Core loop
-  participant X as Context
-  participant D as Durable journal
-  participant M as Model provider
-  participant G as Governance
-  participant T as Tool / sandbox
-
-  S->>C: user message
-  C->>D: journal user_message
-  C->>X: assemble context
-  X-->>C: messages + budget
-  C->>D: journal model_request
-  C->>M: completion / stream
-  M-->>S: assistant deltas (via core)
-  M-->>C: tool_calls (optional)
-  loop each tool call
-    C->>D: journal tool_intent
-    C->>G: authorize + inject secrets
-    G->>T: execute
-    T-->>C: result
-    C->>D: journal tool_result
-    C->>X: ingest or offload
-  end
-  C->>S: turn complete / continue loop
-```
-
-1. Surface submits user message → journal `user_message`.  
-2. `context` assembles messages (system + handoff + recent turns + tool refs).  
-3. Journal `model_request` → call model via unified client → stream events to surface.  
-4. On tool calls: for each tool  
-   - journal `tool_intent`  
-   - `governance` authorize + inject secrets  
-   - execute in sandbox  
-   - journal `tool_result`  
-   - `context` ingest or offload  
-5. Continue model turns until terminal assistant message or HITL pause.  
-6. Emit OTEL spans for model/tool/step; update token budget.
-
-### 5.3 Agent loop (control logic)
-
-```mermaid
-flowchart TD
-  START([Loop start]) --> BUDGET{context_usage ≥ threshold?}
-  BUDGET -->|yes| HANDOFF[Write progress.json / AGENTS.md<br/>journal context_reset · clear · rehydrate]
-  HANDOFF --> ASSEMBLE
-  BUDGET -->|no| ASSEMBLE[Assemble context]
-  ASSEMBLE --> MODEL[Model step — journaled]
-  MODEL --> TOOLS{tool_calls?}
-  TOOLS -->|yes| EXEC[Authorize → execute → journal → ingest/offload]
-  EXEC --> TOOLS
-  TOOLS -->|no| EVAL{eval gate enabled?}
-  EVAL -->|yes| SENSORS[Deterministic sensors ± Evaluator session]
-  SENSORS --> REPAIR{fail?}
-  REPAIR -->|yes| ENQ[Enqueue repair tasks for Generator]
-  REPAIR -->|no| HITL
-  ENQ --> HITL
-  EVAL -->|no| HITL{HITL required?}
-  HITL -->|yes| WAIT[Journal hitl_wait · release compute]
-  WAIT --> STOP([Pause until resume token])
-  HITL -->|no| TERM{max turns or success?}
-  TERM -->|no| BUDGET
-  TERM -->|yes| DONE([Terminal])
-```
-
-Turn limits, cost caps (`maxTurns`-style), and `disallowedTools` are feedforward constraints applied before model listing/execution.
-
-**Phase 1:** tool calls within a single model turn run **sequentially** (simpler journal ordering). Parallel tool execution is deferred (see [designs/agent-loop.md](./designs/agent-loop.md)).
-
-### 5.4 Crash recovery
-
-```mermaid
-sequenceDiagram
-  participant P as Process start
-  participant D as Durable journal
-  participant C as Core loop
-  participant T as Tools / model
-
-  P->>D: open session_id journal
-  D-->>C: replay to last consistent cursor
-  alt incomplete tool_intent without tool_result
-    C->>C: fail-safe: mark failed or retry if idempotent
-  else completed tool / model steps
-    C->>C: serve cached results — no re-execution
-  end
-  C->>C: resume at next work or HITL wait
-  Note over T: Do not re-call LLM for completed responses (DUR-02)
-```
-
-1. Process starts with existing `session_id`.  
-2. Replay journal to last consistent cursor.  
-3. Incomplete `tool_intent` without `tool_result`: policy is **fail-safe**—do not guess; mark failed or retry only if tool is declared idempotent.  
-4. Completed steps: serve cached results; never re-invoke LLM for completed responses.  
-5. Resume loop at next pending work or HITL wait.
-
-### 5.5 Durable HITL
-
-```mermaid
-sequenceDiagram
-  participant C as Core
-  participant G as Governance
-  participant D as Durable journal
-  participant S as Surface / approver
-  participant T as Tool
-
-  C->>G: classify high-risk tool
-  G-->>C: require HITL
-  C->>D: journal hitl_wait (redacted payload)
-  Note over C: release compute — process may exit
-  S->>D: approval or deny token
-  D->>C: journal hitl_resume
-  alt approved
-    C->>T: execute (after re-authorize as needed)
-  else denied
-    C->>C: record denial · continue or fail per policy
-  end
-```
-
-1. High-risk tool classified by policy → journal `hitl_wait` with approval payload (redacted).  
-2. Controller process may exit; no busy-wait compute.  
-3. Approval arrives from the TUI → journal `hitl_resume` → continue execution.
-
-
-### 5.7 Context reset and handoff
-
-Triggered when usage crosses the configured threshold (default ~80% of capacity) or via explicit `/compact` (`CTX-01`, `CTX-02`).
-
-```mermaid
-sequenceDiagram
-  participant C as Core
-  participant X as Context
-  participant D as Durable journal
-  participant WS as Workspace
-
-  C->>X: usage ≥ threshold
-  X->>WS: write progress.json (+ AGENTS.md as needed)
-  C->>D: journal context_reset (artifact pointers)
-  X->>X: clear active conversation window
-  X->>WS: rehydrate from progress + AGENTS.md + git state
-  X-->>C: slim context for next model step
-```
-
-### 5.8 Generator and Evaluator (opt-in)
-
-Default is Generator-only. When enabled, Evaluator runs in an **isolated** session with a clean context (`EVAL-01`).
-
-```mermaid
-sequenceDiagram
-  participant Gen as Generator session
-  participant FB as Feedback
-  participant Ev as Evaluator session
-  participant Sen as Deterministic sensors
-
-  Gen->>Gen: implement task (tools / workspace)
-  Gen->>FB: step boundary / gate
-  FB->>Sen: lint / tests
-  Sen-->>FB: pass or fail report
-  opt LLM Evaluator enabled
-    FB->>Ev: clean context + criteria + artifact pointers
-    Ev-->>FB: structured repair report
-  end
-  alt failures
-    FB->>Gen: enqueue repair tasks
-  else pass
-    FB-->>Gen: continue or complete
-  end
-```
-
-### 5.9 Slash commands / surface-local commands (non-LLM)
-
-Surface-local commands do not hit the model.
-
-- **Phase 1 catalog (canonical):** [designs/tui-commands.md](./designs/tui-commands.md)  
-- **Phase 2 commands:** owned by [durable-hitl.md](./designs/durable-hitl.md), [context-lifecycle.md](./designs/context-lifecycle.md), [workspace-isolation.md](./designs/workspace-isolation.md) — not listed in the Phase 1 catalog.
-
----
-
-## 6. Data model (messages & journal)
-
-### 6.1 Conversation messages (in-context)
-
-| Role | Content |
-|------|---------|
-| `system` | Assembled: product policy + `AGENTS.md` + runtime constraints |
-| `user` | Operator input; may include structured repair tasks |
-| `assistant` | Text + tool_call parts |
-| `tool` | Result body **or** offload reference URI + short summary |
-
-Messages older than the active window are not re-injected after hard reset; only handoff artifacts + new turns.
-
-### 6.2 Offload blob store
-
-Large tool outputs stored as files (workspace `.forge/offload/` or object store); journal and tool messages hold URIs + hashes + token estimates.
-
-### 6.3 Progress document (schema sketch)
-
-Default path: **`.forge/progress.json`** under the workspace root (configurable). Full rules: [designs/context-lifecycle.md](./designs/context-lifecycle.md).
-
-```json
-{
-  "version": 1,
-  "goal": "string",
-  "completed": ["..."],
-  "in_progress": "string",
-  "blockers": ["..."],
-  "next_actions": ["..."],
-  "workspace_ref": "git_sha",
-  "session_id": "…",
-  "updated_at": "ISO-8601"
+```rust
+trait Tool {
+    fn name(&self) -> &str;
+    fn description(&self) -> &str;
+    fn input_schema(&self) -> serde_json::Value;   // schemars-generated
+    fn side_effect_class(&self) -> SideEffectClass;
+    fn idempotent(&self) -> bool;
+    async fn call(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError>;
 }
 ```
 
----
+Registration is a single `HashMap` insert keyed on `name()`, so adding a built-in
+means implementing the trait and pushing it into `default_builtins()`. There is no
+central enum to update and no per-tool rendering code in the TUI — tool calls render
+generically by name.
 
-## 7. Project instructions & workspace loading
+**Paths are confined structurally.** `ToolContext` resolves any tool-supplied path
+for read or write, canonicalising it and rejecting anything that escapes the
+workspace root — which closes symlinked-ancestor escapes, not just `../` — and
+writes into `.git` are refused outright.
 
-| Source | When loaded | Use |
-|--------|-------------|-----|
-| `AGENTS.md` (repo root or configured path) | Session start; post-reset | Standing project memory / operator rules |
-| Skills (`SKILL.md`) | Session start; post-reset | Reusable instruction packs appended to the system prompt |
-| `progress.json` | Resume; post-reset | Task continuity across long horizons |
-| Git status | Each assemble (summarized) | Ground truth of files |
-| Surface system overlays | Per surface | TUI vs CI policy differences |
+`idempotent` is declared on every tool but is **not currently consulted** by
+crash recovery; see [§7](#7-durability).
 
-**Skills discovery** (project overrides global on name collision):
+### Model stream events
 
-| Path | Scope |
-|------|-------|
-| `<workspace>/.forge/skills/<name>/SKILL.md` | Project |
-| `~/.config/forge/skills/<name>/SKILL.md` (or OS config dir equivalent) | Global |
+Provider streams normalise to one envelope so neither the loop nor the UI branches
+on vendor: `text_delta`, `tool_call_start` / `_delta` / `_end`, `usage`,
+`message_end`, `error`. `NativeModelClient` routes a provider/model id into the
+OpenAI-compatible, Anthropic Messages, or Codex Responses transport.
 
-Discovery order and override rules should be deterministic and documented in config (single root of truth for path globs).
+### Journal
 
----
+Append-only SQLite via `sqlx`. Event types, all present in
+`forge_types::JournalEventType`: `SessionCreated`, `UserMessage`, `ModelRequest`,
+`ModelResponse`, `ToolIntent`, `ToolResult`, `ToolValidationFailed`, `StatePatch`,
+`SessionStatus`, `HitlWait`, `HitlResume`, `ContextReset`.
 
-## 8. UI / multi-surface architecture
-
-```mermaid
-flowchart TB
-  subgraph product["Product surface"]
-    TUI["TUI — forge"]
-  end
-
-  subgraph harness["Harness core — single implementation"]
-    LOOP[Agent loop]
-    MCP[MCP tools]
-    CTX[Context lifecycle]
-    DUR[Durable journal]
-    GOV[Governance]
-  end
-
-  subgraph shared["Shared backends"]
-    M[Native model / mock tests]
-    TOOLS[Built-ins + fff + git + web_search + MCP]
-    J[Journal SQLite]
-    WS[Workspace]
-  end
-
-  TUI --> LOOP
-  HD --> LOOP
-  LOOP --> CTX
-  LOOP --> DUR
-  LOOP --> GOV
-  LOOP --> M
-  LOOP --> MCP
-  GOV --> TOOLS
-  DUR --> J
-  CTX --> WS
-  TOOLS --> WS
-```
-
-| Surface | Role | Status |
-|---------|------|--------|
-| **TUI** | Default interactive product (`forge`) | Shipped |
-| **Connect** | `/connect` (TUI) | Shipped |
-| **Feedback / obs** | Optional crates for embedders | Library only |
-
-**Principle:** One harness core powers the TUI product surface.
-
-Streaming display rules: tool names + redacted args; never paint secrets; large payloads show URI + summary.
+Rows carry a `schema_version` column. It is written as `1` and is not yet branched
+on during replay — the field exists so a future layout change can gate parsing, but
+today it is inert.
 
 ---
 
-## 9. Configuration & credentials
-
-### 9.1 Configuration
-
-| Concern | Mechanism |
-|---------|-----------|
-| Model provider + model id | Single config key (env/file); no code changes to switch |
-| Journal backend | SQLite path or Postgres DSN |
-| MCP servers | Declarative list (command/URL) |
-| Tool ACLs | Role/scope → allow/deny tool name patterns |
-| Context thresholds | Offload token limit; reset at 80% capacity (configurable) |
-| Sandbox | Container image, network policy, eBPF profile (Phase 2+) |
-| Surfaces | Which adapters to enable |
-| Workspace root | Optional; **defaults to process cwd** when omitted |
-
-### 9.2 Credentials
-
-| Rule | Detail |
-|------|--------|
-| **SEC-01** | Secrets live in vault (or env for dev); gateway injects at tool/model call time |
-| Never in context | API keys must not appear in prompts, journal plaintext fields that are model-visible, or OTEL attributes |
-| TLS 1.3 | All harness ↔ provider / MCP proxy / sandbox control plane traffic |
-| TUI | Does not collect long-lived provider passwords into chat history |
-
----
-
-## 10. Security architecture
-
-Tool discovery and invocation both pass through governance. Secrets never enter the model-visible context.
+## 4. Process bootstrap
 
 ```mermaid
 flowchart TD
-  subgraph list_path["tools/list path — SEC-02"]
-    L1[Merge built-in + MCP catalog] --> L2[ACL filter by principal]
-    L2 --> L3[Model sees only allowed tools]
-  end
-
-  subgraph call_path["tool_call path"]
-    C1[Schema validate CORE-01] --> C2[Policy classify: allow / deny / HITL]
-    C2 -->|deny| C2D[Reject + audit]
-    C2 -->|HITL| C2H[Durable hitl_wait]
-    C2 -->|allow| C3[Vault inject SEC-01]
-    C3 --> C4[Sandbox execute<br/>container / eBPF Phase 2+]
-    C4 --> C5[Audit log + OTEL redacted]
-  end
-
-  L3 -.->|model may request only listed tools| C1
+  A["Load config: user forge.toml, then ./forge.toml, then env"] --> B["Resolve workspace root — cwd unless overridden"]
+  B --> C{"Resume an existing session_id?"}
+  C -->|yes| D["Open journal, replay to last cursor"]
+  C -->|no| E["Create journal and session"]
+  D --> F["Register built-in tools"]
+  E --> F
+  F --> G["Discover MCP servers from config, merge tools"]
+  G --> H["Load AGENTS.md, skills, progress.json"]
+  H --> I["Bind TUI and enter the event loop"]
 ```
+
+Config load order is user-level, then auto-discovered project `forge.toml`, then
+environment overrides — with the trust distinction in [§8](#8-configuration-and-credentials).
+
+---
+
+## 5. One user message
 
 ```mermaid
 sequenceDiagram
-  participant M as Model
-  participant C as Core
-  participant G as Governance
-  participant V as Vault
-  participant S as Sandbox
-  participant A as Audit / OTEL
+  participant S as TUI
+  participant C as forge-core loop
+  participant X as forge-context
+  participant D as journal
+  participant M as provider
+  participant G as governance
+  participant T as tool
 
-  M->>C: tool_call args
-  C->>C: schema validate
-  C->>G: authorize principal + tool
-  alt denied
-    G-->>C: deny
-    C->>A: audit deny
-  else HITL required
-    G-->>C: hitl
-    C->>A: audit wait
-  else allowed
-    G->>V: fetch secrets for call
-    V-->>G: short-lived material
-    G->>S: execute with injected env / headers
-    S-->>C: result
-    C->>A: audit success redacted
+  S->>C: user message
+  C->>D: append user_message
+  C->>X: assemble context
+  X-->>C: messages + budget
+  C->>D: append model_request
+  C->>M: stream completion
+  M-->>S: text deltas
+  M-->>C: tool calls
+  loop each tool call, sequentially
+    C->>C: validate args against schema
+    C->>G: authorize(call, side_effect_class)
+    alt denied or unrecognised verdict
+      G-->>C: refuse
+      C->>D: append tool_intent + error result
+    else approval required
+      G-->>C: hitl
+      C->>D: append hitl_wait, set AwaitingHitl
+    else allowed
+      C->>D: append tool_intent
+      C->>T: execute
+      T-->>C: output
+      C->>D: append tool_result
+      C->>X: ingest or offload
+    end
   end
+  C->>S: turn complete or continue
 ```
 
-Sandbox defaults (NFR): non-root, restricted egress, read-only root FS.
-
-Immutable audit log: tool invocations, arg payloads (redacted), model response metadata, and policy decisions; export via OTLP when configured.
-
----
-
-## 11. Observability
-
-| Signal | Content |
-|--------|---------|
-| OTEL traces | Spans: session step, model call, tool call, context reset, HITL wait (OBS-01) |
-| Metrics | Latency, tokens, tool error rates, journal write latency |
-| Logs | Structured; correlation with `session_id` + trace id |
-| Targets | Harness overhead &lt; 15 ms; journal write &lt; 5 ms; controller &lt; 256 MB/session active |
+Tool calls within a turn run **sequentially**; parallel execution is not
+implemented. At roughly 80% of context capacity the loop writes handoff artefacts,
+journals a `context_reset`, clears the window, and rehydrates from
+`progress.json` + `AGENTS.md` + git state.
 
 ---
 
-## 12. Testing strategy
+## 6. Governance
 
-| Layer | What |
-|-------|------|
-| **Unit** | Tool schema (serde/schemars) validation; ACL filter; context budget math; journal append/replay pure logic |
-| **Component** | Mock model + mock tools; full loop with journal; crash mid-tool recovery |
-| **Integration** | Real MCP server fixture; multi-provider smoke (config-only switch) |
-| **Security** | Secret redaction tests; deny-list visibility; sandbox egress denial |
-| **Long-horizon** | 100+ turn handoff alignment; offload bloat reduction ≥ 80% |
-| **Eval quality** | Generator-only vs Generator+Evaluator first-pass quality (EVAL-01 target) |
-| **Not mocked away** | Journal durability under kill -9; TLS config in staging |
+Every **model-initiated** tool call passes `forge-governance` before execution:
+list filtering, authorisation, argument redaction, audit record.
 
----
+```
+tools/list   →  ACL filter by tool name          →  model sees allowed tools only
+tool_call    →  schema validate                  →  reject invalid args, retry prompt
+             →  authorize(call, side_effect_class)
+                   Deny / unrecognised  →  refuse + audit
+                   Hitl                 →  journal hitl_wait, release the turn
+                   Allow                →  execute
+             →  audit with redacted arguments
+```
 
-## 13. Cross-cutting decisions
+**What the gate does today, stated precisely:**
 
-| Decision | Choice | Rationale |
-|----------|--------|-----------|
-| Primary API style | Flat typed tools + thin loop, not graph DSL | Low abstraction tax; AI-codability; decaying scaffolding |
-| Durability | Embedded event journal (LLM-aware) | Temporal-like recovery without losing prompt/tool semantics |
-| Context strategy | Offload + hard reset with handoff (prefer over pure summary-only) | Reduce context rot on long tasks |
-| Protocols | MCP native | Standard tool interoperability |
-| Security | Gateway ACLs + vault inject + sandbox | Enterprise least privilege |
-| Surfaces | Adapters over core | One agent process, many UIs |
-| Generator/Evaluator | Optional dual session | Avoid self-grading bias; prunable as models improve |
-| Model portability | Unified client | Single config switch; stable tools and journal schemas |
+- **The ACL matches on tool name.** `is_allowed` takes a `Principal` and a
+  `SideEffectClass` but currently uses neither; it evaluates name patterns, last
+  matching rule winning.
+- **The default policy is permissive.** `Governance::default()` installs
+  `AclPolicy::allow_all()`. For a single-user local tool that is the appropriate
+  default, and no production code path installs a restrictive ACL.
+- **The shell tool always prompts.** `bash` is in the default approval set, and
+  approval does not depend on the command text. An earlier version exempted it
+  unless the command matched one of two literal substrings, which was not a sound
+  basis for the decision — textually different spellings of the same command were
+  not recognised. Risk heuristics belong in how a prompt is *presented*, never in
+  whether one is shown.
+- **Unrecognised verdicts refuse.** The denial path is the wildcard arm, so a policy
+  decision this build does not understand cannot fall through to execution.
+- **Arguments are redacted in audit records and in the UI.** Keys whose names
+  contain `key`, `token` or `secret` are replaced before rendering or logging.
 
----
-
-## 14. Extension points
-
-| Extension | Hook |
-|-----------|------|
-| New model provider | Add a native route/adapter and optional **connect profile** + `/connect` entry |
-| Connect profile | Register profile id, env key names, default models, optional base_url — [connect-command.md](./designs/connect-command.md) |
-| New MCP server | Declarative config; tools appear after ACL filter |
-| New built-in tool | serde/schemars types + handler; optional policy trait |
-| Web search backend | Impl `SearchBackend` + config `provider` id — [web-search-tool.md](./designs/web-search-tool.md) |
-| New surface | Thin adapter on agent events |
-| Custom Evaluator sensors | Register deterministic runners + optional LLM judge profile |
-| Policy packs | ACL + HITL classification rules without core changes |
-| Journal backend | Storage interface (SQLite ↔ Postgres) |
-| Sandbox backend | Container runtime / microVM / eBPF profile provider |
+**What the gate does not do.** It is not on the path of TUI-initiated tool calls
+(see [§2](#2-crate-layout)), there is no sandbox or process isolation beyond
+workspace path confinement, and no vault integration — credentials come from the
+environment or the local store.
 
 ---
 
-## 15. File ↔ responsibility map (target layout)
+## 7. Durability
 
-Illustrative Rust workspace layout (crate names align with §3 / decisions table).
+The write path is complete. The recovery path is partially implemented, and the
+distinction matters because recovery code only runs when something has already
+gone wrong.
 
-| Path / crate | Responsibility |
-|--------------|----------------|
-| `forge-core` — loop | Plan–act–observe driver, termination, turn limits |
-| `forge-core` — tools registry | Tool registration, serde/schemars validation, dispatch |
-| `forge-tools` | Built-ins (`read_file`, `write_file`, `apply_patch`, `bash`, `fffind`, `ffgrep`, **`git`**, **`web_search`**) + registry |
-| `forge-syntax` | Tree-sitter highlighting (diff/code views) and structural helpers |
-| `forge-types` | Shared session/tool/event types |
-| `forge-config` | `forge.toml` + env/flag config loading |
-
-| `forge-mcp` | MCP discovery/call (product path via config/static demo) |
-| `forge-model` | `ModelClient`; native HTTP/SSE transports + test mock |
-| `crates/forge-model/src/native` | Native Rust provider HTTP/SSE transports |
-| `forge-durable` | Journal + HITL wait records |
-| `forge-context` | Budget, offload, handoff, `AGENTS.md` / skills loading |
-| `forge-governance` | ACL, secrets, audit, light sandbox |
-| `forge-connect` | Connect profiles + credential store |
-| `forge-tui` | Full-screen TUI |
-| `forge-cli` | **`forge`** binary: TUI / `run` / `status` / `connect` |
-| `forge-obs` | OTEL helpers library only |
+| Guarantee | State |
+|-----------|-------|
+| Journal the intent before any side effect | **Implemented.** The append is awaited before both the model call and the tool call, and a journal failure propagates, aborting the side effect |
+| Journal is load-bearing, not best-effort | **Implemented.** Session creation fails if the journal cannot be opened; there is no degraded mode and no disable flag |
+| All documented event types exist | **Implemented** |
+| Replay serves cached tool results instead of re-executing | **Partial.** `cached_tool_result` exists and is tested, but `resume` does not call it. Conversation history is rebuilt correctly; nothing yet prevents a resumed session from re-running a tool whose result is already recorded |
+| Crash recovery marks incomplete intents failed, or retries when idempotent | **Partial.** Incomplete intents are identified during replay and logged as a warning. Neither branch is taken, and the `idempotent` flag is never read |
+| HITL survives a process restart | **Partial.** `hitl_wait` / `hitl_resume` are journaled and replay restores `AwaitingHitl` with its payload, but `resolve_hitl` takes an in-process decision. There is no out-of-process path for an approval to arrive, so this is journaled in-process approval rather than approval that outlives the controller |
+| Schema versioning | **Present but inert.** The column is written and read but never branched on |
 
 ---
 
-## 16. Mental model
+## 8. Configuration and credentials
 
-Forge is the **harness** between models and the real world: a typed tool bus, an event-sourced memory of what already happened, a context window that is deliberately managed (offload and reset, not endless append), and a governance shell that decides what the model is allowed to see and run. Surfaces (TUI, IDE, CI, chat) are interchangeable clients. Reliability comes from journaling before side effects, recovering without double execution, and separating “do the work” (Generator) from “prove the work” (Evaluator)—while keeping the API flat enough that both humans and coding models can extend it without a graph DSL.
+### Trust layers
+
+A project `forge.toml` is discovered from the working directory, so it arrives with
+a repository rather than from a deliberate act by the user. Cloning a repository
+must not be enough to redirect credentialed requests or to spawn processes.
+Configuration therefore has two scopes:
+
+| Scope | Source | Privileged keys |
+|-------|--------|-----------------|
+| **Trusted** | User-level config, or a path named explicitly with `--config` | Honoured |
+| **Untrusted project** | Auto-discovered `./forge.toml` | Refused, and the refusal is surfaced |
+
+Keys that grant code execution or redirect credentialed traffic are the ones
+refused from the untrusted layer.
+
+### On-disk formats
+
+| Path | Contents |
+|------|----------|
+| `forge.toml` | Model provider and id, journal location, MCP servers, TUI preferences, tool settings |
+| `~/.config/forge/credentials.toml` | API keys and OAuth tokens, written 0600 |
+| `.forge/sessions/{uuid}.db` | Event journal |
+| `.forge/progress.json` | Handoff document |
+| `.forge/offload/` | Large tool payloads, referenced from the transcript by URI |
+
+### Credential rules
+
+- Secrets come from the environment or the local store; they are injected at call
+  time and never placed in model-visible context.
+- The credential file is written 0600 and its permissions are checked on read.
+- Errors, audit records and the TUI never render a credential; verification
+  failures report status codes, not keys.
 
 ---
 
-## Related docs
+## 9. The sync/async split
 
-- PRD: [prd.md](./prd.md)  
-- TUI UI reference (screens & workflows): [ui.md](./ui.md)  
-- Design docs index (phase-partitioned): [designs/README.md](./designs/README.md)  
+`forge-connect` uses **`ureq`** and is entirely synchronous. Everything else that
+speaks HTTP — `forge-model`, `forge-mcp` — uses `reqwest` on Tokio.
+
+This is deliberate and load-bearing. `forge-connect`'s work happens in synchronous
+contexts: TUI event callbacks and spawned OS threads. `reqwest::blocking` **panics
+when constructed inside a Tokio runtime**, which is exactly where those calls
+originate, so the manifest carries the constraint next to the dependency:
+
+```toml
+# Sync HTTP only — never reqwest::blocking (panics inside tokio async TUI/CLI).
+ureq = { workspace = true }
+```
+
+Two HTTP clients in one workspace looks like duplication and is routinely proposed
+for consolidation. **It is not duplication.** Merging the two would force
+credential verification and catalogue refresh into async code, or wrap every call
+in `spawn_blocking`. Any change here has to keep the sync boundary intact.
+
+The synchronous work that must not block the render loop is moved to OS threads and
+polled without blocking: results return over a channel read with `try_recv`, and the
+event loop idles on a bounded `event::poll` rather than spinning.
 
 ---
 
-## Architecture decisions (resolved)
+## 10. Observability
 
-| # | Topic | Decision |
-|---|-------|----------|
-| 1 | Implementation language | **Rust** |
-| 2 | Product shape | **CLI binary** default TUI; not an always-on service |
-| 3 | Async runtime | **Tokio** + standard ecosystem (`tracing`, HTTP clients, etc.) |
-| 4 | Tool schemas / validation | **serde + schemars** JSON Schema (schema-validated tool I/O) |
-| 5 | TUI | **ratatui + crossterm** |
-| 6 | Event journal (Phase 1) | **SQLite via sqlx (async)** |
-| 7 | Local sandbox default | **Light isolation** (process/cwd limits); containers for CI/prod profiles |
-| 8 | Generator / Evaluator | **Opt-in per task** (single Generator default) |
-| 9 | Project memory file | **`AGENTS.md` primary**; optional aliases later |
-| 10 | Crate layout | **Workspace monorepo, many crates** aligned to modules in §3 |
-| 11 | Model providers (historical) | Native adapters **removed** |
-| 18 | Universal providers | **Native Rust transports only** for production. **Mock** for unit/CI env only — **no** product `--mock` flag |
-| 19 | Connected providers (Phase 6) | **`/connect`** UX + profiles for **xAI Grok** and **OpenCode Go**. **No** second production `ModelClient`. **6.1:** Grok = **OAuth**; OpenCode Go = **API key with mandatory TUI prompt** |
-| 20 | TUI input history (Phase 7) | **Up/Down** navigate submitted command history in main input only; inactive under overlays; session memory required, disk optional |
-| 21 | Inline slash (Phase 8) | Main textbox owns `/command` entry + Enter; **do not** auto-open palette on `/`; palette via **Ctrl+K** (or equivalent) |
-| 22 | Tab autocomplete + highlight (Phase 8.1) | **Tab** completes highlighted slash suggestion; **↑/↓** move suggestion highlight when panel open; **visible caret**; history recall shows line + caret |
-| 23 | Web search tool (Phase 9) | Built-in **`web_search`** with pluggable backends (mock + ≥1 live API); **`network`** side-effect class; keys env/vault only; omit from catalog when disabled/missing key; same journal path as other tools |
-| 24 | Always-visible TUI feedback (Phase 10 / TUI-08) | Render feedback strip every frame; dual-write model/session errors to chat banners; never leave critical outcomes only in unrendered fields |
-| 25 | Session identity chrome (Phase 10 / TUI-09) | Status chrome shows **provider · model · ctx**; narrow layout keeps identity without sidebar |
-| 26 | Activity feed & progressive busy (Phase 10 / TUI-10) | In-session activity ring buffer; busy phases `running · model` / `running · tool:name` |
-| 12 | Config | **TOML file + env overrides** (e.g. `forge.toml` / `~/.config/forge/config.toml`; secrets/CI via env) |
-| 13 | Protocol ownership | **CORE-02 = MCP tools.** |
-| 14 | License | **MIT** |
-| 15 | Workspace root | **Default to process cwd** when not specified (CLI flag / config optional override) |
-| 16 | Handoff progress file | **`.forge/progress.json`** under workspace (configurable) |
-| 17 | Tool parallelism (Phase 1) | **Sequential** tool calls within a model turn |
+`tracing` is used for structured logging in five crates. There is **no OpenTelemetry
+integration** — no exporter, no spans, no metrics pipeline; see
+[roadmap.md](./roadmap.md).
 
-### Rust-specific mapping notes
+---
 
-| PRD / design concept | Rust approach |
-|----------------------|---------------|
-| Schema-validated tool I/O | `serde::Serialize/Deserialize` + `schemars::JsonSchema` on tool input/output types |
-| Type-safe tool registry | Trait objects or enum dispatch + compile-time registered builtins; runtime MCP tools as schema-validated JSON |
-| Event journal | Append-only rows in **SQLite via sqlx**; typed event envelope (`serde_json`) with schema version field |
-| Unified model client | `async trait` `ModelClient`; production: `NativeModelClient`; `MockModelClient` for tests |
-| Native model runtime | Rust `reqwest` HTTP/SSE adapters; no Python runtime or model proxy required |
-| Connect profiles (Phase 6) | Registry + `/connect`; credentials injected into `NativeModelClient` |
-| Connect auth (6.1) | `AuthMode::Oauth` (xAI) vs `AuthMode::ApiKey` + TUI prompt (OpenCode Go); tokens/keys in 0600 store |
-| Surfaces | **Product:** `forge` TUI. **Library:** feedback, obs |
-| Web search | `WebSearchTool` + backends; default offline mock backend |
-| TUI visibility | Feedback strip, session chrome, activity feed in `forge-tui` |
-| Config | **Optional** TOML + env + flags (no file required) |
-| Workspace root | Default **cwd**; override via CLI flag and/or config when specified |
-| Observability | `tracing` + OpenTelemetry exporter crates |
+## 11. Testing and CI
+
+Two workflows, both on Rust 1.97.1, which is also the MSRV in `Cargo.toml`:
+
+| Workflow | Gates |
+|----------|-------|
+| **CI** — on push to `main`, every PR | `cargo fmt --all -- --check` · `cargo clippy --workspace --all-targets --locked -- -D warnings` · `cargo test --workspace --all-targets --locked` |
+| **Audit** — weekly | `cargo audit` against the RustSec advisory database |
+
+Advisory handling is configured rather than ad hoc: `deny.toml` records triaged
+dependency advisories, Dependabot proposes updates, and `SECURITY.md` gives a
+private disclosure path — which matters for a public repository where filing a
+vulnerability as an issue would be the disclosure.
+
+Roughly 880 tests, spanning tool schema validation, ACL evaluation, context budget
+arithmetic, journal append and replay, full loop runs against the mock model, path
+confinement, and rendered-output assertions for the TUI.
+
+**The suite is not fully hermetic.** Some tests read process-global state. Provider
+credentials in particular: validate with them stripped.
+
+```sh
+env -u ANTHROPIC_API_KEY -u OPENAI_API_KEY -u XAI_API_KEY \
+    -u OPENCODE_API_KEY -u OLLAMA_HOST -u FORGE_CODEX_ACCESS_TOKEN \
+  cargo test --workspace --all-targets --locked
+```
+
+Where a process-global race has been found, the established fix is a static mutex
+guard around the affected tests rather than serialising the whole suite.
+
+---
+
+## 12. Extension points
+
+| Extension | What it takes |
+|-----------|---------------|
+| **New built-in tool** | Implement `Tool`, push it into `default_builtins()`. One crate, no central enum, no UI work. Consider whether it should require approval — that is not inferred |
+| **New MCP server** | Declarative config entry; its tools join the registry and are ACL-filtered |
+| **New web-search backend** | Implement `SearchBackend`, select it by config id |
+| **New model provider** | A `ConnectProfile` for auth and catalogue, plus a transport route in `forge-model`. Costlier than it looks: several sites dispatch on provider-id strings with catch-all arms, so a missed edit compiles and fails at runtime |
+| **Journal backend** | Not pluggable. `SqlitePool` is concrete and there is no storage trait |
+
+---
+
+## 13. Resolved decisions
+
+| Topic | Decision |
+|-------|----------|
+| Language | Rust, MSRV 1.97.1 |
+| Product shape | Single CLI binary, full-screen TUI, no daemon |
+| Async runtime | Tokio, plus synchronous `ureq` in `forge-connect` (§9) |
+| Tool schemas | `serde` + `schemars` JSON Schema |
+| TUI | ratatui + crossterm |
+| Journal | SQLite via `sqlx`; the build enables the `sqlite` feature only |
+| Local isolation | Workspace path confinement. No container, no eBPF |
+| Project memory | `AGENTS.md` |
+| Handoff document | `.forge/progress.json` |
+| Tool parallelism | Sequential within a turn |
+| Config | TOML plus env overrides; no file required; project config is untrusted |
+| Model providers | Native Rust transports only; mock is test-only, gated at runtime by config |
+| Error strategy | `thiserror` in libraries, `anyhow` confined to `forge-cli` |
+| Public enums | `#[non_exhaustive]` on embedder-facing enums so added variants are not breaking |
 | License | MIT |
 
 ---
 
-## Open questions
+## 14. Mental model
 
-Resolved: `progress.json` path; sequential tools Phase 1; **CORE-02=MCP**; exclusive phase + design-doc ownership.
+Forge is the harness between a model and a real machine: a typed tool bus, an
+event-sourced record of what already happened, a context window that is managed
+rather than endlessly appended, and a gate that decides what the model may run.
+Reliability comes from journaling intent before acting, and from refusing by
+default when a decision is not understood.
 
-| # | Question | Options / notes | Decision |
-|---|----------|-----------------|----------|
-| 1 | Journal event envelope versioning | Version field on JSON events vs stricter typed migrations | TBD — default lean: `schema_version` on JSON envelope |
-| 2 | Exact config path precedence | cwd `forge.toml` vs XDG `~/.config/forge/config.toml` vs flags | TBD |
-| 3 | Error type strategy | `thiserror` + `anyhow` at edges vs fully typed errors everywhere | TBD — default lean: `thiserror` in libs, `anyhow` in CLI |
+The honest summary of where it stands: the write path and the tool contract are
+solid, the recovery path is scaffolded rather than finished, and two thirds of the
+code is the terminal interface.
