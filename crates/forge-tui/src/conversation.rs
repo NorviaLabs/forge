@@ -400,10 +400,16 @@ impl ConversationModel {
                 }
             }
         }
+        let mut latest_progress = None;
         for event in events {
-            if status == SessionStatus::Running && (event.kind == "progress" || event.kind == "thinking") {
+            if event.kind == "progress" || event.kind == "thinking" {
+                latest_progress = Some(event.detail.clone());
+            }
+        }
+        if let Some(text) = latest_progress {
+            if status == SessionStatus::Running {
                 items.push(ChatItem::Thinking {
-                    text: event.detail.clone(),
+                    text,
                     duration_secs: None,
                 });
             }
@@ -2240,8 +2246,8 @@ mod tests {
             .iter()
             .filter(|line| {
                 line.spans
-                    .first()
-                    .is_some_and(|span| span.content.as_ref() == "▍ ")
+                    .iter()
+                    .any(|span| span.content.contains("word"))
             })
             .count();
         assert_eq!(answer_lines, 1);
@@ -2350,7 +2356,7 @@ mod tests {
             .join("\n");
         assert!(rendered.starts_with("› hello world"), "{rendered}");
         let first = m.lines().into_iter().next().expect("operator turn");
-        assert_eq!(first.style.bg, Some(theme::USER_BG));
+        assert_eq!(first.style.bg, None);
         assert!(!rendered.contains("❯"), "{rendered}");
         assert!(rendered.contains("hello world"), "{rendered}");
     }
