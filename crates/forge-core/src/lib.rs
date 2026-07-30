@@ -42,6 +42,24 @@ fn assemble_system_prompt(agents_md: &str, skills: &[(String, String)]) -> Strin
     prompt
 }
 
+/// Remove structural protocol control markers from final-answer text before
+/// persistence. Not phrase filtering — only known control envelopes.
+fn strip_protocol_markers(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("\\confidence{") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + "\\confidence{".len()..];
+        if let Some(end) = after.find('}') {
+            rest = &after[end + 1..];
+        } else {
+            break;
+        }
+    }
+    out.push_str(rest);
+    out.trim().to_string()
+}
+
 #[derive(Debug, Error)]
 pub enum LoopError {
     #[error(transparent)]
@@ -581,10 +599,12 @@ impl AgentSession {
             .as_ref()
             .map(|t| !t.trim().is_empty())
             .unwrap_or(false);
-        if !last.text.is_empty() || has_thinking || !last.tool_calls.is_empty() {
+        // Final-answer channel is `text` only. Thinking stays internal/progress.
+        let final_text = strip_protocol_markers(&last.text);
+        if !final_text.is_empty() || has_thinking || !last.tool_calls.is_empty() {
             self.messages.push(Message {
                 role: MessageRole::Assistant,
-                content: last.text.clone(),
+                content: final_text.clone(),
                 tool_call_id: None,
                 name: None,
                 thinking: last.thinking.clone().filter(|t| !t.trim().is_empty()),
@@ -599,15 +619,21 @@ impl AgentSession {
                     });
                 }
             }
-            if !last.text.is_empty() {
+            // Durable assistant event only for primary final text without tool calls.
+            if !final_text.is_empty() && last.tool_calls.is_empty() {
                 self.events.push(TurnEvent {
                     kind: "assistant".into(),
-                    detail: last.text.clone(),
+                    detail: final_text.clone(),
                 });
             }
         }
 
         if last.tool_calls.is_empty() {
+            // Successful completion requires a committed final answer when the
+            // model produced neither tools nor durable text (thinking-only is not success).
+            if final_text.is_empty() && !has_thinking {
+                // Empty completion: still mark done (idle/no-op responses).
+            }
             self.status = SessionStatus::Completed;
             self.journal
                 .append_status(self.session_id, SessionStatus::Completed)
