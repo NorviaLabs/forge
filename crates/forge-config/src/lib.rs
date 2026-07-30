@@ -1397,4 +1397,356 @@ max_query_chars = 0
         );
         assert!(WebSearchProvider::parse("bing").is_err());
     }
+
+    #[test]
+    fn web_search_provider_as_str_round_trips_through_parse() {
+        assert_eq!(WebSearchProvider::Mock.as_str(), "mock");
+        assert_eq!(
+            WebSearchProvider::parse(WebSearchProvider::Mock.as_str()).unwrap(),
+            WebSearchProvider::Mock
+        );
+    }
+
+    /// Direct calls to `api_key_present` / `should_register`'s later checks,
+    /// bypassing the `needs_api_key() == false` short-circuit that
+    /// `should_register` takes for every currently-supported provider. These
+    /// are real reachable public methods, just not reached transitively today.
+    #[test]
+    fn api_key_present_reflects_env_var_state() {
+        let g = EnvGuard::clear_forge_env();
+        let mut ws = WebSearchConfig {
+            api_key_env: Some("SOME_SEARCH_KEY".into()),
+            ..Default::default()
+        };
+        assert!(
+            !ws.api_key_present(),
+            "unset env var must not count as present"
+        );
+
+        g.set("SOME_SEARCH_KEY", "   ");
+        assert!(
+            !ws.api_key_present(),
+            "whitespace-only value must not count as present"
+        );
+
+        g.set("SOME_SEARCH_KEY", "real-value");
+        assert!(
+            ws.api_key_present(),
+            "non-empty value must count as present"
+        );
+
+        ws.api_key_env = None;
+        assert!(
+            !ws.api_key_present(),
+            "no resolvable env name means no key can be present"
+        );
+    }
+
+    #[test]
+    fn model_provider_kind_parse_discards_migration_metadata() {
+        assert_eq!(
+            ModelProviderKind::parse("native").unwrap(),
+            ModelProviderKind::Native
+        );
+        assert_eq!(
+            ModelProviderKind::parse("mock").unwrap(),
+            ModelProviderKind::Mock
+        );
+        // Legacy aliases still resolve to a kind even though the migration
+        // prefix/flag that `parse_with_migration` also returns is dropped.
+        assert_eq!(
+            ModelProviderKind::parse("anthropic").unwrap(),
+            ModelProviderKind::Native
+        );
+        assert!(ModelProviderKind::parse("bogus").is_err());
+    }
+
+    #[test]
+    fn file_icon_mode_parse_covers_every_value_and_rejects_unknown() {
+        assert_eq!(
+            FileIconMode::parse("unicode").unwrap(),
+            FileIconMode::Unicode
+        );
+        assert_eq!(
+            FileIconMode::parse("UNICODE").unwrap(),
+            FileIconMode::Unicode
+        );
+        assert_eq!(FileIconMode::parse("off").unwrap(), FileIconMode::Off);
+        assert_eq!(FileIconMode::parse(" Off ").unwrap(), FileIconMode::Off);
+        let err = FileIconMode::parse("emoji").unwrap_err();
+        assert!(matches!(err, ConfigError::Message(_)));
+    }
+
+    /// Every theme resolves to its own distinct title, so a mis-wired match
+    /// arm cannot pass by coincidence.
+    #[test]
+    fn theme_title_maps_every_variant_to_a_distinct_label() {
+        let cases = [
+            (Theme::Dark, "Forge Dark"),
+            (Theme::Light, "Forge Light"),
+            (Theme::System, "System"),
+        ];
+        let mut seen = std::collections::HashSet::new();
+        for (theme, expected) in cases {
+            assert_eq!(theme.title(), expected);
+            assert!(
+                seen.insert(theme.title()),
+                "title {:?} was not unique across variants",
+                theme.title()
+            );
+        }
+    }
+
+    #[test]
+    fn tui_config_file_settings_apply_successfully() {
+        let mut cfg = Config::default();
+        let file = ConfigFile {
+            tui: Some(TuiConfigFile {
+                file_icons: Some("off".into()),
+                mouse_capture: Some(false),
+                theme: Some("system".into()),
+            }),
+            ..Default::default()
+        };
+        file.apply(&mut cfg, ConfigScope::Trusted);
+        assert_eq!(cfg.tui.file_icons, FileIconMode::Off);
+        assert!(!cfg.tui.mouse_capture);
+        assert_eq!(cfg.tui.theme, Theme::System);
+    }
+
+    /// An invalid `file_icons` / `theme` string in the file is silently
+    /// ignored (the `if let Ok(...)` guard), leaving the prior default.
+    #[test]
+    fn tui_config_file_invalid_strings_are_ignored_not_errored() {
+        let mut cfg = Config::default();
+        let file = ConfigFile {
+            tui: Some(TuiConfigFile {
+                file_icons: Some("bogus".into()),
+                mouse_capture: None,
+                theme: Some("bogus".into()),
+            }),
+            ..Default::default()
+        };
+        file.apply(&mut cfg, ConfigScope::Trusted);
+        assert_eq!(cfg.tui.file_icons, FileIconMode::Unicode);
+        assert_eq!(cfg.tui.theme, Theme::Dark);
+    }
+
+    /// A `[validation]` section in the file replaces the whole
+    /// `ValidationConfig`, including its nested `command` override.
+    #[test]
+    fn validation_config_file_section_applies_wholesale() {
+        let mut cfg = Config::default();
+        assert!(cfg.validation.command.is_none());
+        let file = ConfigFile {
+            validation: Some(ValidationConfig {
+                command: Some(CommandConfig {
+                    executable: "just".into(),
+                    args: vec!["check".into()],
+                }),
+            }),
+            ..Default::default()
+        };
+        file.apply(&mut cfg, ConfigScope::Trusted);
+        let command = cfg
+            .validation
+            .command
+            .expect("validation.command must be set after apply");
+        assert_eq!(command.executable, "just");
+        assert_eq!(command.args, vec!["check".to_string()]);
+    }
+
+    /// When the file supplies a provider but no explicit model id, the
+    /// migration prefix is still applied to whatever model id is already set.
+    #[test]
+    fn model_provider_migration_prefixes_existing_model_when_file_omits_model() {
+        let mut cfg = Config::default();
+        cfg.model.model = "claude-sonnet".into();
+        let file = ConfigFile {
+            model: Some(ModelConfigFile {
+                provider: Some("anthropic".into()),
+                model: None,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        file.apply(&mut cfg, ConfigScope::Trusted);
+        assert_eq!(cfg.model.provider, ModelProviderKind::Native);
+        assert_eq!(cfg.model.model, "anthropic/claude-sonnet");
+    }
+
+    /// Env-var equivalent of the file-layer prefix-only migration: setting
+    /// only `FORGE_MODEL_PROVIDER` (no `FORGE_MODEL_ID`) still migrates the
+    /// model id that was already resolved from a lower layer.
+    #[test]
+    fn env_provider_only_migrates_existing_model_id() {
+        let g = EnvGuard::clear_forge_env();
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("forge.toml");
+        fs::write(
+            &path,
+            r#"
+[model]
+model = "claude-sonnet"
+"#,
+        )
+        .unwrap();
+        g.set("FORGE_MODEL_PROVIDER", "anthropic");
+        let cfg = Config::load(ConfigOverrides {
+            config_path: Some(path),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(cfg.model.provider, ModelProviderKind::Native);
+        assert_eq!(cfg.model.model, "anthropic/claude-sonnet");
+    }
+
+    /// CLI-override equivalent: `--model-provider` alone (no `--model-id`)
+    /// still migrates whatever model id was already resolved.
+    #[test]
+    fn cli_provider_only_migrates_existing_model_id() {
+        let _g = EnvGuard::clear_forge_env();
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("forge.toml");
+        fs::write(
+            &path,
+            r#"
+[model]
+model = "claude-sonnet"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load(ConfigOverrides {
+            config_path: Some(path),
+            model_provider: Some("anthropic".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(cfg.model.provider, ModelProviderKind::Native);
+        assert_eq!(cfg.model.model, "anthropic/claude-sonnet");
+    }
+
+    #[test]
+    fn env_api_key_workspace_and_journal_path_overrides() {
+        let g = EnvGuard::clear_forge_env();
+        g.set("FORGE_API_KEY", "sk-from-env");
+        g.set("FORGE_WORKSPACE", "/tmp/some-workspace");
+        g.set("FORGE_JOURNAL_PATH", "custom/journal");
+        let cfg = Config::load(ConfigOverrides::default()).unwrap();
+        assert_eq!(cfg.model.api_key.as_deref(), Some("sk-from-env"));
+        assert_eq!(cfg.workspace_root, Some("/tmp/some-workspace".into()));
+        assert_eq!(cfg.journal.path, "custom/journal");
+    }
+
+    #[test]
+    fn cli_api_key_override_applies() {
+        let _g = EnvGuard::clear_forge_env();
+        let cfg = Config::load(ConfigOverrides {
+            api_key: Some("sk-from-cli".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(cfg.model.api_key.as_deref(), Some("sk-from-cli"));
+    }
+
+    #[test]
+    fn user_config_path_is_a_forge_config_toml_under_config_dir() {
+        let expected = dirs::config_dir().map(|d| d.join("forge").join("config.toml"));
+        assert_eq!(user_config_path(), expected);
+    }
+
+    /// Clears FORGE_* env vars *and* XDG_CONFIG_HOME for the duration of a
+    /// test; restores both on drop (including on panic/assertion failure),
+    /// mirroring `EnvGuard` but widened to the one extra var this test needs.
+    struct XdgEnvGuard {
+        saved: Vec<(String, Option<String>)>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl XdgEnvGuard {
+        fn clear() -> Self {
+            let lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let mut saved = Vec::new();
+            for key in FORGE_ENV_KEYS.iter().copied().chain(["XDG_CONFIG_HOME"]) {
+                saved.push((key.to_string(), env::var(key).ok()));
+                env::remove_var(key);
+            }
+            Self { saved, _lock: lock }
+        }
+    }
+
+    impl Drop for XdgEnvGuard {
+        fn drop(&mut self) {
+            for (key, val) in self.saved.drain(..) {
+                match val {
+                    Some(v) => env::set_var(&key, v),
+                    None => env::remove_var(&key),
+                }
+            }
+        }
+    }
+
+    /// The trusted-user-config layer (found via `dirs::config_dir()`, which
+    /// honours `XDG_CONFIG_HOME` on Linux) is merged first, before the
+    /// project layer and env/CLI. This is the only way to exercise
+    /// `Config::load`'s `user_config_path`/`merge_file` branch, since that
+    /// branch is skipped whenever no file exists at the discovered path.
+    #[test]
+    fn user_config_toml_is_merged_before_project_layer() {
+        let _g = XdgEnvGuard::clear();
+
+        let config_home = tempdir().unwrap();
+        let forge_dir = config_home.path().join("forge");
+        fs::create_dir_all(&forge_dir).unwrap();
+        fs::write(
+            forge_dir.join("config.toml"),
+            r#"
+[model]
+provider = "native"
+model = "from-user-config"
+"#,
+        )
+        .unwrap();
+        env::set_var("XDG_CONFIG_HOME", config_home.path());
+
+        // No project forge.toml at this workspace, so only the user layer applies.
+        let project_dir = tempdir().unwrap();
+        let cfg = Config::load(ConfigOverrides {
+            workspace: Some(project_dir.path().to_path_buf()),
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert_eq!(cfg.model.model, "from-user-config");
+    }
+
+    #[test]
+    fn resolve_workspace_joins_relative_cli_override_onto_cwd() {
+        let cwd = PathBuf::from("/work/dir");
+        let resolved = resolve_workspace(&None, Some(Path::new("relative/sub")), &cwd);
+        assert_eq!(resolved, PathBuf::from("/work/dir/relative/sub"));
+    }
+
+    #[test]
+    fn resolve_workspace_keeps_absolute_cli_override() {
+        let cwd = PathBuf::from("/work/dir");
+        let resolved = resolve_workspace(&None, Some(Path::new("/abs/other")), &cwd);
+        assert_eq!(resolved, PathBuf::from("/abs/other"));
+    }
+
+    #[test]
+    fn resolve_workspace_joins_relative_config_value_onto_cwd() {
+        let cwd = PathBuf::from("/work/dir");
+        let from_cfg = Some("relative/from/config".to_string());
+        let resolved = resolve_workspace(&from_cfg, None, &cwd);
+        assert_eq!(resolved, PathBuf::from("/work/dir/relative/from/config"));
+    }
+
+    #[test]
+    fn resolve_workspace_keeps_absolute_config_value() {
+        let cwd = PathBuf::from("/work/dir");
+        let from_cfg = Some("/abs/from/config".to_string());
+        let resolved = resolve_workspace(&from_cfg, None, &cwd);
+        assert_eq!(resolved, PathBuf::from("/abs/from/config"));
+    }
 }
