@@ -442,4 +442,193 @@ mod tests {
         let lines = highlight_to_lines("rust", "fn main() {}", &theme);
         assert!(!lines.is_empty());
     }
+
+    /// Every field holds a distinct value so a mis-wired match arm in
+    /// `HighlightStyle::rgb` cannot pass by coincidence.
+    fn distinct_theme() -> HighlightTheme {
+        HighlightTheme {
+            comment: (1, 1, 1),
+            keyword: (2, 2, 2),
+            string: (3, 3, 3),
+            number: (4, 4, 4),
+            function: (5, 5, 5),
+            type_: (6, 6, 6),
+            variable: (7, 7, 7),
+            operator: (8, 8, 8),
+            punctuation: (9, 9, 9),
+            property: (10, 10, 10),
+            tag: (11, 11, 11),
+            attribute: (12, 12, 12),
+            default: (13, 13, 13),
+        }
+    }
+
+    #[test]
+    fn rgb_maps_every_class_to_its_own_theme_slot() {
+        let theme = distinct_theme();
+        let cases = [
+            (HighlightClass::Comment, theme.comment),
+            (HighlightClass::Keyword, theme.keyword),
+            (HighlightClass::String, theme.string),
+            (HighlightClass::Number, theme.number),
+            (HighlightClass::Function, theme.function),
+            (HighlightClass::Type, theme.type_),
+            (HighlightClass::Variable, theme.variable),
+            (HighlightClass::Operator, theme.operator),
+            (HighlightClass::Punctuation, theme.punctuation),
+            (HighlightClass::Property, theme.property),
+            (HighlightClass::Tag, theme.tag),
+            (HighlightClass::Attribute, theme.attribute),
+            (HighlightClass::Default, theme.default),
+        ];
+        for (class, expected) in cases {
+            assert_eq!(
+                HighlightStyle { class }.rgb(&theme),
+                expected,
+                "{class:?} resolved to the wrong theme colour"
+            );
+        }
+    }
+
+    #[test]
+    fn span_text_slices_the_source() {
+        let span = HighlightSpan {
+            range: 3..7,
+            style: HighlightStyle {
+                class: HighlightClass::Function,
+            },
+        };
+        assert_eq!(span.text("fn main()"), "main");
+    }
+
+    #[test]
+    fn unparseable_language_falls_back_to_one_default_span() {
+        let code = "some arbitrary text";
+        let spans = highlight(
+            "definitely-not-a-language",
+            code,
+            &HighlightTheme::default(),
+        );
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].range, 0..code.len());
+        assert_eq!(spans[0].style.class, HighlightClass::Default);
+    }
+
+    #[test]
+    fn unknown_language_falls_back_to_one_default_span() {
+        let code = "plain text body";
+        for name in ["unknown", "*"] {
+            let spans = highlight(name, code, &HighlightTheme::default());
+            assert_eq!(
+                spans.len(),
+                1,
+                "language {name:?} should not be highlighted"
+            );
+            assert_eq!(spans[0].range, 0..code.len());
+            assert_eq!(spans[0].style.class, HighlightClass::Default);
+        }
+    }
+
+    /// Empty input takes the `spans.is_empty()` fallback, which pushes a
+    /// zero-width span; `merge_spans` then sees `max_end == 0` and drops it.
+    #[test]
+    fn empty_source_yields_no_spans() {
+        let spans = highlight("rust", "", &HighlightTheme::default());
+        assert!(spans.is_empty());
+    }
+
+    #[test]
+    fn rust_line_comment_is_classified_as_comment() {
+        let code = "// explanatory note\nfn main() {}";
+        let spans = highlight("rust", code, &HighlightTheme::default());
+        let comment = spans
+            .iter()
+            .find(|s| s.style.class == HighlightClass::Comment)
+            .expect("comment should be classified");
+        assert!(comment.text(code).contains("explanatory note"));
+    }
+
+    #[test]
+    fn rust_attribute_is_classified_as_attribute() {
+        let code = "#[derive(Debug)]\nstruct Widget;";
+        let spans = highlight("rust", code, &HighlightTheme::default());
+        assert!(
+            spans
+                .iter()
+                .any(|s| s.style.class == HighlightClass::Attribute),
+            "expected an Attribute span, got {:?}",
+            spans.iter().map(|s| s.style.class).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn called_identifier_is_classified_as_function() {
+        let code = "fn main() { helper(); }";
+        let spans = highlight("rust", code, &HighlightTheme::default());
+        let called = spans
+            .iter()
+            .filter(|s| s.style.class == HighlightClass::Function)
+            .map(|s| s.text(code))
+            .collect::<Vec<_>>();
+        assert!(
+            called.contains(&"helper"),
+            "call target should be a Function span, got {called:?}"
+        );
+    }
+
+    #[test]
+    fn merge_spans_handles_degenerate_input() {
+        assert!(merge_spans(Vec::new()).is_empty());
+        let zero_width = vec![HighlightSpan {
+            range: 0..0,
+            style: HighlightStyle {
+                class: HighlightClass::Default,
+            },
+        }];
+        assert!(merge_spans(zero_width).is_empty());
+    }
+
+    #[test]
+    fn merge_spans_lets_inner_spans_override_outer_ones() {
+        let outer = HighlightSpan {
+            range: 0..10,
+            style: HighlightStyle {
+                class: HighlightClass::Default,
+            },
+        };
+        let inner = HighlightSpan {
+            range: 4..6,
+            style: HighlightStyle {
+                class: HighlightClass::Keyword,
+            },
+        };
+        let merged = merge_spans(vec![outer, inner]);
+        assert_eq!(
+            merged
+                .iter()
+                .map(|s| (s.range.clone(), s.style.class))
+                .collect::<Vec<_>>(),
+            vec![
+                (0..4, HighlightClass::Default),
+                (4..6, HighlightClass::Keyword),
+                (6..10, HighlightClass::Default),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_and_capture_returns_a_tree_for_rust() {
+        let tree = parse_and_capture("rust", "fn main() {}", "").expect("rust source should parse");
+        assert_eq!(tree.root_node().kind(), "source_file");
+        assert!(!tree.root_node().has_error());
+    }
+
+    #[test]
+    fn parse_and_capture_rejects_unknown_languages() {
+        assert_eq!(
+            parse_and_capture("unknown", "anything", "").unwrap_err(),
+            "unknown language"
+        );
+        assert!(parse_and_capture("definitely-not-a-language", "anything", "").is_err());
+    }
 }
