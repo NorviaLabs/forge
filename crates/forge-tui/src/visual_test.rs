@@ -51,6 +51,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: forge_config::FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         (dir, app)
