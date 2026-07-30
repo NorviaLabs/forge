@@ -1,0 +1,80 @@
+# cargo-deny configuration. Run locally with:
+#
+#     cargo deny check advisories bans sources
+#
+# CI runs the same three checks. `licenses` is deliberately not gated yet —
+# see the note at the bottom of this file.
+
+[graph]
+# Only consider dependencies that are actually built for the targets we ship.
+# This matters: without it, `cargo deny` reads every entry in Cargo.lock,
+# including crates pulled in only by feature combinations we never enable.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
+all-features = false
+
+[advisories]
+version = 2
+yanked = "deny"
+# Each entry below is a triaged decision, not a blanket suppression. An advisory
+# that is reachable from Forge should be fixed or the dependency dropped — not
+# added here.
+ignore = [
+    # RUSTSEC-2026-0183, RUSTSEC-2026-0184 — `git2` unsoundness in
+    # `Remote::list()` and in `Signature` from a buffer-created `BlameHunk`.
+    #
+    # Forge has no direct `git2` dependency and calls neither API; the crate
+    # arrives transitively through `fff-search`. Our own git integration shells
+    # out to the `git` binary through an allowlist, it does not link libgit2.
+    # Residual risk is whatever `fff-search` calls internally, which we do not
+    # control. Revisit when `fff-search` bumps `git2`.
+    { id = "RUSTSEC-2026-0183", reason = "no direct git2 usage; transitive via fff-search, affected API never called" },
+    { id = "RUSTSEC-2026-0184", reason = "no direct git2 usage; transitive via fff-search, affected API never called" },
+
+    # RUSTSEC-2025-0141 — `bincode` 1.3.3 is unmaintained.
+    #
+    # Transitive through `fff-search` -> `heed` -> `heed-types`. Not a
+    # vulnerability, and Forge does not use bincode directly. Tracking upstream
+    # rather than forking the chain.
+    { id = "RUSTSEC-2025-0141", reason = "unmaintained only; transitive via fff-search -> heed, no direct usage" },
+]
+
+[bans]
+# Duplicate versions are reported but not fatal. In a tree this size they are
+# usually a transitive dependency mid-migration, and failing on them would mean
+# the gate is red for reasons nobody here can act on.
+multiple-versions = "warn"
+# Reported, not fatal. A wildcard on a *registry* crate would be worth failing
+# on, but every wildcard in this tree today is one of the workspace's own path
+# dependencies, declared without a version as `{ path = "crates/..." }`.
+#
+# `allow-wildcard-paths` does not help: it only exempts crates marked
+# `publish = false`, and these are publishable. Making the check meaningful
+# therefore means either adding versions to every internal dependency or marking
+# the crates unpublishable — a packaging decision, not a security one, and out of
+# scope here. Left as "warn" so a wildcard on a third-party crate is still
+# visible in the log rather than hidden.
+wildcards = "warn"
+# `ureq` and `reqwest` coexist deliberately: forge-connect needs a *synchronous*
+# HTTP client, and `reqwest::blocking` panics when called from inside the tokio
+# runtime that drives the TUI. Consolidating would reintroduce that panic.
+# Documented here so it does not look like accidental duplication.
+skip = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+
+# Licenses are not gated yet. Doing it properly needs a reviewed inventory of
+# every license in the tree and an explicit allow-list; switching it on with a
+# guess would fail CI on a dependency nobody has looked at. Enabling it is a
+# separate change:
+#
+# [licenses]
+# version = 2
+# allow = ["MIT", "Apache-2.0", ...]   # requires review of all 523 crates
