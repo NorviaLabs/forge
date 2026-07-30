@@ -190,17 +190,39 @@ pub enum Theme {
     Dark,
     Light,
     System,
-    Ansi,
 }
 
 impl Theme {
     pub fn parse(s: &str) -> Result<Self, ConfigError> {
+        Self::parse_strict(s).or(Ok(Self::Dark))
+    }
+
+    pub fn parse_strict(s: &str) -> Result<Self, ConfigError> {
         match s.trim().to_ascii_lowercase().as_str() {
             "dark" => Ok(Self::Dark),
             "light" => Ok(Self::Light),
             "system" => Ok(Self::System),
-            "ansi" => Ok(Self::Ansi),
-            _ => Ok(Self::Dark),
+            other => Err(ConfigError::Message(format!(
+                "invalid theme `{other}` (expected dark | light | system)"
+            ))),
+        }
+    }
+
+    pub const ALL: [Self; 3] = [Self::Dark, Self::Light, Self::System];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Dark => "dark",
+            Self::Light => "light",
+            Self::System => "system",
+        }
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Dark => "Forge Dark",
+            Self::Light => "Forge Light",
+            Self::System => "System",
         }
     }
 }
@@ -977,6 +999,19 @@ model = "from-file"
         })
         .unwrap();
         assert_eq!(cfg.journal_dir(), journal);
+    }
+
+    #[test]
+    fn theme_parse_strict_rejects_unknown() {
+        assert!(Theme::parse_strict("bogus").is_err());
+        assert_eq!(Theme::parse("bogus").unwrap(), Theme::Dark);
+    }
+
+    #[test]
+    fn theme_labels_round_trip() {
+        for theme in Theme::ALL {
+            assert_eq!(Theme::parse_strict(theme.label()).unwrap(), theme);
+        }
     }
 
     #[test]

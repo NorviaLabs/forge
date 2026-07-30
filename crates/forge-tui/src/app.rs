@@ -75,7 +75,7 @@ use ratatui::widgets::Clear;
 use crate::{MAX_RECENT_RUNS, RUN_HISTORY_VERSION};
 
 const WORKSPACE_HISTORY_LIMIT: usize = 32;
-const UI_STATE_VERSION: u32 = 1;
+const UI_STATE_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum WorkspaceView {
@@ -206,6 +206,8 @@ struct RepositoryUiState {
     repository_or_workspace_id: String,
     #[serde(default)]
     files_visibility: FilesVisibility,
+    #[serde(default)]
+    theme: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -578,6 +580,23 @@ pub struct TuiRuntimeConfig {
     pub validation_command: Option<CommandConfig>,
     pub file_icons: FileIconMode,
     pub mouse_capture: bool,
+    pub theme: forge_config::Theme,
+}
+
+impl Default for TuiRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            model_label: String::new(),
+            provider: "native".into(),
+            cwd: PathBuf::from("."),
+            version: "test".into(),
+            startup_notices: Vec::new(),
+            validation_command: None,
+            file_icons: FileIconMode::default(),
+            mouse_capture: true,
+            theme: forge_config::Theme::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -727,6 +746,7 @@ struct ConversationRenderKey {
     splash_dismissed: bool,
     slash_mode: bool,
     status: forge_types::SessionStatus,
+    theme: forge_config::Theme,
 }
 
 struct ConversationRenderCache {
@@ -868,6 +888,7 @@ pub(crate) struct RepoHeaderCache {
 
 impl TuiApp {
     pub fn new(session: AgentSession, runtime: TuiRuntimeConfig) -> Self {
+        crate::theme::set_active(runtime.theme);
         let mut input = InputModel::default();
         input.hint = "Describe a task…".into();
         let startup_notices = runtime.startup_notices.clone();
@@ -1049,10 +1070,16 @@ impl TuiApp {
             );
             return;
         };
-        if state.version == UI_STATE_VERSION
+        if state.version >= 1
+            && state.version <= UI_STATE_VERSION
             && state.repository_or_workspace_id == self.repository_or_workspace_id()
         {
             self.files_visible = state.files_visibility.is_open();
+            if let Some(ref name) = state.theme {
+                if let Ok(theme) = forge_config::Theme::parse_strict(name) {
+                    self.apply_theme(theme, false);
+                }
+            }
         }
     }
 
@@ -1062,6 +1089,7 @@ impl TuiApp {
             version: UI_STATE_VERSION,
             repository_or_workspace_id: self.repository_or_workspace_id(),
             files_visibility: FilesVisibility::from_open(self.files_visible),
+            theme: Some(self.runtime.theme.label().to_string()),
         };
         let result = fs::create_dir_all(path.parent().unwrap_or_else(|| Path::new(".")))
             .and_then(|_| fs::write(&path, serde_json::to_vec_pretty(&state).unwrap_or_default()));
@@ -4515,6 +4543,7 @@ Reply with ONLY the commit message line.\n\n\
             splash_dismissed: self.splash_dismissed,
             slash_mode,
             status: self.session.status,
+            theme: crate::theme::active(),
         };
         if self.conversation_cache.as_ref().map(|cache| &cache.key) != Some(&key) {
             let mut conv = ConversationModel::from_messages(
@@ -4822,7 +4851,7 @@ Reply with ONLY the commit message line.\n\n\
         }
 
         let attachment_label = self.pending_attachment.as_ref().map(|a| a.label());
-        let glyph = gutter_glyph(forge_config::Theme::default(), false);
+        let glyph = gutter_glyph(crate::theme::active(), false);
         let composer_content_width = regions
             .input
             .width
@@ -6448,6 +6477,9 @@ Reply with ONLY the commit message line.\n\n\
                 self.persist_selection();
                 self.set_feedback(FeedbackSeverity::Ok, format!("reasoning effort: {level}"));
             }
+            OverlayAction::SelectTheme(theme) => {
+                self.apply_theme(theme, true);
+            }
             OverlayAction::ConnectSubmitKey {
                 profile_id,
                 api_key,
@@ -6834,6 +6866,30 @@ Reply with ONLY the commit message line.\n\n\
         Ok(())
     }
 
+    fn apply_theme(&mut self, theme: forge_config::Theme, persist: bool) {
+        crate::theme::set_active(theme);
+        self.runtime.theme = theme;
+        self.conversation_cache = None;
+        self.overlay = None;
+        self.invalidate_hit_regions();
+        if persist {
+            self.save_ui_state();
+            self.set_feedback(FeedbackSeverity::Ok, format!("theme · {}", theme.title()));
+        }
+    }
+
+    fn handle_theme_command(&mut self, name: Option<&str>) {
+        if let Some(name) = name.filter(|name| !name.trim().is_empty()) {
+            match forge_config::Theme::parse_strict(name) {
+                Ok(theme) => self.apply_theme(theme, true),
+                Err(error) => self.set_feedback(FeedbackSeverity::Warn, error.to_string()),
+            }
+            return;
+        }
+        self.overlay = Some(Overlay::theme_open(crate::theme::active()));
+        self.status_message = "pick a theme".into();
+    }
+
     async fn handle_model_command(&mut self, provider: Option<&str>, model: Option<&str>) {
         if provider.is_none() && model.is_none() {
             let items = self.model_picker_items(true);
@@ -7089,6 +7145,9 @@ Reply with ONLY the commit message line.\n\n\
                 }
                 Ok(SlashCommand::ContextFile) => {
                     self.toggle_file_attachment();
+                }
+                Ok(SlashCommand::Theme { name }) => {
+                    self.handle_theme_command(name.as_deref());
                 }
                 Err(e) => {
                     let msg = e.to_string();
@@ -7796,6 +7855,9 @@ async fn run_loop(
                 _ => {}
             }
             drain_events(app).await?;
+            // Repaint immediately after input so theme and other state changes are visible
+            // without waiting for the next idle frame.
+            terminal.draw(|f| app.draw(f))?;
         }
     }
     Ok(())
@@ -7927,6 +7989,7 @@ mod tests {
                 }),
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         app.run.draft.command_input = "true".into();
@@ -7981,6 +8044,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         (dir, app)
@@ -9343,6 +9407,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         assert!(restored.files_visible);
@@ -9352,6 +9417,44 @@ mod tests {
             !other.files_visible,
             "Files preference must not leak across repositories"
         );
+    }
+
+    #[tokio::test]
+    async fn theme_change_updates_active_palette_immediately() {
+        let (_dir, mut app) = focus_test_app().await;
+        assert_eq!(crate::theme::active(), forge_config::Theme::Dark);
+        assert_eq!(crate::theme::text().fg, Some(crate::theme::TEXT));
+
+        app.handle_theme_command(Some("light"));
+        assert_eq!(crate::theme::active(), forge_config::Theme::Light);
+        assert_eq!(crate::theme::text().fg, Some(crate::theme::LIGHT_TEXT));
+        assert!(app.conversation_cache.is_none());
+    }
+
+    #[tokio::test]
+    async fn theme_persists_per_repository() {
+        let (dir, mut app) = focus_test_app().await;
+        app.handle_theme_command(Some("light"));
+        assert_eq!(app.runtime.theme, forge_config::Theme::Light);
+        assert_eq!(crate::theme::active(), forge_config::Theme::Light);
+
+        let session = session_for_workspace(dir.path()).await;
+        let restored = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "mock".into(),
+                provider: "mock".into(),
+                cwd: dir.path().to_path_buf(),
+                version: "test".into(),
+                startup_notices: Vec::new(),
+                validation_command: None,
+                file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
+                theme: forge_config::Theme::default(),
+            },
+        );
+        assert_eq!(restored.runtime.theme, forge_config::Theme::Light);
+        assert_eq!(crate::theme::active(), forge_config::Theme::Light);
     }
 
     #[tokio::test]
@@ -9373,6 +9476,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
 
@@ -9643,6 +9747,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         let file = dir.path().join("open.rs");
@@ -10184,6 +10289,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
 
@@ -10776,6 +10882,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         app.splash_dismissed = true;
@@ -10822,6 +10929,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         app.splash_dismissed = true;
@@ -10924,6 +11032,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         app.dispatch_line(&format!("/resume {previous_id}"))
@@ -10959,6 +11068,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
 
@@ -10993,6 +11103,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         app.busy = true;
@@ -11027,6 +11138,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         app.busy = true;
@@ -11054,6 +11166,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         app.input.set_text("draft");
@@ -11086,6 +11199,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
 
@@ -11111,6 +11225,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         app.input.set_text("draft");
@@ -11145,6 +11260,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         app.input.set_text("draft");
@@ -11172,6 +11288,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         app.handle_key(press(KeyCode::F(1), KeyModifiers::NONE))
@@ -11197,6 +11314,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         // Simulate messages enqueued while processing.
@@ -11227,6 +11345,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         app.enqueue_user_message("a".into());
@@ -11258,6 +11377,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         app.connect_store = CredentialStore::new(credential_path.clone());
@@ -11282,6 +11402,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         restarted.connect_store = CredentialStore::new(credential_path);
@@ -11305,6 +11426,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
@@ -11335,6 +11457,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
@@ -11427,6 +11550,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         app.dispatch_line("/sync").await.unwrap();
@@ -11465,6 +11589,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         app.dispatch_line("hi").await.unwrap();
@@ -11497,6 +11622,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         app.dispatch_line("/status").await.unwrap();
@@ -11518,6 +11644,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         app.dispatch_line("hi").await.unwrap();
@@ -11552,6 +11679,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         app.dispatch_line("/quit").await.unwrap();
@@ -11594,6 +11722,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         let _store_dir = tempfile::TempDir::new().unwrap();
@@ -11625,6 +11754,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
@@ -11663,6 +11793,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
@@ -11697,6 +11828,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
@@ -11738,6 +11870,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
@@ -11770,6 +11903,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
@@ -11819,6 +11953,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         app.connect_store = CredentialStore::new(cred_dir.path().join("c.toml"));
@@ -11851,6 +11986,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         let enter = KeyEvent {
@@ -11890,6 +12026,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         app.history.push("alpha");
@@ -11929,6 +12066,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         assert!(app.help_text().contains("Conversation"));
@@ -12020,6 +12158,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         app.handle_key(press(KeyCode::Char('/'), KeyModifiers::NONE))
@@ -12052,6 +12191,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         for c in "/status".chars() {
@@ -12083,6 +12223,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         app.handle_key(press(KeyCode::Char('k'), KeyModifiers::CONTROL))
@@ -12105,6 +12246,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         assert!(!app.sidebar_visible);
@@ -12146,6 +12288,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         assert_eq!(app.inspector_view, InspectorView::Task);
@@ -12175,6 +12318,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         for c in "/connect list".chars() {
@@ -12209,6 +12353,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         for c in "/res".chars() {
@@ -12242,6 +12387,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         for c in "/connect".chars() {
@@ -12269,6 +12415,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
 
@@ -12290,6 +12437,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         // Partial type; suggestions include /connect and /status.
@@ -12347,6 +12495,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         app.handle_key(press(KeyCode::Char('/'), KeyModifiers::NONE))
@@ -12394,6 +12543,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         for c in "/sta".chars() {
@@ -12452,6 +12602,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
 
@@ -12538,6 +12689,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         assert!(app
@@ -12605,6 +12757,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         // Override credential store with empty temp file so connection check fails.
@@ -12653,6 +12806,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         assert!(app.is_provider_connected());
@@ -12676,6 +12830,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         app.connect_profile = None;
@@ -12719,6 +12874,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         let chrome = app.refresh_status_model();
@@ -12757,6 +12913,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         // Width 60: no sidebar per layout MIN_WIDTH 80
@@ -12796,6 +12953,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         for c in "/status".chars() {
@@ -12841,6 +12999,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         app.report_error("upstream returned 429 rate limit exceeded");
@@ -12882,6 +13041,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         app.report_error("429 rate limit");
@@ -12916,6 +13076,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         app.push_activity(
@@ -12954,6 +13115,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         app.busy = true;
@@ -12985,6 +13147,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         app.dispatch_line("hello").await.unwrap();
@@ -13016,6 +13179,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         for c in "/status".chars() {
@@ -13181,6 +13345,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         assert!(!app.pending_external_editor);
@@ -13207,6 +13372,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         app.pending_external_editor = true;
@@ -13229,6 +13395,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         app.source_viewer.status = crate::source_viewer::ViewerStatus::Binary;
@@ -13253,6 +13420,7 @@ mod tests {
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
                 mouse_capture: true,
+                theme: forge_config::Theme::default(),
             },
         );
         app.busy_phase = BusyPhase::Tool {

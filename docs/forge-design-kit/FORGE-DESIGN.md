@@ -578,12 +578,11 @@ Rules:
 
 ## 10. Theme Policy
 
-Forge supports four presentation themes:
+Forge supports three presentation themes:
 
 - `Forge Dark`
 - `Forge Light`
 - `System`
-- `ANSI fallback`
 
 Rules:
 
@@ -593,7 +592,8 @@ Rules:
 - `Forge Light` preserves the same semantic hierarchy with lighter surfaces and
   contrast-appropriate text.
 - `System` follows the terminal or platform default where available.
-- `ANSI fallback` is the minimum guarantee for limited-color terminals.
+- Limited-color terminals still get glyph and palette fallbacks automatically;
+  that is not a separate theme choice.
 - Theme choice must not change runtime semantics, navigation, persistence or
   command availability.
 - Theme policy applies to conversation presentation, chrome, activity and code
