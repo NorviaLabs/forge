@@ -2,7 +2,7 @@
 
 use crate::composer_layout::{locate_cursor_in_rows, scroll_offset, ComposerVisualRow};
 use crate::theme;
-use crate::user_message_gutter::{gutter_glyph, gutter_prefix_width, GutterRole, GUTTER_GAP};
+use crate::user_message_gutter::{gutter_glyph, GutterRole, GUTTER_GAP};
 use forge_config::Theme;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -456,7 +456,7 @@ mod tests {
     };
     use crate::theme::{USER_GUTTER_ACTIVE_DARK, USER_MESSAGE_GUTTER_DARK};
     use crate::user_message_gutter::{
-        gutter_glyph, gutter_prefix_width, gutter_style_for, GutterRole, GUTTER_GAP,
+        gutter_glyph, gutter_prefix_width, gutter_style_for, GutterRole,
     };
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
