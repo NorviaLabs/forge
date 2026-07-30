@@ -355,7 +355,7 @@ impl ConversationModel {
                                 text: effective_text.clone(),
                             });
                             validation_retry_pending = false;
-                        } else {
+                        } else if m.tool_calls.is_empty() {
                             items.push(ChatItem::Assistant {
                                 text: effective_text,
                             });
