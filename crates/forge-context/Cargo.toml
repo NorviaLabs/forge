@@ -11,7 +11,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 chrono = { workspace = true }
-sha2 = "0.10"
+sha2 = "0.11"
 hex = "0.4"
 uuid = { workspace = true }
 dirs = { workspace = true }

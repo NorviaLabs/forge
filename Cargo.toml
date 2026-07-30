@@ -66,5 +66,5 @@ forge-tui = { path = "crates/forge-tui" }
 forge-governance = { path = "crates/forge-governance" }
 forge-context = { path = "crates/forge-context" }
 forge-connect = { path = "crates/forge-connect" }
-sha2 = "0.10"
+sha2 = "0.11"
 hex = "0.4"
