@@ -84,8 +84,16 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     Ok(summary.exit_code)
 }
 
-/// Load OAuth / API keys from the connect store into the native model client environment.
-fn inject_connect_credentials_into_env() {
+/// Collect stored OAuth / API-key material for the native model client.
+///
+/// Returns the pairs instead of exporting them. `NativeModelClient` reads its
+/// injected map ahead of the process environment, so the client never needed
+/// them in `std::env` — and putting them there handed a copy to every child
+/// process Forge starts, including MCP servers and shell commands.
+///
+/// An explicitly exported variable still wins, which is the precedence
+/// `forge_connect::resolve_key` already uses.
+fn connect_credentials() -> Vec<(String, String)> {
     let reg = forge_connect::builtin_registry();
     let store = forge_connect::CredentialStore::user_default();
     let svc = forge_connect::ConnectService {
@@ -94,25 +102,32 @@ fn inject_connect_credentials_into_env() {
         active_profile_id: None,
         active_model: None,
     };
-    for p in reg.profiles() {
-        if let Ok(pairs) = svc.provider_env_for_profile(&p.id) {
-            for (k, v) in pairs {
-                if std::env::var(&k).ok().filter(|s| !s.is_empty()).is_none() {
-                    std::env::set_var(k, v);
-                }
+    let mut pairs = Vec::new();
+    for profile in reg.profiles() {
+        let Ok(profile_pairs) = svc.provider_env_for_profile(&profile.id) else {
+            continue;
+        };
+        for (name, value) in profile_pairs {
+            let already_exported = std::env::var(&name)
+                .ok()
+                .is_some_and(|existing| !existing.trim().is_empty());
+            if !already_exported {
+                pairs.push((name, value));
             }
         }
     }
+    pairs
 }
 
 async fn open_session(
     cfg: &Config,
     resume: Option<SessionId>,
 ) -> anyhow::Result<(AgentSession, Vec<String>)> {
-    inject_connect_credentials_into_env();
-
     let model: Arc<dyn ModelClient> =
         Arc::from(client_from_config(cfg).map_err(|e| anyhow::anyhow!(e))?);
+    // After construction, because credentials are resolved per request rather
+    // than at build time.
+    model.apply_provider_env(&connect_credentials());
 
     let mut tools = ToolRegistry::new();
     register_static_mcp(
@@ -182,6 +197,40 @@ mod tests {
         let session_id = SessionId::new_v4();
         let cli = Cli::try_parse_from(["forge", "--resume", &session_id.to_string()]).unwrap();
         assert_eq!(cli.resume, Some(session_id));
+    }
+
+    /// `forge-tools` cannot see `forge-connect`, so the list of credential
+    /// variables the shell tool strips is maintained by hand. This crate depends
+    /// on both, so it is where the two can be checked against each other: a new
+    /// provider whose key is not on that list would otherwise be readable by any
+    /// model-authored command, silently.
+    #[test]
+    fn credential_env_names_cover_every_connect_profile() {
+        let registry = forge_connect::builtin_registry();
+        let stripped = forge_tools::PROVIDER_CREDENTIAL_ENV;
+
+        for profile in registry.profiles() {
+            for name in &profile.api_key_env {
+                assert!(
+                    stripped.contains(&name.as_str()),
+                    "`{name}` (profile `{}`) is a provider credential that the shell tool would \
+                     not strip — add it to forge_tools::PROVIDER_CREDENTIAL_ENV",
+                    profile.id
+                );
+            }
+        }
+
+        // Tokens exported for OAuth providers do not appear in `api_key_env`.
+        for name in [
+            "XAI_API_KEY",
+            forge_connect::OPENAI_CODEX_ACCESS_TOKEN_ENV,
+            forge_connect::OPENAI_CODEX_ACCOUNT_ID_ENV,
+        ] {
+            assert!(
+                stripped.contains(&name),
+                "`{name}` is exported for an OAuth provider but would not be stripped"
+            );
+        }
     }
 
     #[tokio::test]
