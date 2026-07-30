@@ -441,7 +441,7 @@ fn platform_trash_dir() -> Result<PathBuf, FileOperationError> {
             .ok_or_else(|| {
                 FileOperationError::TrashUnavailable("home directory not found".into())
             })?;
-        return Ok(base.join("Trash/files"));
+        Ok(base.join("Trash/files"))
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {

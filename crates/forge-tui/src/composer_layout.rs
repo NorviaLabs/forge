@@ -1,5 +1,6 @@
 //! Wrapped visual-row layout for the active composer.
 
+#[cfg(test)]
 use crate::user_message_gutter::gutter_prefix_width;
 
 /// One wrapped visual row of composer content (byte range into the buffer).
@@ -115,6 +116,7 @@ fn wrap_line_ranges(line: &str, width: usize) -> Vec<(usize, usize)> {
 }
 
 /// Locate the cursor within wrapped visual rows.
+#[cfg(test)]
 pub fn locate_cursor(text: &str, cursor: usize, content_width: usize) -> (usize, usize) {
     let cursor = cursor.min(text.len());
     let rows = build_visual_rows(text, content_width);
@@ -126,7 +128,7 @@ pub fn scroll_offset(cursor_row: usize, total_rows: usize, visible_rows: usize) 
     if total_rows <= visible_rows || visible_rows == 0 {
         return 0;
     }
-    if cursor_row + 1 <= visible_rows {
+    if cursor_row < visible_rows {
         0
     } else {
         (cursor_row + 1).saturating_sub(visible_rows)
@@ -151,6 +153,7 @@ pub fn locate_cursor_in_rows(rows: &[ComposerVisualRow], cursor: usize) -> (usiz
 }
 
 /// Map a mouse click within a visual row to a buffer index.
+#[cfg(test)]
 pub fn click_to_cursor(
     text: &str,
     visual_row: usize,
@@ -169,11 +172,13 @@ pub fn click_to_cursor(
 }
 
 /// Screen column for the first editable character on a row.
+#[cfg(test)]
 pub fn content_start_column(prefix_width: usize) -> usize {
     prefix_width
 }
 
 /// Strip decorative gutter prefix from a rendered composer row.
+#[cfg(test)]
 pub fn strip_rendered_prefix<'a>(line: &'a str, glyph: &str) -> &'a str {
     crate::user_message_gutter::strip_rendered_line_prefix(line, glyph)
 }
@@ -184,6 +189,7 @@ pub fn visual_row_count(text: &str, content_width: usize) -> usize {
 }
 
 /// Copy text is the buffer itself; placeholders and gutters are never included.
+#[cfg(test)]
 pub fn copy_buffer(text: &str) -> &str {
     text
 }
@@ -275,6 +281,7 @@ mod tests {
         assert!(!copy_buffer(text).contains(glyph()));
     }
 
+    #[test]
     fn scroll_keeps_cursor_row_visible_with_tight_viewport() {
         assert_eq!(scroll_offset(4, 8, 4), 1);
         assert_eq!(scroll_offset(7, 8, 4), 4);
