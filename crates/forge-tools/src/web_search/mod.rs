@@ -303,4 +303,99 @@ mod tests {
         let md = format_search_results("nothing", &[]);
         assert!(md.contains("No results"));
     }
+
+    #[test]
+    fn describes_itself() {
+        let tool = WebSearchTool::try_new(&WebSearchConfig::default()).unwrap();
+        assert!(tool.description().contains("Search the public web"));
+    }
+
+    #[tokio::test]
+    async fn new_for_tests_bypasses_should_register() {
+        // `new_for_tests` is the only constructor that skips
+        // `should_register()`; exercise it directly with an explicit backend.
+        let cfg = WebSearchConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        assert!(WebSearchTool::try_new(&cfg).is_none());
+
+        let tool = WebSearchTool::new_for_tests(cfg, Arc::new(MockSearchBackend));
+        let ctx = ToolContext::new(std::env::current_dir().unwrap());
+        let out = tool
+            .call(&ctx, json!({"query": "constructed directly"}))
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn site_filter_is_appended_to_the_query() {
+        let cfg = WebSearchConfig::default();
+        let tool = WebSearchTool::try_new(&cfg).unwrap();
+        let ctx = ToolContext::new(std::env::current_dir().unwrap());
+        let out = tool
+            .call(
+                &ctx,
+                json!({"query": "release notes", "site": "example.com"}),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("site:example.com"),
+            "expected the site filter to reach the backend query: {}",
+            out.content
+        );
+    }
+
+    #[tokio::test]
+    async fn site_filter_is_not_duplicated_when_query_already_has_one() {
+        let cfg = WebSearchConfig::default();
+        let tool = WebSearchTool::try_new(&cfg).unwrap();
+        let ctx = ToolContext::new(std::env::current_dir().unwrap());
+        let out = tool
+            .call(
+                &ctx,
+                json!({"query": "docs site:already.example", "site": "other.example"}),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(!out.content.contains("other.example"), "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn blank_site_filter_is_ignored() {
+        let cfg = WebSearchConfig::default();
+        let tool = WebSearchTool::try_new(&cfg).unwrap();
+        let ctx = ToolContext::new(std::env::current_dir().unwrap());
+        let out = tool
+            .call(&ctx, json!({"query": "plain query", "site": "   "}))
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(!out.content.contains("site:"), "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn call_reports_internal_deserialize_failure() {
+        // Bypasses schema validation to exercise the defensive internal
+        // deserialize error path directly.
+        let cfg = WebSearchConfig::default();
+        let tool = WebSearchTool::try_new(&cfg).unwrap();
+        let ctx = ToolContext::new(std::env::current_dir().unwrap());
+        let err = tool.call(&ctx, json!({"query": 12345})).await.unwrap_err();
+        assert!(err.to_string().contains("internal deserialize"), "{err}");
+    }
+
+    #[test]
+    fn should_register_web_search_matches_config() {
+        assert!(should_register_web_search(&WebSearchConfig::default()));
+        let disabled = WebSearchConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        assert!(!should_register_web_search(&disabled));
+    }
 }
