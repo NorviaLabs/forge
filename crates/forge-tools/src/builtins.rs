@@ -184,6 +184,29 @@ pub struct BashArgs {
 
 pub struct BashTool;
 
+/// Provider credential environment variables, stripped from any child process
+/// the shell tool starts.
+///
+/// These belong to Forge and to the user, not to a model-authored command. A
+/// command has no reason to read a provider key, and `$ANTHROPIC_API_KEY` in a
+/// `curl` is the shortest exfiltration path there is.
+///
+/// Mirrors the `api_key_env` names on `forge_connect`'s built-in profiles plus
+/// the tokens exported for OAuth providers. `forge-tools` does not depend on
+/// `forge-connect`, so `credential_env_names_cover_every_connect_profile` in
+/// `forge-cli` — which sees both crates — asserts this list stays complete.
+pub const PROVIDER_CREDENTIAL_ENV: &[&str] = &[
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "OLLAMA_API_KEY",
+    "OPENCODE_API_KEY",
+    "OPENCODE_GO_API_KEY",
+    "OPENCODE_ZEN_API_KEY",
+    "XAI_API_KEY",
+    "FORGE_CODEX_ACCESS_TOKEN",
+    "FORGE_CODEX_ACCOUNT_ID",
+];
+
 #[async_trait]
 impl Tool for BashTool {
     fn name(&self) -> &str {
@@ -202,12 +225,17 @@ impl Tool for BashTool {
     async fn call(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
         let a: BashArgs =
             serde_json::from_value(args).map_err(|e| ToolError::Execution(e.to_string()))?;
-        let out = Command::new("bash")
+        let mut command = Command::new("bash");
+        command
             .arg("-lc")
             .arg(&a.command)
             .current_dir(&ctx.workspace_root)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::piped());
+        for name in PROVIDER_CREDENTIAL_ENV {
+            command.env_remove(name);
+        }
+        let out = command
             .output()
             .await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
@@ -376,6 +404,91 @@ mod tests {
         let t = ReadFileTool;
         let err = validate_args("read_file", &t.input_schema(), &json!({"path": 1})).unwrap_err();
         assert_eq!(err.tool, "read_file");
+    }
+
+    /// Restores an environment variable on drop, so a test that has to touch the
+    /// process environment does not leak into the rest of the suite.
+    struct EnvVarGuard {
+        name: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(name: &'static str, value: &str) -> Self {
+            let previous = std::env::var(name).ok();
+            std::env::set_var(name, value);
+            Self { name, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => std::env::set_var(self.name, value),
+                None => std::env::remove_var(self.name),
+            }
+        }
+    }
+
+    /// A model-authored command must not be able to read a provider credential
+    /// out of its environment. `OPENCODE_ZEN_API_KEY` is used because nothing
+    /// else in the workspace reads it, so setting it here cannot perturb another
+    /// test.
+    #[tokio::test]
+    async fn bash_does_not_inherit_provider_credentials() {
+        let _guard = EnvVarGuard::set("OPENCODE_ZEN_API_KEY", "sk-must-not-reach-the-child");
+        let dir = tempdir().unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+
+        let out = BashTool
+            .call(
+                &ctx,
+                json!({"command": "printf '[%s]' \"$OPENCODE_ZEN_API_KEY\""}),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            out.content.trim(),
+            "[]",
+            "credential reached the child: {}",
+            out.content
+        );
+    }
+
+    /// This strips credentials, not the environment. An unrelated variable must
+    /// still reach the command, or ordinary builds break.
+    #[tokio::test]
+    async fn bash_still_inherits_unrelated_environment() {
+        let _guard = EnvVarGuard::set("FORGE_TEST_BASH_PASSTHROUGH", "visible");
+        let dir = tempdir().unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+
+        let out = BashTool
+            .call(
+                &ctx,
+                json!({"command": "printf '[%s]' \"$FORGE_TEST_BASH_PASSTHROUGH\""}),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(out.content.trim(), "[visible]", "{}", out.content);
+    }
+
+    #[test]
+    fn provider_credential_env_list_is_well_formed() {
+        for name in PROVIDER_CREDENTIAL_ENV {
+            assert!(
+                name.chars()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'),
+                "`{name}` is not an environment variable name"
+            );
+        }
+        let mut sorted = PROVIDER_CREDENTIAL_ENV.to_vec();
+        sorted.sort_unstable();
+        let before = sorted.len();
+        sorted.dedup();
+        assert_eq!(before, sorted.len(), "duplicate entry in the list");
     }
 
     #[tokio::test]
