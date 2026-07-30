@@ -4,6 +4,7 @@
 
 use crate::auth::AuthMode;
 use crate::profile::ConnectProfile;
+use crate::verify::VerifyError;
 
 pub const PROFILE_ID: &str = "ollama";
 /// Default local Ollama OpenAI-compatible base.
@@ -31,7 +32,7 @@ pub fn ollama_profile() -> ConnectProfile {
 }
 
 /// Probe `GET {base}/api/tags` to ensure Ollama is running.
-pub fn verify_reachable(base_url: &str) -> Result<(), String> {
+pub fn verify_reachable(base_url: &str) -> Result<(), VerifyError> {
     let base = base_url.trim().trim_end_matches('/');
     // Prefer native tags API; fall back to OpenAI-compatible /v1/models.
     let tags = format!("{base}/api/tags");
@@ -44,10 +45,12 @@ pub fn verify_reachable(base_url: &str) -> Result<(), String> {
         .call()
     {
         Ok(r) if (200..300).contains(&r.status()) => Ok(()),
-        Ok(r) => Err(format!(
-            "Ollama responded HTTP {} at {base}. Is the server healthy?",
-            r.status()
-        )),
+        Ok(r) => Err(VerifyError::Unhealthy {
+            provider: "Ollama",
+            status: r.status(),
+            endpoint: base.to_string(),
+            guidance: "Is the server healthy?",
+        }),
         Err(_) => {
             let models = format!("{base}/v1/models");
             match ureq::get(&models)
@@ -59,14 +62,19 @@ pub fn verify_reachable(base_url: &str) -> Result<(), String> {
                 .call()
             {
                 Ok(r) if (200..300).contains(&r.status()) => Ok(()),
-                Ok(r) => Err(format!(
-                    "Ollama responded HTTP {} at {base}. Is the server healthy?",
-                    r.status()
-                )),
-                Err(e) => Err(format!(
-                    "Cannot reach Ollama at {base} ({e}). \
+                Ok(r) => Err(VerifyError::Unhealthy {
+                    provider: "Ollama",
+                    status: r.status(),
+                    endpoint: base.to_string(),
+                    guidance: "Is the server healthy?",
+                }),
+                Err(e) => Err(VerifyError::Unreachable {
+                    provider: "Ollama",
+                    message: format!(
+                        "Cannot reach Ollama at {base} ({e}). \
 Start it with `ollama serve` (default http://localhost:11434)."
-                )),
+                    ),
+                }),
             }
         }
     }
@@ -111,7 +119,9 @@ mod tests {
     fn verify_reachable_accepts_tags_and_reports_unhealthy_status() {
         assert!(verify_reachable(&mock_server(vec![200])).is_ok());
 
-        let err = verify_reachable(&mock_server(vec![503, 500])).unwrap_err();
+        let err = verify_reachable(&mock_server(vec![503, 500]))
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("status code 500"), "{err}");
     }
 
@@ -119,7 +129,9 @@ mod tests {
     fn verify_reachable_falls_back_to_openai_models_route() {
         assert!(verify_reachable(&mock_server(vec![404, 200])).is_ok());
 
-        let err = verify_reachable(&mock_server(vec![404, 500])).unwrap_err();
+        let err = verify_reachable(&mock_server(vec![404, 500]))
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("status code 500"), "{err}");
     }
 }

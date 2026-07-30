@@ -16,16 +16,18 @@ mod profile;
 mod registry;
 mod service;
 mod store;
+mod verify;
 mod xai;
 
 pub use anthropic::{anthropic_profile, PROFILE_ID as ANTHROPIC_PROFILE_ID};
 pub use auth::{AuthMode, OauthPending, OauthTokens};
 pub use catalog::{
     credential_for_catalog, fetch_remote_models, models_for_picker, normalize_model_id,
-    refresh_models_dev_registry, refresh_profile_catalog, CatalogCost, CatalogEntry, CatalogSource,
-    ModelCatalogCache, DEFAULT_TTL_SECS, MODELS_DEV_TTL_SECS,
+    refresh_models_dev_registry, refresh_profile_catalog, CatalogCost, CatalogEntry, CatalogError,
+    CatalogSource, ModelCatalogCache, DEFAULT_TTL_SECS, MODELS_DEV_TTL_SECS,
 };
 pub use cost::provider_cost_report;
+pub use oauth_dispatch::OauthError;
 pub use oauth_xai::{
     try_open_browser, XaiOauthClient, XaiOauthError, DEFAULT_CLIENT_ID, DEFAULT_ISSUER,
     DEFAULT_SCOPES,
@@ -54,6 +56,7 @@ pub use service::{
     parse_connect_args, ConnectAction, ConnectError, ConnectService,
 };
 pub use store::{resolve_connected, resolve_key, CredentialStore, StoreError};
+pub use verify::VerifyError;
 pub use xai::{xai_grok_profile, PROFILE_ID as XAI_PROFILE_ID};
 
 pub(crate) fn register_builtin_profiles(registry: &mut ConnectRegistry) {

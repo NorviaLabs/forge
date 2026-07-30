@@ -3,12 +3,14 @@
 use thiserror::Error;
 
 use crate::auth::{AuthMode, OauthPending, OauthTokens};
+use crate::catalog::CatalogError;
 use crate::catalog::ModelCatalogCache;
-use crate::oauth_dispatch::{OauthDispatcher, PollResult};
+use crate::oauth_dispatch::{OauthDispatcher, OauthError, PollResult};
 use crate::oauth_xai::try_open_browser;
 use crate::profile::{ConnectOutcome, ConnectProfile, ConnectStatus, KeySource};
 use crate::registry::ConnectRegistry;
 use crate::store::{resolve_connected, resolve_key, CredentialStore, StoreError};
+use crate::verify::VerifyError;
 
 #[derive(Debug, Error)]
 pub enum ConnectError {
@@ -22,12 +24,19 @@ pub enum ConnectError {
     OauthRejectsApiKey(String),
     /// Device-code session started; operator must finish login.
     /// Display shows operator instructions (never tokens).
+    /// Boxed: `OauthPending` is ~216 bytes, and inline it made every `Result` in
+    /// this module oversized. That was the sole cause of the ten
+    /// `clippy::result_large_err` allows this change removes.
     #[error("{}", .0.operator_instructions())]
-    OauthDevicePending(OauthPending),
+    OauthDevicePending(Box<OauthPending>),
     #[error("OAuth: {0}")]
-    Oauth(String),
+    Oauth(#[from] OauthError),
     #[error("store: {0}")]
     Store(#[from] StoreError),
+    #[error(transparent)]
+    Verify(#[from] VerifyError),
+    #[error(transparent)]
+    Catalog(#[from] CatalogError),
     #[error("{0}")]
     Message(String),
 }
@@ -62,7 +71,6 @@ pub enum ConnectAction {
 }
 
 /// Parse `/connect …` args (without the leading `/connect`).
-#[allow(clippy::result_large_err)]
 pub fn parse_connect_args(args: &str) -> Result<ConnectAction, ConnectError> {
     let args = args.trim();
     if args.is_empty() {
@@ -94,9 +102,7 @@ pub struct ConnectService<'a> {
     pub active_model: Option<String>,
 }
 
-#[allow(clippy::result_large_err)]
 impl<'a> ConnectService<'a> {
-    #[allow(clippy::result_large_err)]
     pub fn list_lines(&self) -> Result<Vec<String>, ConnectError> {
         let mut lines = Vec::new();
         for p in self.registry.profiles() {
@@ -124,7 +130,6 @@ impl<'a> ConnectService<'a> {
         Ok(lines)
     }
 
-    #[allow(clippy::result_large_err)]
     pub fn status(&self) -> Result<ConnectStatus, ConnectError> {
         let mut connected = Vec::new();
         for p in self.registry.profiles() {
@@ -149,7 +154,6 @@ impl<'a> ConnectService<'a> {
         })
     }
 
-    #[allow(clippy::result_large_err)]
     pub fn status_message(&self) -> Result<String, ConnectError> {
         let s = self.status()?;
         Ok(format!(
@@ -195,42 +199,46 @@ impl<'a> ConnectService<'a> {
                         .default_base_url
                         .as_deref()
                         .unwrap_or(crate::opencode_go::DEFAULT_BASE_URL);
-                    crate::opencode_go::verify_api_key(&key, base)
-                        .map_err(ConnectError::Message)?;
+                    crate::opencode_go::verify_api_key(&key, base)?;
                 }
                 id if id == crate::opencode_zen::PROFILE_ID => {
                     let base = profile
                         .default_base_url
                         .as_deref()
                         .unwrap_or(crate::opencode_zen::DEFAULT_BASE_URL);
-                    crate::opencode_go::verify_api_key(&key, base)
-                        .map_err(|e| {
-                            e.replace("OpenCode Go", "OpenCode Zen")
+                    // Zen reuses the Go verification path, so its guidance must be
+                    // relabelled. Still done on the rendered message: doing it properly
+                    // needs Zen-specific guidance threaded through the shared verifier,
+                    // which changes user-facing wording and belongs in its own change.
+                    crate::opencode_go::verify_api_key(&key, base).map_err(|e| {
+                        ConnectError::Message(
+                            e.to_string()
+                                .replace("OpenCode Go", "OpenCode Zen")
                                 .replace("/zen/go", "/zen")
-                                .replace("subscribe to Go", "Zen billing / API keys")
-                        })
-                        .map_err(ConnectError::Message)?;
+                                .replace("subscribe to Go", "Zen billing / API keys"),
+                        )
+                    })?;
                 }
                 id if id == crate::openai::PROFILE_ID => {
                     let base = profile
                         .default_base_url
                         .as_deref()
                         .unwrap_or(crate::openai::DEFAULT_BASE_URL);
-                    crate::openai::verify_api_key(&key, base).map_err(ConnectError::Message)?;
+                    crate::openai::verify_api_key(&key, base)?;
                 }
                 id if id == crate::anthropic::PROFILE_ID => {
                     let base = profile
                         .default_base_url
                         .as_deref()
                         .unwrap_or(crate::anthropic::DEFAULT_BASE_URL);
-                    crate::anthropic::verify_api_key(&key, base).map_err(ConnectError::Message)?;
+                    crate::anthropic::verify_api_key(&key, base)?;
                 }
                 id if id == crate::ollama::PROFILE_ID => {
                     let base = profile
                         .default_base_url
                         .as_deref()
                         .unwrap_or(crate::ollama::DEFAULT_BASE_URL);
-                    crate::ollama::verify_reachable(base).map_err(ConnectError::Message)?;
+                    crate::ollama::verify_reachable(base)?;
                 }
                 _ => {}
             }
@@ -309,7 +317,7 @@ impl<'a> ConnectService<'a> {
             return Ok(OauthPending::start_stub(&profile.id, auth_server));
         }
 
-        let pending = OauthDispatcher::start(&profile).map_err(ConnectError::Oauth)?;
+        let pending = OauthDispatcher::start(&profile)?;
         if *system_browser {
             try_open_browser(pending.open_url());
         }
@@ -324,7 +332,7 @@ impl<'a> ConnectService<'a> {
         if pending.profile_id != "xai" && pending.client_id == "stub" {
             return Ok(None);
         }
-        match OauthDispatcher::poll(pending).map_err(ConnectError::Oauth)? {
+        match OauthDispatcher::poll(pending)? {
             PollResult::Complete(tokens) => {
                 Ok(Some(self.connect_oauth(&pending.profile_id, tokens)?))
             }
@@ -339,17 +347,19 @@ impl<'a> ConnectService<'a> {
         max_wait: std::time::Duration,
     ) -> Result<ConnectOutcome, ConnectError> {
         if pending.client_id == "stub" {
-            return Err(ConnectError::Oauth(
+            return Err(ConnectError::Oauth(OauthError::Message(
                 "stub OAuth cannot complete; unset FORGE_CONNECT_OAUTH_STUB/FIXTURE or use fixture connect".into(),
-            ));
+            )));
         }
         let deadline = std::time::Instant::now() + max_wait;
         let mut interval = std::time::Duration::from_secs(pending.interval_secs.max(1));
         loop {
             if std::time::Instant::now() >= deadline {
-                return Err(ConnectError::Oauth("device authorization expired".into()));
+                return Err(ConnectError::Oauth(OauthError::Message(
+                    "device authorization expired".into(),
+                )));
             }
-            match OauthDispatcher::poll(pending).map_err(ConnectError::Oauth)? {
+            match OauthDispatcher::poll(pending)? {
                 PollResult::Complete(tokens) => {
                     return self.connect_oauth(&pending.profile_id, tokens)
                 }
@@ -363,7 +373,6 @@ impl<'a> ConnectService<'a> {
     }
 
     /// Connect dispatch used by CLI/TUI after collecting secrets.
-    #[allow(clippy::result_large_err)]
     pub fn connect(
         &mut self,
         profile_id: &str,
@@ -406,7 +415,7 @@ impl<'a> ConnectService<'a> {
                     }
                 }
                 let pending = self.start_oauth(&profile.id)?;
-                Err(ConnectError::OauthDevicePending(pending))
+                Err(ConnectError::OauthDevicePending(Box::new(pending)))
             }
             AuthMode::ApiKey { .. } => self.connect_api_key(&profile.id, api_key),
         }
@@ -527,9 +536,9 @@ impl<'a> ConnectService<'a> {
                 self.store.set_oauth(profile_id, fresh.clone())?;
                 Ok(Some(fresh))
             }
-            Err(error) => Err(ConnectError::Oauth(format!(
+            Err(error) => Err(ConnectError::Oauth(OauthError::Message(format!(
                 "token refresh failed ({error}); run `/connect {profile_id}` again"
-            ))),
+            )))),
         }
     }
 
@@ -552,8 +561,7 @@ impl<'a> ConnectService<'a> {
                     if at.is_empty() || at.starts_with("fixture-") || at == "fixture-access-token" {
                         // skip — operator must complete real OAuth
                     } else if profile.id == crate::openai_codex::PROFILE_ID {
-                        let account_id = crate::openai_codex::account_id_from_token(at)
-                            .map_err(ConnectError::Message)?;
+                        let account_id = crate::openai_codex::account_id_from_token(at)?;
                         out.push((crate::openai_codex::ACCESS_TOKEN_ENV.into(), at.to_string()));
                         out.push((crate::openai_codex::ACCOUNT_ID_ENV.into(), account_id));
                     } else {
@@ -613,7 +621,6 @@ impl<'a> ConnectService<'a> {
     }
 
     /// Profiles that already have stored credentials (for session restore).
-    #[allow(clippy::result_large_err)]
     pub fn connected_profiles(&self) -> Result<Vec<ConnectProfile>, ConnectError> {
         let mut out = Vec::new();
         for p in self.registry.profiles() {
@@ -638,14 +645,12 @@ impl<'a> ConnectService<'a> {
         Ok(out)
     }
 
-    #[allow(clippy::result_large_err)]
     fn profile_or_err(&self, profile_id: &str) -> Result<ConnectProfile, ConnectError> {
         self.registry.get(profile_id).cloned().ok_or_else(|| {
             ConnectError::UnknownProfile(profile_id.into(), self.registry.ids().join(", "))
         })
     }
 
-    #[allow(clippy::result_large_err)]
     fn activate(
         &mut self,
         profile: &ConnectProfile,
@@ -696,7 +701,6 @@ pub fn needs_tui_oauth(registry: &ConnectRegistry, profile_id: &str) -> bool {
         .unwrap_or(false)
 }
 
-#[allow(clippy::result_large_err)]
 pub fn handle_connect_action(
     action: ConnectAction,
     registry: &ConnectRegistry,

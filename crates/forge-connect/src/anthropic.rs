@@ -2,6 +2,7 @@
 
 use crate::auth::AuthMode;
 use crate::profile::ConnectProfile;
+use crate::verify::VerifyError;
 
 pub const PROFILE_ID: &str = "anthropic";
 pub const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
@@ -25,17 +26,16 @@ pub fn anthropic_profile() -> ConnectProfile {
 
 /// Verify key with a lightweight messages probe (or models if available).
 /// Uses Anthropic's `x-api-key` header. Never includes the key in errors.
-pub fn verify_api_key(api_key: &str, base_url: &str) -> Result<(), String> {
+pub fn verify_api_key(api_key: &str, base_url: &str) -> Result<(), VerifyError> {
     let key = api_key.trim();
     if key.is_empty() {
-        return Err("API key is empty".into());
+        return Err(VerifyError::EmptyKey);
     }
     if key.len() < 16 {
-        return Err(format!(
-            "API key looks too short ({n} chars). Create a key at \
-https://console.anthropic.com/settings/keys.",
-            n = key.len()
-        ));
+        return Err(VerifyError::KeyTooShort {
+            len: key.len(),
+            guidance: "Create a key at https://console.anthropic.com/settings/keys.",
+        });
     }
     let base = base_url.trim().trim_end_matches('/');
     // Minimal auth check: list models when supported; otherwise POST with invalid body
@@ -51,11 +51,10 @@ https://console.anthropic.com/settings/keys.",
         .call();
     match resp {
         Ok(r) if (200..300).contains(&r.status()) => Ok(()),
-        Ok(r) if r.status() == 401 || r.status() == 403 => {
-            Err("Anthropic rejected the API key (unauthorized). \
-Create a key at https://console.anthropic.com/settings/keys."
-                .into())
-        }
+        Ok(r) if r.status() == 401 || r.status() == 403 => Err(VerifyError::Unauthorized {
+            provider: "Anthropic",
+            guidance: "Create a key at https://console.anthropic.com/settings/keys.",
+        }),
         Ok(r) if r.status() == 404 => {
             // Older APIs may not expose /v1/models — fall back to a tiny messages call.
             verify_via_messages(key, base)
@@ -65,26 +64,29 @@ Create a key at https://console.anthropic.com/settings/keys."
             if r.status() < 500 {
                 Ok(())
             } else {
-                Err(format!(
-                    "Anthropic key verification failed (HTTP {}).",
-                    r.status()
-                ))
+                Err(VerifyError::Status {
+                    provider: "Anthropic",
+                    status: r.status(),
+                    guidance: None,
+                })
             }
         }
         Err(ureq::Error::Status(code, _)) if code == 401 || code == 403 => {
-            Err("Anthropic rejected the API key (unauthorized). \
-Create a key at https://console.anthropic.com/settings/keys."
-                .into())
+            Err(VerifyError::Unauthorized {
+                provider: "Anthropic",
+                guidance: "Create a key at https://console.anthropic.com/settings/keys.",
+            })
         }
         Err(ureq::Error::Status(404, _)) => verify_via_messages(key, base),
         Err(ureq::Error::Status(code, _)) if code < 500 => Ok(()),
-        Err(other) => Err(format!(
-            "Could not reach Anthropic to verify key ({other}). Check network."
-        )),
+        Err(other) => Err(VerifyError::Unreachable {
+            provider: "Anthropic",
+            message: format!("Could not reach Anthropic to verify key ({other}). Check network."),
+        }),
     }
 }
 
-fn verify_via_messages(key: &str, base: &str) -> Result<(), String> {
+fn verify_via_messages(key: &str, base: &str) -> Result<(), VerifyError> {
     // Intentionally tiny/invalid payload — we only care about auth status codes.
     let url = format!("{base}/v1/messages");
     let body = r#"{"model":"","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}"#;
@@ -100,14 +102,16 @@ fn verify_via_messages(key: &str, base: &str) -> Result<(), String> {
     {
         Ok(_) => Ok(()),
         Err(ureq::Error::Status(401, _)) | Err(ureq::Error::Status(403, _)) => {
-            Err("Anthropic rejected the API key (unauthorized). \
-Create a key at https://console.anthropic.com/settings/keys."
-                .into())
+            Err(VerifyError::Unauthorized {
+                provider: "Anthropic",
+                guidance: "Create a key at https://console.anthropic.com/settings/keys.",
+            })
         }
         Err(ureq::Error::Status(_, _)) => Ok(()), // 400/404/etc. means auth passed
-        Err(other) => Err(format!(
-            "Could not reach Anthropic to verify key ({other}). Check network."
-        )),
+        Err(other) => Err(VerifyError::Unreachable {
+            provider: "Anthropic",
+            message: format!("Could not reach Anthropic to verify key ({other}). Check network."),
+        }),
     }
 }
 
@@ -147,13 +151,17 @@ mod tests {
 
     #[test]
     fn short_key_rejected() {
-        let err = verify_api_key("sk-ant-short", DEFAULT_BASE_URL).unwrap_err();
+        let err = verify_api_key("sk-ant-short", DEFAULT_BASE_URL)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("too short"), "{err}");
     }
 
     #[test]
     fn empty_key_rejected_without_network() {
-        let err = verify_api_key("   ", DEFAULT_BASE_URL).unwrap_err();
+        let err = verify_api_key("   ", DEFAULT_BASE_URL)
+            .unwrap_err()
+            .to_string();
         assert_eq!(err, "API key is empty");
     }
 
@@ -162,13 +170,15 @@ mod tests {
         assert!(verify_api_key("sk-ant-valid-key-for-tests", &mock_server(vec![200])).is_ok());
         assert!(verify_api_key("sk-ant-valid-key-for-tests", &mock_server(vec![400])).is_ok());
 
-        let err =
-            verify_api_key("sk-ant-valid-key-for-tests", &mock_server(vec![403])).unwrap_err();
+        let err = verify_api_key("sk-ant-valid-key-for-tests", &mock_server(vec![403]))
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("unauthorized"), "{err}");
         assert!(!err.contains("sk-ant-valid"));
 
-        let err =
-            verify_api_key("sk-ant-valid-key-for-tests", &mock_server(vec![500])).unwrap_err();
+        let err = verify_api_key("sk-ant-valid-key-for-tests", &mock_server(vec![500]))
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("status code 500"), "{err}");
     }
 
@@ -176,8 +186,9 @@ mod tests {
     fn verify_falls_back_to_messages_endpoint_on_missing_models_route() {
         assert!(verify_api_key("sk-ant-valid-key-for-tests", &mock_server(vec![404, 400])).is_ok());
 
-        let err =
-            verify_api_key("sk-ant-valid-key-for-tests", &mock_server(vec![404, 401])).unwrap_err();
+        let err = verify_api_key("sk-ant-valid-key-for-tests", &mock_server(vec![404, 401]))
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("unauthorized"), "{err}");
         assert!(!err.contains("sk-ant-valid"));
     }
