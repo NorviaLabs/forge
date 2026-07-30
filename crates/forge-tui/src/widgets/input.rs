@@ -1,6 +1,6 @@
 //! Input bar — multi-line paste / Shift+Enter newline, visible caret.
 
-use crate::composer_layout::{build_visual_rows, locate_cursor, scroll_offset, visual_row_count};
+use crate::composer_layout::{locate_cursor_in_rows, scroll_offset, ComposerVisualRow};
 use crate::theme;
 use crate::user_message_gutter::{gutter_glyph, gutter_prefix_width, GutterRole, GUTTER_GAP};
 use forge_config::Theme;
@@ -21,12 +21,16 @@ pub struct InputModel {
     pub history_browse: bool,
     /// No live LLM provider — chrome warns; chat send is gated in the app.
     pub not_connected: bool,
+    /// Bumped whenever buffer content changes so layout caches can invalidate.
+    pub(crate) layout_revision: u64,
     /// Full payloads represented by compact, atomic placeholders in `text`.
     pending_pastes: Vec<PendingPaste>,
 }
 
 const LARGE_PASTE_CHAR_THRESHOLD: usize = 1000;
 const MAX_VISIBLE_ROWS: usize = 6;
+/// Top border row reserved by the input block.
+const INPUT_TOP_BORDER_ROWS: u16 = 1;
 
 #[derive(Debug, Clone)]
 struct PendingPaste {
@@ -36,11 +40,16 @@ struct PendingPaste {
 }
 
 impl InputModel {
+    fn bump_layout(&mut self) {
+        self.layout_revision = self.layout_revision.wrapping_add(1);
+    }
+
     pub fn insert(&mut self, c: char) {
         let i = self.insertion_cursor();
         self.shift_ranges_for_insert(i, c.len_utf8());
         self.text.insert(i, c);
         self.cursor = i + c.len_utf8();
+        self.bump_layout();
     }
 
     /// Insert a newline at the cursor (Shift+Enter / paste).
@@ -71,6 +80,7 @@ impl InputModel {
         } else {
             self.insert_str(&pasted);
         }
+        self.bump_layout();
     }
 
     pub fn backspace(&mut self) {
@@ -87,6 +97,7 @@ impl InputModel {
             self.text.replace_range(paste.range.clone(), "");
             self.cursor = paste.range.start;
             self.shift_ranges_after_remove(paste.range.end, removed);
+            self.bump_layout();
             return;
         }
 
@@ -99,6 +110,7 @@ impl InputModel {
         self.text.replace_range(start..self.cursor, "");
         self.cursor = start;
         self.shift_ranges_after_remove(start + prev, prev);
+        self.bump_layout();
     }
 
     pub fn move_left(&mut self) {
@@ -146,6 +158,7 @@ impl InputModel {
         self.cursor = 0;
         self.history_browse = false;
         self.pending_pastes.clear();
+        self.bump_layout();
     }
 
     pub fn take(&mut self) -> String {
@@ -157,6 +170,7 @@ impl InputModel {
         }
         self.cursor = 0;
         self.history_browse = false;
+        self.bump_layout();
         t
     }
 
@@ -165,6 +179,7 @@ impl InputModel {
         self.text = text.into();
         self.cursor = self.text.len();
         self.pending_pastes.clear();
+        self.bump_layout();
     }
 
     /// Number of visual lines for layout (capped).
@@ -175,7 +190,7 @@ impl InputModel {
 
     /// Wrapped visual row count for a known composer width.
     pub fn visual_lines_for_width(&self, content_width: usize) -> u16 {
-        visual_row_count(&self.text, content_width.max(1))
+        crate::composer_layout::visual_row_count(&self.text, content_width.max(1))
             .min(MAX_VISIBLE_ROWS)
             .max(1) as u16
     }
@@ -260,8 +275,11 @@ fn normalize_pasted_text(pasted: &str) -> String {
 
 pub struct InputBar<'a> {
     pub model: &'a InputModel,
+    pub rows: &'a [ComposerVisualRow],
     /// Optional file-attachment label shown above the prompt line.
     pub attachment: Option<&'a str>,
+    pub dimmed: bool,
+    pub not_connected: bool,
     pub focused: bool,
 }
 
@@ -272,6 +290,9 @@ fn render_content_spans(
     focused: bool,
 ) -> Vec<Span<'static>> {
     let Some(col) = cursor_in_row.filter(|_| focused) else {
+        if fragment.is_empty() {
+            return Vec::new();
+        }
         return vec![Span::styled(fragment.to_string(), base)];
     };
     let col = col.min(fragment.len());
@@ -286,16 +307,20 @@ fn render_content_spans(
     let n = ch.len_utf8();
     let under = &right[..n];
     let under_disp = if under == " " { " " } else { under };
-    vec![
-        Span::styled(left.to_string(), base),
-        Span::styled(under_disp.to_string(), theme::caret()),
-        Span::styled(right[n..].to_string(), base),
-    ]
+    let mut spans = Vec::with_capacity(3);
+    if !left.is_empty() {
+        spans.push(Span::styled(left.to_string(), base));
+    }
+    spans.push(Span::styled(under_disp.to_string(), theme::caret()));
+    if n < right.len() {
+        spans.push(Span::styled(right[n..].to_string(), base));
+    }
+    spans
 }
 
 fn build_input_lines(
     model: &InputModel,
-    content_width: usize,
+    rows: &[ComposerVisualRow],
     visible_rows: usize,
     focused: bool,
     base: Style,
@@ -321,8 +346,7 @@ fn build_input_lines(
         return vec![Line::from(spans)];
     }
 
-    let rows = build_visual_rows(text, content_width);
-    let (cursor_row, cursor_col) = locate_cursor(text, cursor, content_width);
+    let (cursor_row, cursor_col) = locate_cursor_in_rows(rows, cursor);
     let offset = scroll_offset(cursor_row, rows.len(), visible_rows);
     let end = (offset + visible_rows).min(rows.len());
 
@@ -337,7 +361,7 @@ fn build_input_lines(
                 Span::styled(GUTTER_GAP, base),
             ];
             spans.extend(render_content_spans(
-                &row.fragment,
+                row.fragment(text),
                 cursor_in_row,
                 base,
                 focused,
@@ -373,7 +397,7 @@ impl Widget for InputBar<'_> {
             area
         };
 
-        let base = if self.model.dimmed {
+        let base = if self.dimmed {
             theme::dim()
         } else if self.model.history_browse {
             theme::history_active()
@@ -383,14 +407,13 @@ impl Widget for InputBar<'_> {
         let theme = Theme::default();
         let gutter_style = crate::user_message_gutter::gutter_style_for(theme, GutterRole::Active);
 
-        let glyph = gutter_glyph(theme, false);
-        let prefix_width = gutter_prefix_width(glyph);
-        let inner_width = lines_area.width as usize;
-        let content_width = inner_width.saturating_sub(prefix_width).max(1);
-        let visible_rows = lines_area.height.max(1) as usize;
+        let visible_rows = lines_area
+            .height
+            .saturating_sub(INPUT_TOP_BORDER_ROWS)
+            .max(1) as usize;
         let lines = build_input_lines(
             self.model,
-            content_width,
+            self.rows,
             visible_rows,
             self.focused,
             base,
@@ -401,7 +424,7 @@ impl Widget for InputBar<'_> {
 
         let border = if self.focused {
             theme::brand()
-        } else if self.model.not_connected {
+        } else if self.not_connected {
             theme::warn()
         } else {
             theme::border()
@@ -428,7 +451,9 @@ impl Widget for InputBar<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::composer_layout::{click_to_cursor, copy_buffer, strip_rendered_prefix};
+    use crate::composer_layout::{
+        build_visual_rows, click_to_cursor, copy_buffer, strip_rendered_prefix,
+    };
     use crate::theme::{USER_GUTTER_ACTIVE_DARK, USER_MESSAGE_GUTTER_DARK};
     use crate::user_message_gutter::{
         gutter_glyph, gutter_prefix_width, gutter_style_for, GutterRole, GUTTER_GAP,
@@ -440,28 +465,60 @@ mod tests {
         gutter_glyph(Theme::Dark, false)
     }
 
-    fn line_plain(line: &Line<'static>) -> String {
+    fn line_plain(line: &Line<'_>) -> String {
         line.spans
             .iter()
             .map(|span| span.content.as_ref())
             .collect()
     }
 
-    fn render_lines(model: &InputModel, width: u16, height: u16, focused: bool) -> Vec<String> {
+    fn test_rows(model: &InputModel, width: u16) -> Vec<ComposerVisualRow> {
+        let glyph = gutter_glyph(Theme::Dark, false);
+        let content_width = width
+            .saturating_sub(gutter_prefix_width(glyph) as u16)
+            .max(1) as usize;
+        build_visual_rows(&model.text, content_width)
+    }
+
+    fn draw_input_bar(
+        model: &InputModel,
+        rows: &[ComposerVisualRow],
+        width: u16,
+        height: u16,
+        focused: bool,
+        not_connected: bool,
+        attachment: Option<&str>,
+    ) -> ratatui::buffer::Buffer {
         let backend = TestBackend::new(width, height);
         let mut term = Terminal::new(backend).unwrap();
         term.draw(|f| {
             f.render_widget(
                 InputBar {
                     model,
-                    attachment: None,
+                    rows,
+                    attachment,
+                    dimmed: model.dimmed,
+                    not_connected,
                     focused,
                 },
                 f.area(),
             );
         })
         .unwrap();
-        let buf = term.backend().buffer();
+        term.backend().buffer().clone()
+    }
+
+    fn render_lines(model: &InputModel, width: u16, height: u16, focused: bool) -> Vec<String> {
+        let rows = test_rows(model, width);
+        let buf = draw_input_bar(
+            model,
+            &rows,
+            width,
+            height,
+            focused,
+            model.not_connected,
+            None,
+        );
         (1..buf.area().height)
             .map(|y| {
                 (0..buf.area().width)
@@ -583,20 +640,8 @@ mod tests {
         let mut m = InputModel::default();
         m.set_text("ab");
         m.cursor = 2;
-        let backend = TestBackend::new(40, 5);
-        let mut term = Terminal::new(backend).unwrap();
-        term.draw(|f| {
-            f.render_widget(
-                InputBar {
-                    model: &m,
-                    attachment: None,
-                    focused: true,
-                },
-                f.area(),
-            );
-        })
-        .unwrap();
-        let buf = term.backend().buffer();
+        let rows = test_rows(&m, 40);
+        let buf = draw_input_bar(&m, &rows, 40, 5, true, false, None);
         let area = buf.area();
         let mut found = false;
         for y in 0..area.height {
@@ -613,20 +658,8 @@ mod tests {
     #[test]
     fn empty_input_starts_with_caret_cell() {
         let m = InputModel::default();
-        let backend = TestBackend::new(40, 5);
-        let mut term = Terminal::new(backend).unwrap();
-        term.draw(|f| {
-            f.render_widget(
-                InputBar {
-                    model: &m,
-                    attachment: None,
-                    focused: true,
-                },
-                f.area(),
-            );
-        })
-        .unwrap();
-        let buf = term.backend().buffer();
+        let rows = test_rows(&m, 40);
+        let buf = draw_input_bar(&m, &rows, 40, 5, true, false, None);
         let cell = &buf[(2, 1)];
         assert_eq!(cell.symbol(), " ");
         assert_eq!(cell.style().bg, Some(theme::TEXT));
@@ -637,20 +670,8 @@ mod tests {
         let mut m = InputModel::default();
         m.set_text("ab");
         m.cursor = 0;
-        let backend = TestBackend::new(40, 5);
-        let mut term = Terminal::new(backend).unwrap();
-        term.draw(|f| {
-            f.render_widget(
-                InputBar {
-                    model: &m,
-                    attachment: None,
-                    focused: true,
-                },
-                f.area(),
-            );
-        })
-        .unwrap();
-        let buf = term.backend().buffer();
+        let rows = test_rows(&m, 40);
+        let buf = draw_input_bar(&m, &rows, 40, 5, true, false, None);
         let area = buf.area();
         let mut found_a = false;
         for y in 0..area.height {
@@ -674,20 +695,8 @@ mod tests {
             hint: "type here".into(),
             ..Default::default()
         };
-        let backend = TestBackend::new(48, 5);
-        let mut term = Terminal::new(backend).unwrap();
-        term.draw(|f| {
-            f.render_widget(
-                InputBar {
-                    model: &m,
-                    attachment: None,
-                    focused: false,
-                },
-                f.area(),
-            );
-        })
-        .unwrap();
-        let buf = term.backend().buffer();
+        let rows = test_rows(&m, 48);
+        let buf = draw_input_bar(&m, &rows, 48, 5, false, true, None);
         let border = &buf[(0, 0)];
         assert_eq!(border.style().fg, Some(theme::WARN));
         let rendered: String = (0..buf.area().height)
@@ -709,20 +718,8 @@ mod tests {
             history_browse: true,
             ..Default::default()
         };
-        let backend = TestBackend::new(48, 5);
-        let mut term = Terminal::new(backend).unwrap();
-        term.draw(|f| {
-            f.render_widget(
-                InputBar {
-                    model: &m,
-                    attachment: Some("file.txt"),
-                    focused: true,
-                },
-                f.area(),
-            );
-        })
-        .unwrap();
-        let buf = term.backend().buffer();
+        let rows = test_rows(&m, 48);
+        let buf = draw_input_bar(&m, &rows, 48, 5, true, false, Some("file.txt"));
         let mut saw_history_bg = false;
         for y in 0..buf.area().height {
             for x in 0..buf.area().width {
@@ -874,15 +871,29 @@ mod tests {
     }
 
     #[test]
+    fn multiline_input_scrolls_cursor_into_view() {
+        let m = InputModel {
+            text: "line1\nline2\nline3\nline4\nline5".into(),
+            cursor: "line1\nline2\nline3\nline4\nline5".len(),
+            ..Default::default()
+        };
+        let rows = render_lines(&m, 60, 5, true);
+        assert!(rows.iter().any(|row| row.contains("line5")));
+        assert!(rows.iter().all(|row| row.starts_with(glyph())));
+    }
+
+    #[test]
     fn forced_fallback_gutter_renders_on_all_rows() {
         let glyph = gutter_glyph(Theme::Ansi, false);
         assert_ne!(glyph, "▎");
+        let model = InputModel {
+            text: "one two three four five".into(),
+            ..Default::default()
+        };
+        let rows = build_visual_rows(&model.text, 10);
         let lines = build_input_lines(
-            &InputModel {
-                text: "one two three four five".into(),
-                ..Default::default()
-            },
-            10,
+            &model,
+            &rows,
             6,
             true,
             theme::text(),

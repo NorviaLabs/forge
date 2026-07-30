@@ -1,24 +1,48 @@
 //! Wrapped visual-row layout for the active composer.
 
-use crate::conversation::wrap;
 use crate::user_message_gutter::{gutter_prefix_width, GUTTER_GAP};
 
-/// One wrapped visual row of composer content.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One wrapped visual row of composer content (byte range into the buffer).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ComposerVisualRow {
-    pub fragment: String,
     pub start: usize,
     pub end: usize,
+}
+
+impl ComposerVisualRow {
+    pub fn fragment<'a>(&self, text: &'a str) -> &'a str {
+        &text[self.start..self.end.min(text.len())]
+    }
+
+    pub fn len(&self) -> usize {
+        self.end.saturating_sub(self.start)
+    }
+}
+
+/// Cached wrapped layout for the active composer.
+#[derive(Debug, Default)]
+pub struct ComposerLayoutCache {
+    revision: u64,
+    width: usize,
+    rows: Vec<ComposerVisualRow>,
+}
+
+impl ComposerLayoutCache {
+    pub fn rows(&mut self, revision: u64, text: &str, width: usize) -> &[ComposerVisualRow] {
+        if self.revision == revision && self.width == width {
+            return &self.rows;
+        }
+        self.rows = build_visual_rows(text, width);
+        self.revision = revision;
+        self.width = width;
+        &self.rows
+    }
 }
 
 /// Build wrapped visual rows with source byte offsets.
 pub fn build_visual_rows(text: &str, content_width: usize) -> Vec<ComposerVisualRow> {
     if text.is_empty() {
-        return vec![ComposerVisualRow {
-            fragment: String::new(),
-            start: 0,
-            end: 0,
-        }];
+        return vec![ComposerVisualRow { start: 0, end: 0 }];
     }
 
     let mut rows = Vec::new();
@@ -38,36 +62,79 @@ fn visual_rows_for_line(
     line_start: usize,
     content_width: usize,
 ) -> Vec<ComposerVisualRow> {
-    let wrapped = wrap(line, content_width);
-    let mut rows = Vec::with_capacity(wrapped.len());
-    let mut search_from = 0usize;
-    for fragment in wrapped {
-        let pos_in_line = if fragment.is_empty() {
-            search_from
-        } else if search_from == 0 && fragment == line {
-            0
-        } else {
-            line[search_from..]
-                .find(&fragment)
-                .map(|p| search_from + p)
-                .unwrap_or(search_from)
-        };
-        let start = line_start + pos_in_line;
-        let end = start + fragment.len();
-        rows.push(ComposerVisualRow {
-            fragment,
-            start,
-            end,
-        });
-        search_from = pos_in_line + rows.last().map(|r| r.fragment.len()).unwrap_or(0);
+    wrap_line_ranges(line, content_width)
+        .into_iter()
+        .map(|(start, end)| ComposerVisualRow {
+            start: line_start + start,
+            end: line_start + end,
+        })
+        .collect()
+}
+
+/// Word-wrap `line` into byte ranges without allocating per-fragment strings.
+fn wrap_line_ranges(line: &str, width: usize) -> Vec<(usize, usize)> {
+    if line.is_empty() {
+        return vec![(0, 0)];
     }
-    rows
+    if line.len() <= width {
+        return vec![(0, line.len())];
+    }
+
+    let mut out = Vec::new();
+    let mut row_start = 0usize;
+    let mut row_len = 0usize;
+    let mut search_from = 0usize;
+
+    for word in line.split_whitespace() {
+        let word_pos = line[search_from..]
+            .find(word)
+            .map(|p| search_from + p)
+            .unwrap_or(search_from);
+        let word_len = word.len();
+
+        if row_len == 0 {
+            row_start = word_pos;
+            row_len = word_len;
+        } else if row_len + 1 + word_len <= width {
+            row_len += 1 + word_len;
+        } else {
+            out.push((row_start, row_start + row_len));
+            row_start = word_pos;
+            row_len = word_len;
+        }
+        search_from = word_pos + word_len;
+    }
+
+    if row_len > 0 {
+        out.push((row_start, row_start + row_len));
+    }
+    if out.is_empty() {
+        out.push((0, line.len()));
+    }
+    out
 }
 
 /// Locate the cursor within wrapped visual rows.
 pub fn locate_cursor(text: &str, cursor: usize, content_width: usize) -> (usize, usize) {
     let cursor = cursor.min(text.len());
     let rows = build_visual_rows(text, content_width);
+    locate_cursor_in_rows(&rows, cursor)
+}
+
+/// Scroll offset so `cursor_row` stays visible in `visible_rows`.
+pub fn scroll_offset(cursor_row: usize, total_rows: usize, visible_rows: usize) -> usize {
+    if total_rows <= visible_rows || visible_rows == 0 {
+        return 0;
+    }
+    if cursor_row + 1 <= visible_rows {
+        0
+    } else {
+        (cursor_row + 1).saturating_sub(visible_rows)
+    }
+}
+
+/// Locate the cursor within pre-built wrapped visual rows.
+pub fn locate_cursor_in_rows(rows: &[ComposerVisualRow], cursor: usize) -> (usize, usize) {
     if rows.is_empty() {
         return (0, 0);
     }
@@ -80,19 +147,7 @@ pub fn locate_cursor(text: &str, cursor: usize, content_width: usize) -> (usize,
         }
     }
     let last = rows.len() - 1;
-    (last, rows[last].fragment.len())
-}
-
-/// Scroll offset so `cursor_row` stays visible in `visible_rows`.
-pub fn scroll_offset(cursor_row: usize, total_rows: usize, visible_rows: usize) -> usize {
-    if total_rows <= visible_rows {
-        return 0;
-    }
-    if cursor_row + 1 <= visible_rows {
-        0
-    } else {
-        (cursor_row + 1).saturating_sub(visible_rows)
-    }
+    (last, rows[last].len())
 }
 
 /// Map a mouse click within a visual row to a buffer index.
@@ -109,8 +164,20 @@ pub fn click_to_cursor(
     let Some(row) = rows.get(visual_row) else {
         return text.len();
     };
-    let col = content_col.min(row.fragment.len());
+    let col = content_col.min(row.len());
     row.start + col
+}
+
+/// Layout rows and cursor position in one pass.
+pub fn layout_with_cursor(
+    text: &str,
+    cursor: usize,
+    content_width: usize,
+) -> (Vec<ComposerVisualRow>, usize, usize) {
+    let cursor = cursor.min(text.len());
+    let rows = build_visual_rows(text, content_width);
+    let (cursor_row, cursor_col) = locate_cursor_in_rows(&rows, cursor);
+    (rows, cursor_row, cursor_col)
 }
 
 /// Clamp a display click column to the first editable cell on a row.
@@ -141,7 +208,7 @@ pub fn copy_buffer(text: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::user_message_gutter::{gutter_glyph, GUTTER_GAP};
+    use crate::user_message_gutter::gutter_glyph;
     use forge_config::Theme;
 
     fn glyph() -> &'static str {
@@ -156,7 +223,7 @@ mod tests {
     fn empty_buffer_has_one_visual_row() {
         let rows = build_visual_rows("", 40);
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].fragment, "");
+        assert_eq!(rows[0].fragment(""), "");
     }
 
     #[test]
@@ -192,7 +259,7 @@ mod tests {
         let text = "First.\n\nSecond.";
         let rows = build_visual_rows(text, 80);
         assert_eq!(rows.len(), 3);
-        assert_eq!(rows[1].fragment, "");
+        assert_eq!(rows[1].fragment(text), "");
     }
 
     #[test]
@@ -225,11 +292,16 @@ mod tests {
         assert!(!copy_buffer(text).contains(glyph()));
     }
 
+    fn scroll_keeps_cursor_row_visible_with_tight_viewport() {
+        assert_eq!(scroll_offset(4, 8, 4), 1);
+        assert_eq!(scroll_offset(7, 8, 4), 4);
+    }
+
     #[test]
-    fn scroll_keeps_cursor_row_visible() {
-        assert_eq!(scroll_offset(0, 10, 4), 0);
-        assert_eq!(scroll_offset(3, 10, 4), 0);
-        assert_eq!(scroll_offset(5, 10, 4), 2);
+    fn locate_cursor_in_rows_reuses_layout() {
+        let text = "one\ntwo\nthree\nfour\nfive";
+        let rows = build_visual_rows(text, 40);
+        assert_eq!(locate_cursor_in_rows(&rows, text.len()), (4, 4));
     }
 
     #[test]
@@ -240,14 +312,16 @@ mod tests {
         let tail = &rows[1..];
         assert!(tail
             .iter()
-            .all(|row| row.start < row.end || row.fragment.is_empty()));
+            .all(|row| row.start < row.end || row.fragment(text.trim()).is_empty()));
     }
 
     #[test]
     fn pasted_code_preserves_indentation_in_fragments() {
         let text = "Review:\n\nfn main() {\n    println!(\"hi\");\n}";
         let rows = build_visual_rows(text, 80);
-        assert!(rows.iter().any(|row| row.fragment.contains("println!")));
+        assert!(rows
+            .iter()
+            .any(|row| row.fragment(text).contains("println!")));
     }
 
     #[test]
@@ -273,5 +347,16 @@ mod tests {
         let wide = build_visual_rows(&text, 80);
         let narrow = build_visual_rows(&text, 20);
         assert!(narrow.len() > wide.len());
+    }
+
+    #[test]
+    fn layout_cache_reuses_rows_until_revision_changes() {
+        let text = "hello world";
+        let mut cache = ComposerLayoutCache::default();
+        let first = cache.rows(1, text, 40) as *const [ComposerVisualRow];
+        let second = cache.rows(1, text, 40) as *const [ComposerVisualRow];
+        assert_eq!(first, second);
+        let third = cache.rows(2, text, 40) as *const [ComposerVisualRow];
+        assert_ne!(first, third);
     }
 }
