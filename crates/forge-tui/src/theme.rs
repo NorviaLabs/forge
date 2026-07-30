@@ -1,6 +1,7 @@
 //! Color tokens from the Forge TUI design system.
 
 use ratatui::style::{Color, Modifier, Style};
+use forge_config::Theme;
 
 pub const CANVAS: Color = Color::Rgb(24, 23, 22);
 pub const CANVAS_DEEP: Color = Color::Rgb(17, 17, 16);
@@ -26,44 +27,52 @@ pub const DIFF_ADD_BG: Color = Color::Rgb(41, 75, 55);
 pub const DIFF_REMOVE_BG: Color = Color::Rgb(91, 44, 49);
 pub const DIFF_HUNK_BG: Color = Color::Rgb(45, 63, 97);
 
+pub const LIGHT_CANVAS: Color = Color::Rgb(253, 250, 242);
+pub const LIGHT_TEXT: Color = Color::Rgb(32, 29, 26);
+pub const LIGHT_MUTED: Color = Color::Rgb(119, 113, 102);
+pub const LIGHT_SELECTION: Color = Color::Rgb(203, 225, 245);
+pub const LIGHT_DIFF_ADD: Color = Color::Rgb(209, 240, 223);
+pub const LIGHT_DIFF_REMOVE: Color = Color::Rgb(255, 223, 223);
+pub const LIGHT_DIFF_HUNK: Color = Color::Rgb(220, 230, 255);
+
 pub fn brand() -> Style {
-    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+    Style::default().fg(palette(Theme::default()).accent).add_modifier(Modifier::BOLD)
 }
 
 pub fn muted() -> Style {
-    Style::default().fg(MUTED)
+    Style::default().fg(palette(Theme::default()).muted)
 }
 
 pub fn dim() -> Style {
-    Style::default().fg(DIM)
+    Style::default().fg(palette(Theme::default()).dim)
 }
 
 pub fn text() -> Style {
-    Style::default().fg(TEXT)
+    Style::default().fg(palette(Theme::default()).text)
 }
 
 pub fn ok() -> Style {
-    Style::default().fg(OK)
+    Style::default().fg(palette(Theme::default()).ok)
 }
 
 pub fn warn() -> Style {
-    Style::default().fg(WARN)
+    Style::default().fg(palette(Theme::default()).warn)
 }
 
 pub fn danger() -> Style {
-    Style::default().fg(DANGER)
+    Style::default().fg(palette(Theme::default()).danger)
 }
 
 pub fn info() -> Style {
-    Style::default().fg(ACCENT_2)
+    Style::default().fg(palette(Theme::default()).info)
 }
 
 pub fn tool() -> Style {
-    Style::default().fg(TOOL)
+    Style::default().fg(palette(Theme::default()).tool)
 }
 
 pub fn code_punctuation() -> Style {
-    Style::default().fg(MUTED)
+    Style::default().fg(palette(Theme::default()).muted)
 }
 
 pub fn border() -> Style {
@@ -75,45 +84,49 @@ pub fn border_muted() -> Style {
 }
 
 pub fn panel() -> Style {
-    Style::default().bg(PANEL)
+    Style::default().bg(palette(Theme::default()).panel)
 }
 
 pub fn panel_alt() -> Style {
-    Style::default().bg(PANEL_ALT)
+    Style::default().bg(palette(Theme::default()).panel_alt)
 }
 
 pub fn user_message() -> Style {
-    Style::default().bg(USER_BG)
+    Style::default().bg(palette(Theme::default()).user_bg)
 }
 
 pub fn assistant_message() -> Style {
-    Style::default().bg(RESPONSE_BG)
+    Style::default().bg(palette(Theme::default()).response_bg)
 }
 
 pub fn diff_add() -> Style {
-    Style::default().fg(OK).bg(DIFF_ADD_BG)
+    let p = palette(Theme::default());
+    Style::default().fg(p.ok).bg(p.diff_add)
 }
 
 pub fn diff_remove() -> Style {
-    Style::default().fg(DANGER).bg(DIFF_REMOVE_BG)
+    let p = palette(Theme::default());
+    Style::default().fg(p.danger).bg(p.diff_remove)
 }
 
 pub fn diff_context() -> Style {
-    Style::default().fg(MUTED).bg(PANEL_ALT)
+    let p = palette(Theme::default());
+    Style::default().fg(p.muted).bg(p.panel_alt)
 }
 
 pub fn diff_hunk() -> Style {
-    Style::default().fg(ACCENT_2).bg(DIFF_HUNK_BG)
+    let p = palette(Theme::default());
+    Style::default().fg(p.info).bg(p.diff_hunk)
 }
 
 // Transcript roles. Keep these semantic so widgets do not need to know the
 // palette and basic ANSI terminals still get hierarchy from modifiers/symbols.
 pub fn user_message_style() -> Style {
-    user_message().fg(TEXT)
+    user_message().fg(palette(Theme::default()).text)
 }
 
 pub fn assistant_answer_style() -> Style {
-    assistant_message().fg(TEXT).add_modifier(Modifier::BOLD)
+    assistant_message().fg(palette(Theme::default()).text).add_modifier(Modifier::BOLD)
 }
 
 pub fn progress_style() -> Style {
@@ -137,7 +150,8 @@ pub fn selection_active() -> Style {
 }
 
 pub fn selection_inactive() -> Style {
-    Style::default().fg(TEXT).bg(PANEL_ALT)
+    let p = palette(Theme::default());
+    Style::default().fg(p.text).bg(p.panel_alt)
 }
 
 pub fn directory() -> Style {
@@ -157,7 +171,7 @@ pub fn file_config() -> Style {
 }
 
 pub fn file_document() -> Style {
-    Style::default().fg(TEXT)
+    text()
 }
 
 pub fn file_data() -> Style {
@@ -173,7 +187,7 @@ pub fn file_binary() -> Style {
 }
 
 pub fn symlink() -> Style {
-    Style::default().fg(ACCENT).add_modifier(Modifier::ITALIC)
+    Style::default().fg(palette(Theme::default()).accent).add_modifier(Modifier::ITALIC)
 }
 
 pub fn git_added() -> Style {
@@ -203,28 +217,144 @@ pub fn focused_selection_style() -> Style {
 /// Full-row selection (suggestion list, palette, connect picker).
 /// Explicit bg — bare REVERSED is unreliable across terminals.
 pub fn selected_row() -> Style {
+    let p = palette(Theme::default());
     Style::default()
-        .fg(TEXT_STRONG)
-        .bg(SELECTED_BG)
+        .fg(p.text_strong)
+        .bg(p.selection)
         .add_modifier(Modifier::BOLD)
 }
 
 /// Input block cursor: solid inverted cell (bg fills the whole character cell).
 pub fn caret() -> Style {
+    let p = palette(Theme::default());
     Style::default()
-        .fg(PANEL)
-        .bg(TEXT)
+        .fg(p.panel)
+        .bg(p.text)
         .add_modifier(Modifier::BOLD)
 }
 
 /// History-recalled input (subtle highlight of the whole field text).
 pub fn history_active() -> Style {
-    Style::default().fg(TEXT).bg(HISTORY_BG)
+    let p = palette(Theme::default());
+    Style::default().fg(p.text).bg(p.selection)
+}
+
+#[derive(Clone, Copy)]
+pub struct Palette {
+    pub canvas: Color,
+    pub text: Color,
+    pub muted: Color,
+    pub dim: Color,
+    pub accent: Color,
+    pub ok: Color,
+    pub warn: Color,
+    pub danger: Color,
+    pub info: Color,
+    pub tool: Color,
+    pub selection: Color,
+    pub diff_add: Color,
+    pub diff_remove: Color,
+    pub diff_hunk: Color,
+    pub panel: Color,
+    pub panel_alt: Color,
+    pub user_bg: Color,
+    pub response_bg: Color,
+    pub text_strong: Color,
+}
+
+pub fn palette(theme: Theme) -> Palette {
+    match theme {
+        Theme::Dark => Palette {
+            canvas: CANVAS,
+            text: TEXT,
+            muted: MUTED,
+            dim: DIM,
+            accent: ACCENT,
+            ok: OK,
+            warn: WARN,
+            danger: DANGER,
+            info: ACCENT_2,
+            tool: TOOL,
+            selection: SELECTED_BG,
+            diff_add: DIFF_ADD_BG,
+            diff_remove: DIFF_REMOVE_BG,
+            diff_hunk: DIFF_HUNK_BG,
+            panel: PANEL,
+            panel_alt: PANEL_ALT,
+            user_bg: USER_BG,
+            response_bg: RESPONSE_BG,
+            text_strong: TEXT_STRONG,
+        },
+        Theme::Light => Palette {
+            canvas: LIGHT_CANVAS,
+            text: LIGHT_TEXT,
+            muted: LIGHT_MUTED,
+            dim: LIGHT_MUTED,
+            accent: ACCENT,
+            ok: OK,
+            warn: WARN,
+            danger: DANGER,
+            info: ACCENT_2,
+            tool: TOOL,
+            selection: LIGHT_SELECTION,
+            diff_add: LIGHT_DIFF_ADD,
+            diff_remove: LIGHT_DIFF_REMOVE,
+            diff_hunk: LIGHT_DIFF_HUNK,
+            panel: LIGHT_CANVAS,
+            panel_alt: LIGHT_SELECTION,
+            user_bg: LIGHT_CANVAS,
+            response_bg: LIGHT_CANVAS,
+            text_strong: LIGHT_TEXT,
+        },
+        Theme::System => Palette {
+            canvas: Color::Reset,
+            text: Color::Reset,
+            muted: Color::Reset,
+            dim: Color::Reset,
+            accent: Color::Cyan,
+            ok: Color::Green,
+            warn: Color::Yellow,
+            danger: Color::Red,
+            info: Color::Blue,
+            tool: Color::Cyan,
+            selection: Color::Reset,
+            diff_add: Color::Green,
+            diff_remove: Color::Red,
+            diff_hunk: Color::Blue,
+            panel: Color::Reset,
+            panel_alt: Color::Reset,
+            user_bg: Color::Reset,
+            response_bg: Color::Reset,
+            text_strong: Color::White,
+        },
+        Theme::Ansi => Palette {
+            canvas: Color::Black,
+            text: Color::White,
+            muted: Color::Black,
+            dim: Color::Black,
+            accent: Color::Cyan,
+            ok: Color::Green,
+            warn: Color::Yellow,
+            danger: Color::Red,
+            info: Color::Blue,
+            tool: Color::Cyan,
+            selection: Color::Magenta,
+            diff_add: Color::Green,
+            diff_remove: Color::Red,
+            diff_hunk: Color::Blue,
+            panel: Color::Black,
+            panel_alt: Color::Black,
+            user_bg: Color::Black,
+            response_bg: Color::Black,
+            text_strong: Color::White,
+        },
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use forge_config::Theme;
 
     #[test]
     fn tokens_are_distinct() {
@@ -260,5 +390,24 @@ mod tests {
     fn diff_styles_use_background() {
         assert!(diff_add().bg.is_some());
         assert!(diff_remove().bg.is_some());
+    }
+
+    #[test]
+    fn basic_config() {
+        assert_eq!(Theme::default(), Theme::Dark);
+    }
+
+    #[test]
+    fn light_palette_snapshot() {
+        let p = palette(Theme::Light);
+        assert_eq!(p.text, LIGHT_TEXT);
+        assert_eq!(p.canvas, LIGHT_CANVAS);
+    }
+
+    #[test]
+    fn light_diff_snapshot() {
+        let p = palette(Theme::Light);
+        assert_eq!(p.diff_add, LIGHT_DIFF_ADD);
+        assert_eq!(p.diff_remove, LIGHT_DIFF_REMOVE);
     }
 }
