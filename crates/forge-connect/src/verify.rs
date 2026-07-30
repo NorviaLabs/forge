@@ -97,3 +97,324 @@ impl VerifyError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The module contract is that `Display` output stays byte-identical to the
+    /// strings these checks returned before they were given types, because
+    /// callers (and the TUI) surface them verbatim. Pin every variant.
+    #[test]
+    fn display_strings_are_stable() {
+        assert_eq!(VerifyError::EmptyKey.to_string(), "API key is empty");
+
+        assert_eq!(
+            VerifyError::KeyTooShort {
+                len: 4,
+                guidance: "Paste the full key.",
+            }
+            .to_string(),
+            "API key looks too short (4 chars). Paste the full key."
+        );
+
+        assert_eq!(
+            VerifyError::Unauthorized {
+                provider: "OpenAI",
+                guidance: "Check the key.",
+            }
+            .to_string(),
+            "OpenAI rejected the API key (unauthorized). Check the key."
+        );
+
+        assert_eq!(
+            VerifyError::Rejected {
+                provider: "OpenAI",
+                status: 403,
+                guidance: "Check the key.",
+            }
+            .to_string(),
+            "OpenAI rejected the API key (HTTP 403). Check the key."
+        );
+
+        assert_eq!(
+            VerifyError::MalformedToken("token is missing the account claim").to_string(),
+            "token is missing the account claim"
+        );
+
+        assert_eq!(
+            VerifyError::Unhealthy {
+                provider: "Ollama",
+                status: 503,
+                endpoint: "http://localhost:11434/api/tags".into(),
+                guidance: "Is it running?",
+            }
+            .to_string(),
+            "Ollama responded HTTP 503 at http://localhost:11434/api/tags. Is it running?"
+        );
+
+        assert_eq!(
+            VerifyError::Unreachable {
+                provider: "Ollama",
+                message: "connection refused".into(),
+            }
+            .to_string(),
+            "connection refused"
+        );
+    }
+
+    /// `Status` is the one variant whose message changes shape: the trailing
+    /// guidance is appended only when present, with a single leading space and
+    /// no dangling separator when absent.
+    #[test]
+    fn status_display_appends_guidance_only_when_present() {
+        assert_eq!(
+            VerifyError::Status {
+                provider: "xAI",
+                status: 500,
+                guidance: Some("Try again shortly."),
+            }
+            .to_string(),
+            "xAI key verification failed (HTTP 500). Try again shortly."
+        );
+        assert_eq!(
+            VerifyError::Status {
+                provider: "xAI",
+                status: 500,
+                guidance: None,
+            }
+            .to_string(),
+            "xAI key verification failed (HTTP 500)."
+        );
+    }
+
+    #[test]
+    fn status_is_reported_only_when_the_server_supplied_one() {
+        assert_eq!(
+            VerifyError::Rejected {
+                provider: "p",
+                status: 401,
+                guidance: "g",
+            }
+            .status(),
+            Some(401)
+        );
+        assert_eq!(
+            VerifyError::Status {
+                provider: "p",
+                status: 429,
+                guidance: None,
+            }
+            .status(),
+            Some(429)
+        );
+        assert_eq!(
+            VerifyError::Unhealthy {
+                provider: "p",
+                status: 503,
+                endpoint: "e".into(),
+                guidance: "g",
+            }
+            .status(),
+            Some(503)
+        );
+
+        // `Unauthorized` is semantically a 401/403 but carries no status field,
+        // so it deliberately reports None rather than inventing one.
+        assert_eq!(
+            VerifyError::Unauthorized {
+                provider: "p",
+                guidance: "g",
+            }
+            .status(),
+            None
+        );
+        assert_eq!(VerifyError::EmptyKey.status(), None);
+        assert_eq!(
+            VerifyError::KeyTooShort {
+                len: 1,
+                guidance: "g"
+            }
+            .status(),
+            None
+        );
+        assert_eq!(VerifyError::MalformedToken("m").status(), None);
+        assert_eq!(
+            VerifyError::Unreachable {
+                provider: "p",
+                message: "m".into(),
+            }
+            .status(),
+            None
+        );
+    }
+
+    #[test]
+    fn auth_failures_are_the_ones_a_new_credential_would_fix() {
+        assert!(VerifyError::EmptyKey.is_auth_failure());
+        assert!(VerifyError::KeyTooShort {
+            len: 2,
+            guidance: "g"
+        }
+        .is_auth_failure());
+        assert!(VerifyError::Unauthorized {
+            provider: "p",
+            guidance: "g",
+        }
+        .is_auth_failure());
+
+        // `Rejected` is an auth failure only for the two credential-refusal
+        // statuses; any other status is a server problem, not a bad key.
+        for status in [401, 403] {
+            assert!(
+                VerifyError::Rejected {
+                    provider: "p",
+                    status,
+                    guidance: "g",
+                }
+                .is_auth_failure(),
+                "HTTP {status} should count as an auth failure"
+            );
+        }
+        for status in [400, 429, 500, 503] {
+            assert!(
+                !VerifyError::Rejected {
+                    provider: "p",
+                    status,
+                    guidance: "g",
+                }
+                .is_auth_failure(),
+                "HTTP {status} should not be treated as a bad credential"
+            );
+        }
+
+        assert!(!VerifyError::Unreachable {
+            provider: "p",
+            message: "m".into(),
+        }
+        .is_auth_failure());
+        assert!(!VerifyError::MalformedToken("m").is_auth_failure());
+    }
+
+    #[test]
+    fn retryable_covers_transport_faults_and_server_errors_only() {
+        // A transport fault never reached the server, so a retry is reasonable.
+        assert!(VerifyError::Unreachable {
+            provider: "p",
+            message: "connection reset".into(),
+        }
+        .is_retryable());
+
+        // 5xx is the server's problem; 4xx is the request's, so it is not.
+        for status in [500, 502, 503] {
+            assert!(
+                VerifyError::Status {
+                    provider: "p",
+                    status,
+                    guidance: None,
+                }
+                .is_retryable(),
+                "HTTP {status} should be retryable"
+            );
+            assert!(VerifyError::Unhealthy {
+                provider: "p",
+                status,
+                endpoint: "e".into(),
+                guidance: "g",
+            }
+            .is_retryable());
+        }
+        for status in [400, 401, 404, 429] {
+            assert!(
+                !VerifyError::Status {
+                    provider: "p",
+                    status,
+                    guidance: None,
+                }
+                .is_retryable(),
+                "HTTP {status} should not be retryable"
+            );
+        }
+
+        // A refused or malformed credential will not fix itself.
+        assert!(!VerifyError::EmptyKey.is_retryable());
+        assert!(!VerifyError::Unauthorized {
+            provider: "p",
+            guidance: "g",
+        }
+        .is_retryable());
+        assert!(!VerifyError::Rejected {
+            provider: "p",
+            status: 401,
+            guidance: "g",
+        }
+        .is_retryable());
+    }
+
+    /// Auth failure and retryable are meant to be disjoint: a caller decides
+    /// between re-prompting and retrying, so nothing may claim both.
+    #[test]
+    fn no_error_is_both_an_auth_failure_and_retryable() {
+        let all = [
+            VerifyError::EmptyKey,
+            VerifyError::KeyTooShort {
+                len: 3,
+                guidance: "g",
+            },
+            VerifyError::Unauthorized {
+                provider: "p",
+                guidance: "g",
+            },
+            VerifyError::Rejected {
+                provider: "p",
+                status: 401,
+                guidance: "g",
+            },
+            VerifyError::Rejected {
+                provider: "p",
+                status: 500,
+                guidance: "g",
+            },
+            VerifyError::Status {
+                provider: "p",
+                status: 500,
+                guidance: None,
+            },
+            VerifyError::MalformedToken("m"),
+            VerifyError::Unhealthy {
+                provider: "p",
+                status: 503,
+                endpoint: "e".into(),
+                guidance: "g",
+            },
+            VerifyError::Unreachable {
+                provider: "p",
+                message: "m".into(),
+            },
+        ];
+        for e in &all {
+            assert!(
+                !(e.is_auth_failure() && e.is_retryable()),
+                "{e:?} claims to be both an auth failure and retryable"
+            );
+        }
+    }
+
+    /// The module header promises the rendered message never contains the
+    /// credential. `KeyTooShort` is the only variant derived from the key, and
+    /// it must report the length rather than the value.
+    #[test]
+    fn short_key_message_reports_length_not_the_key() {
+        let secret = "sk-supersecret";
+        let rendered = VerifyError::KeyTooShort {
+            len: secret.len(),
+            guidance: "Paste the full key.",
+        }
+        .to_string();
+        assert!(
+            !rendered.contains(secret),
+            "rendered message must not echo the credential: {rendered}"
+        );
+        assert!(rendered.contains(&secret.len().to_string()));
+    }
+}

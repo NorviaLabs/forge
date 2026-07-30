@@ -75,4 +75,35 @@ mod tests {
         assert_eq!(r.get("DEMO").unwrap().title, "Demo");
         assert_eq!(r.ids(), vec!["demo"]);
     }
+
+    fn profile(id: &str, title: &str) -> ConnectProfile {
+        ConnectProfile {
+            id: id.into(),
+            title: title.into(),
+            description: "d".into(),
+            auth_mode: crate::auth::AuthMode::ApiKey {
+                tui_always_prompt: false,
+            },
+            api_key_env: vec![],
+            default_base_url: None,
+            default_models: vec![],
+            models_dev_providers: vec![],
+            auth_url: None,
+            model_provider_prefix: id.into(),
+        }
+    }
+
+    #[test]
+    fn registering_the_same_id_replaces_rather_than_duplicates() {
+        let mut r = ConnectRegistry::new();
+        r.register(profile("demo", "First"));
+        r.register(profile("other", "Other"));
+        r.register(profile("demo", "Second"));
+
+        // The re-registration overwrites in place, so the id is not duplicated
+        // and the original registration order is preserved.
+        assert_eq!(r.ids(), vec!["demo", "other"]);
+        assert_eq!(r.get("demo").unwrap().title, "Second");
+        assert_eq!(r.profiles().len(), 2);
+    }
 }

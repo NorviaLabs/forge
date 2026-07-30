@@ -152,4 +152,48 @@ mod tests {
         assert!(!client.client_id.is_empty());
         assert!(!client.issuer.is_empty());
     }
+
+    /// `start` and `refresh` both consult `xai_client` before making any
+    /// request, so a non-OAuth profile is rejected without network access.
+    /// These assert that short-circuit rather than the transport behind it.
+    #[test]
+    fn start_rejects_a_non_oauth_profile_without_contacting_a_server() {
+        let profile = profile(
+            "demo",
+            AuthMode::ApiKey {
+                tui_always_prompt: false,
+            },
+        );
+        let err = OauthDispatcher::start(&profile).unwrap_err();
+        assert!(
+            matches!(err, OauthError::NotOauth(ref id) if id == "demo"),
+            "expected NotOauth(\"demo\"), got {err:?}"
+        );
+        assert_eq!(err.to_string(), "profile `demo` is not OAuth");
+    }
+
+    #[test]
+    fn refresh_rejects_a_non_oauth_profile_without_contacting_a_server() {
+        let profile = profile(
+            "demo",
+            AuthMode::ApiKey {
+                tui_always_prompt: false,
+            },
+        );
+        let err = OauthDispatcher::refresh(&profile, "rt").unwrap_err();
+        assert!(matches!(err, OauthError::NotOauth(ref id) if id == "demo"));
+    }
+
+    #[test]
+    fn oauth_error_display_is_stable() {
+        assert_eq!(
+            OauthError::Provider("upstream said no".into()).to_string(),
+            "upstream said no"
+        );
+        assert_eq!(
+            OauthError::NotOauth("demo".into()).to_string(),
+            "profile `demo` is not OAuth"
+        );
+        assert_eq!(OauthError::Message("plain".into()).to_string(), "plain");
+    }
 }
