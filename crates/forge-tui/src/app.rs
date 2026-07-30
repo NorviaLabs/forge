@@ -13788,4 +13788,167 @@ mod tests {
         let result = app.resume_after_external_editor(None);
         assert!(result.is_ok());
     }
+
+    // ---- highlight cache invalidation -------------------------------------
+    //
+    // The highlight cache is process-global and it is NOT exclusive to these
+    // tests: `source_viewer` highlights raw source files, so several of its tests
+    // move the same counters concurrently. Exact equality on those counters is
+    // therefore flaky by construction.
+    //
+    // These assertions are written so concurrent activity can never *falsify*
+    // them: "reuse" is asserted as a lower bound on hits and "invalidation" as a
+    // lower bound on misses, and other tests can only ever add to both. Exact
+    // hit/miss semantics are pinned separately in `forge-syntax`'s own unit
+    // tests, where the cache genuinely is exclusive.
+
+    const CACHED_BLOCKS: usize = 4;
+
+    /// Serialises these four tests against each other so their windows do not
+    /// overlap. Follows the repo's pattern for process-global state (`lock_env`
+    /// in `editor.rs`, `ScopedEnvGuard` in `app.rs`), recovering poisoning so one
+    /// failing test does not cascade into the rest.
+    fn lock_highlight_cache() -> std::sync::MutexGuard<'static, ()> {
+        static GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Assistant turns each carrying a distinct fenced Rust block, so a full
+    /// re-highlight costs `CACHED_BLOCKS` misses and a fully cached render costs
+    /// `CACHED_BLOCKS` hits.
+    ///
+    /// Each answer needs its own preceding user message: `compose_turn_presentation`
+    /// keeps only one durable answer per turn, so consecutive assistant messages
+    /// collapse into the last one and the earlier blocks never render at all.
+    fn push_code_transcript(app: &mut TuiApp, marker: &str) {
+        for i in 0..CACHED_BLOCKS {
+            app.session.messages.push(forge_types::Message::new(
+                forge_types::MessageRole::User,
+                format!("Please do step {i} of {marker}."),
+            ));
+            app.session.messages.push(forge_types::Message::new(
+                forge_types::MessageRole::Assistant,
+                format!(
+                    "Step {i} for {marker}.\n\n```rust\n\
+                     pub fn {marker}_{i}(items: &[usize]) -> usize {{\n\
+                     \x20   let mut total = 0usize;\n\
+                     \x20   for item in items {{ total += *item; }}\n\
+                     \x20   total\n\
+                     }}\n```\n\nDone."
+                ),
+            ));
+        }
+    }
+
+    async fn app_with_code(marker: &str) -> (TempDir, TuiApp) {
+        let (dir, mut app) = focus_test_app().await;
+        app.splash_dismissed = true;
+        push_code_transcript(&mut app, marker);
+        (dir, app)
+    }
+
+    /// Highlighting does not depend on terminal width, so a resize must reuse it.
+    /// A resize flips the conversation render key and rebuilds every line; before
+    /// this cache that re-ran tree-sitter over every code block in the transcript.
+    #[tokio::test]
+    async fn resize_reuses_cached_highlights() {
+        let (_dir, mut app) = app_with_code("resize").await;
+        // Take the serialising guard only after the last await: holding a std
+        // guard across an await point is a clippy error and a real deadlock risk.
+        let _guard = lock_highlight_cache();
+        draw_app(&mut app, 100, 30);
+        let before = forge_syntax::highlight_cache_stats();
+
+        // A wide delta guarantees the chat width changes, so the render key flips
+        // and the transcript is rebuilt from scratch.
+        draw_app(&mut app, 170, 40);
+        let after = forge_syntax::highlight_cache_stats();
+
+        assert!(
+            after.hits >= before.hits + CACHED_BLOCKS as u64,
+            "a resize must serve every block from cache (hits {} -> {})",
+            before.hits,
+            after.hits
+        );
+    }
+
+    /// A theme switch changes the colours baked into each segment, so it *must*
+    /// recompute. This is the invalidation half of the contract: stale colours
+    /// after a theme change would be a visible bug.
+    #[tokio::test]
+    async fn theme_switch_recomputes_highlights() {
+        let (_dir, mut app) = app_with_code("theme").await;
+        let _guard = lock_highlight_cache();
+        crate::theme::set_active(forge_config::Theme::Dark);
+        draw_app(&mut app, 100, 30);
+        let before = forge_syntax::highlight_cache_stats();
+
+        crate::theme::set_active(forge_config::Theme::Light);
+        draw_app(&mut app, 100, 30);
+        let after = forge_syntax::highlight_cache_stats();
+
+        // Restore before asserting so a failure cannot leak a palette into others.
+        crate::theme::set_active(forge_config::Theme::Dark);
+
+        assert!(
+            after.misses >= before.misses + CACHED_BLOCKS as u64,
+            "a theme switch must recompute every block (misses {} -> {})",
+            before.misses,
+            after.misses
+        );
+    }
+
+    /// Scrolling changes which lines are visible, never their colours. The scroll
+    /// offset is not part of the conversation render key, so a scroll does not
+    /// rebuild the transcript and must not recompute any highlight.
+    ///
+    /// Asserted as an upper bound with tolerance: a genuine re-highlight would add
+    /// exactly `CACHED_BLOCKS` misses, whereas a concurrent `source_viewer` test
+    /// contributes at most one or two.
+    #[tokio::test]
+    async fn scrollback_does_not_recompute_highlights() {
+        let (_dir, mut app) = app_with_code("scroll").await;
+        let _guard = lock_highlight_cache();
+        draw_app(&mut app, 100, 30);
+        let before = forge_syntax::highlight_cache_stats();
+
+        app.chat_follow = false;
+        app.chat_scroll = 3;
+        draw_app(&mut app, 100, 30);
+        let after = forge_syntax::highlight_cache_stats();
+
+        assert!(
+            after.misses < before.misses + CACHED_BLOCKS as u64,
+            "scrolling must not recompute the transcript's highlights \
+             (misses {} -> {})",
+            before.misses,
+            after.misses
+        );
+    }
+
+    /// Reopening a session re-renders the same transcript text in a fresh
+    /// `TuiApp`. The cache is keyed on content, not on app identity, so the
+    /// second app must not pay for highlighting again.
+    #[tokio::test]
+    async fn session_reload_reuses_cached_highlights() {
+        // Both apps are built before the guard is taken, for the same reason.
+        let (_dir, mut first) = app_with_code("reload").await;
+        // A separate app and session carrying identical transcript text.
+        let (_dir2, mut reloaded) = app_with_code("reload").await;
+        let _guard = lock_highlight_cache();
+        draw_app(&mut first, 100, 30);
+        let before = forge_syntax::highlight_cache_stats();
+
+        draw_app(&mut reloaded, 100, 30);
+        let after = forge_syntax::highlight_cache_stats();
+
+        assert!(
+            after.hits >= before.hits + CACHED_BLOCKS as u64,
+            "a reloaded session must reuse cached highlights (hits {} -> {})",
+            before.hits,
+            after.hits
+        );
+    }
 }
