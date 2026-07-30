@@ -921,3 +921,480 @@ impl TuiApp {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::widgets::bottom_panel::BottomPanelTab;
+    use forge_core::{AgentSession, LoopConfig};
+    use forge_model::MockModelClient;
+    use forge_tools::ToolRegistry;
+    use forge_types::ModelResponse;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    async fn app() -> (TempDir, TuiApp) {
+        let dir = TempDir::new().unwrap();
+        let model = Arc::new(MockModelClient::script(vec![ModelResponse {
+            text: "ok".into(),
+            tool_calls: vec![],
+            usage: None,
+            thinking: None,
+        }]));
+        let session = AgentSession::create(
+            LoopConfig {
+                max_turns: 4,
+                workspace: dir.path().to_path_buf(),
+                journal_dir: dir.path().join("j"),
+                enable_context_lifecycle: true,
+                enable_governance: true,
+                ..Default::default()
+            },
+            model,
+            ToolRegistry::new(),
+        )
+        .await
+        .unwrap();
+        let app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "mock".into(),
+                provider: "mock".into(),
+                cwd: PathBuf::from("/tmp"),
+                version: "forge test".into(),
+                startup_notices: Vec::new(),
+                validation_command: None,
+                file_icons: forge_config::FileIconMode::Unicode,
+                mouse_capture: true,
+                theme: forge_config::Theme::default(),
+            },
+        );
+        (dir, app)
+    }
+
+    fn key(code: KeyCode, modifiers: KeyModifiers) -> event::KeyEvent {
+        event::KeyEvent::new(code, modifiers)
+    }
+
+    const CTRL: KeyModifiers = KeyModifiers::CONTROL;
+    const ALT: KeyModifiers = KeyModifiers::ALT;
+    const SHIFT: KeyModifiers = KeyModifiers::SHIFT;
+    const NONE: KeyModifiers = KeyModifiers::NONE;
+
+    #[tokio::test]
+    async fn tab_nav_needs_shift_and_rejects_control_or_alt() {
+        let (_d, app) = app().await;
+        assert_eq!(
+            app.tab_nav_command(key(KeyCode::Left, SHIFT)),
+            Some(TabNavCommand::PreviousTab)
+        );
+        assert_eq!(
+            app.tab_nav_command(key(KeyCode::Right, SHIFT)),
+            Some(TabNavCommand::NextTab)
+        );
+        // Unshifted arrows are ordinary navigation, not tab switching.
+        assert_eq!(app.tab_nav_command(key(KeyCode::Left, NONE)), None);
+        assert_eq!(app.tab_nav_command(key(KeyCode::Right, NONE)), None);
+        // Shift combined with a chord modifier belongs to another binding.
+        assert_eq!(app.tab_nav_command(key(KeyCode::Left, SHIFT | CTRL)), None);
+        assert_eq!(app.tab_nav_command(key(KeyCode::Right, SHIFT | ALT)), None);
+        assert_eq!(app.tab_nav_command(key(KeyCode::Up, SHIFT)), None);
+    }
+
+    #[tokio::test]
+    async fn global_key_bindings_map_to_their_commands() {
+        let (_d, app) = app().await;
+        let cases: Vec<(event::KeyEvent, SemanticCommand)> = vec![
+            (key(KeyCode::Left, ALT), SemanticCommand::GoBack),
+            (
+                key(KeyCode::Right, ALT),
+                SemanticCommand::ReviewChanges(DiffCommandContext::Current),
+            ),
+            (
+                key(KeyCode::Char('1'), ALT),
+                SemanticCommand::OpenRun(RunCommandTarget::Current),
+            ),
+            (
+                key(KeyCode::Char('2'), ALT),
+                SemanticCommand::OpenBottomPanel(BottomPanelTab::Diagnostics),
+            ),
+            (
+                key(KeyCode::Char('3'), ALT),
+                SemanticCommand::OpenBottomPanel(BottomPanelTab::Terminal),
+            ),
+            (
+                key(KeyCode::Char('4'), ALT),
+                SemanticCommand::OpenBottomPanel(BottomPanelTab::Activity),
+            ),
+            (
+                key(KeyCode::Up, CTRL),
+                SemanticCommand::MoveQueueSelection(-1),
+            ),
+            (
+                key(KeyCode::Down, CTRL),
+                SemanticCommand::MoveQueueSelection(1),
+            ),
+            (
+                key(KeyCode::Backspace, CTRL),
+                SemanticCommand::CancelSelectedQueueMessage,
+            ),
+            (
+                key(KeyCode::Char('c'), CTRL),
+                SemanticCommand::QuitOrInterrupt,
+            ),
+            (key(KeyCode::Char('d'), CTRL), SemanticCommand::Quit),
+            (
+                key(KeyCode::Char('o'), CTRL),
+                SemanticCommand::ToggleToolDetails,
+            ),
+            (key(KeyCode::Char('e'), CTRL), SemanticCommand::ToggleFiles),
+            (
+                key(KeyCode::Char('b'), CTRL),
+                SemanticCommand::ToggleInspector,
+            ),
+            (
+                key(KeyCode::Char('['), ALT),
+                SemanticCommand::CycleInspectorTab { forward: false },
+            ),
+            (
+                key(KeyCode::Char(']'), ALT),
+                SemanticCommand::CycleInspectorTab { forward: true },
+            ),
+            (
+                key(KeyCode::Char('p'), CTRL),
+                SemanticCommand::ToggleBottomPanel,
+            ),
+        ];
+        for (k, expected) in cases {
+            assert_eq!(
+                app.semantic_command_for_global_key(k),
+                Some(expected.clone()),
+                "{k:?} should map to {expected:?}"
+            );
+        }
+
+        // Unmodified keys are not global bindings.
+        assert_eq!(
+            app.semantic_command_for_global_key(key(KeyCode::Left, NONE)),
+            None
+        );
+        assert_eq!(
+            app.semantic_command_for_global_key(key(KeyCode::Char('c'), NONE)),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn command_palette_is_suppressed_while_busy() {
+        let (_d, mut app) = app().await;
+        assert_eq!(
+            app.semantic_command_for_global_key(key(KeyCode::Char('k'), CTRL)),
+            Some(SemanticCommand::OpenGlobalCommandPalette)
+        );
+        // Opening the palette mid-turn would race the running turn, so the
+        // binding goes dead while busy rather than queueing.
+        app.busy = true;
+        assert_eq!(
+            app.semantic_command_for_global_key(key(KeyCode::Char('k'), CTRL)),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn help_binding_yields_to_an_open_overlay() {
+        let (_d, mut app) = app().await;
+        assert_eq!(
+            app.semantic_command_for_global_key(key(KeyCode::F(1), NONE)),
+            Some(SemanticCommand::OpenHelp)
+        );
+        // An overlay already owns the screen; F1 must not stack another.
+        app.overlay = Some(Overlay::StatusReport {
+            title: "t".into(),
+            lines: vec![],
+        });
+        assert_eq!(
+            app.semantic_command_for_global_key(key(KeyCode::F(1), NONE)),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn file_pane_bindings_require_a_visible_pane() {
+        let (_d, mut app) = app().await;
+        app.files_visible = false;
+        // Every binding is inert while the pane is hidden.
+        assert_eq!(
+            app.semantic_command_for_file_key(key(KeyCode::Up, NONE)),
+            None
+        );
+        assert_eq!(
+            app.semantic_command_for_file_key(key(KeyCode::Char('n'), NONE)),
+            None
+        );
+
+        app.files_visible = true;
+        let cases: Vec<(event::KeyEvent, SemanticCommand)> = vec![
+            (
+                key(KeyCode::Esc, NONE),
+                SemanticCommand::CancelCurrentInteraction,
+            ),
+            (
+                key(KeyCode::Up, NONE),
+                SemanticCommand::MoveFileSelection(-1),
+            ),
+            (
+                key(KeyCode::Down, NONE),
+                SemanticCommand::MoveFileSelection(1),
+            ),
+            (
+                key(KeyCode::Right, NONE),
+                SemanticCommand::ExpandSelectedDirectory,
+            ),
+            (
+                key(KeyCode::Left, NONE),
+                SemanticCommand::CollapseSelectedDirectory,
+            ),
+            (
+                key(KeyCode::Enter, NONE),
+                SemanticCommand::OpenSelectedEntry,
+            ),
+            (key(KeyCode::Char('r'), NONE), SemanticCommand::RefreshFiles),
+            (
+                key(KeyCode::Char('n'), NONE),
+                SemanticCommand::BeginCreateFile,
+            ),
+            (
+                key(KeyCode::Char('d'), NONE),
+                SemanticCommand::RequestDelete,
+            ),
+        ];
+        for (k, expected) in cases {
+            assert_eq!(
+                app.semantic_command_for_file_key(k),
+                Some(expected.clone()),
+                "{k:?} should map to {expected:?}"
+            );
+        }
+    }
+
+    /// The capital-letter bindings accept the key both with and without an
+    /// explicit SHIFT modifier, because terminals disagree on whether they
+    /// report it alongside an already-uppercased character.
+    #[tokio::test]
+    async fn shifted_file_bindings_accept_either_modifier_report() {
+        let (_d, mut app) = app().await;
+        app.files_visible = true;
+        for modifiers in [NONE, SHIFT] {
+            assert_eq!(
+                app.semantic_command_for_file_key(key(KeyCode::Char('N'), modifiers)),
+                Some(SemanticCommand::BeginCreateDirectory),
+                "N with {modifiers:?}"
+            );
+            assert_eq!(
+                app.semantic_command_for_file_key(key(KeyCode::Char('R'), modifiers)),
+                Some(SemanticCommand::BeginRename),
+                "R with {modifiers:?}"
+            );
+        }
+        // A chord modifier is a different binding entirely.
+        assert_eq!(
+            app.semantic_command_for_file_key(key(KeyCode::Char('N'), CTRL)),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn inspector_bindings_cycle_tabs_and_cancel() {
+        let (_d, app) = app().await;
+        assert_eq!(
+            app.semantic_command_for_inspector_key(key(KeyCode::Left, SHIFT)),
+            Some(SemanticCommand::CycleInspectorTab { forward: false })
+        );
+        assert_eq!(
+            app.semantic_command_for_inspector_key(key(KeyCode::Right, SHIFT)),
+            Some(SemanticCommand::CycleInspectorTab { forward: true })
+        );
+        assert_eq!(
+            app.semantic_command_for_inspector_key(key(KeyCode::Esc, NONE)),
+            Some(SemanticCommand::CancelCurrentInteraction)
+        );
+        assert_eq!(
+            app.semantic_command_for_inspector_key(key(KeyCode::Char('x'), NONE)),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn bottom_panel_bindings_require_an_open_panel() {
+        let (_d, mut app) = app().await;
+        app.bottom_panel.open = false;
+        assert_eq!(
+            app.semantic_command_for_bottom_panel_key(key(KeyCode::Esc, NONE)),
+            None
+        );
+
+        app.bottom_panel.open = true;
+        // Tab cycling is available on any tab, by shifted arrow or Alt+arrow.
+        for (k, forward) in [
+            (key(KeyCode::Left, SHIFT), false),
+            (key(KeyCode::Right, SHIFT), true),
+            (key(KeyCode::Left, ALT), false),
+            (key(KeyCode::Right, ALT), true),
+        ] {
+            assert_eq!(
+                app.semantic_command_for_bottom_panel_key(k),
+                Some(SemanticCommand::CycleBottomPanelTab { forward }),
+                "{k:?}"
+            );
+        }
+        assert_eq!(
+            app.semantic_command_for_bottom_panel_key(key(KeyCode::Esc, NONE)),
+            Some(SemanticCommand::CancelCurrentInteraction)
+        );
+    }
+
+    #[tokio::test]
+    async fn run_tab_bindings_are_scoped_to_the_run_tab() {
+        let (_d, mut app) = app().await;
+        app.bottom_panel.open = true;
+        app.bottom_panel.active = BottomPanelTab::Run;
+        let cases: Vec<(event::KeyEvent, SemanticCommand)> = vec![
+            (key(KeyCode::Enter, NONE), SemanticCommand::RunOrCancel),
+            (key(KeyCode::Char('r'), NONE), SemanticCommand::Rerun),
+            (key(KeyCode::Char('e'), NONE), SemanticCommand::EditAndRerun),
+            (
+                key(KeyCode::Char('m'), NONE),
+                SemanticCommand::ToggleRunExecutionMode,
+            ),
+            (
+                key(KeyCode::Char('i'), NONE),
+                SemanticCommand::EditRunCommand,
+            ),
+            (
+                key(KeyCode::Char('d'), NONE),
+                SemanticCommand::EditRunDirectory,
+            ),
+        ];
+        for (k, expected) in &cases {
+            assert_eq!(
+                app.semantic_command_for_bottom_panel_key(*k),
+                Some(expected.clone()),
+                "{k:?} on the Run tab"
+            );
+        }
+
+        // The same keys are inert on the other tabs, so they stay available to
+        // whatever those tabs want them for.
+        for tab in [
+            BottomPanelTab::Diagnostics,
+            BottomPanelTab::Terminal,
+            BottomPanelTab::Activity,
+        ] {
+            app.bottom_panel.active = tab;
+            for (k, _) in &cases {
+                assert_eq!(
+                    app.semantic_command_for_bottom_panel_key(*k),
+                    None,
+                    "{k:?} should be inert on {tab:?}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn composer_submits_on_plain_enter_and_newlines_on_modified_enter() {
+        let (_d, app) = app().await;
+        assert_eq!(
+            app.semantic_command_for_composer_key(key(KeyCode::Enter, NONE)),
+            Some(SemanticCommand::SubmitMessage)
+        );
+        // Shift, Alt and Ctrl+J all insert a newline instead of sending.
+        for k in [
+            key(KeyCode::Enter, SHIFT),
+            key(KeyCode::Enter, ALT),
+            key(KeyCode::Char('j'), CTRL),
+        ] {
+            assert_eq!(
+                app.semantic_command_for_composer_key(k),
+                Some(SemanticCommand::InsertComposerNewline),
+                "{k:?}"
+            );
+        }
+        assert_eq!(
+            app.semantic_command_for_composer_key(key(KeyCode::Esc, NONE)),
+            Some(SemanticCommand::CancelCurrentInteraction)
+        );
+        assert_eq!(
+            app.semantic_command_for_composer_key(key(KeyCode::Char('a'), NONE)),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn slash_suggestion_index_is_clamped_to_the_available_items() {
+        let (_d, mut app) = app().await;
+        app.input.set_text("/");
+        let count = app.slash_suggestions().len();
+        assert!(count > 0, "a bare slash should suggest commands");
+
+        app.slash_suggest_idx = count + 10;
+        app.clamp_slash_suggest();
+        assert_eq!(app.slash_suggest_idx, count - 1);
+
+        // With no suggestions the index collapses to zero rather than staying
+        // out of range.
+        app.input.set_text("not a slash command");
+        assert!(app.slash_suggestions().is_empty());
+        app.slash_suggest_idx = 5;
+        app.clamp_slash_suggest();
+        assert_eq!(app.slash_suggest_idx, 0);
+    }
+
+    #[tokio::test]
+    async fn completing_a_slash_suggestion_preserves_already_typed_arguments() {
+        let (_d, mut app) = app().await;
+        app.input.set_text("/");
+        let first = app.slash_suggestions()[0].cmd.clone();
+
+        app.complete_slash_suggestion();
+        assert_eq!(app.input.text, format!("{first} "));
+
+        // Completing again is a no-op: the buffer already holds the bare command.
+        app.input.set_text(first.clone());
+        app.complete_slash_suggestion();
+        assert_eq!(app.input.text, first);
+
+        // Arguments the user typed must not be clobbered by a re-completion.
+        let with_args = format!("{first} some argument");
+        app.input.set_text(with_args.clone());
+        app.complete_slash_suggestion();
+        assert_eq!(app.input.text, with_args);
+    }
+
+    #[tokio::test]
+    async fn theme_command_without_a_name_opens_the_picker() {
+        let (_d, mut app) = app().await;
+        app.handle_theme_command(None);
+        assert!(matches!(app.overlay, Some(Overlay::Theme { .. })));
+        assert_eq!(app.status_message, "pick a theme");
+
+        // A blank name is treated as "no name" rather than as an invalid theme.
+        app.overlay = None;
+        app.handle_theme_command(Some("   "));
+        assert!(matches!(app.overlay, Some(Overlay::Theme { .. })));
+    }
+
+    #[tokio::test]
+    async fn theme_command_reports_an_unknown_name_instead_of_switching() {
+        let (_d, mut app) = app().await;
+        app.handle_theme_command(Some("no-such-theme"));
+        // No picker: the name was supplied, it was simply wrong.
+        assert!(app.overlay.is_none());
+        assert!(
+            !app.feedback.is_empty(),
+            "an unknown theme name should surface feedback"
+        );
+        assert_eq!(app.feedback.severity, FeedbackSeverity::Warn);
+    }
+}
