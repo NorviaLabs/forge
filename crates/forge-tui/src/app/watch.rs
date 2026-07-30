@@ -4,7 +4,14 @@
 //! refreshes the file tree and open source viewer, and keeps diff review snapshots
 //! current. Methods are moved verbatim.
 
+use std::path::Path;
+
 use super::*;
+
+pub(super) fn path_is_under_dot_forge(path: &Path) -> bool {
+    path.components()
+        .any(|component| component.as_os_str() == ".forge")
+}
 
 impl TuiApp {
     pub(super) fn init_file_watcher(&mut self) {
@@ -125,10 +132,6 @@ impl TuiApp {
             self.source_viewer.notice = Some(notice);
         }
     }
-
-    // Intentionally keep the conversation window clean: only real chat (user/assistant)
-    // plus essential banners (errors, HITL, connection). Slash command output lives in
-    // notices / overlays / activity.
 
     pub(super) fn apply_history_text(&mut self, text: String) {
         self.input.set_text(text);
