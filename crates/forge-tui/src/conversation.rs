@@ -337,13 +337,9 @@ impl ConversationModel {
                             // rendered as visible Chat rows by default.
                         }
                     }
-                    let effective_text = if !m.content.trim().is_empty() {
-                        m.content.clone()
-                    } else if let Some(ref th) = m.thinking {
-                        th.clone()
-                    } else {
-                        String::new()
-                    };
+                    // Final answer is durable content only. Thinking/reasoning never
+                    // becomes AssistantAnswer (provenance: primary text channel).
+                    let effective_text = sanitize_final_answer_text(&m.content);
                     if !effective_text.trim().is_empty() {
                         if repair_pending {
                             items.push(ChatItem::GeneratorRepair {
@@ -802,12 +798,14 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
             ChatItem::Thinking { text, .. } => {
                 flush_progress(&mut blocks, &mut progress);
                 flush_activity(&mut blocks, &mut activity_group);
-                blocks.push(ConversationBlock::ActiveProgress(ActiveProgressPresentation {
-                    id: "thinking".into(),
-                    label: "Thinking".into(),
-                    summary: text.clone(),
-                    status: ActiveProgressStatus::Updated,
-                }));
+                blocks.push(ConversationBlock::ActiveProgress(
+                    ActiveProgressPresentation {
+                        id: "thinking".into(),
+                        label: "Thinking".into(),
+                        summary: text.clone(),
+                        status: ActiveProgressStatus::Updated,
+                    },
+                ));
             }
             ChatItem::Assistant { text } => {
                 flush_progress(&mut blocks, &mut progress);
@@ -837,13 +835,15 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
                 }));
             }
             ChatItem::StreamingAssistant { text } => {
+                // Streaming final-answer deltas are answer provenance, not progress.
+                flush_progress(&mut blocks, &mut progress);
                 flush_activity(&mut blocks, &mut activity_group);
-                progress = Some(ActiveProgressPresentation {
-                    id: "stream".into(),
-                    label: "Current progress".into(),
-                    summary: text.clone(),
-                    status: ActiveProgressStatus::Updated,
-                });
+                blocks.push(ConversationBlock::AssistantAnswer(
+                    AssistantAnswerPresentation {
+                        text: sanitize_final_answer_text(text),
+                        streaming: true,
+                    },
+                ));
             }
             ChatItem::RetryAssistant { text }
             | ChatItem::GeneratorRepair { text }
@@ -899,6 +899,16 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
                 state,
             } => {
                 flush_progress(&mut blocks, &mut progress);
+                let outcome = match state {
+                    ToolCardState::Running => ActivityOutcome::Neutral,
+                    // Routine exploration is evidence, not a green "success" banner.
+                    ToolCardState::Done if matches!(category, ActivityCategory::Exploring) => {
+                        ActivityOutcome::Neutral
+                    }
+                    ToolCardState::Done => ActivityOutcome::Success,
+                    ToolCardState::Blocked => ActivityOutcome::Blocked,
+                    ToolCardState::Error => ActivityOutcome::Failure,
+                };
                 append_activity_entry(
                     &mut blocks,
                     &mut activity_group,
@@ -908,12 +918,7 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
                             .label(matches!(state, ToolCardState::Running))
                             .to_string(),
                         count_label: summary.clone(),
-                        outcome: match state {
-                            ToolCardState::Running => ActivityOutcome::Neutral,
-                            ToolCardState::Done => ActivityOutcome::Success,
-                            ToolCardState::Blocked => ActivityOutcome::Blocked,
-                            ToolCardState::Error => ActivityOutcome::Failure,
-                        },
+                        outcome,
                         expanded: matches!(state, ToolCardState::Error) && tool_expanded,
                         items: vec![detail.clone()],
                     },
@@ -1003,7 +1008,81 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
     }
     flush_progress(&mut blocks, &mut progress);
     flush_activity(&mut blocks, &mut activity_group);
-    blocks
+    compose_turn_presentation(blocks)
+}
+
+/// Completed-turn composition: within each user turn, emit
+/// UserMessage → AssistantAnswer → ActivityGroup (not chronological tool→answer).
+/// ActiveProgress is kept only while no final answer exists yet in that turn.
+fn compose_turn_presentation(blocks: Vec<ConversationBlock>) -> Vec<ConversationBlock> {
+    let mut out = Vec::with_capacity(blocks.len());
+    let mut segment: Vec<ConversationBlock> = Vec::new();
+
+    let flush_segment = |out: &mut Vec<ConversationBlock>, segment: &mut Vec<ConversationBlock>| {
+        if segment.is_empty() {
+            return;
+        }
+        let mut user = Vec::new();
+        let mut answers = Vec::new();
+        let mut activity = Vec::new();
+        let mut progress = Vec::new();
+        let mut other = Vec::new();
+        for block in segment.drain(..) {
+            match block {
+                ConversationBlock::UserMessage(_) => user.push(block),
+                ConversationBlock::AssistantAnswer(_) => answers.push(block),
+                ConversationBlock::ActivityGroup(_) | ConversationBlock::DiffBlock(_) => {
+                    activity.push(block)
+                }
+                ConversationBlock::ActiveProgress(_) => progress.push(block),
+                other_block => other.push(other_block),
+            }
+        }
+        // One durable final answer per turn: last primary answer wins.
+        if answers.len() > 1 {
+            let last = answers.pop().into_iter().collect::<Vec<_>>();
+            answers = last;
+        }
+        out.extend(user);
+        if answers.is_empty() {
+            // Still streaming / waiting: progress may remain visible.
+            out.extend(progress);
+        }
+        out.extend(answers);
+        out.extend(activity);
+        out.extend(other);
+    };
+
+    for block in blocks {
+        match block {
+            ConversationBlock::UserMessage(_) => {
+                flush_segment(&mut out, &mut segment);
+                segment.push(block);
+            }
+            other => segment.push(other),
+        }
+    }
+    flush_segment(&mut out, &mut segment);
+    out
+}
+
+/// Strip internal protocol control markers from final-answer text before render.
+/// Not phrase filtering: only known structural envelopes (e.g. confidence tags).
+fn sanitize_final_answer_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("\\confidence{") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + "\\confidence{".len()..];
+        if let Some(end) = after.find('}') {
+            rest = &after[end + 1..];
+        } else {
+            // Unclosed marker: drop remainder of control token only.
+            break;
+        }
+    }
+    out.push_str(rest);
+    out.trim().to_string()
 }
 
 fn append_activity_entry(
@@ -1045,8 +1124,14 @@ fn activity_entry_from_tool(
     state: ToolCardState,
 ) -> Option<ActivityGroupPresentation> {
     let category = routine_tool_category(name, summary, None)?;
+    let lower = detail.to_ascii_lowercase();
+    let zero_result = lower.contains("no matches found") || lower.contains("no results");
     let outcome = match state {
         ToolCardState::Running => ActivityOutcome::Neutral,
+        // Routine exploration success (including zero-result search) stays neutral.
+        ToolCardState::Done if matches!(category, ActivityCategory::Exploring) || zero_result => {
+            ActivityOutcome::Neutral
+        }
         ToolCardState::Done => ActivityOutcome::Success,
         ToolCardState::Blocked => ActivityOutcome::Blocked,
         ToolCardState::Error => ActivityOutcome::Failure,
@@ -2090,7 +2175,7 @@ mod tests {
     }
 
     #[test]
-    fn semantic_blocks_replace_streaming_progress_updates() {
+    fn semantic_blocks_replace_streaming_answer_updates() {
         let model = ConversationModel {
             items: vec![
                 ChatItem::StreamingAssistant {
@@ -2106,12 +2191,12 @@ mod tests {
         };
 
         let blocks = model.semantic_blocks();
+        // Compose keeps one final answer (last streaming snapshot).
         assert_eq!(blocks.len(), 1);
         assert!(matches!(
             &blocks[0],
-            ConversationBlock::ActiveProgress(progress)
-                if progress.summary == "working on the final change"
-                    && progress.status == ActiveProgressStatus::Updated
+            ConversationBlock::AssistantAnswer(answer)
+                if answer.text == "working on the final change" && answer.streaming
         ));
     }
 
@@ -2144,6 +2229,120 @@ mod tests {
             blocks.last(),
             Some(ConversationBlock::ActivityGroup(_))
         ));
+    }
+
+    #[test]
+    fn completed_turn_composes_answer_before_activity() {
+        let model = ConversationModel {
+            items: vec![
+                ChatItem::User {
+                    text: "Summarize this codebase".into(),
+                },
+                ChatItem::ToolCard {
+                    name: "read_file".into(),
+                    summary: "README.md · 10 lines".into(),
+                    detail: "README.md".into(),
+                    state: ToolCardState::Done,
+                    duration: None,
+                },
+                ChatItem::ToolCard {
+                    name: "fffind".into(),
+                    summary: "crate · 3 files".into(),
+                    detail: "crates/".into(),
+                    state: ToolCardState::Done,
+                    duration: None,
+                },
+                ChatItem::Assistant {
+                    text: "Forge is a Rust workspace.".into(),
+                },
+            ],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+
+        let blocks = model.semantic_blocks();
+        assert!(matches!(
+            blocks.as_slice(),
+            [
+                ConversationBlock::UserMessage(_),
+                ConversationBlock::AssistantAnswer(a),
+                ConversationBlock::ActivityGroup(_),
+            ] if a.text == "Forge is a Rust workspace."
+        ));
+    }
+
+    #[test]
+    fn thinking_is_never_promoted_to_final_answer() {
+        let messages = vec![
+            Message {
+                role: MessageRole::User,
+                content: "Summarize this codebase".into(),
+                tool_call_id: None,
+                name: None,
+                thinking: None,
+                thinking_duration_secs: None,
+                tool_calls: vec![],
+            },
+            Message {
+                role: MessageRole::Assistant,
+                content: String::new(),
+                tool_call_id: None,
+                name: None,
+                thinking: Some("First, the user asked to summarize...".into()),
+                thinking_duration_secs: None,
+                tool_calls: vec![],
+            },
+        ];
+        let model = ConversationModel::from_messages(
+            &messages,
+            &[],
+            SessionStatus::Completed,
+            ConversationViewOpts::default(),
+        );
+        let blocks = model.semantic_blocks();
+        assert!(
+            !blocks
+                .iter()
+                .any(|b| matches!(b, ConversationBlock::AssistantAnswer(_))),
+            "thinking-only assistant must not become answer: {blocks:?}"
+        );
+    }
+
+    #[test]
+    fn sanitize_strips_confidence_protocol_marker() {
+        assert_eq!(
+            sanitize_final_answer_text("Forge is a workspace.\\confidence{80}"),
+            "Forge is a workspace."
+        );
+        assert_eq!(sanitize_final_answer_text("answer only"), "answer only");
+    }
+
+    #[test]
+    fn only_last_final_answer_per_turn_is_kept() {
+        let model = ConversationModel {
+            items: vec![
+                ChatItem::User { text: "hi".into() },
+                ChatItem::Assistant {
+                    text: "I need to summarize...".into(),
+                },
+                ChatItem::Assistant {
+                    text: "Forge is a Rust workspace.".into(),
+                },
+            ],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+        let blocks = model.semantic_blocks();
+        let answers: Vec<_> = blocks
+            .iter()
+            .filter_map(|b| match b {
+                ConversationBlock::AssistantAnswer(a) => Some(a.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(answers, vec!["Forge is a Rust workspace."]);
     }
 
     #[test]
@@ -2278,11 +2477,7 @@ mod tests {
         let answer_lines = model
             .lines_for_width(140)
             .iter()
-            .filter(|line| {
-                line.spans
-                    .iter()
-                    .any(|span| span.content.contains("word"))
-            })
+            .filter(|line| line.spans.iter().any(|span| span.content.contains("word")))
             .count();
         assert_eq!(answer_lines, 1);
     }
@@ -2623,7 +2818,8 @@ mod tests {
         assert!(blocks.iter().any(|block| matches!(
             block,
             ConversationBlock::ActivityGroup(group)
-                if !group.items.is_empty() && matches!(group.outcome, ActivityOutcome::Success)
+                if !group.items.is_empty()
+                    && matches!(group.outcome, ActivityOutcome::Neutral | ActivityOutcome::Success)
         )));
         assert!(blocks
             .iter()
@@ -2971,7 +3167,8 @@ mod tests {
             .flat_map(|line| line.spans.iter())
             .map(|span| span.content.as_ref())
             .collect::<String>();
-        assert!(text.contains("Current progress"));
+        // Streaming final-answer deltas render as answer text, not progress.
+        assert!(!text.contains("Current progress"));
         assert!(text.contains("partial response▌"));
     }
 
