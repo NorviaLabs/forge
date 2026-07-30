@@ -123,6 +123,7 @@ impl Widget for BottomPanel<'_> {
             } else {
                 theme::border_muted()
             })
+            .style(theme::panel())
             .title(title);
         let inner = block.inner(area);
         block.render(area, buf);

@@ -491,6 +491,7 @@ impl Widget for StatusBar<'_> {
             }
         }
 
+        theme::fill(area, buf, theme::canvas());
         buf.set_line(area.x, area.y, &Line::from(spans), area.width);
     }
 }

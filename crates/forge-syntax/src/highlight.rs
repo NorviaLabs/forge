@@ -55,21 +55,21 @@ pub struct HighlightTheme {
 }
 
 impl HighlightStyle {
-    pub fn rgb(self) -> (u8, u8, u8) {
+    pub fn rgb(&self, theme: &HighlightTheme) -> (u8, u8, u8) {
         match self.class {
-            HighlightClass::Comment => (139, 155, 176),
-            HighlightClass::Keyword => (61, 214, 198),
-            HighlightClass::String => (227, 179, 65),
-            HighlightClass::Number => (110, 168, 254),
-            HighlightClass::Function => (210, 168, 255),
-            HighlightClass::Type => (110, 168, 254),
-            HighlightClass::Variable => (230, 237, 243),
-            HighlightClass::Operator => (139, 155, 176),
-            HighlightClass::Punctuation => (139, 155, 176),
-            HighlightClass::Property => (61, 214, 198),
-            HighlightClass::Tag => (61, 214, 198),
-            HighlightClass::Attribute => (227, 179, 65),
-            HighlightClass::Default => (230, 237, 243),
+            HighlightClass::Comment => theme.comment,
+            HighlightClass::Keyword => theme.keyword,
+            HighlightClass::String => theme.string,
+            HighlightClass::Number => theme.number,
+            HighlightClass::Function => theme.function,
+            HighlightClass::Type => theme.type_,
+            HighlightClass::Variable => theme.variable,
+            HighlightClass::Operator => theme.operator,
+            HighlightClass::Punctuation => theme.punctuation,
+            HighlightClass::Property => theme.property,
+            HighlightClass::Tag => theme.tag,
+            HighlightClass::Attribute => theme.attribute,
+            HighlightClass::Default => theme.default,
         }
     }
 
@@ -108,6 +108,25 @@ impl Default for HighlightTheme {
 impl HighlightTheme {
     fn style_for_class(&self, class: HighlightClass) -> HighlightStyle {
         HighlightStyle { class }
+    }
+
+    /// Readable syntax colours on the Forge Light canvas.
+    pub fn light() -> Self {
+        Self {
+            comment: (100, 110, 125),
+            keyword: (0, 120, 140),
+            string: (140, 100, 20),
+            number: (30, 90, 180),
+            function: (120, 60, 160),
+            type_: (30, 90, 180),
+            variable: (32, 29, 26),
+            operator: (100, 110, 125),
+            punctuation: (100, 110, 125),
+            property: (0, 120, 140),
+            tag: (0, 120, 140),
+            attribute: (140, 100, 20),
+            default: (32, 29, 26),
+        }
     }
 }
 
@@ -368,7 +387,7 @@ pub fn highlight_to_lines(
                     }
                     let (s_start, s_end) = (span_start, span_end);
                     if s_end > s_start {
-                        let rgb = span.style.rgb();
+                        let rgb = span.style.rgb(theme);
                         segments.push((
                             code[s_start..s_end].to_string(),
                             rgb,
@@ -414,5 +433,13 @@ mod tests {
         let lines = highlight_to_lines("rust", code, &HighlightTheme::default());
         assert_eq!(lines.len(), 1);
         assert!(!lines[0].is_empty());
+    }
+
+    #[test]
+    fn light_theme_uses_distinct_colours() {
+        let theme = HighlightTheme::light();
+        assert_ne!(theme.default, theme.comment);
+        let lines = highlight_to_lines("rust", "fn main() {}", &theme);
+        assert!(!lines.is_empty());
     }
 }
