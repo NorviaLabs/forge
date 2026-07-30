@@ -74,9 +74,9 @@ pub(super) async fn complete(
         .await
         .map_err(|error| ModelError::Transport(error.to_string()))?;
     if !response.status().is_success() {
-        let status = response.status();
+        let status = response.status().as_u16();
         let detail = response.text().await.unwrap_or_default();
-        return Err(ModelError::Provider(format!("HTTP {status}: {detail}")));
+        return Err(ModelError::ProviderStatus { status, detail });
     }
 
     let mut stream = response.bytes_stream();
