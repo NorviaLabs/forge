@@ -60,6 +60,7 @@ impl Widget for FooterBar<'_> {
         if area.height == 0 || self.model.hints.is_empty() {
             return;
         }
+        theme::fill(area, buf, theme::canvas());
         buf.set_stringn(
             area.x,
             area.y,
