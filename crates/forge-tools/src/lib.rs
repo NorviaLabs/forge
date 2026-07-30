@@ -14,7 +14,7 @@ pub use builtins::{
     WriteFileTool,
 };
 pub use registry::{ToolContext, ToolRegistry};
-pub use validation::{validate_args, ValidationBudget};
+pub use validation::{validate_args, validation_error_signature, ValidationBudget};
 pub use web_search::{should_register_web_search, web_search_tool, WebSearchArgs, WebSearchTool};
 
 use async_trait::async_trait;
