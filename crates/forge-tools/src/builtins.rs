@@ -20,8 +20,10 @@ pub(crate) fn schema_for<T: JsonSchema>() -> Value {
 pub struct ReadFileArgs {
     /// Path relative to workspace root (or absolute under workspace).
     pub path: String,
+    /// 1-based start line (integer or null). Separate field from `limit`.
     #[serde(default)]
     pub offset: Option<u64>,
+    /// Max lines to return (integer or null). Separate field from `offset`.
     #[serde(default)]
     pub limit: Option<u64>,
 }
