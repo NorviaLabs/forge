@@ -6,7 +6,7 @@ use std::panic;
 use std::sync::Arc;
 
 use crossterm::cursor::Show;
-use crossterm::event::{DisableBracketedPaste, PopKeyboardEnhancementFlags};
+use crossterm::event::{DisableBracketedPaste, DisableMouseCapture, PopKeyboardEnhancementFlags};
 use crossterm::terminal::{disable_raw_mode, LeaveAlternateScreen};
 use crossterm::ExecutableCommand;
 
@@ -17,6 +17,7 @@ pub fn restore_terminal() {
     let mut stdout = stdout();
     let _ = disable_raw_mode();
     let _ = stdout.execute(PopKeyboardEnhancementFlags);
+    let _ = stdout.execute(DisableMouseCapture);
     let _ = stdout.execute(DisableBracketedPaste);
     let _ = stdout.execute(LeaveAlternateScreen);
     let _ = stdout.execute(Show);
@@ -25,9 +26,10 @@ pub fn restore_terminal() {
 /// Re-initialise the terminal after an external-editor session.
 /// This re-enters alternate screen, re-enables raw mode, and restores
 /// keyboard enhancement flags.
-pub fn reinit_terminal() -> Result<(), Box<dyn std::error::Error>> {
+pub fn reinit_terminal(mouse_capture: bool) -> Result<(), Box<dyn std::error::Error>> {
     use crossterm::event::{
-        EnableBracketedPaste, KeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+        EnableBracketedPaste, EnableMouseCapture, KeyboardEnhancementFlags,
+        PushKeyboardEnhancementFlags,
     };
     use crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
     use crossterm::ExecutableCommand;
@@ -36,6 +38,9 @@ pub fn reinit_terminal() -> Result<(), Box<dyn std::error::Error>> {
     let mut stdout = stdout();
     stdout.execute(EnterAlternateScreen)?;
     stdout.execute(EnableBracketedPaste)?;
+    if mouse_capture {
+        stdout.execute(EnableMouseCapture)?;
+    }
     stdout.execute(PushKeyboardEnhancementFlags(
         KeyboardEnhancementFlags::REPORT_EVENT_TYPES
             | KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
