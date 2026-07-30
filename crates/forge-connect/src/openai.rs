@@ -2,6 +2,7 @@
 
 use crate::auth::AuthMode;
 use crate::profile::ConnectProfile;
+use crate::verify::VerifyError;
 
 pub const PROFILE_ID: &str = "openai";
 pub const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
@@ -24,16 +25,16 @@ pub fn openai_profile() -> ConnectProfile {
 }
 
 /// Verify key with `GET /models` (Bearer). Never includes the key in errors.
-pub fn verify_api_key(api_key: &str, base_url: &str) -> Result<(), String> {
+pub fn verify_api_key(api_key: &str, base_url: &str) -> Result<(), VerifyError> {
     let key = api_key.trim();
     if key.is_empty() {
-        return Err("API key is empty".into());
+        return Err(VerifyError::EmptyKey);
     }
     if key.len() < 16 {
-        return Err(format!(
-            "API key looks too short ({n} chars). Create a key at https://platform.openai.com/api-keys.",
-            n = key.len()
-        ));
+        return Err(VerifyError::KeyTooShort {
+            len: key.len(),
+            guidance: "Create a key at https://platform.openai.com/api-keys.",
+        });
     }
     let base = base_url.trim().trim_end_matches('/');
     let url = format!("{base}/models");
@@ -45,21 +46,30 @@ pub fn verify_api_key(api_key: &str, base_url: &str) -> Result<(), String> {
         )
         .call()
         .map_err(|e| match e {
-            ureq::Error::Status(code, _) => format!(
-                "OpenAI rejected the API key (HTTP {code}). \
-Check the key at https://platform.openai.com/api-keys."
-            ),
-            other => format!("Could not reach OpenAI to verify key ({other}). Check network."),
+            ureq::Error::Status(status, _) => VerifyError::Rejected {
+                provider: "OpenAI",
+                status,
+                guidance: "Check the key at https://platform.openai.com/api-keys.",
+            },
+            other => VerifyError::Unreachable {
+                provider: "OpenAI",
+                message: format!("Could not reach OpenAI to verify key ({other}). Check network."),
+            },
         })?;
     let status = resp.status();
     if (200..300).contains(&status) {
         Ok(())
     } else if status == 401 || status == 403 {
-        Err("OpenAI rejected the API key (unauthorized). \
-Create a key at https://platform.openai.com/api-keys."
-            .into())
+        Err(VerifyError::Unauthorized {
+            provider: "OpenAI",
+            guidance: "Create a key at https://platform.openai.com/api-keys.",
+        })
     } else {
-        Err(format!("OpenAI key verification failed (HTTP {status})."))
+        Err(VerifyError::Status {
+            provider: "OpenAI",
+            status,
+            guidance: None,
+        })
     }
 }
 
@@ -97,13 +107,17 @@ mod tests {
 
     #[test]
     fn short_key_rejected() {
-        let err = verify_api_key("sk-short", DEFAULT_BASE_URL).unwrap_err();
+        let err = verify_api_key("sk-short", DEFAULT_BASE_URL)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("too short"), "{err}");
     }
 
     #[test]
     fn empty_key_rejected_without_network() {
-        let err = verify_api_key("   ", DEFAULT_BASE_URL).unwrap_err();
+        let err = verify_api_key("   ", DEFAULT_BASE_URL)
+            .unwrap_err()
+            .to_string();
         assert_eq!(err, "API key is empty");
     }
 
@@ -115,11 +129,15 @@ mod tests {
 
     #[test]
     fn verify_reports_auth_and_server_statuses_without_secret() {
-        let err = verify_api_key("sk-valid-key-for-tests", &mock_server(401)).unwrap_err();
+        let err = verify_api_key("sk-valid-key-for-tests", &mock_server(401))
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("HTTP 401"), "{err}");
         assert!(!err.contains("sk-valid"));
 
-        let err = verify_api_key("sk-valid-key-for-tests", &mock_server(500)).unwrap_err();
+        let err = verify_api_key("sk-valid-key-for-tests", &mock_server(500))
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("HTTP 500"), "{err}");
         assert!(!err.contains("sk-valid"));
     }
