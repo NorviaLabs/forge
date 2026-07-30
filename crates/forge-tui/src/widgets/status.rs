@@ -10,6 +10,7 @@ use ratatui::widgets::Widget;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Progressive busy phase (Phase 10 / TUI-10; also used in chrome label).
+/// This is activity detail, not overall turn lifecycle.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum BusyPhase {
     #[default]
@@ -30,6 +31,78 @@ impl BusyPhase {
             Self::Tool { name } => format!("tool:{name}"),
             Self::Connect => "connect".into(),
             Self::Other(s) => s.clone(),
+        }
+    }
+}
+
+/// First-class turn lifecycle — separate from tool/activity status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnLifecycle {
+    /// No active turn; ready for input.
+    Idle,
+    /// Agent turn in progress.
+    Working,
+    /// Blocked on human approval or connect.
+    Waiting,
+    /// Turn finished successfully with a final answer.
+    Completed,
+    /// Turn finished in failure (incl. retry exhaustion).
+    Failed,
+    /// Operator cancelled the in-flight turn.
+    Cancelled,
+}
+
+impl TurnLifecycle {
+    /// Map authoritative session status + busy/cancel flags.
+    /// Does not inspect activity rows or assistant text.
+    pub fn from_session(status: SessionStatus, busy: bool, cancelled: bool) -> Self {
+        if cancelled {
+            return Self::Cancelled;
+        }
+        match status {
+            SessionStatus::AwaitingHitl => Self::Waiting,
+            SessionStatus::Failed => Self::Failed,
+            SessionStatus::Completed => Self::Completed,
+            SessionStatus::Running => {
+                if busy {
+                    Self::Working
+                } else {
+                    Self::Idle
+                }
+            }
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Idle => "Idle",
+            Self::Working => "Working",
+            Self::Waiting => "Waiting",
+            Self::Completed => "Completed",
+            Self::Failed => "Failed",
+            Self::Cancelled => "Cancelled",
+        }
+    }
+
+    pub fn style(self) -> ratatui::style::Style {
+        match self {
+            Self::Idle => theme::ok(),
+            Self::Working => theme::info().add_modifier(Modifier::BOLD),
+            Self::Waiting => theme::warn().add_modifier(Modifier::BOLD),
+            Self::Completed => theme::ok(),
+            Self::Failed => theme::danger(),
+            Self::Cancelled => theme::muted(),
+        }
+    }
+
+    pub fn symbol(self) -> &'static str {
+        match self {
+            Self::Idle => "·",
+            Self::Working => "●",
+            Self::Waiting => "!",
+            Self::Completed => "✓",
+            Self::Failed => "×",
+            Self::Cancelled => "–",
         }
     }
 }
@@ -67,6 +140,8 @@ pub struct StatusModel {
     pub dirty: bool,
     pub resource: Option<String>,
     pub activity: Option<String>,
+    /// Soft-cancel of the in-flight turn (Esc while busy) reached a terminal cancel.
+    pub turn_cancelled: bool,
 }
 
 impl StatusModel {
@@ -74,32 +149,17 @@ impl StatusModel {
         self.status_label_with_busy_detail(None)
     }
 
+    /// Overall turn lifecycle label (not tool/activity phase).
+    pub fn turn_lifecycle(&self) -> TurnLifecycle {
+        TurnLifecycle::from_session(self.status, self.busy, self.turn_cancelled)
+    }
+
     pub fn current_state_label(&self) -> &'static str {
-        match self.status {
-            SessionStatus::AwaitingHitl => "Waiting for you",
-            SessionStatus::Failed => "Failed",
-            SessionStatus::Completed => "Completed",
-            SessionStatus::Running => {
-                if self.busy {
-                    match &self.busy_phase {
-                        BusyPhase::Idle => "Idle",
-                        BusyPhase::Model => "Implementing",
-                        BusyPhase::Connect => "Waiting for you",
-                        BusyPhase::Tool { name } => match name.as_str() {
-                            "read_file" | "fffind" | "ffgrep" | "web_search" => "Exploring",
-                            "git" => "Validating",
-                            _ => "Implementing",
-                        },
-                        BusyPhase::Other(step) => match step.as_str() {
-                            "git sync" => "Validating",
-                            _ => "Implementing",
-                        },
-                    }
-                } else {
-                    "Idle"
-                }
-            }
+        // Connect-busy is waiting on the operator, not "Working".
+        if self.busy && matches!(self.busy_phase, BusyPhase::Connect) {
+            return TurnLifecycle::Waiting.label();
         }
+        self.turn_lifecycle().label()
     }
 
     pub fn repo_branch_label(&self) -> Option<String> {
@@ -122,27 +182,26 @@ impl StatusModel {
         &self,
         busy_detail: Option<&str>,
     ) -> (String, ratatui::style::Style) {
-        if self.busy {
-            let phase = self.busy_phase.label();
+        let life = if self.busy && matches!(self.busy_phase, BusyPhase::Connect) {
+            TurnLifecycle::Waiting
+        } else {
+            self.turn_lifecycle()
+        };
+        // Working may include optional busy detail (elapsed), but lifecycle stays "Working".
+        if life == TurnLifecycle::Working {
             let spin = spinner_frame();
-            let text = if let Some(detail) = busy_detail.filter(|detail| !detail.is_empty()) {
-                format!("{spin} {detail}")
-            } else if phase.is_empty() {
-                format!("{spin} running")
+            let text = if let Some(detail) = busy_detail.filter(|d| !d.is_empty()) {
+                format!("{spin} Working · {detail}")
             } else {
-                format!("{spin} {phase}")
+                format!("{spin} Working")
             };
-            return (text, theme::info().add_modifier(Modifier::BOLD));
+            return (text, life.style());
         }
-        match self.status {
-            SessionStatus::Running => ("Idle".into(), theme::ok()),
-            SessionStatus::Completed => ("Completed".into(), theme::ok()),
-            SessionStatus::Failed => ("Failed".into(), theme::danger()),
-            SessionStatus::AwaitingHitl => (
-                "Waiting for you".into(),
-                theme::warn().add_modifier(Modifier::BOLD),
-            ),
-        }
+        let text = match life {
+            TurnLifecycle::Waiting => "Waiting".to_string(),
+            other => other.label().to_string(),
+        };
+        (text, life.style())
     }
 
     #[allow(dead_code)]
@@ -250,14 +309,24 @@ impl Widget for StatusBar<'_> {
             }
         }
 
+        // Turn lifecycle is always shown when space allows — separate from activity.
+        let (life_label, life_style) = self.model.status_label();
+        let life_needed = separators.chars().count() + life_label.chars().count();
+        let life_fits = used + life_needed + activity_needed <= area.width as usize
+            || used + life_needed <= area.width as usize;
+
+        if life_fits && used + life_needed <= area.width as usize {
+            spans.push(Span::raw(separators));
+            spans.push(Span::styled(life_label, life_style));
+            used += life_needed;
+        }
+
         if let Some(activity) = activity {
             let needed = separators.chars().count() + activity.chars().count();
             if used + needed <= area.width as usize {
                 spans.push(Span::raw(separators));
-                spans.push(Span::styled(
-                    activity.to_string(),
-                    theme::info().add_modifier(Modifier::BOLD),
-                ));
+                // Workspace activity (diff/run counters) stays secondary to lifecycle.
+                spans.push(Span::styled(activity.to_string(), theme::metadata_style()));
             }
         }
 
@@ -298,6 +367,7 @@ mod tests {
 
     fn status_model(status: SessionStatus, busy: bool, busy_phase: BusyPhase) -> StatusModel {
         StatusModel {
+            turn_cancelled: false,
             status,
             session_short: "abc".into(),
             model: "openai/gpt-5".into(),
@@ -342,8 +412,9 @@ mod tests {
             dirty: false,
             resource: None,
             activity: None,
+            turn_cancelled: false,
         };
-        assert_eq!(m.status_label().0, "Waiting for you");
+        assert_eq!(m.status_label().0, "Waiting");
     }
 
     #[test]
@@ -368,8 +439,11 @@ mod tests {
             dirty: false,
             resource: None,
             activity: None,
+            turn_cancelled: false,
         };
-        assert!(m.status_label().0.contains("thinking"));
+        // Busy detail is activity-level; lifecycle stays Working.
+        assert!(m.status_label().0.contains("Working"));
+        assert_eq!(m.turn_lifecycle(), TurnLifecycle::Working);
     }
 
     #[test]
@@ -394,6 +468,7 @@ mod tests {
             dirty: false,
             resource: None,
             activity: None,
+            turn_cancelled: false,
         };
         let lines = session_chrome_lines(&m);
         assert!(lines.iter().any(|l| l.contains("provider=native")));
@@ -425,6 +500,7 @@ mod tests {
             dirty: true,
             resource: Some("src/app.rs".into()),
             activity: Some("2 changes · Review".into()),
+            turn_cancelled: false,
         };
 
         assert_eq!(m.connect_profile.as_deref(), Some("openai-code"));
@@ -468,8 +544,9 @@ mod tests {
             dirty: false,
             resource: None,
             activity: None,
+            turn_cancelled: false,
         };
-        assert_eq!(m.current_state_label(), "Waiting for you");
+        assert_eq!(m.current_state_label(), "Waiting");
     }
 
     #[test]
@@ -494,6 +571,7 @@ mod tests {
             dirty: true,
             resource: Some("src/app.rs".into()),
             activity: Some("2 changes · Review".into()),
+            turn_cancelled: false,
         };
         let area = Rect::new(0, 0, 80, 1);
         let mut buf = Buffer::empty(area);
@@ -528,6 +606,7 @@ mod tests {
             dirty: false,
             resource: None,
             activity: Some("Idle".into()),
+            turn_cancelled: false,
         };
         let area = Rect::new(0, 0, 24, 1);
         let mut buf = Buffer::empty(area);
@@ -547,13 +626,14 @@ mod tests {
             status_model(SessionStatus::Failed, false, BusyPhase::Idle).current_state_label(),
             "Failed"
         );
+        // Busy + Running => Working (tool names stay activity-level, not lifecycle).
         assert_eq!(
             status_model(SessionStatus::Running, true, BusyPhase::Idle).current_state_label(),
-            "Idle"
+            "Working"
         );
         assert_eq!(
             status_model(SessionStatus::Running, true, BusyPhase::Connect).current_state_label(),
-            "Waiting for you"
+            "Waiting"
         );
         assert_eq!(
             status_model(
@@ -564,7 +644,7 @@ mod tests {
                 }
             )
             .current_state_label(),
-            "Exploring"
+            "Working"
         );
         assert_eq!(
             status_model(
@@ -573,28 +653,15 @@ mod tests {
                 BusyPhase::Tool { name: "git".into() }
             )
             .current_state_label(),
-            "Validating"
+            "Working"
         );
         assert_eq!(
-            status_model(
-                SessionStatus::Running,
-                true,
-                BusyPhase::Tool {
-                    name: "custom".into()
-                }
-            )
-            .current_state_label(),
-            "Implementing"
+            status_model(SessionStatus::Running, false, BusyPhase::Idle).current_state_label(),
+            "Idle"
         );
-        assert_eq!(
-            status_model(
-                SessionStatus::Running,
-                true,
-                BusyPhase::Other("git sync".into())
-            )
-            .current_state_label(),
-            "Validating"
-        );
+        let mut cancelled = status_model(SessionStatus::Running, false, BusyPhase::Idle);
+        cancelled.turn_cancelled = true;
+        assert_eq!(cancelled.current_state_label(), "Cancelled");
         assert_eq!(BusyPhase::Tool { name: "git".into() }.label(), "tool:git");
         assert_eq!(BusyPhase::Connect.label(), "connect");
         assert_eq!(BusyPhase::Other("phase".into()).label(), "phase");
@@ -610,11 +677,15 @@ mod tests {
         assert!(busy
             .status_label_with_busy_detail(None)
             .0
-            .contains("running"));
+            .contains("Working"));
         assert!(busy
             .status_label_with_busy_detail(Some("custom detail"))
             .0
             .contains("custom detail"));
+        assert!(busy
+            .status_label_with_busy_detail(Some("custom detail"))
+            .0
+            .contains("Working"));
 
         assert_eq!(
             status_model(SessionStatus::Running, false, BusyPhase::Idle)

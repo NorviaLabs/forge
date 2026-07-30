@@ -75,11 +75,12 @@ impl SidebarModel {
     pub fn from_session_with_activity(session: &AgentSession, activity_lines: &[String]) -> Self {
         let id = session.session_id.to_string();
         let short = if id.len() > 8 { &id[..8] } else { &id };
+        // Turn lifecycle only — not tool/activity phase names.
         let status = match session.status {
-            SessionStatus::Running => "Implementing",
+            SessionStatus::Running => "Idle",
             SessionStatus::Completed => "Completed",
             SessionStatus::Failed => "Failed",
-            SessionStatus::AwaitingHitl => "Waiting for you",
+            SessionStatus::AwaitingHitl => "Waiting",
         };
         let mut tools = session.list_tools();
         tools.sort();
@@ -365,9 +366,11 @@ fn kv(label: &'static str, value: impl AsRef<str>) -> Line<'static> {
 #[allow(dead_code)]
 fn status_style(s: &str) -> ratatui::style::Style {
     match s {
-        "Waiting for you" => theme::warn(),
+        "Waiting" | "Waiting for you" => theme::warn(),
         "Failed" => theme::danger(),
         "Completed" => theme::ok(),
+        "Working" => theme::info(),
+        "Cancelled" => theme::muted(),
         _ => theme::info(),
     }
 }
@@ -570,7 +573,7 @@ mod tests {
         let mut m = model();
         m.session_id = "abcdef12".into();
         m.journal_dir = "/tmp/forge/journal".into();
-        m.status = "Waiting for you".into();
+        m.status = "Waiting".into();
         m.surface = "tui".into();
         m.role = "generator".into();
         m.pending_approval = true;
@@ -591,7 +594,7 @@ mod tests {
         let text = render_lines(&widget);
         assert!(text.contains("RUNTIME"), "{text}");
         assert!(text.contains("abcdef12"), "{text}");
-        assert!(text.contains("Waiting for you"), "{text}");
+        assert!(text.contains("Waiting"), "{text}");
         assert!(text.contains("Approval"), "{text}");
         assert!(text.contains("waiting"), "{text}");
         assert!(text.contains("Session allows"), "{text}");
@@ -613,9 +616,10 @@ mod tests {
         assert_eq!(present("value"), "value");
         assert_eq!(truncate("abc", 3), "abc");
         assert_eq!(truncate("abcd", 3), "abc…");
-        assert_eq!(status_style("Waiting for you"), theme::warn());
+        assert_eq!(status_style("Waiting"), theme::warn());
         assert_eq!(status_style("Failed"), theme::danger());
         assert_eq!(status_style("Completed"), theme::ok());
+        assert_eq!(status_style("Working"), theme::info());
         assert_eq!(status_style("Other"), theme::info());
     }
 
