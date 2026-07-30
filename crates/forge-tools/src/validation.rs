@@ -448,4 +448,144 @@ mod tests {
         // Must not extract "1" or "100" from composite garbage.
         assert!(validate_args("test", &schema, &json!({"offset": "1arglimit\">100"})).is_err());
     }
+
+    #[test]
+    fn rejects_string_that_is_not_a_recognized_boolean() {
+        // The boolean-coercion arm only accepts true/1/false/0; anything else
+        // is left as a string so schema validation rejects it (fail closed).
+        let schema = json!({
+            "type": "object",
+            "properties": { "flag": { "type": "boolean" } }
+        });
+        let err = validate_args("test", &schema, &json!({"flag": "maybe"})).unwrap_err();
+        assert_eq!(err.path, "/flag");
+    }
+
+    #[test]
+    fn schema_type_extracts_bare_string() {
+        assert_eq!(schema_type(&json!("integer")), Some("integer"));
+    }
+
+    #[test]
+    fn schema_type_finds_first_non_null_in_array() {
+        assert_eq!(schema_type(&json!(["integer", "null"])), Some("integer"));
+    }
+
+    #[test]
+    fn schema_type_is_none_for_null_only_array() {
+        // Every element is "null", so there is no coercible type to report.
+        assert_eq!(schema_type(&json!(["null"])), None);
+    }
+
+    #[test]
+    fn schema_type_is_none_for_non_string_non_array() {
+        // Malformed schema type (e.g. a bare number) coerces to nothing.
+        assert_eq!(schema_type(&json!(42)), None);
+    }
+
+    #[test]
+    fn schema_type_label_joins_multiple_types() {
+        assert_eq!(
+            schema_type_label(&json!(["integer", "null"])),
+            "integer or null"
+        );
+    }
+
+    #[test]
+    fn schema_type_label_falls_back_to_unknown_for_empty_array() {
+        assert_eq!(schema_type_label(&json!([])), "unknown");
+    }
+
+    #[test]
+    fn json_type_name_covers_every_json_value_variant() {
+        // One fixture per `Value` variant with distinct expected labels, so a
+        // mis-wired arm cannot pass by coincidence.
+        assert_eq!(json_type_name(&json!(null)), "null");
+        assert_eq!(json_type_name(&json!(true)), "boolean");
+        assert_eq!(json_type_name(&json!(7)), "integer");
+        assert_eq!(json_type_name(&json!(1.5)), "number");
+        assert_eq!(json_type_name(&json!("s")), "string");
+        assert_eq!(json_type_name(&json!([1])), "array");
+        assert_eq!(json_type_name(&json!({"k": 1})), "object");
+    }
+
+    #[test]
+    fn property_schema_rejects_empty_key() {
+        let schema = json!({"properties": {"a": {"type": "string"}}});
+        assert!(property_schema(&schema, "/").is_none());
+        assert!(property_schema(&schema, "").is_none());
+    }
+
+    #[test]
+    fn validate_args_reports_invalid_tool_schema() {
+        // The schema itself, not the args, is malformed: `type` must be a
+        // string or array of strings/"null", never a bare number.
+        let schema = json!({"type": 123});
+        let err = validate_args("broken", &schema, &json!({})).unwrap_err();
+        assert_eq!(err.tool, "broken");
+        assert_eq!(err.path, "$");
+        assert!(
+            err.message.contains("invalid tool schema"),
+            "{}",
+            err.message
+        );
+        assert!(err.schema_hint.is_none());
+    }
+
+    #[test]
+    fn signature_classifies_required_errors_distinctly_from_type_mismatch() {
+        // Build a fixture where every branch of the class match produces a
+        // distinct, checkable outcome so a mis-wired arm cannot pass by luck.
+        let schema = json!({
+            "type": "object",
+            "properties": { "path": { "type": "string" } },
+            "required": ["path"]
+        });
+        let err = validate_args("read_file", &schema, &json!({})).unwrap_err();
+        assert!(err.message.contains("required"), "{}", err.message);
+        let sig = validation_error_signature("read_file", &err.path, &err.message);
+        assert_eq!(sig, "read_file|$|required");
+
+        let type_sig = validation_error_signature("t", "/x", "not of type \"string\"");
+        assert_eq!(type_sig, "t|/x|type_mismatch");
+
+        let other_sig = validation_error_signature("t", "/x", "totally unrelated failure");
+        assert_eq!(other_sig, "t|/x|other");
+
+        assert_ne!(sig, type_sig);
+        assert_ne!(sig, other_sig);
+        assert_ne!(type_sig, other_sig);
+    }
+
+    #[test]
+    fn validation_budget_default_matches_explicit_default_max() {
+        let mut default_budget = ValidationBudget::default();
+        let mut explicit_budget = ValidationBudget::with_default_max();
+
+        // Both should accept exactly 3 failures and reject the 4th.
+        for _ in 0..3 {
+            assert!(default_budget.record_failure("t").is_ok());
+            assert!(explicit_budget.record_failure("t").is_ok());
+        }
+        assert!(default_budget.record_failure("t").is_err());
+        assert!(explicit_budget.record_failure("t").is_err());
+    }
+
+    #[test]
+    fn reset_turn_clears_counts_and_signatures() {
+        let mut b = ValidationBudget::new(1);
+        assert!(b.record_failure("t").is_ok());
+        assert!(b.record_failure("t").is_err(), "budget should be exhausted");
+
+        b.reset_turn();
+
+        // After reset, the same tool can fail again up to the max.
+        assert!(b.record_failure("t").is_ok());
+
+        // Signature budget is also cleared by reset_turn.
+        let sig = "tool|/x|type_mismatch";
+        assert!(b.record_failure_with_signature("other", Some(sig)).is_ok());
+        b.reset_turn();
+        assert!(b.record_failure_with_signature("other", Some(sig)).is_ok());
+    }
 }

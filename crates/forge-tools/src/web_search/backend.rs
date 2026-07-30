@@ -5,6 +5,90 @@ use thiserror::Error;
 
 use super::mock::MockSearchBackend;
 
+#[cfg(test)]
+mod backend_tests {
+    use super::*;
+
+    /// Restores the process environment on drop, matching the pattern used in
+    /// `builtins.rs` for tests that must touch `std::env`. The variable name is
+    /// unique to this module so it cannot collide with anything else in the
+    /// suite.
+    struct EnvVarGuard {
+        name: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(name: &'static str, value: &str) -> Self {
+            let previous = std::env::var(name).ok();
+            std::env::set_var(name, value);
+            Self { name, previous }
+        }
+
+        fn unset(name: &'static str) -> Self {
+            let previous = std::env::var(name).ok();
+            std::env::remove_var(name);
+            Self { name, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => std::env::set_var(self.name, value),
+                None => std::env::remove_var(self.name),
+            }
+        }
+    }
+
+    #[test]
+    fn from_config_is_none_when_env_var_is_unset() {
+        const VAR: &str = "FORGE_TEST_WEB_SEARCH_ABSENT_KEY";
+        let _guard = EnvVarGuard::unset(VAR);
+        let cfg = WebSearchConfig {
+            api_key_env: Some(VAR.into()),
+            ..Default::default()
+        };
+        assert!(SearchSecrets::from_config(&cfg).api_key.is_none());
+    }
+
+    #[test]
+    fn from_config_is_none_when_env_var_is_blank() {
+        const VAR: &str = "FORGE_TEST_WEB_SEARCH_BLANK_KEY";
+        let _guard = EnvVarGuard::set(VAR, "   ");
+        let cfg = WebSearchConfig {
+            api_key_env: Some(VAR.into()),
+            ..Default::default()
+        };
+        assert!(SearchSecrets::from_config(&cfg).api_key.is_none());
+    }
+
+    #[test]
+    fn from_config_trims_and_resolves_the_configured_env_var() {
+        const VAR: &str = "FORGE_TEST_WEB_SEARCH_REAL_KEY";
+        let _guard = EnvVarGuard::set(VAR, "  sk-test-value  ");
+        let cfg = WebSearchConfig {
+            api_key_env: Some(VAR.into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            SearchSecrets::from_config(&cfg).api_key,
+            Some("sk-test-value".to_string())
+        );
+    }
+
+    #[test]
+    fn from_config_is_none_when_no_env_var_is_configured() {
+        // Mock's `default_api_key_env()` is `None`, so with no explicit
+        // override there is nothing to resolve.
+        let cfg = WebSearchConfig {
+            api_key_env: None,
+            ..Default::default()
+        };
+        assert!(SearchSecrets::from_config(&cfg).api_key.is_none());
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SearchRequest {
     pub query: String,
