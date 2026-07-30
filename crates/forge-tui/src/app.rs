@@ -441,6 +441,21 @@ struct HitRegion {
     z_order: u16,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DoubleClickTarget {
+    FileEntry(PathBuf),
+}
+
+#[derive(Debug, Clone)]
+struct PendingDoubleClick {
+    target: DoubleClickTarget,
+    button: MouseButton,
+    timestamp: Instant,
+    frame_generation: u64,
+}
+
+const DOUBLE_CLICK_THRESHOLD: Duration = Duration::from_millis(400);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TabNavCommand {
     PreviousTab,
@@ -813,6 +828,7 @@ pub struct TuiApp {
     terminal_capture: TerminalCapture,
     hit_regions: Vec<HitRegion>,
     frame_generation: u64,
+    pending_double_click: Option<PendingDoubleClick>,
     run_rx: Option<std::sync::mpsc::Receiver<RunEvent>>,
     run_abort: Option<tokio::task::JoinHandle<()>>,
 }
@@ -905,6 +921,7 @@ impl TuiApp {
             terminal_capture: TerminalCapture::default(),
             hit_regions: Vec::new(),
             frame_generation: 0,
+            pending_double_click: None,
             run_rx: None,
             run_abort: None,
             last_editor_height: 24,
@@ -1087,6 +1104,7 @@ impl TuiApp {
     }
 
     fn note_workspace_changed(&mut self) {
+        self.clear_pending_double_click();
         self.file_explorer.refresh_workspace();
     }
 
@@ -2029,6 +2047,7 @@ impl TuiApp {
     }
 
     fn reconcile_file_operation(&mut self, result: crate::file_ops::FileOperationResult) {
+        self.clear_pending_double_click();
         let root = self.session.workspace_root().to_path_buf();
         match result.kind {
             FileOperationKind::CreateFile | FileOperationKind::CreateDirectory => {
@@ -3937,6 +3956,11 @@ Reply with ONLY the commit message line.\n\n\
     fn invalidate_hit_regions(&mut self) {
         self.frame_generation = self.frame_generation.saturating_add(1);
         self.hit_regions.clear();
+        self.pending_double_click = None;
+    }
+
+    fn clear_pending_double_click(&mut self) {
+        self.pending_double_click = None;
     }
 
     fn register_hit_region(
@@ -6314,6 +6338,84 @@ Reply with ONLY the commit message line.\n\n\
             .map(|region| region.target.clone())
     }
 
+    fn double_click_target_for(target: &HitTarget) -> Option<DoubleClickTarget> {
+        match target {
+            HitTarget::FileEntry(path) => Some(DoubleClickTarget::FileEntry(path.clone())),
+            HitTarget::Pane(_)
+            | HitTarget::DirectoryChevron(_)
+            | HitTarget::ActivitySummary
+            | HitTarget::VisibleControl(_)
+            | HitTarget::Composer
+            | HitTarget::OverlayAction(_) => None,
+        }
+    }
+
+    fn file_entry_kind(&self, path: &Path) -> Option<FileKind> {
+        self.file_explorer
+            .visible_nodes()
+            .iter()
+            .find(|node| node.path == path)
+            .map(|node| node.kind)
+    }
+
+    fn double_click_target_exists(&self, target: &DoubleClickTarget) -> bool {
+        match target {
+            DoubleClickTarget::FileEntry(path) => self.file_entry_kind(path).is_some(),
+        }
+    }
+
+    fn is_qualifying_double_click(
+        &self,
+        target: &DoubleClickTarget,
+        button: MouseButton,
+        now: Instant,
+    ) -> bool {
+        let Some(pending) = self.pending_double_click.as_ref() else {
+            return false;
+        };
+        pending.button == button
+            && pending.target == *target
+            && now.duration_since(pending.timestamp) <= DOUBLE_CLICK_THRESHOLD
+            && pending.frame_generation <= self.frame_generation
+            && self.double_click_target_exists(&pending.target)
+            && self.double_click_target_exists(target)
+    }
+
+    async fn activate_double_click_target(
+        &mut self,
+        target: DoubleClickTarget,
+    ) -> Result<(), TuiError> {
+        match target {
+            DoubleClickTarget::FileEntry(path) => match self.file_entry_kind(&path) {
+                Some(FileKind::Directory) => {
+                    self.execute_semantic_command(SemanticCommand::ToggleDirectory(path))
+                        .await?;
+                }
+                Some(FileKind::File | FileKind::Symlink) => {
+                    self.execute_semantic_command(SemanticCommand::OpenFile(path))
+                        .await?;
+                }
+                Some(FileKind::Unknown) => {}
+                None => {}
+            },
+        }
+        Ok(())
+    }
+
+    fn remember_double_click_candidate(
+        &mut self,
+        target: DoubleClickTarget,
+        button: MouseButton,
+        timestamp: Instant,
+    ) {
+        self.pending_double_click = Some(PendingDoubleClick {
+            target,
+            button,
+            timestamp,
+            frame_generation: self.frame_generation,
+        });
+    }
+
     fn pane_target_at(&self, x: u16, y: u16) -> Option<FocusBlock> {
         match self.resolve_hit_target(x, y) {
             Some(HitTarget::Pane(block)) => Some(block),
@@ -6397,17 +6499,42 @@ Reply with ONLY the commit message line.\n\n\
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 let Some(target) = self.resolve_hit_target(mouse.column, mouse.row) else {
+                    self.clear_pending_double_click();
                     return Ok(());
                 };
                 if (self.overlay.is_some() || self.explorer_dialog.is_some())
                     && !matches!(target, HitTarget::OverlayAction(_))
                 {
+                    self.clear_pending_double_click();
                     return Ok(());
                 }
+                let now = Instant::now();
+                let double_click_target = Self::double_click_target_for(&target);
+                if let Some(double_click_target) = double_click_target.clone() {
+                    if self.is_qualifying_double_click(&double_click_target, MouseButton::Left, now)
+                    {
+                        self.clear_pending_double_click();
+                        self.activate_double_click_target(double_click_target)
+                            .await?;
+                        self.invalidate_hit_regions();
+                        return Ok(());
+                    }
+                } else {
+                    self.clear_pending_double_click();
+                }
                 self.activate_hit_target(target).await?;
-                self.invalidate_hit_regions();
+                if let Some(double_click_target) = double_click_target {
+                    self.remember_double_click_candidate(
+                        double_click_target,
+                        MouseButton::Left,
+                        now,
+                    );
+                } else {
+                    self.invalidate_hit_regions();
+                }
             }
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                self.clear_pending_double_click();
                 if self.overlay.is_some() || self.explorer_dialog.is_some() {
                     return Ok(());
                 }
@@ -6421,7 +6548,9 @@ Reply with ONLY the commit message line.\n\n\
                     | None => {}
                 }
             }
-            _ => {}
+            _ => {
+                self.clear_pending_double_click();
+            }
         }
         Ok(())
     }
@@ -7808,6 +7937,335 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(app.focus.block, FocusBlock::Composer);
+    }
+
+    #[tokio::test]
+    async fn mouse_double_click_same_file_opens_it_like_enter() {
+        let (dir, mut app) = focus_test_app().await;
+        let file = dir.path().join("main.rs");
+        fs::write(&file, "fn main() {}\n").unwrap();
+        app.file_explorer.refresh_workspace();
+        app.files_visible = true;
+        draw_app(&mut app, 140, 30);
+
+        let canonical = file.canonicalize().unwrap();
+        let (x, y) = hit_point_for_path(
+            &app,
+            |target, path| matches!(target, HitTarget::FileEntry(p) if p == path),
+            &canonical,
+        );
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), x, y))
+            .await
+            .unwrap();
+        assert_eq!(app.workspace_mode, WorkspaceMode::Chat);
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), x, y))
+            .await
+            .unwrap();
+
+        assert_eq!(app.workspace_mode, WorkspaceMode::Editor);
+        assert_eq!(app.source_viewer.path.as_deref(), Some(canonical.as_path()));
+
+        let (enter_dir, mut enter_app) = focus_test_app().await;
+        let enter_file = enter_dir.path().join("main.rs");
+        fs::write(&enter_file, "fn main() {}\n").unwrap();
+        enter_app.file_explorer.refresh_workspace();
+        enter_app.files_visible = true;
+        enter_app.file_explorer.selected_path = Some(enter_file.canonicalize().unwrap());
+        assert_eq!(
+            enter_app.semantic_command_for_file_key(press(KeyCode::Enter, KeyModifiers::NONE)),
+            Some(SemanticCommand::OpenSelectedEntry)
+        );
+        enter_app
+            .execute_semantic_command(SemanticCommand::OpenSelectedEntry)
+            .await
+            .unwrap();
+        assert_eq!(enter_app.workspace_mode, app.workspace_mode);
+        assert!(enter_app.source_viewer.path.is_some());
+    }
+
+    #[tokio::test]
+    async fn mouse_double_click_slow_or_different_rows_only_selects() {
+        let (dir, mut app) = focus_test_app().await;
+        let first = dir.path().join("first.rs");
+        let second = dir.path().join("second.rs");
+        fs::write(&first, "fn first() {}\n").unwrap();
+        fs::write(&second, "fn second() {}\n").unwrap();
+        app.file_explorer.refresh_workspace();
+        app.files_visible = true;
+        draw_app(&mut app, 140, 30);
+
+        let first = first.canonicalize().unwrap();
+        let second = second.canonicalize().unwrap();
+        let first_point = hit_point_for_path(
+            &app,
+            |target, path| matches!(target, HitTarget::FileEntry(p) if p == path),
+            &first,
+        );
+        let second_point = hit_point_for_path(
+            &app,
+            |target, path| matches!(target, HitTarget::FileEntry(p) if p == path),
+            &second,
+        );
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            first_point.0,
+            first_point.1,
+        ))
+        .await
+        .unwrap();
+        app.pending_double_click.as_mut().unwrap().timestamp =
+            Instant::now() - DOUBLE_CLICK_THRESHOLD - Duration::from_millis(1);
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            first_point.0,
+            first_point.1,
+        ))
+        .await
+        .unwrap();
+        assert_eq!(app.workspace_mode, WorkspaceMode::Chat);
+        assert_eq!(
+            app.file_explorer.selected_path.as_deref(),
+            Some(first.as_path())
+        );
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            second_point.0,
+            second_point.1,
+        ))
+        .await
+        .unwrap();
+        assert_eq!(app.workspace_mode, WorkspaceMode::Chat);
+        assert_eq!(
+            app.file_explorer.selected_path.as_deref(),
+            Some(second.as_path())
+        );
+    }
+
+    #[tokio::test]
+    async fn mouse_double_click_cancels_on_scroll_resize_list_or_modal_change() {
+        let (dir, mut app) = focus_test_app().await;
+        let file = dir.path().join("main.rs");
+        fs::write(&file, "fn main() {}\n").unwrap();
+        app.file_explorer.refresh_workspace();
+        app.files_visible = true;
+        draw_app(&mut app, 140, 30);
+
+        let file = file.canonicalize().unwrap();
+        let file_point = hit_point_for_path(
+            &app,
+            |target, path| matches!(target, HitTarget::FileEntry(p) if p == path),
+            &file,
+        );
+        let workspace_point = hit_point(&app, |target| {
+            matches!(target, HitTarget::Pane(FocusBlock::Workspace))
+        });
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            file_point.0,
+            file_point.1,
+        ))
+        .await
+        .unwrap();
+        app.handle_mouse(mouse(
+            MouseEventKind::ScrollUp,
+            workspace_point.0,
+            workspace_point.1,
+        ))
+        .await
+        .unwrap();
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            file_point.0,
+            file_point.1,
+        ))
+        .await
+        .unwrap();
+        assert_eq!(app.workspace_mode, WorkspaceMode::Chat);
+        app.clear_pending_double_click();
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            file_point.0,
+            file_point.1,
+        ))
+        .await
+        .unwrap();
+        app.invalidate_hit_regions();
+        draw_app(&mut app, 140, 30);
+        let file_point = hit_point_for_path(
+            &app,
+            |target, path| matches!(target, HitTarget::FileEntry(p) if p == path),
+            &file,
+        );
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            file_point.0,
+            file_point.1,
+        ))
+        .await
+        .unwrap();
+        assert_eq!(app.workspace_mode, WorkspaceMode::Chat);
+        app.clear_pending_double_click();
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            file_point.0,
+            file_point.1,
+        ))
+        .await
+        .unwrap();
+        app.note_workspace_changed();
+        draw_app(&mut app, 140, 30);
+        let file_point = hit_point_for_path(
+            &app,
+            |target, path| matches!(target, HitTarget::FileEntry(p) if p == path),
+            &file,
+        );
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            file_point.0,
+            file_point.1,
+        ))
+        .await
+        .unwrap();
+        assert_eq!(app.workspace_mode, WorkspaceMode::Chat);
+        app.clear_pending_double_click();
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            file_point.0,
+            file_point.1,
+        ))
+        .await
+        .unwrap();
+        app.overlay = Some(Overlay::welcome());
+        app.invalidate_hit_regions();
+        app.overlay = None;
+        draw_app(&mut app, 140, 30);
+        let file_point = hit_point_for_path(
+            &app,
+            |target, path| matches!(target, HitTarget::FileEntry(p) if p == path),
+            &file,
+        );
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            file_point.0,
+            file_point.1,
+        ))
+        .await
+        .unwrap();
+        assert_eq!(app.workspace_mode, WorkspaceMode::Chat);
+    }
+
+    #[tokio::test]
+    async fn mouse_double_click_uses_semantic_identity_for_truncated_names() {
+        let (dir, mut app) = focus_test_app().await;
+        let long_name = format!("{}-forge-mouse.rs", "very-long-name".repeat(8));
+        let file = dir.path().join(long_name);
+        fs::write(&file, "fn main() {}\n").unwrap();
+        app.file_explorer.refresh_workspace();
+        app.files_visible = true;
+        draw_app(&mut app, 120, 30);
+
+        let file = file.canonicalize().unwrap();
+        let (x, y) = hit_point_for_path(
+            &app,
+            |target, path| matches!(target, HitTarget::FileEntry(p) if p == path),
+            &file,
+        );
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), x, y))
+            .await
+            .unwrap();
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), x, y))
+            .await
+            .unwrap();
+
+        assert_eq!(app.source_viewer.path.as_deref(), Some(file.as_path()));
+    }
+
+    #[tokio::test]
+    async fn mouse_double_click_folder_row_toggles_once() {
+        let (dir, mut app) = focus_test_app().await;
+        fs::create_dir(dir.path().join("src")).unwrap();
+        fs::write(dir.path().join("src/lib.rs"), "pub fn demo() {}\n").unwrap();
+        app.file_explorer.refresh_workspace();
+        app.files_visible = true;
+        draw_app(&mut app, 140, 30);
+
+        let src = dir.path().join("src").canonicalize().unwrap();
+        let (x, y) = hit_point_for_path(
+            &app,
+            |target, path| matches!(target, HitTarget::FileEntry(p) if p == path),
+            &src,
+        );
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), x, y))
+            .await
+            .unwrap();
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), x, y))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            app.file_explorer.selected_path.as_deref(),
+            Some(src.as_path())
+        );
+        assert!(app
+            .file_explorer
+            .visible_nodes()
+            .iter()
+            .any(|node| node.display_name == "lib.rs"));
+    }
+
+    #[tokio::test]
+    async fn mouse_double_click_controls_do_not_gain_row_activation() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.open_bottom_panel(Some(BottomPanelTab::Run));
+        draw_app(&mut app, 120, 40);
+        let (x, y) = hit_point(&app, |target| {
+            matches!(
+                target,
+                HitTarget::VisibleControl(SemanticCommand::OpenBottomPanel(
+                    BottomPanelTab::Activity
+                ))
+            )
+        });
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), x, y))
+            .await
+            .unwrap();
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), x, y))
+            .await
+            .unwrap();
+
+        assert_eq!(app.bottom_panel.active, BottomPanelTab::Activity);
+        assert!(app.pending_double_click.is_none());
+    }
+
+    #[tokio::test]
+    async fn mouse_double_click_cannot_bypass_delete_confirmation() {
+        let (dir, mut app) = focus_test_app().await;
+        let file = dir.path().join("delete-me.rs");
+        fs::write(&file, "fn main() {}\n").unwrap();
+        app.file_explorer.refresh_workspace();
+        app.files_visible = true;
+        app.file_explorer.selected_path = Some(file.canonicalize().unwrap());
+        app.open_explorer_delete_dialog();
+        draw_app(&mut app, 120, 30);
+
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 10, 10))
+            .await
+            .unwrap();
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 10, 10))
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            app.explorer_dialog,
+            Some(ExplorerDialog::ConfirmDelete { .. })
+        ));
+        assert!(file.exists());
     }
 
     #[tokio::test]
