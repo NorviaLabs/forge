@@ -16,6 +16,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum JournalError {
     #[error("sql error: {0}")]
     Sql(#[from] sqlx::Error),
