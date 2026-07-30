@@ -8,8 +8,9 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant, SystemTime};
 
 use crossterm::event::{
-    self, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers,
-    KeyboardEnhancementFlags, MouseEventKind, PushKeyboardEnhancementFlags,
+    self, EnableBracketedPaste, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+    KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind,
+    PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
@@ -38,7 +39,7 @@ use crate::conversation::{
 };
 use crate::editor::EditorError;
 use crate::effort::ReasoningEffort;
-use crate::file_explorer::{FileExplorer, FileExplorerWidget};
+use crate::file_explorer::{FileExplorer, FileExplorerWidget, FileKind};
 use crate::file_ops::{
     DeleteMode, EntryKind, FileOperationError, FileOperationKind, WorkspaceFileOps,
 };
@@ -362,6 +363,7 @@ enum SemanticCommand {
     ToggleFiles,
     CloseOverlay,
     FocusComposer,
+    FocusPane(FocusBlock),
     SubmitMessage,
     InsertComposerNewline,
     OpenSlashCommands,
@@ -418,6 +420,25 @@ enum SemanticCommand {
     ToggleRunExecutionMode,
     EditRunCommand,
     EditRunDirectory,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum HitTarget {
+    Pane(FocusBlock),
+    FileEntry(PathBuf),
+    DirectoryChevron(PathBuf),
+    ActivitySummary,
+    VisibleControl(SemanticCommand),
+    Composer,
+    OverlayAction(OverlayAction),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HitRegion {
+    area: ratatui::layout::Rect,
+    target: HitTarget,
+    generation: u64,
+    z_order: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -515,6 +536,7 @@ pub struct TuiRuntimeConfig {
     pub startup_notices: Vec<String>,
     pub validation_command: Option<CommandConfig>,
     pub file_icons: FileIconMode,
+    pub mouse_capture: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -789,6 +811,8 @@ pub struct TuiApp {
     footer_limits_cache: Option<FooterLimitsCache>,
     footer_limits_rx: Option<std::sync::mpsc::Receiver<(String, FooterLimits)>>,
     terminal_capture: TerminalCapture,
+    hit_regions: Vec<HitRegion>,
+    frame_generation: u64,
     run_rx: Option<std::sync::mpsc::Receiver<RunEvent>>,
     run_abort: Option<tokio::task::JoinHandle<()>>,
 }
@@ -879,6 +903,8 @@ impl TuiApp {
             footer_limits_cache: None,
             footer_limits_rx: None,
             terminal_capture: TerminalCapture::default(),
+            hit_regions: Vec::new(),
+            frame_generation: 0,
             run_rx: None,
             run_abort: None,
             last_editor_height: 24,
@@ -3262,7 +3288,7 @@ impl TuiApp {
     ) -> Result<(), Box<dyn std::error::Error>> {
         // Best effort: terminal restoration must not fail the UI in test or headless
         // contexts where a real terminal may not be attached.
-        let _ = crate::terminal::reinit_terminal();
+        let _ = crate::terminal::reinit_terminal(self.runtime.mouse_capture);
         let _ = crate::terminal::clear_terminal();
         if let Some(term) = terminal {
             term.autoresize()?;
@@ -3900,6 +3926,206 @@ Reply with ONLY the commit message line.\n\n\
         cached_limits.unwrap_or_default()
     }
 
+    fn begin_hit_frame(&mut self) {
+        self.frame_generation = self.frame_generation.saturating_add(1);
+        if self.frame_generation == 0 {
+            self.frame_generation = 1;
+        }
+        self.hit_regions.clear();
+    }
+
+    fn invalidate_hit_regions(&mut self) {
+        self.frame_generation = self.frame_generation.saturating_add(1);
+        self.hit_regions.clear();
+    }
+
+    fn register_hit_region(
+        &mut self,
+        area: ratatui::layout::Rect,
+        target: HitTarget,
+        z_order: u16,
+    ) {
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        self.hit_regions.push(HitRegion {
+            area,
+            target,
+            generation: self.frame_generation,
+            z_order,
+        });
+    }
+
+    fn register_pane_hit_regions(&mut self, regions: &crate::layout::LayoutRegions) {
+        if let Some(area) = regions.files {
+            self.register_hit_region(area, HitTarget::Pane(FocusBlock::Files), 1);
+        }
+        self.register_hit_region(regions.chat, HitTarget::Pane(FocusBlock::Workspace), 1);
+        if let Some(area) = regions.sidebar {
+            self.register_hit_region(area, HitTarget::Pane(FocusBlock::Inspector), 1);
+        }
+        if self.bottom_panel.open && regions.bottom_panel.height > 0 {
+            self.register_hit_region(
+                regions.bottom_panel,
+                HitTarget::Pane(FocusBlock::BottomPanel),
+                1,
+            );
+            self.register_bottom_panel_tab_regions(regions.bottom_panel);
+        }
+        self.register_hit_region(regions.input, HitTarget::Composer, 5);
+    }
+
+    fn register_file_hit_regions(&mut self, area: ratatui::layout::Rect) {
+        let inner = ratatui::widgets::Block::default()
+            .borders(ratatui::widgets::Borders::ALL)
+            .inner(area);
+        let height = inner.height.saturating_sub(1) as usize;
+        let error_shown = self.file_explorer.git_status.error.is_some();
+        let list_height = height.saturating_sub(error_shown as usize);
+        let y_offset = error_shown as u16;
+        let visible = self.file_explorer.visible_nodes();
+        for (row, node) in visible
+            .iter()
+            .skip(self.file_explorer.scroll)
+            .take(list_height)
+            .enumerate()
+        {
+            let y = inner.y.saturating_add(y_offset).saturating_add(row as u16);
+            let row_area = ratatui::layout::Rect::new(inner.x, y, inner.width, 1);
+            self.register_hit_region(row_area, HitTarget::FileEntry(node.path.clone()), 20);
+            if node.kind == FileKind::Directory {
+                let chevron_x = inner
+                    .x
+                    .saturating_add((node.depth as u16).saturating_mul(2));
+                if chevron_x < inner.x.saturating_add(inner.width) {
+                    self.register_hit_region(
+                        ratatui::layout::Rect::new(chevron_x, y, 1, 1),
+                        HitTarget::DirectoryChevron(node.path.clone()),
+                        30,
+                    );
+                }
+            }
+        }
+    }
+
+    fn register_bottom_panel_tab_regions(&mut self, area: ratatui::layout::Rect) {
+        if area.height == 0 || area.width == 0 {
+            return;
+        }
+        let mut x = area.x;
+        let y = area.y;
+        for (idx, tab) in BottomPanelTab::ALL.into_iter().enumerate() {
+            let width = format!(" {} {} ", idx + 1, tab.label()).chars().count() as u16;
+            if x >= area.x.saturating_add(area.width) {
+                break;
+            }
+            let clamped_width = width.min(area.x.saturating_add(area.width).saturating_sub(x));
+            self.register_hit_region(
+                ratatui::layout::Rect::new(x, y, clamped_width, 1),
+                HitTarget::VisibleControl(SemanticCommand::OpenBottomPanel(tab)),
+                25,
+            );
+            x = x.saturating_add(width).saturating_add(1);
+        }
+    }
+
+    fn register_activity_summary_region(
+        &mut self,
+        area: ratatui::layout::Rect,
+        lines: &[Line<'static>],
+        tail_lines: &[Line<'static>],
+    ) {
+        let Some(summary) = self.activity_summary() else {
+            return;
+        };
+        if summary.action.is_none() {
+            return;
+        }
+        let total = lines.len().saturating_add(tail_lines.len());
+        let max_scroll = total.saturating_sub(area.height as usize);
+        let scroll = if self.chat_follow {
+            max_scroll
+        } else {
+            max_scroll.saturating_sub((self.chat_scroll as usize).min(max_scroll))
+        };
+        let end = scroll.saturating_add(area.height as usize).min(total);
+        for index in scroll..end {
+            let line = if index < lines.len() {
+                &lines[index]
+            } else {
+                &tail_lines[index - lines.len()]
+            };
+            let text = line
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>();
+            if text.contains(&summary.label) {
+                let y = area.y.saturating_add(index.saturating_sub(scroll) as u16);
+                self.register_hit_region(
+                    ratatui::layout::Rect::new(area.x, y, area.width, 1),
+                    HitTarget::ActivitySummary,
+                    25,
+                );
+                return;
+            }
+        }
+    }
+
+    fn register_overlay_hit_regions(&mut self, area: ratatui::layout::Rect) {
+        if self.explorer_dialog.is_some() {
+            self.register_hit_region(
+                area,
+                HitTarget::VisibleControl(SemanticCommand::CloseOverlay),
+                900,
+            );
+            return;
+        }
+        let hitl = self.overlay.as_ref().and_then(|overlay| {
+            if let Overlay::Hitl {
+                approval, expanded, ..
+            } = overlay
+            {
+                Some((approval.remember_eligible, *expanded))
+            } else {
+                None
+            }
+        });
+        if self.overlay.is_none() {
+            return;
+        }
+        self.register_hit_region(
+            area,
+            HitTarget::VisibleControl(SemanticCommand::CloseOverlay),
+            900,
+        );
+        if let Some((remember_eligible, expanded)) = hitl {
+            let overlay_area =
+                centered_capped_rect_for_mouse(area, 78, if expanded { 30 } else { 22 });
+            let inner = ratatui::widgets::Block::default()
+                .borders(ratatui::widgets::Borders::ALL)
+                .inner(overlay_area);
+            let action_y = inner.y.saturating_add(10);
+            self.register_hit_region(
+                ratatui::layout::Rect::new(inner.x, action_y, 12, 1),
+                HitTarget::OverlayAction(OverlayAction::HitlApprove),
+                1000,
+            );
+            self.register_hit_region(
+                ratatui::layout::Rect::new(inner.x.saturating_add(14), action_y, 8, 1),
+                HitTarget::OverlayAction(OverlayAction::HitlDeny),
+                1000,
+            );
+            if remember_eligible {
+                self.register_hit_region(
+                    ratatui::layout::Rect::new(inner.x, inner.y.saturating_add(12), inner.width, 1),
+                    HitTarget::OverlayAction(OverlayAction::HitlApproveSession),
+                    1000,
+                );
+            }
+        }
+    }
+
     pub fn draw(&mut self, frame: &mut ratatui::Frame) {
         let area = frame.area();
         if is_too_small(area) {
@@ -3908,12 +4134,14 @@ Reply with ONLY the commit message line.\n\n\
             self.file_explorer.focused = false;
             self.bottom_panel.focused = false;
             self.source_viewer.focused = false;
+            self.invalidate_hit_regions();
             frame.render_widget(
                 Paragraph::new("Terminal too small — resize to at least 40x18"),
                 area,
             );
             return;
         }
+        self.begin_hit_frame();
         let fb_h = if self.feedback.is_empty() { 0 } else { 1 };
         let input_h = (self.input.visual_lines() + 2).clamp(3, 8);
         let slash_mode = self.overlay.is_none() && self.input.text.starts_with('/');
@@ -3942,6 +4170,7 @@ Reply with ONLY the commit message line.\n\n\
             self.focus.mode = FocusMode::Navigation;
         }
         self.normalize_focus();
+        self.register_pane_hit_regions(&regions);
         let connected = self.is_provider_connected();
         let status = self.refresh_status_model_with_connected(connected);
         frame.render_widget(StatusBar { model: &status }, regions.status);
@@ -3953,6 +4182,7 @@ Reply with ONLY the commit message line.\n\n\
                 },
                 files,
             );
+            self.register_file_hit_regions(files);
         }
         self.file_explorer.git_status.poll();
 
@@ -4087,24 +4317,31 @@ Reply with ONLY the commit message line.\n\n\
             .conversation_cache
             .as_ref()
             .expect("conversation cache populated");
+        let cached_lines = cached.lines.clone();
         match self.workspace_navigation.current.clone() {
             WorkspaceView::Conversation => {
+                let conversation_area = ratatui::layout::Rect {
+                    x: regions.chat.x.saturating_add(2.min(regions.chat.width)),
+                    y: regions.chat.y.saturating_add(1.min(regions.chat.height)),
+                    width: regions.chat.width.saturating_sub(2.min(regions.chat.width)),
+                    height: regions
+                        .chat
+                        .height
+                        .saturating_sub(1.min(regions.chat.height)),
+                };
                 frame.render_widget(
                     crate::conversation::ConversationLinesWidget {
-                        lines: &cached.lines,
+                        lines: &cached_lines,
                         tail_lines: &live_lines,
                         scroll: self.chat_scroll,
                         follow: self.chat_follow,
                     },
-                    ratatui::layout::Rect {
-                        x: regions.chat.x.saturating_add(2.min(regions.chat.width)),
-                        y: regions.chat.y.saturating_add(1.min(regions.chat.height)),
-                        width: regions.chat.width.saturating_sub(2.min(regions.chat.width)),
-                        height: regions
-                            .chat
-                            .height
-                            .saturating_sub(1.min(regions.chat.height)),
-                    },
+                    conversation_area,
+                );
+                self.register_activity_summary_region(
+                    conversation_area,
+                    &cached_lines,
+                    &live_lines,
                 );
             }
             WorkspaceView::File(_) => {
@@ -4341,11 +4578,13 @@ Reply with ONLY the commit message line.\n\n\
 
         if let Some(ref dialog) = self.explorer_dialog {
             self.render_explorer_dialog(dialog, area, frame.buffer_mut());
+            self.register_overlay_hit_regions(area);
         } else if let Some(ref ov) = self.overlay {
             match ov {
                 Overlay::Help => self.render_help_overlay(area, frame.buffer_mut()),
                 _ => frame.render_widget(OverlayWidget { overlay: ov }, area),
             }
+            self.register_overlay_hit_regions(area);
         }
     }
 
@@ -5359,6 +5598,7 @@ Reply with ONLY the commit message line.\n\n\
                 self.explorer_dialog = None;
             }
             SemanticCommand::FocusComposer => self.enter_chat_composer(),
+            SemanticCommand::FocusPane(block) => self.focus_block(block),
             SemanticCommand::SubmitMessage => self.submit_composer_message().await?,
             SemanticCommand::InsertComposerNewline => self.input.insert_newline(),
             SemanticCommand::OpenSlashCommands => {
@@ -5852,6 +6092,108 @@ Reply with ONLY the commit message line.\n\n\
         Ok(consumed)
     }
 
+    async fn apply_overlay_action(&mut self, action: OverlayAction) -> Result<(), TuiError> {
+        match action {
+            OverlayAction::None => {}
+            OverlayAction::Close => self.overlay = None,
+            OverlayAction::BeginOnboarding => {
+                self.open_connect_picker();
+                self.set_feedback(FeedbackSeverity::Info, "Step 1 of 2 · choose a provider");
+            }
+            OverlayAction::HitlApprove => {
+                self.resolve_hitl_overlay(HitlDecision::Approve, false)
+                    .await?;
+            }
+            OverlayAction::HitlApproveSession => {
+                self.resolve_hitl_overlay(HitlDecision::Approve, true)
+                    .await?;
+            }
+            OverlayAction::HitlDeny => {
+                self.resolve_hitl_overlay(HitlDecision::Deny, false).await?;
+            }
+            OverlayAction::ContinueTurns => {
+                self.overlay = None;
+                self.pending_turn_continue = true;
+                self.busy = true;
+                self.push_toast("continuing");
+            }
+            OverlayAction::StopTurns => {
+                self.overlay = None;
+                self.status_message = "agent stopped at turn limit".into();
+                self.set_feedback(FeedbackSeverity::Info, "stopped at turn limit");
+            }
+            OverlayAction::RunCommand(cmd) => {
+                self.overlay = None;
+                self.execute_semantic_command(SemanticCommand::DispatchSlash {
+                    origin: SlashCommandOrigin::GlobalPalette,
+                    line: cmd,
+                })
+                .await?;
+            }
+            OverlayAction::InsertInput(s) => {
+                self.overlay = None;
+                self.input.text = s;
+                self.input.cursor = self.input.text.len();
+            }
+            OverlayAction::SelectModel { provider, model } => {
+                self.apply_model_selection(&provider, &model);
+                self.open_effort_picker_for_model(&model);
+            }
+            OverlayAction::SelectEffort(level) => {
+                self.overlay = None;
+                self.reasoning_effort = level;
+                self.persist_selection();
+                self.set_feedback(FeedbackSeverity::Ok, format!("reasoning effort: {level}"));
+            }
+            OverlayAction::ConnectSubmitKey {
+                profile_id,
+                api_key,
+            } => {
+                // Keep overlay until connect succeeds so a bad key does not wipe paste.
+                let key = api_key.trim().to_string();
+                self.try_connect_api_key(&profile_id, Some(key));
+            }
+            OverlayAction::ConnectCompleteOauth { profile_id } => {
+                // Enter: try one poll now; keep overlay if still pending.
+                if self.oauth_pending.is_some() {
+                    self.oauth_last_poll = None;
+                    self.poll_oauth_tick();
+                    if self.oauth_pending.is_some() {
+                        self.status_message =
+                            format!("Still waiting for login… (code for {profile_id})");
+                    }
+                } else if std::env::var("FORGE_CONNECT_OAUTH_FIXTURE").is_ok() {
+                    self.overlay = None;
+                    self.finish_connect(&profile_id, None, true);
+                } else {
+                    self.begin_oauth_flow(&profile_id);
+                }
+            }
+            OverlayAction::ConnectUseEnv { profile_id } => {
+                self.try_connect_api_key(&profile_id, None);
+            }
+            OverlayAction::ConnectPickProfile { profile_id } => {
+                self.overlay = None;
+                self.busy_phase = BusyPhase::Connect;
+                self.push_activity(
+                    ActivityKind::Connect,
+                    FeedbackSeverity::Info,
+                    format!("connect {profile_id}"),
+                );
+                self.finish_connect(&profile_id, None, false);
+                self.busy_phase = BusyPhase::Idle;
+            }
+            OverlayAction::FilePick { path, is_dir } => {
+                if is_dir {
+                    self.open_file_explorer(Some(&path), None);
+                } else {
+                    self.open_file_viewer(&path);
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub async fn handle_key(&mut self, key: event::KeyEvent) -> Result<(), TuiError> {
         // Allow arrow-key auto-repeat for overlays (and other selection UIs).
         if key.kind != KeyEventKind::Press {
@@ -5898,106 +6240,7 @@ Reply with ONLY the commit message line.\n\n\
         if let Some(ref mut ov) = self.overlay {
             let ok = map_key(key);
             let action = handle_overlay_key(ov, ok);
-            match action {
-                OverlayAction::None => {}
-                OverlayAction::Close => self.overlay = None,
-                OverlayAction::BeginOnboarding => {
-                    self.open_connect_picker();
-                    self.set_feedback(FeedbackSeverity::Info, "Step 1 of 2 · choose a provider");
-                }
-                OverlayAction::HitlApprove => {
-                    self.resolve_hitl_overlay(HitlDecision::Approve, false)
-                        .await?;
-                }
-                OverlayAction::HitlApproveSession => {
-                    self.resolve_hitl_overlay(HitlDecision::Approve, true)
-                        .await?;
-                }
-                OverlayAction::HitlDeny => {
-                    self.resolve_hitl_overlay(HitlDecision::Deny, false).await?;
-                }
-                OverlayAction::ContinueTurns => {
-                    self.overlay = None;
-                    self.pending_turn_continue = true;
-                    self.busy = true;
-                    self.push_toast("continuing");
-                }
-                OverlayAction::StopTurns => {
-                    self.overlay = None;
-                    self.status_message = "agent stopped at turn limit".into();
-                    self.set_feedback(FeedbackSeverity::Info, "stopped at turn limit");
-                }
-                OverlayAction::RunCommand(cmd) => {
-                    self.overlay = None;
-                    self.execute_semantic_command(SemanticCommand::DispatchSlash {
-                        origin: SlashCommandOrigin::GlobalPalette,
-                        line: cmd,
-                    })
-                    .await?;
-                }
-                OverlayAction::InsertInput(s) => {
-                    self.overlay = None;
-                    self.input.text = s;
-                    self.input.cursor = self.input.text.len();
-                }
-                OverlayAction::SelectModel { provider, model } => {
-                    self.apply_model_selection(&provider, &model);
-                    self.open_effort_picker_for_model(&model);
-                }
-                OverlayAction::SelectEffort(level) => {
-                    self.overlay = None;
-                    self.reasoning_effort = level;
-                    self.persist_selection();
-                    self.set_feedback(FeedbackSeverity::Ok, format!("reasoning effort: {level}"));
-                }
-                OverlayAction::ConnectSubmitKey {
-                    profile_id,
-                    api_key,
-                } => {
-                    // Keep overlay until connect succeeds so a bad key does not wipe paste.
-                    let key = api_key.trim().to_string();
-                    self.try_connect_api_key(&profile_id, Some(key));
-                }
-                OverlayAction::ConnectCompleteOauth { profile_id } => {
-                    // Enter: try one poll now; keep overlay if still pending
-                    if self.oauth_pending.is_some() {
-                        self.oauth_last_poll = None;
-                        self.poll_oauth_tick();
-                        if self.oauth_pending.is_some() {
-                            self.status_message =
-                                format!("Still waiting for login… (code for {profile_id})");
-                        }
-                    } else if std::env::var("FORGE_CONNECT_OAUTH_FIXTURE").is_ok() {
-                        self.overlay = None;
-                        self.finish_connect(&profile_id, None, true);
-                    } else {
-                        // Restart flow
-                        self.begin_oauth_flow(&profile_id);
-                    }
-                }
-                OverlayAction::ConnectUseEnv { profile_id } => {
-                    self.try_connect_api_key(&profile_id, None);
-                }
-                OverlayAction::ConnectPickProfile { profile_id } => {
-                    self.overlay = None;
-                    self.busy_phase = BusyPhase::Connect;
-                    self.push_activity(
-                        ActivityKind::Connect,
-                        FeedbackSeverity::Info,
-                        format!("connect {profile_id}"),
-                    );
-                    // Continue into oauth / api-key flow for the chosen profile
-                    self.finish_connect(&profile_id, None, false);
-                    self.busy_phase = BusyPhase::Idle;
-                }
-                OverlayAction::FilePick { path, is_dir } => {
-                    if is_dir {
-                        self.open_file_explorer(Some(&path), None);
-                    } else {
-                        self.open_file_viewer(&path);
-                    }
-                }
-            }
+            self.apply_overlay_action(action).await?;
             return Ok(());
         }
 
@@ -6062,12 +6305,125 @@ Reply with ONLY the commit message line.\n\n\
         }
     }
 
-    pub fn handle_mouse(&mut self, kind: MouseEventKind) {
-        match kind {
-            MouseEventKind::ScrollUp => self.scroll_conversation_up(3),
-            MouseEventKind::ScrollDown => self.scroll_conversation_down(3),
+    fn resolve_hit_target(&self, x: u16, y: u16) -> Option<HitTarget> {
+        self.hit_regions
+            .iter()
+            .filter(|region| region.generation == self.frame_generation)
+            .filter(|region| rect_contains(region.area, x, y))
+            .max_by_key(|region| region.z_order)
+            .map(|region| region.target.clone())
+    }
+
+    fn pane_target_at(&self, x: u16, y: u16) -> Option<FocusBlock> {
+        match self.resolve_hit_target(x, y) {
+            Some(HitTarget::Pane(block)) => Some(block),
+            Some(HitTarget::FileEntry(_)) | Some(HitTarget::DirectoryChevron(_)) => {
+                Some(FocusBlock::Files)
+            }
+            Some(HitTarget::Composer) => Some(FocusBlock::Composer),
+            Some(HitTarget::ActivitySummary) => Some(FocusBlock::Workspace),
+            Some(HitTarget::VisibleControl(_)) | Some(HitTarget::OverlayAction(_)) => None,
+            None => None,
+        }
+    }
+
+    fn scroll_files(&mut self, up: bool, amount: usize) {
+        let visible_len = self.file_explorer.visible_nodes().len();
+        if up {
+            self.file_explorer.scroll = self.file_explorer.scroll.saturating_sub(amount);
+        } else {
+            self.file_explorer.scroll = self
+                .file_explorer
+                .scroll
+                .saturating_add(amount)
+                .min(visible_len.saturating_sub(1));
+        }
+    }
+
+    fn scroll_workspace_under_pointer(&mut self, up: bool) {
+        match self.workspace_navigation.current {
+            WorkspaceView::Conversation => {
+                if up {
+                    self.scroll_conversation_up(3);
+                } else {
+                    self.scroll_conversation_down(3);
+                }
+            }
+            WorkspaceView::File(_) => {
+                let height = self.last_editor_height.saturating_sub(2) as usize;
+                let delta = if up { -3 } else { 3 };
+                self.source_viewer.move_cursor_vertical(delta, height);
+            }
+            WorkspaceView::Diff(_) | WorkspaceView::Run(_) => {}
+        }
+    }
+
+    async fn activate_hit_target(&mut self, target: HitTarget) -> Result<(), TuiError> {
+        match target {
+            HitTarget::Pane(block) => {
+                self.execute_semantic_command(SemanticCommand::FocusPane(block))
+                    .await?;
+            }
+            HitTarget::FileEntry(path) => {
+                self.execute_semantic_command(SemanticCommand::SelectEntry(path))
+                    .await?;
+            }
+            HitTarget::DirectoryChevron(path) => {
+                self.execute_semantic_command(SemanticCommand::ToggleDirectory(path))
+                    .await?;
+            }
+            HitTarget::ActivitySummary => {
+                self.execute_semantic_command(SemanticCommand::ActivateActivitySummary)
+                    .await?;
+            }
+            HitTarget::VisibleControl(command) => {
+                self.execute_semantic_command(command).await?;
+            }
+            HitTarget::Composer => {
+                self.execute_semantic_command(SemanticCommand::FocusComposer)
+                    .await?;
+            }
+            HitTarget::OverlayAction(action) => {
+                self.apply_overlay_action(action).await?;
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn handle_mouse(&mut self, mouse: MouseEvent) -> Result<(), TuiError> {
+        if !self.runtime.mouse_capture {
+            return Ok(());
+        }
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                let Some(target) = self.resolve_hit_target(mouse.column, mouse.row) else {
+                    return Ok(());
+                };
+                if (self.overlay.is_some() || self.explorer_dialog.is_some())
+                    && !matches!(target, HitTarget::OverlayAction(_))
+                {
+                    return Ok(());
+                }
+                self.activate_hit_target(target).await?;
+                self.invalidate_hit_regions();
+            }
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                if self.overlay.is_some() || self.explorer_dialog.is_some() {
+                    return Ok(());
+                }
+                let up = matches!(mouse.kind, MouseEventKind::ScrollUp);
+                match self.pane_target_at(mouse.column, mouse.row) {
+                    Some(FocusBlock::Files) => self.scroll_files(up, 3),
+                    Some(FocusBlock::Workspace) => self.scroll_workspace_under_pointer(up),
+                    Some(
+                        FocusBlock::Composer | FocusBlock::Inspector | FocusBlock::BottomPanel,
+                    )
+                    | None => {}
+                }
+            }
             _ => {}
         }
+        Ok(())
     }
 
     async fn handle_model_command(&mut self, provider: Option<&str>, model: Option<&str>) {
@@ -6801,6 +7157,28 @@ fn map_key(key: event::KeyEvent) -> OverlayKey {
     }
 }
 
+fn centered_capped_rect_for_mouse(
+    area: ratatui::layout::Rect,
+    max_width: u16,
+    max_height: u16,
+) -> ratatui::layout::Rect {
+    let width = area.width.min(max_width).max(1);
+    let height = area.height.min(max_height).max(1);
+    ratatui::layout::Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    }
+}
+
+fn rect_contains(area: ratatui::layout::Rect, x: u16, y: u16) -> bool {
+    x >= area.x
+        && y >= area.y
+        && x < area.x.saturating_add(area.width)
+        && y < area.y.saturating_add(area.height)
+}
+
 /// Drain every pending terminal event (paste floods many keys; do not drop them).
 async fn drain_events(app: &mut TuiApp) -> Result<(), TuiError> {
     loop {
@@ -6808,9 +7186,16 @@ async fn drain_events(app: &mut TuiApp) -> Result<(), TuiError> {
             break;
         }
         match event::read()? {
-            Event::Key(key) => app.handle_key(key).await?,
-            Event::Mouse(mouse) => app.handle_mouse(mouse.kind),
-            Event::Paste(data) => app.handle_paste(&data),
+            Event::Key(key) => {
+                app.handle_key(key).await?;
+                app.invalidate_hit_regions();
+            }
+            Event::Mouse(mouse) => app.handle_mouse(mouse).await?,
+            Event::Paste(data) => {
+                app.handle_paste(&data);
+                app.invalidate_hit_regions();
+            }
+            Event::Resize(_, _) => app.invalidate_hit_regions(),
             _ => {}
         }
     }
@@ -6826,13 +7211,12 @@ pub async fn run_tui(
     // Ensure the terminal is restored on panic, returned errors and normal exit.
     let _guard = TerminalGuard::install();
     let mut stdout = stdout();
-    // Bracketed paste plus keyboard enhancement for reliable key disambiguation.
-    // Deliberately do not enable mouse capture: the terminal must retain mouse selection so
-    // users can select and copy transcript text. Conversation scrolling remains on PageUp/Down.
+    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
+    if runtime.mouse_capture {
+        execute!(stdout, EnableMouseCapture)?;
+    }
     execute!(
         stdout,
-        EnterAlternateScreen,
-        EnableBracketedPaste,
         PushKeyboardEnhancementFlags(
             KeyboardEnhancementFlags::REPORT_EVENT_TYPES
                 | KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
@@ -6914,9 +7298,16 @@ async fn run_loop(
             // Read the ready event, then drain the rest of the queue so a paste
             // of a long API key is not truncated to a handful of characters.
             match event::read()? {
-                Event::Key(key) => app.handle_key(key).await?,
-                Event::Mouse(mouse) => app.handle_mouse(mouse.kind),
-                Event::Paste(data) => app.handle_paste(&data),
+                Event::Key(key) => {
+                    app.handle_key(key).await?;
+                    app.invalidate_hit_regions();
+                }
+                Event::Mouse(mouse) => app.handle_mouse(mouse).await?,
+                Event::Paste(data) => {
+                    app.handle_paste(&data);
+                    app.invalidate_hit_regions();
+                }
+                Event::Resize(_, _) => app.invalidate_hit_regions(),
                 _ => {}
             }
             drain_events(app).await?;
@@ -7029,6 +7420,7 @@ mod tests {
                     args: vec![],
                 }),
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         app.run.draft.command_input = "true".into();
@@ -7082,6 +7474,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         (dir, app)
@@ -7102,6 +7495,39 @@ mod tests {
             text.push('\n');
         }
         text
+    }
+
+    fn draw_app(app: &mut TuiApp, width: u16, height: u16) {
+        use ratatui::backend::TestBackend;
+
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+    }
+
+    fn mouse(kind: MouseEventKind, x: u16, y: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    fn hit_point(app: &TuiApp, predicate: impl Fn(&HitTarget) -> bool) -> (u16, u16) {
+        let region = app
+            .hit_regions
+            .iter()
+            .find(|region| region.generation == app.frame_generation && predicate(&region.target))
+            .expect("expected hit region");
+        (region.area.x, region.area.y)
+    }
+
+    fn hit_point_for_path(
+        app: &TuiApp,
+        predicate: impl Fn(&HitTarget, &Path) -> bool,
+        path: &Path,
+    ) -> (u16, u16) {
+        hit_point(app, |target| predicate(target, path))
     }
 
     #[tokio::test]
@@ -7189,6 +7615,199 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(app.focus.block, FocusBlock::Workspace);
+    }
+
+    #[tokio::test]
+    async fn mouse_click_pane_and_composer_focus() {
+        let (_dir, mut app) = focus_test_app().await;
+        draw_app(&mut app, 120, 30);
+
+        let (x, y) = hit_point(&app, |target| {
+            matches!(target, HitTarget::Pane(FocusBlock::Workspace))
+        });
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), x, y))
+            .await
+            .unwrap();
+        assert_eq!(app.focus.block, FocusBlock::Workspace);
+
+        draw_app(&mut app, 120, 30);
+        let (x, y) = hit_point(&app, |target| matches!(target, HitTarget::Composer));
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), x, y))
+            .await
+            .unwrap();
+        assert_eq!(app.focus.block, FocusBlock::Composer);
+    }
+
+    #[tokio::test]
+    async fn mouse_click_file_row_selects_and_chevron_toggles() {
+        let (dir, mut app) = focus_test_app().await;
+        fs::create_dir(dir.path().join("src")).unwrap();
+        fs::write(dir.path().join("src/lib.rs"), "pub fn demo() {}\n").unwrap();
+        app.file_explorer.refresh_workspace();
+        app.files_visible = true;
+        draw_app(&mut app, 140, 30);
+
+        let src = dir.path().join("src").canonicalize().unwrap();
+        let (x, y) = hit_point_for_path(
+            &app,
+            |target, path| matches!(target, HitTarget::FileEntry(p) if p == path),
+            &src,
+        );
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), x, y))
+            .await
+            .unwrap();
+        assert_eq!(
+            app.file_explorer.selected_path.as_deref(),
+            Some(src.as_path())
+        );
+
+        draw_app(&mut app, 140, 30);
+        let (x, y) = hit_point_for_path(
+            &app,
+            |target, path| matches!(target, HitTarget::DirectoryChevron(p) if p == path),
+            &src,
+        );
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), x, y))
+            .await
+            .unwrap();
+        assert!(app
+            .file_explorer
+            .visible_nodes()
+            .iter()
+            .any(|node| node.display_name == "lib.rs"));
+    }
+
+    #[tokio::test]
+    async fn mouse_click_bottom_tab_visible_control_emits_once() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.open_bottom_panel(Some(BottomPanelTab::Run));
+        draw_app(&mut app, 120, 40);
+        let (x, y) = hit_point(&app, |target| {
+            matches!(
+                target,
+                HitTarget::VisibleControl(SemanticCommand::OpenBottomPanel(
+                    BottomPanelTab::Activity
+                ))
+            )
+        });
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), x, y))
+            .await
+            .unwrap();
+        assert_eq!(app.bottom_panel.active, BottomPanelTab::Activity);
+        assert_eq!(app.focus.block, FocusBlock::BottomPanel);
+    }
+
+    #[tokio::test]
+    async fn mouse_wheel_scrolls_hovered_pane_without_focus_change() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.focus_block(FocusBlock::Composer);
+        draw_app(&mut app, 120, 30);
+        let (x, y) = hit_point(&app, |target| {
+            matches!(target, HitTarget::Pane(FocusBlock::Workspace))
+        });
+        app.handle_mouse(mouse(MouseEventKind::ScrollUp, x, y))
+            .await
+            .unwrap();
+        assert_eq!(app.focus.block, FocusBlock::Composer);
+        assert_eq!(app.chat_scroll, 3);
+    }
+
+    #[tokio::test]
+    async fn mouse_overlay_blocks_underlying_targets() {
+        let (_dir, mut app) = focus_test_app().await;
+        let payload = HitlPayload {
+            call_id: "call-1".into(),
+            tool: "write".into(),
+            args_redacted: json!({"path": "src/main.rs"}),
+            reason: "Edit requires approval".into(),
+        };
+        app.open_hitl_overlay(payload);
+        draw_app(&mut app, 120, 30);
+        let (x, y) = hit_point(&app, |target| matches!(target, HitTarget::Composer));
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), x, y))
+            .await
+            .unwrap();
+        assert_eq!(app.focus.block, FocusBlock::Composer);
+        assert!(matches!(app.overlay, Some(Overlay::Hitl { .. })));
+    }
+
+    #[tokio::test]
+    async fn mouse_disabled_ignores_pointer_but_keeps_keyboard() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.runtime.mouse_capture = false;
+        draw_app(&mut app, 120, 30);
+        let (x, y) = hit_point(&app, |target| {
+            matches!(target, HitTarget::Pane(FocusBlock::Workspace))
+        });
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), x, y))
+            .await
+            .unwrap();
+        assert_eq!(app.focus.block, FocusBlock::Composer);
+
+        app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert_eq!(app.focus.block, FocusBlock::Workspace);
+    }
+
+    #[tokio::test]
+    async fn mouse_stale_regions_are_ignored_after_resize_or_list_mutation() {
+        let (dir, mut app) = focus_test_app().await;
+        fs::create_dir(dir.path().join("src")).unwrap();
+        fs::write(dir.path().join("src/lib.rs"), "pub fn demo() {}\n").unwrap();
+        app.file_explorer.refresh_workspace();
+        app.files_visible = true;
+        app.file_explorer.selected_path = Some(dir.path().join("src").canonicalize().unwrap());
+        app.file_explorer.expand_selected();
+        draw_app(&mut app, 140, 30);
+
+        let lib = dir.path().join("src/lib.rs").canonicalize().unwrap();
+        let stale_lib_point = hit_point_for_path(
+            &app,
+            |target, path| matches!(target, HitTarget::FileEntry(p) if p == path),
+            &lib,
+        );
+        app.file_explorer.selected_path = Some(dir.path().join("src").canonicalize().unwrap());
+        app.file_explorer.collapse_selected();
+        app.file_explorer.selected_path = app.file_explorer.root_path().map(Path::to_path_buf);
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            stale_lib_point.0,
+            stale_lib_point.1,
+        ))
+        .await
+        .unwrap();
+        assert_ne!(
+            app.file_explorer.selected_path.as_deref(),
+            Some(lib.as_path())
+        );
+
+        draw_app(&mut app, 140, 30);
+        let (x, y) = hit_point(&app, |target| {
+            matches!(target, HitTarget::Pane(FocusBlock::Workspace))
+        });
+        app.invalidate_hit_regions();
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), x, y))
+            .await
+            .unwrap();
+        assert_ne!(app.focus.block, FocusBlock::Workspace);
+    }
+
+    #[tokio::test]
+    async fn mouse_unsupported_buttons_and_80x24_regions_are_safe() {
+        let (_dir, mut app) = focus_test_app().await;
+        draw_app(&mut app, 80, 24);
+        let (x, y) = hit_point(&app, |target| matches!(target, HitTarget::Composer));
+        app.focus_block(FocusBlock::Workspace);
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Right), x, y))
+            .await
+            .unwrap();
+        assert_eq!(app.focus.block, FocusBlock::Workspace);
+
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), x, y))
+            .await
+            .unwrap();
+        assert_eq!(app.focus.block, FocusBlock::Composer);
     }
 
     #[tokio::test]
@@ -7709,6 +8328,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         assert!(restored.files_visible);
@@ -7738,6 +8358,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
 
@@ -8164,6 +8785,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
 
@@ -8752,6 +9374,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         app.splash_dismissed = true;
@@ -8797,6 +9420,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         app.splash_dismissed = true;
@@ -8898,6 +9522,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         app.dispatch_line(&format!("/resume {previous_id}"))
@@ -8932,6 +9557,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
 
@@ -8965,6 +9591,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         app.busy = true;
@@ -8998,6 +9625,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         app.busy = true;
@@ -9024,6 +9652,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         app.input.set_text("draft");
@@ -9055,6 +9684,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
 
@@ -9079,6 +9709,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         app.input.set_text("draft");
@@ -9112,6 +9743,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         app.input.set_text("draft");
@@ -9138,6 +9770,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         app.handle_key(press(KeyCode::F(1), KeyModifiers::NONE))
@@ -9162,6 +9795,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         // Simulate messages enqueued while processing.
@@ -9191,6 +9825,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         app.enqueue_user_message("a".into());
@@ -9221,6 +9856,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         app.connect_store = CredentialStore::new(credential_path.clone());
@@ -9244,6 +9880,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         restarted.connect_store = CredentialStore::new(credential_path);
@@ -9266,6 +9903,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
@@ -9295,6 +9933,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
@@ -9386,6 +10025,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         app.dispatch_line("/sync").await.unwrap();
@@ -9423,6 +10063,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         app.dispatch_line("hi").await.unwrap();
@@ -9454,6 +10095,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         app.dispatch_line("/status").await.unwrap();
@@ -9474,6 +10116,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         app.dispatch_line("hi").await.unwrap();
@@ -9507,6 +10150,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         app.dispatch_line("/quit").await.unwrap();
@@ -9548,6 +10192,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         let _store_dir = tempfile::TempDir::new().unwrap();
@@ -9578,6 +10223,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
@@ -9615,6 +10261,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
@@ -9648,6 +10295,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
@@ -9688,6 +10336,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
@@ -9719,6 +10368,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
@@ -9767,6 +10417,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         app.connect_store = CredentialStore::new(cred_dir.path().join("c.toml"));
@@ -9798,6 +10449,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         let enter = KeyEvent {
@@ -9836,6 +10488,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         app.history.push("alpha");
@@ -9874,6 +10527,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         assert!(app.help_text().contains("Conversation"));
@@ -9964,6 +10618,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         app.handle_key(press(KeyCode::Char('/'), KeyModifiers::NONE))
@@ -9995,6 +10650,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         for c in "/status".chars() {
@@ -10025,6 +10681,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         app.handle_key(press(KeyCode::Char('k'), KeyModifiers::CONTROL))
@@ -10046,6 +10703,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         assert!(!app.sidebar_visible);
@@ -10086,6 +10744,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         assert_eq!(app.inspector_view, InspectorView::Task);
@@ -10114,6 +10773,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         for c in "/connect list".chars() {
@@ -10147,6 +10807,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         for c in "/res".chars() {
@@ -10179,6 +10840,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         for c in "/connect".chars() {
@@ -10205,6 +10867,7 @@ mod tests {
                 startup_notices: vec!["mcp: failed".into()],
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
 
@@ -10225,6 +10888,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         // Partial type; suggestions include /connect and /status.
@@ -10281,6 +10945,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         app.handle_key(press(KeyCode::Char('/'), KeyModifiers::NONE))
@@ -10327,6 +10992,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         for c in "/sta".chars() {
@@ -10408,6 +11074,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         // Override credential store with empty temp file so connection check fails.
@@ -10455,6 +11122,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         assert!(app.is_provider_connected());
@@ -10477,6 +11145,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         app.connect_profile = None;
@@ -10519,6 +11188,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         let chrome = app.refresh_status_model();
@@ -10556,6 +11226,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         // Width 60: no sidebar per layout MIN_WIDTH 80
@@ -10594,6 +11265,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         for c in "/status".chars() {
@@ -10638,6 +11310,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         app.report_error("upstream returned 429 rate limit exceeded");
@@ -10678,6 +11351,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         app.report_error("429 rate limit");
@@ -10711,6 +11385,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         app.push_activity(
@@ -10748,6 +11423,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         app.busy = true;
@@ -10778,6 +11454,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         app.dispatch_line("hello").await.unwrap();
@@ -10808,6 +11485,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         for c in "/status".chars() {
@@ -10972,6 +11650,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         assert!(!app.pending_external_editor);
@@ -10997,6 +11676,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         app.pending_external_editor = true;
@@ -11018,6 +11698,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         app.source_viewer.status = crate::source_viewer::ViewerStatus::Binary;
@@ -11041,6 +11722,7 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: FileIconMode::Unicode,
+                mouse_capture: true,
             },
         );
         app.busy_phase = BusyPhase::Tool {
