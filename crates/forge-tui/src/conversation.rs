@@ -337,20 +337,27 @@ impl ConversationModel {
                             // rendered as visible Chat rows by default.
                         }
                     }
-                    if !m.content.is_empty() {
+                    let effective_text = if !m.content.trim().is_empty() {
+                        m.content.clone()
+                    } else if let Some(ref th) = m.thinking {
+                        th.clone()
+                    } else {
+                        String::new()
+                    };
+                    if !effective_text.trim().is_empty() {
                         if repair_pending {
                             items.push(ChatItem::GeneratorRepair {
-                                text: m.content.clone(),
+                                text: effective_text.clone(),
                             });
                             repair_pending = false;
                         } else if validation_retry_pending {
                             items.push(ChatItem::RetryAssistant {
-                                text: m.content.clone(),
+                                text: effective_text.clone(),
                             });
                             validation_retry_pending = false;
                         } else {
                             items.push(ChatItem::Assistant {
-                                text: m.content.clone(),
+                                text: effective_text,
                             });
                         }
                     }
