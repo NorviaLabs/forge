@@ -140,9 +140,12 @@ mod tests {
         reg.register(opencode_go_profile());
         let mut ap = None;
         let mut am = None;
-        // Isolate from real env vars.
-        std::env::remove_var("OPENCODE_API_KEY");
-        std::env::remove_var("OPENCODE_GO_API_KEY");
+        // The guard clears these, isolating the test from the developer's shell.
+        let _guard = crate::test_env::EnvGuard::new(&[
+            "OPENCODE_API_KEY",
+            "OPENCODE_GO_API_KEY",
+            "FORGE_CONNECT_SKIP_VERIFY",
+        ]);
         let err = handle_connect_action(
             ConnectAction::Connect {
                 profile_id: "opencode_go".into(),
@@ -166,8 +169,15 @@ mod tests {
         reg.register(opencode_go_profile());
         let mut ap = None;
         let mut am = None;
-        // Offline unit test: skip live key verification.
-        std::env::set_var("FORGE_CONNECT_SKIP_VERIFY", "1");
+        // Offline unit test: skip live key verification. `FORGE_CONNECT_SKIP_VERIFY`
+        // is read by `connect_api_key` in service.rs, so setting it unguarded used to
+        // change whether *other* tests made real network calls.
+        let guard = crate::test_env::EnvGuard::new(&[
+            "OPENCODE_API_KEY",
+            "OPENCODE_GO_API_KEY",
+            "FORGE_CONNECT_SKIP_VERIFY",
+        ]);
+        guard.set("FORGE_CONNECT_SKIP_VERIFY", "1");
         let msg = handle_connect_action(
             ConnectAction::Connect {
                 profile_id: "opencode_go".into(),
@@ -181,7 +191,6 @@ mod tests {
             &mut am,
         )
         .unwrap();
-        std::env::remove_var("FORGE_CONNECT_SKIP_VERIFY");
         assert!(msg.contains("OpenCode Go"));
         assert!(!msg.contains("go-secret-key"));
         assert_eq!(ap.as_deref(), Some("opencode_go"));

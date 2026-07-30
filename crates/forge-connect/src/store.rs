@@ -395,13 +395,13 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
         store.set_api_key("xai", "from-file").unwrap();
-        std::env::set_var("FORGE_TEST_XAI_KEY", "from-env");
+        let guard = crate::test_env::EnvGuard::new(&["FORGE_TEST_XAI_KEY"]);
+        guard.set("FORGE_TEST_XAI_KEY", "from-env");
         let r = resolve_key(&["FORGE_TEST_XAI_KEY".into()], "xai", &store)
             .unwrap()
             .unwrap();
         assert_eq!(r.0, "from-env");
         assert_eq!(r.1, KeySource::Env);
-        std::env::remove_var("FORGE_TEST_XAI_KEY");
     }
 
     /// The regression that matters most here: an existing `credentials.toml` has

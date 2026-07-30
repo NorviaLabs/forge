@@ -16,6 +16,8 @@ mod profile;
 mod registry;
 mod service;
 mod store;
+#[cfg(test)]
+mod test_env;
 mod verify;
 mod xai;
 
