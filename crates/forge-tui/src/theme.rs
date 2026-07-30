@@ -9,6 +9,8 @@ pub const ACCENT: Color = Color::Rgb(83, 214, 227);
 pub const ACCENT_2: Color = Color::Rgb(125, 168, 245);
 pub const USER_MESSAGE_GUTTER_DARK: Color = Color::Rgb(96, 145, 220);
 pub const USER_MESSAGE_GUTTER_LIGHT: Color = Color::Rgb(37, 99, 175);
+pub const USER_GUTTER_ACTIVE_DARK: Color = Color::Rgb(112, 168, 245);
+pub const USER_GUTTER_ACTIVE_LIGHT: Color = Color::Rgb(25, 82, 155);
 pub const OK: Color = Color::Rgb(97, 207, 139);
 pub const WARN: Color = Color::Rgb(229, 185, 79);
 pub const DANGER: Color = Color::Rgb(239, 112, 120);
@@ -135,6 +137,14 @@ pub fn user_message_gutter_style() -> Style {
 
 pub fn user_message_gutter_style_for(theme: Theme) -> Style {
     user_message().fg(palette(theme).user_message_gutter)
+}
+
+pub fn user_gutter_active_style() -> Style {
+    user_gutter_active_style_for(Theme::default())
+}
+
+pub fn user_gutter_active_style_for(theme: Theme) -> Style {
+    user_message().fg(palette(theme).user_gutter_active)
 }
 
 pub fn assistant_answer_style() -> Style {
@@ -277,6 +287,7 @@ pub struct Palette {
     pub response_bg: Color,
     pub text_strong: Color,
     pub user_message_gutter: Color,
+    pub user_gutter_active: Color,
 }
 
 pub fn palette(theme: Theme) -> Palette {
@@ -302,6 +313,7 @@ pub fn palette(theme: Theme) -> Palette {
             response_bg: RESPONSE_BG,
             text_strong: TEXT_STRONG,
             user_message_gutter: USER_MESSAGE_GUTTER_DARK,
+            user_gutter_active: USER_GUTTER_ACTIVE_DARK,
         },
         Theme::Light => Palette {
             canvas: LIGHT_CANVAS,
@@ -324,6 +336,7 @@ pub fn palette(theme: Theme) -> Palette {
             response_bg: LIGHT_CANVAS,
             text_strong: LIGHT_TEXT,
             user_message_gutter: USER_MESSAGE_GUTTER_LIGHT,
+            user_gutter_active: USER_GUTTER_ACTIVE_LIGHT,
         },
         Theme::System => Palette {
             canvas: Color::Reset,
@@ -346,6 +359,7 @@ pub fn palette(theme: Theme) -> Palette {
             response_bg: Color::Reset,
             text_strong: Color::White,
             user_message_gutter: Color::Blue,
+            user_gutter_active: Color::LightBlue,
         },
         Theme::Ansi => Palette {
             canvas: Color::Black,
@@ -368,6 +382,7 @@ pub fn palette(theme: Theme) -> Palette {
             response_bg: Color::Black,
             text_strong: Color::White,
             user_message_gutter: Color::LightBlue,
+            user_gutter_active: Color::LightBlue,
         },
     }
 }
@@ -419,6 +434,13 @@ mod tests {
             user_message_gutter_style().fg,
             Some(USER_MESSAGE_GUTTER_DARK)
         );
+    }
+
+    #[test]
+    fn user_gutter_active_is_distinct_from_submitted() {
+        let dark = palette(Theme::Dark);
+        assert_ne!(dark.user_gutter_active, dark.user_message_gutter);
+        assert_ne!(dark.user_gutter_active, dark.accent);
     }
 
     #[test]
