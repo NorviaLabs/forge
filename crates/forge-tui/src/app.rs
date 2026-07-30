@@ -70,7 +70,6 @@ use crate::widgets::{
     InputModel, StatusBar, StatusModel, TurnLifecycle,
 };
 use forge_config::{CommandConfig, FileIconMode};
-use ratatui::widgets::Clear;
 
 use crate::{MAX_RECENT_RUNS, RUN_HISTORY_VERSION};
 
@@ -4436,6 +4435,7 @@ Reply with ONLY the commit message line.\n\n\
             return;
         }
         self.begin_hit_frame();
+        crate::theme::fill(area, frame.buffer_mut(), crate::theme::canvas());
         let fb_h = if self.feedback.is_empty() { 0 } else { 1 };
         let slash_mode = self.overlay.is_none() && self.input.text.starts_with('/');
         let input_h = (self.input.visual_lines() + 2).clamp(3, 8);
@@ -4755,6 +4755,7 @@ Reply with ONLY the commit message line.\n\n\
                     Paragraph::new(text).style(theme::muted()).block(
                         ratatui::widgets::Block::default()
                             .borders(ratatui::widgets::Borders::TOP)
+                            .style(theme::panel())
                             .title(ratatui::text::Span::styled(" notices ", theme::muted())),
                     ),
                     notice_area,
@@ -4832,6 +4833,7 @@ Reply with ONLY the commit message line.\n\n\
                             ratatui::widgets::Block::default()
                                 .borders(ratatui::widgets::Borders::ALL)
                                 .border_style(theme::brand())
+                                .style(theme::panel())
                                 .title(ratatui::text::Span::styled(title, theme::brand())),
                         ),
                         sug_area,
@@ -4906,7 +4908,8 @@ Reply with ONLY the commit message line.\n\n\
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .border_style(theme::muted()),
+                        .border_style(theme::muted())
+                        .style(theme::panel()),
                 )
                 .render(area, buf);
             return;
@@ -4918,7 +4921,8 @@ Reply with ONLY the commit message line.\n\n\
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .border_style(theme::muted()),
+                        .border_style(theme::muted())
+                        .style(theme::panel()),
                 )
                 .render(area, buf);
             return;
@@ -4930,7 +4934,8 @@ Reply with ONLY the commit message line.\n\n\
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .border_style(theme::muted()),
+                        .border_style(theme::muted())
+                        .style(theme::panel()),
                 )
                 .render(area, buf);
             return;
@@ -5004,7 +5009,8 @@ Reply with ONLY the commit message line.\n\n\
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(theme::muted()),
+                    .border_style(theme::muted())
+                    .style(theme::panel()),
             )
             .render(area, buf);
     }
@@ -5340,7 +5346,7 @@ Reply with ONLY the commit message line.\n\n\
 
     fn render_help_overlay(&self, area: ratatui::layout::Rect, buf: &mut ratatui::buffer::Buffer) {
         let r = centered_rect(64, 58, area);
-        Clear.render(r, buf);
+        crate::theme::fill(r, buf, crate::theme::panel());
         Paragraph::new(self.help_text())
             .wrap(ratatui::widgets::Wrap { trim: true })
             .block(
@@ -5360,7 +5366,7 @@ Reply with ONLY the commit message line.\n\n\
         buf: &mut ratatui::buffer::Buffer,
     ) {
         let r = centered_rect(64, 34, area);
-        Clear.render(r, buf);
+        crate::theme::fill(r, buf, crate::theme::panel());
         let mut lines = Vec::new();
         let (title, border) = match dialog {
             ExplorerDialog::Name { action, .. } => (
@@ -9455,6 +9461,131 @@ mod tests {
         );
         assert_eq!(restored.runtime.theme, forge_config::Theme::Light);
         assert_eq!(crate::theme::active(), forge_config::Theme::Light);
+    }
+
+    fn assert_buffer_fully_themed(buf: &ratatui::buffer::Buffer) {
+        use ratatui::style::Color;
+        for y in 0..buf.area().height {
+            for x in 0..buf.area().width {
+                let bg = buf[(x, y)].style().bg;
+                assert!(bg.is_some(), "unpainted cell at {x},{y}");
+                assert_ne!(bg, Some(Color::Black), "terminal-default black at {x},{y}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn light_theme_paints_root_canvas_on_draw() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let (_dir, mut app) = focus_test_app().await;
+        app.splash_dismissed = true;
+        app.handle_theme_command(Some("light"));
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        term.draw(|f| app.draw(f)).unwrap();
+        assert_buffer_fully_themed(term.backend().buffer());
+        let corner = term.backend().buffer()[(0, 0)].style().bg;
+        assert_eq!(corner, Some(crate::theme::LIGHT_CANVAS));
+    }
+
+    #[tokio::test]
+    async fn light_theme_resize_keeps_canvas_background() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let (_dir, mut app) = focus_test_app().await;
+        app.splash_dismissed = true;
+        app.handle_theme_command(Some("light"));
+        for (w, h) in [(80, 24), (160, 50), (120, 40)] {
+            let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+            term.draw(|f| app.draw(f)).unwrap();
+            assert_buffer_fully_themed(term.backend().buffer());
+        }
+    }
+
+    #[tokio::test]
+    async fn light_theme_representative_layout_snapshot() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.splash_dismissed = true;
+        app.files_visible = true;
+        app.handle_theme_command(Some("light"));
+        app.session.messages.push(Message {
+            role: MessageRole::User,
+            content: "Please review this change.\n\nIt spans multiple lines.".into(),
+            tool_call_id: None,
+            name: None,
+            thinking: None,
+            thinking_duration_secs: None,
+            tool_calls: vec![],
+        });
+        app.session.messages.push(Message {
+            role: MessageRole::Assistant,
+            content: "Here is a concise review of your change.".into(),
+            tool_call_id: None,
+            name: None,
+            thinking: None,
+            thinking_duration_secs: None,
+            tool_calls: vec![],
+        });
+        app.feedback = FeedbackModel::error("Model error: rate limited (HTTP 429).");
+        app.conversation_cache = None;
+        app.input.set_text("draft reply");
+        app.input.cursor = app.input.text.len();
+
+        let text = render_app_text(&mut app, 120, 40);
+        assert!(text.contains("Forge"), "missing header:\n{text}");
+        assert!(text.contains("FILES"), "missing sidebar:\n{text}");
+        assert!(
+            text.contains("Please review this change."),
+            "missing user message:\n{text}"
+        );
+        assert!(
+            text.contains("concise review"),
+            "missing assistant response:\n{text}"
+        );
+        assert!(
+            text.contains("Model error"),
+            "missing model error feedback:\n{text}"
+        );
+        assert!(text.contains("draft reply"), "missing composer:\n{text}");
+
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        term.draw(|f| app.draw(f)).unwrap();
+        assert_buffer_fully_themed(term.backend().buffer());
+        let buf = term.backend().buffer();
+        let mut saw_gutter = false;
+        let mut saw_selection = false;
+        for y in 0..buf.area().height {
+            for x in 0..buf.area().width {
+                if buf[(x, y)].style().fg == Some(crate::theme::USER_MESSAGE_GUTTER_LIGHT) {
+                    saw_gutter = true;
+                }
+                if buf[(x, y)].style().bg == Some(crate::theme::LIGHT_SELECTION) {
+                    saw_selection = true;
+                }
+            }
+        }
+        assert!(saw_gutter, "expected light-theme user gutter colour");
+        assert!(
+            saw_selection || text.contains("draft reply"),
+            "expected composer selection or typed text"
+        );
+    }
+
+    #[tokio::test]
+    async fn light_theme_overlay_uses_themed_backdrop() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let (_dir, mut app) = focus_test_app().await;
+        app.handle_theme_command(Some("light"));
+        app.overlay = Some(Overlay::Help);
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        term.draw(|f| app.draw(f)).unwrap();
+        assert_buffer_fully_themed(term.backend().buffer());
     }
 
     #[tokio::test]

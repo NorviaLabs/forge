@@ -7,7 +7,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Widget};
+use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Widget};
 use std::path::Path;
 
 #[derive(Debug, Clone)]
@@ -1426,7 +1426,7 @@ pub struct OverlayWidget<'a> {
 impl Widget for OverlayWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         if !matches!(self.overlay, Overlay::Hitl { .. }) {
-            Clear.render(area, buf);
+            theme::fill(area, buf, theme::canvas());
         }
         match self.overlay {
             Overlay::Help => {

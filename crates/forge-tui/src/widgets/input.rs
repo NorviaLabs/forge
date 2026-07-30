@@ -647,7 +647,7 @@ mod tests {
         for y in 0..area.height {
             for x in 0..area.width {
                 let cell = &buf[(x, y)];
-                if cell.style().bg == Some(theme::TEXT) {
+                if cell.style().bg == Some(theme::caret().bg.unwrap()) {
                     found = true;
                 }
             }
@@ -662,7 +662,7 @@ mod tests {
         let buf = draw_input_bar(&m, &rows, 40, 5, true, false, None);
         let cell = &buf[(2, 1)];
         assert_eq!(cell.symbol(), " ");
-        assert_eq!(cell.style().bg, Some(theme::TEXT));
+        assert_eq!(cell.style().bg, theme::caret().bg);
     }
 
     #[test]
@@ -677,7 +677,7 @@ mod tests {
         for y in 0..area.height {
             for x in 0..area.width {
                 let cell = &buf[(x, y)];
-                if cell.symbol() == "a" && cell.style().bg == Some(theme::TEXT) {
+                if cell.symbol() == "a" && cell.style().bg == theme::caret().bg {
                     found_a = true;
                 }
             }
@@ -723,7 +723,7 @@ mod tests {
         let mut saw_history_bg = false;
         for y in 0..buf.area().height {
             for x in 0..buf.area().width {
-                if buf[(x, y)].style().bg == Some(theme::HISTORY_BG) {
+                if buf[(x, y)].style().bg == Some(theme::palette(theme::active()).selection) {
                     saw_history_bg = true;
                 }
             }

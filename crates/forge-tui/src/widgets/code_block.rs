@@ -51,7 +51,7 @@ impl<'a> CodeBlock<'a> {
 impl Widget for CodeBlock<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let lines = if let Some(lang) = self.language {
-            let theme = forge_syntax::HighlightTheme::default();
+            let theme = crate::theme::syntax_theme();
             let highlighted = highlight_to_lines(lang, self.code, &theme);
             highlighted
                 .into_iter()
@@ -81,7 +81,8 @@ impl Widget for CodeBlock<'_> {
         if self.show_border {
             let block = Block::default()
                 .borders(Borders::TOP | Borders::BOTTOM)
-                .border_style(self.block_style);
+                .border_style(self.block_style)
+                .style(crate::theme::panel_alt());
             block.render(area, buf);
         }
 

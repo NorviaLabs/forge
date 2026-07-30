@@ -65,6 +65,7 @@ impl Widget for FeedbackBar<'_> {
         if area.height == 0 || area.width == 0 || self.model.is_empty() {
             return;
         }
+        theme::fill(area, buf, theme::canvas());
         let (prefix, style) = match self.model.severity {
             FeedbackSeverity::Info => (" ", theme::info()),
             FeedbackSeverity::Warn => ("! ", theme::warn().add_modifier(Modifier::BOLD)),

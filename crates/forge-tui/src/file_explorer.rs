@@ -812,7 +812,8 @@ impl Widget for FileExplorerWidget<'_> {
                 theme::brand()
             } else {
                 theme::border_muted()
-            });
+            })
+            .style(theme::panel());
         let inner = block.inner(area);
         block.render(area, buf);
         let height = inner.height.saturating_sub(1) as usize;

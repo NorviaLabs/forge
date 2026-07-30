@@ -1386,8 +1386,8 @@ fn render_numbered_diff(path: &str, diff: &[String], width: usize) -> Vec<Line<'
         .map(|line| line.content.as_str())
         .collect::<Vec<_>>()
         .join("\n");
-    let highlighted = lang_from_path(path)
-        .map(|lang| highlight_to_lines(lang, &code, &forge_syntax::HighlightTheme::default()));
+    let highlighted =
+        lang_from_path(path).map(|lang| highlight_to_lines(lang, &code, &theme::syntax_theme()));
     let mut code_index = 0;
     let mut rendered = Vec::with_capacity(numbered.len());
 
@@ -1425,7 +1425,7 @@ fn render_numbered_diff(path: &str, diff: &[String], width: usize) -> Vec<Line<'
             for (text, rgb, bold, italic) in parts {
                 let mut style = ratatui::style::Style::default()
                     .fg(ratatui::style::Color::Rgb(rgb.0, rgb.1, rgb.2))
-                    .bg(line_style.bg.unwrap_or(theme::PANEL_ALT));
+                    .bg(line_style.bg.unwrap_or(theme::panel_alt_bg()));
                 if *bold {
                     style = style.add_modifier(Modifier::BOLD);
                 }
@@ -1846,7 +1846,7 @@ fn assistant_lines(text: &str, width: usize) -> Vec<Line<'static>> {
             if fenced {
                 if !code_block_lines.is_empty() {
                     let code = code_block_lines.join("\n");
-                    let theme = forge_syntax::HighlightTheme::default();
+                    let theme = theme::syntax_theme();
                     let highlighted = highlight_to_lines(&language, &code, &theme);
                     for line_segments in highlighted {
                         out.push(Line::from(render_highlighted_line(&line_segments)));
@@ -1982,6 +1982,7 @@ fn render_conversation_lines(
     area: Rect,
     buf: &mut Buffer,
 ) {
+    theme::fill(area, buf, theme::assistant_message());
     let total = lines.len().saturating_add(tail_lines.len());
     let max_scroll = total.saturating_sub(area.height as usize);
     let scroll = if follow {
@@ -2693,7 +2694,7 @@ mod tests {
             "{rendered}"
         );
         let first = m.lines().into_iter().next().expect("operator turn");
-        assert_eq!(first.style.bg, None);
+        assert_eq!(first.style.bg, Some(theme::USER_BG));
         assert_eq!(
             first.spans[0].style.fg,
             Some(theme::USER_MESSAGE_GUTTER_DARK)

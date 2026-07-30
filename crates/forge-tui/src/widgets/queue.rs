@@ -28,6 +28,7 @@ impl Widget for QueueBar<'_> {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(theme::warn())
+            .style(theme::panel())
             .title(Span::styled(
                 " queue · read-only · ctrl+up/down select · ctrl+backspace cancel ",
                 theme::warn().add_modifier(Modifier::BOLD),

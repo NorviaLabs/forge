@@ -284,7 +284,7 @@ impl SourceViewer {
             return;
         };
 
-        let theme = forge_syntax::HighlightTheme::default();
+        let theme = theme::syntax_theme();
         let lines = match std::panic::catch_unwind(|| {
             forge_syntax::highlight_to_lines(&lang, expanded_text, &theme)
         }) {
@@ -808,11 +808,9 @@ fn apply_search_styles(
         for j in start..end {
             if let Some((_, style)) = chars.get_mut(j) {
                 let patch = if i == active_index {
-                    Style::default()
-                        .bg(theme::WARN)
-                        .add_modifier(Modifier::BOLD)
+                    theme::search_match().add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().bg(theme::WARN)
+                    theme::search_match()
                 };
                 *style = style.patch(patch);
             }
@@ -935,9 +933,11 @@ impl Widget for SourceViewerWidget<'_> {
                 theme::brand()
             } else {
                 theme::border()
-            });
+            })
+            .style(theme::panel());
         let inner = block.inner(area);
         block.render(area, buf);
+        theme::fill(inner, buf, theme::panel());
 
         match self.viewer.status.clone() {
             ViewerStatus::Empty => self.render_message(
@@ -1115,7 +1115,7 @@ impl SourceViewerWidget<'_> {
             if selected && self.viewer.focused {
                 // Subtle dark tint behind the current line so syntax colours stay readable.
                 line_spans.extend(spans.into_iter().map(|span| {
-                    let style = span.style.bg(theme::PANEL_ALT);
+                    let style = span.style.bg(theme::panel_alt_bg());
                     Span::styled(span.content.into_owned(), style)
                 }));
             } else {
