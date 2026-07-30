@@ -271,6 +271,25 @@ mod tests {
         );
     }
 
+    /// A literal `"*"` entry in `hitl_tools` matches every tool name via
+    /// `glob_match`'s dedicated `pattern == "*"` branch — distinct from a
+    /// `"foo*"` prefix pattern, which takes the `strip_suffix` branch below it.
+    #[test]
+    fn bare_star_hitl_tool_entry_requires_approval_for_any_tool() {
+        let g = Governance {
+            hitl_tools: vec!["*".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            g.authorize(&call("read_file", json!({})), SideEffectClass::Read),
+            PolicyDecision::Hitl
+        );
+        assert_eq!(
+            g.authorize(&call("anything_at_all", json!({})), SideEffectClass::Write),
+            PolicyDecision::Hitl
+        );
+    }
+
     /// Glob entries in `hitl_tools` keep working after the exemption removal.
     #[test]
     fn glob_hitl_tool_entry_requires_approval() {
@@ -323,5 +342,70 @@ mod tests {
             trace_id: None,
         });
         assert_eq!(g.audit.len(), 1);
+    }
+
+    #[test]
+    fn with_principal_replaces_the_default_local_dev_principal() {
+        let custom = Principal {
+            id: "svc-account".into(),
+            roles: vec!["ci".into()],
+            scopes: vec!["deploy".into()],
+            surface: "api".into(),
+        };
+        let g = Governance::default().with_principal(custom.clone());
+        assert_eq!(g.principal, custom);
+        assert_ne!(g.principal, Principal::local_dev());
+    }
+
+    #[test]
+    fn require_hitl_for_tool_adds_without_removing_existing_entries() {
+        let g = Governance::default().require_hitl_for_tool("deploy");
+        assert!(g.hitl_tools.contains(&"bash".to_string()));
+        assert!(g.hitl_tools.contains(&"deploy".to_string()));
+        assert_eq!(
+            g.authorize(&call("deploy", json!({})), SideEffectClass::Write),
+            PolicyDecision::Hitl
+        );
+    }
+
+    /// `redact_value` recurses into arrays, not just objects: a secret nested
+    /// inside an array of objects must still be redacted.
+    #[test]
+    fn redact_secrets_nested_inside_arrays() {
+        let g = Governance::default();
+        let red = g.redact_args(&json!({
+            "items": [
+                {"api_key": "sk-secret-1", "id": 1},
+                {"api_key": "sk-secret-2", "id": 2}
+            ]
+        }));
+        let items = red["items"].as_array().expect("items must stay an array");
+        assert_eq!(items.len(), 2);
+        for item in items {
+            assert_eq!(item["api_key"], "[REDACTED]");
+        }
+        assert_eq!(items[0]["id"], 1);
+        assert_eq!(items[1]["id"], 2);
+    }
+
+    /// `glob_match`'s prefix-wildcard branch (`"foo*"`) is exercised via
+    /// `hitl_tools` glob entries elsewhere; this covers the exact-match
+    /// fallthrough (neither `"*"` nor a `*`-suffixed pattern) directly
+    /// through `authorize`, distinguishing it from a prefix match.
+    #[test]
+    fn hitl_tools_exact_match_does_not_affect_other_tool_names() {
+        let g = Governance {
+            hitl_tools: vec!["exact_tool".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            g.authorize(&call("exact_tool", json!({})), SideEffectClass::Write),
+            PolicyDecision::Hitl
+        );
+        assert_eq!(
+            g.authorize(&call("exact_toolkit", json!({})), SideEffectClass::Write),
+            PolicyDecision::Allow,
+            "a longer name sharing the prefix must not match an exact pattern"
+        );
     }
 }
