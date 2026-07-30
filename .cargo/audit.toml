@@ -1,0 +1,18 @@
+# Configuration for `cargo audit` (RustSec). Read automatically by cargo-audit
+# when run from the workspace root, so local runs match CI exactly.
+
+[advisories]
+ignore = [
+    # RUSTSEC-2023-0071 — Marvin Attack timing sidechannel in `rsa` 0.9.x.
+    #
+    # Not reachable in Forge. `rsa` is depended on solely by `sqlx-mysql`, and
+    # we enable sqlx with features ["runtime-tokio", "sqlite", "chrono"] only.
+    # `cargo tree -i rsa` reports "nothing to print" — the crate is present in
+    # Cargo.lock (which is a union across features and platforms) but is never
+    # compiled or shipped.
+    #
+    # There is also no fixed release available upstream, so this cannot be
+    # resolved by upgrading. Re-evaluate if we ever enable the sqlx `mysql`
+    # feature, at which point this entry must be removed.
+    "RUSTSEC-2023-0071",
+]
