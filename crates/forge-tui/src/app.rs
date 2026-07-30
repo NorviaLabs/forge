@@ -3302,6 +3302,9 @@ impl TuiApp {
         self.status_message = match decision {
             HitlDecision::Approve => "Action approved".into(),
             HitlDecision::Deny => "Action denied".into(),
+            // `HitlDecision` is `#[non_exhaustive]`. Report an unrecognised decision as
+            // denied so the operator sees what `resolve_hitl` actually did with it.
+            _ => "Action denied".into(),
         };
         self.push_notice(vec![self.status_message.clone()]);
         self.busy_phase = BusyPhase::Idle;
@@ -3345,6 +3348,8 @@ impl TuiApp {
             }
             HitlDecision::Approve => self.push_toast("approved once"),
             HitlDecision::Deny => self.push_toast("denied"),
+            // `HitlDecision` is `#[non_exhaustive]`; an unrecognised decision is denied.
+            _ => self.push_toast("denied"),
         }
         Ok(())
     }
