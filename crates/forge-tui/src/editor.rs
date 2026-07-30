@@ -84,6 +84,7 @@ impl std::fmt::Display for EditorError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
 
     #[test]
     fn argument_splitting_handles_command_with_flags() {
@@ -148,6 +149,22 @@ mod tests {
         assert!(err.to_string().contains("missing"));
     }
 
+    /// Serializes the env-mutating tests in this module.
+    ///
+    /// `std::env` is process-global while the test harness runs tests in
+    /// parallel threads, so two tests setting VISUAL/EDITOR concurrently can
+    /// observe each other's values. Mirrors `ScopedEnvGuard` in `app.rs`.
+    ///
+    /// Poisoning is recovered rather than propagated: one failing test should
+    /// not cascade into the others.
+    fn env_lock() -> MutexGuard<'static, ()> {
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     fn with_env(name: &str, value: Option<&str>, f: impl FnOnce()) {
         let previous = env::var_os(name);
         match value {
@@ -163,6 +180,7 @@ mod tests {
 
     #[test]
     fn resolve_editor_prefers_visual_then_editor() {
+        let _lock = env_lock();
         with_env("VISUAL", Some("nvim"), || {
             with_env("EDITOR", Some("vim"), || {
                 assert_eq!(resolve_editor(), Some(("nvim".into(), vec![])));
@@ -172,6 +190,7 @@ mod tests {
 
     #[test]
     fn resolve_editor_skips_empty_visual() {
+        let _lock = env_lock();
         with_env("VISUAL", Some("   "), || {
             with_env("EDITOR", Some("nano"), || {
                 assert_eq!(resolve_editor(), Some(("nano".into(), vec![])));
