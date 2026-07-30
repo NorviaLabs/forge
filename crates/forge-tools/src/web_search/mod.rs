@@ -1,6 +1,7 @@
 //! Phase 9 — `web_search` built-in (WEB-01).
 //!
-//! See docs/designs/web-search-tool.md.
+//! Backend selection and the `SearchBackend` extension point are documented in
+//! `docs/architecture.md`; the design doc this used to reference was deleted.
 
 mod backend;
 mod mock;

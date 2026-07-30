@@ -21,7 +21,7 @@ cd forge
 cargo build --workspace --locked
 ```
 
-Forge is a Rust workspace. The main binary is provided by `crates/forge-cli`, the terminal interface is in `crates/forge-tui`, and the agent loop is in `crates/forge-core`. Design documents live under `docs/designs/`.
+Forge is a Rust workspace. The main binary is provided by `crates/forge-cli`, the terminal interface is in `crates/forge-tui`, and the agent loop is in `crates/forge-core`. Architecture is documented in `docs/architecture.md`, which describes the shipped implementation; planned and partially built work is in `docs/roadmap.md`.
 
 ## Making changes
 
