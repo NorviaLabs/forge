@@ -138,7 +138,7 @@ async fn open_session(
         }],
     );
 
-    let mut startup_notices = Vec::new();
+    let mut startup_notices = cfg.refused_key_notices();
     if !cfg.mcp.servers.is_empty() {
         let mut mgr = McpManager::new();
         let errors = mgr.connect_all(&cfg.mcp.servers).await;
