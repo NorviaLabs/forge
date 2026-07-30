@@ -22,7 +22,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use crate::highlight::HighlightTheme;
 
@@ -45,7 +45,9 @@ struct Key {
 }
 
 struct Entry {
-    lines: Lines,
+    /// Shared with every caller that looks this entry up, so neither a hit nor an
+    /// insert copies the segments.
+    lines: Arc<Lines>,
     bytes: usize,
     used: u64,
 }
@@ -96,6 +98,11 @@ fn measure(lines: &Lines) -> usize {
 /// Return the highlight for `(lang, code, theme)`, computing it via `compute`
 /// only on a miss.
 ///
+/// The result is shared rather than copied. A hit costs a refcount bump; storing
+/// a fresh entry costs one too. Previously both paths deep-copied every segment,
+/// which meant the cache still allocated a `String` per token on every lookup —
+/// cheaper than re-parsing, but far from free.
+///
 /// `compute` runs with the lock released, so a slow parse does not block lookups
 /// for other blocks.
 pub(crate) fn cached_or_compute<F>(
@@ -103,7 +110,7 @@ pub(crate) fn cached_or_compute<F>(
     code: &str,
     theme: &HighlightTheme,
     compute: F,
-) -> Lines
+) -> Arc<Lines>
 where
     F: FnOnce() -> Lines,
 {
@@ -117,14 +124,14 @@ where
         let mut guard = cache();
         if let Some(entry) = guard.map.get_mut(&key) {
             entry.used = TICK.fetch_add(1, Ordering::Relaxed);
-            let lines = entry.lines.clone();
+            let lines = Arc::clone(&entry.lines);
             guard.hits += 1;
             return lines;
         }
         guard.misses += 1;
     }
 
-    let lines = compute();
+    let lines = Arc::new(compute());
     let bytes = measure(&lines);
 
     // An entry larger than the whole budget can never be retained; hand it back
@@ -141,7 +148,7 @@ where
         guard.map.insert(
             key,
             Entry {
-                lines: lines.clone(),
+                lines: Arc::clone(&lines),
                 bytes,
                 used,
             },
@@ -231,6 +238,30 @@ mod tests {
         assert_eq!((stats.hits, stats.misses), (1, 1));
     }
 
+    /// A hit must hand back the *same* allocation, not a copy of it. Pointer
+    /// identity is the direct check: before results were shared, every lookup
+    /// rebuilt a `String` per token, so the cache saved the tree-sitter parse but
+    /// still allocated proportionally to the block.
+    #[test]
+    fn lookups_share_one_allocation() {
+        let _guard = lock_cache();
+        clear_highlight_cache();
+        let theme = HighlightTheme::default();
+
+        let first = cached_or_compute("rust", "fn a() {}", &theme, || lines_of("computed"));
+        let second = cached_or_compute("rust", "fn a() {}", &theme, || {
+            panic!("must not recompute on a hit")
+        });
+
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "a hit must share the cached allocation, not clone it"
+        );
+        // The stored entry is the same allocation too, so inserting did not copy:
+        // two live handles plus the cache's own.
+        assert_eq!(Arc::strong_count(&first), 3);
+    }
+
     #[test]
     fn different_theme_is_a_separate_entry() {
         let _guard = lock_cache();
@@ -244,7 +275,7 @@ mod tests {
         cached_or_compute("rust", "fn a() {}", &dark, || lines_of("dark"));
         let got = cached_or_compute("rust", "fn a() {}", &light, || lines_of("light"));
 
-        assert_eq!(got, lines_of("light"), "theme must not alias");
+        assert_eq!(*got, lines_of("light"), "theme must not alias");
         assert_eq!(highlight_cache_stats().entries, 2);
     }
 
@@ -257,7 +288,7 @@ mod tests {
         cached_or_compute("rust", "x", &theme, || lines_of("as-rust"));
         let got = cached_or_compute("python", "x", &theme, || lines_of("as-python"));
 
-        assert_eq!(got, lines_of("as-python"));
+        assert_eq!(*got, lines_of("as-python"));
         assert_eq!(highlight_cache_stats().entries, 2);
     }
 
@@ -293,7 +324,7 @@ mod tests {
 
         let got = cached_or_compute("rust", "big", &theme, || lines_of(&huge));
 
-        assert_eq!(got, lines_of(&huge), "caller still gets its result");
+        assert_eq!(*got, lines_of(&huge), "caller still gets its result");
         assert_eq!(
             highlight_cache_stats().entries,
             0,
