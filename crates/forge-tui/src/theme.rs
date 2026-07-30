@@ -1,6 +1,8 @@
 //! Color tokens from the Forge TUI design system.
 
 use forge_config::Theme;
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use std::cell::Cell;
 
@@ -53,6 +55,42 @@ pub const LIGHT_SELECTION: Color = Color::Rgb(203, 225, 245);
 pub const LIGHT_DIFF_ADD: Color = Color::Rgb(209, 240, 223);
 pub const LIGHT_DIFF_REMOVE: Color = Color::Rgb(255, 223, 223);
 pub const LIGHT_DIFF_HUNK: Color = Color::Rgb(220, 230, 255);
+pub const LIGHT_BORDER: Color = Color::Rgb(201, 195, 185);
+pub const LIGHT_BORDER_MUTED: Color = Color::Rgb(221, 216, 208);
+pub const LIGHT_DIM: Color = Color::Rgb(92, 87, 80);
+pub const LIGHT_PANEL_ALT: Color = Color::Rgb(245, 242, 234);
+pub const LIGHT_SEARCH_MATCH_BG: Color = Color::Rgb(255, 244, 200);
+pub const DARK_SEARCH_MATCH_BG: Color = Color::Rgb(72, 64, 40);
+
+/// Paint every cell in `area` with `style` (used for root canvas and overlay backdrops).
+pub fn fill(area: Rect, buf: &mut Buffer, style: Style) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    for y in area.y..area.y.saturating_add(area.height) {
+        for x in area.x..area.x.saturating_add(area.width) {
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.set_symbol(" ");
+                cell.set_style(style);
+            }
+        }
+    }
+}
+
+pub fn canvas() -> Style {
+    Style::default().bg(palette(active()).canvas)
+}
+
+pub fn panel_alt_bg() -> Color {
+    palette(active()).panel_alt
+}
+
+pub fn syntax_theme() -> forge_syntax::HighlightTheme {
+    match active() {
+        Theme::Light => forge_syntax::HighlightTheme::light(),
+        Theme::Dark | Theme::System => forge_syntax::HighlightTheme::default(),
+    }
+}
 
 pub fn brand() -> Style {
     Style::default()
@@ -97,11 +135,11 @@ pub fn code_punctuation() -> Style {
 }
 
 pub fn border() -> Style {
-    Style::default().fg(BORDER)
+    Style::default().fg(palette(active()).border)
 }
 
 pub fn border_muted() -> Style {
-    Style::default().fg(BORDER_MUTED)
+    Style::default().fg(palette(active()).border_muted)
 }
 
 pub fn panel() -> Style {
@@ -113,11 +151,16 @@ pub fn panel_alt() -> Style {
 }
 
 pub fn user_message() -> Style {
-    Style::default()
+    Style::default().bg(palette(active()).user_bg)
 }
 
 pub fn assistant_message() -> Style {
-    Style::default()
+    Style::default().bg(palette(active()).response_bg)
+}
+
+pub fn search_match() -> Style {
+    let p = palette(active());
+    Style::default().fg(p.warn).bg(p.search_match)
 }
 
 pub fn diff_add() -> Style {
@@ -303,6 +346,9 @@ pub struct Palette {
     pub text_strong: Color,
     pub user_message_gutter: Color,
     pub user_gutter_active: Color,
+    pub border: Color,
+    pub border_muted: Color,
+    pub search_match: Color,
 }
 
 pub fn palette(theme: Theme) -> Palette {
@@ -329,12 +375,15 @@ pub fn palette(theme: Theme) -> Palette {
             text_strong: TEXT_STRONG,
             user_message_gutter: USER_MESSAGE_GUTTER_DARK,
             user_gutter_active: USER_GUTTER_ACTIVE_DARK,
+            border: BORDER,
+            border_muted: BORDER_MUTED,
+            search_match: DARK_SEARCH_MATCH_BG,
         },
         Theme::Light => Palette {
             canvas: LIGHT_CANVAS,
             text: LIGHT_TEXT,
             muted: LIGHT_MUTED,
-            dim: LIGHT_MUTED,
+            dim: LIGHT_DIM,
             accent: ACCENT,
             ok: OK,
             warn: WARN,
@@ -346,12 +395,15 @@ pub fn palette(theme: Theme) -> Palette {
             diff_remove: LIGHT_DIFF_REMOVE,
             diff_hunk: LIGHT_DIFF_HUNK,
             panel: LIGHT_CANVAS,
-            panel_alt: LIGHT_SELECTION,
+            panel_alt: LIGHT_PANEL_ALT,
             user_bg: LIGHT_CANVAS,
             response_bg: LIGHT_CANVAS,
             text_strong: LIGHT_TEXT,
             user_message_gutter: USER_MESSAGE_GUTTER_LIGHT,
             user_gutter_active: USER_GUTTER_ACTIVE_LIGHT,
+            border: LIGHT_BORDER,
+            border_muted: LIGHT_BORDER_MUTED,
+            search_match: LIGHT_SEARCH_MATCH_BG,
         },
         Theme::System => Palette {
             canvas: Color::Reset,
@@ -375,6 +427,9 @@ pub fn palette(theme: Theme) -> Palette {
             text_strong: Color::White,
             user_message_gutter: Color::Blue,
             user_gutter_active: Color::LightBlue,
+            border: Color::Reset,
+            border_muted: Color::Reset,
+            search_match: Color::Reset,
         },
     }
 }
@@ -383,6 +438,8 @@ pub fn palette(theme: Theme) -> Palette {
 mod tests {
     use super::*;
     use forge_config::Theme;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
 
     #[test]
     fn tokens_are_distinct() {
@@ -399,9 +456,33 @@ mod tests {
     }
 
     #[test]
-    fn conversation_background_is_distinct_from_panel() {
-        assert_eq!(user_message().bg, None);
-        assert_eq!(assistant_message().bg, None);
+    fn conversation_backgrounds_use_palette_roles() {
+        set_active(Theme::Dark);
+        assert_eq!(user_message().bg, Some(USER_BG));
+        assert_eq!(assistant_message().bg, Some(RESPONSE_BG));
+        set_active(Theme::Light);
+        assert_eq!(user_message().bg, Some(LIGHT_CANVAS));
+        assert_eq!(assistant_message().bg, Some(LIGHT_CANVAS));
+        set_active(Theme::Dark);
+    }
+
+    #[test]
+    fn borders_follow_active_palette() {
+        set_active(Theme::Dark);
+        assert_eq!(border().fg, Some(BORDER));
+        assert_eq!(border_muted().fg, Some(BORDER_MUTED));
+        set_active(Theme::Light);
+        assert_eq!(border().fg, Some(LIGHT_BORDER));
+        assert_eq!(border_muted().fg, Some(LIGHT_BORDER_MUTED));
+        set_active(Theme::Dark);
+    }
+
+    #[test]
+    fn canvas_style_uses_palette_background() {
+        set_active(Theme::Light);
+        assert_eq!(canvas().bg, Some(LIGHT_CANVAS));
+        set_active(Theme::Dark);
+        assert_eq!(canvas().bg, Some(CANVAS));
     }
 
     #[test]
@@ -447,6 +528,9 @@ mod tests {
         let p = palette(Theme::Light);
         assert_eq!(p.text, LIGHT_TEXT);
         assert_eq!(p.canvas, LIGHT_CANVAS);
+        assert_eq!(p.panel_alt, LIGHT_PANEL_ALT);
+        assert_eq!(p.dim, LIGHT_DIM);
+        assert_ne!(p.dim, p.muted);
     }
 
     #[test]
@@ -454,6 +538,23 @@ mod tests {
         let p = palette(Theme::Light);
         assert_eq!(p.diff_add, LIGHT_DIFF_ADD);
         assert_eq!(p.diff_remove, LIGHT_DIFF_REMOVE);
+    }
+
+    #[test]
+    fn fill_paints_every_cell() {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+
+        set_active(Theme::Light);
+        let area = Rect::new(0, 0, 4, 2);
+        let mut buf = Buffer::empty(area);
+        fill(area, &mut buf, canvas());
+        for y in 0..2 {
+            for x in 0..4 {
+                assert_eq!(buf[(x, y)].style().bg, Some(LIGHT_CANVAS));
+            }
+        }
+        set_active(Theme::Dark);
     }
 
     #[test]

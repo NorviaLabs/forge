@@ -255,11 +255,12 @@ mod tests {
         for y in 0..area.height {
             for x in 0..area.width {
                 let cell = &buf[(x, y)];
-                if cell.style().bg == Some(crate::theme::SELECTED_BG) {
+                if cell.style().bg == Some(crate::theme::palette(crate::theme::active()).selection)
+                {
                     found_sel_bg = true;
                 }
-                // Block cursor: solid TEXT background cell (space or inverted char)
-                if cell.style().bg == Some(crate::theme::TEXT) {
+                // Block cursor: solid inverted cell (space or inverted char)
+                if cell.style().bg == crate::theme::caret().bg {
                     found_caret_bg = true;
                 }
             }
