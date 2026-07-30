@@ -1917,8 +1917,10 @@ fn push_code_block(
     }
     let code = code_block_lines.join("\n");
     let theme = theme::syntax_theme();
-    for line_segments in highlight_to_lines(language, &code, &theme) {
-        out.push(Line::from(render_highlighted_line(&line_segments)));
+    // Borrowed, not consumed: the highlight is shared with the cache, and
+    // `render_highlighted_line` only needs a slice.
+    for line_segments in highlight_to_lines(language, &code, &theme).iter() {
+        out.push(Line::from(render_highlighted_line(line_segments)));
     }
     code_block_lines.clear();
 }

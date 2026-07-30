@@ -295,20 +295,23 @@ impl SourceViewer {
             }
         };
 
+        // Borrowed rather than consumed: the highlight is shared with the cache.
+        // The text is cloned here because a `Span` owns its content, which is a
+        // copy this path always had to make.
         self.highlighted_lines = lines
-            .into_iter()
+            .iter()
             .map(|segments| {
                 segments
-                    .into_iter()
+                    .iter()
                     .map(|(text, (r, g, b), bold, italic)| {
-                        let mut style = Style::default().fg(Color::Rgb(r, g, b));
-                        if bold {
+                        let mut style = Style::default().fg(Color::Rgb(*r, *g, *b));
+                        if *bold {
                             style = style.add_modifier(Modifier::BOLD);
                         }
-                        if italic {
+                        if *italic {
                             style = style.add_modifier(Modifier::ITALIC);
                         }
-                        Span::styled(text, style)
+                        Span::styled(text.clone(), style)
                     })
                     .collect()
             })
