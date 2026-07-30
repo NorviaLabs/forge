@@ -206,7 +206,7 @@ impl SidebarWidget<'_> {
         )));
         if self.model.busy || self.model.objective.is_some() {
             if let Some(obj) = self.model.objective.as_deref() {
-                lines.push(kv("Objective", &truncate(obj, 60)));
+                lines.push(kv("Objective", truncate(obj, 60)));
             }
             lines.push(kv("Stage", self.stage()));
             lines.push(kv("Changes", self.changes_label()));
@@ -245,21 +245,21 @@ impl SidebarWidget<'_> {
         lines.push(kv("Model", present(&self.model.model)));
         lines.push(kv("Provider", present(&self.model.provider)));
         let pct = (self.model.ctx_pct * 100.0).clamp(0.0, 100.0);
-        lines.push(kv("Window", &format!("{pct:.0}%")));
+        lines.push(kv("Window", format!("{pct:.0}%")));
         lines.push(kv(
             "Context tokens",
-            &format!("{} / {}", self.model.ctx_used, self.model.ctx_total),
+            format!("{} / {}", self.model.ctx_used, self.model.ctx_total),
         ));
-        lines.push(kv("Tokens used", &self.model.tokens_used.to_string()));
+        lines.push(kv("Tokens used", self.model.tokens_used.to_string()));
         if let Some((before, after)) = self.model.context_reset {
-            lines.push(kv("Fresh context", &format!("{before:.0}% → {after:.0}%")));
+            lines.push(kv("Fresh context", format!("{before:.0}% → {after:.0}%")));
         } else {
             lines.push(kv("Fresh context", "Not active"));
         }
         lines.push(kv("Preserved details", "Recent activity"));
         lines.push(kv(
             "Instructions",
-            &format!("{} skills", self.model.skills.len()),
+            format!("{} skills", self.model.skills.len()),
         ));
         for name in &self.model.skills {
             lines.push(Line::from(Span::styled(format!("· {name}"), theme::text())));
@@ -283,14 +283,14 @@ impl SidebarWidget<'_> {
         ));
         lines.push(kv(
             "Session allows",
-            &self.model.session_allows.len().to_string(),
+            self.model.session_allows.len().to_string(),
         ));
-        lines.push(kv("Messages", &self.model.message_count.to_string()));
+        lines.push(kv("Messages", self.model.message_count.to_string()));
         lines.push(kv(
             "Tool results",
-            &self.model.tool_message_count.to_string(),
+            self.model.tool_message_count.to_string(),
         ));
-        lines.push(kv("Tools", &self.model.tools.len().to_string()));
+        lines.push(kv("Tools", self.model.tools.len().to_string()));
         for name in &self.model.tools {
             lines.push(Line::from(Span::styled(
                 format!("· {name}"),
