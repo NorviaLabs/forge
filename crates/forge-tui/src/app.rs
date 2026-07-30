@@ -72,14 +72,6 @@ use ratatui::widgets::Clear;
 
 use crate::{MAX_RECENT_RUNS, RUN_HISTORY_VERSION};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum WorkspaceMode {
-    #[default]
-    Chat,
-    Editor,
-    Diff,
-}
-
 const WORKSPACE_HISTORY_LIMIT: usize = 32;
 const UI_STATE_VERSION: u32 = 1;
 
@@ -386,9 +378,6 @@ enum SemanticCommand {
         line: String,
     },
     CycleFocus {
-        forward: bool,
-    },
-    CycleWorkspaceTab {
         forward: bool,
     },
     ToggleInspector,
@@ -793,11 +782,9 @@ pub struct TuiApp {
     reasoning_effort: ReasoningEffort,
     /// Expand last tool detail (Ctrl+O).
     tool_expanded: bool,
-    /// V3.1 contextual workspace navigation, adapted to the current tab UI.
+    /// V3.1 contextual workspace navigation.
     workspace_navigation: WorkspaceNavigation,
-    /// Active workspace tab. Older restored sessions safely use the default Chat mode.
-    pub workspace_mode: WorkspaceMode,
-    /// Read-only source viewer state for the Editor workspace tab.
+    /// Read-only source viewer state for the File workspace view.
     pub source_viewer: SourceViewer,
     file_watcher: Option<RecommendedWatcher>,
     file_change_rx: Receiver<FileChangeEvent>,
@@ -902,7 +889,6 @@ impl TuiApp {
             reasoning_effort: ReasoningEffort::Auto,
             tool_expanded: false,
             workspace_navigation: WorkspaceNavigation::default(),
-            workspace_mode: WorkspaceMode::default(),
             source_viewer: SourceViewer::new(),
             file_watcher: None,
             file_change_rx,
@@ -1193,7 +1179,6 @@ impl TuiApp {
                     old_top.min(self.source_viewer.lines.len().saturating_sub(1));
                 self.workspace_navigation
                     .replace_view(WorkspaceView::File(workspace_path));
-                self.workspace_mode = WorkspaceMode::Editor;
                 self.set_feedback(FeedbackSeverity::Info, "Open file was renamed externally");
                 return true;
             }
@@ -1837,7 +1822,6 @@ impl TuiApp {
     fn show_file_in_editor(&mut self, path: &Path) {
         let root = self.session.workspace_root().to_path_buf();
         self.source_viewer.open(&root, path);
-        self.workspace_mode = WorkspaceMode::Editor;
         self.focus_block(FocusBlock::Workspace);
         self.status_message = "Viewing file (readonly)".into();
         // Keep the file explorer in sync with the active file.
@@ -4981,19 +4965,15 @@ Reply with ONLY the commit message line.\n\n\
 
     fn apply_workspace_view(&mut self, view: &WorkspaceView) {
         match view {
-            WorkspaceView::Conversation => {
-                self.workspace_mode = WorkspaceMode::Chat;
-            }
+            WorkspaceView::Conversation => {}
             WorkspaceView::File(path) => {
                 self.show_file_in_editor(path);
             }
             WorkspaceView::Diff(DiffCommandContext::Current) => {
-                self.workspace_mode = WorkspaceMode::Diff;
                 self.focus_block(FocusBlock::Workspace);
             }
             WorkspaceView::Run(id) => {
                 if self.run_exists(id) {
-                    self.workspace_mode = WorkspaceMode::Chat;
                     self.focus_block(FocusBlock::Workspace);
                 } else {
                     self.set_feedback(
@@ -5002,7 +4982,6 @@ Reply with ONLY the commit message line.\n\n\
                     );
                     self.workspace_navigation
                         .replace_view(WorkspaceView::Conversation);
-                    self.workspace_mode = WorkspaceMode::Chat;
                 }
             }
         }
@@ -5853,15 +5832,6 @@ Reply with ONLY the commit message line.\n\n\
                 self.dispatch_line(&line).await?;
             }
             SemanticCommand::CycleFocus { forward } => self.cycle_focus_block(forward),
-            SemanticCommand::CycleWorkspaceTab { forward } => {
-                if forward {
-                    self.navigate_to_workspace_view(WorkspaceView::Diff(
-                        DiffCommandContext::Current,
-                    ));
-                } else {
-                    self.go_back_workspace();
-                }
-            }
             SemanticCommand::ToggleInspector => {
                 self.sidebar_visible = !self.sidebar_visible;
                 if self.sidebar_visible {
@@ -5982,8 +5952,8 @@ Reply with ONLY the commit message line.\n\n\
         }
 
         let height = self.last_editor_height.saturating_sub(2) as usize;
-        // Navigation shortcuts are plain keys so that Alt/Ctrl combinations
-        // continue to control workspace tabs and other chrome.
+        // Navigation shortcuts are plain keys so modified combinations can
+        // continue to control contextual workspace and chrome commands.
         match key.code {
             KeyCode::Up if key.modifiers.is_empty() => {
                 self.source_viewer.move_cursor_vertical(-1, height);
@@ -7859,6 +7829,142 @@ mod tests {
         terminal.draw(|frame| app.draw(frame)).unwrap();
     }
 
+    #[tokio::test]
+    async fn final_shell_rendering_matrix_covers_v31_states_without_obsolete_chrome() {
+        let sizes = [(80, 24), (120, 40), (160, 50), (240, 60)];
+        let mut scenarios: Vec<(&str, TempDir, TuiApp, Vec<&str>)> = Vec::new();
+
+        let (dir, app) = focus_test_app().await;
+        scenarios.push(("conversation idle", dir, app, vec!["Describe a task"]));
+
+        let (dir, mut app) = focus_test_app().await;
+        app.busy = true;
+        app.busy_phase = BusyPhase::Model;
+        app.turn_started = Some(Instant::now());
+        scenarios.push(("agent thinking", dir, app, vec!["thinking"]));
+
+        let (dir, mut app) = focus_test_app().await;
+        app.files_visible = true;
+        scenarios.push(("files open", dir, app, vec!["FILES", "Describe a task"]));
+
+        let (dir, mut app) = focus_test_app().await;
+        app.files_visible = false;
+        scenarios.push(("files closed", dir, app, vec!["Describe a task"]));
+
+        let (dir, mut app) = focus_test_app().await;
+        let file = dir.path().join("src").join("matrix.rs");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, "fn matrix() {}\n").unwrap();
+        app.execute_semantic_command(SemanticCommand::OpenFile(file.clone()))
+            .await
+            .unwrap();
+        scenarios.push(("file open", dir, app, vec!["matrix.rs"]));
+
+        let (dir, mut app) = focus_test_app().await;
+        app.execute_semantic_command(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
+            .await
+            .unwrap();
+        scenarios.push(("diff", dir, app, vec!["CHANGES"]));
+
+        let (dir, mut app) = focus_test_app().await;
+        app.run.draft.command_input = "cargo test".into();
+        app.run_current_draft();
+        scenarios.push((
+            "background run",
+            dir,
+            app,
+            vec!["Running cargo test", "View output"],
+        ));
+
+        let (dir, mut app) = focus_test_app().await;
+        app.run.draft.command_input = "cargo test".into();
+        app.run_current_draft();
+        app.execute_semantic_command(SemanticCommand::OpenRun(RunCommandTarget::Current))
+            .await
+            .unwrap();
+        scenarios.push(("run open", dir, app, vec!["Run: cargo test"]));
+
+        let (dir, mut app) = focus_test_app().await;
+        app.run.draft.command_input = "cargo test".into();
+        app.run_current_draft();
+        if let Some(record) = app.run.current.as_mut() {
+            record.state = RunState::Failed;
+            record.exit_status = Some(101);
+        }
+        let run_id = app.current_run_id().unwrap();
+        app.execute_semantic_command(SemanticCommand::OpenRun(RunCommandTarget::Id(run_id)))
+            .await
+            .unwrap();
+        scenarios.push(("run failed", dir, app, vec!["Failed", "Exit status: 101"]));
+
+        let (dir, mut app) = focus_test_app().await;
+        app.open_hitl_overlay(direct_hitl_payload("matrix-approval", "src/main.rs"));
+        scenarios.push((
+            "approval",
+            dir,
+            app,
+            vec!["Approval required", "Allow once", "Deny"],
+        ));
+
+        let (dir, mut app) = focus_test_app().await;
+        app.sidebar_visible = false;
+        scenarios.push(("inspector closed", dir, app, vec!["Describe a task"]));
+
+        let (dir, mut app) = focus_test_app().await;
+        app.sidebar_visible = true;
+        app.focus_block(FocusBlock::Inspector);
+        scenarios.push((
+            "inspector open",
+            dir,
+            app,
+            vec!["INSPECTOR", "Describe a task"],
+        ));
+
+        let (dir, mut app) = focus_test_app().await;
+        app.bottom_panel.open = false;
+        scenarios.push(("bottom closed", dir, app, vec!["Describe a task"]));
+
+        let (dir, mut app) = focus_test_app().await;
+        app.open_bottom_panel(Some(BottomPanelTab::Terminal));
+        scenarios.push(("bottom open", dir, app, vec!["Terminal", "Describe a task"]));
+
+        let (dir, mut app) = focus_test_app().await;
+        app.runtime.mouse_capture = false;
+        scenarios.push(("mouse disabled", dir, app, vec!["Describe a task"]));
+
+        for (name, _dir, mut app, expected) in scenarios {
+            for (width, height) in sizes {
+                let text = render_app_text(&mut app, width, height);
+                assert!(
+                    !text.contains(" Chat  Editor  Diff "),
+                    "{name} at {width}x{height} restored permanent tabs:\n{text}"
+                );
+                assert!(
+                    !text.contains("BOTTOM"),
+                    "{name} at {width}x{height} restored BOTTOM label:\n{text}"
+                );
+                assert!(
+                    !text.contains("Ctrl+P close"),
+                    "{name} at {width}x{height} restored shortcut manual:\n{text}"
+                );
+                if name == "mouse disabled" {
+                    assert!(
+                        !text.to_ascii_lowercase().contains("mouse"),
+                        "mouse-disabled chrome should not spend space on mouse hints:\n{text}"
+                    );
+                }
+                let lower_text = text.to_ascii_lowercase();
+                assert!(
+                    expected
+                        .iter()
+                        .any(|needle| lower_text.contains(&needle.to_ascii_lowercase())),
+                    "{name} at {width}x{height} missing expected state {:?}:\n{text}",
+                    expected
+                );
+            }
+        }
+    }
+
     fn mouse(kind: MouseEventKind, x: u16, y: u16) -> MouseEvent {
         MouseEvent {
             kind,
@@ -8183,12 +8289,18 @@ mod tests {
         app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), x, y))
             .await
             .unwrap();
-        assert_eq!(app.workspace_mode, WorkspaceMode::Chat);
+        assert_eq!(
+            app.workspace_navigation.current,
+            WorkspaceView::Conversation
+        );
         app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), x, y))
             .await
             .unwrap();
 
-        assert_eq!(app.workspace_mode, WorkspaceMode::Editor);
+        assert_eq!(
+            app.workspace_navigation.current,
+            WorkspaceView::File(canonical.clone())
+        );
         assert_eq!(app.source_viewer.path.as_deref(), Some(canonical.as_path()));
 
         let (enter_dir, mut enter_app) = focus_test_app().await;
@@ -8205,7 +8317,10 @@ mod tests {
             .execute_semantic_command(SemanticCommand::OpenSelectedEntry)
             .await
             .unwrap();
-        assert_eq!(enter_app.workspace_mode, app.workspace_mode);
+        assert!(matches!(
+            enter_app.workspace_navigation.current,
+            WorkspaceView::File(_)
+        ));
         assert!(enter_app.source_viewer.path.is_some());
     }
 
@@ -8249,7 +8364,10 @@ mod tests {
         ))
         .await
         .unwrap();
-        assert_eq!(app.workspace_mode, WorkspaceMode::Chat);
+        assert_eq!(
+            app.workspace_navigation.current,
+            WorkspaceView::Conversation
+        );
         assert_eq!(
             app.file_explorer.selected_path.as_deref(),
             Some(first.as_path())
@@ -8262,7 +8380,10 @@ mod tests {
         ))
         .await
         .unwrap();
-        assert_eq!(app.workspace_mode, WorkspaceMode::Chat);
+        assert_eq!(
+            app.workspace_navigation.current,
+            WorkspaceView::Conversation
+        );
         assert_eq!(
             app.file_explorer.selected_path.as_deref(),
             Some(second.as_path())
@@ -8309,7 +8430,10 @@ mod tests {
         ))
         .await
         .unwrap();
-        assert_eq!(app.workspace_mode, WorkspaceMode::Chat);
+        assert_eq!(
+            app.workspace_navigation.current,
+            WorkspaceView::Conversation
+        );
         app.clear_pending_double_click();
 
         app.handle_mouse(mouse(
@@ -8333,7 +8457,10 @@ mod tests {
         ))
         .await
         .unwrap();
-        assert_eq!(app.workspace_mode, WorkspaceMode::Chat);
+        assert_eq!(
+            app.workspace_navigation.current,
+            WorkspaceView::Conversation
+        );
         app.clear_pending_double_click();
 
         app.handle_mouse(mouse(
@@ -8357,7 +8484,10 @@ mod tests {
         ))
         .await
         .unwrap();
-        assert_eq!(app.workspace_mode, WorkspaceMode::Chat);
+        assert_eq!(
+            app.workspace_navigation.current,
+            WorkspaceView::Conversation
+        );
         app.clear_pending_double_click();
 
         app.handle_mouse(mouse(
@@ -8383,7 +8513,10 @@ mod tests {
         ))
         .await
         .unwrap();
-        assert_eq!(app.workspace_mode, WorkspaceMode::Chat);
+        assert_eq!(
+            app.workspace_navigation.current,
+            WorkspaceView::Conversation
+        );
     }
 
     #[tokio::test]
@@ -8550,7 +8683,10 @@ mod tests {
         app.handle_key(press(KeyCode::Right, KeyModifiers::SHIFT))
             .await
             .unwrap();
-        assert_eq!(app.workspace_mode, WorkspaceMode::Chat);
+        assert_eq!(
+            app.workspace_navigation.current,
+            WorkspaceView::Conversation
+        );
         app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
             .await
             .unwrap();
@@ -8650,12 +8786,18 @@ mod tests {
         app.execute_semantic_command(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
             .await
             .unwrap();
-        assert_eq!(app.workspace_mode, WorkspaceMode::Diff);
+        assert_eq!(
+            app.workspace_navigation.current,
+            WorkspaceView::Diff(DiffCommandContext::Current)
+        );
 
         app.execute_semantic_command(SemanticCommand::OpenFile(path.clone()))
             .await
             .unwrap();
-        assert_eq!(app.workspace_mode, WorkspaceMode::Editor);
+        assert_eq!(
+            app.workspace_navigation.current,
+            WorkspaceView::File(path.clone())
+        );
         assert_eq!(
             app.source_viewer.path.as_deref(),
             Some(path.canonicalize().unwrap().as_path())
@@ -8688,7 +8830,10 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(app.workspace_mode, WorkspaceMode::Chat);
+        assert_eq!(
+            app.workspace_navigation.current,
+            WorkspaceView::Conversation
+        );
         assert!(!app.bottom_panel.open);
     }
 
@@ -8760,7 +8905,6 @@ mod tests {
             WorkspaceView::Conversation
         );
         assert!(app.workspace_navigation.history.is_empty());
-        assert_eq!(app.workspace_mode, WorkspaceMode::Chat);
     }
 
     #[tokio::test]
@@ -8783,7 +8927,6 @@ mod tests {
             app.workspace_navigation.history,
             vec![WorkspaceView::Conversation]
         );
-        assert_eq!(app.workspace_mode, WorkspaceMode::Editor);
 
         app.execute_semantic_command(SemanticCommand::OpenFile(second.clone()))
             .await
@@ -8825,7 +8968,6 @@ mod tests {
                 WorkspaceView::File(first.clone())
             ]
         );
-        assert_eq!(app.workspace_mode, WorkspaceMode::Diff);
 
         app.execute_semantic_command(SemanticCommand::OpenFile(second.clone()))
             .await
@@ -8843,7 +8985,6 @@ mod tests {
                 WorkspaceView::Diff(DiffCommandContext::Current)
             ]
         );
-        assert_eq!(app.workspace_mode, WorkspaceMode::Editor);
     }
 
     #[tokio::test]
@@ -8867,7 +9008,6 @@ mod tests {
             app.workspace_navigation.current,
             WorkspaceView::Conversation
         );
-        assert_eq!(app.workspace_mode, WorkspaceMode::Chat);
     }
 
     #[tokio::test]
@@ -8888,7 +9028,6 @@ mod tests {
             WorkspaceView::Conversation
         );
         assert!(app.workspace_navigation.history.is_empty());
-        assert_eq!(app.workspace_mode, WorkspaceMode::Chat);
     }
 
     #[tokio::test]
@@ -10410,7 +10549,10 @@ mod tests {
         app.handle_key(press(KeyCode::Char(']'), KeyModifiers::NONE))
             .await
             .unwrap();
-        assert_eq!(app.workspace_mode, WorkspaceMode::Chat);
+        assert_eq!(
+            app.workspace_navigation.current,
+            WorkspaceView::Conversation
+        );
         assert!(app.overlay.is_some());
     }
 

@@ -12,6 +12,8 @@ Authoritative references:
 
 Scope note: this audit describes the current checkout. The tree already contained in-progress File Explorer filesystem-operation changes before this audit phase; those are treated as current local state and are not redesigned here.
 
+Final status note: this document is the Prompt 00 baseline audit. Later V3.1 phases replaced the permanent Chat/Editor/Diff tab model with `WorkspaceView`, made Files visibility repository-scoped and independent, added scoped approval, contextual supporting surfaces, command-driven mouse input, safe double-click activation, and edge-state recovery. Use `docs/forge-v31-redesign-prompts/FORGE-V3.1-INTERACTION-CONTRACT.md` and `docs/forge-design-kit/FORGE-DESIGN.md` for the current contract.
+
 ## 1. Current State Model
 
 The current TUI state is centralized in `TuiApp` (`crates/forge-tui/src/app.rs`). It is a single application model that owns session, layout visibility, keyboard focus, workspace tab selection, overlays, file tree, source viewer, run state, activity, and transient UI banners.
