@@ -183,12 +183,36 @@ impl FileIconMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Theme {
+    #[default]
+    Dark,
+    Light,
+    System,
+    Ansi,
+}
+
+impl Theme {
+    pub fn parse(s: &str) -> Result<Self, ConfigError> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "dark" => Ok(Self::Dark),
+            "light" => Ok(Self::Light),
+            "system" => Ok(Self::System),
+            "ansi" => Ok(Self::Ansi),
+            _ => Ok(Self::Dark),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TuiConfig {
     #[serde(default)]
     pub file_icons: FileIconMode,
     #[serde(default = "default_mouse_capture")]
     pub mouse_capture: bool,
+    #[serde(default)]
+    pub theme: Theme,
 }
 
 impl Default for TuiConfig {
@@ -196,6 +220,7 @@ impl Default for TuiConfig {
         Self {
             file_icons: FileIconMode::Unicode,
             mouse_capture: default_mouse_capture(),
+            theme: Theme::default(),
         }
     }
 }
@@ -215,6 +240,7 @@ pub struct CommandConfig {
 struct TuiConfigFile {
     file_icons: Option<String>,
     mouse_capture: Option<bool>,
+    theme: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -547,6 +573,11 @@ impl ConfigFile {
             if let Some(mouse_capture) = tui.mouse_capture {
                 cfg.tui.mouse_capture = mouse_capture;
             }
+            if let Some(theme) = tui.theme {
+                if let Ok(th) = Theme::parse(&theme) {
+                    cfg.tui.theme = th;
+                }
+            }
         }
         if let Some(validation) = self.validation {
             cfg.validation = validation;
@@ -755,6 +786,7 @@ mod tests {
         assert!(cfg.model.model.is_empty());
         assert_eq!(cfg.model.request_timeout_secs, 300);
         assert_eq!(cfg.journal.backend, "sqlite");
+        assert_eq!(cfg.tui.theme, Theme::Dark);
     }
 
     #[test]
@@ -779,7 +811,9 @@ command = "echo"
 args = ["hi"]
 [tui]
 mouse_capture = false
+theme = "light"
 "#,
+
             ws = dir.path().display()
         )
         .unwrap();
@@ -799,6 +833,7 @@ mouse_capture = false
         assert_eq!(cfg.mcp.servers[0].id, "demo");
         assert_eq!(cfg.resolved_workspace, dir.path());
         assert!(!cfg.tui.mouse_capture);
+        assert_eq!(cfg.tui.theme, Theme::Light);
     }
 
     #[test]
