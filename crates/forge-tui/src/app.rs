@@ -20,7 +20,7 @@ use forge_connect::{
 };
 use forge_core::{AgentSession, ApplyOutcome, LoopError};
 use forge_tools::{GitTool, Tool, ToolContext};
-use forge_types::{HitlDecision, ModelStreamEvent, ProgressDocument};
+use forge_types::{HitlDecision, HitlPayload, ModelStreamEvent, ProgressDocument};
 use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use ratatui::backend::CrosstermBackend;
 use ratatui::text::{Line, Span};
@@ -50,9 +50,9 @@ use crate::layout::split_areas_full;
 use crate::layout::split_areas_with_side_panels;
 use crate::msg_queue::MessageQueue;
 use crate::overlays::{
-    centered_rect, filter_palette, handle_overlay_key, models_from_catalog, ConnectProfileItem,
-    FileExplorerItem, Key, Key as OverlayKey, Overlay, OverlayAction, OverlayWidget, PaletteItem,
-    ResumeSessionItem,
+    centered_rect, filter_palette, handle_overlay_key, models_from_catalog, ApprovalExecutionMode,
+    ApprovalOverlayState, ConnectProfileItem, FileExplorerItem, Key, Key as OverlayKey, Overlay,
+    OverlayAction, OverlayWidget, PaletteItem, ResumeSessionItem,
 };
 use crate::run::{RunExecutionMode, RunHistoryFile, RunState, RunStateModel};
 use crate::sidebar::{InspectorView, SidebarModel, SidebarWidget};
@@ -176,6 +176,28 @@ impl FilesVisibility {
 
     fn is_open(self) -> bool {
         matches!(self, Self::Open)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ApprovalIdentity {
+    executable: String,
+    arguments: Vec<String>,
+    working_directory: String,
+    environment_delta: String,
+    workspace_identity: String,
+    session_id: String,
+}
+
+impl ApprovalIdentity {
+    fn label(&self) -> String {
+        std::iter::once(self.executable.as_str())
+            .chain(self.arguments.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .take(80)
+            .collect()
     }
 }
 
@@ -745,8 +767,8 @@ pub struct TuiApp {
     diff_selected: usize,
     /// Soft-cancel in-flight turn (Esc while busy).
     cancel_requested: bool,
-    /// Tools allowed for the rest of this session (HITL "s").
-    hitl_session_allow: HashSet<String>,
+    /// Exact Direct invocations remembered for this Forge session only.
+    hitl_session_allow: HashSet<ApprovalIdentity>,
     /// Transient toast (auto-clears).
     toast: Option<(Instant, String)>,
     /// Last measured height of the editor viewport for page scrolling.
@@ -912,6 +934,35 @@ impl TuiApp {
 
     fn repository_or_workspace_id(&self) -> String {
         self.session.workspace_root().display().to_string()
+    }
+
+    fn approval_state_for_payload(&self, payload: &HitlPayload) -> ApprovalOverlayState {
+        ApprovalOverlayState::for_payload(
+            payload,
+            self.session.workspace_root().display().to_string(),
+        )
+    }
+
+    fn approval_identity_for_payload(&self, payload: &HitlPayload) -> Option<ApprovalIdentity> {
+        let approval = self.approval_state_for_payload(payload);
+        if approval.mode != ApprovalExecutionMode::Direct || !approval.remember_eligible {
+            return None;
+        }
+        Some(ApprovalIdentity {
+            executable: approval.executable_or_shell,
+            arguments: approval.arguments,
+            working_directory: approval.working_directory,
+            environment_delta: approval.environment_delta,
+            workspace_identity: self.repository_or_workspace_id(),
+            session_id: self.session.session_id.to_string(),
+        })
+    }
+
+    fn open_hitl_overlay(&mut self, payload: HitlPayload) {
+        self.overlay = Some(Overlay::hitl_with_working_directory(
+            payload,
+            self.session.workspace_root().display().to_string(),
+        ));
     }
 
     fn load_ui_state(&mut self) {
@@ -3017,6 +3068,44 @@ impl TuiApp {
         Ok(())
     }
 
+    async fn resolve_hitl_overlay(
+        &mut self,
+        decision: HitlDecision,
+        remember_exact_direct: bool,
+    ) -> Result<(), TuiError> {
+        let Some(payload) = self.session.pending_hitl.clone() else {
+            self.overlay = None;
+            return Ok(());
+        };
+
+        let identity_to_remember = if remember_exact_direct {
+            let Some(identity) = self.approval_identity_for_payload(&payload) else {
+                self.set_feedback(
+                    FeedbackSeverity::Warn,
+                    "this approval cannot be remembered; use Allow once or Deny",
+                );
+                return Ok(());
+            };
+            Some(identity)
+        } else {
+            None
+        };
+
+        self.session.resolve_hitl(decision.clone(), "tui").await?;
+        if let Some(identity) = identity_to_remember {
+            self.hitl_session_allow.insert(identity);
+        }
+        self.overlay = None;
+        match decision {
+            HitlDecision::Approve if remember_exact_direct => {
+                self.push_toast("remembered exact Direct invocation");
+            }
+            HitlDecision::Approve => self.push_toast("approved once"),
+            HitlDecision::Deny => self.push_toast("denied"),
+        }
+        Ok(())
+    }
+
     pub async fn drain_pending_context_reset(
         &mut self,
         mut terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
@@ -4047,7 +4136,11 @@ Reply with ONLY the commit message line.\n\n\
             }
             .into();
             sidebar.context_reset = self.context_reset_snapshot;
-            sidebar.session_allows = self.hitl_session_allow.iter().cloned().collect();
+            sidebar.session_allows = self
+                .hitl_session_allow
+                .iter()
+                .map(ApprovalIdentity::label)
+                .collect();
             let header = self.repo_header();
             sidebar.repo_name = header.repo_name;
             sidebar.branch = header.branch;
@@ -5847,26 +5940,15 @@ Reply with ONLY the commit message line.\n\n\
                     self.set_feedback(FeedbackSeverity::Info, "Step 1 of 2 · choose a provider");
                 }
                 OverlayAction::HitlApprove => {
-                    self.session
-                        .resolve_hitl(HitlDecision::Approve, "tui")
+                    self.resolve_hitl_overlay(HitlDecision::Approve, false)
                         .await?;
-                    self.overlay = None;
-                    self.push_toast("approved");
                 }
                 OverlayAction::HitlApproveSession => {
-                    if let Some(ref p) = self.session.pending_hitl {
-                        self.hitl_session_allow.insert(p.tool.clone());
-                    }
-                    self.session
-                        .resolve_hitl(HitlDecision::Approve, "tui")
+                    self.resolve_hitl_overlay(HitlDecision::Approve, true)
                         .await?;
-                    self.overlay = None;
-                    self.push_toast("allowed for session");
                 }
                 OverlayAction::HitlDeny => {
-                    self.session.resolve_hitl(HitlDecision::Deny, "tui").await?;
-                    self.overlay = None;
-                    self.push_toast("denied");
+                    self.resolve_hitl_overlay(HitlDecision::Deny, false).await?;
                 }
                 OverlayAction::ContinueTurns => {
                     self.overlay = None;
@@ -6601,7 +6683,7 @@ Reply with ONLY the commit message line.\n\n\
             // Leave queue intact so the operator can fix and continue.
         } else if self.session.pending_hitl.is_some() {
             if let Some(ref p) = self.session.pending_hitl {
-                self.overlay = Some(Overlay::hitl(p.clone()));
+                self.open_hitl_overlay(p.clone());
             }
             self.last_exit = ExitCode::AwaitingHitl;
             self.set_feedback(FeedbackSeverity::Warn, "awaiting human approval");
@@ -6637,23 +6719,29 @@ Reply with ONLY the commit message line.\n\n\
     pub fn maybe_open_hitl(&mut self) {
         if self.overlay.is_none() {
             if let Some(ref p) = self.session.pending_hitl {
-                if self.hitl_session_allow.contains(&p.tool) {
+                if self
+                    .approval_identity_for_payload(p)
+                    .is_some_and(|identity| self.hitl_session_allow.contains(&identity))
+                {
                     // Will be drained by `drain_auto_hitl` in the event loop.
                     return;
                 }
-                self.overlay = Some(Overlay::hitl(p.clone()));
+                self.open_hitl_overlay(p.clone());
             }
         }
     }
 
-    /// Auto-approve HITL for tools allowed this session (`s` key).
+    /// Auto-approve HITL for exact Direct invocations remembered this session.
     pub async fn drain_auto_hitl(&mut self) -> Result<(), TuiError> {
         if let Some(ref p) = self.session.pending_hitl.clone() {
-            if self.hitl_session_allow.contains(&p.tool) {
+            if let Some(identity) = self.approval_identity_for_payload(p) {
+                if !self.hitl_session_allow.contains(&identity) {
+                    return Ok(());
+                }
                 self.session
                     .resolve_hitl(HitlDecision::Approve, "tui-session")
                     .await?;
-                self.push_toast(format!("auto-approved {}", p.tool));
+                self.push_toast(format!("auto-approved {}", identity.label()));
             }
         }
         Ok(())
@@ -6735,6 +6823,8 @@ fn map_key(key: event::KeyEvent) -> OverlayKey {
     match key.code {
         KeyCode::Esc => OverlayKey::Esc,
         KeyCode::Enter => OverlayKey::Enter,
+        KeyCode::Tab => OverlayKey::Tab,
+        KeyCode::BackTab => OverlayKey::BackTab,
         KeyCode::Up => OverlayKey::Up,
         KeyCode::Down => OverlayKey::Down,
         KeyCode::Left => OverlayKey::Left,
@@ -8011,6 +8101,212 @@ mod tests {
         assert_eq!(app.workspace_navigation, before);
         assert!(app.activity_summary().is_none());
         assert_eq!(app.workspace_navigation.current, WorkspaceView::File(path));
+    }
+
+    fn direct_hitl_payload(call_id: &str, path: &str) -> HitlPayload {
+        HitlPayload {
+            call_id: call_id.into(),
+            tool: "read_file".into(),
+            args_redacted: json!({"path": path}),
+            reason: "test approval".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn approval_direct_allow_once_resolves_without_remembering() {
+        let (dir, mut app) = focus_test_app().await;
+        fs::write(dir.path().join("allowed.txt"), "ok").unwrap();
+        app.session.pending_hitl = Some(direct_hitl_payload("direct-once", "allowed.txt"));
+        app.maybe_open_hitl();
+
+        app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .unwrap();
+
+        assert!(app.session.pending_hitl.is_none());
+        assert!(app.hitl_session_allow.is_empty());
+        assert!(app
+            .session
+            .messages
+            .iter()
+            .any(|message| message.content == "ok"));
+    }
+
+    #[tokio::test]
+    async fn approval_remembered_direct_invocation_matches_exact_identity() {
+        let (dir, mut app) = focus_test_app().await;
+        fs::write(dir.path().join("remember.txt"), "ok").unwrap();
+        let payload = direct_hitl_payload("remember", "remember.txt");
+        app.session.pending_hitl = Some(payload.clone());
+        app.maybe_open_hitl();
+
+        app.handle_key(press(KeyCode::Char('s'), KeyModifiers::NONE))
+            .await
+            .unwrap();
+
+        let identity = app.approval_identity_for_payload(&payload).unwrap();
+        assert!(app.hitl_session_allow.contains(&identity));
+        assert!(!app.hitl_session_allow.contains(
+            &app.approval_identity_for_payload(&direct_hitl_payload("arg", "other.txt"))
+                .unwrap()
+        ));
+
+        let env_payload = HitlPayload {
+            args_redacted: json!({"path": "remember.txt", "env": {"RUST_LOG": "debug"}}),
+            ..direct_hitl_payload("env", "remember.txt")
+        };
+        assert!(!app
+            .hitl_session_allow
+            .contains(&app.approval_identity_for_payload(&env_payload).unwrap()));
+
+        let cwd_payload = HitlPayload {
+            args_redacted: json!({"path": "remember.txt", "cwd": "nested"}),
+            ..direct_hitl_payload("cwd", "remember.txt")
+        };
+        assert!(!app
+            .hitl_session_allow
+            .contains(&app.approval_identity_for_payload(&cwd_payload).unwrap()));
+
+        let (other_dir, other_app) = focus_test_app().await;
+        fs::write(other_dir.path().join("remember.txt"), "ok").unwrap();
+        assert!(!app
+            .hitl_session_allow
+            .contains(&other_app.approval_identity_for_payload(&payload).unwrap()));
+    }
+
+    #[tokio::test]
+    async fn approval_remembered_direct_expires_with_session() {
+        let (dir, mut app) = focus_test_app().await;
+        fs::write(dir.path().join("session.txt"), "ok").unwrap();
+        let payload = direct_hitl_payload("session", "session.txt");
+        app.session.pending_hitl = Some(payload.clone());
+        app.maybe_open_hitl();
+        app.handle_key(press(KeyCode::Char('s'), KeyModifiers::NONE))
+            .await
+            .unwrap();
+
+        let next_session = session_for_workspace(dir.path()).await;
+        let next_app = TuiApp::new(
+            next_session,
+            TuiRuntimeConfig {
+                model_label: "mock".into(),
+                provider: "mock".into(),
+                cwd: dir.path().to_path_buf(),
+                version: "test".into(),
+                startup_notices: Vec::new(),
+                validation_command: None,
+                file_icons: FileIconMode::Unicode,
+            },
+        );
+
+        assert!(next_app.hitl_session_allow.is_empty());
+        assert_ne!(
+            app.approval_identity_for_payload(&payload),
+            next_app.approval_identity_for_payload(&payload)
+        );
+    }
+
+    #[tokio::test]
+    async fn approval_shell_mode_cannot_be_remembered() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.session.pending_hitl = Some(HitlPayload {
+            call_id: "shell".into(),
+            tool: "bash".into(),
+            args_redacted: json!({"command": "git push origin main"}),
+            reason: "test approval".into(),
+        });
+        app.maybe_open_hitl();
+
+        let Some(Overlay::Hitl { approval, .. }) = &app.overlay else {
+            panic!("expected approval overlay");
+        };
+        assert_eq!(approval.mode, ApprovalExecutionMode::Shell);
+        assert!(!approval.remember_eligible);
+        assert_eq!(
+            app.approval_identity_for_payload(app.session.pending_hitl.as_ref().unwrap()),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn approval_escape_denies_and_underlying_commands_are_blocked() {
+        let (dir, mut app) = focus_test_app().await;
+        fs::write(dir.path().join("blocked.txt"), "ok").unwrap();
+        app.session.pending_hitl = Some(direct_hitl_payload("esc", "blocked.txt"));
+        app.maybe_open_hitl();
+        let before_history = app.workspace_navigation.clone();
+
+        app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert!(app.input.text.is_empty());
+        assert!(app.session.pending_hitl.is_some());
+
+        app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
+            .await
+            .unwrap();
+
+        assert!(app.session.pending_hitl.is_none());
+        assert_eq!(app.workspace_navigation, before_history);
+        assert!(app
+            .session
+            .messages
+            .iter()
+            .any(|message| message.content.contains("HITL denied")));
+        assert!(!app
+            .session
+            .messages
+            .iter()
+            .any(|message| message.content == "ok"));
+    }
+
+    #[tokio::test]
+    async fn approval_duplicate_confirmation_is_idempotent() {
+        let (dir, mut app) = focus_test_app().await;
+        fs::write(dir.path().join("dup.txt"), "ok").unwrap();
+        app.session.pending_hitl = Some(direct_hitl_payload("dup", "dup.txt"));
+        app.maybe_open_hitl();
+
+        app.resolve_hitl_overlay(HitlDecision::Approve, false)
+            .await
+            .unwrap();
+        app.resolve_hitl_overlay(HitlDecision::Approve, false)
+            .await
+            .unwrap();
+
+        let successful_tool_messages = app
+            .session
+            .messages
+            .iter()
+            .filter(|message| message.content == "ok")
+            .count();
+        assert_eq!(successful_tool_messages, 1);
+    }
+
+    #[tokio::test]
+    async fn approval_overlay_80x24_renders_actions_and_redacts_secrets() {
+        let (_dir, mut app) = focus_test_app().await;
+        app.session.pending_hitl = Some(HitlPayload {
+            call_id: "secret".into(),
+            tool: "read_file".into(),
+            args_redacted: json!({"path": "config.txt", "api_key": "[REDACTED]"}),
+            reason: "secret test".into(),
+        });
+        app.maybe_open_hitl();
+
+        let rendered = render_app_text(&mut app, 80, 24);
+
+        assert!(rendered.contains("Approval required"), "{rendered}");
+        assert!(rendered.contains("Mode: Direct"), "{rendered}");
+        assert!(rendered.contains("Executable: read_file"), "{rendered}");
+        assert!(rendered.contains("Working directory:"), "{rendered}");
+        assert!(rendered.contains("[Allow once]"), "{rendered}");
+        assert!(rendered.contains("[Deny]"), "{rendered}");
+        assert!(rendered.contains("[REDACTED]"), "{rendered}");
+        assert!(
+            !rendered.contains("Remember this exact Direct invocation"),
+            "{rendered}"
+        );
     }
 
     #[tokio::test]
