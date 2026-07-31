@@ -431,7 +431,7 @@ fn platform_trash_dir() -> Result<PathBuf, FileOperationError> {
         let home = dirs::home_dir().ok_or_else(|| {
             FileOperationError::TrashUnavailable("home directory not found".into())
         })?;
-        return Ok(home.join(".Trash"));
+        Ok(home.join(".Trash"))
     }
     #[cfg(target_os = "linux")]
     {

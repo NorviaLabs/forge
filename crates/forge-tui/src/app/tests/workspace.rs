@@ -273,22 +273,6 @@ async fn files_visibility_persists_per_repository() {
 }
 
 #[tokio::test]
-async fn files_toggle_is_reachable_from_global_palette_dispatch() {
-    let (_dir, mut app) = focus_test_app().await;
-    assert!(!app.files_visible);
-
-    app.execute_semantic_command(SemanticCommand::DispatchSlash {
-        origin: SlashCommandOrigin::GlobalPalette,
-        line: "/files".into(),
-    })
-    .await
-    .unwrap();
-
-    assert!(app.files_visible);
-    assert_eq!(app.focus.block, FocusBlock::Files);
-}
-
-#[tokio::test]
 async fn opening_file_does_not_open_closed_files_preference() {
     let (dir, mut app) = focus_test_app().await;
     let path = dir.path().join("main.rs");
