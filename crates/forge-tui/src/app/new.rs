@@ -44,7 +44,6 @@ impl TuiApp {
             pending_context_reset: false,
             pending_external_editor: false,
             pending_attachment: None,
-            message_queue: MessageQueue::new(),
             queue_selected: None,
             stream_preview: String::new(),
             stream_thinking: String::new(),

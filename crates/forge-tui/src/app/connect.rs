@@ -156,7 +156,9 @@ impl TuiApp {
         self.pending_prompt = None;
         self.pending_hitl_decision = None;
         self.pending_context_reset = false;
-        self.message_queue = MessageQueue::new();
+        // The future-task queue is durable session state (owned by
+        // `AgentSession`, not the TUI) — a provider disconnect must not
+        // silently drop queued instructions.
         self.queue_selected = None;
         self.stream_preview.clear();
         self.stream_thinking.clear();

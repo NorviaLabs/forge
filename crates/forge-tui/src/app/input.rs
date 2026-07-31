@@ -206,8 +206,8 @@ impl TuiApp {
 
         let line = self.input.take();
         if line.trim().is_empty() {
-            if !self.busy && !self.message_queue.is_empty() {
-                self.dequeue_and_send_next();
+            if !self.busy && !self.session.queue.is_empty() {
+                self.dequeue_and_send_next().await;
             }
             return Ok(());
         }
@@ -216,10 +216,47 @@ impl TuiApp {
         self.slash_suggest_idx = 0;
         self.notices.clear();
         self.input.history_browse = false;
-        if self.busy && !line.trim_start().starts_with('/') {
-            self.enqueue_user_message(line);
-        } else {
+
+        // Slash commands always dispatch immediately regardless of lifecycle.
+        if line.trim_start().starts_with('/') {
             self.dispatch_line(&line).await?;
+            return Ok(());
+        }
+
+        match input_route::classify_input(&self.session.active_task, self.overlay.is_some(), &line)
+        {
+            input_route::InputRoute::StartNewTask => {
+                self.dispatch_line(&line).await?;
+            }
+            input_route::InputRoute::QueueFutureTask => {
+                self.enqueue_user_message(line).await;
+            }
+            input_route::InputRoute::ResolveApproval(decision) => {
+                let label = match decision {
+                    HitlDecision::Approve => "approved via composer",
+                    HitlDecision::Deny => "denied via composer",
+                    _ => "resolved via composer",
+                };
+                match self.session.resolve_hitl(decision, "tui").await {
+                    Ok(()) => {
+                        self.overlay = None;
+                        self.push_toast(label);
+                    }
+                    Err(e) => self.report_error(&e.to_string()),
+                }
+            }
+            input_route::InputRoute::AnswerClarification
+            | input_route::InputRoute::ResolveSelection => {
+                // No runtime producer exists yet for these wait reasons —
+                // structurally routable, but nothing sets them today.
+                self.set_feedback(FeedbackSeverity::Warn, "nothing pending to answer");
+            }
+            input_route::InputRoute::RejectStaleResponse => {
+                self.set_feedback(
+                    FeedbackSeverity::Warn,
+                    "resolve the pending approval first — type y/n, or use the approval overlay",
+                );
+            }
         }
         Ok(())
     }

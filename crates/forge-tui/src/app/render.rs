@@ -128,7 +128,7 @@ impl TuiApp {
             events: visible_events.len(),
             last_event_detail: visible_events.last().map_or(0, |event| event.detail.len()),
             banners: self.ui_banners.len(),
-            queue: self.message_queue.len(),
+            queue: self.session.queue.len(),
             queue_selected: self.queue_selected,
             chat_message_start: self.chat_message_start,
             chat_event_start: self.chat_event_start,
@@ -138,14 +138,14 @@ impl TuiApp {
             tool_expanded: self.tool_expanded,
             splash_dismissed: self.splash_dismissed,
             slash_mode,
-            status: self.session.status,
+            status: self.session.active_task.lifecycle,
             theme: crate::theme::active(),
         };
         if self.conversation_cache.as_ref().map(|cache| &cache.key) != Some(&key) {
             let mut conv = ConversationModel::from_messages(
                 visible_messages,
                 visible_events,
-                self.session.status,
+                self.session.active_task.lifecycle,
                 ConversationViewOpts {
                     busy: false,
                     stream_wait: None,
@@ -168,7 +168,11 @@ impl TuiApp {
                     conv.with_activity_summary(summary.label, summary.action_label, summary.kind);
             }
             conv = conv.with_queued_messages(
-                self.message_queue.iter().cloned().collect::<Vec<_>>(),
+                self.session
+                    .queue
+                    .visible()
+                    .map(|item| item.text.clone())
+                    .collect::<Vec<_>>(),
                 self.queue_selected,
             );
             if let BusyPhase::Tool { name } = &self.busy_phase {
@@ -176,7 +180,7 @@ impl TuiApp {
                     conv = conv.with_running_tool(name.clone());
                 }
             }
-            if let Some(payload) = &self.session.pending_hitl {
+            if let Some(payload) = self.session.pending_hitl() {
                 let args = payload
                     .args_redacted
                     .get("command")
@@ -196,7 +200,7 @@ impl TuiApp {
             ConversationModel::from_messages(
                 &[],
                 &[],
-                self.session.status,
+                self.session.active_task.lifecycle,
                 ConversationViewOpts { busy: true, ..opts },
             )
             .with_streaming_preview(self.stream_thinking.clone(), self.stream_preview.clone())

@@ -1153,6 +1153,7 @@ name = "forge-core"
 version = "0.1.0-alpha.10"
 dependencies = [
  "async-trait",
+ "chrono",
  "forge-config",
  "forge-context",
  "forge-durable",

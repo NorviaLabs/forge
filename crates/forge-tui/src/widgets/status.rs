@@ -1,7 +1,7 @@
 //! Session chrome data for `/status`.
 
 use crate::theme;
-use forge_types::SessionStatus;
+use forge_types::TaskLifecycle;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
@@ -98,28 +98,20 @@ pub enum TurnLifecycle {
 }
 
 impl TurnLifecycle {
-    /// Map authoritative session status + busy/cancel flags.
-    /// Does not inspect activity rows or assistant text.
-    pub fn from_session(status: SessionStatus, busy: bool, cancelled: bool) -> Self {
-        // Explicit durable cancel wins even if a stale busy flag lingers.
-        if cancelled || status == SessionStatus::Cancelled {
-            return Self::Cancelled;
-        }
+    /// Direct, 1:1 mirror of the authoritative `TaskLifecycle` — kept as a
+    /// distinct type only because it carries rendering-specific methods
+    /// (`.style()`, `.symbol()`, `.label()`); it must never re-derive its
+    /// value from `busy`/cancel flags or transcript content.
+    pub fn from_task_lifecycle(status: TaskLifecycle) -> Self {
         match status {
-            SessionStatus::AwaitingHitl => Self::Waiting,
-            SessionStatus::Failed => Self::Failed,
-            SessionStatus::Completed => Self::Completed,
-            SessionStatus::Interrupted => Self::Interrupted,
-            SessionStatus::Cancelled => Self::Cancelled,
-            SessionStatus::Running => {
-                if busy {
-                    Self::Working
-                } else {
-                    // Fresh / legacy Running with no live runtime is Ready, not Working.
-                    Self::Ready
-                }
-            }
-            // `SessionStatus` is `#[non_exhaustive]`. Never render an unrecognised status as
+            TaskLifecycle::Ready => Self::Ready,
+            TaskLifecycle::Working => Self::Working,
+            TaskLifecycle::Waiting => Self::Waiting,
+            TaskLifecycle::Failed => Self::Failed,
+            TaskLifecycle::Completed => Self::Completed,
+            TaskLifecycle::Cancelled => Self::Cancelled,
+            TaskLifecycle::Interrupted => Self::Interrupted,
+            // `TaskLifecycle` is `#[non_exhaustive]`. Never render an unrecognised status as
             // Ready or Working — that would imply a live runtime we cannot confirm.
             _ => Self::Interrupted,
         }
@@ -199,7 +191,7 @@ fn format_lifecycle_label(life: TurnLifecycle, detail: Option<&str>, animated: b
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct StatusModel {
-    pub status: SessionStatus,
+    pub status: TaskLifecycle,
     pub session_short: String,
     pub model: String,
     pub provider: String,
@@ -219,8 +211,6 @@ pub struct StatusModel {
     pub dirty: bool,
     pub resource: Option<String>,
     pub activity: Option<String>,
-    /// Soft-cancel of the in-flight turn (Esc while busy) reached a terminal cancel.
-    pub turn_cancelled: bool,
     /// Typed progress description for Working (from structured busy phase / progress).
     pub progress_description: Option<String>,
     /// Safe concise failure category for Failed header detail (never raw errors).
@@ -234,25 +224,15 @@ impl StatusModel {
         self.status_label_for_width(usize::MAX)
     }
 
-    /// Overall turn lifecycle label (not tool/activity phase).
+    /// Overall turn lifecycle label (not tool/activity phase). A direct,
+    /// non-inferred mapping of the authoritative session lifecycle — the
+    /// one legitimate override is connecting to a provider, which isn't
+    /// itself a task and so has no `TaskLifecycle` equivalent.
     pub fn turn_lifecycle(&self) -> TurnLifecycle {
-        // Connect-busy is waiting on the operator, not "Working".
         if self.busy && matches!(self.busy_phase, BusyPhase::Connect) {
             return TurnLifecycle::Waiting;
         }
-        if self.waiting_detail.is_some()
-            && !self.busy
-            && matches!(
-                self.status,
-                SessionStatus::Running | SessionStatus::AwaitingHitl
-            )
-        {
-            return TurnLifecycle::Waiting;
-        }
-        if self.status == SessionStatus::AwaitingHitl {
-            return TurnLifecycle::Waiting;
-        }
-        TurnLifecycle::from_session(self.status, self.busy, self.turn_cancelled)
+        TurnLifecycle::from_task_lifecycle(self.status)
     }
 
     pub fn current_state_label(&self) -> &'static str {
@@ -294,7 +274,7 @@ impl StatusModel {
                 .or_else(|| {
                     if matches!(self.busy_phase, BusyPhase::Connect) {
                         Some("Your input required".into())
-                    } else if self.status == SessionStatus::AwaitingHitl {
+                    } else if self.status == TaskLifecycle::Waiting {
                         Some("Approval required".into())
                     } else {
                         None
@@ -530,9 +510,8 @@ mod tests {
     use super::*;
     use ratatui::buffer::Buffer;
 
-    fn status_model(status: SessionStatus, busy: bool, busy_phase: BusyPhase) -> StatusModel {
+    fn status_model(status: TaskLifecycle, busy: bool, busy_phase: BusyPhase) -> StatusModel {
         StatusModel {
-            turn_cancelled: false,
             status,
             session_short: "abc".into(),
             model: "openai/gpt-5".into(),
@@ -561,7 +540,7 @@ mod tests {
     #[test]
     fn hitl_label() {
         let m = StatusModel {
-            status: SessionStatus::AwaitingHitl,
+            status: TaskLifecycle::Waiting,
             session_short: "abcd".into(),
             model: "mock".into(),
             provider: "mock".into(),
@@ -580,7 +559,6 @@ mod tests {
             dirty: false,
             resource: None,
             activity: None,
-            turn_cancelled: false,
             progress_description: None,
             failure_category: None,
             waiting_detail: None,
@@ -591,7 +569,7 @@ mod tests {
     #[test]
     fn busy_phase_model() {
         let m = StatusModel {
-            status: SessionStatus::Running,
+            status: TaskLifecycle::Working,
             session_short: "x".into(),
             model: "m".into(),
             provider: "native".into(),
@@ -610,7 +588,6 @@ mod tests {
             dirty: false,
             resource: None,
             activity: None,
-            turn_cancelled: false,
             progress_description: None,
             failure_category: None,
             waiting_detail: None,
@@ -623,7 +600,7 @@ mod tests {
     #[test]
     fn chrome_lines_include_provider_model() {
         let m = StatusModel {
-            status: SessionStatus::Running,
+            status: TaskLifecycle::Working,
             session_short: "abc".into(),
             model: "openai/gpt".into(),
             provider: "native".into(),
@@ -642,7 +619,6 @@ mod tests {
             dirty: false,
             resource: None,
             activity: None,
-            turn_cancelled: false,
             progress_description: None,
             failure_category: None,
             waiting_detail: None,
@@ -658,7 +634,7 @@ mod tests {
     #[test]
     fn status_bar_uses_connect_profile_and_model_name() {
         let m = StatusModel {
-            status: SessionStatus::Running,
+            status: TaskLifecycle::Working,
             session_short: "abc".into(),
             model: "openai-code/gpt-5.4".into(),
             provider: "native".into(),
@@ -677,7 +653,6 @@ mod tests {
             dirty: true,
             resource: Some("src/app.rs".into()),
             activity: Some("2 changes · Review".into()),
-            turn_cancelled: false,
             progress_description: None,
             failure_category: None,
             waiting_detail: None,
@@ -705,7 +680,7 @@ mod tests {
     #[test]
     fn awaiting_hitl_maps_to_waiting_for_you() {
         let m = StatusModel {
-            status: SessionStatus::AwaitingHitl,
+            status: TaskLifecycle::Waiting,
             session_short: "abc".into(),
             model: "mock".into(),
             provider: "mock".into(),
@@ -724,7 +699,6 @@ mod tests {
             dirty: false,
             resource: None,
             activity: None,
-            turn_cancelled: false,
             progress_description: None,
             failure_category: None,
             waiting_detail: None,
@@ -735,7 +709,7 @@ mod tests {
     #[test]
     fn status_bar_renders_full_header_when_wide() {
         let m = StatusModel {
-            status: SessionStatus::Running,
+            status: TaskLifecycle::Working,
             session_short: "abc".into(),
             model: "mock".into(),
             provider: "mock".into(),
@@ -754,7 +728,6 @@ mod tests {
             dirty: true,
             resource: Some("src/app.rs".into()),
             activity: Some("2 changes · Review".into()),
-            turn_cancelled: false,
             progress_description: None,
             failure_category: None,
             waiting_detail: None,
@@ -773,7 +746,7 @@ mod tests {
     #[test]
     fn status_bar_preserves_state_on_narrow_width() {
         let m = StatusModel {
-            status: SessionStatus::Running,
+            status: TaskLifecycle::Ready,
             session_short: "abc".into(),
             model: "very-long-model-name".into(),
             provider: "mock".into(),
@@ -792,7 +765,6 @@ mod tests {
             dirty: false,
             resource: None,
             activity: Some("2 changes".into()),
-            turn_cancelled: false,
             progress_description: None,
             failure_category: None,
             waiting_detail: None,
@@ -808,25 +780,25 @@ mod tests {
     #[test]
     fn current_state_label_covers_status_and_busy_phase_branches() {
         assert_eq!(
-            status_model(SessionStatus::Completed, false, BusyPhase::Idle).current_state_label(),
+            status_model(TaskLifecycle::Completed, false, BusyPhase::Idle).current_state_label(),
             "Completed"
         );
         assert_eq!(
-            status_model(SessionStatus::Failed, false, BusyPhase::Idle).current_state_label(),
+            status_model(TaskLifecycle::Failed, false, BusyPhase::Idle).current_state_label(),
             "Failed"
         );
         // Busy + Running => Working (tool names stay activity-level, not lifecycle).
         assert_eq!(
-            status_model(SessionStatus::Running, true, BusyPhase::Idle).current_state_label(),
+            status_model(TaskLifecycle::Working, true, BusyPhase::Idle).current_state_label(),
             "Working"
         );
         assert_eq!(
-            status_model(SessionStatus::Running, true, BusyPhase::Connect).current_state_label(),
+            status_model(TaskLifecycle::Working, true, BusyPhase::Connect).current_state_label(),
             "Waiting"
         );
         assert_eq!(
             status_model(
-                SessionStatus::Running,
+                TaskLifecycle::Working,
                 true,
                 BusyPhase::Tool {
                     name: "read_file".into()
@@ -837,7 +809,7 @@ mod tests {
         );
         assert_eq!(
             status_model(
-                SessionStatus::Running,
+                TaskLifecycle::Working,
                 true,
                 BusyPhase::Tool { name: "git".into() }
             )
@@ -845,12 +817,13 @@ mod tests {
             "Working"
         );
         assert_eq!(
-            status_model(SessionStatus::Running, false, BusyPhase::Idle).current_state_label(),
+            status_model(TaskLifecycle::Ready, false, BusyPhase::Idle).current_state_label(),
             "Ready"
         );
-        let mut cancelled = status_model(SessionStatus::Running, false, BusyPhase::Idle);
-        cancelled.turn_cancelled = true;
-        assert_eq!(cancelled.current_state_label(), "Cancelled");
+        assert_eq!(
+            status_model(TaskLifecycle::Cancelled, false, BusyPhase::Idle).current_state_label(),
+            "Cancelled"
+        );
         assert_eq!(BusyPhase::Tool { name: "git".into() }.label(), "tool:git");
         assert_eq!(BusyPhase::Connect.label(), "connect");
         assert_eq!(BusyPhase::Other("phase".into()).label(), "phase");
@@ -859,7 +832,7 @@ mod tests {
     #[test]
     fn status_label_and_truncation_cover_edge_cases() {
         let busy = status_model(
-            SessionStatus::Running,
+            TaskLifecycle::Working,
             true,
             BusyPhase::Other(String::new()),
         );
@@ -876,17 +849,17 @@ mod tests {
             .0
             .contains("Working"));
 
-        assert!(status_model(SessionStatus::Running, false, BusyPhase::Idle)
+        assert!(status_model(TaskLifecycle::Ready, false, BusyPhase::Idle)
             .status_label()
             .0
             .contains("Ready"));
         assert!(
-            status_model(SessionStatus::Completed, false, BusyPhase::Idle)
+            status_model(TaskLifecycle::Completed, false, BusyPhase::Idle)
                 .status_label()
                 .0
                 .contains("Completed")
         );
-        assert!(status_model(SessionStatus::Failed, false, BusyPhase::Idle)
+        assert!(status_model(TaskLifecycle::Failed, false, BusyPhase::Idle)
             .status_label()
             .0
             .contains("Failed"));
@@ -895,7 +868,7 @@ mod tests {
         assert_eq!(StatusModel::truncate_middle("abcdef", 4), "abcd");
         assert_eq!(StatusModel::truncate_middle("abcdef", 5), "ab…ef");
 
-        let mut m = status_model(SessionStatus::Running, false, BusyPhase::Idle);
+        let mut m = status_model(TaskLifecycle::Ready, false, BusyPhase::Idle);
         assert_eq!(m.repo_branch_label(), None);
         m.repo_name = Some("forge".into());
         assert_eq!(m.repo_branch_label().as_deref(), Some("forge"));
@@ -903,7 +876,7 @@ mod tests {
 
     #[test]
     fn status_bar_handles_zero_sized_area() {
-        let m = status_model(SessionStatus::Running, false, BusyPhase::Idle);
+        let m = status_model(TaskLifecycle::Ready, false, BusyPhase::Idle);
         let area = Rect::new(0, 0, 0, 0);
         let mut buf = Buffer::empty(area);
         StatusBar { model: &m }.render(area, &mut buf);
@@ -911,7 +884,7 @@ mod tests {
 
     #[test]
     fn ready_when_no_active_task() {
-        let m = status_model(SessionStatus::Running, false, BusyPhase::Idle);
+        let m = status_model(TaskLifecycle::Ready, false, BusyPhase::Idle);
         assert_eq!(m.turn_lifecycle(), TurnLifecycle::Ready);
         assert_eq!(m.current_state_label(), "Ready");
         assert!(m.status_label().0.contains("Ready"));
@@ -920,7 +893,7 @@ mod tests {
     #[test]
     fn working_with_typed_progress_updates_in_place() {
         let mut m = status_model(
-            SessionStatus::Running,
+            TaskLifecycle::Working,
             true,
             BusyPhase::Tool {
                 name: "fffind".into(),
@@ -941,39 +914,46 @@ mod tests {
 
     #[test]
     fn waiting_for_approval_and_input() {
-        let m = status_model(SessionStatus::AwaitingHitl, false, BusyPhase::Idle);
+        let m = status_model(TaskLifecycle::Waiting, false, BusyPhase::Idle);
         assert_eq!(m.turn_lifecycle(), TurnLifecycle::Waiting);
         assert!(m.status_label().0.contains("Waiting"));
         assert!(m.status_label().0.contains("Approval required"));
 
-        let mut input = status_model(SessionStatus::Running, true, BusyPhase::Connect);
+        let input = status_model(TaskLifecycle::Working, true, BusyPhase::Connect);
         assert_eq!(input.turn_lifecycle(), TurnLifecycle::Waiting);
         assert!(input.status_label().0.contains("Your input required"));
-        input.busy = false;
-        input.busy_phase = BusyPhase::Idle;
-        input.waiting_detail = Some("Your input required".into());
-        assert_eq!(input.turn_lifecycle(), TurnLifecycle::Waiting);
+    }
+
+    #[test]
+    fn waiting_detail_alone_does_not_override_an_authoritative_non_waiting_status() {
+        // `waiting_detail` is presentation-only text; it must never itself
+        // flip the header lifecycle away from what `status` (the
+        // authoritative session lifecycle) says — that would resurrect
+        // exactly the kind of ad hoc inference this type exists to prevent.
+        let mut m = status_model(TaskLifecycle::Working, false, BusyPhase::Idle);
+        m.waiting_detail = Some("Your input required".into());
+        assert_eq!(m.turn_lifecycle(), TurnLifecycle::Working);
     }
 
     #[test]
     fn terminal_states_map_structurally() {
         assert_eq!(
-            status_model(SessionStatus::Completed, false, BusyPhase::Idle).turn_lifecycle(),
+            status_model(TaskLifecycle::Completed, false, BusyPhase::Idle).turn_lifecycle(),
             TurnLifecycle::Completed
         );
         assert_eq!(
-            status_model(SessionStatus::Failed, false, BusyPhase::Idle).turn_lifecycle(),
+            status_model(TaskLifecycle::Failed, false, BusyPhase::Idle).turn_lifecycle(),
             TurnLifecycle::Failed
         );
         assert_eq!(
-            status_model(SessionStatus::Cancelled, false, BusyPhase::Idle).turn_lifecycle(),
+            status_model(TaskLifecycle::Cancelled, false, BusyPhase::Idle).turn_lifecycle(),
             TurnLifecycle::Cancelled
         );
         assert_eq!(
-            status_model(SessionStatus::Interrupted, false, BusyPhase::Idle).turn_lifecycle(),
+            status_model(TaskLifecycle::Interrupted, false, BusyPhase::Idle).turn_lifecycle(),
             TurnLifecycle::Interrupted
         );
-        let mut failed = status_model(SessionStatus::Failed, false, BusyPhase::Idle);
+        let mut failed = status_model(TaskLifecycle::Failed, false, BusyPhase::Idle);
         failed.failure_category = Some("Tool retries exhausted".into());
         let label = failed.status_label().0;
         assert!(label.contains("Failed"), "{label}");
@@ -984,7 +964,7 @@ mod tests {
     #[test]
     fn child_activity_failure_does_not_fail_header() {
         let mut m = status_model(
-            SessionStatus::Running,
+            TaskLifecycle::Working,
             true,
             BusyPhase::Other("Trying another approach".into()),
         );
@@ -997,7 +977,7 @@ mod tests {
     #[test]
     fn narrow_width_keeps_state_label() {
         let mut m = status_model(
-            SessionStatus::Running,
+            TaskLifecycle::Working,
             true,
             BusyPhase::Tool {
                 name: "read_file".into(),
@@ -1022,11 +1002,13 @@ mod tests {
     }
 
     #[test]
-    fn cancelled_flag_and_durable_status_agree() {
-        let durable = status_model(SessionStatus::Cancelled, false, BusyPhase::Idle);
+    fn cancelled_status_is_authoritative_regardless_of_busy() {
+        // There is no separate "cancelled" flag to disagree with `status`
+        // anymore — `TaskLifecycle::Cancelled` alone is the single source
+        // of truth, whether or not a stale `busy` flag lingers.
+        let durable = status_model(TaskLifecycle::Cancelled, false, BusyPhase::Idle);
         assert_eq!(durable.current_state_label(), "Cancelled");
-        let mut flag = status_model(SessionStatus::Running, false, BusyPhase::Idle);
-        flag.turn_cancelled = true;
-        assert_eq!(flag.current_state_label(), "Cancelled");
+        let durable_busy = status_model(TaskLifecycle::Cancelled, true, BusyPhase::Idle);
+        assert_eq!(durable_busy.current_state_label(), "Cancelled");
     }
 }

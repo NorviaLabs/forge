@@ -2,7 +2,7 @@
 
 use crate::theme;
 use forge_core::AgentSession;
-use forge_types::{MessageRole, SessionStatus};
+use forge_types::{MessageRole, TaskLifecycle};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
@@ -76,14 +76,15 @@ impl SidebarModel {
         let id = session.session_id.to_string();
         let short = if id.len() > 8 { &id[..8] } else { &id };
         // Turn lifecycle only — not tool/activity phase names.
-        let status = match session.status {
-            SessionStatus::Running => "Ready",
-            SessionStatus::Completed => "Completed",
-            SessionStatus::Failed => "Failed",
-            SessionStatus::AwaitingHitl => "Waiting",
-            SessionStatus::Cancelled => "Cancelled",
-            SessionStatus::Interrupted => "Interrupted",
-            // `SessionStatus` is `#[non_exhaustive]`; label an unrecognised status honestly
+        let status = match session.active_task.lifecycle {
+            TaskLifecycle::Ready => "Ready",
+            TaskLifecycle::Working => "Working",
+            TaskLifecycle::Completed => "Completed",
+            TaskLifecycle::Failed => "Failed",
+            TaskLifecycle::Waiting => "Waiting",
+            TaskLifecycle::Cancelled => "Cancelled",
+            TaskLifecycle::Interrupted => "Interrupted",
+            // `TaskLifecycle` is `#[non_exhaustive]`; label an unrecognised status honestly
             // rather than guessing at a concrete one.
             _ => "Unknown",
         };
@@ -126,7 +127,7 @@ impl SidebarModel {
             tools,
             activity: activity_lines.to_vec(),
             session_allows: Vec::new(),
-            pending_approval: session.pending_hitl.is_some(),
+            pending_approval: session.pending_hitl().is_some(),
         }
     }
 }

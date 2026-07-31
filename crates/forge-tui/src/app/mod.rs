@@ -53,7 +53,6 @@ use crate::layout::is_too_small;
 #[cfg(test)]
 use crate::layout::split_areas_full;
 use crate::layout::split_areas_with_chrome;
-use crate::msg_queue::MessageQueue;
 use crate::overlays::{
     centered_rect, filter_palette, handle_overlay_key, models_from_catalog, ApprovalExecutionMode,
     ApprovalOverlayState, ConnectProfileItem, FileExplorerItem, Key, Key as OverlayKey, Overlay,
@@ -85,6 +84,7 @@ mod context;
 mod files;
 mod focus;
 mod input;
+mod input_route;
 mod mouse;
 mod new;
 mod overlays;

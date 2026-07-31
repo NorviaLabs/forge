@@ -502,7 +502,7 @@ impl TuiApp {
             SemanticCommand::ToggleCurrentFileAttachment => self.toggle_file_attachment(),
             SemanticCommand::ToggleToolDetails => self.tool_expanded = !self.tool_expanded,
             SemanticCommand::MoveQueueSelection(delta) => self.move_queue_selection(delta),
-            SemanticCommand::CancelSelectedQueueMessage => self.cancel_selected_queue(),
+            SemanticCommand::CancelSelectedQueueMessage => self.cancel_selected_queue().await,
             SemanticCommand::QuitOrInterrupt => {
                 if self.busy {
                     if self.cancel_requested {
@@ -658,17 +658,19 @@ impl TuiApp {
                             self.notices.clear();
                             self.busy = false;
                             self.busy_phase = BusyPhase::Idle;
-                            self.last_exit = match self.session.status {
-                                forge_types::SessionStatus::Failed => ExitCode::Failed,
-                                forge_types::SessionStatus::AwaitingHitl => ExitCode::AwaitingHitl,
-                                forge_types::SessionStatus::Cancelled => ExitCode::Canceled,
+                            self.last_exit = match self.session.active_task.lifecycle {
+                                forge_types::TaskLifecycle::Failed => ExitCode::Failed,
+                                forge_types::TaskLifecycle::Waiting => ExitCode::AwaitingHitl,
+                                forge_types::TaskLifecycle::Cancelled => ExitCode::Canceled,
                                 _ => ExitCode::Success,
                             };
-                            // Stale Running with no live runtime becomes Interrupted.
+                            // Stale Working with no live runtime becomes Interrupted.
                             if let Err(error) = self.session.mark_interrupted_if_stale().await {
                                 self.report_error(&error.to_string());
                             }
-                            if self.session.status == forge_types::SessionStatus::Interrupted {
+                            if self.session.active_task.lifecycle
+                                == forge_types::TaskLifecycle::Interrupted
+                            {
                                 self.status_message = "session interrupted".into();
                                 self.set_feedback(
                                     FeedbackSeverity::Warn,
@@ -688,7 +690,9 @@ impl TuiApp {
                                 format!("session resumed · {session_id}"),
                             );
                             self.ui_banners.clear();
-                            self.message_queue.clear();
+                            // `resume_session` already restored the durable queue for
+                            // the target session — do not clear it out from under
+                            // that restoration.
                             self.queue_selected = None;
                             self.stream_preview.clear();
                             self.stream_thinking.clear();

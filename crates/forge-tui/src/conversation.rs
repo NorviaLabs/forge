@@ -4,7 +4,7 @@ use crate::theme;
 use crate::user_message_gutter;
 use forge_core::{AgentSession, TurnEvent, TURN_FAILED_MARKER};
 use forge_syntax::highlight_to_lines;
-use forge_types::{Message, MessageRole, SessionStatus, ToolCall};
+use forge_types::{Message, MessageRole, TaskLifecycle, ToolCall};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
@@ -79,7 +79,7 @@ pub enum ChatItem {
         incomplete_intents: usize,
         last_assistant: Option<String>,
     },
-    SessionStatus {
+    TaskLifecycle {
         session_id: String,
         status: String,
         provider: String,
@@ -298,7 +298,7 @@ impl ConversationModel {
     pub fn from_messages(
         messages: &[Message],
         events: &[TurnEvent],
-        status: SessionStatus,
+        status: TaskLifecycle,
         opts: ConversationViewOpts,
     ) -> Self {
         // System prompts and tool call cards stay out of the operator chat.
@@ -431,7 +431,7 @@ impl ConversationModel {
             }
         }
         if let Some(text) = latest_progress {
-            if status == SessionStatus::Running {
+            if status == TaskLifecycle::Working {
                 items.push(ChatItem::Thinking {
                     text,
                     duration_secs: None,
@@ -439,7 +439,7 @@ impl ConversationModel {
             }
         }
         items = group_routine_activity(items);
-        if status == SessionStatus::AwaitingHitl {
+        if status == TaskLifecycle::Waiting {
             items.push(ChatItem::Banner {
                 text: "Awaiting approval · Enter/a allow once · s remember exact when eligible · d/Esc deny"
                     .into(),
@@ -455,7 +455,12 @@ impl ConversationModel {
     }
 
     pub fn from_session(session: &AgentSession, opts: ConversationViewOpts) -> Self {
-        Self::from_messages(&session.messages, &session.events, session.status, opts)
+        Self::from_messages(
+            &session.messages,
+            &session.events,
+            session.active_task.lifecycle,
+            opts,
+        )
     }
 
     /// Streaming assistant preview. Live reasoning is tracked by the caller via
@@ -994,7 +999,7 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
                     kind: BannerKind::Info,
                 }));
             }
-            ChatItem::SessionStatus { status, model, .. } => {
+            ChatItem::TaskLifecycle { status, model, .. } => {
                 flush_progress(&mut blocks, &mut progress);
                 flush_activity(&mut blocks, &mut activity_group);
                 blocks.push(ConversationBlock::Metadata(MetadataPresentation {
@@ -2140,7 +2145,7 @@ mod tests {
         let m = ConversationModel::from_messages(
             &msgs,
             &[],
-            SessionStatus::Running,
+            TaskLifecycle::Working,
             ConversationViewOpts::default(),
         );
         // System prompts and reasoning stay hidden; tool results become compact cards.
@@ -2350,7 +2355,7 @@ mod tests {
         let model = ConversationModel::from_messages(
             &messages,
             &[],
-            SessionStatus::Completed,
+            TaskLifecycle::Completed,
             ConversationViewOpts::default(),
         );
         let blocks = model.semantic_blocks();
@@ -2432,7 +2437,7 @@ mod tests {
         let model = ConversationModel::from_messages(
             &messages,
             &[],
-            SessionStatus::Failed,
+            TaskLifecycle::Failed,
             ConversationViewOpts::default(),
         );
         let blocks = model.semantic_blocks();
@@ -2505,7 +2510,7 @@ mod tests {
                 kind: "legacy".into(),
                 detail: "ignored".into(),
             }],
-            SessionStatus::Running,
+            TaskLifecycle::Working,
             ConversationViewOpts::default(),
         );
         let blocks = model.semantic_blocks();
@@ -2558,7 +2563,7 @@ mod tests {
         let m = ConversationModel::from_messages(
             &msgs,
             &[],
-            SessionStatus::Running,
+            TaskLifecycle::Working,
             ConversationViewOpts {
                 ..Default::default()
             },
@@ -2602,7 +2607,7 @@ mod tests {
         let model = ConversationModel::from_messages(
             &msgs,
             &[],
-            SessionStatus::Running,
+            TaskLifecycle::Working,
             ConversationViewOpts::default(),
         );
 
@@ -2630,7 +2635,7 @@ mod tests {
         let model = ConversationModel::from_messages(
             &msgs,
             &[],
-            SessionStatus::Running,
+            TaskLifecycle::Working,
             ConversationViewOpts::default(),
         );
 
@@ -2657,7 +2662,7 @@ mod tests {
         let m = ConversationModel::from_messages(
             &msgs,
             &[],
-            SessionStatus::Running,
+            TaskLifecycle::Working,
             ConversationViewOpts::default(),
         );
         let rendered_lines: Vec<String> = m
@@ -2701,7 +2706,7 @@ mod tests {
         let m = ConversationModel::from_messages(
             &msgs,
             &[],
-            SessionStatus::Running,
+            TaskLifecycle::Working,
             ConversationViewOpts::default(),
         );
         let glyph = crate::user_message_gutter::gutter_glyph(crate::theme::active(), false);
@@ -2736,7 +2741,7 @@ mod tests {
         let model = ConversationModel::from_messages(
             &[],
             &[],
-            SessionStatus::Running,
+            TaskLifecycle::Working,
             ConversationViewOpts::default(),
         );
         let rendered = model
@@ -2768,7 +2773,7 @@ mod tests {
         let model = ConversationModel::from_messages(
             &msgs,
             &[],
-            SessionStatus::Running,
+            TaskLifecycle::Working,
             ConversationViewOpts::default(),
         );
         let rendered = model
@@ -2799,7 +2804,7 @@ mod tests {
         let m = ConversationModel::from_messages(
             &msgs,
             &[],
-            SessionStatus::Running,
+            TaskLifecycle::Working,
             ConversationViewOpts::default(),
         );
         assert!(matches!(
@@ -2882,7 +2887,7 @@ mod tests {
         let model = ConversationModel::from_messages(
             &messages,
             &[],
-            SessionStatus::Running,
+            TaskLifecycle::Working,
             ConversationViewOpts::default(),
         );
         assert_eq!(output_count, outputs.len());
@@ -2911,7 +2916,7 @@ mod tests {
         let expanded = ConversationModel::from_messages(
             &messages,
             &[],
-            SessionStatus::Running,
+            TaskLifecycle::Working,
             ConversationViewOpts {
                 tool_expanded: true,
                 ..ConversationViewOpts::default()
@@ -2981,7 +2986,7 @@ mod tests {
         let running = ConversationModel::from_messages(
             &[],
             &[],
-            SessionStatus::Running,
+            TaskLifecycle::Working,
             ConversationViewOpts::default(),
         )
         .with_running_tool("read_file");
@@ -3060,7 +3065,7 @@ mod tests {
         let model = ConversationModel::from_messages(
             &msgs,
             &events,
-            SessionStatus::Running,
+            TaskLifecycle::Working,
             ConversationViewOpts::default(),
         );
         assert_eq!(model.items.len(), 3);
@@ -3106,7 +3111,7 @@ mod tests {
         let m = ConversationModel::from_messages(
             &msgs,
             &[],
-            SessionStatus::Running,
+            TaskLifecycle::Working,
             ConversationViewOpts::default(),
         );
         assert!(matches!(m.items[0], ChatItem::DiffCard { .. }));
@@ -3139,7 +3144,7 @@ mod tests {
         let model = ConversationModel::from_messages(
             &msgs,
             &[],
-            SessionStatus::Running,
+            TaskLifecycle::Working,
             ConversationViewOpts::default(),
         );
 
@@ -3299,7 +3304,7 @@ mod tests {
         let m = ConversationModel::from_messages(
             &[],
             &[],
-            SessionStatus::Running,
+            TaskLifecycle::Working,
             ConversationViewOpts::default(),
         );
         assert!(m.items.is_empty());
@@ -3311,7 +3316,7 @@ mod tests {
         let m = ConversationModel::from_messages(
             &[],
             &[],
-            SessionStatus::Running,
+            TaskLifecycle::Working,
             ConversationViewOpts::default(),
         )
         .with_brand("forge 0.8.0")
@@ -3345,7 +3350,7 @@ mod tests {
         let mut m = ConversationModel::from_messages(
             &[],
             &[],
-            SessionStatus::Running,
+            TaskLifecycle::Working,
             ConversationViewOpts {
                 busy: true,
                 stream_wait: Some((StreamWaitPhase::Thinking, 1.2)),
@@ -3389,7 +3394,7 @@ mod tests {
         let m = ConversationModel::from_messages(
             &[],
             &[],
-            SessionStatus::Running,
+            TaskLifecycle::Working,
             ConversationViewOpts {
                 busy: true,
                 ..Default::default()
@@ -3412,7 +3417,7 @@ mod tests {
         let m = ConversationModel::from_messages(
             &[],
             &[],
-            SessionStatus::Running,
+            TaskLifecycle::Working,
             ConversationViewOpts::default(),
         )
         .with_running_tool("read_file");
@@ -3431,7 +3436,7 @@ mod tests {
         let m = ConversationModel::from_messages(
             &[],
             &[],
-            SessionStatus::AwaitingHitl,
+            TaskLifecycle::Waiting,
             ConversationViewOpts::default(),
         )
         .with_blocked_tool("bash", "git push -u origin feature");
@@ -3517,7 +3522,7 @@ mod tests {
         let model = ConversationModel::from_messages(
             &messages,
             &[],
-            SessionStatus::Running,
+            TaskLifecycle::Working,
             ConversationViewOpts::default(),
         );
         let text = model
@@ -3538,7 +3543,7 @@ mod tests {
         let mut m = ConversationModel::from_messages(
             &[],
             &[],
-            SessionStatus::Running,
+            TaskLifecycle::Working,
             ConversationViewOpts::default(),
         );
         assert!(m.follow);

@@ -3,10 +3,10 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use forge_types::{
-    JournalEvent, JournalEventType, Message, MessageRole, ModelResponse, SessionId, SessionStatus,
-    ToolCall, ToolOutput,
+    JournalEvent, JournalEventType, Message, MessageRole, ModelResponse, QueueItemId,
+    QueueItemStatus, SessionId, TaskLifecycle, ToolCall, ToolOutput,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -44,7 +44,7 @@ pub struct ToolResultPayload {
 #[derive(Debug, Clone)]
 pub struct ReplayState {
     pub session_id: SessionId,
-    pub status: SessionStatus,
+    pub status: TaskLifecycle,
     pub last_seq: u64,
     /// call_id -> tool result for completed tools
     pub tool_results: HashMap<String, ToolResultPayload>,
@@ -58,6 +58,24 @@ pub struct ReplayState {
     pub events: Vec<JournalEvent>,
     /// Phase 2: pending HITL payload if status is AwaitingHitl
     pub pending_hitl: Option<serde_json::Value>,
+    /// Future-task queue items reconstructed from `Queue*` events. A
+    /// `Promoting` item with no later `Promoted`/`Removed` event (a crash
+    /// mid-promotion) is left as `Promoting` here — the caller (forge-core's
+    /// `TaskQueue::from_restored`) is responsible for reconciling it back to
+    /// `Queued`, since that reconciliation policy belongs with the queue's
+    /// own invariants, not journal replay.
+    pub queue_items: Vec<RestoredQueueItem>,
+}
+
+/// One queue item as reconstructed from the journal — a lightweight mirror
+/// of forge-core's `QueuedTask` that doesn't require forge-durable to depend
+/// on forge-core (dependency direction is the other way around).
+#[derive(Debug, Clone)]
+pub struct RestoredQueueItem {
+    pub id: QueueItemId,
+    pub text: String,
+    pub created_at: DateTime<Utc>,
+    pub status: QueueItemStatus,
 }
 
 impl Journal {
@@ -226,7 +244,7 @@ impl Journal {
     pub async fn append_status(
         &self,
         session_id: SessionId,
-        status: SessionStatus,
+        status: TaskLifecycle,
     ) -> Result<u64, JournalError> {
         self.append(
             session_id,
@@ -269,6 +287,64 @@ impl Journal {
             .await
     }
 
+    /// Unified task/queue lifecycle: durable future-task queue events.
+    /// **Record-before-side-effect** applies here too — callers must await
+    /// each of these before claiming the corresponding queue mutation
+    /// succeeded (e.g. before telling the user a message was queued).
+    pub async fn append_queue_enqueued(
+        &self,
+        session_id: SessionId,
+        item_id: QueueItemId,
+        text: &str,
+    ) -> Result<u64, JournalError> {
+        self.append(
+            session_id,
+            JournalEventType::QueueEnqueued,
+            json!({ "item_id": item_id.0, "text": text }),
+        )
+        .await
+    }
+
+    pub async fn append_queue_promoting(
+        &self,
+        session_id: SessionId,
+        item_id: QueueItemId,
+    ) -> Result<u64, JournalError> {
+        self.append(
+            session_id,
+            JournalEventType::QueuePromoting,
+            json!({ "item_id": item_id.0 }),
+        )
+        .await
+    }
+
+    pub async fn append_queue_promoted(
+        &self,
+        session_id: SessionId,
+        item_id: QueueItemId,
+        task_id: u64,
+    ) -> Result<u64, JournalError> {
+        self.append(
+            session_id,
+            JournalEventType::QueuePromoted,
+            json!({ "item_id": item_id.0, "task_id": task_id }),
+        )
+        .await
+    }
+
+    pub async fn append_queue_removed(
+        &self,
+        session_id: SessionId,
+        item_id: QueueItemId,
+    ) -> Result<u64, JournalError> {
+        self.append(
+            session_id,
+            JournalEventType::QueueRemoved,
+            json!({ "item_id": item_id.0 }),
+        )
+        .await
+    }
+
     pub async fn replay(&self, session_id: SessionId) -> Result<ReplayState, JournalError> {
         let sid = session_id.to_string();
         let rows = sqlx::query(
@@ -283,7 +359,7 @@ impl Journal {
 
         let mut state = ReplayState {
             session_id,
-            status: SessionStatus::Running,
+            status: TaskLifecycle::Working,
             last_seq: 0,
             tool_results: HashMap::new(),
             incomplete_intents: Vec::new(),
@@ -292,9 +368,21 @@ impl Journal {
             model_responses: Vec::new(),
             events: Vec::new(),
             pending_hitl: None,
+            queue_items: Vec::new(),
         };
 
         let mut open_intents: HashMap<String, String> = HashMap::new();
+        // Tracks a promotion currently "in flight" per the event stream: set
+        // on `QueuePromoting`, cleared on the matching `QueuePromoted`/
+        // `QueueRemoved`. If a `UserMessage` event lands while a promotion is
+        // in flight, the task it belongs to was actually created — a crash
+        // before the confirming `QueuePromoted` event must not then re-queue
+        // the item (that would create a second task from the same
+        // instruction). Only an item with no `UserMessage` following its
+        // `QueuePromoting` is safe to revert to `Queued`.
+        let mut promoting_item: Option<u64> = None;
+        let mut promoted_without_confirmation: std::collections::HashSet<u64> =
+            std::collections::HashSet::new();
 
         for row in rows {
             let seq = row.get::<i64, _>("seq") as u64;
@@ -324,6 +412,9 @@ impl Journal {
                     if let Some(c) = payload.get("content").and_then(|v| v.as_str()) {
                         state.user_messages.push(c.to_string());
                         state.messages.push(Message::new(MessageRole::User, c));
+                    }
+                    if let Some(id) = promoting_item {
+                        promoted_without_confirmation.insert(id);
                     }
                 }
                 JournalEventType::ModelResponse => {
@@ -375,7 +466,7 @@ impl Journal {
                     }
                 }
                 JournalEventType::SessionStatus => {
-                    if let Ok(s) = serde_json::from_value::<SessionStatus>(
+                    if let Ok(s) = serde_json::from_value::<TaskLifecycle>(
                         payload.get("status").cloned().unwrap_or(Value::Null),
                     ) {
                         state.status = s;
@@ -383,12 +474,12 @@ impl Journal {
                 }
                 JournalEventType::HitlWait => {
                     state.pending_hitl = Some(payload.clone());
-                    state.status = SessionStatus::AwaitingHitl;
+                    state.status = TaskLifecycle::Waiting;
                 }
                 JournalEventType::HitlResume => {
                     state.pending_hitl = None;
-                    if state.status == SessionStatus::AwaitingHitl {
-                        state.status = SessionStatus::Running;
+                    if state.status == TaskLifecycle::Waiting {
+                        state.status = TaskLifecycle::Working;
                     }
                 }
                 JournalEventType::ContextReset => {
@@ -400,10 +491,69 @@ impl Journal {
                         }
                     }
                 }
+                JournalEventType::QueueEnqueued => {
+                    if let (Some(id), Some(text)) = (
+                        payload.get("item_id").and_then(|v| v.as_u64()),
+                        payload.get("text").and_then(|v| v.as_str()),
+                    ) {
+                        state.queue_items.push(RestoredQueueItem {
+                            id: QueueItemId(id),
+                            text: text.to_string(),
+                            created_at: ts,
+                            status: QueueItemStatus::Queued,
+                        });
+                    }
+                }
+                JournalEventType::QueuePromoting => {
+                    if let Some(id) = payload.get("item_id").and_then(|v| v.as_u64()) {
+                        promoting_item = Some(id);
+                        if let Some(item) =
+                            state.queue_items.iter_mut().find(|item| item.id.0 == id)
+                        {
+                            item.status = QueueItemStatus::Promoting;
+                        }
+                    }
+                }
+                JournalEventType::QueuePromoted => {
+                    if let Some(id) = payload.get("item_id").and_then(|v| v.as_u64()) {
+                        promoting_item = None;
+                        promoted_without_confirmation.remove(&id);
+                        if let Some(item) =
+                            state.queue_items.iter_mut().find(|item| item.id.0 == id)
+                        {
+                            item.status = QueueItemStatus::Promoted;
+                        }
+                    }
+                }
+                JournalEventType::QueueRemoved => {
+                    if let Some(id) = payload.get("item_id").and_then(|v| v.as_u64()) {
+                        promoting_item = None;
+                        promoted_without_confirmation.remove(&id);
+                        if let Some(item) =
+                            state.queue_items.iter_mut().find(|item| item.id.0 == id)
+                        {
+                            item.status = QueueItemStatus::Removed;
+                        }
+                    }
+                }
                 _ => {}
             }
 
             state.events.push(ev);
+        }
+
+        // A `Promoting` item with no confirming `QueuePromoted`/`QueueRemoved`
+        // is a crash mid-promotion. If a `UserMessage` was journaled after it
+        // started promoting, the task was already created — reconcile
+        // forward to `Promoted` so restart can't create a second task from
+        // the same instruction. Otherwise it's safe to leave as `Promoting`
+        // (the caller, `TaskQueue::from_restored`, reverts that to `Queued`).
+        for item in state.queue_items.iter_mut() {
+            if item.status == QueueItemStatus::Promoting
+                && promoted_without_confirmation.contains(&item.id.0)
+            {
+                item.status = QueueItemStatus::Promoted;
+            }
         }
 
         state.incomplete_intents = open_intents.into_keys().collect();
@@ -541,13 +691,13 @@ mod tests {
             .await
             .unwrap();
         let st = j.replay(sid).await.unwrap();
-        assert_eq!(st.status, SessionStatus::AwaitingHitl);
+        assert_eq!(st.status, TaskLifecycle::Waiting);
         assert!(st.pending_hitl.is_some());
         j.append_hitl_resume(sid, "approve", "tui:test")
             .await
             .unwrap();
         let st2 = j.replay(sid).await.unwrap();
-        assert_eq!(st2.status, SessionStatus::Running);
+        assert_eq!(st2.status, TaskLifecycle::Working);
         assert!(st2.pending_hitl.is_none());
     }
 
@@ -605,17 +755,17 @@ mod tests {
     }
 
     /// Default (no events) replays as `Running`; each explicit status must
-    /// round-trip to the matching `SessionStatus` variant, not just "some
+    /// round-trip to the matching `TaskLifecycle` variant, not just "some
     /// status changed" — an N-arm enum written through one JSON shape, so
     /// every variant gets its own journal to avoid later events masking an
     /// earlier mis-wired arm.
     #[tokio::test]
     async fn append_status_updates_replayed_session_status() {
         for status in [
-            SessionStatus::Completed,
-            SessionStatus::Failed,
-            SessionStatus::Cancelled,
-            SessionStatus::Interrupted,
+            TaskLifecycle::Completed,
+            TaskLifecycle::Failed,
+            TaskLifecycle::Cancelled,
+            TaskLifecycle::Interrupted,
         ] {
             let dir = tempdir().unwrap();
             let sid = new_session_id();
@@ -627,6 +777,100 @@ mod tests {
                 "status did not round-trip through replay"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn queue_events_round_trip_through_replay() {
+        let dir = tempdir().unwrap();
+        let sid = new_session_id();
+        let j = Journal::open(dir.path(), sid).await.unwrap();
+        j.append_queue_enqueued(sid, QueueItemId(1), "do the thing")
+            .await
+            .unwrap();
+        j.append_queue_enqueued(sid, QueueItemId(2), "do another thing")
+            .await
+            .unwrap();
+
+        let state = j.replay(sid).await.unwrap();
+        assert_eq!(state.queue_items.len(), 2);
+        assert_eq!(state.queue_items[0].id, QueueItemId(1));
+        assert_eq!(state.queue_items[0].status, QueueItemStatus::Queued);
+        assert_eq!(state.queue_items[0].text, "do the thing");
+
+        j.append_queue_promoting(sid, QueueItemId(1)).await.unwrap();
+        j.append_queue_promoted(sid, QueueItemId(1), 7)
+            .await
+            .unwrap();
+        let state = j.replay(sid).await.unwrap();
+        assert_eq!(state.queue_items[0].status, QueueItemStatus::Promoted);
+        // Untouched item stays Queued.
+        assert_eq!(state.queue_items[1].status, QueueItemStatus::Queued);
+
+        j.append_queue_removed(sid, QueueItemId(2)).await.unwrap();
+        let state = j.replay(sid).await.unwrap();
+        assert_eq!(state.queue_items[1].status, QueueItemStatus::Removed);
+    }
+
+    #[tokio::test]
+    async fn queue_item_stuck_in_promoting_with_no_task_created_stays_promoting_through_replay() {
+        // A crash between `QueuePromoting` and `append_user_message` means no
+        // task was ever created for this item — replay leaves it `Promoting`
+        // (not reconciled forward), and `TaskQueue::from_restored` in
+        // forge-core is the one that reverts it to `Queued` as safe to retry.
+        let dir = tempdir().unwrap();
+        let sid = new_session_id();
+        let j = Journal::open(dir.path(), sid).await.unwrap();
+        j.append_queue_enqueued(sid, QueueItemId(1), "stuck")
+            .await
+            .unwrap();
+        j.append_queue_promoting(sid, QueueItemId(1)).await.unwrap();
+
+        let state = j.replay(sid).await.unwrap();
+        assert_eq!(state.queue_items.len(), 1);
+        assert_eq!(state.queue_items[0].status, QueueItemStatus::Promoting);
+    }
+
+    #[tokio::test]
+    async fn queue_item_promoted_without_confirmation_reconciles_to_promoted_not_queued() {
+        // A crash *after* the task was actually created (its UserMessage is
+        // journaled) but *before* the confirming `QueuePromoted` event must
+        // not re-queue the item — replaying it back to `Queued` here would
+        // let a subsequent promotion create a second task from the same
+        // instruction. Reconciling forward to `Promoted` prevents that.
+        let dir = tempdir().unwrap();
+        let sid = new_session_id();
+        let j = Journal::open(dir.path(), sid).await.unwrap();
+        j.append_queue_enqueued(sid, QueueItemId(1), "do the thing")
+            .await
+            .unwrap();
+        j.append_queue_promoting(sid, QueueItemId(1)).await.unwrap();
+        // Mirrors what `AgentSession::promote_next_queued` -> `append_user_message`
+        // journals next, in the real pipeline — no `QueuePromoted` follows.
+        j.append_user_message(sid, "do the thing").await.unwrap();
+
+        let state = j.replay(sid).await.unwrap();
+        assert_eq!(state.queue_items.len(), 1);
+        assert_eq!(state.queue_items[0].status, QueueItemStatus::Promoted);
+    }
+
+    #[tokio::test]
+    async fn user_message_before_any_promotion_does_not_affect_unrelated_queue_items() {
+        // A `UserMessage` journaled with no promotion in flight (the normal,
+        // non-queue dispatch path) must not spuriously mark some other,
+        // still-`Queued` item as `Promoted`.
+        let dir = tempdir().unwrap();
+        let sid = new_session_id();
+        let j = Journal::open(dir.path(), sid).await.unwrap();
+        j.append_user_message(sid, "direct dispatch, no queue involved")
+            .await
+            .unwrap();
+        j.append_queue_enqueued(sid, QueueItemId(1), "still waiting")
+            .await
+            .unwrap();
+
+        let state = j.replay(sid).await.unwrap();
+        assert_eq!(state.queue_items.len(), 1);
+        assert_eq!(state.queue_items[0].status, QueueItemStatus::Queued);
     }
 
     /// `ModelResponse::text` may be empty while the turn still produced

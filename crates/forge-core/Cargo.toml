@@ -6,6 +6,7 @@ license.workspace = true
 description = "Agent loop orchestration (Phase 1 + 2 hooks)"
 
 [dependencies]
+chrono = { workspace = true }
 forge-types = { workspace = true }
 forge-config = { workspace = true }
 forge-tools = { workspace = true }

@@ -1,12 +1,16 @@
 //! Agent loop — Phase 1 base + Phase 2 hooks (context, HITL, governance).
 
 mod completion;
+mod lifecycle;
+mod queue;
 
 pub use completion::{
     CompletionDecision, CompletionEvaluator, CompletionReason, DefaultCompletionEvaluator,
     EvidenceEntry, EvidenceSummary, ExecutionEvent, ExecutionEvidence, FileEffectExpectation,
     FileEffectKind, GitEffectExpectation, GitEffectKind, TaskExpectation, ToolExpectation,
 };
+pub use lifecycle::{ActiveTaskState, TransitionError, TransitionReason};
+pub use queue::{QueuedTask, TaskQueue};
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -22,7 +26,7 @@ use forge_tools::{
 };
 use forge_types::{
     HitlDecision, HitlPayload, Message, MessageRole, ModelResponse, PolicyDecision, SessionId,
-    SessionStatus, SideEffectClass, ToolCall, ToolOutput, Usage,
+    SideEffectClass, TaskId, TaskLifecycle, ToolCall, ToolOutput, Usage, WaitReason,
 };
 use serde_json::json;
 use thiserror::Error;
@@ -272,6 +276,35 @@ fn strip_protocol_markers(text: &str) -> String {
     out.trim().to_string()
 }
 
+/// Reconstruct the `WaitReason` a restored session was blocked on, from the
+/// raw HITL payload the journal replayed. Only `Approval` is ever produced
+/// today — the sole wait reason with a real runtime producer.
+fn restored_wait_reason(pending_hitl: &Option<serde_json::Value>) -> Option<WaitReason> {
+    let payload: HitlPayload = serde_json::from_value(pending_hitl.clone()?).ok()?;
+    Some(WaitReason::Approval {
+        request_id: payload.call_id.clone(),
+        payload,
+    })
+}
+
+/// Map forge-durable's lightweight replay mirror into forge-core's
+/// `QueuedTask`, attaching the session id (not itself journaled per item).
+fn restored_queue_items(
+    session_id: SessionId,
+    items: Vec<forge_durable::RestoredQueueItem>,
+) -> Vec<QueuedTask> {
+    items
+        .into_iter()
+        .map(|item| QueuedTask {
+            id: item.id,
+            session_id,
+            text: item.text,
+            created_at: item.created_at,
+            status: item.status,
+        })
+        .collect()
+}
+
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum LoopError {
@@ -287,6 +320,8 @@ pub enum LoopError {
     AwaitingHitl,
     #[error("no pending HITL")]
     NoPendingHitl,
+    #[error(transparent)]
+    Transition(#[from] TransitionError),
     #[error("{0}")]
     Other(String),
 }
@@ -398,10 +433,18 @@ pub struct ResumeReport {
 
 pub struct AgentSession {
     pub session_id: SessionId,
-    pub status: SessionStatus,
     pub messages: Vec<Message>,
     pub events: Vec<TurnEvent>,
-    pub pending_hitl: Option<HitlPayload>,
+    /// Authoritative task/attempt lifecycle. The single source of truth for
+    /// "what task is active, is Forge working/waiting, and why" — UI code
+    /// must read this rather than deriving its own copy from busy/streaming
+    /// flags. All mutation goes through `AgentSession::transition`/
+    /// `enter_waiting`/`start_new_task`, never a direct field write.
+    pub active_task: ActiveTaskState,
+    /// Explicit FIFO queue of future-task instructions, owned here (not the
+    /// TUI) so promotion/journaling/restoration go through one store with
+    /// direct `Journal` access.
+    pub queue: TaskQueue,
     /// Provider/model id for the next completion (empty → client default).
     pub active_model: String,
     journal: Journal,
@@ -475,9 +518,8 @@ impl AgentSession {
         }
 
         let active_root = context.workspace.clone();
-        let pending_hitl = state
-            .pending_hitl
-            .and_then(|value| serde_json::from_value::<HitlPayload>(value).ok());
+        let wait_reason = restored_wait_reason(&state.pending_hitl);
+        let queue = TaskQueue::from_restored(restored_queue_items(session_id, state.queue_items));
         let mut token_usage = SessionTokenUsage::default();
         for response in &state.model_responses {
             token_usage.record_response(response.usage.as_ref(), response.thinking.as_deref());
@@ -490,18 +532,18 @@ impl AgentSession {
             incomplete_intents: state.incomplete_intents.len(),
         };
         self.session_id = session_id;
-        self.status = state.status;
+        self.active_task = ActiveTaskState::from_restored(session_id, state.status, wait_reason);
+        self.queue = queue;
         self.messages = messages;
         self.events = vec![TurnEvent {
             kind: "resume".into(),
             detail: format!("seq={}", state.last_seq),
         }];
-        self.pending_hitl = pending_hitl;
         self.journal = journal;
         self.tool_ctx = ToolContext::new(active_root);
         self.context = context;
         self.token_usage = token_usage;
-        // Stale Running without a live executor is Interrupted, not eternal Working.
+        // Stale Working without a live executor is Interrupted, not eternal Working.
         self.mark_interrupted_if_stale().await?;
         Ok(report)
     }
@@ -528,7 +570,6 @@ impl AgentSession {
 
         Ok(Self {
             session_id,
-            status: SessionStatus::Running,
             messages: vec![Message {
                 role: MessageRole::System,
                 content: system,
@@ -539,7 +580,8 @@ impl AgentSession {
                 tool_calls: vec![],
             }],
             events: vec![],
-            pending_hitl: None,
+            active_task: ActiveTaskState::new(session_id),
+            queue: TaskQueue::new(),
             active_model: String::new(),
             journal,
             tools,
@@ -597,9 +639,8 @@ impl AgentSession {
 
         let active_root = loop_cfg.workspace.clone();
 
-        let pending_hitl = state
-            .pending_hitl
-            .and_then(|v| serde_json::from_value::<HitlPayload>(v).ok());
+        let wait_reason = restored_wait_reason(&state.pending_hitl);
+        let queue = TaskQueue::from_restored(restored_queue_items(session_id, state.queue_items));
 
         let mut token_usage = SessionTokenUsage::default();
         for response in &state.model_responses {
@@ -608,13 +649,13 @@ impl AgentSession {
 
         let mut session = Self {
             session_id,
-            status: state.status,
             messages,
             events: vec![TurnEvent {
                 kind: "resume".into(),
                 detail: format!("seq={}", state.last_seq),
             }],
-            pending_hitl,
+            active_task: ActiveTaskState::from_restored(session_id, state.status, wait_reason),
+            queue,
             active_model: String::new(),
             journal,
             tools,
@@ -638,6 +679,155 @@ impl AgentSession {
 
     pub fn set_governance(&mut self, g: Governance) {
         self.governance = g;
+    }
+
+    /// The HITL payload the active task is waiting on, if any — a
+    /// convenience view over `active_task.wait_reason`'s `Approval` variant
+    /// (the only wait reason with a real producer today).
+    pub fn pending_hitl(&self) -> Option<&HitlPayload> {
+        match &self.active_task.wait_reason {
+            Some(WaitReason::Approval { payload, .. }) => Some(payload),
+            _ => None,
+        }
+    }
+
+    /// Validate and apply a lifecycle transition, journaling it durably.
+    /// The single path through which `active_task.lifecycle` may change
+    /// (other than `enter_waiting`/`start_new_task`, which carry their own
+    /// payload) — every direct field write this crate used to do goes
+    /// through here instead. Rejects illegal transitions rather than
+    /// silently coercing state; the current valid state is preserved on
+    /// failure since `ActiveTaskState::try_transition` never partially
+    /// applies a rejected move.
+    async fn transition(
+        &mut self,
+        to: TaskLifecycle,
+        reason: TransitionReason,
+    ) -> Result<(), LoopError> {
+        let from = self.active_task.lifecycle;
+        if let Err(err) = self.active_task.try_transition(to) {
+            tracing::warn!(
+                from = ?from,
+                to = ?to,
+                reason = ?reason,
+                error = %err,
+                "rejected illegal lifecycle transition"
+            );
+            return Err(LoopError::from(err));
+        }
+        self.journal.append_status(self.session_id, to).await?;
+        tracing::debug!(
+            from = ?from,
+            to = ?to,
+            revision = self.active_task.revision,
+            reason = ?reason,
+            "lifecycle transition"
+        );
+        Ok(())
+    }
+
+    /// Transition into `Waiting`, atomically attaching the structured reason
+    /// a response must correlate against to resume the attempt.
+    async fn enter_waiting(
+        &mut self,
+        wait: WaitReason,
+        reason: TransitionReason,
+    ) -> Result<(), LoopError> {
+        let from = self.active_task.lifecycle;
+        if let Err(err) = self.active_task.enter_waiting(wait) {
+            tracing::warn!(
+                from = ?from,
+                to = ?TaskLifecycle::Waiting,
+                reason = ?reason,
+                error = %err,
+                "rejected illegal lifecycle transition"
+            );
+            return Err(LoopError::from(err));
+        }
+        self.journal
+            .append_status(self.session_id, TaskLifecycle::Waiting)
+            .await?;
+        tracing::debug!(
+            from = ?from,
+            to = ?TaskLifecycle::Waiting,
+            revision = self.active_task.revision,
+            reason = ?reason,
+            "lifecycle transition"
+        );
+        Ok(())
+    }
+
+    /// Start a brand-new task (direct dispatch or queue promotion): fresh
+    /// task id, attempt reset to 1, `-> Working`. Legal from `Ready` or any
+    /// terminal state; rejected while a task is already `Working`/`Waiting`
+    /// — at most one active attempt per session.
+    async fn transition_to_new_task(&mut self, task_id: TaskId) -> Result<(), LoopError> {
+        self.active_task
+            .start_new_task(task_id)
+            .map_err(LoopError::from)?;
+        self.journal
+            .append_status(self.session_id, TaskLifecycle::Working)
+            .await?;
+        Ok(())
+    }
+
+    /// Enqueue a future-task instruction. Journals the enqueue before
+    /// returning — callers must not report "queued" to the user until this
+    /// succeeds.
+    pub async fn enqueue_task(&mut self, text: &str) -> Result<QueuedTask, LoopError> {
+        let item = self.queue.enqueue(self.session_id, text);
+        self.journal
+            .append_queue_enqueued(self.session_id, item.id, &item.text)
+            .await?;
+        Ok(item)
+    }
+
+    /// Cancel a still-queued item by its 1-based visible position (matches
+    /// the existing keyboard cancel-by-row UX). Returns `None` if the
+    /// position is out of range or the item is no longer cancellable
+    /// (already promoting/promoted/removed).
+    pub async fn cancel_queued_at(
+        &mut self,
+        one_based: usize,
+    ) -> Result<Option<QueuedTask>, LoopError> {
+        let Some(item) = self.queue.remove_at_visible_position(one_based) else {
+            return Ok(None);
+        };
+        self.journal
+            .append_queue_removed(self.session_id, item.id)
+            .await?;
+        Ok(Some(item))
+    }
+
+    /// Atomic promotion of the oldest queued item into a new task, started
+    /// `Working`. Returns `None` if the queue is empty. On failure to start
+    /// the new task, the item is rolled back to `Queued` (never lost) and
+    /// the error propagated.
+    pub async fn promote_next_queued(&mut self) -> Result<Option<TaskId>, LoopError> {
+        let Some(item) = self.queue.peek_next_queued().cloned() else {
+            return Ok(None);
+        };
+        if !self.queue.mark_promoting(item.id) {
+            // Lost the race to another caller — nothing to do.
+            return Ok(None);
+        }
+        self.journal
+            .append_queue_promoting(self.session_id, item.id)
+            .await?;
+
+        match self.append_user_message(&item.text).await {
+            Ok(()) => {
+                self.queue.mark_promoted(item.id);
+                self.journal
+                    .append_queue_promoted(self.session_id, item.id, self.active_task.task_id.0)
+                    .await?;
+                Ok(Some(self.active_task.task_id))
+            }
+            Err(err) => {
+                self.queue.revert_promoting(item.id);
+                Err(err)
+            }
+        }
     }
 
     pub fn journal_dir(&self) -> &std::path::Path {
@@ -774,7 +964,7 @@ impl AgentSession {
     /// Append a user message to the session (journal + transcript) without calling the model.
     /// Used by the TUI so the YOU bubble can paint before the model run starts.
     pub async fn append_user_message(&mut self, text: &str) -> Result<(), LoopError> {
-        if self.status == SessionStatus::AwaitingHitl {
+        if self.active_task.lifecycle == TaskLifecycle::Waiting {
             return Err(LoopError::AwaitingHitl);
         }
         self.journal
@@ -792,7 +982,8 @@ impl AgentSession {
         if self.context.goal.is_empty() {
             self.context.goal = text.chars().take(200).collect();
         }
-        self.status = SessionStatus::Running;
+        let next_id = TaskId(self.active_task.task_id.0 + 1);
+        self.transition_to_new_task(next_id).await?;
         // Fresh validation budget for each user turn.
         self.validation_budget = ValidationBudget::with_default_max();
         // Fresh completion-evidence bookkeeping for each user turn — a prior
@@ -883,13 +1074,13 @@ impl AgentSession {
             // step (e.g. a caller re-driving `apply_model_response` outside
             // the normal `run_agent_turns` loop) must never resurrect or
             // overwrite it — a new attempt only starts via a new user
-            // message (`append_user_message`), which resets `status` itself.
+            // message (`append_user_message`), which starts a new task itself.
             if matches!(
-                self.status,
-                SessionStatus::Completed
-                    | SessionStatus::Failed
-                    | SessionStatus::Cancelled
-                    | SessionStatus::Interrupted
+                self.active_task.lifecycle,
+                TaskLifecycle::Completed
+                    | TaskLifecycle::Failed
+                    | TaskLifecycle::Cancelled
+                    | TaskLifecycle::Interrupted
             ) {
                 return Ok(ApplyOutcome::Done(last));
             }
@@ -919,12 +1110,37 @@ impl AgentSession {
                 "turn completion decision"
             );
             match decision.state {
-                SessionStatus::Completed => {
-                    self.status = SessionStatus::Completed;
-                    self.journal
-                        .append_status(self.session_id, SessionStatus::Completed)
-                        .await?;
+                TaskLifecycle::Completed => {
+                    self.transition(
+                        TaskLifecycle::Completed,
+                        TransitionReason::Completion(decision.reason),
+                    )
+                    .await?;
                 }
+                TaskLifecycle::Failed => {
+                    self.finalize_turn_failure(
+                        &decision.evidence_summary.detail,
+                        decision.reason.as_category(),
+                    )
+                    .await?;
+                }
+                TaskLifecycle::Waiting | TaskLifecycle::Cancelled | TaskLifecycle::Interrupted => {
+                    // The evaluator can, in principle, observe evidence that maps
+                    // to one of these states (e.g. a `WaitingForUser`/`UserCancelled`
+                    // entry left over from earlier in the same turn) — but only the
+                    // runtime's own coordinators may actually author these
+                    // transitions (the HITL gate in `run_one_tool`, `mark_cancelled`).
+                    // A completion decision alone must never force or re-enter one of
+                    // them; this used to fall through to `finalize_turn_failure` and
+                    // wrongly mark the turn Failed.
+                    tracing::debug!(
+                        state = ?decision.state,
+                        reason = decision.reason.as_category(),
+                        "completion decision observed a non-authoritative state; lifecycle left unchanged"
+                    );
+                }
+                // `TaskLifecycle` is `#[non_exhaustive]`; an unrecognised decision
+                // state fails safe rather than silently completing.
                 _ => {
                     self.finalize_turn_failure(
                         &decision.evidence_summary.detail,
@@ -946,7 +1162,7 @@ impl AgentSession {
                     return Ok(ApplyOutcome::Hitl(pause));
                 }
                 // Retry exhaustion is a terminal failure — do not Continue the loop.
-                if self.status == SessionStatus::Failed {
+                if self.active_task.lifecycle == TaskLifecycle::Failed {
                     return Ok(ApplyOutcome::Done(last.clone()));
                 }
             }
@@ -976,7 +1192,7 @@ impl AgentSession {
         summary: &str,
         category: &str,
     ) -> Result<(), LoopError> {
-        if self.status == SessionStatus::Failed {
+        if self.active_task.lifecycle == TaskLifecycle::Failed {
             // Idempotent: keep the first failure summary.
             if self
                 .messages
@@ -1001,7 +1217,8 @@ impl AgentSession {
             kind: "turn_failed".into(),
             detail: format!("{category}: {summary}"),
         });
-        self.status = SessionStatus::Failed;
+        self.transition(TaskLifecycle::Failed, TransitionReason::TurnFailure)
+            .await?;
         let response = ModelResponse {
             text: content,
             tool_calls: vec![],
@@ -1015,27 +1232,26 @@ impl AgentSession {
                     .map_err(|error| LoopError::Other(error.to_string()))?,
             )
             .await?;
-        self.journal
-            .append_status(self.session_id, SessionStatus::Failed)
-            .await?;
         Ok(())
     }
 
-    /// Persist operator/system cancellation of the foreground task.
+    /// Persist operator/system cancellation of the foreground task. A no-op
+    /// (not an error) when no attempt is actually active — cancelling a
+    /// task that already reached a terminal state, or was never started,
+    /// must never overwrite that terminal outcome.
     pub async fn mark_cancelled(&mut self) -> Result<(), LoopError> {
-        if self.status == SessionStatus::Cancelled {
-            return Ok(());
+        match self.active_task.lifecycle {
+            TaskLifecycle::Working | TaskLifecycle::Waiting => {
+                self.transition(TaskLifecycle::Cancelled, TransitionReason::UserCancel)
+                    .await?;
+                self.events.push(TurnEvent {
+                    kind: "cancelled".into(),
+                    detail: "foreground task cancelled".into(),
+                });
+                Ok(())
+            }
+            _ => Ok(()),
         }
-        self.status = SessionStatus::Cancelled;
-        self.pending_hitl = None;
-        self.journal
-            .append_status(self.session_id, SessionStatus::Cancelled)
-            .await?;
-        self.events.push(TurnEvent {
-            kind: "cancelled".into(),
-            detail: "foreground task cancelled".into(),
-        });
-        Ok(())
     }
 
     /// On resume/reload: a durable Running/AwaitingHitl task with no live runtime
@@ -1043,12 +1259,10 @@ impl AgentSession {
     /// Interrupted. Legacy sessions with no terminal metadata stay Interrupted rather
     /// than eternal Working. Completed/Failed/Cancelled are left untouched.
     pub async fn mark_interrupted_if_stale(&mut self) -> Result<(), LoopError> {
-        match self.status {
-            SessionStatus::Running => {
+        match self.active_task.lifecycle {
+            TaskLifecycle::Working => {
                 // No active runtime after reload/resume.
-                self.status = SessionStatus::Interrupted;
-                self.journal
-                    .append_status(self.session_id, SessionStatus::Interrupted)
+                self.transition(TaskLifecycle::Interrupted, TransitionReason::StaleOnResume)
                     .await?;
                 self.events.push(TurnEvent {
                     kind: "interrupted".into(),
@@ -1056,13 +1270,14 @@ impl AgentSession {
                 });
                 Ok(())
             }
-            // AwaitingHitl is still a recoverable waiting state (operator can decide).
-            SessionStatus::AwaitingHitl
-            | SessionStatus::Completed
-            | SessionStatus::Failed
-            | SessionStatus::Cancelled
-            | SessionStatus::Interrupted => Ok(()),
-            // `SessionStatus` is `#[non_exhaustive]`. Leave an unrecognised status untouched
+            // Waiting is still a recoverable state (operator can decide).
+            TaskLifecycle::Ready
+            | TaskLifecycle::Waiting
+            | TaskLifecycle::Completed
+            | TaskLifecycle::Failed
+            | TaskLifecycle::Cancelled
+            | TaskLifecycle::Interrupted => Ok(()),
+            // `TaskLifecycle` is `#[non_exhaustive]`. Leave an unrecognised status untouched
             // rather than forcing it to Interrupted.
             _ => Ok(()),
         }
@@ -1125,7 +1340,7 @@ impl AgentSession {
         &mut self,
         stream_tx: Option<StreamEventTx>,
     ) -> Result<ModelResponse, LoopError> {
-        if self.status == SessionStatus::AwaitingHitl {
+        if self.active_task.lifecycle == TaskLifecycle::Waiting {
             return Err(LoopError::AwaitingHitl);
         }
 
@@ -1460,11 +1675,15 @@ impl AgentSession {
                     self.journal
                         .append_hitl_wait(self.session_id, &serde_json::to_value(&payload).unwrap())
                         .await?;
-                    self.journal
-                        .append_status(self.session_id, SessionStatus::AwaitingHitl)
-                        .await?;
-                    self.pending_hitl = Some(payload.clone());
-                    self.status = SessionStatus::AwaitingHitl;
+                    let request_id = payload.call_id.clone();
+                    self.enter_waiting(
+                        WaitReason::Approval {
+                            request_id,
+                            payload: payload.clone(),
+                        },
+                        TransitionReason::HitlWait,
+                    )
+                    .await?;
                     self.events.push(TurnEvent {
                         kind: "hitl_wait".into(),
                         detail: payload.tool.clone(),
@@ -1621,7 +1840,10 @@ impl AgentSession {
         decision: HitlDecision,
         actor: &str,
     ) -> Result<(), LoopError> {
-        let payload = self.pending_hitl.clone().ok_or(LoopError::NoPendingHitl)?;
+        let payload = self
+            .pending_hitl()
+            .cloned()
+            .ok_or(LoopError::NoPendingHitl)?;
         // `HitlDecision` is `#[non_exhaustive]`. Derive approval explicitly rather than
         // testing `== Deny` below: a decision this build does not recognise must never
         // be read as approval and reach execution. Fail closed.
@@ -1662,10 +1884,12 @@ impl AgentSession {
                 thinking_duration_secs: None,
                 tool_calls: vec![],
             });
-            self.pending_hitl = None;
-            self.status = SessionStatus::Running;
-            self.journal
-                .append_status(self.session_id, SessionStatus::Running)
+            // Stale evidence from the paused call must not leak into a later
+            // completion decision within this same turn (see `apply_model_response`).
+            self.turn_evidence
+                .0
+                .retain(|e| e.event() != ExecutionEvent::WaitingForUser);
+            self.transition(TaskLifecycle::Working, TransitionReason::HitlResolved)
                 .await?;
             return Ok(());
         }
@@ -1690,8 +1914,11 @@ impl AgentSession {
             // refused. Behaviour is unchanged for Allow, Hitl and Deny.
             let refuse = !matches!(d, PolicyDecision::Allow | PolicyDecision::Hitl);
             if refuse {
-                self.pending_hitl = None;
-                self.status = SessionStatus::Running;
+                self.turn_evidence
+                    .0
+                    .retain(|e| e.event() != ExecutionEvent::WaitingForUser);
+                self.transition(TaskLifecycle::Working, TransitionReason::HitlResolved)
+                    .await?;
                 return Err(LoopError::Other(
                     "policy denies tool after HITL approve".into(),
                 ));
@@ -1700,10 +1927,10 @@ impl AgentSession {
 
         // Restore args from pending — we only have redacted; for tests use redacted as args
         let mut budget = ValidationBudget::with_default_max();
-        self.pending_hitl = None;
-        self.status = SessionStatus::Running;
-        self.journal
-            .append_status(self.session_id, SessionStatus::Running)
+        self.turn_evidence
+            .0
+            .retain(|e| e.event() != ExecutionEvent::WaitingForUser);
+        self.transition(TaskLifecycle::Working, TransitionReason::HitlResolved)
             .await?;
         // Execute with stored args (may be redacted in production; Phase 2 keeps full call in journal intent before wait ideally)
         // Re-fetch from last HitlWait — for approve path re-execute with redacted args is weak;
@@ -1896,7 +2123,181 @@ mod tests {
             .unwrap();
         let r = s.run_user_message("hello").await.unwrap();
         assert_eq!(r.text, "all done");
-        assert_eq!(s.status, SessionStatus::Completed);
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Completed);
+    }
+
+    #[tokio::test]
+    async fn promote_next_queued_starts_a_new_task_and_removes_the_item() {
+        let dir = tempdir().unwrap();
+        let model = Arc::new(MockModelClient::script(vec![]));
+        let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Ready);
+
+        let item = s.enqueue_task("do the next thing").await.unwrap();
+        assert_eq!(s.queue.len(), 1);
+
+        let task_id = s.promote_next_queued().await.unwrap().unwrap();
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Working);
+        assert_eq!(s.active_task.task_id, task_id);
+        // Promotion removed exactly the one item from the visible queue.
+        assert_eq!(s.queue.len(), 0);
+        assert!(s.queue.visible().all(|q| q.id != item.id));
+        assert!(s.messages.iter().any(|m| m.content == "do the next thing"));
+    }
+
+    #[tokio::test]
+    async fn promote_next_queued_on_empty_queue_is_a_no_op() {
+        let dir = tempdir().unwrap();
+        let mut s = idle_session(dir.path()).await;
+        assert_eq!(s.promote_next_queued().await.unwrap(), None);
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Ready);
+    }
+
+    #[tokio::test]
+    async fn cancel_queued_at_removes_by_visible_position() {
+        let dir = tempdir().unwrap();
+        let mut s = idle_session(dir.path()).await;
+        s.enqueue_task("a").await.unwrap();
+        let b = s.enqueue_task("b").await.unwrap();
+        s.enqueue_task("c").await.unwrap();
+
+        let removed = s.cancel_queued_at(2).await.unwrap().unwrap();
+        assert_eq!(removed.id, b.id);
+        let remaining: Vec<&str> = s.queue.visible().map(|q| q.text.as_str()).collect();
+        assert_eq!(remaining, vec!["a", "c"]);
+    }
+
+    #[tokio::test]
+    async fn queue_items_survive_resume_without_duplication() {
+        let dir = tempdir().unwrap();
+        let model = Arc::new(MockModelClient::script(vec![]));
+        let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        s.append_user_message("first task").await.unwrap();
+        s.enqueue_task("queued one").await.unwrap();
+        s.enqueue_task("queued two").await.unwrap();
+        assert_eq!(s.queue.len(), 2);
+
+        let resumed = AgentSession::resume(
+            base_cfg(dir.path()),
+            Arc::new(MockModelClient::script(vec![])),
+            ToolRegistry::new(),
+            s.session_id,
+        )
+        .await
+        .unwrap();
+        assert_eq!(resumed.queue.len(), 2);
+        let texts: Vec<&str> = resumed.queue.visible().map(|q| q.text.as_str()).collect();
+        assert_eq!(texts, vec!["queued one", "queued two"]);
+    }
+
+    /// End-to-end crash-recovery test: a crash between the `QueuePromoting`
+    /// journal write and the confirming `QueuePromoted` one — but *after*
+    /// the task's user message already landed — must not resurrect the item
+    /// as `Queued` on resume. That would let a later `promote_next_queued`
+    /// create a second task from the same instruction, violating "a queue
+    /// item cannot execute twice."
+    #[tokio::test]
+    async fn crash_after_task_created_but_before_promoted_confirmation_does_not_duplicate() {
+        let dir = tempdir().unwrap();
+        let model = Arc::new(MockModelClient::script(vec![]));
+        let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        let item = s.enqueue_task("do the thing").await.unwrap();
+
+        // Simulate a crash: journal exactly what `promote_next_queued`'s
+        // first steps write (mark Promoting, then the task's user message)
+        // but never reach the confirming `QueuePromoted` event.
+        let journal = forge_durable::Journal::open(s.journal_dir(), s.session_id)
+            .await
+            .unwrap();
+        journal
+            .append_queue_promoting(s.session_id, item.id)
+            .await
+            .unwrap();
+        journal
+            .append_user_message(s.session_id, &item.text)
+            .await
+            .unwrap();
+
+        let resumed = AgentSession::resume(
+            base_cfg(dir.path()),
+            Arc::new(MockModelClient::script(vec![])),
+            ToolRegistry::new(),
+            s.session_id,
+        )
+        .await
+        .unwrap();
+
+        // Not visible in the queue again — the task was already created.
+        assert!(resumed.queue.is_empty());
+        assert!(resumed.queue.peek_next_queued().is_none());
+        // The task's user message did survive, exactly once.
+        assert_eq!(
+            resumed
+                .messages
+                .iter()
+                .filter(|m| m.content == "do the thing")
+                .count(),
+            1
+        );
+    }
+
+    /// Contrasting case: a crash *before* the task's user message was ever
+    /// journaled must return the item to `Queued` so it isn't lost.
+    #[tokio::test]
+    async fn crash_before_task_created_reverts_item_to_queued() {
+        let dir = tempdir().unwrap();
+        let model = Arc::new(MockModelClient::script(vec![]));
+        let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        let queued = s.enqueue_task("not started yet").await.unwrap();
+        let journal = forge_durable::Journal::open(s.journal_dir(), s.session_id)
+            .await
+            .unwrap();
+        journal
+            .append_queue_promoting(s.session_id, queued.id)
+            .await
+            .unwrap();
+        // No `append_user_message` — the crash happened before the task
+        // itself was created.
+
+        let resumed = AgentSession::resume(
+            base_cfg(dir.path()),
+            Arc::new(MockModelClient::script(vec![])),
+            ToolRegistry::new(),
+            s.session_id,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(resumed.queue.len(), 1);
+        assert_eq!(
+            resumed.queue.peek_next_queued().map(|q| q.text.as_str()),
+            Some("not started yet")
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelling_the_active_task_preserves_the_queue() {
+        let dir = tempdir().unwrap();
+        let model = Arc::new(MockModelClient::script(vec![]));
+        let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        s.append_user_message("first task").await.unwrap();
+        s.enqueue_task("queued while busy").await.unwrap();
+        assert_eq!(s.queue.len(), 1);
+
+        s.mark_cancelled().await.unwrap();
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Cancelled);
+        // Cancellation must not silently clear the queue.
+        assert_eq!(s.queue.len(), 1);
     }
 
     #[tokio::test]
@@ -2036,7 +2437,7 @@ mod tests {
             .await
             .unwrap();
         let _ = s.run_user_message("read it").await.unwrap();
-        assert_eq!(s.status, SessionStatus::Failed);
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Failed);
         assert!(
             s.messages
                 .iter()
@@ -2084,7 +2485,7 @@ mod tests {
             .await
             .unwrap();
         let _ = s.run_user_message("read it").await.unwrap();
-        assert_eq!(s.status, SessionStatus::Failed);
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Failed);
         assert!(s
             .messages
             .iter()
@@ -2174,12 +2575,62 @@ mod tests {
             .await
             .unwrap();
         let r = s.run_user_message("push").await.unwrap();
-        assert_eq!(s.status, SessionStatus::AwaitingHitl);
-        assert!(s.pending_hitl.is_some());
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Waiting);
+        assert!(s.pending_hitl().is_some());
         assert!(r.text.contains("HITL"));
         s.resolve_hitl(HitlDecision::Deny, "test").await.unwrap();
-        assert_eq!(s.status, SessionStatus::Running);
-        assert!(s.pending_hitl.is_none());
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Working);
+        assert!(s.pending_hitl().is_none());
+    }
+
+    /// Before this fix, the `WaitingForUser` evidence pushed at the HITL
+    /// pause point lingered in `turn_evidence` for the rest of the turn.
+    /// Approving and continuing would then have the completion evaluator see
+    /// stale `WaitingForUser` evidence and misroute the next no-tool-calls
+    /// model step through `finalize_turn_failure` as if the turn were
+    /// waiting/failed, even though the attempt had already resumed Working
+    /// and finished cleanly. `resolve_hitl` now strips that stale evidence on
+    /// resume, so the turn completes normally instead.
+    #[tokio::test]
+    async fn resuming_from_hitl_does_not_leak_stale_waiting_evidence_into_completion() {
+        let dir = tempdir().unwrap();
+        let model = Arc::new(MockModelClient::script(vec![
+            ModelResponse {
+                text: "".into(),
+                tool_calls: vec![ToolCall {
+                    id: "1".into(),
+                    name: "bash".into(),
+                    arguments: json!({"command": "echo ok"}),
+                }],
+                usage: None,
+                thinking: None,
+            },
+            ModelResponse {
+                text: "done".into(),
+                tool_calls: vec![],
+                usage: None,
+                thinking: None,
+            },
+        ]));
+        let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        s.run_user_message("run it").await.unwrap();
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Waiting);
+
+        s.resolve_hitl(HitlDecision::Approve, "test").await.unwrap();
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Working);
+        // The stale WaitingForUser entry from the pause must be gone —
+        // otherwise the next completion decision would misread it.
+        assert!(!s
+            .turn_evidence
+            .0
+            .iter()
+            .any(|e| e.event() == ExecutionEvent::WaitingForUser));
+
+        let outcome = s.run_agent_turns(None).await.unwrap();
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Completed);
+        assert_eq!(outcome.text, "done");
     }
 
     #[tokio::test]
@@ -2282,11 +2733,11 @@ mod tests {
             .await
             .unwrap();
         s.run_user_message("run it").await.unwrap();
-        assert_eq!(s.status, SessionStatus::AwaitingHitl);
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Waiting);
 
         s.resolve_hitl(HitlDecision::Approve, "test").await.unwrap();
-        assert_eq!(s.status, SessionStatus::Running);
-        assert!(s.pending_hitl.is_none());
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Working);
+        assert!(s.pending_hitl().is_none());
 
         let tool_contents: Vec<&str> = s
             .messages
@@ -2307,6 +2758,11 @@ mod tests {
     #[tokio::test]
     async fn offload_large_tool_output() {
         let dir = tempdir().unwrap();
+        // Offloading now routes through the runtime-storage resolver, which
+        // falls back to the platform application-data directory outside a
+        // Git repository — git-init keeps this test's writes inside the
+        // tempdir instead of touching the real host machine.
+        init_repo(dir.path()).await;
         let big = "z".repeat(25_000);
         std::fs::write(dir.path().join("big.txt"), &big).unwrap();
         let model = Arc::new(MockModelClient::script(vec![
@@ -2388,12 +2844,14 @@ mod tests {
         let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
             .await
             .unwrap();
-        assert_eq!(s.status, SessionStatus::Running);
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Ready);
+        s.append_user_message("hi").await.unwrap();
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Working);
         s.mark_interrupted_if_stale().await.unwrap();
-        assert_eq!(s.status, SessionStatus::Interrupted);
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Interrupted);
         // Idempotent on terminal interrupted.
         s.mark_interrupted_if_stale().await.unwrap();
-        assert_eq!(s.status, SessionStatus::Interrupted);
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Interrupted);
     }
 
     #[tokio::test]
@@ -2408,8 +2866,9 @@ mod tests {
         let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
             .await
             .unwrap();
+        s.append_user_message("hi").await.unwrap();
         s.mark_cancelled().await.unwrap();
-        assert_eq!(s.status, SessionStatus::Cancelled);
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Cancelled);
         let s2 = AgentSession::resume(
             base_cfg(dir.path()),
             Arc::new(MockModelClient::script(vec![])),
@@ -2418,7 +2877,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(s2.status, SessionStatus::Cancelled);
+        assert_eq!(s2.active_task.lifecycle, TaskLifecycle::Cancelled);
     }
 
     #[tokio::test]
@@ -2442,7 +2901,57 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(resumed.status, SessionStatus::Interrupted);
+        assert_eq!(resumed.active_task.lifecycle, TaskLifecycle::Interrupted);
+    }
+
+    /// A persisted `Waiting` (HITL) status is a legitimately recoverable
+    /// state, not a stale crash — it must restore as `Waiting` with its
+    /// `WaitReason::Approval` correlation intact, so the operator's pending
+    /// approval can still be resolved after a restart.
+    #[tokio::test]
+    async fn resume_restores_a_valid_waiting_session_and_can_resolve_it() {
+        let dir = tempdir().unwrap();
+        let model = Arc::new(MockModelClient::script(vec![ModelResponse {
+            text: "".into(),
+            tool_calls: vec![ToolCall {
+                id: "1".into(),
+                name: "bash".into(),
+                arguments: json!({"command": "echo hi"}),
+            }],
+            usage: None,
+            thinking: None,
+        }]));
+        let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        s.run_user_message("run it").await.unwrap();
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Waiting);
+        let request_id = s.pending_hitl().unwrap().call_id.clone();
+
+        let mut resumed = AgentSession::resume(
+            base_cfg(dir.path()),
+            Arc::new(MockModelClient::script(vec![ModelResponse {
+                text: "done".into(),
+                tool_calls: vec![],
+                usage: None,
+                thinking: None,
+            }])),
+            ToolRegistry::new(),
+            s.session_id,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(resumed.active_task.lifecycle, TaskLifecycle::Waiting);
+        assert!(resumed.active_task.is_active_wait(&request_id));
+        assert!(resumed.pending_hitl().is_some());
+
+        // The restored wait can actually be resolved — correlation survived.
+        resumed
+            .resolve_hitl(HitlDecision::Approve, "test")
+            .await
+            .unwrap();
+        assert_eq!(resumed.active_task.lifecycle, TaskLifecycle::Working);
     }
 
     /// A session with no scripted model turns; enough to exercise state helpers
@@ -2531,11 +3040,12 @@ mod tests {
     async fn finalize_turn_failure_keeps_the_first_summary() {
         let dir = tempdir().unwrap();
         let mut s = idle_session(dir.path()).await;
+        s.append_user_message("do something").await.unwrap();
 
         s.finalize_turn_failure("first failure", "cat_a")
             .await
             .unwrap();
-        assert_eq!(s.status, SessionStatus::Failed);
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Failed);
         let after_first = s.messages.len();
 
         // Idempotent: a second failure must not append another marker message
@@ -2559,10 +3069,11 @@ mod tests {
     async fn fail_max_turns_records_a_step_limit_failure() {
         let dir = tempdir().unwrap();
         let mut s = idle_session(dir.path()).await;
+        s.append_user_message("do something").await.unwrap();
 
         s.fail_max_turns().await.unwrap();
 
-        assert_eq!(s.status, SessionStatus::Failed);
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Failed);
         let marker = s
             .messages
             .iter()
@@ -2578,6 +3089,11 @@ mod tests {
     #[tokio::test]
     async fn prepare_model_step_resets_context_when_over_threshold() {
         let dir = tempdir().unwrap();
+        // The context-reset handoff writes a progress checkpoint through the
+        // runtime-storage resolver, which falls back to the platform
+        // application-data directory outside a Git repository — git-init
+        // keeps this test's writes inside the tempdir.
+        init_repo(dir.path()).await;
         let mut s = idle_session(dir.path()).await;
 
         // Shrink the window so the messages below cross the reset ratio.
@@ -2761,7 +3277,7 @@ mod tests {
             .await
             .unwrap();
         s.run_user_message("delete missing.txt").await.unwrap();
-        assert_eq!(s.status, SessionStatus::Failed);
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Failed);
         assert!(s
             .messages
             .iter()
@@ -2783,7 +3299,7 @@ mod tests {
             .await
             .unwrap();
         s.run_user_message("create new.txt").await.unwrap();
-        assert_eq!(s.status, SessionStatus::Completed);
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Completed);
         assert_eq!(
             std::fs::read_to_string(dir.path().join("new.txt")).unwrap(),
             "hello\n"
@@ -2809,7 +3325,7 @@ mod tests {
             .await
             .unwrap();
         s.run_user_message("run it").await.unwrap();
-        assert_eq!(s.status, SessionStatus::Failed);
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Failed);
         let failure = s
             .messages
             .iter()
@@ -2837,7 +3353,7 @@ mod tests {
             .await
             .unwrap();
         s.run_user_message("search for it").await.unwrap();
-        assert_eq!(s.status, SessionStatus::Completed);
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Completed);
         assert_eq!(
             s.last_completion.as_ref().unwrap().evidence_summary.detail,
             "Search completed with 0 matches."
@@ -2868,7 +3384,7 @@ mod tests {
             .await
             .unwrap();
         s.run_user_message("update both").await.unwrap();
-        assert_eq!(s.status, SessionStatus::Failed);
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Failed);
         assert_eq!(
             s.last_completion.as_ref().unwrap().reason,
             CompletionReason::PartialFailure
@@ -2889,7 +3405,7 @@ mod tests {
             .await
             .unwrap();
         s.run_user_message("what is this repo?").await.unwrap();
-        assert_eq!(s.status, SessionStatus::Completed);
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Completed);
         assert_eq!(
             s.last_completion.as_ref().unwrap().reason,
             CompletionReason::NoChangesRequired
@@ -2912,7 +3428,7 @@ mod tests {
             .await
             .unwrap();
         s.run_user_message("stage a.txt").await.unwrap();
-        assert_eq!(s.status, SessionStatus::Failed);
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Failed);
         assert_eq!(
             s.last_completion.as_ref().unwrap().reason,
             CompletionReason::GitEffectNotObserved
@@ -2943,7 +3459,7 @@ mod tests {
             .await
             .unwrap();
         s.run_user_message("commit the change").await.unwrap();
-        assert_eq!(s.status, SessionStatus::Completed);
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Completed);
         assert_eq!(
             s.last_completion.as_ref().unwrap().reason,
             CompletionReason::GitEffectVerified
@@ -2957,16 +3473,17 @@ mod tests {
     async fn failed_turn_is_not_overwritten_by_later_success_narration() {
         let dir = tempdir().unwrap();
         let mut s = idle_session(dir.path()).await;
+        s.append_user_message("run the tests").await.unwrap();
         s.finalize_turn_failure("cargo test exited with code 101.", "tool_exited_nonzero")
             .await
             .unwrap();
-        assert_eq!(s.status, SessionStatus::Failed);
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Failed);
 
         let outcome = s
             .apply_model_response(text_only("Actually, all tests passed now!"))
             .await
             .unwrap();
-        assert_eq!(s.status, SessionStatus::Failed);
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Failed);
         assert!(matches!(outcome, ApplyOutcome::Done(_)));
     }
 
@@ -2974,12 +3491,13 @@ mod tests {
     async fn cancellation_yields_interrupted_and_never_completes() {
         let dir = tempdir().unwrap();
         let mut s = idle_session(dir.path()).await;
+        s.append_user_message("do something").await.unwrap();
         s.mark_cancelled().await.unwrap();
-        assert_eq!(s.status, SessionStatus::Cancelled);
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Cancelled);
 
         // A later model step must not resurrect the turn into Completed.
         let outcome = s.apply_model_response(text_only("Done!")).await.unwrap();
-        assert_eq!(s.status, SessionStatus::Cancelled);
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Cancelled);
         assert!(matches!(outcome, ApplyOutcome::Done(_)));
     }
 }

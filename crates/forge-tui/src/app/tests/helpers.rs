@@ -152,6 +152,18 @@ pub(crate) fn direct_hitl_payload(call_id: &str, path: &str) -> HitlPayload {
     }
 }
 
+/// Directly install a HITL wait onto the session's `active_task` for test
+/// setup. Bypasses the normal transition validator (as session restoration
+/// does) — appropriate here since these tests simulate "there's a pending
+/// approval" without driving a real tool call through governance.
+pub(crate) fn set_pending_hitl(app: &mut TuiApp, payload: HitlPayload) {
+    app.session.active_task.lifecycle = forge_types::TaskLifecycle::Waiting;
+    app.session.active_task.wait_reason = Some(forge_types::WaitReason::Approval {
+        request_id: payload.call_id.clone(),
+        payload,
+    });
+}
+
 pub(crate) fn press(code: KeyCode, mods: KeyModifiers) -> event::KeyEvent {
     event::KeyEvent {
         code,
