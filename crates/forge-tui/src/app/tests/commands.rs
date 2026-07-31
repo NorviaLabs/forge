@@ -830,30 +830,6 @@ async fn enter_runs_slash_from_main_textbox() {
 }
 
 #[tokio::test]
-async fn ctrl_k_opens_command_palette() {
-    use crossterm::event::{KeyCode, KeyModifiers};
-    let (_dir, session) = test_session().await;
-    let mut app = TuiApp::new(
-        session,
-        TuiRuntimeConfig {
-            model_label: "m".into(),
-            provider: "mock".into(),
-            cwd: PathBuf::from("."),
-            version: "0.8.0".into(),
-            startup_notices: Vec::new(),
-            validation_command: None,
-            file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
-            theme: forge_config::Theme::default(),
-        },
-    );
-    app.handle_key(press(KeyCode::Char('k'), KeyModifiers::CONTROL))
-        .await
-        .unwrap();
-    assert!(matches!(app.overlay, Some(Overlay::Slash { .. })));
-}
-
-#[tokio::test]
 async fn inspector_is_closed_by_default_and_opens_on_demand() {
     let (_dir, session) = test_session().await;
     let mut app = TuiApp::new(

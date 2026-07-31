@@ -132,7 +132,7 @@ The full-screen TUI uses one contextual workspace: Conversation, File, Review ch
 
 Context compaction and session resume report their before/after or recovery state in the transcript, feedback strip, notices, and activity feed. HITL decisions are made through the approval modal; they are not slash commands. Background Run and agent activity update the activity summary without taking over the current workspace.
 
-Slash commands can be typed directly in the textbox or discovered with **Ctrl+K**:
+Slash commands are typed directly in the textbox, with inline autocomplete suggestions:
 
 | Command | Description |
 |---------|-------------|
@@ -152,7 +152,6 @@ Slash commands can be typed directly in the textbox or discovered with **Ctrl+K*
 | Key | Action |
 |-----|--------|
 | **Enter** | Send message (or enqueue while agent is busy) |
-| **Ctrl+K** | Open the command palette |
 | **Ctrl+E** | Toggle Files |
 | **Ctrl+B** | Toggle Inspector |
 | **Ctrl+P** | Toggle Bottom surface |
