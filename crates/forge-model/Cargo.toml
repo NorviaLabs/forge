@@ -21,3 +21,4 @@ uuid = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tempfile = { workspace = true }
+forge-test-support = { workspace = true }

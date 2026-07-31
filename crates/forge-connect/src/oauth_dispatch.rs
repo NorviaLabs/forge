@@ -35,7 +35,8 @@ pub(crate) struct OauthDispatcher;
 impl OauthDispatcher {
     pub(crate) fn start(profile: &ConnectProfile) -> Result<OauthPending, OauthError> {
         if profile.id == crate::openai_codex::PROFILE_ID {
-            return OpenAiCodexOauthClient::start_device_code()
+            return OpenAiCodexOauthClient::default()
+                .start_device_code()
                 .map_err(|error| OauthError::Provider(error.to_string()));
         }
 
@@ -46,7 +47,10 @@ impl OauthDispatcher {
 
     pub(crate) fn poll(pending: &OauthPending) -> Result<PollResult, OauthError> {
         if pending.profile_id == crate::openai_codex::PROFILE_ID {
-            return match OpenAiCodexOauthClient::poll_token_once(pending) {
+            let client = OpenAiCodexOauthClient {
+                auth_base: pending.auth_server.clone(),
+            };
+            return match client.poll_token_once(pending) {
                 Ok(tokens) => Ok(PollResult::Complete(tokens)),
                 Err(OpenAiCodexOauthError::Pending) => Ok(PollResult::Pending),
                 Err(OpenAiCodexOauthError::SlowDown) => Ok(PollResult::SlowDown),
@@ -72,7 +76,8 @@ impl OauthDispatcher {
         refresh_token: &str,
     ) -> Result<OauthTokens, OauthError> {
         if profile.id == crate::openai_codex::PROFILE_ID {
-            return OpenAiCodexOauthClient::refresh(refresh_token)
+            return OpenAiCodexOauthClient::default()
+                .refresh(refresh_token)
                 .map_err(|error| OauthError::Provider(error.to_string()));
         }
 
