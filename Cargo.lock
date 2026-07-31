@@ -1094,6 +1094,7 @@ dependencies = [
  "forge-core",
  "forge-mcp",
  "forge-model",
+ "forge-storage",
  "forge-tools",
  "forge-tui",
  "forge-types",
@@ -1138,6 +1139,7 @@ version = "0.1.0-alpha.10"
 dependencies = [
  "chrono",
  "dirs 6.0.0",
+ "forge-storage",
  "forge-types",
  "hex",
  "serde",
@@ -1234,6 +1236,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "forge-storage"
+version = "0.1.0-alpha.10"
+dependencies = [
+ "dirs 6.0.0",
+ "tempfile",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "forge-syntax"
 version = "0.1.0-alpha.10"
 dependencies = [
@@ -1293,6 +1304,7 @@ dependencies = [
  "forge-connect",
  "forge-core",
  "forge-model",
+ "forge-storage",
  "forge-syntax",
  "forge-tools",
  "forge-types",
