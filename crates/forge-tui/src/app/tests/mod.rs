@@ -4,10 +4,10 @@ use super::*;
 use crate::widgets::status::TurnLifecycle;
 use forge_config::CommandConfig;
 use forge_core::LoopConfig;
-use forge_model::{MockModelClient, ModelClient};
+use forge_model::MockModelClient;
 use forge_tools::ToolRegistry;
 use forge_types::{Message, MessageRole, ModelResponse};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::Arc;
 use tempfile::TempDir;
 
 mod helpers;
