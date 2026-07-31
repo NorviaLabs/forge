@@ -391,6 +391,12 @@ impl SessionTokenUsage {
             self.completion_tokens = self
                 .completion_tokens
                 .saturating_add(u.completion_tokens as u64);
+            self.prompt_cache_hits = self
+                .prompt_cache_hits
+                .saturating_add(u.prompt_cache_read_tokens as u64);
+            self.prompt_cache_writes = self
+                .prompt_cache_writes
+                .saturating_add(u.prompt_cache_write_tokens as u64);
             self.model_calls_with_usage = self.model_calls_with_usage.saturating_add(1);
         }
         if let Some(th) = thinking.filter(|t| !t.trim().is_empty()) {
@@ -2122,6 +2128,7 @@ mod tests {
             usage: Some(Usage {
                 prompt_tokens: 11,
                 completion_tokens: 4,
+                ..Default::default()
             }),
             thinking: Some("trace".into()),
         }]));
@@ -2535,6 +2542,7 @@ mod tests {
                 usage: Some(Usage {
                     prompt_tokens: 10,
                     completion_tokens: 2,
+                    ..Default::default()
                 }),
                 thinking: Some("inspect".into()),
             },
@@ -2544,6 +2552,7 @@ mod tests {
                 usage: Some(Usage {
                     prompt_tokens: 20,
                     completion_tokens: 4,
+                    ..Default::default()
                 }),
                 thinking: None,
             },
@@ -2824,6 +2833,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn accumulates_prompt_cache_tokens_in_session_usage() {
+        let dir = tempdir().unwrap();
+        let model = Arc::new(MockModelClient::script(vec![ModelResponse {
+            text: "one".into(),
+            tool_calls: vec![],
+            usage: Some(Usage {
+                prompt_tokens: 10,
+                completion_tokens: 3,
+                prompt_cache_read_tokens: 7,
+                prompt_cache_write_tokens: 2,
+            }),
+            thinking: None,
+        }]));
+        let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        s.run_user_message("hi").await.unwrap();
+        assert_eq!(s.token_usage.prompt_cache_hits, 7);
+        assert_eq!(s.token_usage.prompt_cache_writes, 2);
+    }
+
+    #[tokio::test]
     async fn accumulates_api_token_usage_for_cost() {
         let dir = tempdir().unwrap();
         let model = Arc::new(MockModelClient::script(vec![ModelResponse {
@@ -2832,6 +2863,7 @@ mod tests {
             usage: Some(Usage {
                 prompt_tokens: 10,
                 completion_tokens: 3,
+                ..Default::default()
             }),
             thinking: Some("hmm".into()),
         }]));
