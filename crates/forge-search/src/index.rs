@@ -146,14 +146,16 @@ impl WorkspaceIndex {
             .items
             .into_iter()
             .zip(results.scores)
+            .zip(results.match_byte_offsets)
             .take(max_results)
-            .map(|(item, score)| {
+            .map(|((item, score), match_ranges)| {
                 let path = item.relative_path(picker).to_string();
                 let relevance = (score.total as f32 / top_score as f32).clamp(0.0, 1.0);
                 FileSearchHit {
                     path,
                     score: score.total,
                     relevance,
+                    match_ranges: match_ranges.into_iter().collect(),
                 }
             })
             .collect();
