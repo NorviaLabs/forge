@@ -78,6 +78,11 @@ impl ModelClient for MockModelClient {
                             text: response.text.clone(),
                         });
                     }
+                    if let Some(ref usage) = response.usage {
+                        let _ = tx.send(ModelStreamEvent::Usage {
+                            usage: usage.clone(),
+                        });
+                    }
                     let _ = tx.send(ModelStreamEvent::MessageEnd);
                 }
                 Ok(response)
