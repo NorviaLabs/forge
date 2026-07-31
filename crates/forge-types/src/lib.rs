@@ -122,10 +122,16 @@ impl std::fmt::Display for ToolValidationError {
 
 impl std::error::Error for ToolValidationError {}
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Usage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
+    /// Provider-reported prompt tokens served from cache (read/hit).
+    #[serde(default)]
+    pub prompt_cache_read_tokens: u32,
+    /// Provider-reported prompt tokens written to cache this request.
+    #[serde(default)]
+    pub prompt_cache_write_tokens: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

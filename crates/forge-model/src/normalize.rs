@@ -162,10 +162,9 @@ fn parse_usage(v: Option<&Value>) -> Option<Usage> {
     let u = v?;
     let prompt = u.get("prompt_tokens").and_then(|x| x.as_u64())? as u32;
     let completion = u.get("completion_tokens").and_then(|x| x.as_u64())? as u32;
-    Some(Usage {
-        prompt_tokens: prompt,
-        completion_tokens: completion,
-    })
+    Some(crate::prompt_cache::usage_from_provider(
+        u, prompt, completion,
+    ))
 }
 
 pub fn forge_messages_to_wire(messages: &[Message]) -> Vec<Value> {
