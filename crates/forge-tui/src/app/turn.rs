@@ -79,29 +79,42 @@ impl TuiApp {
         );
     }
 
-    /// Enqueue while a message is processing (TUI Enter path only).
-    pub(super) fn enqueue_user_message(&mut self, line: String) {
-        let n = self.message_queue.enqueue(line);
-        if self.queue_selected.is_none() {
-            self.queue_selected = Some(0);
+    /// Enqueue while a message is processing (TUI Enter path only). Does not
+    /// claim success (or clear the composer's caller-held text) until the
+    /// queue store durably accepts the item.
+    pub(super) async fn enqueue_user_message(&mut self, line: String) {
+        match self.session.enqueue_task(&line).await {
+            Ok(_item) => {
+                let n = self.session.queue.len();
+                if self.queue_selected.is_none() {
+                    self.queue_selected = Some(0);
+                }
+                self.push_toast(format!("queued #{n}"));
+                self.set_feedback(
+                    FeedbackSeverity::Info,
+                    format!(
+                        "queued #{n} · {n} waiting · Ctrl+Up/Down select · Ctrl+Backspace cancel"
+                    ),
+                );
+                self.push_activity(
+                    ActivityKind::System,
+                    FeedbackSeverity::Info,
+                    format!("queue enqueue #{n}"),
+                );
+            }
+            Err(e) => {
+                // Preserve the typed message rather than dropping it silently.
+                self.input.set_text(line);
+                self.report_error(&format!("Could not queue the instruction: {e}"));
+            }
         }
-        self.push_toast(format!("queued #{n}"));
-        self.set_feedback(
-            FeedbackSeverity::Info,
-            format!(
-                "queued #{n} · {} waiting · Ctrl+Up/Down select · Ctrl+Backspace cancel",
-                self.message_queue.len()
-            ),
-        );
-        self.push_activity(
-            ActivityKind::System,
-            FeedbackSeverity::Info,
-            format!("queue enqueue #{n}"),
-        );
     }
 
-    /// Take next queued message and start a model turn.
-    pub(super) fn dequeue_and_send_next(&mut self) {
+    /// Atomically promote the oldest queued item into a new task and start
+    /// driving its turn. A thin wrapper over `AgentSession::promote_next_queued`
+    /// — the queue store owns the atomic Queued->Promoting->Promoted pipeline;
+    /// this only decides when to call it and how to kick off streaming.
+    pub(super) async fn dequeue_and_send_next(&mut self) {
         if self.busy || self.pending_prompt.is_some() {
             self.set_feedback(
                 FeedbackSeverity::Warn,
@@ -109,59 +122,68 @@ impl TuiApp {
             );
             return;
         }
-        if self.session.pending_hitl.is_some() {
+        if self.session.pending_hitl().is_some() {
             self.set_feedback(FeedbackSeverity::Warn, "resolve HITL before dequeuing");
             return;
         }
-        let Some(next) = self.message_queue.dequeue() else {
-            self.set_feedback(FeedbackSeverity::Warn, "queue empty");
-            return;
-        };
-        self.clamp_queue_selection();
         if !self.is_provider_connected() {
-            self.message_queue.push_front(next);
             self.report_error("Not connected — cannot send queued message. Run /connect.");
             return;
         }
-        self.push_activity(
-            ActivityKind::System,
-            FeedbackSeverity::Info,
-            format!("queue dequeue · {} left", self.message_queue.len()),
-        );
-        self.set_feedback(
-            FeedbackSeverity::Info,
-            format!("sending dequeued · {} remaining", self.message_queue.len()),
-        );
-        // Start the turn the same way as a normal Enter send (no dispatch recursion).
-        self.clear_error_chrome();
-        if let Some(pid) = self.connect.profile.clone() {
-            self.apply_connect_credentials(&pid);
+        match self.session.promote_next_queued().await {
+            Ok(Some(_task_id)) => {
+                self.clamp_queue_selection();
+                self.push_activity(
+                    ActivityKind::System,
+                    FeedbackSeverity::Info,
+                    format!("queue dequeue · {} left", self.session.queue.len()),
+                );
+                self.set_feedback(
+                    FeedbackSeverity::Info,
+                    format!("sending dequeued · {} remaining", self.session.queue.len()),
+                );
+                // Start the turn the same way as a normal Enter send (no dispatch
+                // recursion). The user message was already appended by
+                // `promote_next_queued`, so this continues the turn rather than
+                // appending again — the same mechanism used to resume after the
+                // turn-limit overlay.
+                self.clear_error_chrome();
+                if let Some(pid) = self.connect.profile.clone() {
+                    self.apply_connect_credentials(&pid);
+                }
+                self.pending_turn_continue = true;
+                self.busy = true;
+                self.busy_phase = BusyPhase::Model;
+                self.turn_started = Some(Instant::now());
+                self.stream_preview.clear();
+                self.stream_thinking.clear();
+                self.push_activity(
+                    ActivityKind::Model,
+                    FeedbackSeverity::Info,
+                    "model call started",
+                );
+            }
+            Ok(None) => {
+                self.set_feedback(FeedbackSeverity::Warn, "queue empty");
+            }
+            Err(e) => {
+                self.report_error(&format!("Could not start the next queued task: {e}"));
+            }
         }
-        self.pending_prompt = Some(next);
-        self.busy = true;
-        self.busy_phase = BusyPhase::Model;
-        self.turn_started = Some(Instant::now());
-        self.stream_preview.clear();
-        self.stream_thinking.clear();
-        self.push_activity(
-            ActivityKind::Model,
-            FeedbackSeverity::Info,
-            "model call started",
-        );
     }
 
-    /// Cancel a queued message by 0-based index.
-    fn cancel_queued_at(&mut self, index: usize) {
+    /// Cancel a queued message by 0-based visible-position index.
+    async fn cancel_queued_at(&mut self, index: usize) {
         let one_based = index + 1;
-        match self.message_queue.drop_at(one_based) {
-            Some(t) => {
-                let preview: String = t.chars().take(48).collect();
+        match self.session.cancel_queued_at(one_based).await {
+            Ok(Some(item)) => {
+                let preview: String = item.text.chars().take(48).collect();
                 self.push_toast(format!("cancelled #{one_based}"));
                 self.set_feedback(
                     FeedbackSeverity::Ok,
                     format!(
                         "cancelled queued #{one_based} · {} left",
-                        self.message_queue.len()
+                        self.session.queue.len()
                     ),
                 );
                 self.push_activity(
@@ -171,14 +193,17 @@ impl TuiApp {
                 );
                 self.clamp_queue_selection();
             }
-            None => {
+            Ok(None) => {
                 self.set_feedback(FeedbackSeverity::Warn, "queue item gone");
+            }
+            Err(e) => {
+                self.report_error(&format!("Could not cancel the queued item: {e}"));
             }
         }
     }
 
     fn clamp_queue_selection(&mut self) {
-        let len = self.message_queue.len();
+        let len = self.session.queue.len();
         self.queue_selected = match (len, self.queue_selected) {
             (0, _) => None,
             (_, Some(i)) if i < len => Some(i),
@@ -188,7 +213,7 @@ impl TuiApp {
     }
 
     pub(super) fn move_queue_selection(&mut self, delta: i32) {
-        let len = self.message_queue.len();
+        let len = self.session.queue.len();
         if len == 0 {
             self.queue_selected = None;
             return;
@@ -198,12 +223,12 @@ impl TuiApp {
         self.queue_selected = Some(next);
     }
 
-    pub(super) fn cancel_selected_queue(&mut self) {
+    pub(super) async fn cancel_selected_queue(&mut self) {
         let Some(idx) = self.queue_selected else {
             self.set_feedback(FeedbackSeverity::Warn, "queue empty");
             return;
         };
-        self.cancel_queued_at(idx);
+        self.cancel_queued_at(idx).await;
     }
 
     /// Run a queued user prompt with streaming + intermediate redraws.
@@ -453,8 +478,8 @@ impl TuiApp {
         }
 
         let turn_limit_reached = outcome_err.is_none()
-            && self.session.status != forge_types::SessionStatus::Completed
-            && self.session.status != forge_types::SessionStatus::AwaitingHitl;
+            && self.session.active_task.lifecycle != forge_types::TaskLifecycle::Completed
+            && self.session.active_task.lifecycle != forge_types::TaskLifecycle::Waiting;
         let interrupted_partial = outcome_err
             .as_ref()
             .filter(|_| !self.stream_preview.trim().is_empty())
@@ -508,14 +533,14 @@ impl TuiApp {
                 self.last_exit = ExitCode::Failed;
             }
             // Leave queue intact so the operator can fix and continue.
-        } else if self.session.pending_hitl.is_some() {
+        } else if self.session.pending_hitl().is_some() {
             self.stream_preview.clear();
             self.stream_thinking.clear();
             self.turn_started = None;
             self.thinking_started = None;
             self.thought_secs = None;
-            if let Some(ref p) = self.session.pending_hitl {
-                self.open_hitl_overlay(p.clone());
+            if let Some(p) = self.session.pending_hitl().cloned() {
+                self.open_hitl_overlay(p);
             }
             self.last_exit = ExitCode::AwaitingHitl;
             self.set_feedback(FeedbackSeverity::Warn, "awaiting human approval");
@@ -532,22 +557,22 @@ impl TuiApp {
             }
             self.clear_error_chrome();
             self.tool_expanded = false;
-            if self.message_queue.is_empty() {
+            if self.session.queue.is_empty() {
                 self.feedback = FeedbackModel::default();
                 self.status_message.clear();
             } else {
                 self.push_toast(format!(
                     "{} queued · sending next",
-                    self.message_queue.len()
+                    self.session.queue.len()
                 ));
                 self.set_feedback(
                     FeedbackSeverity::Info,
-                    format!("{} in queue — sending next", self.message_queue.len()),
+                    format!("{} in queue — sending next", self.session.queue.len()),
                 );
             }
             self.push_activity(ActivityKind::Model, FeedbackSeverity::Ok, "model ok");
-            if !self.message_queue.is_empty() {
-                self.dequeue_and_send_next();
+            if !self.session.queue.is_empty() {
+                self.dequeue_and_send_next().await;
             }
         }
         Ok(())

@@ -13,7 +13,6 @@ mod file_ops;
 mod git_status;
 mod history;
 mod layout;
-mod msg_queue;
 mod overlays;
 mod run;
 mod sidebar;
@@ -39,7 +38,6 @@ pub use layout::{
     is_too_small, split_areas, split_areas_ex, split_areas_full, LayoutRegions, MIN_HEIGHT,
     MIN_WIDTH,
 };
-pub use msg_queue::MessageQueue;
 pub use overlays::{
     default_models, default_palette_items, filter_palette, handle_overlay_key, models_from_catalog,
     Key as OverlayKey, Overlay, OverlayAction,

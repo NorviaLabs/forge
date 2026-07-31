@@ -32,12 +32,15 @@ async fn approval_overlay_preserves_underlying_workspace() {
         .await
         .unwrap();
     let before = app.workspace_navigation.clone();
-    app.session.pending_hitl = Some(forge_types::HitlPayload {
-        call_id: "1".into(),
-        tool: "bash".into(),
-        args_redacted: json!({"command": "cargo test"}),
-        reason: "test approval".into(),
-    });
+    set_pending_hitl(
+        &mut app,
+        forge_types::HitlPayload {
+            call_id: "1".into(),
+            tool: "bash".into(),
+            args_redacted: json!({"command": "cargo test"}),
+            reason: "test approval".into(),
+        },
+    );
 
     app.maybe_open_hitl();
 
@@ -51,14 +54,14 @@ async fn approval_overlay_preserves_underlying_workspace() {
 async fn approval_direct_allow_once_resolves_without_remembering() {
     let (dir, mut app) = focus_test_app().await;
     fs::write(dir.path().join("allowed.txt"), "ok").unwrap();
-    app.session.pending_hitl = Some(direct_hitl_payload("direct-once", "allowed.txt"));
+    set_pending_hitl(&mut app, direct_hitl_payload("direct-once", "allowed.txt"));
     app.maybe_open_hitl();
 
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
 
-    assert!(app.session.pending_hitl.is_none());
+    assert!(app.session.pending_hitl().is_none());
     assert!(app.hitl_session_allow.is_empty());
     assert!(app
         .session
@@ -72,7 +75,7 @@ async fn approval_remembered_direct_invocation_matches_exact_identity() {
     let (dir, mut app) = focus_test_app().await;
     fs::write(dir.path().join("remember.txt"), "ok").unwrap();
     let payload = direct_hitl_payload("remember", "remember.txt");
-    app.session.pending_hitl = Some(payload.clone());
+    set_pending_hitl(&mut app, payload.clone());
     app.maybe_open_hitl();
 
     app.handle_key(press(KeyCode::Char('s'), KeyModifiers::NONE))
@@ -114,7 +117,7 @@ async fn approval_remembered_direct_expires_with_session() {
     let (dir, mut app) = focus_test_app().await;
     fs::write(dir.path().join("session.txt"), "ok").unwrap();
     let payload = direct_hitl_payload("session", "session.txt");
-    app.session.pending_hitl = Some(payload.clone());
+    set_pending_hitl(&mut app, payload.clone());
     app.maybe_open_hitl();
     app.handle_key(press(KeyCode::Char('s'), KeyModifiers::NONE))
         .await
@@ -146,12 +149,15 @@ async fn approval_remembered_direct_expires_with_session() {
 #[tokio::test]
 async fn approval_shell_mode_cannot_be_remembered() {
     let (_dir, mut app) = focus_test_app().await;
-    app.session.pending_hitl = Some(HitlPayload {
-        call_id: "shell".into(),
-        tool: "bash".into(),
-        args_redacted: json!({"command": "git push origin main"}),
-        reason: "test approval".into(),
-    });
+    set_pending_hitl(
+        &mut app,
+        HitlPayload {
+            call_id: "shell".into(),
+            tool: "bash".into(),
+            args_redacted: json!({"command": "git push origin main"}),
+            reason: "test approval".into(),
+        },
+    );
     app.maybe_open_hitl();
 
     let Some(Overlay::Hitl { approval, .. }) = &app.overlay else {
@@ -160,7 +166,7 @@ async fn approval_shell_mode_cannot_be_remembered() {
     assert_eq!(approval.mode, ApprovalExecutionMode::Shell);
     assert!(!approval.remember_eligible);
     assert_eq!(
-        app.approval_identity_for_payload(app.session.pending_hitl.as_ref().unwrap()),
+        app.approval_identity_for_payload(app.session.pending_hitl().unwrap()),
         None
     );
 }
@@ -169,7 +175,7 @@ async fn approval_shell_mode_cannot_be_remembered() {
 async fn approval_escape_denies_and_underlying_commands_are_blocked() {
     let (dir, mut app) = focus_test_app().await;
     fs::write(dir.path().join("blocked.txt"), "ok").unwrap();
-    app.session.pending_hitl = Some(direct_hitl_payload("esc", "blocked.txt"));
+    set_pending_hitl(&mut app, direct_hitl_payload("esc", "blocked.txt"));
     app.maybe_open_hitl();
     let before_history = app.workspace_navigation.clone();
 
@@ -177,13 +183,13 @@ async fn approval_escape_denies_and_underlying_commands_are_blocked() {
         .await
         .unwrap();
     assert!(app.input.text.is_empty());
-    assert!(app.session.pending_hitl.is_some());
+    assert!(app.session.pending_hitl().is_some());
 
     app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
         .await
         .unwrap();
 
-    assert!(app.session.pending_hitl.is_none());
+    assert!(app.session.pending_hitl().is_none());
     assert_eq!(app.workspace_navigation, before_history);
     assert!(app
         .session
@@ -201,7 +207,7 @@ async fn approval_escape_denies_and_underlying_commands_are_blocked() {
 async fn approval_duplicate_confirmation_is_idempotent() {
     let (dir, mut app) = focus_test_app().await;
     fs::write(dir.path().join("dup.txt"), "ok").unwrap();
-    app.session.pending_hitl = Some(direct_hitl_payload("dup", "dup.txt"));
+    set_pending_hitl(&mut app, direct_hitl_payload("dup", "dup.txt"));
     app.maybe_open_hitl();
 
     app.resolve_hitl_overlay(HitlDecision::Approve, false)
@@ -223,12 +229,15 @@ async fn approval_duplicate_confirmation_is_idempotent() {
 #[tokio::test]
 async fn approval_overlay_80x24_renders_actions_and_redacts_secrets() {
     let (_dir, mut app) = focus_test_app().await;
-    app.session.pending_hitl = Some(HitlPayload {
-        call_id: "secret".into(),
-        tool: "read_file".into(),
-        args_redacted: json!({"path": "config.txt", "api_key": "[REDACTED]"}),
-        reason: "secret test".into(),
-    });
+    set_pending_hitl(
+        &mut app,
+        HitlPayload {
+            call_id: "secret".into(),
+            tool: "read_file".into(),
+            args_redacted: json!({"path": "config.txt", "api_key": "[REDACTED]"}),
+            reason: "secret test".into(),
+        },
+    );
     app.maybe_open_hitl();
 
     let rendered = render_app_text(&mut app, 80, 24);

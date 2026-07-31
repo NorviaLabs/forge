@@ -114,7 +114,7 @@ pub fn content_column_to_display(content_col: usize, glyph: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use forge_types::{Message, MessageRole, SessionStatus};
+    use forge_types::{Message, MessageRole, TaskLifecycle};
     use ratatui::backend::TestBackend;
     use ratatui::layout::Rect;
     use ratatui::style::Color;
@@ -134,7 +134,7 @@ mod tests {
                 tool_calls: vec![],
             }],
             &[],
-            SessionStatus::Running,
+            TaskLifecycle::Working,
             ConversationViewOpts::default(),
         )
     }
@@ -362,7 +362,7 @@ mod tests {
                 },
             ],
             &[],
-            SessionStatus::Running,
+            TaskLifecycle::Working,
             ConversationViewOpts::default(),
         );
         let rows: Vec<String> = model
@@ -539,7 +539,7 @@ mod tests {
                 },
             ],
             &[],
-            SessionStatus::Running,
+            TaskLifecycle::Working,
             ConversationViewOpts::default(),
         );
         snapshot_model(&model, 100, "consecutive_users");

@@ -186,6 +186,9 @@ async fn enter_while_busy_enqueues_user_message() {
             theme: forge_config::Theme::default(),
         },
     );
+    // Input routing keys off the authoritative session lifecycle, not the
+    // UI `busy` flag — a real task must be Working for Enter to enqueue.
+    app.session.append_user_message("first").await.unwrap();
     app.busy = true;
     for c in "queued later".chars() {
         app.handle_key(press(KeyCode::Char(c), KeyModifiers::NONE))
@@ -195,10 +198,10 @@ async fn enter_while_busy_enqueues_user_message() {
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.message_queue.len(), 1);
+    assert_eq!(app.session.queue.len(), 1);
     assert!(app.pending_prompt.is_none());
     assert_eq!(
-        app.message_queue.iter().next().map(|s| s.as_str()),
+        app.session.queue.visible().next().map(|q| q.text.as_str()),
         Some("queued later")
     );
 }
@@ -228,7 +231,7 @@ async fn typing_while_busy_updates_input_buffer() {
             .unwrap();
     }
     assert_eq!(app.input.text, "next");
-    assert_eq!(app.message_queue.len(), 0);
+    assert_eq!(app.session.queue.len(), 0);
 }
 
 #[tokio::test]
@@ -397,17 +400,26 @@ async fn empty_enter_when_idle_dequeues_and_sends() {
             theme: forge_config::Theme::default(),
         },
     );
-    // Simulate messages enqueued while processing.
-    app.message_queue.enqueue("from queue");
+    // Simulate a message enqueued while processing.
+    app.session.enqueue_task("from queue").await.unwrap();
     app.busy = false;
     assert!(app.pending_prompt.is_none());
     // Empty Enter = user action to dequeue + send
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert!(app.message_queue.is_empty());
-    assert_eq!(app.pending_prompt.as_deref(), Some("from queue"));
+    assert!(app.session.queue.is_empty());
+    // Promotion already appended the message and started the task; the
+    // turn continues via `pending_turn_continue`, not a re-appended
+    // `pending_prompt` (that would double-append).
+    assert!(app.pending_prompt.is_none());
+    assert!(app.pending_turn_continue);
     assert!(app.busy);
+    assert!(app
+        .session
+        .messages
+        .iter()
+        .any(|m| m.content == "from queue"));
 }
 
 #[tokio::test]
@@ -428,15 +440,15 @@ async fn ctrl_backspace_cancels_selected_queue_message() {
             theme: forge_config::Theme::default(),
         },
     );
-    app.enqueue_user_message("a".into());
-    app.enqueue_user_message("b".into());
+    app.enqueue_user_message("a".into()).await;
+    app.enqueue_user_message("b".into()).await;
     app.move_queue_selection(1);
     app.handle_key(press(KeyCode::Backspace, KeyModifiers::CONTROL))
         .await
         .unwrap();
-    assert_eq!(app.message_queue.len(), 1);
+    assert_eq!(app.session.queue.len(), 1);
     assert_eq!(
-        app.message_queue.iter().next().map(|s| s.as_str()),
+        app.session.queue.visible().next().map(|q| q.text.as_str()),
         Some("a")
     );
 }
