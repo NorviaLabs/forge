@@ -45,7 +45,6 @@ impl TuiApp {
             activity: ActivityFeed::default(),
             pending_prompt: None,
             pending_turn_continue: false,
-            pending_sync: false,
             pending_hitl_decision: None,
             pending_context_reset: false,
             pending_external_editor: false,

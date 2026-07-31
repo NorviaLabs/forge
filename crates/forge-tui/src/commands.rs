@@ -28,22 +28,12 @@ pub enum SlashCommand {
     Compact,
     /// Phase 6 — provider connect flow
     Connect(ConnectAction),
-    /// Copy last assistant message to clipboard (best-effort)
-    Copy,
     /// Clear the visible transcript without deleting model context.
     Clear,
-    /// Browse and read a single workspace file in readonly mode.
-    File {
-        path: Option<String>,
-    },
-    /// Toggle the Files pane.
-    ToggleFiles,
     /// Disconnect from the current provider and clear stored credentials.
     Disconnect {
         profile_id: Option<String>,
     },
-    /// Stage all changes, generate a commit message from the changeset, commit, and push.
-    Sync,
     /// Refresh the file explorer's git status cache.
     Refresh,
     /// Open the active file in the external editor.
@@ -97,18 +87,7 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
                 .map(SlashCommand::Connect)
                 .map_err(|e| CommandError::Usage(e.to_string()))
         }
-        "copy" => Ok(SlashCommand::Copy),
         "clear" => Ok(SlashCommand::Clear),
-        "file" | "open" => Ok(SlashCommand::File {
-            path: parts.next().map(|s| s.to_string()),
-        }),
-        "files" => Ok(match parts.next() {
-            None => SlashCommand::ToggleFiles,
-            Some(path) => SlashCommand::File {
-                path: Some(path.to_string()),
-            },
-        }),
-        "sync" => Ok(SlashCommand::Sync),
         "refresh" => Ok(SlashCommand::Refresh),
         "edit" => Ok(SlashCommand::Edit),
         "context-file" | "context_file" | "cf" => Ok(SlashCommand::ContextFile),
@@ -150,22 +129,6 @@ mod tests {
     #[test]
     fn parses_phase2_commands() {
         assert_eq!(parse_slash("/clear").unwrap().unwrap(), SlashCommand::Clear);
-        assert_eq!(
-            parse_slash("/file README.md").unwrap().unwrap(),
-            SlashCommand::File {
-                path: Some("README.md".into())
-            }
-        );
-        assert_eq!(
-            parse_slash("/files").unwrap().unwrap(),
-            SlashCommand::ToggleFiles
-        );
-        assert_eq!(
-            parse_slash("/files README.md").unwrap().unwrap(),
-            SlashCommand::File {
-                path: Some("README.md".into())
-            }
-        );
         assert!(parse_slash("/reset").unwrap().is_err());
         assert!(parse_slash("/context").unwrap().is_err());
         assert!(parse_slash("/worktree merge").unwrap().is_err());
@@ -177,7 +140,10 @@ mod tests {
 
     #[test]
     fn removed_commands_are_unknown() {
-        for command in ["/cost", "/diff", "/appove", "/approve", "/deny", "/effort"] {
+        for command in [
+            "/cost", "/diff", "/appove", "/approve", "/deny", "/effort", "/sync", "/copy", "/file",
+            "/files", "/open",
+        ] {
             assert!(matches!(
                 parse_slash(command).unwrap().unwrap_err(),
                 CommandError::Unknown(_)
@@ -197,13 +163,6 @@ mod tests {
     fn no_queue_slash_commands() {
         assert!(parse_slash("/queue").unwrap().is_err());
         assert!(parse_slash("/dequeue").unwrap().is_err());
-    }
-
-    #[test]
-    fn parses_sync() {
-        assert_eq!(parse_slash("/sync").unwrap().unwrap(), SlashCommand::Sync);
-        assert!(parse_slash("/commit").unwrap().is_err());
-        assert!(parse_slash("/push").unwrap().is_err());
     }
 
     #[test]

@@ -528,8 +528,6 @@ pub struct TuiApp {
     pending_prompt: Option<String>,
     /// Resume the current agent loop after an interactive turn-limit checkpoint.
     pending_turn_continue: bool,
-    /// Long-running slash action queued to run on the event loop (so the command echo paints).
-    pending_sync: bool,
     /// HITL resolve queued to run on the event loop (journals + state updates).
     pending_hitl_decision: Option<HitlDecision>,
     /// Context reset queued to run on the event loop.
