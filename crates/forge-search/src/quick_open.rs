@@ -210,7 +210,8 @@ fn score_fuzzy_word_boundary(
             if ctx.penalize_suffix {
                 let tail = ctx
                     .h_len
-                    .saturating_sub(matches.last().copied().unwrap_or(0) + 1) as i32;
+                    .saturating_sub(matches.last().copied().unwrap_or(0) + 1)
+                    as i32;
                 final_score += tail * UNMATCHED_PENALTY;
             }
             if best
