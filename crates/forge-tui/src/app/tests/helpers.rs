@@ -3,7 +3,6 @@
 //! Split out of `app/tests/mod.rs` per #19. Moved verbatim.
 
 use super::super::*;
-use forge_config::CommandConfig;
 use forge_core::LoopConfig;
 use forge_model::{MockModelClient, ModelClient};
 use forge_tools::ToolRegistry;
