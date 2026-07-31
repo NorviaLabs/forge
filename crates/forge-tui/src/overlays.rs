@@ -252,22 +252,6 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
             desc: "Restore a previous session".into(),
         },
         PaletteItem {
-            cmd: "/file".into(),
-            desc: "Browse and read one file (readonly)".into(),
-        },
-        PaletteItem {
-            cmd: "/files".into(),
-            desc: "Toggle the Files pane".into(),
-        },
-        PaletteItem {
-            cmd: "/sync".into(),
-            desc: "Commit + push (message from changeset)".into(),
-        },
-        PaletteItem {
-            cmd: "/copy".into(),
-            desc: "Copy last answer".into(),
-        },
-        PaletteItem {
             cmd: "/clear".into(),
             desc: "Clear the TUI screen".into(),
         },
@@ -815,10 +799,7 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                             | "/disconnect"
                             | "/quit"
                             | "/compact"
-                            | "/sync"
-                            | "/copy"
                             | "/clear"
-                            | "/file"
                     ) {
                         OverlayAction::RunCommand(cmd)
                     } else {
@@ -2035,7 +2016,7 @@ mod tests {
             }
         }
         assert!(
-            items.len() >= 10,
+            items.len() >= 8,
             "expected full command list, got {}",
             items.len()
         );
@@ -2627,10 +2608,10 @@ mod tests {
 
     #[test]
     fn overlay_widget_renders_slash_and_model_empty_states() {
-        let slash = render_text(&Overlay::slash_open("sync"));
-        assert!(slash.contains("/ sync"));
-        assert!(slash.contains("/sync"));
-        assert!(slash.contains("Commit + push"));
+        let slash = render_text(&Overlay::slash_open("compact"));
+        assert!(slash.contains("/ compact"));
+        assert!(slash.contains("/compact"));
+        assert!(slash.contains("Continue in a fresh context"));
 
         let empty_model = render_text(&Overlay::model_open_with(vec![]));
         assert!(empty_model.contains("Models · all · 0/0"));

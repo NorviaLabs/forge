@@ -711,46 +711,6 @@ impl TuiApp {
                         }
                     }
                 }
-                Ok(SlashCommand::Copy) => {
-                    let last = self
-                        .session
-                        .messages
-                        .iter()
-                        .rev()
-                        .find(|m| {
-                            m.role == forge_types::MessageRole::Assistant && !m.content.is_empty()
-                        })
-                        .map(|m| m.content.clone());
-                    if let Some(text) = last {
-                        let ok = std::process::Command::new("pbcopy")
-                            .stdin(std::process::Stdio::piped())
-                            .spawn()
-                            .and_then(|mut c| {
-                                use std::io::Write;
-                                if let Some(mut sin) = c.stdin.take() {
-                                    sin.write_all(text.as_bytes())?;
-                                }
-                                c.wait()?;
-                                Ok(())
-                            })
-                            .is_ok()
-                            || std::process::Command::new("wl-copy")
-                                .arg(&text)
-                                .status()
-                                .map(|s| s.success())
-                                .unwrap_or(false);
-                        if ok {
-                            self.push_toast("copied last answer");
-                        } else {
-                            self.push_notice(vec![
-                                "Clipboard unavailable (pbcopy/wl-copy).".into(),
-                                text.chars().take(400).collect(),
-                            ]);
-                        }
-                    } else {
-                        self.push_toast("nothing to copy");
-                    }
-                }
                 Ok(SlashCommand::Clear) => {
                     // Hide everything currently in the transcript without deleting session
                     // context, so subsequent model turns still see the full conversation.
@@ -765,34 +725,6 @@ impl TuiApp {
                     self.chat_scroll = 0;
                     self.chat_follow = true;
                 }
-                Ok(SlashCommand::File { path }) => {
-                    if let Some(path) = path.as_deref() {
-                        match self.resolve_workspace_path(path) {
-                            Ok(resolved) if resolved.is_file() => {
-                                self.open_file_viewer(&resolved.display().to_string());
-                            }
-                            Ok(resolved) if resolved.is_dir() => {
-                                self.open_file_explorer(
-                                    Some(&resolved.display().to_string()),
-                                    None,
-                                );
-                            }
-                            Ok(_) => self.open_file_explorer(
-                                None,
-                                Some("Path is not a regular file or directory".into()),
-                            ),
-                            Err(err) => self.open_file_explorer(
-                                None,
-                                Some(format!("Could not open path: {err}")),
-                            ),
-                        }
-                    } else {
-                        self.open_file_explorer(None, None);
-                    }
-                }
-                Ok(SlashCommand::ToggleFiles) => {
-                    self.toggle_files_panel();
-                }
                 Ok(SlashCommand::Disconnect { profile_id }) => {
                     let msg = self.disconnect_auth(profile_id.as_deref())?;
                     self.open_connect_picker();
@@ -800,14 +732,6 @@ impl TuiApp {
                 }
                 Ok(SlashCommand::Connect(action)) => {
                     self.handle_connect(action);
-                }
-                Ok(SlashCommand::Sync) => {
-                    self.queue_sync();
-                    // Unit tests call `dispatch_line` directly without the event loop;
-                    // run queued sync immediately in that case.
-                    if cfg!(test) {
-                        let _ = self.drain_pending_sync(None).await;
-                    }
                 }
                 Ok(SlashCommand::Refresh) => {
                     if self.current_workspace_is_diff() {

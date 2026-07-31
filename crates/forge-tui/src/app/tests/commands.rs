@@ -573,89 +573,6 @@ async fn model_command_rejects_cross_provider_selection_without_matching_connect
 }
 
 #[tokio::test]
-async fn slash_sync_commits_and_does_not_queue_chat() {
-    let (dir, session) = test_session().await;
-    for args in [
-        &["init"][..],
-        &["config", "user.email", "forge@test"][..],
-        &["config", "user.name", "Forge Test"][..],
-    ] {
-        std::process::Command::new("git")
-            .args(args)
-            .current_dir(dir.path())
-            .output()
-            .unwrap();
-    }
-    // Need an initial commit so later push has a branch tip; create one empty first.
-    std::fs::write(dir.path().join("README"), "x").unwrap();
-    std::process::Command::new("git")
-        .args(["add", "README"])
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
-    std::process::Command::new("git")
-        .args(["commit", "-m", "init"])
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
-    // Bare remote for push
-    let remote = dir.path().join("remote.git");
-    std::process::Command::new("git")
-        .args(["init", "--bare"])
-        .arg(&remote)
-        .output()
-        .unwrap();
-    std::process::Command::new("git")
-        .args(["remote", "add", "origin"])
-        .arg(&remote)
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
-    std::process::Command::new("git")
-        .args(["push", "-u", "origin", "HEAD"])
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
-
-    std::fs::write(dir.path().join("note.txt"), "hello").unwrap();
-
-    let mut app = TuiApp::new(
-        session,
-        TuiRuntimeConfig {
-            model_label: "mock".into(),
-            provider: "mock".into(),
-            cwd: dir.path().to_path_buf(),
-            version: "0.12.0".into(),
-            startup_notices: Vec::new(),
-            validation_command: None,
-            file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
-            theme: forge_config::Theme::default(),
-        },
-    );
-    app.dispatch_line("/sync").await.unwrap();
-    assert!(app.pending_prompt.is_none());
-    assert!(!app.busy);
-    let log = app
-        .run_git_tool("log", vec!["-1".into(), "--oneline".into()])
-        .await
-        .unwrap();
-    // Heuristic message mentions note.txt when mock has no real LLM summary
-    assert!(
-        log.content.contains("note") || log.content.contains("Add") || !log.content.is_empty(),
-        "expected a commit: {}",
-        log.content
-    );
-    assert!(
-        app.activity
-            .recent(12)
-            .iter()
-            .any(|e| e.summary.contains("git commit") || e.summary.contains("git push")),
-        "activity should record sync steps"
-    );
-}
-
-#[tokio::test]
 async fn app_dispatch_user_message() {
     let (_dir, session) = test_session().await;
     let mut app = TuiApp::new(
@@ -1189,9 +1106,6 @@ async fn bare_slash_lists_all_palette_commands() {
         "/model",
         "/compact",
         "/resume",
-        "/file",
-        "/sync",
-        "/copy",
         "/clear",
         "/disconnect",
         "/quit",

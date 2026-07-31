@@ -125,7 +125,6 @@ impl TuiApp {
         self.oauth_pending = None;
         self.oauth_last_poll = None;
         self.pending_prompt = None;
-        self.pending_sync = false;
         self.pending_hitl_decision = None;
         self.pending_context_reset = false;
         self.message_queue = MessageQueue::new();
