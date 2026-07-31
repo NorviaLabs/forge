@@ -1530,4 +1530,179 @@ mod tests {
         assert_eq!(outcome.key_source, KeySource::Provided);
         assert_eq!(svc.active_profile_id.as_deref(), Some("opencode_zen"));
     }
+
+    #[test]
+    fn connect_rejects_api_key_for_oauth_profile() {
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+        let reg = oauth_registry();
+        let mut svc = ConnectService {
+            registry: &reg,
+            store: &store,
+            active_profile_id: None,
+            active_model: None,
+        };
+        let err = svc.connect("xai", Some("sk-secret"), false).unwrap_err();
+        assert!(matches!(err, ConnectError::OauthRejectsApiKey(ref id) if id == "xai"));
+    }
+
+    #[test]
+    fn connect_uses_xai_access_token_env_when_set() {
+        let guard = EnvGuard::new(OAUTH_ENV);
+        guard.set("FORGE_CONNECT_SKIP_VERIFY", "1");
+        guard.set("FORGE_XAI_OAUTH_ACCESS_TOKEN", "env-access");
+        guard.set("FORGE_XAI_OAUTH_REFRESH_TOKEN", "env-refresh");
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+        let reg = oauth_registry();
+        let mut svc = ConnectService {
+            registry: &reg,
+            store: &store,
+            active_profile_id: None,
+            active_model: None,
+        };
+        let outcome = svc.connect("xai", None, false).unwrap();
+        assert_eq!(outcome.key_source, KeySource::Oauth);
+        let stored = store.get_oauth("xai").unwrap().unwrap();
+        assert_eq!(stored.access_token, "env-access");
+        assert_eq!(stored.refresh_token.as_deref(), Some("env-refresh"));
+    }
+
+    #[test]
+    fn connect_oauth_rejects_non_oauth_profile_and_empty_token() {
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+        let reg = api_key_registry();
+        let mut svc = ConnectService {
+            registry: &reg,
+            store: &store,
+            active_profile_id: None,
+            active_model: None,
+        };
+        let err = svc
+            .connect_oauth(
+                "demo",
+                OauthTokens {
+                    access_token: "tok".into(),
+                    refresh_token: None,
+                    expires_at: None,
+                },
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("not OAuth"));
+
+        let oauth_reg = oauth_registry();
+        let mut oauth_svc = ConnectService {
+            registry: &oauth_reg,
+            store: &store,
+            active_profile_id: None,
+            active_model: None,
+        };
+        let err = oauth_svc
+            .connect_oauth(
+                "xai",
+                OauthTokens {
+                    access_token: "   ".into(),
+                    refresh_token: None,
+                    expires_at: None,
+                },
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("empty"));
+    }
+
+    #[test]
+    fn ensure_oauth_fresh_refreshes_expired_tokens_via_mock() {
+        use forge_test_support::mock_http;
+
+        const ENV: &[&str] = &["FORGE_XAI_OAUTH_ISSUER", "FORGE_CONNECT_SKIP_VERIFY"];
+        let guard = EnvGuard::new(ENV);
+        let base = mock_http(vec![(
+            200,
+            r#"{"access_token":"refreshed","refresh_token":"new-rt","expires_in":3600}"#,
+            vec![],
+        )]);
+        guard.set("FORGE_XAI_OAUTH_ISSUER", &base);
+        guard.set("FORGE_CONNECT_SKIP_VERIFY", "1");
+
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+        let reg = oauth_registry();
+        store
+            .set_oauth(
+                "xai",
+                OauthTokens {
+                    access_token: "old-access".into(),
+                    refresh_token: Some("old-refresh".into()),
+                    expires_at: Some("0".into()),
+                },
+            )
+            .unwrap();
+        let svc = ConnectService {
+            registry: &reg,
+            store: &store,
+            active_profile_id: None,
+            active_model: None,
+        };
+        let fresh = svc.ensure_oauth_fresh("xai").unwrap().unwrap();
+        assert_eq!(fresh.access_token, "refreshed");
+        assert_eq!(
+            store.get_oauth("xai").unwrap().unwrap().access_token,
+            "refreshed"
+        );
+    }
+
+    #[test]
+    fn poll_oauth_once_completes_device_flow_via_mock() {
+        use forge_test_support::mock_http;
+
+        const ENV: &[&str] = &["FORGE_XAI_OAUTH_ISSUER", "FORGE_CONNECT_SKIP_VERIFY"];
+        let guard = EnvGuard::new(ENV);
+        let base = mock_http(vec![(
+            200,
+            r#"{"access_token":"poll-access","refresh_token":"poll-refresh","expires_in":3600}"#,
+            vec![],
+        )]);
+        guard.set("FORGE_XAI_OAUTH_ISSUER", &base);
+        guard.set("FORGE_CONNECT_SKIP_VERIFY", "1");
+
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+        let reg = oauth_registry();
+        let mut svc = ConnectService {
+            registry: &reg,
+            store: &store,
+            active_profile_id: None,
+            active_model: None,
+        };
+        let pending = OauthPending {
+            profile_id: "xai".into(),
+            verification_uri: format!("{base}/oauth2/device"),
+            verification_uri_complete: None,
+            user_code: "AB12".into(),
+            device_code: "dc".into(),
+            auth_server: base,
+            interval_secs: 1,
+            expires_in_secs: Some(900),
+            client_id: crate::oauth_xai::DEFAULT_CLIENT_ID.into(),
+        };
+        let outcome = svc.poll_oauth_once(&pending).unwrap().unwrap();
+        assert_eq!(outcome.key_source, KeySource::Oauth);
+        assert_eq!(svc.active_profile_id.as_deref(), Some("xai"));
+    }
+
+    #[test]
+    fn connect_error_partial_eq_compares_oauth_device_pending_by_profile_and_code() {
+        let pending_a = OauthPending::start_stub("xai", "https://auth.x.ai");
+        let pending_b = OauthPending::start_stub("xai", "https://auth.x.ai");
+        let pending_other = OauthPending::start_stub("other", "https://auth.example");
+        assert_eq!(
+            ConnectError::OauthDevicePending(Box::new(pending_a.clone())),
+            ConnectError::OauthDevicePending(Box::new(pending_b))
+        );
+        assert_ne!(
+            ConnectError::OauthDevicePending(Box::new(pending_a)),
+            ConnectError::OauthDevicePending(Box::new(pending_other))
+        );
+    }
 }
