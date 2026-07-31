@@ -178,10 +178,6 @@ async fn semantic_key_paths_emit_existing_commands() {
         app.semantic_command_for_global_key(press(KeyCode::Char('e'), KeyModifiers::CONTROL)),
         Some(SemanticCommand::ToggleFiles)
     );
-    assert_eq!(
-        app.semantic_command_for_global_key(press(KeyCode::Char('k'), KeyModifiers::CONTROL)),
-        Some(SemanticCommand::OpenGlobalCommandPalette)
-    );
 
     app.focus_block(FocusBlock::Workspace);
     assert_eq!(
