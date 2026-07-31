@@ -240,7 +240,11 @@ impl McpStdioClient {
             .get("content")
             .map(|c| c.to_string())
             .unwrap_or_else(|| result.to_string());
-        Ok(ToolOutput { content, is_error })
+        Ok(ToolOutput {
+            content,
+            is_error,
+            exit_code: None,
+        })
     }
 
     pub fn server_id(&self) -> &str {
@@ -401,6 +405,7 @@ done
                         .unwrap_or("")
                         .to_string(),
                     is_error: false,
+                    exit_code: None,
                 }),
             }],
         );
@@ -432,6 +437,7 @@ done
                 handler: Box::new(|_| ToolOutput {
                     content: "x".into(),
                     is_error: false,
+                    exit_code: None,
                 }),
             }],
         );

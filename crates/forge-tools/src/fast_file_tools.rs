@@ -104,6 +104,7 @@ impl Tool for FffFindTool {
                 matches.join("\n")
             },
             is_error: false,
+            exit_code: None,
         })
     }
 }
@@ -154,6 +155,7 @@ impl Tool for FffGrepTool {
                 rows.join("\n")
             },
             is_error: false,
+            exit_code: None,
         })
     }
 }
