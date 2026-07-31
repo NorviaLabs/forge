@@ -3,6 +3,12 @@
 mod completion;
 mod lifecycle;
 mod queue;
+mod stream;
+
+pub use stream::{
+    accumulate_stream_event, merge_streamed_response, observe_stream_event, stream_turn_event,
+    ModelStepAccumulator,
+};
 
 pub use completion::{
     CompletionDecision, CompletionEvaluator, CompletionReason, DefaultCompletionEvaluator,
@@ -1345,10 +1351,8 @@ impl AgentSession {
         }
 
         for turn in 0..self.max_turns {
-            let req = self.prepare_model_step(turn).await?;
             let last = self
-                .model
-                .complete_with_stream(req, stream_tx.clone())
+                .run_model_step_with_stream(turn, stream_tx.clone())
                 .await?;
 
             match self.apply_model_response(last).await? {
@@ -2033,7 +2037,7 @@ mod tests {
     use super::*;
     use forge_governance::AclPolicy;
     use forge_model::MockModelClient;
-    use forge_types::ToolCall;
+    use forge_types::{Message, MessageRole, ToolCall, Usage};
     use tempfile::tempdir;
 
     #[test]
@@ -2107,6 +2111,30 @@ mod tests {
             .await
             .unwrap();
         assert!(!s.list_tools().iter().any(|n| n == "web_search"));
+    }
+
+    #[tokio::test]
+    async fn run_model_step_with_stream_merges_stream_usage() {
+        let dir = tempdir().unwrap();
+        let model = Arc::new(MockModelClient::script(vec![ModelResponse {
+            text: "streamed".into(),
+            tool_calls: vec![],
+            usage: Some(Usage {
+                prompt_tokens: 11,
+                completion_tokens: 4,
+            }),
+            thinking: Some("trace".into()),
+        }]));
+        let mut session = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        session
+            .messages
+            .push(Message::new(MessageRole::User, "hello"));
+        let response = session.run_model_step_with_stream(0, None).await.unwrap();
+        assert_eq!(response.text, "streamed");
+        assert_eq!(response.usage.unwrap().prompt_tokens, 11);
+        assert_eq!(response.thinking.as_deref(), Some("trace"));
     }
 
     #[tokio::test]
