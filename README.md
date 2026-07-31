@@ -154,7 +154,8 @@ Slash commands are typed directly in the textbox, with inline autocomplete sugge
 | **Enter** | Send message (or enqueue while agent is busy) |
 | **Ctrl+E** | Toggle Files |
 | **Ctrl+B** | Toggle Inspector |
-| **Ctrl+P** | Toggle Bottom surface |
+| **Ctrl+P** | Quick Open (fuzzy file search) |
+| **Ctrl+`** | Toggle Bottom surface |
 | **Alt+Left** | Back |
 | **Alt+Right** | Review changes |
 | **Alt+1** | Open current Run output |

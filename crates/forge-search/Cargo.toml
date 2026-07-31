@@ -1,0 +1,16 @@
+[package]
+name = "forge-search"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Workspace file index and fast search (fff) for Forge agents and UI"
+
+[dependencies]
+fff-search = { workspace = true }
+fff-query-parser = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

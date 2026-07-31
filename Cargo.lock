@@ -1239,6 +1239,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "forge-search"
+version = "0.1.0-alpha.10"
+dependencies = [
+ "fff-query-parser",
+ "fff-search",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "forge-storage"
 version = "0.1.0-alpha.10"
 dependencies = [
@@ -1279,10 +1291,8 @@ name = "forge-tools"
 version = "0.1.0-alpha.10"
 dependencies = [
  "async-trait",
- "fff-grep",
- "fff-query-parser",
- "fff-search",
  "forge-config",
+ "forge-search",
  "forge-syntax",
  "forge-types",
  "jsonschema",
@@ -1307,6 +1317,7 @@ dependencies = [
  "forge-connect",
  "forge-core",
  "forge-model",
+ "forge-search",
  "forge-storage",
  "forge-syntax",
  "forge-tools",

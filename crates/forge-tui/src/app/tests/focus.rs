@@ -64,12 +64,12 @@ async fn tab_and_shift_tab_reach_composer() {
 async fn opening_and_closing_bottom_panel_transfers_focus() {
     let (_dir, mut app) = focus_test_app().await;
     app.focus_block(FocusBlock::Workspace);
-    app.handle_key(press(KeyCode::Char('p'), KeyModifiers::CONTROL))
+    app.handle_key(press(KeyCode::Char('`'), KeyModifiers::CONTROL))
         .await
         .unwrap();
     assert_eq!(app.focus.block, FocusBlock::BottomPanel);
     assert!(app.bottom_panel.open);
-    app.handle_key(press(KeyCode::Char('p'), KeyModifiers::CONTROL))
+    app.handle_key(press(KeyCode::Char('`'), KeyModifiers::CONTROL))
         .await
         .unwrap();
     assert_eq!(app.focus.block, FocusBlock::Workspace);
