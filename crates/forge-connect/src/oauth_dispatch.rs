@@ -105,7 +105,7 @@ impl OauthDispatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::AuthMode;
+    use crate::auth::{AuthMode, OauthPending};
 
     fn profile(id: &str, auth_mode: AuthMode) -> ConnectProfile {
         ConnectProfile {
@@ -200,5 +200,84 @@ mod tests {
             "profile `demo` is not OAuth"
         );
         assert_eq!(OauthError::Message("plain".into()).to_string(), "plain");
+    }
+
+    #[test]
+    fn codex_oauth_dispatch_start_poll_and_refresh_use_mock_server() {
+        use crate::test_env::EnvGuard;
+        use forge_test_support::mock_http;
+
+        const ENV: &[&str] = &["FORGE_OPENAI_CODEX_OAUTH_ISSUER"];
+        let guard = EnvGuard::new(ENV);
+        let base = mock_http(vec![
+            (
+                200,
+                r#"{"device_auth_id":"device-1","user_code":"AB12","interval":1}"#,
+                vec![],
+            ),
+            (
+                200,
+                r#"{"authorization_code":"auth-code","code_verifier":"verifier"}"#,
+                vec![],
+            ),
+            (
+                200,
+                r#"{"access_token":"access","refresh_token":"refresh","expires_in":3600}"#,
+                vec![],
+            ),
+            (
+                200,
+                r#"{"access_token":"new-access","refresh_token":"new-refresh","expires_in":120}"#,
+                vec![],
+            ),
+        ]);
+        guard.set("FORGE_OPENAI_CODEX_OAUTH_ISSUER", &base);
+
+        let profile = crate::openai_codex::openai_codex_profile();
+        let pending = OauthDispatcher::start(&profile).unwrap();
+        assert_eq!(pending.profile_id, "openai_codex");
+        assert_eq!(pending.device_code, "device-1");
+
+        let poll = OauthDispatcher::poll(&pending).unwrap();
+        assert!(matches!(poll, PollResult::Complete(_)));
+
+        let tokens = OauthDispatcher::refresh(&profile, "old-refresh").unwrap();
+        assert_eq!(tokens.access_token, "new-access");
+        assert_eq!(tokens.refresh_token.as_deref(), Some("new-refresh"));
+    }
+
+    #[test]
+    fn codex_oauth_dispatch_poll_maps_pending_and_slowdown() {
+        use crate::test_env::EnvGuard;
+        use forge_test_support::mock_http;
+
+        const ENV: &[&str] = &["FORGE_OPENAI_CODEX_OAUTH_ISSUER"];
+        let guard = EnvGuard::new(ENV);
+        let base = mock_http(vec![
+            (403, "", vec![]),
+            (400, r#"{"error":"slow_down"}"#, vec![]),
+        ]);
+        guard.set("FORGE_OPENAI_CODEX_OAUTH_ISSUER", &base);
+
+        let pending = OauthPending {
+            profile_id: crate::openai_codex::PROFILE_ID.into(),
+            verification_uri: format!("{base}/codex/device"),
+            verification_uri_complete: None,
+            user_code: "AB12".into(),
+            device_code: "device-1".into(),
+            auth_server: base.clone(),
+            interval_secs: 1,
+            expires_in_secs: Some(900),
+            client_id: crate::oauth_openai_codex::CLIENT_ID.into(),
+        };
+
+        assert!(matches!(
+            OauthDispatcher::poll(&pending).unwrap(),
+            PollResult::Pending
+        ));
+        assert!(matches!(
+            OauthDispatcher::poll(&pending).unwrap(),
+            PollResult::SlowDown
+        ));
     }
 }

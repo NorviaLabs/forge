@@ -533,4 +533,42 @@ done
         assert!(output.is_error);
         assert!(output.content.contains("hello"));
     }
+
+    #[tokio::test]
+    async fn manager_default_and_connect_all_reports_spawn_failures() {
+        let mut manager = McpManager::default();
+        let errors = manager
+            .connect_all(&[McpServerConfig {
+                id: "missing".into(),
+                transport: "stdio".into(),
+                command: "/no/such/mcp-server".into(),
+                args: Vec::new(),
+            }])
+            .await;
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].starts_with("missing:"));
+
+        let mut registry = ToolRegistry::new();
+        manager.register_into(&mut registry).await.unwrap();
+        assert!(registry.names().is_empty());
+    }
+
+    #[tokio::test]
+    async fn static_mcp_tool_exposes_metadata() {
+        let tool = StaticMcpTool {
+            server_id: "demo".into(),
+            tool_name: "mcp:demo:echo".into(),
+            description: "echo back".into(),
+            schema: json!({"type": "object"}),
+            handler: Box::new(|_| ToolOutput {
+                content: "ok".into(),
+                is_error: false,
+                exit_code: None,
+            }),
+        };
+        assert_eq!(tool.name(), "mcp:demo:echo");
+        assert_eq!(tool.description(), "echo back");
+        assert_eq!(tool.side_effect_class(), SideEffectClass::Meta);
+        assert!(tool.input_schema().is_object());
+    }
 }
