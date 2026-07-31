@@ -123,14 +123,13 @@ uses it.
 discovered:**
 
 **`forge-tui` reaches past `forge-core`.** It depends directly on `forge-tools`,
-`forge-model` and `forge-connect` (the dotted edges above). Concretely: it builds
-`ModelRequest` values itself, and it invokes the `git` tool directly for
-surface-local commands such as `/sync`, without going through the agent loop. Those
-invocations therefore do not pass the governance gate and are not journaled. That is
-a deliberate choice — a keystroke-initiated `git status` is an operator action, not
-an agent action — but it means **the governance gate is a chokepoint for
-model-initiated tool calls only**, not for everything the process can do. See
-[§6](#6-governance).
+`forge-model` and `forge-connect` (the dotted edges above). The `forge-connect`
+dependency is live in production code (provider connect and model-catalog flows);
+`forge-tools` and `forge-model` are currently pulled in only for test scaffolding
+(`ToolRegistry`, `MockModelClient`) inside `forge-tui`'s own `#[cfg(test)]` modules.
+Nothing in the production path builds `ModelRequest` values or calls a tool directly
+outside the agent loop's governance gate — **the governance gate is a chokepoint for
+all tool calls**, not just model-initiated ones. See [§6](#6-governance).
 
 **`forge-connect` shares no types.** It is the only substantial crate with zero
 internal dependencies, not even `forge-types`. It hands credentials to

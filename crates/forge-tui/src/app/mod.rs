@@ -21,7 +21,6 @@ use forge_connect::{
     ConnectService, CredentialStore, ModelCatalogCache, OauthPending, OPENAI_CODEX_PROFILE_ID,
 };
 use forge_core::{AgentSession, ApplyOutcome, LoopError};
-use forge_tools::{GitTool, Tool, ToolContext};
 use forge_types::{
     HitlDecision, HitlPayload, Message, MessageRole, ModelStreamEvent, ProgressDocument,
 };
@@ -31,6 +30,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 use ratatui::Terminal;
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use serde_json::json;
 use thiserror::Error;
 
