@@ -6,6 +6,7 @@ use serde_json::{json, Value};
 
 use super::NativeModelClient;
 use crate::normalize::{forge_messages_to_wire, tools_to_openai_functions};
+use crate::prompt_cache::{apply_openai_prompt_cache, usage_from_provider};
 use crate::{ModelError, ModelRequest, StreamEventTx};
 
 struct Route {
@@ -40,7 +41,7 @@ pub(super) async fn complete(
         body["tools"] = Value::Array(tools);
     }
     if req.prompt_cache {
-        apply_prompt_cache(&mut body);
+        apply_openai_prompt_cache(&mut body);
     }
     apply_reasoning_effort(&mut body, model, req.reasoning_effort.as_deref());
 
@@ -171,19 +172,6 @@ fn route(client: &NativeModelClient, model: &str) -> Result<Route, ModelError> {
     Ok(route)
 }
 
-fn apply_prompt_cache(body: &mut Value) {
-    let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
-        return;
-    };
-    if let Some(first) = messages.first_mut() {
-        if first.get("role").and_then(Value::as_str) == Some("system") {
-            if let Some(obj) = first.as_object_mut() {
-                obj.insert("cache_control".into(), json!({"type": "ephemeral"}));
-            }
-        }
-    }
-}
-
 fn consume_event(
     event: &Value,
     text: &mut String,
@@ -193,16 +181,17 @@ fn consume_event(
     tx: Option<&StreamEventTx>,
 ) {
     if let Some(raw_usage) = event.get("usage") {
-        *usage = Some(Usage {
-            prompt_tokens: raw_usage
+        *usage = Some(usage_from_provider(
+            raw_usage,
+            raw_usage
                 .get("prompt_tokens")
                 .and_then(Value::as_u64)
                 .unwrap_or(0) as u32,
-            completion_tokens: raw_usage
+            raw_usage
                 .get("completion_tokens")
                 .and_then(Value::as_u64)
                 .unwrap_or(0) as u32,
-        });
+        ));
     }
     let Some(delta) = event.pointer("/choices/0/delta") else {
         return;

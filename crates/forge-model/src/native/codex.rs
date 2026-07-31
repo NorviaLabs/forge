@@ -7,6 +7,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::NativeModelClient;
+use crate::prompt_cache::{apply_codex_prompt_cache, usage_from_provider};
 use crate::{ModelError, ModelRequest, StreamEventTx};
 
 pub const DEFAULT_BASE_URL: &str = "https://chatgpt.com/backend-api";
@@ -43,6 +44,10 @@ pub(super) async fn complete(
         })?;
     let aliases = tool_aliases(&req);
     let body = request_body(client, &req, model, &aliases);
+    let mut body = body;
+    if req.prompt_cache {
+        apply_codex_prompt_cache(&mut body);
+    }
     let request_id = Uuid::new_v4().to_string();
     let response = client
         .http
@@ -296,16 +301,17 @@ fn consume_event(
         }
         "response.completed" => {
             let raw_usage = event.pointer("/response/usage").unwrap_or(&Value::Null);
-            *usage = Some(Usage {
-                prompt_tokens: raw_usage
+            *usage = Some(usage_from_provider(
+                raw_usage,
+                raw_usage
                     .get("input_tokens")
                     .and_then(Value::as_u64)
                     .unwrap_or(0) as u32,
-                completion_tokens: raw_usage
+                raw_usage
                     .get("output_tokens")
                     .and_then(Value::as_u64)
                     .unwrap_or(0) as u32,
-            });
+            ));
         }
         "error" | "response.failed" => {
             return Err(ModelError::Provider(event.to_string()));

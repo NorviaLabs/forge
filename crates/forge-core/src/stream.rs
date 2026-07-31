@@ -126,6 +126,7 @@ mod tests {
             usage: Some(Usage {
                 prompt_tokens: 9,
                 completion_tokens: 3,
+                ..Default::default()
             }),
             ..Default::default()
         };

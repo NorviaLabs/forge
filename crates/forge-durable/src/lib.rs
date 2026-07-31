@@ -636,6 +636,7 @@ mod tests {
             usage: Some(forge_types::Usage {
                 prompt_tokens: 12,
                 completion_tokens: 3,
+                ..Default::default()
             }),
             thinking: Some("need the file".into()),
         };

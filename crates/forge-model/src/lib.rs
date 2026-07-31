@@ -3,6 +3,7 @@
 mod mock;
 mod native;
 mod normalize;
+mod prompt_cache;
 
 pub use mock::MockModelClient;
 pub use native::NativeModelClient;

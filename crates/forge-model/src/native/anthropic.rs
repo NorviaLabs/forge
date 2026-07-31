@@ -5,6 +5,7 @@ use futures::StreamExt;
 use serde_json::{json, Value};
 
 use super::NativeModelClient;
+use crate::prompt_cache::{apply_anthropic_prompt_cache, usage_from_provider};
 use crate::{ModelError, ModelRequest, StreamEventTx};
 
 #[derive(Default)]
@@ -45,7 +46,7 @@ pub(super) async fn complete(
         body["system"] = Value::String(system);
     }
     if req.prompt_cache {
-        apply_prompt_cache(&mut body);
+        apply_anthropic_prompt_cache(&mut body);
     }
     if !req.tools.is_empty() {
         body["tools"] = Value::Array(
@@ -85,8 +86,10 @@ pub(super) async fn complete(
     let mut text = String::new();
     let mut thinking = String::new();
     let mut tool_uses = BTreeMap::new();
-    let mut prompt_tokens = 0;
-    let mut completion_tokens = 0;
+    let mut prompt_tokens = 0_u32;
+    let mut prompt_cache_read_tokens = 0_u32;
+    let mut prompt_cache_write_tokens = 0_u32;
+    let mut completion_tokens = 0_u32;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|error| ModelError::Transport(error.to_string()))?;
         pending.push_str(&String::from_utf8_lossy(&chunk));
@@ -107,6 +110,8 @@ pub(super) async fn complete(
                 &mut thinking,
                 &mut tool_uses,
                 &mut prompt_tokens,
+                &mut prompt_cache_read_tokens,
+                &mut prompt_cache_write_tokens,
                 &mut completion_tokens,
                 tx.as_ref(),
             )?;
@@ -117,6 +122,8 @@ pub(super) async fn complete(
     let usage = Usage {
         prompt_tokens,
         completion_tokens,
+        prompt_cache_read_tokens,
+        prompt_cache_write_tokens,
     };
     if let Some(tx) = tx {
         for call in &tool_calls {
@@ -187,15 +194,26 @@ fn consume_event(
     thinking: &mut String,
     tool_uses: &mut BTreeMap<usize, ToolUseAccumulator>,
     prompt_tokens: &mut u32,
+    prompt_cache_read_tokens: &mut u32,
+    prompt_cache_write_tokens: &mut u32,
     completion_tokens: &mut u32,
     tx: Option<&StreamEventTx>,
 ) -> Result<(), ModelError> {
     match event.get("type").and_then(Value::as_str).unwrap_or("") {
         "message_start" => {
-            *prompt_tokens = event
-                .pointer("/message/usage/input_tokens")
-                .and_then(Value::as_u64)
-                .unwrap_or(0) as u32;
+            if let Some(raw_usage) = event.pointer("/message/usage") {
+                let parsed = usage_from_provider(
+                    raw_usage,
+                    raw_usage
+                        .get("input_tokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0) as u32,
+                    *completion_tokens,
+                );
+                *prompt_tokens = parsed.prompt_tokens;
+                *prompt_cache_read_tokens = parsed.prompt_cache_read_tokens;
+                *prompt_cache_write_tokens = parsed.prompt_cache_write_tokens;
+            }
         }
         "message_delta" => {
             *completion_tokens = event
@@ -356,19 +374,6 @@ fn apply_reasoning_effort(body: &mut Value, model: &str, reasoning_effort: Optio
     }
 }
 
-fn apply_prompt_cache(body: &mut Value) {
-    let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
-        return;
-    };
-    if let Some(first) = messages.first_mut() {
-        if first.get("role").and_then(Value::as_str) == Some("user") {
-            if let Some(obj) = first.as_object_mut() {
-                obj.insert("cache_control".into(), json!({"type": "ephemeral"}));
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,11 +423,39 @@ mod tests {
     }
 
     #[test]
+    fn message_start_records_cache_usage() {
+        let mut text = String::new();
+        let mut thinking = String::new();
+        let mut tools = BTreeMap::new();
+        let mut input = 0;
+        let mut cache_read = 0;
+        let mut cache_write = 0;
+        let mut output = 0;
+        consume_event(
+            &json!({"type":"message_start","message":{"usage":{"input_tokens":120,"cache_creation_input_tokens":40,"cache_read_input_tokens":80}}}),
+            &mut text,
+            &mut thinking,
+            &mut tools,
+            &mut input,
+            &mut cache_read,
+            &mut cache_write,
+            &mut output,
+            None,
+        )
+        .unwrap();
+        assert_eq!(input, 120);
+        assert_eq!(cache_read, 80);
+        assert_eq!(cache_write, 40);
+    }
+
+    #[test]
     fn accumulates_thinking_and_tool_json() {
         let mut text = String::new();
         let mut thinking = String::new();
         let mut tools = BTreeMap::new();
         let mut input = 0;
+        let mut cache_read = 0;
+        let mut cache_write = 0;
         let mut output = 0;
         consume_event(
             &json!({"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"t1","name":"bash"}}),
@@ -430,6 +463,8 @@ mod tests {
             &mut thinking,
             &mut tools,
             &mut input,
+            &mut cache_read,
+            &mut cache_write,
             &mut output,
             None,
         )
@@ -440,6 +475,8 @@ mod tests {
             &mut thinking,
             &mut tools,
             &mut input,
+            &mut cache_read,
+            &mut cache_write,
             &mut output,
             None,
         )
@@ -508,7 +545,8 @@ mod tests {
         assert!(raw_request
             .to_ascii_lowercase()
             .contains("x-api-key: anthropic-secret"));
-        assert!(raw_request.contains("\"system\":\"system\""));
+        assert!(raw_request.contains("\"text\":\"system\""));
+        assert!(raw_request.contains("\"cache_control\":{\"type\":\"ephemeral\"}"));
         assert!(raw_request.contains("\"output_config\":{\"effort\":\"high\"}"));
     }
 
@@ -548,6 +586,8 @@ mod tests {
         let mut thinking = String::new();
         let mut tools = BTreeMap::new();
         let mut input = 0;
+        let mut cache_read = 0;
+        let mut cache_write = 0;
         let mut output = 0;
         let error = consume_event(
             &json!({"type":"error","error":{"message":"stream failed"}}),
@@ -555,6 +595,8 @@ mod tests {
             &mut thinking,
             &mut tools,
             &mut input,
+            &mut cache_read,
+            &mut cache_write,
             &mut output,
             None,
         )
