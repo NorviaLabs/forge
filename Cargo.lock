@@ -1208,6 +1208,7 @@ version = "0.1.0-alpha.10"
 dependencies = [
  "async-trait",
  "forge-config",
+ "forge-test-support",
  "forge-tools",
  "forge-types",
  "serde",
@@ -1224,6 +1225,7 @@ version = "0.1.0-alpha.10"
 dependencies = [
  "async-trait",
  "forge-config",
+ "forge-test-support",
  "forge-types",
  "futures",
  "reqwest",
