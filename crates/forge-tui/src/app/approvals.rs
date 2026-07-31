@@ -100,7 +100,7 @@ impl TuiApp {
         decision: HitlDecision,
         remember_exact_direct: bool,
     ) -> Result<(), TuiError> {
-        let Some(payload) = self.session.pending_hitl.clone() else {
+        let Some(payload) = self.session.pending_hitl().cloned() else {
             self.overlay = None;
             return Ok(());
         };
@@ -137,7 +137,7 @@ impl TuiApp {
 
     pub fn maybe_open_hitl(&mut self) {
         if self.overlay.is_none() {
-            if let Some(ref p) = self.session.pending_hitl {
+            if let Some(p) = self.session.pending_hitl() {
                 if self
                     .approval_identity_for_payload(p)
                     .is_some_and(|identity| self.hitl_session_allow.contains(&identity))
@@ -152,7 +152,7 @@ impl TuiApp {
 
     /// Auto-approve HITL for exact Direct invocations remembered this session.
     pub async fn drain_auto_hitl(&mut self) -> Result<(), TuiError> {
-        if let Some(ref p) = self.session.pending_hitl.clone() {
+        if let Some(ref p) = self.session.pending_hitl().cloned() {
             if let Some(identity) = self.approval_identity_for_payload(p) {
                 if !self.hitl_session_allow.contains(&identity) {
                     return Ok(());

@@ -2,17 +2,17 @@
 //!
 //! Forge must never mark a turn `Completed` because the model *said* it was
 //! done. This module is the single place that turns runtime-observed
-//! [`ExecutionEvidence`] into a final [`SessionStatus`] for a turn, given what
+//! [`ExecutionEvidence`] into a final [`TaskLifecycle`] for a turn, given what
 //! the turn was expected to accomplish (a [`TaskExpectation`]). It has no
 //! `async`, no filesystem access, and no dependency on the model's own text —
 //! callers (see `AgentSession::apply_model_response` in `lib.rs`) are
 //! responsible for collecting evidence from real tool results and filesystem
 //! state before calling [`CompletionEvaluator::evaluate`].
 //!
-//! `SessionStatus` (from `forge_types`) is reused as the decision's state
+//! `TaskLifecycle` (from `forge_types`) is reused as the decision's state
 //! instead of introducing a parallel `TaskState` enum.
 
-use forge_types::SessionStatus;
+use forge_types::TaskLifecycle;
 
 /// What a turn was expected to accomplish, derived from the tool calls the
 /// model actually issued this turn (see `classify_turn` in `lib.rs`) — not
@@ -298,7 +298,7 @@ pub struct EvidenceSummary {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompletionDecision {
-    pub state: SessionStatus,
+    pub state: TaskLifecycle,
     pub reason: CompletionReason,
     pub evidence_summary: EvidenceSummary,
 }
@@ -322,21 +322,21 @@ impl CompletionEvaluator for DefaultCompletionEvaluator {
         // Runtime facts that override any category-specific reasoning.
         if evidence.any(ExecutionEvent::RuntimeFailed) {
             return decision(
-                SessionStatus::Failed,
+                TaskLifecycle::Failed,
                 CompletionReason::RuntimeFailure,
                 "Forge hit a runtime error before finishing this turn.",
             );
         }
         if evidence.any(ExecutionEvent::UserCancelled) {
             return decision(
-                SessionStatus::Interrupted,
+                TaskLifecycle::Interrupted,
                 CompletionReason::Cancelled,
                 "Cancelled by user.",
             );
         }
         if evidence.any(ExecutionEvent::WaitingForUser) {
             return decision(
-                SessionStatus::AwaitingHitl,
+                TaskLifecycle::Waiting,
                 CompletionReason::AwaitingApproval,
                 "Waiting for approval.",
             );
@@ -344,7 +344,7 @@ impl CompletionEvaluator for DefaultCompletionEvaluator {
 
         match expectation {
             TaskExpectation::Unclassifiable => decision(
-                SessionStatus::Failed,
+                TaskLifecycle::Failed,
                 CompletionReason::ExpectationUnclassifiable,
                 "Could not confidently determine what this task required, so it was not marked complete.",
             ),
@@ -365,7 +365,7 @@ impl CompletionEvaluator for DefaultCompletionEvaluator {
     }
 }
 
-fn decision(state: SessionStatus, reason: CompletionReason, detail: &str) -> CompletionDecision {
+fn decision(state: TaskLifecycle, reason: CompletionReason, detail: &str) -> CompletionDecision {
     CompletionDecision {
         state,
         reason,
@@ -380,13 +380,13 @@ fn decision(state: SessionStatus, reason: CompletionReason, detail: &str) -> Com
 fn evaluate_read_only(evidence: &ExecutionEvidence) -> CompletionDecision {
     if evidence.any(ExecutionEvent::AssistantResponseProduced) {
         decision(
-            SessionStatus::Completed,
+            TaskLifecycle::Completed,
             CompletionReason::NoChangesRequired,
             "No changes required.",
         )
     } else {
         decision(
-            SessionStatus::Failed,
+            TaskLifecycle::Failed,
             CompletionReason::NoEditEvidence,
             "Forge couldn't complete this turn.",
         )
@@ -407,21 +407,21 @@ fn evaluate_search(required_operations: usize, evidence: &ExecutionEvidence) -> 
 
     if failed_count > 0 {
         return decision(
-            SessionStatus::Failed,
+            TaskLifecycle::Failed,
             CompletionReason::SearchExecutionFailed,
             "Search execution failed.",
         );
     }
     if required_operations == 0 || finished.len() < required_operations {
         return decision(
-            SessionStatus::Failed,
+            TaskLifecycle::Failed,
             CompletionReason::SearchExecutionFailed,
             "Search did not complete.",
         );
     }
     let matches: usize = finished.iter().filter_map(|e| e.count).sum();
     decision(
-        SessionStatus::Completed,
+        TaskLifecycle::Completed,
         CompletionReason::SearchSucceeded,
         &format!(
             "Search completed with {matches} match{}.",
@@ -436,7 +436,7 @@ fn evaluate_tool_execution(
 ) -> CompletionDecision {
     if required_tools.is_empty() {
         return decision(
-            SessionStatus::Failed,
+            TaskLifecycle::Failed,
             CompletionReason::ToolNotInvoked,
             "No required command ran.",
         );
@@ -472,7 +472,7 @@ fn evaluate_tool_execution(
     let total = required_tools.len();
     if failed.is_empty() {
         decision_with_lists(
-            SessionStatus::Completed,
+            TaskLifecycle::Completed,
             CompletionReason::ToolSucceeded,
             format!(
                 "{} command{} completed successfully.",
@@ -489,7 +489,7 @@ fn evaluate_tool_execution(
             CompletionReason::ToolExitedNonZero
         };
         decision_with_lists(
-            SessionStatus::Failed,
+            TaskLifecycle::Failed,
             reason,
             failed.join("; ") + ".",
             ok,
@@ -497,7 +497,7 @@ fn evaluate_tool_execution(
         )
     } else {
         decision_with_lists(
-            SessionStatus::Failed,
+            TaskLifecycle::Failed,
             CompletionReason::PartialFailure,
             format!(
                 "{} of {total} required commands succeeded; {} failed.",
@@ -539,7 +539,7 @@ fn evaluate_file_edit(
 ) -> CompletionDecision {
     if expected_effects.is_empty() {
         return decision(
-            SessionStatus::Failed,
+            TaskLifecycle::Failed,
             CompletionReason::NoEditEvidence,
             "No file modifications were successfully applied.",
         );
@@ -566,7 +566,7 @@ fn evaluate_file_edit(
     let total = expected_effects.len();
     if failed.is_empty() {
         decision_with_lists(
-            SessionStatus::Completed,
+            TaskLifecycle::Completed,
             CompletionReason::EditVerified,
             format!("Updated {total} file{}.", if total == 1 { "" } else { "s" }),
             ok,
@@ -574,7 +574,7 @@ fn evaluate_file_edit(
         )
     } else if let Some(path) = any_patch_rejected.filter(|_| ok.is_empty() && failed.len() == 1) {
         decision_with_lists(
-            SessionStatus::Failed,
+            TaskLifecycle::Failed,
             CompletionReason::PatchRejected,
             format!("Patch could not be applied to {path}."),
             ok,
@@ -582,7 +582,7 @@ fn evaluate_file_edit(
         )
     } else if ok.is_empty() {
         decision_with_lists(
-            SessionStatus::Failed,
+            TaskLifecycle::Failed,
             CompletionReason::NoEditEvidence,
             "No file modifications were successfully applied.",
             ok,
@@ -590,7 +590,7 @@ fn evaluate_file_edit(
         )
     } else {
         decision_with_lists(
-            SessionStatus::Failed,
+            TaskLifecycle::Failed,
             CompletionReason::PartialFailure,
             format!(
                 "Updated {} file{}, but {} required edit{} failed.",
@@ -611,7 +611,7 @@ fn evaluate_git_operation(
 ) -> CompletionDecision {
     if expected_effects.is_empty() {
         return decision(
-            SessionStatus::Failed,
+            TaskLifecycle::Failed,
             CompletionReason::GitCommandFailed,
             "No git operation ran.",
         );
@@ -637,7 +637,7 @@ fn evaluate_git_operation(
     let total = expected_effects.len();
     if failed.is_empty() {
         decision_with_lists(
-            SessionStatus::Completed,
+            TaskLifecycle::Completed,
             CompletionReason::GitEffectVerified,
             format!(
                 "Completed {total} git operation{}.",
@@ -648,7 +648,7 @@ fn evaluate_git_operation(
         )
     } else if ok.is_empty() && not_observed && failed.len() == 1 {
         decision_with_lists(
-            SessionStatus::Failed,
+            TaskLifecycle::Failed,
             CompletionReason::GitEffectNotObserved,
             format!(
                 "git {} exited successfully, but the expected repository effect did not occur.",
@@ -659,7 +659,7 @@ fn evaluate_git_operation(
         )
     } else if ok.is_empty() {
         decision_with_lists(
-            SessionStatus::Failed,
+            TaskLifecycle::Failed,
             CompletionReason::GitCommandFailed,
             format!("git {} failed.", failed.join(", ")),
             ok,
@@ -667,7 +667,7 @@ fn evaluate_git_operation(
         )
     } else {
         decision_with_lists(
-            SessionStatus::Failed,
+            TaskLifecycle::Failed,
             CompletionReason::PartialFailure,
             format!(
                 "{} of {total} required git operations succeeded; {} failed.",
@@ -681,7 +681,7 @@ fn evaluate_git_operation(
 }
 
 fn decision_with_lists(
-    state: SessionStatus,
+    state: TaskLifecycle,
     reason: CompletionReason,
     detail: impl Into<String>,
     succeeded: Vec<String>,
@@ -722,7 +722,7 @@ mod tests {
             ExecutionEvent::AssistantResponseProduced,
         ));
         let d = eval(&expectation, &evidence);
-        assert_eq!(d.state, SessionStatus::Failed);
+        assert_eq!(d.state, TaskLifecycle::Failed);
         assert_eq!(d.reason, CompletionReason::NoEditEvidence);
     }
 
@@ -744,7 +744,7 @@ mod tests {
                 .error("hunk did not match"),
         );
         let d = eval(&expectation, &evidence);
-        assert_eq!(d.state, SessionStatus::Failed);
+        assert_eq!(d.state, TaskLifecycle::Failed);
         assert_eq!(d.reason, CompletionReason::PatchRejected);
         assert_eq!(
             d.evidence_summary.detail,
@@ -771,7 +771,7 @@ mod tests {
                 .checksum_after(None),
         );
         let d = eval(&expectation, &evidence);
-        assert_eq!(d.state, SessionStatus::Failed);
+        assert_eq!(d.state, TaskLifecycle::Failed);
     }
 
     // 4. File contents remain unchanged after an edit task.
@@ -793,7 +793,7 @@ mod tests {
                 .checksum_after(Some(42)),
         );
         let d = eval(&expectation, &evidence);
-        assert_eq!(d.state, SessionStatus::Failed);
+        assert_eq!(d.state, TaskLifecycle::Failed);
         // Zero of one verified -> NoEditEvidence, not PartialFailure.
         assert_eq!(d.reason, CompletionReason::NoEditEvidence);
     }
@@ -811,7 +811,7 @@ mod tests {
                 .count(0),
         );
         let d = eval(&expectation, &evidence);
-        assert_eq!(d.state, SessionStatus::Completed);
+        assert_eq!(d.state, TaskLifecycle::Completed);
         assert_eq!(d.reason, CompletionReason::SearchSucceeded);
         assert_eq!(
             d.evidence_summary.detail,
@@ -835,7 +835,7 @@ mod tests {
                 .exit_code(101),
         );
         let d = eval(&expectation, &evidence);
-        assert_eq!(d.state, SessionStatus::Failed);
+        assert_eq!(d.state, TaskLifecycle::Failed);
         assert_eq!(d.reason, CompletionReason::ToolExitedNonZero);
         assert!(d
             .evidence_summary
@@ -860,7 +860,7 @@ mod tests {
                 .exit_code(0),
         );
         let d = eval(&expectation, &evidence);
-        assert_eq!(d.state, SessionStatus::Failed);
+        assert_eq!(d.state, TaskLifecycle::Failed);
         assert_eq!(d.reason, CompletionReason::ToolNotInvoked);
     }
 
@@ -893,7 +893,7 @@ mod tests {
             );
         }
         let d = eval(&expectation, &evidence);
-        assert_eq!(d.state, SessionStatus::Failed);
+        assert_eq!(d.state, TaskLifecycle::Failed);
         assert_eq!(d.reason, CompletionReason::PartialFailure);
         assert_eq!(
             d.evidence_summary.detail,
@@ -916,8 +916,8 @@ mod tests {
         let mut evidence = ExecutionEvidence::new();
         evidence.push(EvidenceEntry::new(ExecutionEvent::UserCancelled).operation_id("call-1"));
         let d = eval(&expectation, &evidence);
-        assert_ne!(d.state, SessionStatus::Completed);
-        assert_eq!(d.state, SessionStatus::Interrupted);
+        assert_ne!(d.state, TaskLifecycle::Completed);
+        assert_eq!(d.state, TaskLifecycle::Interrupted);
     }
 
     // 10. Runtime crashes after one successful edit.
@@ -939,7 +939,7 @@ mod tests {
         );
         evidence.push(EvidenceEntry::new(ExecutionEvent::RuntimeFailed));
         let d = eval(&expectation, &evidence);
-        assert_eq!(d.state, SessionStatus::Failed);
+        assert_eq!(d.state, TaskLifecycle::Failed);
         assert_eq!(d.reason, CompletionReason::RuntimeFailure);
     }
 
@@ -952,7 +952,7 @@ mod tests {
             ExecutionEvent::AssistantResponseProduced,
         ));
         let d = eval(&TaskExpectation::ReadOnly, &evidence);
-        assert_eq!(d.state, SessionStatus::Completed);
+        assert_eq!(d.state, TaskLifecycle::Completed);
         assert_eq!(d.reason, CompletionReason::NoChangesRequired);
     }
 
@@ -962,8 +962,8 @@ mod tests {
         let mut evidence = ExecutionEvidence::new();
         evidence.push(EvidenceEntry::new(ExecutionEvent::WaitingForUser));
         let d = eval(&TaskExpectation::ReadOnly, &evidence);
-        assert_eq!(d.state, SessionStatus::AwaitingHitl);
-        assert_ne!(d.state, SessionStatus::Completed);
+        assert_eq!(d.state, TaskLifecycle::Waiting);
+        assert_ne!(d.state, TaskLifecycle::Completed);
     }
 
     // 13. Rename source disappears but destination is missing.
@@ -985,7 +985,7 @@ mod tests {
                 .checksum_after(None), // destination NOT found either
         );
         let d = eval(&expectation, &evidence);
-        assert_eq!(d.state, SessionStatus::Failed);
+        assert_eq!(d.state, TaskLifecycle::Failed);
     }
 
     // 14. Git command exits successfully but the expected effect did not
@@ -1007,7 +1007,7 @@ mod tests {
                 .git_effect_verified(Some(false)),
         );
         let d = eval(&expectation, &evidence);
-        assert_eq!(d.state, SessionStatus::Failed);
+        assert_eq!(d.state, TaskLifecycle::Failed);
         assert_eq!(d.reason, CompletionReason::GitEffectNotObserved);
     }
 
@@ -1028,7 +1028,7 @@ mod tests {
                 .error("rejected"),
         );
         let d = eval(&expectation, &evidence);
-        assert_eq!(d.state, SessionStatus::Failed);
+        assert_eq!(d.state, TaskLifecycle::Failed);
         assert_eq!(d.reason, CompletionReason::GitCommandFailed);
     }
 
@@ -1049,7 +1049,7 @@ mod tests {
                 .git_effect_verified(Some(true)),
         );
         let d = eval(&expectation, &evidence);
-        assert_eq!(d.state, SessionStatus::Completed);
+        assert_eq!(d.state, TaskLifecycle::Completed);
         assert_eq!(d.reason, CompletionReason::GitEffectVerified);
     }
 
@@ -1060,7 +1060,7 @@ mod tests {
             ExecutionEvent::AssistantResponseProduced,
         ));
         let d = eval(&TaskExpectation::Unclassifiable, &evidence);
-        assert_eq!(d.state, SessionStatus::Failed);
+        assert_eq!(d.state, TaskLifecycle::Failed);
         assert_eq!(d.reason, CompletionReason::ExpectationUnclassifiable);
     }
 
@@ -1083,6 +1083,6 @@ mod tests {
             ));
         }
         let d = eval(&expectation, &evidence);
-        assert_eq!(d.state, SessionStatus::Failed);
+        assert_eq!(d.state, TaskLifecycle::Failed);
     }
 }
