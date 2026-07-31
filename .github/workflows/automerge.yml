@@ -13,7 +13,10 @@ on:
 
 permissions:
   pull-requests: write
-  contents: read
+  # `enablePullRequestAutoMerge` is a merge operation, so the token needs write
+  # access to contents as well; with `contents: read` GitHub rejects it with
+  # "Resource not accessible by integration".
+  contents: write
 
 jobs:
   enable-automerge:
