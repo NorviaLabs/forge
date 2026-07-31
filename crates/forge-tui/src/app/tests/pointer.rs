@@ -650,7 +650,7 @@ async fn edge_end_to_end_recovery_flow_mouse_enabled_and_disabled() {
         app.run_current_draft();
         let run_id = app.run.current.as_ref().unwrap().id.clone();
         let (tx, rx) = std::sync::mpsc::channel();
-        app.run_rx = Some(rx);
+        app.run_exec.rx = Some(rx);
         tx.send(RunEvent::Finished {
             exit_code: Some(101),
             success: false,

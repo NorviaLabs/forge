@@ -43,7 +43,6 @@ impl TuiApp {
             pending_hitl_decision: None,
             pending_context_reset: false,
             pending_external_editor: false,
-            pending_validation: false,
             pending_attachment: None,
             message_queue: MessageQueue::new(),
             queue_selected: None,
@@ -61,6 +60,7 @@ impl TuiApp {
             file_change_tx,
             bottom_panel: BottomPanelState::default(),
             run,
+            run_exec: run::RunExecution::default(),
             files_visible: false,
             file_explorer: FileExplorer::new(Some(workspace_root), file_icons),
             explorer_dialog: None,
@@ -91,8 +91,6 @@ impl TuiApp {
             frame_generation: 0,
             pending_double_click: None,
             diff_snapshot: DiffSnapshot::default(),
-            run_rx: None,
-            run_abort: None,
             last_editor_height: 24,
         };
         app.init_file_watcher();
