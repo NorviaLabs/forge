@@ -7,6 +7,16 @@ use crate::{CredentialStore, OPENAI_CODEX_PROFILE_ID};
 const CODEX_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
 const MODELS_DEV_URL: &str = "https://models.dev/api.json";
 
+fn models_dev_url() -> String {
+    std::env::var("FORGE_MODELS_DEV_URL").unwrap_or_else(|_| MODELS_DEV_URL.to_string())
+}
+
+fn codex_usage_url() -> String {
+    std::env::var(crate::openai_codex::API_BASE_ENV)
+        .map(|base| format!("{}/wham/usage", base.trim_end_matches('/')))
+        .unwrap_or_else(|_| CODEX_USAGE_URL.to_string())
+}
+
 pub fn provider_cost_report(
     profile_id: &str,
     model: &str,
@@ -109,7 +119,7 @@ fn token_cost(tokens: u64, dollars_per_million: f64) -> f64 {
 }
 
 fn fetch_models_dev_cost(provider: &str, model: &str) -> Result<Option<ModelCost>, String> {
-    let body: Value = ureq::get(MODELS_DEV_URL)
+    let body: Value = ureq::get(&models_dev_url())
         .set(
             "User-Agent",
             &format!("forge-connect/{}", env!("CARGO_PKG_VERSION")),
@@ -155,7 +165,7 @@ fn codex_cost_report(store: &CredentialStore) -> Result<Vec<String>, String> {
         .or_else(|| crate::openai_codex::account_id_from_token(&access_token).ok())
         .ok_or_else(|| "Codex credentials do not include a ChatGPT account".to_string())?;
 
-    let response = ureq::get(CODEX_USAGE_URL)
+    let response = ureq::get(&codex_usage_url())
         .set("Authorization", &format!("Bearer {access_token}"))
         .set("ChatGPT-Account-Id", &account_id)
         .set(
@@ -379,5 +389,61 @@ mod tests {
         assert_eq!(format_duration(59), "0m");
         assert_eq!(format_duration(3_660), "1h 1m");
         assert_eq!(format_duration(90_000), "1d 1h");
+    }
+
+    #[test]
+    fn codex_cost_report_fetches_usage_from_configured_base_url() {
+        use crate::test_env::EnvGuard;
+        use forge_test_support::mock_http;
+        use tempfile::tempdir;
+
+        const ENV: &[&str] = &[
+            crate::openai_codex::API_BASE_ENV,
+            crate::openai_codex::ACCESS_TOKEN_ENV,
+            crate::openai_codex::ACCOUNT_ID_ENV,
+        ];
+        let guard = EnvGuard::new(ENV);
+        let base = mock_http(vec![(
+            200,
+            r#"{"plan_type":"plus","rate_limit":{"limit_reached":false,"primary_window":{"used_percent":10}},"credits":{"balance":5.0}}"#,
+            vec![],
+        )]);
+        guard.set(crate::openai_codex::API_BASE_ENV, &base);
+        guard.set(crate::openai_codex::ACCESS_TOKEN_ENV, "access-token");
+        guard.set(crate::openai_codex::ACCOUNT_ID_ENV, "account-123");
+
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+        let report = codex_cost_report(&store).unwrap();
+        assert!(report[0].contains("OpenAI Codex (plus plan)"));
+        assert!(report.iter().any(|line| line.contains("90% remaining")));
+    }
+
+    #[test]
+    fn model_cost_report_uses_models_dev_override_url() {
+        use crate::test_env::EnvGuard;
+        use forge_test_support::mock_http;
+
+        const ENV: &[&str] = &["FORGE_MODELS_DEV_URL"];
+        let guard = EnvGuard::new(ENV);
+        let base = mock_http(vec![(
+            200,
+            r#"{"openai":{"models":{"gpt-4.1-mini":{"cost":{"input":1.0,"output":2.0}}}}}"#,
+            vec![],
+        )]);
+        guard.set("FORGE_MODELS_DEV_URL", &base);
+
+        let report = provider_cost_report(
+            "openai",
+            "openai/gpt-4.1-mini",
+            1_000_000,
+            500_000,
+            &CredentialStore::user_default(),
+        )
+        .unwrap();
+        assert!(report
+            .iter()
+            .any(|line| line.contains("Estimated session cost")));
+        assert!(report.iter().any(|line| line.contains("$2.000000")));
     }
 }
