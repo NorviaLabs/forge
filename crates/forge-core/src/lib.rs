@@ -92,6 +92,26 @@ fn truncate(s: &str, max_chars: usize) -> String {
     }
 }
 
+fn search_result_count(content: &str) -> usize {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(content) {
+        if let Some(hits) = value.get("hits").and_then(|hits| hits.as_array()) {
+            return hits.len();
+        }
+        if value
+            .get("message")
+            .and_then(|message| message.as_str())
+            .is_some_and(|message| message.contains("no matches found"))
+        {
+            return 0;
+        }
+    }
+    if content.trim() == "no matches found" || content.contains("no matches found") {
+        0
+    } else {
+        content.lines().count()
+    }
+}
+
 /// Content hash of a workspace file. `None` means the path does not exist
 /// (or isn't readable) — the convention `EvidenceEntry` documents.
 async fn hash_file(path: &Path) -> Option<u64> {
@@ -1585,11 +1605,7 @@ impl AgentSession {
         if output.is_error {
             entry = entry.error(truncate(&output.content, 200));
         } else {
-            let count = if output.content.trim() == "no matches found" {
-                0
-            } else {
-                output.content.lines().count()
-            };
+            let count = search_result_count(&output.content);
             entry = entry.count(count);
         }
         self.turn_evidence.push(entry);
