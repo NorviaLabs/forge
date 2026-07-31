@@ -1503,4 +1503,31 @@ mod tests {
         assert_eq!(ollama_outcome.key_source, KeySource::Provided);
         assert_eq!(svc.active_profile_id.as_deref(), Some("ollama"));
     }
+
+    #[test]
+    fn connect_api_key_verifies_opencode_zen_against_profile_base_url() {
+        use forge_test_support::mock_http;
+
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+        let mut reg = ConnectRegistry::new();
+        let mut zen = crate::opencode_zen::opencode_zen_profile();
+        zen.default_base_url = Some(mock_http(vec![(
+            200,
+            r#"{"data":[{"id":"claude-sonnet-4"}]}"#,
+            vec![],
+        )]));
+        reg.register(zen);
+        let mut svc = ConnectService {
+            registry: &reg,
+            store: &store,
+            active_profile_id: None,
+            active_model: None,
+        };
+        let outcome = svc
+            .connect_api_key("opencode_zen", Some("zen-valid-key-for-tests"))
+            .unwrap();
+        assert_eq!(outcome.key_source, KeySource::Provided);
+        assert_eq!(svc.active_profile_id.as_deref(), Some("opencode_zen"));
+    }
 }

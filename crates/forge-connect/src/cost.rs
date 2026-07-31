@@ -420,6 +420,48 @@ mod tests {
     }
 
     #[test]
+    fn codex_cost_report_requires_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+        let err = codex_cost_report(&store).unwrap_err();
+        assert!(err.contains("Codex is not connected"));
+    }
+
+    #[test]
+    fn provider_cost_report_routes_codex_profile_to_usage_fetch() {
+        use crate::test_env::EnvGuard;
+        use forge_test_support::mock_http;
+        use tempfile::tempdir;
+
+        const ENV: &[&str] = &[
+            crate::openai_codex::API_BASE_ENV,
+            crate::openai_codex::ACCESS_TOKEN_ENV,
+            crate::openai_codex::ACCOUNT_ID_ENV,
+        ];
+        let guard = EnvGuard::new(ENV);
+        let base = mock_http(vec![(
+            200,
+            r#"{"plan_type":"team","rate_limit":{"limit_reached":false,"primary_window":{"used_percent":0}}}"#,
+            vec![],
+        )]);
+        guard.set(crate::openai_codex::API_BASE_ENV, &base);
+        guard.set(crate::openai_codex::ACCESS_TOKEN_ENV, "access-token");
+        guard.set(crate::openai_codex::ACCOUNT_ID_ENV, "account-123");
+
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+        let report = provider_cost_report(
+            OPENAI_CODEX_PROFILE_ID,
+            "openai-codex/gpt-test",
+            0,
+            0,
+            &store,
+        )
+        .unwrap();
+        assert!(report[0].contains("OpenAI Codex (team plan)"));
+    }
+
+    #[test]
     fn model_cost_report_uses_models_dev_override_url() {
         use crate::test_env::EnvGuard;
         use forge_test_support::mock_http;
