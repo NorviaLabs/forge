@@ -381,6 +381,7 @@ done
         let (s, t) = parse_mcp_tool_name(&n).unwrap();
         assert_eq!(s, "demo");
         assert_eq!(t, "echo");
+        assert!(parse_mcp_tool_name("not-mcp").is_none());
     }
 
     #[tokio::test]
@@ -473,6 +474,60 @@ done
         assert_eq!(tools[0].description, "Echo text");
         let output = client
             .call_tool("echo", json!({"text": "hello"}))
+            .await
+            .unwrap();
+        assert!(output.is_error);
+        assert!(output.content.contains("hello"));
+    }
+
+    #[tokio::test]
+    async fn spawn_rejects_unsupported_transport() {
+        let cfg = McpServerConfig {
+            id: "bad".into(),
+            transport: "http".into(),
+            command: "true".into(),
+            args: Vec::new(),
+        };
+        match McpStdioClient::spawn(&cfg).await {
+            Err(McpError::Protocol(message)) => {
+                assert!(message.contains("unsupported transport"));
+            }
+            Ok(_) => panic!("expected unsupported transport error"),
+            Err(other) => panic!("expected protocol error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn manager_connects_registers_and_invokes_remote_tools() {
+        let directory = fixture_server();
+        let cfg = McpServerConfig {
+            id: "fixture".into(),
+            transport: "stdio".into(),
+            command: directory
+                .path()
+                .join("mcp-server.sh")
+                .to_string_lossy()
+                .into_owned(),
+            args: Vec::new(),
+        };
+
+        let mut manager = McpManager::new();
+        assert!(manager.connect_all(&[cfg]).await.is_empty());
+
+        let mut registry = ToolRegistry::new();
+        manager.register_into(&mut registry).await.unwrap();
+        assert!(registry.names().contains(&"mcp:fixture:echo".to_string()));
+
+        let ctx = ToolContext::new(std::env::current_dir().unwrap());
+        let mut budget = ValidationBudget::with_default_max();
+        let output = registry
+            .call(
+                &ctx,
+                "mcp:fixture:echo",
+                json!({"text": "hello"}),
+                &mut budget,
+            )
             .await
             .unwrap();
         assert!(output.is_error);

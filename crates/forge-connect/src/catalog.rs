@@ -1289,6 +1289,29 @@ mod tests {
             fetch_remote_models(&xai, Some("xai-token")).unwrap(),
             vec!["xai/grok-code-fast"]
         );
+
+        let mut codex = crate::openai_codex::openai_codex_profile();
+        codex.default_base_url = Some(mock_http(vec![(
+            200,
+            r#"{"models":[{"slug":"gpt-5.6-sol"},{"slug":"codex-auto-review"}]}"#,
+            vec![],
+        )]));
+        let token = codex_access_token_for_tests();
+        assert_eq!(
+            fetch_remote_models(&codex, Some(&token)).unwrap(),
+            vec!["openai-codex/gpt-5.6-sol"]
+        );
+    }
+
+    fn codex_access_token_for_tests() -> String {
+        use base64::Engine;
+        let payload = serde_json::json!({
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "account-123"
+            }
+        });
+        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload.to_string());
+        format!("header.{encoded}.signature")
     }
 
     #[test]
