@@ -77,8 +77,8 @@ async fn restored_running_run_becomes_cancelled() {
         .current
         .as_ref()
         .is_some_and(|record| record.state == RunState::Cancelled));
-    assert!(!app.pending_validation);
-    assert!(app.run_rx.is_none());
+    assert!(!app.run_exec.pending_validation);
+    assert!(app.run_exec.rx.is_none());
 }
 
 #[tokio::test]
@@ -187,7 +187,7 @@ async fn run_failure_while_in_diff_updates_summary_without_navigation() {
         .unwrap();
     let before = app.workspace_navigation.clone();
     let (tx, rx) = std::sync::mpsc::channel();
-    app.run_rx = Some(rx);
+    app.run_exec.rx = Some(rx);
 
     tx.send(RunEvent::Finished {
         exit_code: Some(1),
@@ -244,7 +244,7 @@ async fn edge_run_spawn_failure_shows_invocation_without_exit_code() {
     app.run_current_draft();
     let run_id = app.run.current.as_ref().unwrap().id.clone();
     let (tx, rx) = std::sync::mpsc::channel();
-    app.run_rx = Some(rx);
+    app.run_exec.rx = Some(rx);
 
     tx.send(RunEvent::SpawnFailed("No such file or directory".into()))
         .unwrap();
