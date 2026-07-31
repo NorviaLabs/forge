@@ -1,3 +1,4 @@
+use crate::quick_open::rerank_quick_open_hits;
 use crate::types::{FileSearchHit, FindResponse, GrepQueryMode, GrepResponse, GrepSearchHit};
 use fff_search::{
     file_picker::{FFFMode, FilePicker, FilePickerOptions, FuzzySearchOptions},
@@ -160,6 +161,41 @@ impl WorkspaceIndex {
             })
             .collect();
 
+        Ok(FindResponse {
+            hits,
+            total_matched,
+            total_files,
+        })
+    }
+
+    /// Quick Open search with VS Code–style word-boundary scoring and path awareness.
+    ///
+    /// Empty queries still return frecency-ranked files. Non-empty queries pull a
+    /// broader fuzzy candidate set from fff, then re-rank with [`crate::quick_open`].
+    pub fn find_files_quick_open(
+        &self,
+        query: &str,
+        max_results: usize,
+        current_file: Option<&Path>,
+    ) -> Result<FindResponse, SearchError> {
+        if max_results == 0 {
+            return Ok(FindResponse {
+                hits: Vec::new(),
+                total_matched: 0,
+                total_files: 0,
+            });
+        }
+
+        if query.trim().is_empty() {
+            return self.find_files(query, max_results, current_file);
+        }
+
+        let candidate_limit = max_results.saturating_mul(8).clamp(100, 400);
+        let response = self.find_files(query, candidate_limit, current_file)?;
+        let total_files = response.total_files;
+        let hits = rerank_quick_open_hits(response.hits, query);
+        let total_matched = hits.len();
+        let hits = hits.into_iter().take(max_results).collect();
         Ok(FindResponse {
             hits,
             total_matched,
