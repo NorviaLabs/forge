@@ -501,15 +501,7 @@ pub struct TuiApp {
     pub(crate) status_message: String,
     pub(crate) runtime: TuiRuntimeConfig,
     last_exit: ExitCode,
-    connect_registry: ConnectRegistry,
-    connect_store: CredentialStore,
-    connect_profile: Option<String>,
-    /// Manual disconnect latch: prevents auto-restore until the user signs in again.
-    auth_suspended: bool,
-    /// In-flight xAI device-code OAuth (polled on the event loop tick).
-    oauth_pending: Option<OauthPending>,
-    /// Last time we polled the token endpoint (respect server `interval`).
-    oauth_last_poll: Option<std::time::Instant>,
+    connect: connect::ConnectionModel,
     /// Phase 7 — submitted command history (Up/Down when no overlay).
     history: InputHistory,
     /// Phase 8 autocomplete: selection within filtered `/` suggestions.

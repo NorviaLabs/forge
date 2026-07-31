@@ -571,8 +571,9 @@ impl TuiApp {
             self.status_message = "pick a model (live catalog when connected)".into();
         }
 
-        let connected_prefix = self.connect_profile.as_deref().and_then(|id| {
-            self.connect_registry
+        let connected_prefix = self.connect.profile.as_deref().and_then(|id| {
+            self.connect
+                .registry
                 .get(id)
                 .map(|profile| profile.model_provider_prefix.as_str())
         });
@@ -779,15 +780,15 @@ impl TuiApp {
             }
         }
         // Re-apply credentials (with silent refresh) before each turn so sessions stay signed in.
-        if !self.auth_suspended {
-            if let Some(pid) = self.connect_profile.clone() {
+        if !self.connect.auth_suspended {
+            if let Some(pid) = self.connect.profile.clone() {
                 self.apply_connect_credentials(&pid);
             } else {
                 // Try restore mid-session if credentials appeared (e.g. /connect in another terminal)
                 let restored = {
                     let svc = ConnectService {
-                        registry: &self.connect_registry,
-                        store: &self.connect_store,
+                        registry: &self.connect.registry,
+                        store: &self.connect.store,
                         active_profile_id: None,
                         active_model: None,
                     };
@@ -799,7 +800,7 @@ impl TuiApp {
                     })
                 };
                 if let Some(p) = restored {
-                    self.connect_profile = Some(p.id.clone());
+                    self.connect.profile = Some(p.id.clone());
                     self.apply_connect_credentials(&p.id);
                     if let Some(m) = p.default_model() {
                         self.runtime.model_label = m.to_string();
