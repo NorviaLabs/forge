@@ -171,6 +171,7 @@ impl TuiApp {
 
     pub(super) fn open_file_in_editor(&mut self, path: &Path) {
         self.navigate_to_workspace_view(WorkspaceView::File(path.to_path_buf()));
+        self.note_workspace_file_opened(path);
     }
 
     #[cfg(test)]
