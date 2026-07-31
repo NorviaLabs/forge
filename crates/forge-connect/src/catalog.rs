@@ -264,7 +264,9 @@ pub fn refresh_models_dev_registry(
     cache: &ModelCatalogCache,
 ) -> Result<usize, CatalogError> {
     let ua = format!("forge-connect/{}", env!("CARGO_PKG_VERSION"));
-    let body: serde_json::Value = ureq::get(MODELS_DEV_URL)
+    let models_dev_url =
+        std::env::var("FORGE_MODELS_DEV_URL").unwrap_or_else(|_| MODELS_DEV_URL.to_string());
+    let body: serde_json::Value = ureq::get(&models_dev_url)
         .set("User-Agent", &ua)
         .timeout(std::time::Duration::from_secs(10))
         .call()
@@ -372,7 +374,7 @@ pub fn fetch_remote_models(
             let url = format!(
                 "{}/codex/models?client_version={}",
                 if base.is_empty() {
-                    "https://chatgpt.com/backend-api"
+                    crate::openai_codex::DEFAULT_BASE_URL
                 } else {
                     base
                 },
@@ -1408,6 +1410,37 @@ mod tests {
             credential_for_catalog(&oauth_profile, &store),
             Some("real-access-token".into())
         );
+    }
+
+    #[test]
+    fn refresh_models_dev_registry_uses_override_url() {
+        use crate::test_env::EnvGuard;
+        use forge_test_support::mock_http;
+        use tempfile::tempdir;
+
+        const ENV: &[&str] = &["FORGE_MODELS_DEV_URL"];
+        let guard = EnvGuard::new(ENV);
+        let base = mock_http(vec![(
+            200,
+            r#"{"openai":{"models":{"gpt-4.1-mini":{"cost":{"input":1.0,"output":2.0},"tool_call":true,"modalities":{"output":["text"]}}}}}"#,
+            vec![],
+        )]);
+        guard.set("FORGE_MODELS_DEV_URL", &base);
+
+        let dir = tempdir().unwrap();
+        let cache = ModelCatalogCache::new(dir.path().join("c.toml"));
+        let profiles = vec![openai_profile()];
+        let count = refresh_models_dev_registry(&profiles, &cache).unwrap();
+        assert_eq!(count, 1);
+        let entries = models_for_picker(
+            &profiles,
+            &CredentialStore::new(dir.path().join("k.toml")),
+            &cache,
+            false,
+        );
+        assert!(entries
+            .iter()
+            .any(|entry| entry.id == "openai/gpt-4.1-mini"));
     }
 
     #[test]

@@ -123,6 +123,13 @@ impl NativeModelClient {
                 .filter(|value| !value.trim().is_empty())
         })
     }
+
+    pub(super) fn resolved_base_url(&self, env_names: &[&str], default: &str) -> String {
+        self.configured_base_url
+            .clone()
+            .or_else(|| self.injected_or_env(env_names))
+            .unwrap_or_else(|| default.into())
+    }
 }
 
 #[async_trait]

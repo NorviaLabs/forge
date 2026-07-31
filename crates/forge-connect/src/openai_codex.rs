@@ -7,7 +7,9 @@ use crate::{AuthMode, ConnectProfile};
 pub const PROFILE_ID: &str = "openai_codex";
 pub const ACCESS_TOKEN_ENV: &str = "FORGE_CODEX_ACCESS_TOKEN";
 pub const ACCOUNT_ID_ENV: &str = "FORGE_CODEX_ACCOUNT_ID";
+pub const API_BASE_ENV: &str = "FORGE_CODEX_API_BASE";
 pub const AUTH_SERVER: &str = "https://auth.openai.com";
+pub const DEFAULT_BASE_URL: &str = "https://chatgpt.com/backend-api";
 
 pub fn openai_codex_profile() -> ConnectProfile {
     ConnectProfile {
@@ -20,7 +22,7 @@ pub fn openai_codex_profile() -> ConnectProfile {
             auth_server: AUTH_SERVER.into(),
         },
         api_key_env: vec![],
-        default_base_url: Some("https://chatgpt.com/backend-api".into()),
+        default_base_url: Some(DEFAULT_BASE_URL.into()),
         default_models: vec!["openai-codex/gpt-5.6-sol".into()],
         models_dev_providers: vec![],
         auth_url: Some("https://auth.openai.com/codex/device".into()),

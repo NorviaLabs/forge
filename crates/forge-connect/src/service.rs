@@ -1417,4 +1417,50 @@ mod tests {
         assert!(needs_tui_oauth(&reg, "xai"));
         assert!(!needs_tui_oauth(&reg, "opencode_go"));
     }
+
+    #[test]
+    fn connect_api_key_verifies_against_profile_base_url() {
+        use forge_test_support::mock_http;
+
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+        let mut reg = ConnectRegistry::new();
+        let mut openai = crate::openai::openai_profile();
+        openai.default_base_url = Some(mock_http(vec![(200, r#"{"data":[]}"#, vec![])]));
+        reg.register(openai);
+        let mut svc = ConnectService {
+            registry: &reg,
+            store: &store,
+            active_profile_id: None,
+            active_model: None,
+        };
+        let outcome = svc
+            .connect_api_key("openai", Some("sk-valid-key-for-tests"))
+            .unwrap();
+        assert_eq!(outcome.key_source, KeySource::Provided);
+        assert_eq!(svc.active_profile_id.as_deref(), Some("openai"));
+    }
+
+    #[test]
+    fn connect_api_key_surfaces_verify_failures_from_mock_server() {
+        use forge_test_support::mock_http;
+
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+        let mut reg = ConnectRegistry::new();
+        let mut anthropic = crate::anthropic::anthropic_profile();
+        anthropic.default_base_url = Some(mock_http(vec![(401, "bad key", vec![])]));
+        reg.register(anthropic);
+        let mut svc = ConnectService {
+            registry: &reg,
+            store: &store,
+            active_profile_id: None,
+            active_model: None,
+        };
+        let err = svc
+            .connect_api_key("anthropic", Some("sk-ant-valid-key-for-tests"))
+            .unwrap_err();
+        assert!(matches!(err, ConnectError::Verify(_)));
+        assert!(err.to_string().contains("unauthorized"));
+    }
 }

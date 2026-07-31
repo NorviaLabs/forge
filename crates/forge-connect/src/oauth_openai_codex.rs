@@ -8,10 +8,7 @@ use thiserror::Error;
 use crate::{OauthPending, OauthTokens};
 
 pub const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
-const AUTH_BASE: &str = "https://auth.openai.com";
-const DEVICE_CODE_URL: &str = "https://auth.openai.com/api/accounts/deviceauth/usercode";
-const DEVICE_TOKEN_URL: &str = "https://auth.openai.com/api/accounts/deviceauth/token";
-const TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
+pub const DEFAULT_AUTH_BASE: &str = "https://auth.openai.com";
 const DEVICE_REDIRECT_URI: &str = "https://auth.openai.com/deviceauth/callback";
 
 #[derive(Debug, Error)]
@@ -28,9 +25,40 @@ pub enum OpenAiCodexOauthError {
     Token(String),
 }
 
-pub struct OpenAiCodexOauthClient;
+#[derive(Debug, Clone)]
+pub struct OpenAiCodexOauthClient {
+    pub auth_base: String,
+}
+
+impl Default for OpenAiCodexOauthClient {
+    fn default() -> Self {
+        Self::from_env()
+    }
+}
 
 impl OpenAiCodexOauthClient {
+    pub fn from_env() -> Self {
+        Self {
+            auth_base: std::env::var("FORGE_OPENAI_CODEX_OAUTH_ISSUER")
+                .or_else(|_| std::env::var("OPENAI_CODEX_OAUTH_ISSUER"))
+                .unwrap_or_else(|_| DEFAULT_AUTH_BASE.into())
+                .trim_end_matches('/')
+                .into(),
+        }
+    }
+
+    fn device_code_url(&self) -> String {
+        format!("{}/api/accounts/deviceauth/usercode", self.auth_base)
+    }
+
+    fn device_token_url(&self) -> String {
+        format!("{}/api/accounts/deviceauth/token", self.auth_base)
+    }
+
+    fn token_url(&self) -> String {
+        format!("{}/oauth/token", self.auth_base)
+    }
+
     fn response_body(response: ureq::Response) -> String {
         let mut body = String::new();
         let _ = response.into_reader().read_to_string(&mut body);
@@ -70,9 +98,11 @@ impl OpenAiCodexOauthClient {
         }
     }
 
-    pub fn start_device_code() -> Result<OauthPending, OpenAiCodexOauthError> {
-        let (status, body) =
-            Self::post_json(DEVICE_CODE_URL, serde_json::json!({"client_id": CLIENT_ID}))?;
+    pub fn start_device_code(&self) -> Result<OauthPending, OpenAiCodexOauthError> {
+        let (status, body) = Self::post_json(
+            &self.device_code_url(),
+            serde_json::json!({"client_id": CLIENT_ID}),
+        )?;
         if !(200..300).contains(&status) {
             return Err(OpenAiCodexOauthError::Device(format!(
                 "HTTP {status}: {body}"
@@ -82,20 +112,23 @@ impl OpenAiCodexOauthClient {
             .map_err(|error| OpenAiCodexOauthError::Device(error.to_string()))?;
         Ok(OauthPending {
             profile_id: crate::openai_codex::PROFILE_ID.into(),
-            verification_uri: "https://auth.openai.com/codex/device".into(),
+            verification_uri: format!("{}/codex/device", self.auth_base),
             verification_uri_complete: None,
             user_code: response.user_code,
             device_code: response.device_auth_id,
-            auth_server: AUTH_BASE.into(),
+            auth_server: self.auth_base.clone(),
             interval_secs: response.interval.max(1),
             expires_in_secs: Some(15 * 60),
             client_id: CLIENT_ID.into(),
         })
     }
 
-    pub fn poll_token_once(pending: &OauthPending) -> Result<OauthTokens, OpenAiCodexOauthError> {
+    pub fn poll_token_once(
+        &self,
+        pending: &OauthPending,
+    ) -> Result<OauthTokens, OpenAiCodexOauthError> {
         let (status, body) = Self::post_json(
-            DEVICE_TOKEN_URL,
+            &self.device_token_url(),
             serde_json::json!({
                 "device_auth_id": pending.device_code,
                 "user_code": pending.user_code,
@@ -117,15 +150,16 @@ impl OpenAiCodexOauthClient {
         }
         let code: DeviceTokenResponse = serde_json::from_str(&body)
             .map_err(|error| OpenAiCodexOauthError::Device(error.to_string()))?;
-        Self::exchange_code(&code.authorization_code, &code.code_verifier)
+        self.exchange_code(&code.authorization_code, &code.code_verifier)
     }
 
     fn exchange_code(
+        &self,
         authorization_code: &str,
         verifier: &str,
     ) -> Result<OauthTokens, OpenAiCodexOauthError> {
         let (status, body) = Self::post_form(
-            TOKEN_URL,
+            &self.token_url(),
             &[
                 ("grant_type", "authorization_code"),
                 ("client_id", CLIENT_ID),
@@ -137,9 +171,9 @@ impl OpenAiCodexOauthClient {
         Self::parse_tokens(status, &body, None)
     }
 
-    pub fn refresh(refresh_token: &str) -> Result<OauthTokens, OpenAiCodexOauthError> {
+    pub fn refresh(&self, refresh_token: &str) -> Result<OauthTokens, OpenAiCodexOauthError> {
         let (status, body) = Self::post_form(
-            TOKEN_URL,
+            &self.token_url(),
             &[
                 ("grant_type", "refresh_token"),
                 ("refresh_token", refresh_token),
@@ -216,11 +250,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use forge_test_support::mock_http;
     use serde::Deserialize;
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
-    use std::thread;
-    use std::time::Duration;
 
     #[derive(Deserialize)]
     struct IntervalFixture {
@@ -228,63 +259,35 @@ mod tests {
         interval: u64,
     }
 
-    fn mock_server(status: u16, body: &'static str) -> String {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(2)))
-                .unwrap();
-            let mut request = Vec::new();
-            let mut buf = [0_u8; 1024];
-            while let Ok(n) = stream.read(&mut buf) {
-                if n == 0 {
-                    break;
-                }
-                request.extend_from_slice(&buf[..n]);
-                let Some(header_end) = request.windows(4).position(|w| w == b"\r\n\r\n") else {
-                    continue;
-                };
-                let headers = String::from_utf8_lossy(&request[..header_end]);
-                let content_len = headers
-                    .lines()
-                    .find_map(|line| {
-                        line.split_once(':').and_then(|(name, value)| {
-                            name.eq_ignore_ascii_case("content-length")
-                                .then(|| value.trim().parse::<usize>().ok())
-                                .flatten()
-                        })
-                    })
-                    .unwrap_or(0);
-                if request.len() >= header_end + 4 + content_len {
-                    break;
-                }
-            }
-            let reason = if status < 400 { "OK" } else { "Bad Request" };
-            let response = format!(
-                "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            stream.write_all(response.as_bytes()).unwrap();
-            stream.flush().unwrap();
-        });
-        format!("http://{addr}/token")
+    fn mock_client(base: String) -> OpenAiCodexOauthClient {
+        OpenAiCodexOauthClient { auth_base: base }
+    }
+
+    fn pending_for(client: &OpenAiCodexOauthClient) -> OauthPending {
+        OauthPending {
+            profile_id: crate::openai_codex::PROFILE_ID.into(),
+            verification_uri: format!("{}/codex/device", client.auth_base),
+            verification_uri_complete: None,
+            user_code: "FORGE-TEST".into(),
+            device_code: "device-under-test".into(),
+            auth_server: client.auth_base.clone(),
+            interval_secs: 1,
+            expires_in_secs: Some(900),
+            client_id: CLIENT_ID.into(),
+        }
     }
 
     #[test]
     fn post_json_and_form_return_status_and_body_for_success_and_error_status() {
-        let (status, body) = OpenAiCodexOauthClient::post_json(
-            &mock_server(200, r#"{"ok":true}"#),
-            serde_json::json!({"client_id": CLIENT_ID}),
-        )
-        .unwrap();
+        let base = mock_http(vec![(200, r#"{"ok":true}"#, vec![])]);
+        let (status, body) =
+            OpenAiCodexOauthClient::post_json(&base, serde_json::json!({"client_id": CLIENT_ID}))
+                .unwrap();
         assert_eq!(status, 200);
         assert!(body.contains("ok"));
 
-        let (status, body) =
-            OpenAiCodexOauthClient::post_form(&mock_server(400, "bad request"), &[("a", "b")])
-                .unwrap();
+        let base = mock_http(vec![(400, "bad request", vec![])]);
+        let (status, body) = OpenAiCodexOauthClient::post_form(&base, &[("a", "b")]).unwrap();
         assert_eq!(status, 400);
         assert_eq!(body, "bad request");
     }
@@ -375,5 +378,86 @@ mod tests {
         assert!(OpenAiCodexOauthError::Device("x".into())
             .to_string()
             .contains("device authorization failed"));
+    }
+
+    #[test]
+    fn start_device_code_success() {
+        let base = mock_http(vec![(
+            200,
+            r#"{"device_auth_id":"device-1","user_code":"AB12-CD34","interval":3}"#,
+            vec![],
+        )]);
+        let client = mock_client(base);
+        let pending = client.start_device_code().unwrap();
+        assert_eq!(pending.profile_id, "openai_codex");
+        assert_eq!(pending.device_code, "device-1");
+        assert_eq!(pending.user_code, "AB12-CD34");
+        assert_eq!(
+            pending.verification_uri,
+            format!("{}/codex/device", client.auth_base)
+        );
+        assert_eq!(pending.interval_secs, 3);
+    }
+
+    #[test]
+    fn poll_token_once_success_exchanges_authorization_code() {
+        let base = mock_http(vec![
+            (
+                200,
+                r#"{"authorization_code":"auth-code","code_verifier":"verifier"}"#,
+                vec![],
+            ),
+            (
+                200,
+                r#"{"access_token":"access","refresh_token":"refresh","expires_in":3600}"#,
+                vec![],
+            ),
+        ]);
+        let client = mock_client(base);
+        let pending = pending_for(&client);
+        let tokens = client.poll_token_once(&pending).unwrap();
+        assert_eq!(tokens.access_token, "access");
+        assert_eq!(tokens.refresh_token.as_deref(), Some("refresh"));
+    }
+
+    #[test]
+    fn poll_token_once_maps_pending_slowdown_and_http_errors() {
+        for (status, body, expected) in [
+            (403, "", "authorization pending"),
+            (404, "", "authorization pending"),
+            (400, r#"{"error":"slow_down"}"#, "slow down"),
+            (
+                400,
+                r#"{"error":"authorization_pending"}"#,
+                "authorization pending",
+            ),
+            (500, "upstream", "device authorization failed"),
+        ] {
+            let base = mock_http(vec![(status, body, vec![])]);
+            let client = mock_client(base);
+            let err = client.poll_token_once(&pending_for(&client)).unwrap_err();
+            assert!(
+                err.to_string().contains(expected),
+                "status={status} body={body} got {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn refresh_success_and_error_paths() {
+        let base = mock_http(vec![(
+            200,
+            r#"{"access_token":"new-access","refresh_token":"new-refresh","expires_in":120}"#,
+            vec![],
+        )]);
+        let client = mock_client(base);
+        let tokens = client.refresh("old-refresh").unwrap();
+        assert_eq!(tokens.access_token, "new-access");
+        assert_eq!(tokens.refresh_token.as_deref(), Some("new-refresh"));
+
+        let base = mock_http(vec![(503, "maintenance", vec![])]);
+        let client = mock_client(base);
+        let err = client.refresh("old-refresh").unwrap_err();
+        assert!(matches!(err, OpenAiCodexOauthError::Token(msg) if msg.contains("HTTP 503")));
     }
 }
