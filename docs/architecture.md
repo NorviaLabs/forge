@@ -325,8 +325,8 @@ gone wrong.
 | Journal the intent before any side effect | **Implemented.** The append is awaited before both the model call and the tool call, and a journal failure propagates, aborting the side effect |
 | Journal is load-bearing, not best-effort | **Implemented.** Session creation fails if the journal cannot be opened; there is no degraded mode and no disable flag |
 | All documented event types exist | **Implemented** |
-| Replay serves cached tool results instead of re-executing | **Partial.** `cached_tool_result` exists and is tested, but `resume` does not call it. Conversation history is rebuilt correctly; nothing yet prevents a resumed session from re-running a tool whose result is already recorded |
-| Crash recovery marks incomplete intents failed, or retries when idempotent | **Partial.** Incomplete intents are identified during replay and logged as a warning. Neither branch is taken, and the `idempotent` flag is never read |
+| Replay serves cached tool results instead of re-executing | **Implemented.** `journaled_tool_results` is restored on resume; `run_one_tool` serves journaled results via `try_serve_journaled_tool` instead of re-running |
+| Crash recovery marks incomplete intents failed, or retries when idempotent | **Implemented.** `reconcile_incomplete_intents` on resume writes a synthetic failure for non-idempotent tools and re-executes idempotent ones whose intent was journaled without a result |
 | HITL survives a process restart | **Partial.** `hitl_wait` / `hitl_resume` are journaled and replay restores `AwaitingHitl` with its payload, but `resolve_hitl` takes an in-process decision. There is no out-of-process path for an approval to arrive, so this is journaled in-process approval rather than approval that outlives the controller |
 | Schema versioning | **Present but inert.** The column is written and read but never branched on |
 

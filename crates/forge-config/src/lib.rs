@@ -1653,8 +1653,11 @@ model = "claude-sonnet"
         assert_eq!(cfg.model.api_key.as_deref(), Some("sk-from-cli"));
     }
 
+    /// Holds `ENV_LOCK` so the two `dirs::config_dir()` reads below cannot
+    /// straddle another test's mutation of `HOME`/`XDG_CONFIG_HOME`.
     #[test]
     fn user_config_path_is_a_forge_config_toml_under_config_dir() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let expected = dirs::config_dir().map(|d| d.join("forge").join("config.toml"));
         assert_eq!(user_config_path(), expected);
     }
