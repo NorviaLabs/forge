@@ -486,6 +486,272 @@ mod tests {
         );
     }
 
+    fn mock_client(base: String) -> XaiOauthClient {
+        XaiOauthClient {
+            issuer: base,
+            client_id: "test-client".into(),
+            scopes: DEFAULT_SCOPES.into(),
+        }
+    }
+
+    fn pending_for(client: &XaiOauthClient) -> OauthPending {
+        OauthPending {
+            profile_id: "xai".into(),
+            verification_uri: format!("{}/oauth2/device", client.issuer),
+            verification_uri_complete: None,
+            user_code: "FORGE-TEST".into(),
+            device_code: "device-under-test".into(),
+            auth_server: client.issuer.clone(),
+            interval_secs: 1,
+            expires_in_secs: Some(1800),
+            client_id: client.client_id.clone(),
+        }
+    }
+
+    #[test]
+    fn start_device_code_success() {
+        let base = forge_test_support::mock_http(vec![(
+            200,
+            r#"{"device_code":"dc","user_code":"AB12-CD34","verification_uri":"https://accounts.x.ai/oauth2/device","interval":3,"expires_in":900}"#,
+            vec![],
+        )]);
+        let client = mock_client(base);
+        let pending = client.start_device_code("xai").unwrap();
+        assert_eq!(pending.profile_id, "xai");
+        assert_eq!(pending.device_code, "dc");
+        assert_eq!(pending.user_code, "AB12-CD34");
+        assert_eq!(
+            pending.verification_uri,
+            "https://accounts.x.ai/oauth2/device"
+        );
+        assert_eq!(pending.interval_secs, 3);
+        assert_eq!(pending.expires_in_secs, Some(900));
+        assert_eq!(pending.client_id, "test-client");
+    }
+
+    #[test]
+    fn start_device_code_falls_back_to_verification_uri_complete_then_default() {
+        let base = forge_test_support::mock_http(vec![
+            (
+                200,
+                r#"{"device_code":"dc","user_code":"u","verification_uri_complete":"https://accounts.x.ai/complete"}"#,
+                vec![],
+            ),
+            (200, r#"{"device_code":"dc2","user_code":"u2"}"#, vec![]),
+        ]);
+        let client = mock_client(base);
+
+        let via_complete = client.start_device_code("xai").unwrap();
+        assert_eq!(
+            via_complete.verification_uri,
+            "https://accounts.x.ai/complete"
+        );
+        assert_eq!(
+            via_complete.verification_uri_complete.as_deref(),
+            Some("https://accounts.x.ai/complete")
+        );
+
+        let via_default = client.start_device_code("xai").unwrap();
+        assert_eq!(
+            via_default.verification_uri,
+            "https://accounts.x.ai/oauth2/device"
+        );
+    }
+
+    #[test]
+    fn start_device_code_transport_failure_is_an_http_error() {
+        // Nothing is listening on this port, so ureq should fail to connect
+        // rather than get any HTTP response at all -- the `Err(e) => Err(Http(..))`
+        // branch in post_form, distinct from the "got a response, bad status" path.
+        let client = mock_client("http://127.0.0.1:1".into());
+        let err = client.start_device_code("xai").unwrap_err();
+        assert!(matches!(err, XaiOauthError::Http(_)));
+    }
+
+    #[test]
+    fn start_device_code_http_error_status() {
+        let base = forge_test_support::mock_http(vec![(400, "bad request", vec![])]);
+        let client = mock_client(base);
+        let err = client.start_device_code("xai").unwrap_err();
+        assert!(matches!(err, XaiOauthError::DeviceCode(_)));
+        assert!(err.to_string().contains("device code request failed"));
+    }
+
+    #[test]
+    fn start_device_code_invalid_json_body() {
+        let base = forge_test_support::mock_http(vec![(200, "not json", vec![])]);
+        let client = mock_client(base);
+        let err = client.start_device_code("xai").unwrap_err();
+        assert!(matches!(err, XaiOauthError::DeviceCode(msg) if msg.contains("invalid JSON")));
+    }
+
+    #[test]
+    fn start_device_code_missing_required_fields() {
+        let base = forge_test_support::mock_http(vec![(
+            200,
+            r#"{"device_code":"","user_code":""}"#,
+            vec![],
+        )]);
+        let client = mock_client(base);
+        let err = client.start_device_code("xai").unwrap_err();
+        assert!(
+            matches!(err, XaiOauthError::DeviceCode(msg) if msg.contains("missing device_code"))
+        );
+    }
+
+    #[test]
+    fn poll_token_once_success_computes_expiry() {
+        let base = forge_test_support::mock_http(vec![(
+            200,
+            r#"{"access_token":"tok","refresh_token":"rt","expires_in":3600}"#,
+            vec![],
+        )]);
+        let client = mock_client(base);
+        let pending = pending_for(&client);
+        let tokens = client.poll_token_once(&pending).unwrap();
+        assert_eq!(tokens.access_token, "tok");
+        assert_eq!(tokens.refresh_token.as_deref(), Some("rt"));
+        assert!(tokens.expires_at.is_some());
+    }
+
+    #[test]
+    fn poll_token_once_empty_access_token_is_an_error() {
+        let base = forge_test_support::mock_http(vec![(200, r#"{"access_token":""}"#, vec![])]);
+        let client = mock_client(base);
+        let pending = pending_for(&client);
+        let err = client.poll_token_once(&pending).unwrap_err();
+        assert!(matches!(err, XaiOauthError::Token(msg) if msg.contains("empty access_token")));
+    }
+
+    #[test]
+    fn poll_token_once_maps_known_oauth_error_codes() {
+        for (body, expected) in [
+            (
+                r#"{"error":"authorization_pending"}"#,
+                "authorization pending",
+            ),
+            (
+                r#"{"error":"slow_down"}"#,
+                "slow down (increase poll interval)",
+            ),
+            (r#"{"error":"expired_token"}"#, "device code expired"),
+            (r#"{"error":"expired"}"#, "device code expired"),
+            (r#"{"error":"access_denied"}"#, "access denied"),
+        ] {
+            let base = forge_test_support::mock_http(vec![(400, body, vec![])]);
+            let client = mock_client(base);
+            let pending = pending_for(&client);
+            let err = client.poll_token_once(&pending).unwrap_err();
+            assert_eq!(err.to_string(), expected, "body={body}");
+        }
+    }
+
+    #[test]
+    fn poll_token_once_maps_unrecognized_oauth_error_with_description() {
+        let base = forge_test_support::mock_http(vec![(
+            400,
+            r#"{"error":"invalid_grant","error_description":"device code not found"}"#,
+            vec![],
+        )]);
+        let client = mock_client(base);
+        let pending = pending_for(&client);
+        let err = client.poll_token_once(&pending).unwrap_err();
+        assert_eq!(err.to_string(), "OAuth error: device code not found");
+    }
+
+    #[test]
+    fn poll_token_once_non_oauth_http_error_is_a_token_error() {
+        let base = forge_test_support::mock_http(vec![(500, "upstream on fire", vec![])]);
+        let client = mock_client(base);
+        let pending = pending_for(&client);
+        let err = client.poll_token_once(&pending).unwrap_err();
+        assert!(matches!(err, XaiOauthError::Token(msg) if msg.contains("HTTP 500")));
+    }
+
+    #[test]
+    fn refresh_access_token_success_keeps_old_refresh_token_when_omitted() {
+        let base = forge_test_support::mock_http(vec![(
+            200,
+            r#"{"access_token":"new-access","expires_in":120}"#,
+            vec![],
+        )]);
+        let client = mock_client(base);
+        let tokens = client.refresh_access_token("old-refresh").unwrap();
+        assert_eq!(tokens.access_token, "new-access");
+        assert_eq!(tokens.refresh_token.as_deref(), Some("old-refresh"));
+        assert!(tokens.expires_at.is_some());
+    }
+
+    #[test]
+    fn refresh_access_token_prefers_new_refresh_token_when_present() {
+        let base = forge_test_support::mock_http(vec![(
+            200,
+            r#"{"access_token":"new-access","refresh_token":"new-refresh"}"#,
+            vec![],
+        )]);
+        let client = mock_client(base);
+        let tokens = client.refresh_access_token("old-refresh").unwrap();
+        assert_eq!(tokens.refresh_token.as_deref(), Some("new-refresh"));
+    }
+
+    #[test]
+    fn refresh_access_token_error_with_oauth_body() {
+        let base = forge_test_support::mock_http(vec![(
+            400,
+            r#"{"error":"invalid_grant","error_description":"refresh token revoked"}"#,
+            vec![],
+        )]);
+        let client = mock_client(base);
+        let err = client.refresh_access_token("old-refresh").unwrap_err();
+        assert_eq!(err.to_string(), "OAuth error: refresh token revoked");
+    }
+
+    #[test]
+    fn refresh_access_token_error_without_oauth_body_is_a_token_error() {
+        let base = forge_test_support::mock_http(vec![(503, "maintenance", vec![])]);
+        let client = mock_client(base);
+        let err = client.refresh_access_token("old-refresh").unwrap_err();
+        assert!(matches!(err, XaiOauthError::Token(msg) if msg.contains("HTTP 503")));
+    }
+
+    #[test]
+    fn refresh_access_token_empty_access_token_is_an_error() {
+        let base = forge_test_support::mock_http(vec![(200, r#"{"access_token":""}"#, vec![])]);
+        let client = mock_client(base);
+        let err = client.refresh_access_token("old-refresh").unwrap_err();
+        assert!(
+            matches!(err, XaiOauthError::Token(msg) if msg.contains("empty access_token on refresh"))
+        );
+    }
+
+    #[test]
+    fn poll_until_tokens_retries_through_authorization_pending() {
+        // SlowDown's own error mapping is covered by
+        // poll_token_once_maps_known_oauth_error_codes; not exercised here too,
+        // since poll_until_tokens adds a hardcoded 5s backoff on that leg that
+        // would make this test needlessly slow for no extra coverage.
+        let base = forge_test_support::mock_http(vec![
+            (400, r#"{"error":"authorization_pending"}"#, vec![]),
+            (200, r#"{"access_token":"tok"}"#, vec![]),
+        ]);
+        let client = mock_client(base);
+        let pending = pending_for(&client);
+        let tokens = client
+            .poll_until_tokens(&pending, std::time::Duration::from_secs(30))
+            .unwrap();
+        assert_eq!(tokens.access_token, "tok");
+    }
+
+    #[test]
+    fn poll_until_tokens_returns_expired_once_the_deadline_has_passed() {
+        let client = mock_client("http://127.0.0.1:1".into()); // never reached
+        let pending = pending_for(&client);
+        let err = client
+            .poll_until_tokens(&pending, std::time::Duration::from_millis(0))
+            .unwrap_err();
+        assert!(matches!(err, XaiOauthError::Expired));
+    }
+
     /// Live smoke against auth.x.ai (skipped if FORGE_SKIP_NETWORK=1).
     #[test]
     fn live_device_code_start() {
