@@ -493,36 +493,36 @@ struct FooterLimitsCache {
 }
 
 pub struct TuiApp {
-    pub session: AgentSession,
-    pub input: InputModel,
-    pub overlay: Option<Overlay>,
-    pub should_quit: bool,
-    pub busy: bool,
-    pub status_message: String,
-    pub runtime: TuiRuntimeConfig,
-    pub last_exit: ExitCode,
-    pub connect_registry: ConnectRegistry,
-    pub connect_store: CredentialStore,
-    pub connect_profile: Option<String>,
+    pub(crate) session: AgentSession,
+    input: InputModel,
+    pub(crate) overlay: Option<Overlay>,
+    should_quit: bool,
+    busy: bool,
+    pub(crate) status_message: String,
+    pub(crate) runtime: TuiRuntimeConfig,
+    last_exit: ExitCode,
+    connect_registry: ConnectRegistry,
+    connect_store: CredentialStore,
+    connect_profile: Option<String>,
     /// Manual disconnect latch: prevents auto-restore until the user signs in again.
-    pub auth_suspended: bool,
+    auth_suspended: bool,
     /// In-flight xAI device-code OAuth (polled on the event loop tick).
-    pub oauth_pending: Option<OauthPending>,
+    oauth_pending: Option<OauthPending>,
     /// Last time we polled the token endpoint (respect server `interval`).
     oauth_last_poll: Option<std::time::Instant>,
     /// Phase 7 — submitted command history (Up/Down when no overlay).
-    pub history: InputHistory,
+    history: InputHistory,
     /// Phase 8 autocomplete: selection within filtered `/` suggestions.
-    pub slash_suggest_idx: usize,
+    slash_suggest_idx: usize,
     /// Multi-line notices (e.g. /connect list) shown above the input.
-    pub notices: Vec<String>,
+    pub(crate) notices: Vec<String>,
     notices_until: Option<Instant>,
     /// Phase 10 / TUI-08 — always-visible feedback strip model.
-    pub feedback: FeedbackModel,
+    feedback: FeedbackModel,
     /// Phase 10 / TUI-08 — durable UI error/info banners in chat.
-    pub ui_banners: Vec<ChatItem>,
+    ui_banners: Vec<ChatItem>,
     /// Phase 10 / TUI-10 — progressive busy phase for chrome.
-    pub busy_phase: BusyPhase,
+    busy_phase: BusyPhase,
     /// User prompt queued on Enter; drained by the event loop so the YOU bubble paints first.
     pending_prompt: Option<String>,
     /// Resume the current agent loop after an interactive turn-limit checkpoint.
@@ -551,9 +551,9 @@ pub struct TuiApp {
     /// Duration of the thinking phase once it ends (used for persistence/telemetry).
     thought_secs: Option<f64>,
     /// Optional web_search label for chrome (`mock` / `off` / provider id).
-    pub web_search_label: Option<String>,
+    web_search_label: Option<String>,
     /// Phase 10 / TUI-10 — activity ring buffer.
-    pub activity: ActivityFeed,
+    activity: ActivityFeed,
     /// Reasoning effort sent to model providers (`auto` omits the parameter).
     reasoning_effort: ReasoningEffort,
     /// Expand last tool detail (Ctrl+O).
@@ -561,14 +561,14 @@ pub struct TuiApp {
     /// V3.1 contextual workspace navigation.
     workspace_navigation: WorkspaceNavigation,
     /// Read-only source viewer state for the File workspace view.
-    pub source_viewer: SourceViewer,
+    pub(crate) source_viewer: SourceViewer,
     file_watcher: Option<RecommendedWatcher>,
     file_change_rx: Receiver<FileChangeEvent>,
     file_change_tx: Sender<FileChangeEvent>,
-    pub bottom_panel: BottomPanelState,
-    pub run: RunStateModel,
-    pub files_visible: bool,
-    pub file_explorer: FileExplorer,
+    bottom_panel: BottomPanelState,
+    run: RunStateModel,
+    pub(crate) files_visible: bool,
+    pub(crate) file_explorer: FileExplorer,
     explorer_dialog: Option<ExplorerDialog>,
     /// Authoritative keyboard ownership. Legacy component `focused` flags are
     /// synchronised from this state for rendering only.
