@@ -454,6 +454,7 @@ mod tests {
             &ToolOutput {
                 content: "ok".into(),
                 is_error: false,
+                exit_code: None,
             },
         )
         .await
@@ -499,6 +500,7 @@ mod tests {
                 &ToolOutput {
                     content: "contents".into(),
                     is_error: false,
+                    exit_code: None,
                 },
             )
             .await

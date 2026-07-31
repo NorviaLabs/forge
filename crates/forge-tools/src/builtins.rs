@@ -58,6 +58,7 @@ impl Tool for ReadFileTool {
         Ok(ToolOutput {
             content,
             is_error: false,
+            exit_code: None,
         })
     }
 }
@@ -173,6 +174,7 @@ impl Tool for WriteFileTool {
         Ok(ToolOutput {
             content,
             is_error: false,
+            exit_code: None,
         })
     }
 }
@@ -250,6 +252,7 @@ impl Tool for BashTool {
         Ok(ToolOutput {
             content,
             is_error: !out.status.success(),
+            exit_code: out.status.code(),
         })
     }
 }
@@ -1115,6 +1118,7 @@ impl Tool for GitTool {
         Ok(ToolOutput {
             content,
             is_error: !out.status.success(),
+            exit_code: out.status.code(),
         })
     }
 }
