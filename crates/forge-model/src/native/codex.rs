@@ -9,7 +9,16 @@ use uuid::Uuid;
 use super::NativeModelClient;
 use crate::{ModelError, ModelRequest, StreamEventTx};
 
-const CODEX_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
+pub const DEFAULT_BASE_URL: &str = "https://chatgpt.com/backend-api";
+
+fn codex_responses_url(client: &NativeModelClient) -> String {
+    format!(
+        "{}/codex/responses",
+        client
+            .resolved_base_url(&["FORGE_CODEX_API_BASE"], DEFAULT_BASE_URL)
+            .trim_end_matches('/')
+    )
+}
 
 pub(super) async fn complete(
     client: &NativeModelClient,
@@ -37,7 +46,7 @@ pub(super) async fn complete(
     let request_id = Uuid::new_v4().to_string();
     let response = client
         .http
-        .post(CODEX_URL)
+        .post(codex_responses_url(client))
         .bearer_auth(access_token)
         .header("chatgpt-account-id", account_id)
         .header("originator", "forge")
@@ -548,5 +557,62 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("response.failed"));
+    }
+
+    #[tokio::test]
+    async fn completes_codex_sse_against_configured_base_url() {
+        use crate::ModelClient;
+        use forge_test_support::mock_http;
+
+        let sse = concat!(
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":2}}}\n\n",
+        );
+        let base = mock_http(vec![(
+            200,
+            sse,
+            vec![("content-type", "text/event-stream")],
+        )]);
+        let mut config = Config::default();
+        config.model.base_url = Some(base);
+        let client = NativeModelClient::from_config(&config).unwrap();
+        client.apply_provider_env(&[
+            ("FORGE_CODEX_ACCESS_TOKEN".into(), "token".into()),
+            ("FORGE_CODEX_ACCOUNT_ID".into(), "account-123".into()),
+        ]);
+        let request = ModelRequest {
+            model: "openai-codex/gpt-test".into(),
+            messages: vec![Message::new(MessageRole::User, "hello")],
+            tools: vec![],
+            reasoning_effort: None,
+            prompt_cache: true,
+        };
+        let response = client.complete(request).await.unwrap();
+        assert_eq!(response.text, "hello");
+        assert_eq!(response.usage.unwrap().completion_tokens, 2);
+    }
+
+    #[tokio::test]
+    async fn codex_auth_failure_surfaces_provider_auth_error() {
+        use crate::ModelClient;
+        use forge_test_support::mock_http;
+
+        let base = mock_http(vec![(401, "unauthorized", vec![])]);
+        let mut config = Config::default();
+        config.model.base_url = Some(base);
+        let client = NativeModelClient::from_config(&config).unwrap();
+        client.apply_provider_env(&[
+            ("FORGE_CODEX_ACCESS_TOKEN".into(), "token".into()),
+            ("FORGE_CODEX_ACCOUNT_ID".into(), "account-123".into()),
+        ]);
+        let request = ModelRequest {
+            model: "openai-codex/gpt-test".into(),
+            messages: vec![Message::new(MessageRole::User, "hello")],
+            tools: vec![],
+            reasoning_effort: None,
+            prompt_cache: true,
+        };
+        let err = client.complete(request).await.unwrap_err();
+        assert!(err.is_auth_failure());
     }
 }
