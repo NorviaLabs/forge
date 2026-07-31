@@ -280,7 +280,7 @@ fn recent_resume_sessions_lists_previous_valid_journals() {
 fn status_model_from_app_fields() {
     // layout + status integration smoke
     let m = StatusModel {
-        status: forge_types::SessionStatus::Running,
+        status: forge_types::TaskLifecycle::Ready,
         session_short: "abc".into(),
         model: "m".into(),
         provider: "mock".into(),
@@ -299,7 +299,6 @@ fn status_model_from_app_fields() {
         dirty: false,
         resource: None,
         activity: None,
-        turn_cancelled: false,
         progress_description: None,
         failure_category: None,
         waiting_detail: None,
@@ -329,6 +328,12 @@ async fn header_status_follows_session_lifecycle() {
     assert_eq!(ready.turn_lifecycle(), TurnLifecycle::Ready);
     assert!(ready.status_label().0.contains("Ready"));
 
+    // A real task must actually be started for the authoritative lifecycle
+    // to read Working — `busy` alone is UI activity detail, not lifecycle.
+    app.session
+        .append_user_message("do something")
+        .await
+        .unwrap();
     app.busy = true;
     app.busy_phase = BusyPhase::Tool {
         name: "read_file".into(),
@@ -344,32 +349,31 @@ async fn header_status_follows_session_lifecycle() {
 
     app.busy = false;
     app.busy_phase = BusyPhase::Idle;
-    app.session.status = forge_types::SessionStatus::Completed;
+    app.session.active_task.lifecycle = forge_types::TaskLifecycle::Completed;
     assert_eq!(
         app.refresh_status_model().turn_lifecycle(),
         TurnLifecycle::Completed
     );
 
-    app.session.status = forge_types::SessionStatus::Failed;
+    app.session.active_task.lifecycle = forge_types::TaskLifecycle::Failed;
     assert_eq!(
         app.refresh_status_model().turn_lifecycle(),
         TurnLifecycle::Failed
     );
 
-    app.session.status = forge_types::SessionStatus::Cancelled;
+    app.session.active_task.lifecycle = forge_types::TaskLifecycle::Cancelled;
     assert_eq!(
         app.refresh_status_model().turn_lifecycle(),
         TurnLifecycle::Cancelled
     );
 
-    app.session.status = forge_types::SessionStatus::Interrupted;
+    app.session.active_task.lifecycle = forge_types::TaskLifecycle::Interrupted;
     assert_eq!(
         app.refresh_status_model().turn_lifecycle(),
         TurnLifecycle::Interrupted
     );
 
-    app.session.status = forge_types::SessionStatus::AwaitingHitl;
-    app.session.pending_hitl = Some(direct_hitl_payload("h", "x.txt"));
+    set_pending_hitl(&mut app, direct_hitl_payload("h", "x.txt"));
     let waiting = app.refresh_status_model();
     assert_eq!(waiting.turn_lifecycle(), TurnLifecycle::Waiting);
     assert!(waiting.status_label().0.contains("Approval required"));
@@ -389,7 +393,10 @@ async fn header_status_switches_with_selected_session() {
     )
     .await;
     completed.run_user_message("a").await.unwrap();
-    assert_eq!(completed.status, forge_types::SessionStatus::Completed);
+    assert_eq!(
+        completed.active_task.lifecycle,
+        forge_types::TaskLifecycle::Completed
+    );
     let id_a = completed.session_id;
 
     let running =
@@ -418,7 +425,10 @@ async fn header_status_switches_with_selected_session() {
         .contains("Completed"));
 
     app.session.resume_session(id_b).await.unwrap();
-    assert_eq!(app.session.status, forge_types::SessionStatus::Interrupted);
+    assert_eq!(
+        app.session.active_task.lifecycle,
+        forge_types::TaskLifecycle::Interrupted
+    );
     assert!(app
         .refresh_status_model()
         .status_label()
@@ -426,7 +436,10 @@ async fn header_status_switches_with_selected_session() {
         .contains("Interrupted"));
 
     app.session.resume_session(id_a).await.unwrap();
-    assert_eq!(app.session.status, forge_types::SessionStatus::Completed);
+    assert_eq!(
+        app.session.active_task.lifecycle,
+        forge_types::TaskLifecycle::Completed
+    );
     assert!(app
         .refresh_status_model()
         .status_label()

@@ -128,11 +128,8 @@ impl TuiApp {
         } else {
             id
         };
-        let turn_cancelled = !self.busy
-            && (self.last_exit == ExitCode::Canceled
-                || self.session.status == forge_types::SessionStatus::Cancelled);
         StatusModel {
-            status: self.session.status,
+            status: self.session.active_task.lifecycle,
             session_short: short,
             model: self.runtime.model_label.clone(),
             provider: self.runtime.provider.clone(),
@@ -152,7 +149,6 @@ impl TuiApp {
             resource: self.workspace_resource_label(),
             // Workspace secondary metadata only — never overall task lifecycle.
             activity: self.workspace_activity_label(),
-            turn_cancelled,
             progress_description: self.header_progress_description(),
             failure_category: self.header_failure_category(),
             waiting_detail: self.header_waiting_detail(),
@@ -177,8 +173,8 @@ impl TuiApp {
     }
 
     fn header_waiting_detail(&self) -> Option<String> {
-        if self.session.pending_hitl.is_some()
-            || self.session.status == forge_types::SessionStatus::AwaitingHitl
+        if self.session.pending_hitl().is_some()
+            || self.session.active_task.lifecycle == forge_types::TaskLifecycle::Waiting
         {
             return Some("Approval required".into());
         }
@@ -188,8 +184,17 @@ impl TuiApp {
         None
     }
 
+    /// Structured failure category for the header. Prefers the in-memory
+    /// `turn_failed`/`validation_exhausted` event (present for every failure
+    /// in the live process — `finalize_turn_failure` always pushes one).
+    ///
+    /// `TurnEvent`s are not journaled, so they're gone after `/resume`; the
+    /// content-marker fallback below is the only signal that currently
+    /// survives a resume. Removing it is tracked as a follow-up for the
+    /// persistence phase (extending the durable status event to carry the
+    /// failure category), not dropped silently.
     fn header_failure_category(&self) -> Option<String> {
-        if self.session.status != forge_types::SessionStatus::Failed {
+        if self.session.active_task.lifecycle != forge_types::TaskLifecycle::Failed {
             return None;
         }
         // Prefer the latest structured turn_failed event category.
@@ -272,7 +277,7 @@ impl TuiApp {
 
     pub(super) fn activity_summary(&self) -> Option<ActivitySummaryModel> {
         // Approval is represented by the blocking overlay, not a background summary.
-        if self.overlay.is_some() || self.session.pending_hitl.is_some() {
+        if self.overlay.is_some() || self.session.pending_hitl().is_some() {
             return None;
         }
 
