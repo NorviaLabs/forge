@@ -90,7 +90,7 @@ async fn characterization_run_completion_preserves_bottom_panel_focus() {
         .await
         .unwrap();
     assert_eq!(app.focus.block, FocusBlock::BottomPanel);
-    assert!(app.pending_validation);
+    assert!(app.run_exec.pending_validation);
 
     app.drain_pending_validation(None).await.unwrap();
     for _ in 0..50 {

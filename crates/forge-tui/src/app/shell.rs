@@ -111,7 +111,7 @@ async fn run_loop(
             app.drain_pending_external_editor(Some(terminal)).await?;
             continue;
         }
-        if app.pending_validation {
+        if app.run_exec.pending_validation {
             app.drain_pending_validation(Some(terminal)).await?;
             continue;
         }

@@ -525,7 +525,6 @@ pub struct TuiApp {
     pending_context_reset: bool,
     /// External-editor request queued for the event loop (terminal suspend/resume).
     pending_external_editor: bool,
-    pending_validation: bool,
     /// Active-file context attachment for the next user message.
     pending_attachment: Option<crate::file_context::FileAttachment>,
     /// Additional user messages waiting to run after the current turn (FIFO).
@@ -559,6 +558,7 @@ pub struct TuiApp {
     file_change_tx: Sender<FileChangeEvent>,
     bottom_panel: BottomPanelState,
     run: RunStateModel,
+    run_exec: run::RunExecution,
     pub(crate) files_visible: bool,
     pub(crate) file_explorer: FileExplorer,
     explorer_dialog: Option<ExplorerDialog>,
@@ -603,8 +603,6 @@ pub struct TuiApp {
     frame_generation: u64,
     pending_double_click: Option<PendingDoubleClick>,
     diff_snapshot: DiffSnapshot,
-    run_rx: Option<std::sync::mpsc::Receiver<RunEvent>>,
-    run_abort: Option<tokio::task::JoinHandle<()>>,
 }
 
 #[derive(Debug, Clone)]
