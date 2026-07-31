@@ -421,6 +421,14 @@ mod tests {
 
     #[test]
     fn codex_cost_report_requires_connection() {
+        use crate::test_env::EnvGuard;
+
+        const ENV: &[&str] = &[
+            crate::openai_codex::API_BASE_ENV,
+            crate::openai_codex::ACCESS_TOKEN_ENV,
+            crate::openai_codex::ACCOUNT_ID_ENV,
+        ];
+        let _guard = EnvGuard::new(ENV);
         let dir = tempfile::tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
         let err = codex_cost_report(&store).unwrap_err();

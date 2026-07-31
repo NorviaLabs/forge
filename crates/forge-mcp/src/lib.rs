@@ -382,6 +382,10 @@ done
         assert_eq!(s, "demo");
         assert_eq!(t, "echo");
         assert!(parse_mcp_tool_name("not-mcp").is_none());
+        assert!(parse_mcp_tool_name("mcp:server-only").is_none());
+        let (s, t) = parse_mcp_tool_name("mcp:demo:tool:with:colons").unwrap();
+        assert_eq!(s, "demo");
+        assert_eq!(t, "tool:with:colons");
     }
 
     #[tokio::test]
