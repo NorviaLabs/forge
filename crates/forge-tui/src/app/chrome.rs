@@ -10,10 +10,8 @@
 //! (`clear_error_chrome`, `apply_connection_chrome`, `session_chrome_lines`), and
 //! to avoid confusion with the crate-level `activity` module.
 //!
-//! Methods are moved verbatim. The `FooterLimits`, `FooterLimitsCache` and
-//! `ActivitySummaryModel` types stay in `mod.rs`: unlike `ApprovalIdentity` in
-//! `approvals.rs`, they are also used by free functions and `TuiApp` fields
-//! there, so they are not exclusively this module's concern.
+//! Methods and chrome-related free functions are moved verbatim. Types such as
+//! `FooterLimits` and `ActivitySummaryModel` live in `types.inc.rs`.
 
 use super::*;
 
@@ -476,6 +474,153 @@ impl TuiApp {
         }
 
         cached_limits.unwrap_or_default()
+    }
+}
+
+// Free functions moved from `app/mod.rs` per #19.
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResumeSession {
+    pub(crate) id: uuid::Uuid,
+    pub(crate) modified: SystemTime,
+}
+
+pub(crate) fn recent_resume_sessions(
+    dir: &std::path::Path,
+    current: uuid::Uuid,
+    limit: usize,
+) -> io::Result<Vec<ResumeSession>> {
+    let mut sessions = Vec::new();
+    if !dir.is_dir() {
+        return Ok(sessions);
+    }
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("db") {
+            continue;
+        }
+        let Some(id) = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .and_then(|value| uuid::Uuid::parse_str(value).ok())
+        else {
+            continue;
+        };
+        if id == current {
+            continue;
+        }
+        let modified = entry
+            .metadata()?
+            .modified()
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        sessions.push(ResumeSession { id, modified });
+    }
+    sessions.sort_by_key(|session| std::cmp::Reverse(session.modified));
+    sessions.truncate(limit);
+    Ok(sessions)
+}
+pub(crate) fn failure_category_label(category: &str) -> String {
+    match category {
+        "validation_exhausted" => "Tool retries exhausted".into(),
+        "no_final_answer" => "Turn incomplete".into(),
+        "max_turns" => "Step limit reached".into(),
+        other => {
+            // Keep only short snake_case categories; never raw payloads.
+            let cleaned = other.replace('_', " ");
+            if cleaned.chars().count() <= 28
+                && cleaned
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == ' ')
+            {
+                let mut chars = cleaned.chars();
+                match chars.next() {
+                    Some(c) => format!("{}{}", c.to_uppercase(), chars.as_str()),
+                    None => "Failed".into(),
+                }
+            } else {
+                "Failed".into()
+            }
+        }
+    }
+}
+
+pub(crate) fn format_exit_token_usage(report: &forge_core::TokenUsageReport) -> String {
+    let api = &report.api;
+    format!(
+        "Token usage: total={} input={} (+ {} cached) output={} (reasoning {})",
+        format_with_commas(api.total_api_tokens()),
+        format_with_commas(api.prompt_tokens),
+        format_with_commas(api.prompt_cache_hits),
+        format_with_commas(api.completion_tokens),
+        format_with_commas(api.thinking_tokens_est),
+    )
+}
+
+pub(crate) fn format_with_commas(value: u64) -> String {
+    let digits = value.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, ch) in digits.chars().rev().enumerate() {
+        if index > 0 && index % 3 == 0 {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out.chars().rev().collect()
+}
+pub(crate) fn footer_usage_summary_with_cost(
+    report: &forge_core::TokenUsageReport,
+    cost: Option<forge_connect::CatalogCost>,
+) -> String {
+    let cost = cost
+        .filter(|_| report.api.prompt_tokens > 0 || report.api.completion_tokens > 0)
+        .map(|cost| {
+            let input = report.api.prompt_tokens as f64 * cost.input / 1_000_000.0;
+            let output = report.api.completion_tokens as f64 * cost.output / 1_000_000.0;
+            format!(" · ${:.4}", input + output)
+        })
+        .unwrap_or_default();
+    format!(
+        "in {} · out {} · total {}{}",
+        format_with_commas(report.api.prompt_tokens),
+        format_with_commas(report.api.completion_tokens),
+        format_with_commas(report.api.total_api_tokens()),
+        cost,
+    )
+}
+
+pub(super) fn footer_limits_from_report(lines: &[String]) -> FooterLimits {
+    FooterLimits {
+        usage: lines
+            .iter()
+            .find(|line| line.starts_with("Session limit:"))
+            .cloned()
+            .unwrap_or_default(),
+        weekly_limit: lines
+            .iter()
+            .find(|line| line.starts_with("Weekly limit:"))
+            .cloned()
+            .unwrap_or_default(),
+        credits: lines
+            .iter()
+            .find(|line| line.starts_with("Credits:") || line.starts_with("Credit balance:"))
+            .cloned()
+            .unwrap_or_default(),
+    }
+}
+
+#[allow(dead_code)]
+pub(super) fn footer_usage_summary(
+    report: &forge_core::TokenUsageReport,
+    cost: Option<forge_connect::CatalogCost>,
+    limits: &FooterLimits,
+) -> crate::widgets::FooterModel {
+    crate::widgets::FooterModel {
+        usage: limits.usage.clone(),
+        weekly_limit: limits.weekly_limit.clone(),
+        credits: limits.credits.clone(),
+        usage_summary: footer_usage_summary_with_cost(report, cost),
+        ..Default::default()
     }
 }
 
