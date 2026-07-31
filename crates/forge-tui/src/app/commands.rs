@@ -94,9 +94,6 @@ impl TuiApp {
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(SemanticCommand::Quit)
             }
-            KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) && !self.busy => {
-                Some(SemanticCommand::OpenGlobalCommandPalette)
-            }
             KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(SemanticCommand::ToggleToolDetails)
             }
@@ -392,9 +389,6 @@ impl TuiApp {
                     FeedbackSeverity::Info,
                     "Help · press Enter to get started or Esc to dismiss",
                 );
-            }
-            SemanticCommand::OpenGlobalCommandPalette => {
-                self.overlay = Some(Overlay::slash_open(""));
             }
             SemanticCommand::ActivateActivitySummary => self.activate_activity_summary(),
             SemanticCommand::SelectEntry(path) => {
@@ -1005,22 +999,6 @@ mod tests {
         );
         assert_eq!(
             app.semantic_command_for_global_key(key(KeyCode::Char('c'), NONE)),
-            None
-        );
-    }
-
-    #[tokio::test]
-    async fn command_palette_is_suppressed_while_busy() {
-        let (_d, mut app) = app().await;
-        assert_eq!(
-            app.semantic_command_for_global_key(key(KeyCode::Char('k'), CTRL)),
-            Some(SemanticCommand::OpenGlobalCommandPalette)
-        );
-        // Opening the palette mid-turn would race the running turn, so the
-        // binding goes dead while busy rather than queueing.
-        app.busy = true;
-        assert_eq!(
-            app.semantic_command_for_global_key(key(KeyCode::Char('k'), CTRL)),
             None
         );
     }
