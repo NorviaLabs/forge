@@ -1477,6 +1477,11 @@ fn tool_argument<'a>(call: Option<&'a ToolCall>, name: &str) -> Option<&'a str> 
 }
 
 fn visible_result_count(detail: &str) -> usize {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(detail) {
+        if let Some(hits) = value.get("hits").and_then(|hits| hits.as_array()) {
+            return hits.len();
+        }
+    }
     detail
         .lines()
         .filter(|line| {

@@ -202,6 +202,12 @@ impl TuiApp {
                     self.open_file_viewer(&path);
                 }
             }
+            OverlayAction::QuickOpenFile { path } => {
+                self.overlay = None;
+                let abs = self.session.workspace_root().join(&path);
+                self.open_file_in_editor(&abs);
+                self.set_feedback(FeedbackSeverity::Ok, format!("opened · {path}"));
+            }
         }
         Ok(())
     }

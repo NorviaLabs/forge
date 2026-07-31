@@ -110,6 +110,9 @@ impl TuiApp {
                 Some(SemanticCommand::CycleInspectorTab { forward: true })
             }
             KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(SemanticCommand::OpenQuickOpen)
+            }
+            KeyCode::Char('`') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(SemanticCommand::ToggleBottomPanel)
             }
             KeyCode::F(1) if self.overlay.is_none() => Some(SemanticCommand::OpenHelp),
@@ -453,6 +456,7 @@ impl TuiApp {
                 };
             }
             SemanticCommand::ToggleBottomPanel => self.toggle_bottom_panel(),
+            SemanticCommand::OpenQuickOpen => self.open_quick_open(),
             SemanticCommand::CycleBottomPanelTab { forward } => {
                 if forward {
                     self.bottom_panel.next_tab();
@@ -1007,6 +1011,10 @@ mod tests {
             ),
             (
                 key(KeyCode::Char('p'), CTRL),
+                SemanticCommand::OpenQuickOpen,
+            ),
+            (
+                key(KeyCode::Char('`'), CTRL),
                 SemanticCommand::ToggleBottomPanel,
             ),
         ];

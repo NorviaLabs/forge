@@ -287,6 +287,7 @@ enum SemanticCommand {
         forward: bool,
     },
     ToggleBottomPanel,
+    OpenQuickOpen,
     CycleBottomPanelTab {
         forward: bool,
     },
@@ -601,6 +602,8 @@ pub struct TuiApp {
     frame_generation: u64,
     pending_double_click: Option<PendingDoubleClick>,
     diff_snapshot: DiffSnapshot,
+    workspace_index: Option<Arc<forge_search::WorkspaceIndex>>,
+    workspace_index_error: Option<String>,
 }
 
 #[derive(Debug, Clone)]

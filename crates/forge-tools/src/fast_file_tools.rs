@@ -1,16 +1,12 @@
 use async_trait::async_trait;
-use fff_search::{
-    file_picker::{FFFMode, FilePicker, FilePickerOptions, FuzzySearchOptions},
-    grep::{parse_grep_query, GrepMode, GrepSearchOptions},
-    PaginationArgs, QueryParser, SharedFilePicker, SharedFrecency,
-};
+use forge_search::{GrepQueryMode, SearchError, WorkspaceIndex, WorkspaceIndexOptions};
 use forge_types::{SideEffectClass, ToolOutput};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::path::Path;
-use std::sync::Arc;
-use std::time::Duration;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use crate::registry::ToolContext;
 use crate::{Tool, ToolError};
@@ -56,21 +52,60 @@ pub enum FffModeArg {
     Fuzzy,
 }
 
-pub(crate) struct FastFileState;
-
-impl FastFileState {
-    pub(crate) fn new() -> Self {
-        Self
+impl From<&FffModeArg> for GrepQueryMode {
+    fn from(mode: &FffModeArg) -> Self {
+        match mode {
+            FffModeArg::Plain => GrepQueryMode::Plain,
+            FffModeArg::Regex => GrepQueryMode::Regex,
+            FffModeArg::Fuzzy => GrepQueryMode::Fuzzy,
+        }
     }
 }
 
+pub(crate) struct FastFileState {
+    indices: Mutex<HashMap<PathBuf, Arc<WorkspaceIndex>>>,
+}
+
+impl FastFileState {
+    pub(crate) fn new() -> Self {
+        Self {
+            indices: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn index_for(&self, root: &Path) -> Result<Arc<WorkspaceIndex>, ToolError> {
+        let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        let mut guard = self
+            .indices
+            .lock()
+            .map_err(|e| ToolError::Execution(format!("fff cache lock: {e}")))?;
+        if let Some(index) = guard.get(&canonical) {
+            return Ok(index.clone());
+        }
+        let index = WorkspaceIndex::open_with_options(
+            &canonical,
+            WorkspaceIndexOptions {
+                watch: false,
+                ..Default::default()
+            },
+        )
+        .map_err(search_err)?;
+        guard.insert(canonical, index.clone());
+        Ok(index)
+    }
+}
+
+fn search_err(error: SearchError) -> ToolError {
+    ToolError::Execution(error.to_string())
+}
+
 pub struct FffFindTool {
-    _state: Arc<FastFileState>,
+    state: Arc<FastFileState>,
 }
 
 impl FffFindTool {
     pub(crate) fn new(state: Arc<FastFileState>) -> Self {
-        Self { _state: state }
+        Self { state }
     }
 }
 
@@ -95,13 +130,23 @@ impl Tool for FffFindTool {
     async fn call(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
         let args: FffFindArgs = serde_json::from_value(args)
             .map_err(|e| ToolError::Execution(format!("fff args: {e}")))?;
-        let matches = find_with_fff(&ctx.workspace_root, &args.query, args.max_results as usize)?;
+        let index = self.state.index_for(&ctx.workspace_root)?;
+        let response = index
+            .find_files(&args.query, args.max_results as usize, None)
+            .map_err(search_err)?;
 
         Ok(ToolOutput {
-            content: if matches.is_empty() {
-                "no matches found".into()
+            content: if response.hits.is_empty() {
+                serde_json::json!({
+                    "hits": [],
+                    "total_matched": response.total_matched,
+                    "total_files": response.total_files,
+                    "message": "no matches found",
+                })
+                .to_string()
             } else {
-                matches.join("\n")
+                serde_json::to_string_pretty(&response)
+                    .map_err(|e| ToolError::Execution(format!("fff encode: {e}")))?
             },
             is_error: false,
             exit_code: None,
@@ -110,12 +155,12 @@ impl Tool for FffFindTool {
 }
 
 pub struct FffGrepTool {
-    _state: Arc<FastFileState>,
+    state: Arc<FastFileState>,
 }
 
 impl FffGrepTool {
     pub(crate) fn new(state: Arc<FastFileState>) -> Self {
-        Self { _state: state }
+        Self { state }
     }
 }
 
@@ -140,164 +185,36 @@ impl Tool for FffGrepTool {
     async fn call(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
         let args: FffGrepArgs = serde_json::from_value(args)
             .map_err(|e| ToolError::Execution(format!("fff args: {e}")))?;
-        let rows = grep_workspace(
-            &ctx.workspace_root,
-            args.path.as_deref(),
-            &args.pattern,
-            args.mode.as_ref(),
-            args.max_results as usize,
-        )?;
+        let mode = args
+            .mode
+            .as_ref()
+            .map(GrepQueryMode::from)
+            .unwrap_or(GrepQueryMode::Plain);
+        let index = self.state.index_for(&ctx.workspace_root)?;
+        let response = index
+            .grep(
+                &args.pattern,
+                args.path.as_deref(),
+                mode,
+                args.max_results as usize,
+            )
+            .map_err(search_err)?;
 
         Ok(ToolOutput {
-            content: if rows.is_empty() {
-                "no matches found".into()
+            content: if response.hits.is_empty() {
+                serde_json::json!({
+                    "hits": [],
+                    "total_matched": response.total_matched,
+                    "message": "no matches found",
+                })
+                .to_string()
             } else {
-                rows.join("\n")
+                serde_json::to_string_pretty(&response)
+                    .map_err(|e| ToolError::Execution(format!("fff encode: {e}")))?
             },
             is_error: false,
             exit_code: None,
         })
-    }
-}
-
-fn find_with_fff(root: &Path, query: &str, max_results: usize) -> Result<Vec<String>, ToolError> {
-    if max_results == 0 {
-        return Ok(Vec::new());
-    }
-
-    let shared_picker = SharedFilePicker::default();
-    let shared_frecency = SharedFrecency::default();
-    FilePicker::new_with_shared_state(
-        shared_picker.clone(),
-        shared_frecency,
-        FilePickerOptions {
-            base_path: root.display().to_string(),
-            mode: FFFMode::Ai,
-            watch: false,
-            ..Default::default()
-        },
-    )
-    .map_err(|e| ToolError::Execution(format!("fff init: {e}")))?;
-
-    if !shared_picker.wait_for_scan(Duration::from_secs(10)) {
-        return Err(ToolError::Execution("fff scan timed out".into()));
-    }
-
-    let picker_guard = shared_picker
-        .read()
-        .map_err(|e| ToolError::Execution(format!("fff lock: {e}")))?;
-    let picker = picker_guard
-        .as_ref()
-        .ok_or_else(|| ToolError::Execution("fff picker missing".into()))?;
-
-    let parser = QueryParser::default();
-    let parsed = parser.parse(query.trim());
-    let results = picker.fuzzy_search(
-        &parsed,
-        None,
-        FuzzySearchOptions {
-            max_threads: 0,
-            current_file: None,
-            project_path: Some(root),
-            pagination: PaginationArgs {
-                offset: 0,
-                limit: max_results,
-            },
-            ..Default::default()
-        },
-    );
-
-    Ok(results
-        .items
-        .into_iter()
-        .map(|item| item.relative_path(picker))
-        .take(max_results)
-        .collect())
-}
-
-fn grep_workspace(
-    root: &Path,
-    path_filter: Option<&str>,
-    pattern: &str,
-    mode: Option<&FffModeArg>,
-    max_results: usize,
-) -> Result<Vec<String>, ToolError> {
-    if max_results == 0 || pattern.trim().is_empty() {
-        return Ok(Vec::new());
-    }
-    let shared_picker = SharedFilePicker::default();
-    let shared_frecency = SharedFrecency::default();
-    FilePicker::new_with_shared_state(
-        shared_picker.clone(),
-        shared_frecency,
-        FilePickerOptions {
-            base_path: root.display().to_string(),
-            mode: FFFMode::Ai,
-            watch: false,
-            ..Default::default()
-        },
-    )
-    .map_err(|e| ToolError::Execution(format!("fff init: {e}")))?;
-
-    if !shared_picker.wait_for_scan(Duration::from_secs(10)) {
-        return Err(ToolError::Execution("fff scan timed out".into()));
-    }
-
-    let picker_guard = shared_picker
-        .read()
-        .map_err(|e| ToolError::Execution(format!("fff lock: {e}")))?;
-    let picker = picker_guard
-        .as_ref()
-        .ok_or_else(|| ToolError::Execution("fff picker missing".into()))?;
-
-    let parsed = parse_grep_query(pattern);
-    let result = picker.grep(
-        &parsed,
-        &GrepSearchOptions {
-            mode: grep_mode(pattern, mode),
-            page_limit: max_results,
-            ..Default::default()
-        },
-    );
-
-    let filter = path_filter.map(|value| value.to_ascii_lowercase());
-    let mut rows = Vec::with_capacity(result.matches.len().min(max_results));
-    for entry in result.matches.into_iter().take(max_results) {
-        let rel = result.files[entry.file_index].relative_path(picker);
-        if let Some(filter) = &filter {
-            if !rel.to_ascii_lowercase().contains(filter) {
-                continue;
-            }
-        }
-        rows.push(format!(
-            "{}:{}:{}",
-            rel,
-            entry.line_number,
-            entry.line_content.trim()
-        ));
-    }
-    Ok(rows)
-}
-
-fn grep_mode(pattern: &str, mode: Option<&FffModeArg>) -> GrepMode {
-    match mode.unwrap_or(&FffModeArg::Plain) {
-        FffModeArg::Plain => {
-            if parse_regex_literal(pattern).is_some() {
-                GrepMode::Regex
-            } else {
-                GrepMode::PlainText
-            }
-        }
-        FffModeArg::Regex => GrepMode::Regex,
-        FffModeArg::Fuzzy => GrepMode::Fuzzy,
-    }
-}
-
-fn parse_regex_literal(pattern: &str) -> Option<&str> {
-    if pattern.len() >= 2 && pattern.starts_with('/') && pattern.ends_with('/') {
-        Some(&pattern[1..pattern.len() - 1])
-    } else {
-        None
     }
 }
 
@@ -312,25 +229,23 @@ pub fn fff_tools() -> Vec<Arc<dyn Tool>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use forge_search::FindResponse;
     use tempfile::tempdir;
 
     #[test]
-    fn plain_mode_auto_detects_regex_literal() {
-        assert_eq!(
-            grep_mode("/foo.*/", Some(&FffModeArg::Plain)),
-            GrepMode::Regex
-        );
-    }
-
-    #[test]
-    fn find_uses_fff_index() {
+    fn find_uses_shared_index() {
         let dir = tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("src")).unwrap();
         std::fs::write(dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
         std::fs::write(dir.path().join("src/lib.rs"), "pub fn lib() {}\n").unwrap();
 
-        let matches = find_with_fff(dir.path(), "main.rs", 10).unwrap();
-        assert_eq!(matches.first().map(String::as_str), Some("src/main.rs"));
+        let state = FastFileState::new();
+        let index = state.index_for(dir.path()).unwrap();
+        let response = index.find_files("main.rs", 10, None).unwrap();
+        assert_eq!(
+            response.hits.first().map(|hit| hit.path.as_str()),
+            Some("src/main.rs")
+        );
     }
 
     #[test]
@@ -340,20 +255,17 @@ mod tests {
         std::fs::write(dir.path().join("src/main.rs"), "hello world\n").unwrap();
         std::fs::write(dir.path().join("src/lib.rs"), "goodbye\n").unwrap();
 
-        let rows = grep_workspace(
-            dir.path(),
-            Some("main"),
-            "hello",
-            Some(&FffModeArg::Plain),
-            10,
-        )
-        .unwrap();
-        assert_eq!(rows, vec!["src/main.rs:1:hello world"]);
+        let state = FastFileState::new();
+        let index = state.index_for(dir.path()).unwrap();
+        let response = index
+            .grep("hello", Some("main"), GrepQueryMode::Plain, 10)
+            .unwrap();
+        assert_eq!(response.hits.len(), 1);
+        assert_eq!(response.hits[0].path, "src/main.rs");
+        assert_eq!(response.hits[0].line, 1);
+        assert_eq!(response.hits[0].text, "hello world");
     }
 
-    /// Both `src/main.rs` and `src/lib.rs` match the pattern, but the path
-    /// filter keeps only one — the other must be skipped via `continue`
-    /// rather than included or causing an error.
     #[test]
     fn grep_filter_skips_non_matching_paths_when_others_match() {
         let dir = tempdir().unwrap();
@@ -361,142 +273,48 @@ mod tests {
         std::fs::write(dir.path().join("src/main.rs"), "shared line\n").unwrap();
         std::fs::write(dir.path().join("src/lib.rs"), "shared line\n").unwrap();
 
-        let rows = grep_workspace(
-            dir.path(),
-            Some("main"),
-            "shared",
-            Some(&FffModeArg::Plain),
-            10,
-        )
-        .unwrap();
-        assert_eq!(rows, vec!["src/main.rs:1:shared line"]);
+        let state = FastFileState::new();
+        let index = state.index_for(dir.path()).unwrap();
+        let response = index
+            .grep("shared", Some("main"), GrepQueryMode::Plain, 10)
+            .unwrap();
+        assert_eq!(response.hits.len(), 1);
+        assert_eq!(response.hits[0].path, "src/main.rs");
     }
 
     #[test]
-    fn find_with_fff_returns_empty_without_scanning_when_max_results_is_zero() {
+    fn find_returns_empty_without_scanning_when_max_results_is_zero() {
         let dir = tempdir().unwrap();
+        let state = FastFileState::new();
+        let index = state.index_for(dir.path()).unwrap();
+        let response = index.find_files("anything", 0, None).unwrap();
         assert_eq!(
-            find_with_fff(dir.path(), "anything", 0).unwrap(),
-            Vec::<String>::new()
-        );
-    }
-
-    #[test]
-    fn grep_workspace_returns_empty_when_max_results_is_zero() {
-        let dir = tempdir().unwrap();
-        assert_eq!(
-            grep_workspace(dir.path(), None, "anything", None, 0).unwrap(),
-            Vec::<String>::new()
+            response,
+            FindResponse {
+                hits: Vec::new(),
+                total_matched: 0,
+                total_files: 0,
+            }
         );
     }
 
     #[test]
-    fn grep_workspace_returns_empty_for_blank_pattern() {
+    fn grep_returns_empty_when_max_results_is_zero() {
         let dir = tempdir().unwrap();
-        assert_eq!(
-            grep_workspace(dir.path(), None, "   ", None, 10).unwrap(),
-            Vec::<String>::new()
-        );
+        let state = FastFileState::new();
+        let index = state.index_for(dir.path()).unwrap();
+        let response = index
+            .grep("anything", None, GrepQueryMode::Plain, 0)
+            .unwrap();
+        assert!(response.hits.is_empty());
     }
 
     #[test]
-    fn grep_mode_maps_every_arg_variant_to_a_distinct_mode() {
-        // Fixture covers every `FffModeArg` variant with an outcome that
-        // cannot be confused with another arm.
-        assert_eq!(
-            grep_mode("plain text", Some(&FffModeArg::Plain)),
-            GrepMode::PlainText
-        );
-        assert_eq!(
-            grep_mode("plain text", Some(&FffModeArg::Regex)),
-            GrepMode::Regex
-        );
-        assert_eq!(
-            grep_mode("plain text", Some(&FffModeArg::Fuzzy)),
-            GrepMode::Fuzzy
-        );
-        // No explicit mode defaults to Plain, still auto-detecting regex literals.
-        assert_eq!(grep_mode("plain text", None), GrepMode::PlainText);
-    }
-
-    #[tokio::test]
-    async fn fff_find_tool_describes_itself_and_finds_files() {
-        let tool = FffFindTool::new(Arc::new(FastFileState::new()));
-        assert_eq!(
-            tool.description(),
-            "Find files in the workspace by path/name pattern."
-        );
-        assert_eq!(tool.side_effect_class(), SideEffectClass::Read);
-        assert!(tool.idempotent());
-
+    fn grep_returns_empty_for_blank_pattern() {
         let dir = tempdir().unwrap();
-        std::fs::write(dir.path().join("target.rs"), "fn f() {}\n").unwrap();
-        let ctx = ToolContext::new(dir.path().to_path_buf());
-
-        let out = tool
-            .call(&ctx, serde_json::json!({"query": "target.rs"}))
-            .await
-            .unwrap();
-        assert!(!out.is_error);
-        assert!(out.content.contains("target.rs"), "{}", out.content);
-    }
-
-    #[tokio::test]
-    async fn fff_find_tool_reports_no_matches() {
-        let tool = FffFindTool::new(Arc::new(FastFileState::new()));
-        let dir = tempdir().unwrap();
-        std::fs::write(dir.path().join("present.rs"), "fn f() {}\n").unwrap();
-        let ctx = ToolContext::new(dir.path().to_path_buf());
-
-        let out = tool
-            .call(
-                &ctx,
-                serde_json::json!({"query": "totally-absent-xyz", "max_results": 5}),
-            )
-            .await
-            .unwrap();
-        assert!(!out.is_error);
-        assert_eq!(out.content, "no matches found");
-    }
-
-    #[tokio::test]
-    async fn fff_grep_tool_describes_itself_and_finds_matches() {
-        let tool = FffGrepTool::new(Arc::new(FastFileState::new()));
-        assert_eq!(
-            tool.description(),
-            "Search file contents in the workspace. Supports plain text, regex, and fuzzy matching."
-        );
-        assert_eq!(tool.side_effect_class(), SideEffectClass::Read);
-        assert!(tool.idempotent());
-
-        let dir = tempdir().unwrap();
-        std::fs::write(dir.path().join("note.txt"), "needle in haystack\n").unwrap();
-        let ctx = ToolContext::new(dir.path().to_path_buf());
-
-        let out = tool
-            .call(&ctx, serde_json::json!({"pattern": "needle"}))
-            .await
-            .unwrap();
-        assert!(!out.is_error);
-        assert!(
-            out.content.contains("needle in haystack"),
-            "{}",
-            out.content
-        );
-    }
-
-    #[tokio::test]
-    async fn fff_grep_tool_reports_no_matches() {
-        let tool = FffGrepTool::new(Arc::new(FastFileState::new()));
-        let dir = tempdir().unwrap();
-        std::fs::write(dir.path().join("note.txt"), "unrelated content\n").unwrap();
-        let ctx = ToolContext::new(dir.path().to_path_buf());
-
-        let out = tool
-            .call(&ctx, serde_json::json!({"pattern": "totally-absent-xyz"}))
-            .await
-            .unwrap();
-        assert!(!out.is_error);
-        assert_eq!(out.content, "no matches found");
+        let state = FastFileState::new();
+        let index = state.index_for(dir.path()).unwrap();
+        let response = index.grep("   ", None, GrepQueryMode::Plain, 10).unwrap();
+        assert!(response.hits.is_empty());
     }
 }

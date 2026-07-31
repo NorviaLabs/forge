@@ -254,13 +254,13 @@ async fn ctrl_p_toggles_bottom_panel_without_touching_input() {
     );
     app.input.set_text("draft");
 
-    app.handle_key(press(KeyCode::Char('p'), KeyModifiers::CONTROL))
+    app.handle_key(press(KeyCode::Char('`'), KeyModifiers::CONTROL))
         .await
         .unwrap();
     assert!(app.bottom_panel.open);
     assert_eq!(app.input.text, "draft");
 
-    app.handle_key(press(KeyCode::Char('p'), KeyModifiers::CONTROL))
+    app.handle_key(press(KeyCode::Char('`'), KeyModifiers::CONTROL))
         .await
         .unwrap();
     assert!(!app.bottom_panel.open);

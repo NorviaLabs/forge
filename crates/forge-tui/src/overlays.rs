@@ -85,6 +85,12 @@ pub enum Overlay {
         lines: Vec<String>,
         scroll: usize,
     },
+    QuickOpen {
+        query: String,
+        selected: usize,
+        hits: Vec<QuickOpenItem>,
+        error: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -107,6 +113,12 @@ pub struct ConnectProfileItem {
 pub struct ResumeSessionItem {
     pub id: String,
     pub modified: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct QuickOpenItem {
+    pub path: String,
+    pub score: i32,
 }
 
 #[derive(Debug, Clone)]
@@ -505,6 +517,15 @@ impl Overlay {
         }
     }
 
+    pub fn quick_open() -> Self {
+        Self::QuickOpen {
+            query: String::new(),
+            selected: 0,
+            hits: Vec::new(),
+            error: None,
+        }
+    }
+
     pub fn move_sel(&mut self, delta: i32) {
         match self {
             Self::Effort {
@@ -567,6 +588,13 @@ impl Overlay {
                     return;
                 }
                 let n = items.len() as i32;
+                *selected = ((*selected as i32 + delta).rem_euclid(n)) as usize;
+            }
+            Self::QuickOpen { selected, hits, .. } => {
+                if hits.is_empty() {
+                    return;
+                }
+                let n = hits.len() as i32;
                 *selected = ((*selected as i32 + delta).rem_euclid(n)) as usize;
             }
             Self::FileViewer { scroll, lines, .. } => {
@@ -672,6 +700,9 @@ pub enum OverlayAction {
     FilePick {
         path: String,
         is_dir: bool,
+    },
+    QuickOpenFile {
+        path: String,
     },
 }
 
@@ -814,6 +845,12 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                     OverlayAction::None
                 }
             }
+            Overlay::QuickOpen { selected, hits, .. } => hits
+                .get(*selected)
+                .map(|item| OverlayAction::QuickOpenFile {
+                    path: item.path.clone(),
+                })
+                .unwrap_or(OverlayAction::None),
             Overlay::Theme {
                 selected, items, ..
             } => items
@@ -896,6 +933,18 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             }
             OverlayAction::None
         }
+        Key::Char(c) if matches!(overlay, Overlay::QuickOpen { .. }) => {
+            if let Overlay::QuickOpen {
+                query, selected, ..
+            } = overlay
+            {
+                if !c.is_control() {
+                    query.push(c);
+                    *selected = 0;
+                }
+            }
+            OverlayAction::None
+        }
         Key::Paste(ref data) if matches!(overlay, Overlay::Model { .. }) => {
             if let Overlay::Model {
                 model_input,
@@ -912,6 +961,20 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             }
             OverlayAction::None
         }
+        Key::Paste(ref data) if matches!(overlay, Overlay::QuickOpen { .. }) => {
+            if let Overlay::QuickOpen {
+                query, selected, ..
+            } = overlay
+            {
+                for c in data.chars() {
+                    if !c.is_control() {
+                        query.push(c);
+                    }
+                }
+                *selected = 0;
+            }
+            OverlayAction::None
+        }
         Key::Backspace if matches!(overlay, Overlay::Model { .. }) => {
             if let Overlay::Model {
                 model_input,
@@ -921,6 +984,16 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             {
                 model_input.pop();
                 *model_selected = 0;
+            }
+            OverlayAction::None
+        }
+        Key::Backspace if matches!(overlay, Overlay::QuickOpen { .. }) => {
+            if let Overlay::QuickOpen {
+                query, selected, ..
+            } = overlay
+            {
+                query.pop();
+                *selected = 0;
             }
             OverlayAction::None
         }
@@ -1334,7 +1407,7 @@ impl Widget for OverlayWidget<'_> {
             Overlay::Help => {
                 let r = centered_rect(64, 58, area);
                 Paragraph::new(
-                    "Forge is an AI coding agent for your terminal.\n\nStart typing and press Enter.\n\nShortcuts\n• /       Commands\n• Ctrl+B  Toggle inspector\n• Tab / Shift+Tab  Focus visible blocks\n• Ctrl+P  Toggle bottom panel\n• Alt+1-4 Open bottom-panel tabs\n• ⇧← / ⇧→  Switch tab in the active block\n• Enter/i Interact\n• Tab     Complete (Chat composer)\n• ↑↓      Navigate local list or input\n• Esc     Leave one interaction level\n• ?       Help\n\nEditor (when a file is open)\n• Ctrl+F  Search file\n• Ctrl+G  Jump to line\n• G / r   Editor navigation and refresh\n• Esc     Return to workspace\n\nForge asks before sensitive actions and automatically saves your session.\n\nPress Enter to get started.",
+                    "Forge is an AI coding agent for your terminal.\n\nStart typing and press Enter.\n\nShortcuts\n• /       Commands\n• Ctrl+B  Toggle inspector\n• Tab / Shift+Tab  Focus visible blocks\n• Ctrl+P  Quick Open files\n• Ctrl+`  Toggle bottom panel\n• Alt+1-4 Open bottom-panel tabs\n• ⇧← / ⇧→  Switch tab in the active block\n• Enter/i Interact\n• Tab     Complete (Chat composer)\n• ↑↓      Navigate local list or input\n• Esc     Leave one interaction level\n• ?       Help\n\nEditor (when a file is open)\n• Ctrl+F  Search file\n• Ctrl+G  Jump to line\n• G / r   Editor navigation and refresh\n• Esc     Return to workspace\n\nForge asks before sensitive actions and automatically saves your session.\n\nPress Enter to get started.",
                 )
                 .wrap(ratatui::widgets::Wrap { trim: true })
                 .block(
@@ -1624,6 +1697,75 @@ impl Widget for OverlayWidget<'_> {
                             .title(Span::styled(" Sign in ", theme::brand())),
                     )
                     .render(r, buf);
+            }
+            Overlay::QuickOpen {
+                query,
+                selected,
+                hits,
+                error,
+            } => {
+                let r = centered_capped_rect(area, 88, 20);
+                let visible = r.height.saturating_sub(6).max(1) as usize;
+                let start = if *selected < visible {
+                    0
+                } else if *selected + 1 > visible {
+                    (*selected).saturating_add(1).saturating_sub(visible)
+                } else {
+                    0
+                };
+                let end = (start + visible).min(hits.len());
+                let window = &hits[start..end];
+                let list_items: Vec<ListItem> = if let Some(message) = error {
+                    vec![ListItem::new(Span::styled(message, theme::warn()))]
+                } else if window.is_empty() {
+                    vec![ListItem::new(Span::styled(
+                        if query.trim().is_empty() {
+                            "Type to search files…"
+                        } else {
+                            "No matching files"
+                        },
+                        theme::muted(),
+                    ))]
+                } else {
+                    window
+                        .iter()
+                        .enumerate()
+                        .map(|(i, hit)| {
+                            let idx = start + i;
+                            let marker = if idx == *selected { "▶ " } else { "  " };
+                            let style = if idx == *selected {
+                                theme::focused_selection_style()
+                            } else {
+                                theme::text()
+                            };
+                            ListItem::new(Span::styled(format!("{marker}{}", hit.path), style))
+                        })
+                        .collect()
+                };
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Length(3), Constraint::Min(3)])
+                    .split(r);
+                Paragraph::new(format!("{query}█"))
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_style(theme::border())
+                            .style(theme::panel())
+                            .title(Span::styled(
+                                " Quick Open · ↑↓ Enter · Esc cancel ",
+                                theme::brand(),
+                            )),
+                    )
+                    .render(chunks[0], buf);
+                List::new(list_items)
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_style(theme::border())
+                            .style(theme::panel()),
+                    )
+                    .render(chunks[1], buf);
             }
             Overlay::ResumePicker { selected, items } => {
                 let r = centered_rect(70, 48, area);

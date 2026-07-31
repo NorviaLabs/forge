@@ -90,6 +90,8 @@ impl TuiApp {
             frame_generation: 0,
             pending_double_click: None,
             diff_snapshot: DiffSnapshot::default(),
+            workspace_index: None,
+            workspace_index_error: None,
             last_editor_height: 24,
         };
         app.init_file_watcher();

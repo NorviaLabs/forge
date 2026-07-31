@@ -616,7 +616,11 @@ impl TuiApp {
         if let Some(ref mut ov) = self.overlay {
             let ok = map_key(key);
             let action = handle_overlay_key(ov, ok);
+            let refresh_quick_open = matches!(self.overlay, Some(Overlay::QuickOpen { .. }));
             self.apply_overlay_action(action).await?;
+            if refresh_quick_open {
+                self.refresh_quick_open_results();
+            }
             return Ok(());
         }
 
