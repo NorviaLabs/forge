@@ -44,7 +44,7 @@ async fn connect_opencode_go_opens_api_key_overlay() {
         },
     );
     let _store_dir = tempfile::TempDir::new().unwrap();
-    app.connect_store = CredentialStore::new(_store_dir.path().join("empty-creds.toml"));
+    app.connect.store = CredentialStore::new(_store_dir.path().join("empty-creds.toml"));
     app.dispatch_line("/connect opencode_go").await.unwrap();
     match &app.overlay {
         Some(Overlay::ConnectApiKey {
@@ -75,20 +75,21 @@ async fn disconnect_clears_credentials_and_prompts_reauth() {
             theme: forge_config::Theme::default(),
         },
     );
-    app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
-    app.connect_store
+    app.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
+    app.connect
+        .store
         .set_api_key("openai", "sk-test-saved-credential")
         .unwrap();
-    app.connect_profile = Some("openai".into());
+    app.connect.profile = Some("openai".into());
     app.runtime.model_label = "openai/gpt-4.1-mini".into();
     app.session.set_active_model("openai/gpt-4.1-mini");
 
     app.dispatch_line("/disconnect").await.unwrap();
 
-    assert!(app.auth_suspended);
-    assert!(app.connect_profile.is_none());
+    assert!(app.connect.auth_suspended);
+    assert!(app.connect.profile.is_none());
     assert!(!app.is_provider_connected());
-    assert!(!app.connect_store.is_connected("openai").unwrap());
+    assert!(!app.connect.store.is_connected("openai").unwrap());
     assert!(matches!(app.overlay, Some(Overlay::ConnectPicker { .. })));
     assert!(
         app.notices.iter().any(|l| l.contains("disconnected"))
@@ -114,8 +115,9 @@ async fn connect_picker_marks_saved_credentials_as_connected() {
             theme: forge_config::Theme::default(),
         },
     );
-    app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
-    app.connect_store
+    app.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
+    app.connect
+        .store
         .set_api_key("openai", "sk-test-saved-credential")
         .unwrap();
 
@@ -149,11 +151,12 @@ async fn successful_connect_hands_off_to_model_picker() {
             theme: forge_config::Theme::default(),
         },
     );
-    app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
-    app.connect_store
+    app.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
+    app.connect
+        .store
         .set_api_key("openai", "sk-test-saved-credential")
         .unwrap();
-    app.connect_profile = Some("openai".into());
+    app.connect.profile = Some("openai".into());
     app.runtime.model_label = "openai/gpt-4.1-mini".into();
     app.session.set_active_model("openai/gpt-4.1-mini");
 
@@ -191,18 +194,20 @@ async fn model_selection_switches_to_the_matching_connected_provider() {
             theme: forge_config::Theme::default(),
         },
     );
-    app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
-    app.connect_store
+    app.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
+    app.connect
+        .store
         .set_api_key("openai", "sk-test-openai-credential")
         .unwrap();
-    app.connect_store
+    app.connect
+        .store
         .set_api_key("anthropic", "sk-test-anthropic-credential")
         .unwrap();
-    app.connect_profile = Some("openai".into());
+    app.connect.profile = Some("openai".into());
 
     app.apply_model_selection("native", "anthropic/claude-sonnet-4-5");
 
-    assert_eq!(app.connect_profile.as_deref(), Some("anthropic"));
+    assert_eq!(app.connect.profile.as_deref(), Some("anthropic"));
     assert_eq!(app.runtime.model_label, "anthropic/claude-sonnet-4-5");
 }
 
@@ -224,7 +229,7 @@ async fn invalid_api_key_error_stays_inside_key_modal() {
             theme: forge_config::Theme::default(),
         },
     );
-    app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
+    app.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
     let mut overlay = Overlay::connect_api_key("openai", "OpenAI", None, None);
     if let Overlay::ConnectApiKey { key_input, .. } = &mut overlay {
         *key_input = "bad".into();
@@ -274,7 +279,7 @@ async fn connect_xai_opens_oauth_overlay() {
             theme: forge_config::Theme::default(),
         },
     );
-    app.connect_store = CredentialStore::new(cred_dir.path().join("c.toml"));
+    app.connect.store = CredentialStore::new(cred_dir.path().join("c.toml"));
     app.dispatch_line("/connect xai").await.unwrap();
     std::env::remove_var("FORGE_CONNECT_OAUTH_STUB");
     match &app.overlay {
@@ -286,7 +291,7 @@ async fn connect_xai_opens_oauth_overlay() {
         }
         other => panic!("expected ConnectOauth overlay, got {other:?}"),
     }
-    assert!(app.oauth_pending.is_some());
+    assert!(app.connect.oauth_pending.is_some());
 }
 
 #[tokio::test]
@@ -365,8 +370,8 @@ async fn blocks_chat_when_not_connected() {
     );
     // Override credential store with empty temp file so connection check fails.
     let _store_dir = tempfile::TempDir::new().unwrap();
-    app.connect_store = CredentialStore::new(_store_dir.path().join("empty-creds.toml"));
-    app.connect_profile = None;
+    app.connect.store = CredentialStore::new(_store_dir.path().join("empty-creds.toml"));
+    app.connect.profile = None;
     app.refresh_connection_ui();
     assert!(!app.is_provider_connected());
 

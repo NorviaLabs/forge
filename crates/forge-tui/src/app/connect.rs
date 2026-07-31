@@ -7,6 +7,35 @@
 
 use super::*;
 
+/// Provider connection/auth state: known profiles, stored credentials, the
+/// active profile selection, and in-flight xAI OAuth polling. #19 phase 3 —
+/// the first extracted sub-model; grouped verbatim from six `TuiApp` fields,
+/// no behavior change.
+pub(super) struct ConnectionModel {
+    pub(super) registry: ConnectRegistry,
+    pub(super) store: CredentialStore,
+    pub(super) profile: Option<String>,
+    /// Manual disconnect latch: prevents auto-restore until the user signs in again.
+    pub(super) auth_suspended: bool,
+    /// In-flight xAI device-code OAuth (polled on the event loop tick).
+    pub(super) oauth_pending: Option<OauthPending>,
+    /// Last time we polled the token endpoint (respect server `interval`).
+    pub(super) oauth_last_poll: Option<std::time::Instant>,
+}
+
+impl ConnectionModel {
+    pub(super) fn new() -> Self {
+        Self {
+            registry: builtin_registry(),
+            store: CredentialStore::user_default(),
+            profile: None,
+            auth_suspended: false,
+            oauth_pending: None,
+            oauth_last_poll: None,
+        }
+    }
+}
+
 impl TuiApp {
     /// Mock provider is always "connected" (offline tests / CI).
     fn is_mock_provider(&self) -> bool {
@@ -17,9 +46,9 @@ impl TuiApp {
     /// Live credentials still exist for a connect profile id.
     fn credentials_live_for(&self, profile_id: &str) -> bool {
         let svc = ConnectService {
-            registry: &self.connect_registry,
-            store: &self.connect_store,
-            active_profile_id: self.connect_profile.clone(),
+            registry: &self.connect.registry,
+            store: &self.connect.store,
+            active_profile_id: self.connect.profile.clone(),
             active_model: Some(self.runtime.model_label.clone()),
         };
         svc.connected_profiles()
@@ -33,23 +62,23 @@ impl TuiApp {
         if self.is_mock_provider() {
             return true;
         }
-        match self.connect_profile.as_deref() {
+        match self.connect.profile.as_deref() {
             Some(id) => self.credentials_live_for(id),
             None => false,
         }
     }
 
-    /// Drop stale `connect_profile` if credentials were cleared out-of-band.
+    /// Drop a stale `connect.profile` if credentials were cleared out-of-band.
     fn sync_provider_connection(&mut self) {
-        if self.auth_suspended {
+        if self.connect.auth_suspended {
             return;
         }
         if self.is_mock_provider() {
             return;
         }
-        if let Some(id) = self.connect_profile.clone() {
+        if let Some(id) = self.connect.profile.clone() {
             if !self.credentials_live_for(&id) {
-                self.connect_profile = None;
+                self.connect.profile = None;
             }
         }
     }
@@ -102,9 +131,9 @@ impl TuiApp {
         let mut env_keys = Vec::new();
         {
             let svc = ConnectService {
-                registry: &self.connect_registry,
-                store: &self.connect_store,
-                active_profile_id: self.connect_profile.clone(),
+                registry: &self.connect.registry,
+                store: &self.connect.store,
+                active_profile_id: self.connect.profile.clone(),
                 active_model: Some(self.runtime.model_label.clone()),
             };
             let profiles: Vec<_> = if let Some(id) = profile_id {
@@ -122,8 +151,8 @@ impl TuiApp {
             std::env::remove_var(key);
         }
         self.session.clear_provider_env();
-        self.oauth_pending = None;
-        self.oauth_last_poll = None;
+        self.connect.oauth_pending = None;
+        self.connect.oauth_last_poll = None;
         self.pending_prompt = None;
         self.pending_hitl_decision = None;
         self.pending_context_reset = false;
@@ -140,7 +169,7 @@ impl TuiApp {
         self.tool_expanded = false;
         self.chat_follow = true;
         self.chat_scroll = 0;
-        self.connect_profile = None;
+        self.connect.profile = None;
         self.runtime.provider.clear();
         self.runtime.model_label.clear();
         self.session.set_active_model(String::new());
@@ -156,21 +185,23 @@ impl TuiApp {
                 } if text.contains("Not connected")
             )
         });
-        self.auth_suspended = true;
+        self.connect.auth_suspended = true;
 
         let cleared = if let Some(id) = profile_id {
-            self.connect_store
+            self.connect
+                .store
                 .clear(id)
                 .map_err(|e| TuiError::Other(e.to_string()))?
         } else {
-            self.connect_store
+            self.connect
+                .store
                 .clear_all()
                 .map_err(|e| TuiError::Other(e.to_string()))?
         };
         if let Some(id) = profile_id {
-            let _ = self.connect_store.clear_last_selection(Some(id));
+            let _ = self.connect.store.clear_last_selection(Some(id));
         } else {
-            let _ = self.connect_store.clear_last_selection(None);
+            let _ = self.connect.store.clear_last_selection(None);
         }
         self.refresh_connection_ui();
         let msg = if let Some(id) = profile_id {
@@ -193,16 +224,17 @@ impl TuiApp {
     /// So a successful `/connect` continues to work in later Forge sessions.
     pub(super) fn restore_saved_auth(mut self) -> Self {
         let svc = ConnectService {
-            registry: &self.connect_registry,
-            store: &self.connect_store,
+            registry: &self.connect.registry,
+            store: &self.connect.store,
             active_profile_id: None,
             active_model: None,
         };
         let mut connected = svc.connected_profiles().unwrap_or_default();
         connected.sort_by(|a, b| a.id.cmp(&b.id));
-        let saved_selection = self.connect_store.last_selection().ok().flatten();
+        let saved_selection = self.connect.store.last_selection().ok().flatten();
         if let Some(effort) = self
-            .connect_store
+            .connect
+            .store
             .last_effort()
             .ok()
             .flatten()
@@ -223,7 +255,7 @@ impl TuiApp {
             if let Ok(pairs) = svc.provider_env_for_profile(&profile.id) {
                 self.session.apply_provider_env(&pairs);
             }
-            self.connect_profile = Some(profile.id.clone());
+            self.connect.profile = Some(profile.id.clone());
             // Only switch the active model when it still looks like the forge default
             // (don't clobber an explicit --model / test runtime label).
             let cur = self.runtime.model_label.as_str();
@@ -279,22 +311,24 @@ impl TuiApp {
     }
 
     pub(super) fn persist_selection(&self) {
-        if let Some(profile_id) = self.connect_profile.as_deref() {
+        if let Some(profile_id) = self.connect.profile.as_deref() {
             let _ = self
-                .connect_store
+                .connect
+                .store
                 .set_last_selection(profile_id, &self.runtime.model_label);
         }
         let _ = self
-            .connect_store
+            .connect
+            .store
             .set_last_effort(&self.reasoning_effort.to_string());
     }
 
     pub(super) fn open_connect_picker(&mut self) {
         let connected: HashSet<String> = {
             let svc = ConnectService {
-                registry: &self.connect_registry,
-                store: &self.connect_store,
-                active_profile_id: self.connect_profile.clone(),
+                registry: &self.connect.registry,
+                store: &self.connect.store,
+                active_profile_id: self.connect.profile.clone(),
                 active_model: Some(self.runtime.model_label.clone()),
             };
             svc.connected_profiles()
@@ -304,7 +338,8 @@ impl TuiApp {
                 .collect()
         };
         let items: Vec<ConnectProfileItem> = self
-            .connect_registry
+            .connect
+            .registry
             .profiles()
             .iter()
             .map(|p| ConnectProfileItem {
@@ -321,7 +356,7 @@ impl TuiApp {
     }
 
     fn open_api_key_prompt(&mut self, profile_id: &str, error: Option<String>) {
-        let p = self.connect_registry.get(profile_id);
+        let p = self.connect.registry.get(profile_id);
         let title = p
             .map(|x| x.title.clone())
             .unwrap_or_else(|| profile_id.to_string());
@@ -357,7 +392,8 @@ impl TuiApp {
         overlay.focus_model(&self.runtime.model_label);
         self.overlay = Some(overlay);
         let title = self
-            .connect_registry
+            .connect
+            .registry
             .get(profile_id)
             .map(|p| p.title.as_str())
             .unwrap_or(profile_id);
@@ -377,9 +413,9 @@ impl TuiApp {
                 let mut model = Some(self.runtime.model_label.clone());
                 if let Ok(msg) = handle_connect_action(
                     ConnectAction::List,
-                    &self.connect_registry,
-                    &self.connect_store,
-                    &mut self.connect_profile,
+                    &self.connect.registry,
+                    &self.connect.store,
+                    &mut self.connect.profile,
                     &mut model,
                 ) {
                     self.push_notice(msg.lines().map(|s| s.to_string()).collect());
@@ -397,7 +433,7 @@ impl TuiApp {
         } = action
         {
             if api_key.is_none() && !oauth_fixture {
-                if needs_tui_api_key_prompt(&self.connect_registry, profile_id) {
+                if needs_tui_api_key_prompt(&self.connect.registry, profile_id) {
                     // Existing file/env credentials should reconnect without
                     // asking the user to paste the same secret again.
                     if !self.credentials_live_for(profile_id) {
@@ -405,7 +441,7 @@ impl TuiApp {
                         return;
                     }
                 }
-                if needs_tui_oauth(&self.connect_registry, profile_id) {
+                if needs_tui_oauth(&self.connect.registry, profile_id) {
                     self.begin_oauth_flow(profile_id);
                     return;
                 }
@@ -418,19 +454,19 @@ impl TuiApp {
         let mut model = Some(self.runtime.model_label.clone());
         match handle_connect_action(
             action,
-            &self.connect_registry,
-            &self.connect_store,
-            &mut self.connect_profile,
+            &self.connect.registry,
+            &self.connect.store,
+            &mut self.connect.profile,
             &mut model,
         ) {
             Ok(msg) => {
                 if let Some(m) = model {
                     self.runtime.model_label = m.clone();
                     self.runtime.provider = "native".into();
-                    self.auth_suspended = false;
+                    self.connect.auth_suspended = false;
                     self.session.set_active_model(m);
                 }
-                if let Some(pid) = self.connect_profile.clone() {
+                if let Some(pid) = self.connect.profile.clone() {
                     self.apply_connect_credentials(&pid);
                 }
                 let lines: Vec<String> = msg.lines().map(|s| s.to_string()).collect();
@@ -459,7 +495,7 @@ impl TuiApp {
             Err(e) => {
                 let error = e.to_string();
                 if let Some(profile_id) =
-                    connect_target.filter(|id| needs_tui_api_key_prompt(&self.connect_registry, id))
+                    connect_target.filter(|id| needs_tui_api_key_prompt(&self.connect.registry, id))
                 {
                     self.open_api_key_prompt(&profile_id, Some(error));
                 } else {
@@ -472,9 +508,9 @@ impl TuiApp {
 
     pub(super) fn begin_oauth_flow(&mut self, profile_id: &str) {
         let mut svc = ConnectService {
-            registry: &self.connect_registry,
-            store: &self.connect_store,
-            active_profile_id: self.connect_profile.clone(),
+            registry: &self.connect.registry,
+            store: &self.connect.store,
+            active_profile_id: self.connect.profile.clone(),
             active_model: Some(self.runtime.model_label.clone()),
         };
         match svc.connect_start_oauth(profile_id) {
@@ -492,14 +528,14 @@ impl TuiApp {
 
     /// After a successful connect: update model, inject credentials, clear OAuth UI.
     fn on_connect_success(&mut self, out: &forge_connect::ConnectOutcome) {
-        self.connect_profile = Some(out.profile_id.clone());
+        self.connect.profile = Some(out.profile_id.clone());
         self.runtime.model_label = out.model.clone();
         self.runtime.provider = "native".into();
-        self.auth_suspended = false;
+        self.connect.auth_suspended = false;
         self.session.set_active_model(out.model.clone());
         self.apply_connect_credentials(&out.profile_id);
-        self.oauth_pending = None;
-        self.oauth_last_poll = None;
+        self.connect.oauth_pending = None;
+        self.connect.oauth_last_poll = None;
         self.refresh_connection_ui();
         self.open_model_picker_after_connect(&out.profile_id);
     }
@@ -507,9 +543,9 @@ impl TuiApp {
     /// Export stored OAuth / API key material into the native model client.
     pub(super) fn apply_connect_credentials(&mut self, profile_id: &str) {
         let svc = ConnectService {
-            registry: &self.connect_registry,
-            store: &self.connect_store,
-            active_profile_id: self.connect_profile.clone(),
+            registry: &self.connect.registry,
+            store: &self.connect.store,
+            active_profile_id: self.connect.profile.clone(),
             active_model: Some(self.runtime.model_label.clone()),
         };
         match svc.provider_env_for_profile(profile_id) {
@@ -529,7 +565,8 @@ impl TuiApp {
 
     fn show_oauth_pending(&mut self, pending: OauthPending) {
         let title = self
-            .connect_registry
+            .connect
+            .registry
             .get(&pending.profile_id)
             .map(|p| p.title.clone())
             .unwrap_or_else(|| pending.profile_id.clone());
@@ -545,26 +582,26 @@ impl TuiApp {
             title,
             instructions,
         ));
-        self.oauth_pending = Some(pending);
-        self.oauth_last_poll = None;
+        self.connect.oauth_pending = Some(pending);
+        self.connect.oauth_last_poll = None;
     }
 
     /// Poll device-code OAuth once (called from the TUI tick loop).
     pub fn poll_oauth_tick(&mut self) {
-        let Some(pending) = self.oauth_pending.clone() else {
+        let Some(pending) = self.connect.oauth_pending.clone() else {
             return;
         };
         let interval = Duration::from_secs(pending.interval_secs.max(1));
-        if let Some(last) = self.oauth_last_poll {
+        if let Some(last) = self.connect.oauth_last_poll {
             if last.elapsed() < interval {
                 return;
             }
         }
-        self.oauth_last_poll = Some(std::time::Instant::now());
+        self.connect.oauth_last_poll = Some(std::time::Instant::now());
         let mut svc = ConnectService {
-            registry: &self.connect_registry,
-            store: &self.connect_store,
-            active_profile_id: self.connect_profile.clone(),
+            registry: &self.connect.registry,
+            store: &self.connect.store,
+            active_profile_id: self.connect.profile.clone(),
             active_model: Some(self.runtime.model_label.clone()),
         };
         match svc.poll_oauth_once(&pending) {
@@ -575,8 +612,8 @@ impl TuiApp {
                 // still waiting
             }
             Err(e) => {
-                self.oauth_pending = None;
-                self.oauth_last_poll = None;
+                self.connect.oauth_pending = None;
+                self.connect.oauth_last_poll = None;
                 self.overlay = None;
                 self.report_error(&e.to_string());
             }
@@ -609,19 +646,19 @@ impl TuiApp {
         };
         match handle_connect_action(
             action,
-            &self.connect_registry,
-            &self.connect_store,
-            &mut self.connect_profile,
+            &self.connect.registry,
+            &self.connect.store,
+            &mut self.connect.profile,
             &mut model,
         ) {
             Ok(msg) => {
                 if let Some(m) = model {
                     self.runtime.model_label = m.clone();
                     self.runtime.provider = "native".into();
-                    self.auth_suspended = false;
+                    self.connect.auth_suspended = false;
                     self.session.set_active_model(m);
                 }
-                if let Some(pid) = self.connect_profile.clone() {
+                if let Some(pid) = self.connect.profile.clone() {
                     self.apply_connect_credentials(&pid);
                 }
                 self.status_message = msg.lines().next().unwrap_or_default().to_string();
@@ -655,15 +692,15 @@ impl TuiApp {
         } else {
             provider.to_string()
         };
-        self.auth_suspended = false;
+        self.connect.auth_suspended = false;
         self.runtime.model_label = model.to_string();
         self.session.set_active_model(model);
         // Match the selected model to its connected profile even when a
         // different provider was active before opening the picker.
         let prefix = model.split('/').next().unwrap_or("");
         let svc = ConnectService {
-            registry: &self.connect_registry,
-            store: &self.connect_store,
+            registry: &self.connect.registry,
+            store: &self.connect.store,
             active_profile_id: None,
             active_model: None,
         };
@@ -674,10 +711,10 @@ impl TuiApp {
                     || (prefix == "opencode-go" && p.id == "opencode_go")
                     || (prefix == "opencode-zen" && p.id == "opencode_zen")
             }) {
-                self.connect_profile = Some(profile.id.clone());
+                self.connect.profile = Some(profile.id.clone());
             }
         }
-        if let Some(profile_id) = self.connect_profile.clone() {
+        if let Some(profile_id) = self.connect.profile.clone() {
             self.apply_connect_credentials(&profile_id);
         }
         self.persist_selection();
@@ -701,9 +738,9 @@ impl TuiApp {
             return None;
         }
         let svc = ConnectService {
-            registry: &self.connect_registry,
-            store: &self.connect_store,
-            active_profile_id: self.connect_profile.clone(),
+            registry: &self.connect.registry,
+            store: &self.connect.store,
+            active_profile_id: self.connect.profile.clone(),
             active_model: Some(self.runtime.model_label.clone()),
         };
         let connected = svc.connected_profiles().ok()?;
@@ -731,20 +768,20 @@ impl TuiApp {
         refresh_stale: bool,
     ) -> Vec<crate::overlays::ModelItem> {
         let svc = ConnectService {
-            registry: &self.connect_registry,
-            store: &self.connect_store,
-            active_profile_id: self.connect_profile.clone(),
+            registry: &self.connect.registry,
+            store: &self.connect.store,
+            active_profile_id: self.connect.profile.clone(),
             active_model: Some(self.runtime.model_label.clone()),
         };
         let connected = svc.connected_profiles().unwrap_or_default();
         let cache = ModelCatalogCache::user_default();
         let profiles: Vec<_> = if connected.is_empty() {
             // Show all built-in defaults when nothing connected
-            self.connect_registry.profiles().to_vec()
+            self.connect.registry.profiles().to_vec()
         } else {
             connected
         };
-        let entries = models_for_picker(&profiles, &self.connect_store, &cache, refresh_stale);
+        let entries = models_for_picker(&profiles, &self.connect.store, &cache, refresh_stale);
         models_from_catalog(&entries)
     }
 

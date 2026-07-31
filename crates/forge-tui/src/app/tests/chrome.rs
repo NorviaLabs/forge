@@ -453,8 +453,8 @@ async fn status_chrome_shows_not_connected_badge() {
             theme: forge_config::Theme::default(),
         },
     );
-    app.connect_profile = None;
-    app.connect_store = CredentialStore::new(
+    app.connect.profile = None;
+    app.connect.store = CredentialStore::new(
         tempfile::TempDir::new()
             .unwrap()
             .path()

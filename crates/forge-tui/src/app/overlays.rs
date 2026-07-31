@@ -167,10 +167,10 @@ impl TuiApp {
             }
             OverlayAction::ConnectCompleteOauth { profile_id } => {
                 // Enter: try one poll now; keep overlay if still pending.
-                if self.oauth_pending.is_some() {
-                    self.oauth_last_poll = None;
+                if self.connect.oauth_pending.is_some() {
+                    self.connect.oauth_last_poll = None;
                     self.poll_oauth_tick();
-                    if self.oauth_pending.is_some() {
+                    if self.connect.oauth_pending.is_some() {
                         self.status_message =
                             format!("Still waiting for login… (code for {profile_id})");
                     }

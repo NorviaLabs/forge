@@ -134,7 +134,7 @@ impl TuiApp {
         );
         // Start the turn the same way as a normal Enter send (no dispatch recursion).
         self.clear_error_chrome();
-        if let Some(pid) = self.connect_profile.clone() {
+        if let Some(pid) = self.connect.profile.clone() {
             self.apply_connect_credentials(&pid);
         }
         self.pending_prompt = Some(next);
@@ -219,7 +219,7 @@ impl TuiApp {
         }
 
         // Refresh OAuth close to expiry and recycle the worker with the current token.
-        if let Some(profile_id) = self.connect_profile.clone() {
+        if let Some(profile_id) = self.connect.profile.clone() {
             self.apply_connect_credentials(&profile_id);
         }
 

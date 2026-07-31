@@ -460,13 +460,13 @@ async fn effort_selection_persists_across_tui_instances() {
             theme: forge_config::Theme::default(),
         },
     );
-    app.connect_store = CredentialStore::new(credential_path.clone());
+    app.connect.store = CredentialStore::new(credential_path.clone());
 
     app.reasoning_effort = ReasoningEffort::High;
     app.persist_selection();
 
     assert_eq!(
-        app.connect_store.last_effort().unwrap().as_deref(),
+        app.connect.store.last_effort().unwrap().as_deref(),
         Some("high")
     );
 
@@ -485,7 +485,7 @@ async fn effort_selection_persists_across_tui_instances() {
             theme: forge_config::Theme::default(),
         },
     );
-    restarted.connect_store = CredentialStore::new(credential_path);
+    restarted.connect.store = CredentialStore::new(credential_path);
     restarted = restarted.restore_saved_auth();
 
     assert_eq!(restarted.reasoning_effort, ReasoningEffort::High);
@@ -509,11 +509,12 @@ async fn model_command_applies_provider_id_to_session() {
             theme: forge_config::Theme::default(),
         },
     );
-    app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
-    app.connect_store
+    app.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
+    app.connect
+        .store
         .set_api_key("openai", "sk-test-openai-credential")
         .unwrap();
-    app.connect_profile = Some("openai".into());
+    app.connect.profile = Some("openai".into());
     app.runtime.model_label = "openai/gpt-4.1-mini".into();
     app.session.set_active_model("openai/gpt-4.1-mini");
     app.apply_model_selection("native", "openai/gpt-4.1-mini");
@@ -540,8 +541,8 @@ async fn model_command_rejects_cross_provider_selection_without_matching_connect
             theme: forge_config::Theme::default(),
         },
     );
-    app.connect_store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
-    app.connect_store
+    app.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
+    app.connect.store
         .set_oauth(
             "openai_codex",
             forge_connect::OauthTokens {
@@ -553,7 +554,7 @@ async fn model_command_rejects_cross_provider_selection_without_matching_connect
             },
         )
         .unwrap();
-    app.connect_profile = Some("openai_codex".into());
+    app.connect.profile = Some("openai_codex".into());
     app.runtime.model_label = "openai-codex/gpt-5.6-sol".into();
     app.session.set_active_model("openai-codex/gpt-5.6-sol");
 
@@ -561,7 +562,7 @@ async fn model_command_rejects_cross_provider_selection_without_matching_connect
         .await
         .unwrap();
 
-    assert_eq!(app.connect_profile.as_deref(), Some("openai_codex"));
+    assert_eq!(app.connect.profile.as_deref(), Some("openai_codex"));
     assert_eq!(app.runtime.model_label, "openai-codex/gpt-5.6-sol");
     assert!(
         app.status_message.contains("connect `not-connected` first")
