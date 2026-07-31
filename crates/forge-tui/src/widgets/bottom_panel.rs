@@ -46,11 +46,13 @@ impl Default for BottomPanelState {
 }
 
 impl BottomPanelState {
+    #[cfg(test)]
     pub fn toggle(&mut self) {
         self.open = !self.open;
         self.focused = self.open;
     }
 
+    #[cfg(test)]
     pub fn open_tab(&mut self, tab: BottomPanelTab) {
         self.active = tab;
         self.open = true;

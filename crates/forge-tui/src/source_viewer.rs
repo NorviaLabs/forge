@@ -548,6 +548,7 @@ impl SourceViewer {
         self.search.matches.clear();
     }
 
+    #[cfg(test)]
     pub fn accept_search(&mut self) {
         self.search.pre_line = self.current_line;
         self.search.pre_top = self.top_line;
