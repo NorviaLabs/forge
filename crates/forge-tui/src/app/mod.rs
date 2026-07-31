@@ -20,7 +20,10 @@ use forge_connect::{
     needs_tui_oauth, normalize_model_id, ConnectAction, ConnectError, ConnectRegistry,
     ConnectService, CredentialStore, ModelCatalogCache, OauthPending, OPENAI_CODEX_PROFILE_ID,
 };
-use forge_core::{AgentSession, ApplyOutcome, LoopError};
+use forge_core::{
+    merge_streamed_response, observe_stream_event, AgentSession, ApplyOutcome, LoopError,
+    ModelStepAccumulator,
+};
 use forge_types::{
     HitlDecision, HitlPayload, Message, MessageRole, ModelStreamEvent, ProgressDocument,
 };

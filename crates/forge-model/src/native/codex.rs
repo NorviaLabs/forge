@@ -272,7 +272,7 @@ fn consume_event(
                 .unwrap_or("{}");
             let arguments = serde_json::from_str(raw_arguments)
                 .unwrap_or_else(|_| json!({"_raw": raw_arguments}));
-            tool_calls.push(ToolCall {
+            let call = ToolCall {
                 id: event
                     .pointer("/item/call_id")
                     .or_else(|| event.pointer("/item/id"))
@@ -284,7 +284,15 @@ fn consume_event(
                     .cloned()
                     .unwrap_or_else(|| alias.into()),
                 arguments,
-            });
+            };
+            if let Some(tx) = tx {
+                let _ = tx.send(ModelStreamEvent::ToolCallStart {
+                    id: call.id.clone(),
+                    name: call.name.clone(),
+                });
+                let _ = tx.send(ModelStreamEvent::ToolCallEnd { call: call.clone() });
+            }
+            tool_calls.push(call);
         }
         "response.completed" => {
             let raw_usage = event.pointer("/response/usage").unwrap_or(&Value::Null);

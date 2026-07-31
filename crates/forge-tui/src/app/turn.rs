@@ -40,6 +40,34 @@ impl TuiApp {
         self.thought_secs = Some(secs);
     }
 
+    /// Apply one provider stream event to session state and live preview chrome.
+    /// Returns `Some(error)` when the stream reports a terminal failure.
+    fn handle_stream_event(
+        &mut self,
+        event: &ModelStreamEvent,
+        acc: &mut ModelStepAccumulator,
+    ) -> Option<String> {
+        observe_stream_event(&mut self.session, event, None, acc);
+        match event {
+            ModelStreamEvent::TextDelta { text } => {
+                self.close_thinking_timer();
+                self.stream_preview.push_str(text);
+            }
+            ModelStreamEvent::ThinkingDelta { text } => {
+                if self.thinking_started.is_none() {
+                    self.thinking_started = self.turn_started.or_else(|| Some(Instant::now()));
+                }
+                self.stream_thinking.push_str(text);
+            }
+            ModelStreamEvent::ToolCallStart { name, .. } => {
+                self.busy_phase = BusyPhase::Tool { name: name.clone() };
+            }
+            ModelStreamEvent::Error { message } => return Some(message.clone()),
+            _ => {}
+        }
+        None
+    }
+
     fn persist_turn_thinking_duration(&mut self, secs: f64) {
         if let Some(m) = self
             .session
@@ -290,6 +318,7 @@ impl TuiApp {
             let handle =
                 tokio::spawn(async move { model.complete_with_stream(req, Some(tx)).await });
 
+            let mut step_acc = ModelStepAccumulator::default();
             // Pump stream events + redraw until the model call finishes
             loop {
                 if self.cancel_requested {
@@ -300,27 +329,10 @@ impl TuiApp {
                     break 'turns;
                 }
                 while let Ok(ev) = rx.try_recv() {
-                    match ev {
-                        ModelStreamEvent::TextDelta { text } => {
-                            // Thinking ends when answer tokens begin
-                            self.close_thinking_timer();
-                            self.stream_preview.push_str(&text);
-                        }
-                        ModelStreamEvent::ThinkingDelta { text } => {
-                            if self.thinking_started.is_none() {
-                                // Prefer turn start so duration covers full thinking wait if
-                                // the provider dumps reasoning in one late chunk.
-                                self.thinking_started =
-                                    self.turn_started.or_else(|| Some(Instant::now()));
-                            }
-                            self.stream_thinking.push_str(&text);
-                        }
-                        ModelStreamEvent::Error { message } => {
-                            handle.abort();
-                            outcome_err = Some(message);
-                            break 'turns;
-                        }
-                        _ => {}
+                    if let Some(message) = self.handle_stream_event(&ev, &mut step_acc) {
+                        handle.abort();
+                        outcome_err = Some(message);
+                        break 'turns;
                     }
                 }
                 // Keep the terminal responsive while the current turn is streaming so
@@ -356,24 +368,9 @@ impl TuiApp {
                 if handle.is_finished() {
                     // Drain remaining events
                     while let Ok(ev) = rx.try_recv() {
-                        match ev {
-                            ModelStreamEvent::TextDelta { text } => {
-                                self.close_thinking_timer();
-                                self.stream_preview.push_str(&text);
-                            }
-                            ModelStreamEvent::ThinkingDelta { text } => {
-                                if self.thinking_started.is_none() {
-                                    self.thinking_started =
-                                        self.turn_started.or_else(|| Some(Instant::now()));
-                                }
-                                self.stream_thinking.push_str(&text);
-                            }
-                            ModelStreamEvent::Error { message } => {
-                                handle.abort();
-                                outcome_err = Some(message);
-                                break 'turns;
-                            }
-                            _ => {}
+                        if let Some(message) = self.handle_stream_event(&ev, &mut step_acc) {
+                            outcome_err = Some(message);
+                            break 'turns;
                         }
                     }
                     // Thinking-only or late thinking dump: close the clock now
@@ -389,7 +386,7 @@ impl TuiApp {
             }
 
             let mut last = match handle.await {
-                Ok(Ok(r)) => r,
+                Ok(Ok(r)) => merge_streamed_response(r, &step_acc),
                 Ok(Err(e)) => {
                     outcome_err = Some(e.to_string());
                     break;
