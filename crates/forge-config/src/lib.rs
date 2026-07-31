@@ -154,7 +154,11 @@ pub struct JournalConfig {
 fn default_journal_backend() -> String {
     "sqlite".into()
 }
-fn default_journal_path() -> String {
+/// The unconfigured default journal path. Public so callers can detect
+/// "the user hasn't overridden this" and route the default case through a
+/// different resolution strategy (e.g. the centralized runtime-storage
+/// resolver) while still respecting an explicit override as-is.
+pub fn default_journal_path() -> String {
     ".forge/sessions".into()
 }
 

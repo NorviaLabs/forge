@@ -4,6 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use chrono::Utc;
+use forge_storage::{LocalRuntimeStorage, RuntimeDataKind, RuntimeStorage};
 use forge_types::{Message, MessageRole, ProgressDocument, SessionId};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -118,10 +119,7 @@ impl ContextEngine {
         if tokens <= self.config.offload_token_threshold {
             return Ok(None);
         }
-        let dir = self
-            .workspace
-            .join(&self.config.offload_dir)
-            .join(self.session_id.to_string());
+        let dir = self.offload_base_dir().join(self.session_id.to_string());
         fs::create_dir_all(&dir)?;
         let id = Uuid::new_v4();
         let file = dir.join(format!("tool_{id}.txt"));
@@ -159,16 +157,48 @@ impl ContextEngine {
         }
     }
 
+    /// Base directory for offloaded tool-output files. When the caller
+    /// hasn't overridden `offload_dir` away from its built-in default, this
+    /// routes through the centralized runtime-storage resolver
+    /// (`.forge/local/cache`, or an application-data fallback outside a
+    /// Git repository) instead of the naive `.forge/offload` join. An
+    /// explicit override is respected as-is.
+    fn offload_base_dir(&self) -> PathBuf {
+        if self.config.offload_dir == default_offload_dir() {
+            if let Ok(dir) =
+                LocalRuntimeStorage::new(&self.workspace).path_for(RuntimeDataKind::Cache)
+            {
+                return dir;
+            }
+        }
+        self.workspace.join(&self.config.offload_dir)
+    }
+
+    /// Where the progress checkpoint lives — a pure computation with no
+    /// side effects (no directory created, no Git exclude touched), safe
+    /// for read-only callers. `write_progress` separately ensures storage
+    /// is actually set up before writing.
     pub fn progress_path(&self) -> PathBuf {
         let p = PathBuf::from(&self.config.progress_path);
         if p.is_absolute() {
-            p
-        } else {
-            self.workspace.join(p)
+            return p;
         }
+        if self.config.progress_path == default_progress_path() {
+            if let Some(dir) =
+                LocalRuntimeStorage::new(&self.workspace).path_for_read(RuntimeDataKind::Checkpoint)
+            {
+                return dir.join("progress.json");
+            }
+        }
+        self.workspace.join(p)
     }
 
     pub fn write_progress(&self, doc: &ProgressDocument) -> Result<(), ContextError> {
+        if self.config.progress_path == default_progress_path() {
+            // Establishes Git exclusion / the application-data fallback on
+            // first real write — reads never trigger this.
+            let _ = LocalRuntimeStorage::new(&self.workspace).path_for(RuntimeDataKind::Checkpoint);
+        }
         let path = self.progress_path();
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
@@ -285,6 +315,27 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    /// Git-initializes `dir` so offload/progress-path resolution exercises
+    /// repository-local storage hermetically — without this, the default
+    /// (unconfigured) path falls back to the platform application-data
+    /// directory, which is correct real-world behavior outside a repository
+    /// but not something a test should touch on the host machine.
+    fn init_repo(dir: &std::path::Path) {
+        for args in [
+            vec!["init", "--initial-branch=main", "-q"],
+            vec!["config", "user.email", "test@example.com"],
+            vec!["config", "user.name", "Test"],
+        ] {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(&args)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+    }
+
     #[test]
     fn estimate_tokens_rough() {
         assert!(estimate_tokens("abcd") >= 1);
@@ -301,6 +352,7 @@ mod tests {
     #[test]
     fn large_body_offloaded_with_high_reduction() {
         let dir = tempdir().unwrap();
+        init_repo(dir.path());
         let eng = ContextEngine::new(dir.path().to_path_buf(), Uuid::new_v4());
         let big = "x".repeat(20_000); // ~5000 tokens
         let o = eng.offload_tool_output(&big).unwrap().expect("offload");
@@ -329,6 +381,7 @@ mod tests {
     #[test]
     fn handoff_writes_progress_and_clears() {
         let dir = tempdir().unwrap();
+        init_repo(dir.path());
         std::fs::write(dir.path().join("AGENTS.md"), "Be careful").unwrap();
         let sid = Uuid::new_v4();
         let mut eng = ContextEngine::new(dir.path().to_path_buf(), sid);
@@ -454,6 +507,7 @@ mod tests {
     #[test]
     fn maybe_offload_tool_content_replaces_large_body_with_in_context_summary() {
         let dir = tempdir().unwrap();
+        init_repo(dir.path());
         let eng = ContextEngine::new(dir.path().to_path_buf(), Uuid::new_v4());
         let big = "z".repeat(20_000);
         let result = eng.maybe_offload_tool_content(big.clone()).unwrap();
@@ -476,13 +530,32 @@ mod tests {
     #[test]
     fn progress_path_is_relative_to_workspace_by_default() {
         let dir = tempdir().unwrap();
+        init_repo(dir.path());
         let eng = ContextEngine::new(dir.path().to_path_buf(), Uuid::new_v4());
-        assert_eq!(eng.progress_path(), dir.path().join(".forge/progress.json"));
+        // Routed through the runtime-storage resolver: repository-local,
+        // under `.forge/local/`, never the naive `.forge/progress.json`.
+        // `progress_path()` is a pure read-only computation (no directory
+        // is created), so compare against the tempdir's own canonical form
+        // (which does exist) joined with the expected relative subpath,
+        // rather than canonicalizing the not-yet-created leaf directory.
+        // `git rev-parse --show-toplevel` resolves symlinks (e.g. macOS's
+        // `/var` -> `/private/var`), the raw tempdir path doesn't.
+        let path = eng.progress_path();
+        assert_eq!(path.file_name().unwrap(), "progress.json");
+        let expected = dir
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join(".forge")
+            .join("local")
+            .join("checkpoints");
+        assert_eq!(path.parent().unwrap(), expected);
     }
 
     #[test]
     fn read_progress_returns_none_when_no_file_written_yet() {
         let dir = tempdir().unwrap();
+        init_repo(dir.path());
         let eng = ContextEngine::new(dir.path().to_path_buf(), Uuid::new_v4());
         assert!(eng.read_progress().unwrap().is_none());
     }
@@ -490,6 +563,7 @@ mod tests {
     #[test]
     fn write_then_read_progress_round_trips() {
         let dir = tempdir().unwrap();
+        init_repo(dir.path());
         let eng = ContextEngine::new(dir.path().to_path_buf(), Uuid::new_v4());
         let doc = ProgressDocument::new(eng.session_id, "ship it");
         eng.write_progress(&doc).unwrap();
@@ -522,6 +596,7 @@ mod tests {
     #[test]
     fn handoff_reset_falls_back_to_first_user_message_when_goal_is_empty() {
         let dir = tempdir().unwrap();
+        init_repo(dir.path());
         let eng = ContextEngine::new(dir.path().to_path_buf(), Uuid::new_v4());
         assert!(eng.goal.is_empty());
         let messages = vec![
@@ -553,6 +628,7 @@ mod tests {
     #[test]
     fn handoff_reset_falls_back_to_continue_task_when_no_user_message_exists() {
         let dir = tempdir().unwrap();
+        init_repo(dir.path());
         let eng = ContextEngine::new(dir.path().to_path_buf(), Uuid::new_v4());
         let messages = vec![Message {
             role: MessageRole::Assistant,

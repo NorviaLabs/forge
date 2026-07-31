@@ -18,8 +18,29 @@ mod tests {
     use std::sync::Arc;
     use tempfile::TempDir;
 
+    /// Git-initializes `dir` so writes routed through the runtime-storage
+    /// resolver (UI state, run history, context offload/progress) resolve
+    /// repository-locally inside the tempdir, instead of falling back to
+    /// the real platform application-data directory.
+    fn init_repo(dir: &std::path::Path) {
+        for args in [
+            vec!["init", "--initial-branch=main", "-q"],
+            vec!["config", "user.email", "test@example.com"],
+            vec!["config", "user.name", "Test"],
+        ] {
+            let status = Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(&args)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+    }
+
     async fn app() -> (TempDir, TuiApp) {
         let dir = TempDir::new().unwrap();
+        init_repo(dir.path());
         let model = Arc::new(MockModelClient::script(vec![ModelResponse {
             text: "ok".into(),
             tool_calls: vec![],
