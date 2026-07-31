@@ -19,6 +19,7 @@ struct ToolCallAccumulator {
     id: String,
     name: String,
     arguments: String,
+    start_sent: bool,
 }
 
 pub(super) async fn complete(
@@ -89,6 +90,9 @@ pub(super) async fn complete(
 
     let tool_calls = finalize_tool_calls(tool_calls)?;
     if let Some(tx) = tx {
+        for call in &tool_calls {
+            let _ = tx.send(ModelStreamEvent::ToolCallEnd { call: call.clone() });
+        }
         if let Some(ref usage) = usage {
             let _ = tx.send(ModelStreamEvent::Usage {
                 usage: usage.clone(),
@@ -246,9 +250,47 @@ fn consume_event(
                 call.name.push_str(name);
             }
         }
+        maybe_emit_tool_call_start(index, call, tx);
         if let Some(arguments) = raw_call.pointer("/function/arguments") {
+            let before = call.arguments.len();
             accumulate_tool_arguments(&mut call.arguments, arguments);
+            if let Some(tx) = tx {
+                let after = call.arguments.len();
+                if after > before {
+                    let id = tool_call_stream_id(index, call);
+                    let _ = tx.send(ModelStreamEvent::ToolCallDelta {
+                        id,
+                        arguments_delta: call.arguments[before..].to_string(),
+                    });
+                }
+            }
         }
+    }
+}
+
+fn tool_call_stream_id(index: usize, call: &ToolCallAccumulator) -> String {
+    if call.id.is_empty() {
+        format!("call_{index}")
+    } else {
+        call.id.clone()
+    }
+}
+
+fn maybe_emit_tool_call_start(
+    index: usize,
+    call: &mut ToolCallAccumulator,
+    tx: Option<&StreamEventTx>,
+) {
+    if call.start_sent || call.name.is_empty() {
+        return;
+    }
+    if let Some(tx) = tx {
+        let id = tool_call_stream_id(index, call);
+        let _ = tx.send(ModelStreamEvent::ToolCallStart {
+            id,
+            name: call.name.clone(),
+        });
+        call.start_sent = true;
     }
 }
 
@@ -388,6 +430,44 @@ mod tests {
             route(&client, "ollama/llama3.2").unwrap().base_url,
             "http://localhost:11434/v1"
         );
+    }
+
+    #[test]
+    fn accumulates_streamed_tool_calls_and_emits_stream_events() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut text = String::new();
+        let mut thinking = String::new();
+        let mut calls = BTreeMap::new();
+        let mut usage = None;
+        consume_event(
+            &json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"bash","arguments":"{\"command\":"}}]}}]}),
+            &mut text,
+            &mut thinking,
+            &mut calls,
+            &mut usage,
+            Some(&tx),
+        );
+        consume_event(
+            &json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"ls\"}"}}]}}]}),
+            &mut text,
+            &mut thinking,
+            &mut calls,
+            &mut usage,
+            Some(&tx),
+        );
+        let calls = finalize_tool_calls(calls).unwrap();
+        for call in &calls {
+            let _ = tx.send(ModelStreamEvent::ToolCallEnd { call: call.clone() });
+        }
+        let events: Vec<_> = rx.try_iter().collect();
+        assert!(events.iter().any(|event| {
+            matches!(event, ModelStreamEvent::ToolCallStart { name, .. } if name == "bash")
+        }));
+        assert!(events
+            .iter()
+            .any(|event| { matches!(event, ModelStreamEvent::ToolCallDelta { .. }) }));
+        assert_eq!(calls[0].name, "bash");
+        assert_eq!(calls[0].arguments["command"], "ls");
     }
 
     #[test]
@@ -571,6 +651,7 @@ mod tests {
                 id: String::new(),
                 name: "bash".into(),
                 arguments: "not-json".into(),
+                start_sent: false,
             },
         )]);
         assert!(finalize_tool_calls(calls).is_err());

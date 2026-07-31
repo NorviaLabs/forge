@@ -12,6 +12,7 @@ struct ToolUseAccumulator {
     id: String,
     name: String,
     input: String,
+    start_sent: bool,
 }
 
 pub(super) async fn complete(
@@ -118,6 +119,9 @@ pub(super) async fn complete(
         completion_tokens,
     };
     if let Some(tx) = tx {
+        for call in &tool_calls {
+            let _ = tx.send(ModelStreamEvent::ToolCallEnd { call: call.clone() });
+        }
         let _ = tx.send(ModelStreamEvent::Usage {
             usage: usage.clone(),
         });
@@ -202,22 +206,37 @@ fn consume_event(
         "content_block_start" => {
             if event.pointer("/content_block/type").and_then(Value::as_str) == Some("tool_use") {
                 let index = event.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
-                tool_uses.insert(
-                    index,
-                    ToolUseAccumulator {
-                        id: event
-                            .pointer("/content_block/id")
-                            .and_then(Value::as_str)
-                            .unwrap_or("")
-                            .into(),
-                        name: event
-                            .pointer("/content_block/name")
-                            .and_then(Value::as_str)
-                            .unwrap_or("")
-                            .into(),
-                        input: String::new(),
-                    },
-                );
+                let id = event
+                    .pointer("/content_block/id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .into();
+                let name: String = event
+                    .pointer("/content_block/name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .into();
+                let mut tool_use = ToolUseAccumulator {
+                    id,
+                    name: name.clone(),
+                    input: String::new(),
+                    start_sent: false,
+                };
+                if let Some(tx) = tx {
+                    if !tool_use.name.is_empty() {
+                        let stream_id = if tool_use.id.is_empty() {
+                            format!("tool_{index}")
+                        } else {
+                            tool_use.id.clone()
+                        };
+                        let _ = tx.send(ModelStreamEvent::ToolCallStart {
+                            id: stream_id,
+                            name,
+                        });
+                        tool_use.start_sent = true;
+                    }
+                }
+                tool_uses.insert(index, tool_use);
             }
         }
         "content_block_delta" => {
@@ -246,12 +265,24 @@ fn consume_event(
             if delta_type == "input_json_delta" {
                 let index = event.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
                 if let Some(tool_use) = tool_uses.get_mut(&index) {
-                    tool_use.input.push_str(
-                        event
-                            .pointer("/delta/partial_json")
-                            .and_then(Value::as_str)
-                            .unwrap_or(""),
-                    );
+                    let piece = event
+                        .pointer("/delta/partial_json")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    tool_use.input.push_str(piece);
+                    if let Some(tx) = tx {
+                        if !piece.is_empty() {
+                            let id = if tool_use.id.is_empty() {
+                                format!("tool_{index}")
+                            } else {
+                                tool_use.id.clone()
+                            };
+                            let _ = tx.send(ModelStreamEvent::ToolCallDelta {
+                                id,
+                                arguments_delta: piece.into(),
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -539,6 +570,7 @@ mod tests {
                 id: String::new(),
                 name: "bash".into(),
                 input: "invalid".into(),
+                start_sent: false,
             },
         )]);
         assert!(finalize_tool_uses(invalid).is_err());
@@ -548,6 +580,7 @@ mod tests {
                 id: String::new(),
                 name: "bash".into(),
                 input: String::new(),
+                start_sent: false,
             },
         )]);
         let calls = finalize_tool_uses(empty).unwrap();
