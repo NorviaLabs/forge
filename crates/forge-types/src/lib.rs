@@ -6,15 +6,22 @@ use uuid::Uuid;
 
 pub type SessionId = Uuid;
 
+/// Authoritative task/attempt lifecycle. Owned by the runtime (`AgentSession`);
+/// UI code must read this rather than deriving its own copy from busy/streaming flags.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
-pub enum SessionStatus {
-    Running,
+pub enum TaskLifecycle {
+    /// No active task attempt. Queued items may still exist.
+    Ready,
+    /// An attempt is actively processing (model inference, tool execution, evaluation).
+    #[serde(alias = "running")]
+    Working,
+    /// Blocked on a specific external response (see `WaitReason`).
+    #[serde(alias = "awaiting_hitl")]
+    Waiting,
     Completed,
     Failed,
-    /// Phase 2 HITL — reserved so journal can round-trip later.
-    AwaitingHitl,
     /// Operator or system cancelled the foreground task.
     Cancelled,
     /// Persisted as active, but no recoverable runtime remains.
@@ -176,12 +183,21 @@ pub enum JournalEventType {
     ToolResult,
     ToolValidationFailed,
     StatePatch,
+    /// Tag for a lifecycle-transition journal entry. Kept as `SessionStatus`
+    /// (rather than renamed to `TaskLifecycle`) so its wire value
+    /// (`"session_status"`) stays stable for existing persisted journals —
+    /// this is an event-type tag, not the `TaskLifecycle` type itself.
     SessionStatus,
     /// Phase 2 — durable HITL
     HitlWait,
     HitlResume,
     /// Phase 2 — context handoff
     ContextReset,
+    /// Unified task/queue lifecycle — future-task queue durability.
+    QueueEnqueued,
+    QueuePromoting,
+    QueuePromoted,
+    QueueRemoved,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -296,26 +312,142 @@ pub struct HitlPayload {
     pub reason: String,
 }
 
+/// Identifies one user-requested unit of work within a session. A new task
+/// (not a resumed one) is created either by direct dispatch or by queue
+/// promotion — both paths go through the same counter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskId(pub u64);
+
+/// Identifies one execution episode of a `TaskId`. A terminal attempt never
+/// resumes; continuing after a terminal outcome always starts a new task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttemptId(pub u64);
+
+/// Why the active task is `TaskLifecycle::Waiting`. Every variant carries a
+/// stable `request_id` so a response can be correlated to (and rejected if
+/// stale against) the specific outstanding request.
+///
+/// Only `Approval` has a real producer in Forge today (the tool-call HITL
+/// gate); the remaining variants are structurally complete but currently
+/// unreachable — built ahead of need so adding a real clarification/selection
+/// flow later is additive, not a migration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum WaitReason {
+    Approval {
+        request_id: String,
+        payload: HitlPayload,
+    },
+    Clarification {
+        request_id: String,
+    },
+    Selection {
+        request_id: String,
+    },
+    MissingConfiguration {
+        request_id: String,
+        key: String,
+    },
+    ExternalAction {
+        request_id: String,
+        description: String,
+    },
+}
+
+impl WaitReason {
+    /// The correlation id every response must match to resume the attempt.
+    pub fn request_id(&self) -> &str {
+        match self {
+            WaitReason::Approval { request_id, .. }
+            | WaitReason::Clarification { request_id }
+            | WaitReason::Selection { request_id }
+            | WaitReason::MissingConfiguration { request_id, .. }
+            | WaitReason::ExternalAction { request_id, .. } => request_id,
+        }
+    }
+}
+
+/// Stable identifier for one queued future-task instruction. Distinct from
+/// `TaskId`: a queue item is never itself `Working`/`Completed`/etc. — only
+/// its promoted task is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct QueueItemId(pub u64);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueueItemStatus {
+    Queued,
+    Promoting,
+    Promoted,
+    Removed,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn session_status_roundtrip() {
+    fn task_lifecycle_roundtrip() {
         let cases = [
-            (SessionStatus::Running, "\"running\""),
-            (SessionStatus::Completed, "\"completed\""),
-            (SessionStatus::Failed, "\"failed\""),
-            (SessionStatus::AwaitingHitl, "\"awaiting_hitl\""),
-            (SessionStatus::Cancelled, "\"cancelled\""),
-            (SessionStatus::Interrupted, "\"interrupted\""),
+            (TaskLifecycle::Ready, "\"ready\""),
+            (TaskLifecycle::Working, "\"working\""),
+            (TaskLifecycle::Completed, "\"completed\""),
+            (TaskLifecycle::Failed, "\"failed\""),
+            (TaskLifecycle::Waiting, "\"waiting\""),
+            (TaskLifecycle::Cancelled, "\"cancelled\""),
+            (TaskLifecycle::Interrupted, "\"interrupted\""),
         ];
         for (status, wire) in cases {
             let j = serde_json::to_string(&status).unwrap();
             assert_eq!(j, wire);
-            let back: SessionStatus = serde_json::from_str(&j).unwrap();
+            let back: TaskLifecycle = serde_json::from_str(&j).unwrap();
             assert_eq!(back, status);
         }
+    }
+
+    #[test]
+    fn task_lifecycle_accepts_legacy_wire_aliases() {
+        let legacy_running: TaskLifecycle = serde_json::from_str("\"running\"").unwrap();
+        assert_eq!(legacy_running, TaskLifecycle::Working);
+        let legacy_awaiting_hitl: TaskLifecycle =
+            serde_json::from_str("\"awaiting_hitl\"").unwrap();
+        assert_eq!(legacy_awaiting_hitl, TaskLifecycle::Waiting);
+    }
+
+    #[test]
+    fn wait_reason_request_id_extracts_for_every_variant() {
+        let approval = WaitReason::Approval {
+            request_id: "r1".into(),
+            payload: HitlPayload {
+                call_id: "c1".into(),
+                tool: "bash".into(),
+                args_redacted: serde_json::json!({}),
+                reason: "policy requires human approval".into(),
+            },
+        };
+        assert_eq!(approval.request_id(), "r1");
+
+        let clarification = WaitReason::Clarification {
+            request_id: "r2".into(),
+        };
+        assert_eq!(clarification.request_id(), "r2");
+
+        let selection = WaitReason::Selection {
+            request_id: "r3".into(),
+        };
+        assert_eq!(selection.request_id(), "r3");
+
+        let missing_config = WaitReason::MissingConfiguration {
+            request_id: "r4".into(),
+            key: "api_key".into(),
+        };
+        assert_eq!(missing_config.request_id(), "r4");
+
+        let external = WaitReason::ExternalAction {
+            request_id: "r5".into(),
+            description: "waiting on webhook".into(),
+        };
+        assert_eq!(external.request_id(), "r5");
     }
 
     #[test]

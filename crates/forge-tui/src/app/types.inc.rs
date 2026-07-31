@@ -474,7 +474,7 @@ struct ConversationRenderKey {
     tool_expanded: bool,
     splash_dismissed: bool,
     slash_mode: bool,
-    status: forge_types::SessionStatus,
+    status: forge_types::TaskLifecycle,
     theme: forge_config::Theme,
 }
 
@@ -527,8 +527,6 @@ pub struct TuiApp {
     pending_external_editor: bool,
     /// Active-file context attachment for the next user message.
     pending_attachment: Option<crate::file_context::FileAttachment>,
-    /// Additional user messages waiting to run after the current turn (FIFO).
-    message_queue: MessageQueue,
     /// Selected queued row for keyboard cancellation.
     queue_selected: Option<usize>,
     /// Live assistant text while tokens stream in.
