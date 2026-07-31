@@ -894,39 +894,8 @@ mod tests {
     use super::*;
     use crate::auth::OauthTokens;
     use crate::openai::openai_profile;
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
-    use std::thread;
+    use forge_test_support::mock_http;
     use tempfile::tempdir;
-
-    /// (status, body, extra headers)
-    type MockResponse = (u16, &'static str, Vec<(&'static str, &'static str)>);
-
-    fn mock_http(responses: Vec<MockResponse>) -> String {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        thread::spawn(move || {
-            for (status, body, headers) in responses {
-                let (mut stream, _) = listener.accept().unwrap();
-                let mut buf = [0_u8; 2048];
-                let _ = stream.read(&mut buf);
-                let mut response = format!(
-                    "HTTP/1.1 {status} test\r\ncontent-length: {}\r\n",
-                    body.len()
-                );
-                for (name, value) in headers {
-                    response.push_str(name);
-                    response.push_str(": ");
-                    response.push_str(value);
-                    response.push_str("\r\n");
-                }
-                response.push_str("connection: close\r\n\r\n");
-                response.push_str(body);
-                stream.write_all(response.as_bytes()).unwrap();
-            }
-        });
-        format!("http://{addr}")
-    }
 
     #[test]
     fn normalize_model_id_variants() {

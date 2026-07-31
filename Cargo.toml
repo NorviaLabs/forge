@@ -14,6 +14,7 @@ members = [
     "crates/forge-governance",
     "crates/forge-context",
     "crates/forge-connect",
+    "crates/forge-test-support",
 ]
 
 [workspace.package]
@@ -66,5 +67,6 @@ forge-tui = { path = "crates/forge-tui" }
 forge-governance = { path = "crates/forge-governance" }
 forge-context = { path = "crates/forge-context" }
 forge-connect = { path = "crates/forge-connect" }
+forge-test-support = { path = "crates/forge-test-support" }
 sha2 = "0.10"
 hex = "0.4"
