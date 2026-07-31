@@ -3,6 +3,7 @@
 mod completion;
 mod lifecycle;
 mod queue;
+mod resume;
 mod stream;
 
 pub use stream::{
@@ -482,6 +483,8 @@ pub struct AgentSession {
     /// turn, for callers/tests that want the machine-readable reason behind
     /// `status` without re-deriving it from messages.
     pub last_completion: Option<CompletionDecision>,
+    /// Journaled tool results indexed by call id — used to avoid re-execution on resume.
+    journaled_tool_results: HashMap<String, forge_durable::ToolResultPayload>,
 }
 
 impl AgentSession {
@@ -526,9 +529,11 @@ impl AgentSession {
             messages.insert(0, system_message);
         }
         for incomplete in &state.incomplete_intents {
-            warn!(call_id = %incomplete, "incomplete tool intent on resume (fail-safe)");
+            warn!(call_id = %incomplete, "incomplete tool intent on resume");
         }
 
+        let incomplete = state.incomplete_intents.clone();
+        let journaled_tool_results = state.tool_results.clone();
         let active_root = context.workspace.clone();
         let wait_reason = restored_wait_reason(&state.pending_hitl);
         let queue = TaskQueue::from_restored(restored_queue_items(session_id, state.queue_items));
@@ -555,6 +560,8 @@ impl AgentSession {
         self.tool_ctx = ToolContext::new(active_root);
         self.context = context;
         self.token_usage = token_usage;
+        self.journaled_tool_results = journaled_tool_results;
+        self.reconcile_incomplete_intents(&incomplete).await?;
         // Stale Working without a live executor is Interrupted, not eternal Working.
         self.mark_interrupted_if_stale().await?;
         Ok(report)
@@ -609,6 +616,7 @@ impl AgentSession {
             turn_calls: Vec::new(),
             turn_evidence: ExecutionEvidence::new(),
             last_completion: None,
+            journaled_tool_results: HashMap::new(),
         })
     }
 
@@ -646,9 +654,10 @@ impl AgentSession {
             messages.insert(0, system_message);
         }
         for incomplete in &state.incomplete_intents {
-            warn!(call_id = %incomplete, "incomplete tool intent on resume (fail-safe)");
+            warn!(call_id = %incomplete, "incomplete tool intent on resume");
         }
 
+        let incomplete = state.incomplete_intents.clone();
         let active_root = loop_cfg.workspace.clone();
 
         let wait_reason = restored_wait_reason(&state.pending_hitl);
@@ -683,7 +692,9 @@ impl AgentSession {
             turn_calls: Vec::new(),
             turn_evidence: ExecutionEvidence::new(),
             last_completion: None,
+            journaled_tool_results: state.tool_results.clone(),
         };
+        session.reconcile_incomplete_intents(&incomplete).await?;
         // Legacy fallback: Running with no runtime becomes Interrupted (not guessed from text).
         session.mark_interrupted_if_stale().await?;
         Ok(session)
@@ -1653,6 +1664,9 @@ impl AgentSession {
         call: &ToolCall,
         budget: &mut ValidationBudget,
     ) -> Result<Option<ModelResponse>, LoopError> {
+        if self.try_serve_journaled_tool(call).await? {
+            return Ok(None);
+        }
         self.turn_calls.push(call.clone());
         let class = self
             .tools
@@ -1728,6 +1742,7 @@ impl AgentSession {
                     self.journal
                         .append_tool_result(self.session_id, call, &output)
                         .await?;
+                    self.remember_tool_result(call, &output);
                     self.messages.push(Message {
                         role: MessageRole::Tool,
                         content: output.content,
@@ -1762,6 +1777,7 @@ impl AgentSession {
                 self.journal
                     .append_tool_result(self.session_id, call, &output)
                     .await?;
+                self.remember_tool_result(call, &output);
                 self.messages.push(Message {
                     role: MessageRole::Tool,
                     content: output.content.clone(),
@@ -1818,6 +1834,7 @@ impl AgentSession {
                 self.journal
                     .append_tool_result(self.session_id, call, &output)
                     .await?;
+                self.remember_tool_result(call, &output);
                 self.messages.push(Message {
                     role: MessageRole::Tool,
                     content: output.content.clone(),
@@ -1885,6 +1902,7 @@ impl AgentSession {
             self.journal
                 .append_tool_result(self.session_id, &call, &output)
                 .await?;
+            self.remember_tool_result(&call, &output);
             self.messages.push(Message {
                 role: MessageRole::Tool,
                 content: output.content,
@@ -1954,6 +1972,9 @@ impl AgentSession {
         call: &ToolCall,
         budget: &mut ValidationBudget,
     ) -> Result<(), LoopError> {
+        if self.try_serve_journaled_tool(call).await? {
+            return Ok(());
+        }
         self.turn_calls.push(call.clone());
         self.journal
             .append_tool_intent(self.session_id, call)
@@ -1970,6 +1991,7 @@ impl AgentSession {
                 self.journal
                     .append_tool_result(self.session_id, call, &output)
                     .await?;
+                self.remember_tool_result(call, &output);
                 self.messages.push(Message {
                     role: MessageRole::Tool,
                     content: output.content,
@@ -1989,6 +2011,7 @@ impl AgentSession {
                 self.journal
                     .append_tool_result(self.session_id, call, &output)
                     .await?;
+                self.remember_tool_result(call, &output);
             }
         }
         Ok(())
@@ -2593,6 +2616,169 @@ mod tests {
         assert_eq!(resumed.token_usage.prompt_tokens, 30);
         assert_eq!(resumed.token_usage.completion_tokens, 6);
         assert_eq!(resumed.token_usage.model_steps, 2);
+    }
+
+    #[tokio::test]
+    async fn resume_serves_journaled_tool_without_reexecuting() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("f.txt"), "first").unwrap();
+        let model = Arc::new(MockModelClient::script(vec![
+            ModelResponse {
+                text: "".into(),
+                tool_calls: vec![ToolCall {
+                    id: "1".into(),
+                    name: "read_file".into(),
+                    arguments: json!({"path": "f.txt"}),
+                }],
+                usage: None,
+                thinking: None,
+            },
+            ModelResponse {
+                text: "done".into(),
+                tool_calls: vec![],
+                usage: None,
+                thinking: None,
+            },
+        ]));
+        let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        s.run_user_message("read").await.unwrap();
+        let session_id = s.session_id;
+        std::fs::write(dir.path().join("f.txt"), "second").unwrap();
+
+        let model = Arc::new(MockModelClient::script(vec![
+            ModelResponse {
+                text: "".into(),
+                tool_calls: vec![ToolCall {
+                    id: "1".into(),
+                    name: "read_file".into(),
+                    arguments: json!({"path": "f.txt"}),
+                }],
+                usage: None,
+                thinking: None,
+            },
+            ModelResponse {
+                text: "done again".into(),
+                tool_calls: vec![],
+                usage: None,
+                thinking: None,
+            },
+        ]));
+        let mut resumed =
+            AgentSession::resume(base_cfg(dir.path()), model, ToolRegistry::new(), session_id)
+                .await
+                .unwrap();
+        resumed.run_user_message("read again").await.unwrap();
+        let tool_messages: Vec<_> = resumed
+            .messages
+            .iter()
+            .filter(|message| message.role == MessageRole::Tool)
+            .collect();
+        assert_eq!(tool_messages.len(), 1);
+        assert!(tool_messages[0].content.contains("first"));
+        assert!(!tool_messages[0].content.contains("second"));
+    }
+
+    #[tokio::test]
+    async fn resume_reconciles_non_idempotent_incomplete_intent() {
+        use forge_durable::{new_session_id, Journal};
+
+        let dir = tempdir().unwrap();
+        let journal_dir = dir.path().join("j");
+        let sid = new_session_id();
+        let journal = Journal::open(&journal_dir, sid).await.unwrap();
+        journal.append_session_created(sid).await.unwrap();
+        journal.append_user_message(sid, "run").await.unwrap();
+        let call = ToolCall {
+            id: "c1".into(),
+            name: "bash".into(),
+            arguments: json!({"command": "echo hi"}),
+        };
+        let response = ModelResponse {
+            text: String::new(),
+            tool_calls: vec![call.clone()],
+            usage: None,
+            thinking: None,
+        };
+        journal
+            .append_model_response(sid, serde_json::to_value(&response).unwrap())
+            .await
+            .unwrap();
+        journal.append_tool_intent(sid, &call).await.unwrap();
+
+        let resumed = AgentSession::resume(
+            base_cfg(dir.path()),
+            Arc::new(MockModelClient::script(vec![])),
+            ToolRegistry::new(),
+            sid,
+        )
+        .await
+        .unwrap();
+        let tool = resumed
+            .messages
+            .iter()
+            .find(|message| message.role == MessageRole::Tool)
+            .expect("synthetic tool result");
+        assert!(tool.content.contains("not marked idempotent"));
+        let state = Journal::open(&journal_dir, sid)
+            .await
+            .unwrap()
+            .replay(sid)
+            .await
+            .unwrap();
+        assert!(state.incomplete_intents.is_empty());
+    }
+
+    #[tokio::test]
+    async fn resume_retries_idempotent_incomplete_intent() {
+        use forge_durable::{new_session_id, Journal};
+
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("f.txt"), "payload").unwrap();
+        let journal_dir = dir.path().join("j");
+        let sid = new_session_id();
+        let journal = Journal::open(&journal_dir, sid).await.unwrap();
+        journal.append_session_created(sid).await.unwrap();
+        journal.append_user_message(sid, "read").await.unwrap();
+        let call = ToolCall {
+            id: "c1".into(),
+            name: "read_file".into(),
+            arguments: json!({"path": "f.txt"}),
+        };
+        let response = ModelResponse {
+            text: String::new(),
+            tool_calls: vec![call.clone()],
+            usage: None,
+            thinking: None,
+        };
+        journal
+            .append_model_response(sid, serde_json::to_value(&response).unwrap())
+            .await
+            .unwrap();
+        journal.append_tool_intent(sid, &call).await.unwrap();
+
+        let resumed = AgentSession::resume(
+            base_cfg(dir.path()),
+            Arc::new(MockModelClient::script(vec![])),
+            ToolRegistry::new(),
+            sid,
+        )
+        .await
+        .unwrap();
+        let tool = resumed
+            .messages
+            .iter()
+            .find(|message| message.role == MessageRole::Tool)
+            .expect("retried tool result");
+        assert!(tool.content.contains("payload"));
+        let state = Journal::open(&journal_dir, sid)
+            .await
+            .unwrap()
+            .replay(sid)
+            .await
+            .unwrap();
+        assert!(state.incomplete_intents.is_empty());
     }
 
     #[tokio::test]
