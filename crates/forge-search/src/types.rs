@@ -7,6 +7,9 @@ pub struct FileSearchHit {
     pub score: i32,
     /// Normalized relevance in `[0.0, 1.0]` relative to the top hit in this result set.
     pub relevance: f32,
+    /// Byte ranges `(start, end)` within `path` that matched the query.
+    #[serde(default)]
+    pub match_ranges: Vec<(u32, u32)>,
 }
 
 /// A full-text grep hit with optional surrounding context.
