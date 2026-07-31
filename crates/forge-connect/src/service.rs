@@ -1463,4 +1463,44 @@ mod tests {
         assert!(matches!(err, ConnectError::Verify(_)));
         assert!(err.to_string().contains("unauthorized"));
     }
+
+    #[test]
+    fn connect_api_key_verifies_opencode_go_and_ollama_against_profile_base_url() {
+        use forge_test_support::mock_http;
+
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+        let mut reg = ConnectRegistry::new();
+
+        let mut go = crate::opencode_go::opencode_go_profile();
+        go.default_base_url = Some(mock_http(vec![(
+            200,
+            r#"{"data":[{"id":"gpt-4.1-mini"}]}"#,
+            vec![],
+        )]));
+        reg.register(go);
+
+        let mut ollama = crate::ollama::ollama_profile();
+        ollama.default_base_url = Some(mock_http(vec![(200, r#"{"models":[]}"#, vec![])]));
+        reg.register(ollama);
+
+        let mut svc = ConnectService {
+            registry: &reg,
+            store: &store,
+            active_profile_id: None,
+            active_model: None,
+        };
+
+        let go_outcome = svc
+            .connect_api_key("opencode_go", Some("go-valid-key-for-tests"))
+            .unwrap();
+        assert_eq!(go_outcome.key_source, KeySource::Provided);
+        assert_eq!(svc.active_profile_id.as_deref(), Some("opencode_go"));
+
+        svc.active_profile_id = None;
+        svc.active_model = None;
+        let ollama_outcome = svc.connect_api_key("ollama", None).unwrap();
+        assert_eq!(ollama_outcome.key_source, KeySource::Provided);
+        assert_eq!(svc.active_profile_id.as_deref(), Some("ollama"));
+    }
 }
