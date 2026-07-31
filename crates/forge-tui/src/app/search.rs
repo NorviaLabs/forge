@@ -56,6 +56,7 @@ impl TuiApp {
                     .map(|hit| QuickOpenItem {
                         path: hit.path,
                         score: hit.score,
+                        match_ranges: hit.match_ranges,
                     })
                     .collect();
                 if hits.is_empty() {
