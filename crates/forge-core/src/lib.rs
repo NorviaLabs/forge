@@ -1,6 +1,15 @@
 //! Agent loop — Phase 1 base + Phase 2 hooks (context, HITL, governance).
 
-use std::path::PathBuf;
+mod completion;
+
+pub use completion::{
+    CompletionDecision, CompletionEvaluator, CompletionReason, DefaultCompletionEvaluator,
+    EvidenceEntry, EvidenceSummary, ExecutionEvent, ExecutionEvidence, FileEffectExpectation,
+    FileEffectKind, GitEffectExpectation, GitEffectKind, TaskExpectation, ToolExpectation,
+};
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use forge_config::WebSearchConfig;
@@ -45,6 +54,200 @@ fn assemble_system_prompt(agents_md: &str, skills: &[(String, String)]) -> Strin
 /// Durable marker for a terminal turn failure summary in session messages.
 /// Presentation maps this to TurnFailure; it is never a user-facing answer.
 pub const TURN_FAILED_MARKER: &str = "[forge.turn_failed]";
+
+// --- Completion-evidence helpers -------------------------------------------
+//
+// These are pure/near-pure helpers used to classify a turn's expectation and
+// to build `EvidenceEntry` values from real tool calls and filesystem state.
+// None of them read the model's own text.
+
+/// Lightweight, local mirror of `forge_tools::builtins::GitArgs` so this
+/// module doesn't need to depend on that crate's private argument shape —
+/// just enough to recover the subcommand and its arguments from a `ToolCall`.
+#[derive(serde::Deserialize)]
+struct GitCallArgsLite {
+    subcommand: String,
+    #[serde(default)]
+    args: Vec<String>,
+}
+
+fn truncate(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(max_chars).collect();
+        out.push('…');
+        out
+    }
+}
+
+/// Content hash of a workspace file. `None` means the path does not exist
+/// (or isn't readable) — the convention `EvidenceEntry` documents.
+async fn hash_file(path: &Path) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    let bytes = tokio::fs::read(path).await.ok()?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    Some(hasher.finish())
+}
+
+/// Parse `*** Add/Update/Delete File: <path>` header lines out of an
+/// `apply_patch` call's own `patch` argument. Deliberately does not
+/// duplicate the tool's hunk-application logic — only enough to know which
+/// paths a patch touched and whether the file should end up present or gone.
+fn parse_patch_paths(patch: &str) -> Vec<(String, FileEffectKind)> {
+    patch
+        .lines()
+        .filter_map(|line| {
+            for (prefix, kind) in [
+                ("*** Add File: ", FileEffectKind::Modified),
+                ("*** Update File: ", FileEffectKind::Modified),
+                ("*** Delete File: ", FileEffectKind::Deleted),
+            ] {
+                if let Some(p) = line.strip_prefix(prefix) {
+                    return Some((p.to_string(), kind));
+                }
+            }
+            None
+        })
+        .collect()
+}
+
+/// A short label for a bash call, e.g. `"cargo test"`, used both to classify
+/// the turn and to name the operation in evidence/user-facing messages.
+fn bash_label(arguments: &serde_json::Value) -> String {
+    let command = arguments
+        .get("command")
+        .and_then(|v| v.as_str())
+        .unwrap_or("bash")
+        .trim();
+    let first_line = command.lines().next().unwrap_or(command);
+    truncate(first_line, 60)
+}
+
+fn git_effect_kind(subcommand: &str) -> GitEffectKind {
+    match subcommand {
+        "commit" => GitEffectKind::CommitCreated,
+        "add" => GitEffectKind::Staged,
+        "checkout" | "switch" => GitEffectKind::BranchChanged,
+        "restore" => GitEffectKind::Restored,
+        _ => GitEffectKind::CommandOnly,
+    }
+}
+
+/// Collapse repeated attempts at the same target down to the last one, order
+/// otherwise unspecified. A model that retries a failed write/command/git
+/// call until it succeeds should only be judged on the final attempt, not
+/// penalized for the earlier failures — this is what makes that distinction
+/// from "5 required edits, 3 succeeded" (genuinely distinct targets).
+fn dedup_keep_last<T: Clone>(items: Vec<T>, key_fn: impl Fn(&T) -> String) -> Vec<T> {
+    let mut map: HashMap<String, T> = HashMap::new();
+    let mut order: Vec<String> = Vec::new();
+    for item in items {
+        let key = key_fn(&item);
+        if !map.contains_key(&key) {
+            order.push(key.clone());
+        }
+        map.insert(key, item);
+    }
+    order
+        .into_iter()
+        .filter_map(|key| map.remove(&key))
+        .collect()
+}
+
+/// Classify a finished turn's expectation from the tool calls the model
+/// actually issued — not from natural-language intent inference over the
+/// user's request. Precedence (a turn can only be one category):
+/// `GitOperation > FileEdit > ToolExecution > Search > ReadOnly`.
+fn classify_turn(calls: &[ToolCall]) -> TaskExpectation {
+    let mut git_items: Vec<(String, String, GitEffectKind)> = Vec::new();
+    let mut file_items: Vec<(String, String, FileEffectKind)> = Vec::new();
+    let mut tool_items: Vec<(String, String)> = Vec::new();
+    let mut search_count = 0usize;
+
+    for call in calls {
+        match call.name.as_str() {
+            "git" => {
+                if let Ok(a) = serde_json::from_value::<GitCallArgsLite>(call.arguments.clone()) {
+                    let sub = a.subcommand.trim().to_ascii_lowercase();
+                    git_items.push((call.id.clone(), sub.clone(), git_effect_kind(&sub)));
+                }
+            }
+            "write_file" => {
+                if let Some(path) = call.arguments.get("path").and_then(|v| v.as_str()) {
+                    file_items.push((call.id.clone(), path.to_string(), FileEffectKind::Modified));
+                }
+            }
+            "apply_patch" => {
+                if let Some(patch) = call.arguments.get("patch").and_then(|v| v.as_str()) {
+                    for (path, kind) in parse_patch_paths(patch) {
+                        file_items.push((call.id.clone(), path, kind));
+                    }
+                }
+            }
+            "bash" => tool_items.push((call.id.clone(), bash_label(&call.arguments))),
+            "fffind" | "ffgrep" => search_count += 1,
+            _ => {}
+        }
+    }
+
+    if !git_items.is_empty() {
+        let deduped = dedup_keep_last(git_items, |(_, sub, _)| sub.clone());
+        return TaskExpectation::GitOperation {
+            expected_effects: deduped
+                .into_iter()
+                .map(|(operation_id, command, effect)| GitEffectExpectation {
+                    operation_id,
+                    command,
+                    effect,
+                })
+                .collect(),
+        };
+    }
+    if !file_items.is_empty() {
+        let deduped = dedup_keep_last(file_items, |(_, path, _)| path.clone());
+        return TaskExpectation::FileEdit {
+            expected_effects: deduped
+                .into_iter()
+                .map(|(operation_id, path, kind)| FileEffectExpectation {
+                    operation_id,
+                    path,
+                    kind,
+                })
+                .collect(),
+        };
+    }
+    if !tool_items.is_empty() {
+        let deduped = dedup_keep_last(tool_items, |(_, label)| label.clone());
+        return TaskExpectation::ToolExecution {
+            required_tools: deduped
+                .into_iter()
+                .map(|(operation_id, tool_name)| ToolExpectation {
+                    operation_id,
+                    tool_name,
+                })
+                .collect(),
+        };
+    }
+    if search_count > 0 {
+        return TaskExpectation::Search {
+            required_operations: search_count,
+        };
+    }
+    TaskExpectation::ReadOnly
+}
+
+/// Pre-call git state needed to verify a subcommand's repository effect
+/// afterward. `None`-shaped variants mean "not practical to verify" per
+/// subcommand.
+#[derive(Clone)]
+enum GitPre {
+    Head(Option<String>),
+    Branch(Option<String>),
+    RestorePath(Option<String>),
+    NotVerified,
+}
 
 /// Remove structural protocol control markers from final-answer text before
 /// persistence. Not phrase filtering — only known control envelopes.
@@ -214,6 +417,16 @@ pub struct AgentSession {
     pub token_usage: SessionTokenUsage,
     /// Validation failures within the current user turn (not persisted).
     validation_budget: ValidationBudget,
+    /// Tool calls issued so far in the current user turn — reset in
+    /// `append_user_message`. Feeds `classify_turn` at the end of the turn.
+    turn_calls: Vec<ToolCall>,
+    /// Runtime-observed evidence collected so far in the current user turn —
+    /// reset in `append_user_message`. Never derived from assistant text.
+    turn_evidence: ExecutionEvidence,
+    /// The `CompletionEvaluator` decision for the most recently finished
+    /// turn, for callers/tests that want the machine-readable reason behind
+    /// `status` without re-deriving it from messages.
+    pub last_completion: Option<CompletionDecision>,
 }
 
 impl AgentSession {
@@ -339,6 +552,9 @@ impl AgentSession {
             enable_gov: loop_cfg.enable_governance,
             token_usage: SessionTokenUsage::default(),
             validation_budget: ValidationBudget::with_default_max(),
+            turn_calls: Vec::new(),
+            turn_evidence: ExecutionEvidence::new(),
+            last_completion: None,
         })
     }
 
@@ -411,6 +627,9 @@ impl AgentSession {
             enable_gov: loop_cfg.enable_governance,
             token_usage,
             validation_budget: ValidationBudget::with_default_max(),
+            turn_calls: Vec::new(),
+            turn_evidence: ExecutionEvidence::new(),
+            last_completion: None,
         };
         // Legacy fallback: Running with no runtime becomes Interrupted (not guessed from text).
         session.mark_interrupted_if_stale().await?;
@@ -576,6 +795,11 @@ impl AgentSession {
         self.status = SessionStatus::Running;
         // Fresh validation budget for each user turn.
         self.validation_budget = ValidationBudget::with_default_max();
+        // Fresh completion-evidence bookkeeping for each user turn — a prior
+        // turn's tool calls/evidence must never leak into this one's decision.
+        self.turn_calls = Vec::new();
+        self.turn_evidence = ExecutionEvidence::new();
+        self.last_completion = None;
         Ok(())
     }
 
@@ -655,23 +879,61 @@ impl AgentSession {
         }
 
         if last.tool_calls.is_empty() {
-            if final_text.is_empty() {
-                // No durable final answer. If the turn already did tool/validation
-                // work, this is a failed terminal state — not silent success.
-                if self.current_turn_has_tool_activity() {
+            // Once a turn has reached a terminal state, a stray extra model
+            // step (e.g. a caller re-driving `apply_model_response` outside
+            // the normal `run_agent_turns` loop) must never resurrect or
+            // overwrite it — a new attempt only starts via a new user
+            // message (`append_user_message`), which resets `status` itself.
+            if matches!(
+                self.status,
+                SessionStatus::Completed
+                    | SessionStatus::Failed
+                    | SessionStatus::Cancelled
+                    | SessionStatus::Interrupted
+            ) {
+                return Ok(ApplyOutcome::Done(last));
+            }
+            // No durable final answer *and* the turn already did tool/validation
+            // work: a failed terminal state, not silent success. An idle / no-op
+            // response with no prior activity still counts as a valid (empty)
+            // answer below — unchanged from before this evaluator existed.
+            if final_text.is_empty() && self.current_turn_has_tool_activity() {
+                self.finalize_turn_failure("Forge couldn't complete this turn.", "no_final_answer")
+                    .await?;
+                return Ok(ApplyOutcome::Done(last));
+            }
+            self.turn_evidence.push(EvidenceEntry::new(
+                ExecutionEvent::AssistantResponseProduced,
+            ));
+
+            // The model's own words never decide this — only the expectation
+            // derived from tool calls actually issued this turn, and the
+            // evidence those calls produced.
+            let expectation = classify_turn(&self.turn_calls);
+            let decision = DefaultCompletionEvaluator.evaluate(&expectation, &self.turn_evidence);
+            tracing::debug!(
+                expectation = ?expectation,
+                evidence_count = self.turn_evidence.0.len(),
+                reason = decision.reason.as_category(),
+                state = ?decision.state,
+                "turn completion decision"
+            );
+            match decision.state {
+                SessionStatus::Completed => {
+                    self.status = SessionStatus::Completed;
+                    self.journal
+                        .append_status(self.session_id, SessionStatus::Completed)
+                        .await?;
+                }
+                _ => {
                     self.finalize_turn_failure(
-                        "Forge couldn't complete this turn.",
-                        "no_final_answer",
+                        &decision.evidence_summary.detail,
+                        decision.reason.as_category(),
                     )
                     .await?;
-                    return Ok(ApplyOutcome::Done(last));
                 }
-                // Idle / no-op response with no tools: still complete cleanly.
             }
-            self.status = SessionStatus::Completed;
-            self.journal
-                .append_status(self.session_id, SessionStatus::Completed)
-                .await?;
+            self.last_completion = Some(decision);
             return Ok(ApplyOutcome::Done(last));
         }
 
@@ -885,12 +1147,288 @@ impl AgentSession {
         Err(LoopError::Other("max_turns exceeded".into()))
     }
 
+    async fn hash_workspace_path(&self, relative: &str) -> Option<u64> {
+        hash_file(&self.tool_ctx.workspace_root.join(relative)).await
+    }
+
+    /// Read-only `git` invocation used only to capture before/after state for
+    /// effect verification — never one of the mutating tool-facing commands.
+    async fn run_git_readonly(&self, args: &[&str]) -> Option<String> {
+        let out = tokio::process::Command::new("git")
+            .args(args)
+            .current_dir(&self.tool_ctx.workspace_root)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .await
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    }
+
+    /// Pre-call content hashes for the path(s) a `write_file`/`apply_patch`
+    /// call is about to touch. `None` for any other tool.
+    async fn pre_edit_snapshot(&self, call: &ToolCall) -> Option<Vec<(String, Option<u64>)>> {
+        match call.name.as_str() {
+            "write_file" => {
+                let path = call.arguments.get("path")?.as_str()?.to_string();
+                let hash = self.hash_workspace_path(&path).await;
+                Some(vec![(path, hash)])
+            }
+            "apply_patch" => {
+                let patch = call.arguments.get("patch")?.as_str()?;
+                let mut out = Vec::new();
+                for (path, _kind) in parse_patch_paths(patch) {
+                    let hash = self.hash_workspace_path(&path).await;
+                    out.push((path, hash));
+                }
+                Some(out)
+            }
+            _ => None,
+        }
+    }
+
+    /// Pre-call git state needed to verify the requested effect afterward.
+    /// `None` for any non-`git` tool.
+    async fn git_pre_state(&self, call: &ToolCall) -> Option<GitPre> {
+        if call.name != "git" {
+            return None;
+        }
+        let a: GitCallArgsLite = serde_json::from_value(call.arguments.clone()).ok()?;
+        let sub = a.subcommand.trim().to_ascii_lowercase();
+        Some(match sub.as_str() {
+            "commit" => GitPre::Head(self.run_git_readonly(&["rev-parse", "HEAD"]).await),
+            "checkout" | "switch" => GitPre::Branch(
+                self.run_git_readonly(&["rev-parse", "--abbrev-ref", "HEAD"])
+                    .await,
+            ),
+            "restore" => {
+                GitPre::RestorePath(a.args.iter().rev().find(|s| !s.starts_with('-')).cloned())
+            }
+            "add" => GitPre::NotVerified, // verified post-hoc from staged state, no pre-check needed
+            _ => GitPre::NotVerified,
+        })
+    }
+
+    async fn pre_tool_state(
+        &self,
+        call: &ToolCall,
+    ) -> (Option<Vec<(String, Option<u64>)>>, Option<GitPre>) {
+        (
+            self.pre_edit_snapshot(call).await,
+            self.git_pre_state(call).await,
+        )
+    }
+
+    /// Build evidence for a `write_file`/`apply_patch` call from its
+    /// pre-call content hashes and the tool's own success/failure report.
+    /// Post-call state is re-read from the filesystem — never trusted from
+    /// the tool's text output alone.
+    async fn push_file_edit_evidence(
+        &mut self,
+        call: &ToolCall,
+        pre: Vec<(String, Option<u64>)>,
+        output: &ToolOutput,
+    ) {
+        match call.name.as_str() {
+            "write_file" => {
+                let Some((path, pre_hash)) = pre.into_iter().next() else {
+                    return;
+                };
+                let post_hash = self.hash_workspace_path(&path).await;
+                let event = if output.is_error {
+                    ExecutionEvent::ToolFailed
+                } else if pre_hash.is_none() {
+                    ExecutionEvent::FileCreated
+                } else {
+                    ExecutionEvent::FileWritten
+                };
+                let mut entry = EvidenceEntry::new(event)
+                    .operation_id(call.id.clone())
+                    .tool_name("write_file")
+                    .path(path)
+                    .checksum_before(pre_hash)
+                    .checksum_after(post_hash);
+                if output.is_error {
+                    entry = entry.error(truncate(&output.content, 200));
+                }
+                self.turn_evidence.push(entry);
+            }
+            "apply_patch" => {
+                for (path, pre_hash) in pre {
+                    let post_hash = self.hash_workspace_path(&path).await;
+                    let event = if output.is_error {
+                        ExecutionEvent::PatchRejected
+                    } else {
+                        ExecutionEvent::PatchApplied
+                    };
+                    let mut entry = EvidenceEntry::new(event)
+                        .operation_id(call.id.clone())
+                        .tool_name("apply_patch")
+                        .path(path)
+                        .checksum_before(pre_hash)
+                        .checksum_after(post_hash);
+                    if output.is_error {
+                        entry = entry.error(truncate(&output.content, 200));
+                    }
+                    self.turn_evidence.push(entry);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Build evidence for a `git` call, verifying the subcommand's expected
+    /// repository effect where practical (see `GitPre`).
+    async fn push_git_evidence(
+        &mut self,
+        call: &ToolCall,
+        pre: Option<GitPre>,
+        output: &ToolOutput,
+    ) {
+        let Ok(a) = serde_json::from_value::<GitCallArgsLite>(call.arguments.clone()) else {
+            return;
+        };
+        let sub = a.subcommand.trim().to_ascii_lowercase();
+        let mut entry = EvidenceEntry::new(if output.is_error {
+            ExecutionEvent::GitCommandFailed
+        } else {
+            ExecutionEvent::GitCommandSucceeded
+        })
+        .operation_id(call.id.clone())
+        .tool_name("git")
+        .git_command(sub.clone());
+
+        if output.is_error {
+            entry = entry.error(truncate(&output.content, 200));
+            self.turn_evidence.push(entry);
+            return;
+        }
+
+        let verified = match pre {
+            Some(GitPre::Head(pre_head)) => {
+                let post_head = self.run_git_readonly(&["rev-parse", "HEAD"]).await;
+                Some(pre_head != post_head)
+            }
+            Some(GitPre::Branch(pre_branch)) => {
+                let post_branch = self
+                    .run_git_readonly(&["rev-parse", "--abbrev-ref", "HEAD"])
+                    .await;
+                Some(pre_branch != post_branch)
+            }
+            Some(GitPre::RestorePath(Some(path))) => {
+                let still_dirty = self
+                    .run_git_readonly(&["diff", "--name-only", "--", &path])
+                    .await
+                    .map(|s| !s.trim().is_empty())
+                    .unwrap_or(true);
+                Some(!still_dirty)
+            }
+            _ if sub == "add" => {
+                let staged = self
+                    .run_git_readonly(&["diff", "--cached", "--name-only"])
+                    .await;
+                Some(staged.map(|s| !s.trim().is_empty()).unwrap_or(false))
+            }
+            _ => None,
+        };
+        entry = entry.git_effect_verified(verified);
+        self.turn_evidence.push(entry);
+    }
+
+    fn push_search_evidence(&mut self, call: &ToolCall, output: &ToolOutput) {
+        let event = if output.is_error {
+            ExecutionEvent::SearchFailed
+        } else {
+            ExecutionEvent::SearchFinished
+        };
+        let mut entry = EvidenceEntry::new(event)
+            .operation_id(call.id.clone())
+            .tool_name(call.name.clone());
+        if output.is_error {
+            entry = entry.error(truncate(&output.content, 200));
+        } else {
+            let count = if output.content.trim() == "no matches found" {
+                0
+            } else {
+                output.content.lines().count()
+            };
+            entry = entry.count(count);
+        }
+        self.turn_evidence.push(entry);
+    }
+
+    fn push_bash_evidence(&mut self, call: &ToolCall, output: &ToolOutput) {
+        let event = if output.is_error {
+            ExecutionEvent::ToolFailed
+        } else {
+            ExecutionEvent::ToolFinished
+        };
+        let mut entry = EvidenceEntry::new(event)
+            .operation_id(call.id.clone())
+            .tool_name(bash_label(&call.arguments));
+        if let Some(code) = output.exit_code {
+            entry = entry.exit_code(code);
+        }
+        if output.is_error {
+            entry = entry.error(truncate(&output.content, 200));
+        }
+        self.turn_evidence.push(entry);
+    }
+
+    /// Dispatches to the right evidence builder for a successfully-dispatched
+    /// tool call (the tool itself may still report `is_error`). No-op for
+    /// tools with no completion-relevant side effect (e.g. `read_file`).
+    async fn push_success_evidence(
+        &mut self,
+        call: &ToolCall,
+        pre_edit: Option<Vec<(String, Option<u64>)>>,
+        pre_git: Option<GitPre>,
+        output: &ToolOutput,
+    ) {
+        match call.name.as_str() {
+            "write_file" | "apply_patch" => {
+                if let Some(pre) = pre_edit {
+                    self.push_file_edit_evidence(call, pre, output).await;
+                }
+            }
+            "git" => self.push_git_evidence(call, pre_git, output).await,
+            "fffind" | "ffgrep" => self.push_search_evidence(call, output),
+            "bash" => self.push_bash_evidence(call, output),
+            _ => {}
+        }
+    }
+
+    /// Evidence for a call the runtime refused to execute at all (ACL denial,
+    /// HITL denial) — no filesystem/process ever ran, so there's nothing to
+    /// verify beyond recording the refusal.
+    fn push_denied_evidence(&mut self, call: &ToolCall, message: &str) {
+        let event = match call.name.as_str() {
+            "git" => ExecutionEvent::GitCommandFailed,
+            "write_file" | "apply_patch" => ExecutionEvent::PatchRejected,
+            "fffind" | "ffgrep" => ExecutionEvent::SearchFailed,
+            _ => ExecutionEvent::ToolFailed,
+        };
+        let mut entry = EvidenceEntry::new(event)
+            .operation_id(call.id.clone())
+            .tool_name(call.name.clone())
+            .error(truncate(message, 200));
+        if call.name == "git" {
+            if let Ok(a) = serde_json::from_value::<GitCallArgsLite>(call.arguments.clone()) {
+                entry = entry.git_command(a.subcommand.trim().to_ascii_lowercase());
+            }
+        }
+        self.turn_evidence.push(entry);
+    }
+
     /// Returns Some(response) if paused for HITL.
     async fn run_one_tool(
         &mut self,
         call: &ToolCall,
         budget: &mut ValidationBudget,
     ) -> Result<Option<ModelResponse>, LoopError> {
+        self.turn_calls.push(call.clone());
         let class = self
             .tools
             .get(&call.name)
@@ -931,6 +1469,11 @@ impl AgentSession {
                         kind: "hitl_wait".into(),
                         detail: payload.tool.clone(),
                     });
+                    self.turn_evidence.push(
+                        EvidenceEntry::new(ExecutionEvent::WaitingForUser)
+                            .operation_id(call.id.clone())
+                            .tool_name(call.name.clone()),
+                    );
                     return Ok(Some(ModelResponse {
                         text: format!("Awaiting HITL approval for tool {}", call.name),
                         tool_calls: vec![call.clone()],
@@ -947,7 +1490,9 @@ impl AgentSession {
                     let output = ToolOutput {
                         content: format!("denied by ACL: {}", call.name),
                         is_error: true,
+                        exit_code: None,
                     };
+                    self.push_denied_evidence(call, &output.content);
                     self.journal
                         .append_tool_intent(self.session_id, call)
                         .await?;
@@ -972,12 +1517,16 @@ impl AgentSession {
             .append_tool_intent(self.session_id, call)
             .await?;
 
+        let (pre_edit, pre_git) = self.pre_tool_state(call).await;
+
         match self
             .tools
             .call(&self.tool_ctx, &call.name, call.arguments.clone(), budget)
             .await
         {
             Ok(mut output) => {
+                self.push_success_evidence(call, pre_edit, pre_git, &output)
+                    .await;
                 if self.enable_context {
                     output.content = self.context.maybe_offload_tool_content(output.content)?;
                 }
@@ -1035,6 +1584,7 @@ impl AgentSession {
                         content
                     },
                     is_error: true,
+                    exit_code: None,
                 };
                 self.journal
                     .append_tool_result(self.session_id, call, &output)
@@ -1088,12 +1638,15 @@ impl AgentSession {
             let output = ToolOutput {
                 content: format!("HITL denied by {actor}"),
                 is_error: true,
+                exit_code: None,
             };
             let call = ToolCall {
                 id: payload.call_id.clone(),
                 name: payload.tool.clone(),
                 arguments: payload.args_redacted.clone(),
             };
+            self.turn_calls.push(call.clone());
+            self.push_denied_evidence(&call, &output.content);
             self.journal
                 .append_tool_intent(self.session_id, &call)
                 .await?;
@@ -1164,15 +1717,19 @@ impl AgentSession {
         call: &ToolCall,
         budget: &mut ValidationBudget,
     ) -> Result<(), LoopError> {
+        self.turn_calls.push(call.clone());
         self.journal
             .append_tool_intent(self.session_id, call)
             .await?;
+        let (pre_edit, pre_git) = self.pre_tool_state(call).await;
         match self
             .tools
             .call(&self.tool_ctx, &call.name, call.arguments.clone(), budget)
             .await
         {
             Ok(output) => {
+                self.push_success_evidence(call, pre_edit, pre_git, &output)
+                    .await;
                 self.journal
                     .append_tool_result(self.session_id, call, &output)
                     .await?;
@@ -1190,6 +1747,7 @@ impl AgentSession {
                 let output = ToolOutput {
                     content: e.to_string(),
                     is_error: true,
+                    exit_code: None,
                 };
                 self.journal
                     .append_tool_result(self.session_id, call, &output)
@@ -2128,5 +2686,300 @@ mod tests {
 
         assert_eq!(s.messages.len(), before);
         assert!(s.journal_cursor().await.unwrap() > 0);
+    }
+
+    // --- Verified Task Completion: integration tests --------------------
+
+    /// Governance/HITL gating is orthogonal to completion verification —
+    /// these tests disable it so a tool call executes directly and the
+    /// evaluator's evidence-based decision is what's under test.
+    fn no_gov_cfg(dir: &std::path::Path) -> LoopConfig {
+        LoopConfig {
+            enable_governance: false,
+            ..base_cfg(dir)
+        }
+    }
+
+    fn script(responses: Vec<ModelResponse>) -> Arc<MockModelClient> {
+        Arc::new(MockModelClient::script(responses))
+    }
+
+    fn text_only(text: &str) -> ModelResponse {
+        ModelResponse {
+            text: text.into(),
+            tool_calls: vec![],
+            usage: None,
+            thinking: None,
+        }
+    }
+
+    fn tool_call_response(calls: Vec<ToolCall>) -> ModelResponse {
+        ModelResponse {
+            text: "".into(),
+            tool_calls: calls,
+            usage: None,
+            thinking: None,
+        }
+    }
+
+    async fn git(dir: &std::path::Path, args: &[&str]) {
+        let status = tokio::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .await
+            .unwrap();
+        assert!(status.success(), "git {args:?} failed");
+    }
+
+    async fn init_repo(dir: &std::path::Path) {
+        git(dir, &["init", "-q"]).await;
+        git(dir, &["config", "user.email", "forge@example.com"]).await;
+        git(dir, &["config", "user.name", "Forge Test"]).await;
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        git(dir, &["add", "a.txt"]).await;
+        git(dir, &["commit", "-q", "-m", "init"]).await;
+    }
+
+    // Model claims a write succeeded ("Done") but the tool never actually
+    // performed one — a turn with a file-edit expectation but no matching
+    // verified evidence must fail, never trust the narration.
+    #[tokio::test]
+    async fn model_claims_success_without_a_verified_edit_fails() {
+        let dir = tempdir().unwrap();
+        let model = script(vec![
+            tool_call_response(vec![ToolCall {
+                id: "1".into(),
+                name: "apply_patch".into(),
+                arguments: json!({
+                    "patch": "*** Begin Patch\n*** Delete File: missing.txt\n*** End Patch"
+                }),
+            }]),
+            text_only("Done — file removed."),
+        ]);
+        let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        s.run_user_message("delete missing.txt").await.unwrap();
+        assert_eq!(s.status, SessionStatus::Failed);
+        assert!(s
+            .messages
+            .iter()
+            .any(|m| m.content.starts_with(TURN_FAILED_MARKER)));
+    }
+
+    #[tokio::test]
+    async fn write_file_success_completes() {
+        let dir = tempdir().unwrap();
+        let model = script(vec![
+            tool_call_response(vec![ToolCall {
+                id: "1".into(),
+                name: "write_file".into(),
+                arguments: json!({"path": "new.txt", "content": "hello\n"}),
+            }]),
+            text_only("Created new.txt."),
+        ]);
+        let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        s.run_user_message("create new.txt").await.unwrap();
+        assert_eq!(s.status, SessionStatus::Completed);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("new.txt")).unwrap(),
+            "hello\n"
+        );
+        assert_eq!(
+            s.last_completion.as_ref().unwrap().reason,
+            CompletionReason::EditVerified
+        );
+    }
+
+    #[tokio::test]
+    async fn bash_nonzero_exit_fails_with_exit_code_in_message() {
+        let dir = tempdir().unwrap();
+        let model = script(vec![
+            tool_call_response(vec![ToolCall {
+                id: "1".into(),
+                name: "bash".into(),
+                arguments: json!({"command": "exit 7"}),
+            }]),
+            text_only("Ran the command."),
+        ]);
+        let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        s.run_user_message("run it").await.unwrap();
+        assert_eq!(s.status, SessionStatus::Failed);
+        let failure = s
+            .messages
+            .iter()
+            .find(|m| m.content.starts_with(TURN_FAILED_MARKER))
+            .unwrap();
+        assert!(
+            failure.content.contains("exited with code 7"),
+            "{}",
+            failure.content
+        );
+    }
+
+    #[tokio::test]
+    async fn search_zero_matches_completes() {
+        let dir = tempdir().unwrap();
+        let model = script(vec![
+            tool_call_response(vec![ToolCall {
+                id: "1".into(),
+                name: "ffgrep".into(),
+                arguments: json!({"pattern": "definitely_not_present_anywhere"}),
+            }]),
+            text_only("No matches found."),
+        ]);
+        let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        s.run_user_message("search for it").await.unwrap();
+        assert_eq!(s.status, SessionStatus::Completed);
+        assert_eq!(
+            s.last_completion.as_ref().unwrap().evidence_summary.detail,
+            "Search completed with 0 matches."
+        );
+    }
+
+    #[tokio::test]
+    async fn two_edits_one_fails_is_partial_failure_not_completed() {
+        let dir = tempdir().unwrap();
+        let model = script(vec![
+            tool_call_response(vec![
+                ToolCall {
+                    id: "1".into(),
+                    name: "write_file".into(),
+                    arguments: json!({"path": "ok.txt", "content": "fine\n"}),
+                },
+                ToolCall {
+                    id: "2".into(),
+                    name: "apply_patch".into(),
+                    arguments: json!({
+                        "patch": "*** Begin Patch\n*** Delete File: missing.txt\n*** End Patch"
+                    }),
+                },
+            ]),
+            text_only("Updated both files."),
+        ]);
+        let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        s.run_user_message("update both").await.unwrap();
+        assert_eq!(s.status, SessionStatus::Failed);
+        assert_eq!(
+            s.last_completion.as_ref().unwrap().reason,
+            CompletionReason::PartialFailure
+        );
+        // The successful half of the turn still happened on disk — the
+        // evaluator fails the turn without pretending the edit didn't occur.
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("ok.txt")).unwrap(),
+            "fine\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_only_turn_completes_without_tool_calls() {
+        let dir = tempdir().unwrap();
+        let model = script(vec![text_only("Forge is a Rust workspace.")]);
+        let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        s.run_user_message("what is this repo?").await.unwrap();
+        assert_eq!(s.status, SessionStatus::Completed);
+        assert_eq!(
+            s.last_completion.as_ref().unwrap().reason,
+            CompletionReason::NoChangesRequired
+        );
+    }
+
+    #[tokio::test]
+    async fn git_add_with_no_changes_fails_effect_not_observed() {
+        let dir = tempdir().unwrap();
+        init_repo(dir.path()).await;
+        let model = script(vec![
+            tool_call_response(vec![ToolCall {
+                id: "1".into(),
+                name: "git".into(),
+                arguments: json!({"subcommand": "add", "args": ["a.txt"]}),
+            }]),
+            text_only("Staged a.txt."),
+        ]);
+        let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        s.run_user_message("stage a.txt").await.unwrap();
+        assert_eq!(s.status, SessionStatus::Failed);
+        assert_eq!(
+            s.last_completion.as_ref().unwrap().reason,
+            CompletionReason::GitEffectNotObserved
+        );
+    }
+
+    #[tokio::test]
+    async fn git_add_then_commit_completes_with_verified_effect() {
+        let dir = tempdir().unwrap();
+        init_repo(dir.path()).await;
+        std::fs::write(dir.path().join("a.txt"), "one\ntwo\n").unwrap();
+        let model = script(vec![
+            tool_call_response(vec![
+                ToolCall {
+                    id: "1".into(),
+                    name: "git".into(),
+                    arguments: json!({"subcommand": "add", "args": ["a.txt"]}),
+                },
+                ToolCall {
+                    id: "2".into(),
+                    name: "git".into(),
+                    arguments: json!({"subcommand": "commit", "args": ["-m", "update a.txt"]}),
+                },
+            ]),
+            text_only("Committed the change."),
+        ]);
+        let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        s.run_user_message("commit the change").await.unwrap();
+        assert_eq!(s.status, SessionStatus::Completed);
+        assert_eq!(
+            s.last_completion.as_ref().unwrap().reason,
+            CompletionReason::GitEffectVerified
+        );
+    }
+
+    // A failed turn later receiving narration claiming success must never
+    // flip to Completed — terminal states are not overwritten by later
+    // model text, even via a direct (non-`run_agent_turns`) re-entry.
+    #[tokio::test]
+    async fn failed_turn_is_not_overwritten_by_later_success_narration() {
+        let dir = tempdir().unwrap();
+        let mut s = idle_session(dir.path()).await;
+        s.finalize_turn_failure("cargo test exited with code 101.", "tool_exited_nonzero")
+            .await
+            .unwrap();
+        assert_eq!(s.status, SessionStatus::Failed);
+
+        let outcome = s
+            .apply_model_response(text_only("Actually, all tests passed now!"))
+            .await
+            .unwrap();
+        assert_eq!(s.status, SessionStatus::Failed);
+        assert!(matches!(outcome, ApplyOutcome::Done(_)));
+    }
+
+    #[tokio::test]
+    async fn cancellation_yields_interrupted_and_never_completes() {
+        let dir = tempdir().unwrap();
+        let mut s = idle_session(dir.path()).await;
+        s.mark_cancelled().await.unwrap();
+        assert_eq!(s.status, SessionStatus::Cancelled);
+
+        // A later model step must not resurrect the turn into Completed.
+        let outcome = s.apply_model_response(text_only("Done!")).await.unwrap();
+        assert_eq!(s.status, SessionStatus::Cancelled);
+        assert!(matches!(outcome, ApplyOutcome::Done(_)));
     }
 }

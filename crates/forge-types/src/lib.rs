@@ -88,6 +88,10 @@ pub struct ToolOutput {
     pub content: String,
     #[serde(default)]
     pub is_error: bool,
+    /// Process exit code, when the tool ran an external command. `None` for
+    /// tools with no notion of an exit code, or when the process never ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
