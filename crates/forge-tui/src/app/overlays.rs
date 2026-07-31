@@ -144,11 +144,6 @@ impl TuiApp {
                 })
                 .await?;
             }
-            OverlayAction::InsertInput(s) => {
-                self.overlay = None;
-                self.input.text = s;
-                self.input.cursor = self.input.text.len();
-            }
             OverlayAction::SelectModel { provider, model } => {
                 self.apply_model_selection(&provider, &model);
                 self.open_effort_picker_for_model(&model);

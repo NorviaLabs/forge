@@ -33,11 +33,6 @@ pub enum Overlay {
     TurnLimit {
         turns: u32,
     },
-    Slash {
-        filter: String,
-        selected: usize,
-        items: Vec<PaletteItem>,
-    },
     Model {
         provider_selected: usize,
         model_selected: usize,
@@ -307,16 +302,6 @@ impl Overlay {
         Self::Help
     }
 
-    pub fn slash_open(filter: impl Into<String>) -> Self {
-        let filter = filter.into();
-        let items = filter_palette(&filter);
-        Self::Slash {
-            filter,
-            selected: 0,
-            items,
-        }
-    }
-
     pub fn model_open() -> Self {
         Self::model_open_with(default_models())
     }
@@ -520,19 +505,6 @@ impl Overlay {
         }
     }
 
-    pub fn filter_slash(&mut self, f: &str) {
-        if let Self::Slash {
-            filter,
-            selected,
-            items,
-        } = self
-        {
-            *filter = f.to_string();
-            *items = filter_palette(f);
-            *selected = 0;
-        }
-    }
-
     pub fn move_sel(&mut self, delta: i32) {
         match self {
             Self::Effort {
@@ -542,15 +514,6 @@ impl Overlay {
                     let n = items.len() as i32;
                     *selected = ((*selected as i32 + delta).rem_euclid(n)) as usize;
                 }
-            }
-            Self::Slash {
-                selected, items, ..
-            } => {
-                if items.is_empty() {
-                    return;
-                }
-                let n = items.len() as i32;
-                *selected = ((*selected as i32 + delta).rem_euclid(n)) as usize;
             }
             Self::Model {
                 provider_selected,
@@ -682,8 +645,6 @@ pub enum OverlayAction {
     StopTurns,
     /// Execute slash command string e.g. "/status"
     RunCommand(String),
-    /// Insert into input
-    InsertInput(String),
     /// Model selection
     SelectModel {
         provider: String,
@@ -785,30 +746,6 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                 .unwrap_or(OverlayAction::None),
             Overlay::StatusReport { .. } => OverlayAction::Close,
             Overlay::TurnLimit { .. } => OverlayAction::ContinueTurns,
-            Overlay::Slash {
-                selected, items, ..
-            } => {
-                if let Some(item) = items.get(*selected) {
-                    let cmd = item.cmd.clone();
-                    // no-arg or picker-opening commands execute; resume inserts to allow ID
-                    if matches!(
-                        cmd.as_str(),
-                        "/connect"
-                            | "/model"
-                            | "/theme"
-                            | "/disconnect"
-                            | "/quit"
-                            | "/compact"
-                            | "/clear"
-                    ) {
-                        OverlayAction::RunCommand(cmd)
-                    } else {
-                        OverlayAction::InsertInput(format!("{cmd} "))
-                    }
-                } else {
-                    OverlayAction::None
-                }
-            }
             Overlay::Model {
                 provider_selected,
                 model_selected,
@@ -1050,22 +987,6 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
         }
         Key::Char('n') | Key::Char('N') if matches!(overlay, Overlay::TurnLimit { .. }) => {
             OverlayAction::StopTurns
-        }
-        Key::Char(c) => {
-            if let Overlay::Slash { filter, .. } = overlay {
-                let mut f = filter.clone();
-                f.push(c);
-                overlay.filter_slash(&f);
-            }
-            OverlayAction::None
-        }
-        Key::Backspace => {
-            if let Overlay::Slash { filter, .. } = overlay {
-                let mut f = filter.clone();
-                f.pop();
-                overlay.filter_slash(&f);
-            }
-            OverlayAction::None
         }
         _ => OverlayAction::None,
     }
@@ -1535,39 +1456,6 @@ impl Widget for OverlayWidget<'_> {
                             )),
                     )
                     .render(r, buf);
-            }
-            Overlay::Slash {
-                filter,
-                selected,
-                items,
-            } => {
-                let r = centered_capped_rect(area, 72, 18);
-                let block = Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(theme::border())
-                    .style(theme::panel())
-                    .title(Span::styled(format!(" / {filter} "), theme::brand()));
-                let inner = block.inner(r);
-                block.render(r, buf);
-                let list_items: Vec<ListItem> = items
-                    .iter()
-                    .enumerate()
-                    .map(|(i, it)| {
-                        let marker = if i == *selected { "▶ " } else { "  " };
-                        let style = if i == *selected {
-                            theme::focused_selection_style()
-                        } else {
-                            theme::text()
-                        };
-                        // Pad for full-width selection background
-                        let mut row = format!("{marker}{:<16} {}", it.cmd, it.desc);
-                        while row.chars().count() < inner.width.saturating_sub(1) as usize {
-                            row.push(' ');
-                        }
-                        ListItem::new(Span::styled(row, style))
-                    })
-                    .collect();
-                List::new(list_items).render(inner, buf);
             }
             Overlay::Model {
                 provider_selected,
@@ -2142,20 +2030,6 @@ mod tests {
     }
 
     #[test]
-    fn slash_enter_runs_resume() {
-        let mut o = Overlay::slash_open("");
-        // find /resume index
-        if let Overlay::Slash {
-            selected, items, ..
-        } = &mut o
-        {
-            *selected = items.iter().position(|i| i.cmd == "/resume").unwrap();
-        }
-        let a = handle_overlay_key(&mut o, Key::Enter);
-        assert_eq!(a, OverlayAction::InsertInput("/resume ".into()));
-    }
-
-    #[test]
     fn model_select() {
         let mut o = Overlay::model_open();
         let a = handle_overlay_key(&mut o, Key::Enter);
@@ -2192,17 +2066,6 @@ mod tests {
             handle_overlay_key(&mut overlay, Key::Enter),
             OverlayAction::RunCommand("/model anthropic/custom-model".into())
         );
-    }
-
-    #[test]
-    fn palette_moves() {
-        let mut o = Overlay::slash_open("");
-        handle_overlay_key(&mut o, Key::Down);
-        if let Overlay::Slash { selected, .. } = o {
-            assert_eq!(selected, 1);
-        } else {
-            panic!();
-        }
     }
 
     #[test]
@@ -2471,16 +2334,6 @@ mod tests {
             OverlayAction::None
         );
 
-        let mut slash = Overlay::slash_open("definitely-not-a-command");
-        assert_eq!(
-            handle_overlay_key(&mut slash, Key::Down),
-            OverlayAction::None
-        );
-        assert_eq!(
-            handle_overlay_key(&mut slash, Key::Enter),
-            OverlayAction::None
-        );
-
         let mut connect = Overlay::connect_picker(vec![]);
         assert_eq!(
             handle_overlay_key(&mut connect, Key::Down),
@@ -2607,12 +2460,7 @@ mod tests {
     }
 
     #[test]
-    fn overlay_widget_renders_slash_and_model_empty_states() {
-        let slash = render_text(&Overlay::slash_open("compact"));
-        assert!(slash.contains("/ compact"));
-        assert!(slash.contains("/compact"));
-        assert!(slash.contains("Continue in a fresh context"));
-
+    fn overlay_widget_renders_model_empty_states() {
         let empty_model = render_text(&Overlay::model_open_with(vec![]));
         assert!(empty_model.contains("Models · all · 0/0"));
         assert!(empty_model.contains("No connected provider models"));

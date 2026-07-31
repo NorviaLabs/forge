@@ -265,7 +265,6 @@ enum SemanticCommand {
     SubmitMessage,
     InsertComposerNewline,
     OpenSlashCommands,
-    OpenGlobalCommandPalette,
     OpenHelp,
     ActivateActivitySummary,
     SelectEntry(PathBuf),
