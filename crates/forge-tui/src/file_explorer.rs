@@ -12,7 +12,7 @@ use forge_config::FileIconMode;
 use crate::git_status::{GitStatusCache, GitStatusKind};
 use crate::theme;
 
-const HIDDEN_DIRS: &[&str] = &[".git", "target", ".forge"];
+const HIDDEN_DIRS: &[&str] = &[".git", "target"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileKind {
@@ -675,12 +675,16 @@ fn load_children(root: Option<&Path>, node: &mut FileNode) {
 fn read_children(root: Option<&Path>, dir: &Path) -> Result<Vec<FileNode>, String> {
     let root = root.ok_or_else(|| "No repository detected".to_string())?;
     let dir = safe_path(root, dir)?;
+    // `dir` above is already canonicalized (via `safe_path`); canonicalize
+    // `root` too so the `.forge/local` path comparison in `should_hide`
+    // compares like with like (e.g. macOS's `/var` vs `/private/var`).
+    let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let entries = fs::read_dir(&dir).map_err(|error| error.to_string())?;
     let mut children = Vec::new();
     for entry in entries {
         let entry = entry.map_err(|error| error.to_string())?;
         let path = entry.path();
-        if should_hide(&path) {
+        if should_hide(&canonical_root, &path) {
             continue;
         }
         let file_type = entry.file_type().map_err(|error| error.to_string())?;
@@ -712,10 +716,20 @@ pub fn safe_path(root: &Path, path: &Path) -> Result<PathBuf, String> {
     }
 }
 
-fn should_hide(path: &Path) -> bool {
-    path.file_name()
+fn should_hide(root: &Path, path: &Path) -> bool {
+    let hidden_by_name = path
+        .file_name()
         .and_then(|name| name.to_str())
-        .is_some_and(|name| HIDDEN_DIRS.contains(&name))
+        .is_some_and(|name| HIDDEN_DIRS.contains(&name));
+    if hidden_by_name {
+        return true;
+    }
+    // `.forge/local/` is Forge's own runtime-state subtree — hidden from the
+    // browser like `.git`/`target`. Matched by exact path (never by bare
+    // name) so a project's own `local/` directory elsewhere in the tree is
+    // never hidden by mistake. The rest of `.forge/` (rules/agents/skills/
+    // workflows) is project-owned and stays visible.
+    path == root.join(".forge").join("local")
 }
 
 fn sort_nodes(nodes: &mut [FileNode]) {
@@ -1143,6 +1157,52 @@ mod tests {
         assert_eq!(explorer.visible_nodes().len(), 3);
         explorer.collapse_selected();
         assert_eq!(explorer.visible_nodes().len(), 2);
+    }
+
+    #[test]
+    fn forge_local_is_hidden_but_project_owned_forge_resources_are_visible() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join(".forge/local/sessions")).unwrap();
+        fs::write(root.path().join(".forge/local/sessions/x.db"), "").unwrap();
+        fs::create_dir_all(root.path().join(".forge/rules")).unwrap();
+        fs::write(root.path().join(".forge/rules/style.md"), "").unwrap();
+        fs::create_dir_all(root.path().join(".forge/skills/ponytail")).unwrap();
+        fs::write(root.path().join(".forge/skills/ponytail/SKILL.md"), "").unwrap();
+
+        let children = read_children(Some(root.path()), root.path()).unwrap();
+        let names: Vec<&str> = children
+            .iter()
+            .filter_map(|n| n.path.file_name().and_then(|s| s.to_str()))
+            .collect();
+        assert!(names.contains(&".forge"), "{names:?}");
+
+        let forge_children = read_children(Some(root.path()), &root.path().join(".forge")).unwrap();
+        let forge_names: Vec<&str> = forge_children
+            .iter()
+            .filter_map(|n| n.path.file_name().and_then(|s| s.to_str()))
+            .collect();
+        assert!(forge_names.contains(&"rules"), "{forge_names:?}");
+        assert!(forge_names.contains(&"skills"), "{forge_names:?}");
+        assert!(
+            !forge_names.contains(&"local"),
+            "`.forge/local` must stay hidden: {forge_names:?}"
+        );
+    }
+
+    #[test]
+    fn a_project_directory_literally_named_local_is_not_hidden() {
+        // `.forge/local` is hidden by exact path, never by bare name — a
+        // repository's own `local/` directory elsewhere must stay visible.
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("local")).unwrap();
+        fs::write(root.path().join("local/config.toml"), "").unwrap();
+
+        let children = read_children(Some(root.path()), root.path()).unwrap();
+        let names: Vec<&str> = children
+            .iter()
+            .filter_map(|n| n.path.file_name().and_then(|s| s.to_str()))
+            .collect();
+        assert!(names.contains(&"local"), "{names:?}");
     }
 
     #[test]
