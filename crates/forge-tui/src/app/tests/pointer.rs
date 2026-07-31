@@ -2,8 +2,7 @@
 //!
 //! Split out of `app/tests/mod.rs` per #19. Moved verbatim.
 
-use super::super::*;
-use super::helpers::*;
+use super::prelude::*;
 
 #[tokio::test]
 async fn mouse_click_pane_and_composer_focus() {
