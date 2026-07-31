@@ -97,6 +97,7 @@ mod persist;
 /// only — `TuiApp`'s fields and every signature are unchanged.
 mod render;
 mod run;
+mod search;
 mod shell;
 mod turn;
 mod util;

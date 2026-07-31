@@ -64,7 +64,8 @@ codebase is terminal UI.
 |-------|----:|----------------------|------|
 | `forge-tui` | 33,189 | config, connect, core, model, syntax, tools, types | Full-screen TUI: chat, overlays, file explorer, diff and source views, model picker, `/connect` flow |
 | `forge-connect` | 6,085 | *none* | Provider profiles, credential store, model catalogue, cost lookup, OAuth device flows |
-| `forge-tools` | 2,985 | config, syntax, types | Built-in tools, the `Tool` trait, registry, workspace path confinement |
+| `forge-tools` | 2,985 | config, search, syntax, types | Built-in tools, the `Tool` trait, registry, workspace path confinement |
+| `forge-search` | — | fff-search | Shared workspace index, structured `fffind`/`ffgrep` results, Quick Open backing API |
 | `forge-model` | 2,588 | config, types | `ModelClient`; native HTTP/SSE transports and wire normalisation; test mock |
 | `forge-core` | 1,884 | config, context, durable, governance, model, tools, types | Agent loop, session lifecycle, tool orchestration |
 | `forge-config` | 1,315 | types | `forge.toml` and env loading, provider migration, config trust layers |
