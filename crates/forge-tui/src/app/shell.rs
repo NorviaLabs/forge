@@ -99,11 +99,6 @@ async fn run_loop(
             app.drain_pending_prompt(Some(terminal)).await?;
             continue;
         }
-        // Drain queued long-running slash tasks (so the command echo paints first).
-        if app.pending_sync {
-            app.drain_pending_sync(Some(terminal)).await?;
-            continue;
-        }
         if app.pending_hitl_decision.is_some() {
             app.drain_pending_hitl(Some(terminal)).await?;
             continue;
