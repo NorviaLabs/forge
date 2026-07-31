@@ -1123,6 +1123,7 @@ version = "0.1.0-alpha.10"
 dependencies = [
  "base64",
  "dirs 6.0.0",
+ "forge-test-support",
  "serde",
  "serde_json",
  "tempfile",
@@ -1250,6 +1251,13 @@ dependencies = [
  "tree-sitter-python",
  "tree-sitter-rust",
  "tree-sitter-typescript",
+]
+
+[[package]]
+name = "forge-test-support"
+version = "0.1.0-alpha.10"
+dependencies = [
+ "ureq",
 ]
 
 [[package]]

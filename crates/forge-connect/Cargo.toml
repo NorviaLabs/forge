@@ -17,3 +17,4 @@ ureq = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+forge-test-support = { workspace = true }
