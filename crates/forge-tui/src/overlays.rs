@@ -119,6 +119,7 @@ pub struct ResumeSessionItem {
 pub struct QuickOpenItem {
     pub path: String,
     pub score: i32,
+    pub match_ranges: Vec<(u32, u32)>,
 }
 
 #[derive(Debug, Clone)]
@@ -1381,6 +1382,63 @@ pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
         .split(popup[1])[1]
 }
 
+/// Build styled spans for a Quick Open path, highlighting query match ranges.
+fn quick_open_path_spans(
+    path: &str,
+    match_ranges: &[(u32, u32)],
+    selected: bool,
+) -> Vec<Span<'static>> {
+    let base = if selected {
+        theme::focused_selection_style()
+    } else {
+        theme::text()
+    };
+    if match_ranges.is_empty() {
+        return vec![Span::styled(path.to_owned(), base)];
+    }
+
+    let bytes = path.as_bytes();
+    let mut ranges: Vec<(usize, usize)> = match_ranges
+        .iter()
+        .map(|&(start, end)| (start as usize, end as usize))
+        .filter(|&(start, end)| start < end && start < bytes.len())
+        .collect();
+    ranges.sort_by_key(|range| range.0);
+
+    let match_style = if selected {
+        theme::search_match().add_modifier(Modifier::BOLD)
+    } else {
+        theme::search_match()
+    };
+
+    let mut spans = Vec::new();
+    let mut cursor = 0usize;
+    for (start, end) in ranges {
+        let start = start.min(bytes.len());
+        let end = end.min(bytes.len()).max(start);
+        if start > cursor {
+            spans.push(Span::styled(
+                String::from_utf8_lossy(&bytes[cursor..start]).into_owned(),
+                base,
+            ));
+        }
+        if end > start {
+            spans.push(Span::styled(
+                String::from_utf8_lossy(&bytes[start..end]).into_owned(),
+                match_style,
+            ));
+        }
+        cursor = cursor.max(end);
+    }
+    if cursor < bytes.len() {
+        spans.push(Span::styled(
+            String::from_utf8_lossy(&bytes[cursor..]).into_owned(),
+            base,
+        ));
+    }
+    spans
+}
+
 /// Centred panel that remains usable on small terminals without becoming a
 /// nearly full-width dashboard on large ones.
 fn centered_capped_rect(area: Rect, max_width: u16, max_height: u16) -> Rect {
@@ -1733,12 +1791,18 @@ impl Widget for OverlayWidget<'_> {
                         .map(|(i, hit)| {
                             let idx = start + i;
                             let marker = if idx == *selected { "▶ " } else { "  " };
-                            let style = if idx == *selected {
+                            let marker_style = if idx == *selected {
                                 theme::focused_selection_style()
                             } else {
                                 theme::text()
                             };
-                            ListItem::new(Span::styled(format!("{marker}{}", hit.path), style))
+                            let mut spans = vec![Span::styled(marker.to_string(), marker_style)];
+                            spans.extend(quick_open_path_spans(
+                                &hit.path,
+                                &hit.match_ranges,
+                                idx == *selected,
+                            ));
+                            ListItem::new(Line::from(spans))
                         })
                         .collect()
                 };
@@ -2000,6 +2064,28 @@ mod tests {
             text.push('\n');
         }
         text
+    }
+
+    #[test]
+    fn quick_open_path_spans_highlight_match_ranges() {
+        let spans = quick_open_path_spans("src/main.rs", &[(0, 3), (4, 8)], false);
+        assert_eq!(spans.len(), 4);
+        assert_eq!(spans[0].content, "src");
+        assert_eq!(spans[0].style, theme::search_match());
+        assert_eq!(spans[1].content, "/");
+        assert_eq!(spans[1].style, theme::text());
+        assert_eq!(spans[2].content, "main");
+        assert_eq!(spans[2].style, theme::search_match());
+        assert_eq!(spans[3].content, ".rs");
+        assert_eq!(spans[3].style, theme::text());
+    }
+
+    #[test]
+    fn quick_open_path_spans_without_ranges_use_base_style() {
+        let spans = quick_open_path_spans("README.md", &[], true);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].content, "README.md");
+        assert_eq!(spans[0].style, theme::focused_selection_style());
     }
 
     #[test]
