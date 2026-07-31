@@ -1,19 +1,40 @@
 //! UI state and run-history persistence for [`TuiApp`].
 //!
 //! Split out of `app.rs` per #19. Loads and saves per-repository Files visibility,
-//! theme choice, and recent run records under `.forge/`. Methods are moved verbatim.
+//! theme choice, and recent run records — routed through the centralized
+//! runtime-storage resolver (`.forge/local/ui-state`, or an application-data
+//! fallback outside a Git repository) rather than a hardcoded `.forge/` join.
 
 use super::*;
+use forge_storage::{LocalRuntimeStorage, RuntimeDataKind, RuntimeStorage};
 
 impl TuiApp {
+    /// Pure path computation — no directory created, no Git exclude
+    /// touched. Used for reads (`load_*`, called on every `TuiApp::new`)
+    /// so simply opening Forge never triggers lazy initialization.
+    fn ui_state_storage_dir_for_read(&self) -> PathBuf {
+        let workspace = self.session.workspace_root();
+        LocalRuntimeStorage::new(workspace)
+            .path_for_read(RuntimeDataKind::UiState)
+            .unwrap_or_else(|| workspace.join(".forge"))
+    }
+
+    /// Establishes Git exclusion / the application-data fallback as a side
+    /// effect — used only by `save_*`, right before an actual write.
+    fn ui_state_storage_dir_for_write(&self) -> PathBuf {
+        let workspace = self.session.workspace_root();
+        LocalRuntimeStorage::new(workspace)
+            .path_for(RuntimeDataKind::UiState)
+            .unwrap_or_else(|_| workspace.join(".forge"))
+    }
+
     pub(super) fn run_history_path(&self) -> PathBuf {
-        self.session
-            .workspace_root()
-            .join(".forge/run-history.json")
+        self.ui_state_storage_dir_for_read()
+            .join("run-history.json")
     }
 
     pub(super) fn ui_state_path(&self) -> PathBuf {
-        self.session.workspace_root().join(".forge/ui-state.json")
+        self.ui_state_storage_dir_for_read().join("ui-state.json")
     }
 
     pub(super) fn load_run_history(&mut self) {
@@ -33,7 +54,9 @@ impl TuiApp {
     }
 
     pub(super) fn save_run_history(&mut self) {
-        let path = self.run_history_path();
+        let path = self
+            .ui_state_storage_dir_for_write()
+            .join("run-history.json");
         let history = RunHistoryFile {
             version: RUN_HISTORY_VERSION,
             repository_or_workspace_id: self.session.workspace_root().display().to_string(),
@@ -80,7 +103,7 @@ impl TuiApp {
     }
 
     pub(super) fn save_ui_state(&mut self) {
-        let path = self.ui_state_path();
+        let path = self.ui_state_storage_dir_for_write().join("ui-state.json");
         let state = RepositoryUiState {
             version: UI_STATE_VERSION,
             repository_or_workspace_id: self.repository_or_workspace_id(),
@@ -95,5 +118,88 @@ impl TuiApp {
                 format!("could not persist Files visibility: {error}"),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::tests::helpers::{init_repo, session_for_workspace};
+    use tempfile::TempDir;
+
+    async fn test_app(dir: &std::path::Path) -> TuiApp {
+        let session = session_for_workspace(dir).await;
+        TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "mock".into(),
+                provider: "mock".into(),
+                cwd: dir.to_path_buf(),
+                version: "test".into(),
+                startup_notices: Vec::new(),
+                validation_command: None,
+                file_icons: forge_config::FileIconMode::Unicode,
+                mouse_capture: true,
+                theme: forge_config::Theme::default(),
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn ui_state_resolves_repository_locally_and_round_trips() {
+        let dir = TempDir::new().unwrap();
+        init_repo(dir.path());
+        let mut app = test_app(dir.path()).await;
+
+        // Routed through the runtime-storage resolver: under `.forge/local/`,
+        // never the naive `.forge/ui-state.json`. Canonicalize the tempdir
+        // side: `git rev-parse --show-toplevel` resolves symlinks (e.g.
+        // macOS's `/var` -> `/private/var`), the raw tempdir path doesn't.
+        let path = app.ui_state_path();
+        let repo_local_root = dir
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join(".forge")
+            .join("local");
+        assert!(path.starts_with(&repo_local_root));
+        assert!(path.ends_with(std::path::Path::new("ui-state").join("ui-state.json")));
+
+        app.files_visible = false;
+        app.save_ui_state();
+        assert!(path.is_file());
+
+        let mut reloaded = test_app(dir.path()).await;
+        reloaded.files_visible = true;
+        reloaded.load_ui_state();
+        assert!(!reloaded.files_visible);
+    }
+
+    #[tokio::test]
+    async fn run_history_resolves_repository_locally_and_round_trips() {
+        let dir = TempDir::new().unwrap();
+        init_repo(dir.path());
+        let mut app = test_app(dir.path()).await;
+
+        let path = app.run_history_path();
+        let repo_local_root = dir
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join(".forge")
+            .join("local");
+        assert!(path.starts_with(&repo_local_root));
+        assert!(path.ends_with(std::path::Path::new("ui-state").join("run-history.json")));
+
+        app.save_run_history();
+        assert!(path.is_file());
+
+        let text = fs::read_to_string(&path).unwrap();
+        let history: RunHistoryFile = serde_json::from_str(&text).unwrap();
+        assert_eq!(history.version, RUN_HISTORY_VERSION);
+        assert_eq!(
+            history.repository_or_workspace_id,
+            app.repository_or_workspace_id()
+        );
     }
 }

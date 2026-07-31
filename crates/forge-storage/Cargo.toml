@@ -1,0 +1,13 @@
+[package]
+name = "forge-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Centralized runtime-storage resolver: repository-local .forge/local/ with native Git exclusion, and application-data fallback"
+
+[dependencies]
+dirs = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

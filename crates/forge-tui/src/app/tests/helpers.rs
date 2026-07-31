@@ -10,7 +10,35 @@ use forge_types::ModelResponse;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use tempfile::TempDir;
 
-/// Returns (journal_workspace_guard, session). Keep the TempDir until the test ends.
+/// Git-initializes `dir` so any write routed through the centralized
+/// runtime-storage resolver (UI state, run history, context offload/
+/// progress) resolves to repository-local storage hermetically inside the
+/// tempdir — without this, those writers fall back to the platform
+/// application-data directory (correct real-world behavior outside a
+/// repository, but not something a test should touch on the host machine).
+pub(crate) fn init_repo(dir: &Path) {
+    for args in [
+        vec!["init", "--initial-branch=main", "-q"],
+        vec!["config", "user.email", "test@example.com"],
+        vec!["config", "user.name", "Test"],
+    ] {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(&args)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+}
+
+/// Returns (journal_workspace_guard, session). Keep the TempDir until the
+/// test ends. Deliberately does *not* git-init `dir` — some tests
+/// (repo-header display) rely on it being a plain, non-Git directory.
+/// Tests that trigger a write through the runtime-storage resolver (UI
+/// state save, run-history save, context offload/progress) should call
+/// `init_repo` themselves first, to avoid falling back to the real
+/// platform application-data directory.
 pub(crate) async fn test_session() -> (TempDir, AgentSession) {
     let dir = TempDir::new().unwrap();
     let session = session_for_workspace(dir.path()).await;
