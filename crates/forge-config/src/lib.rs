@@ -1659,9 +1659,10 @@ model = "claude-sonnet"
         assert_eq!(user_config_path(), expected);
     }
 
-    /// Clears FORGE_* env vars *and* XDG_CONFIG_HOME for the duration of a
-    /// test; restores both on drop (including on panic/assertion failure),
-    /// mirroring `EnvGuard` but widened to the one extra var this test needs.
+    /// Clears FORGE_* env vars, `XDG_CONFIG_HOME`, and `HOME` for the duration
+    /// of a test; restores all three on drop (including on panic/assertion
+    /// failure), mirroring `EnvGuard` but widened to the extra vars this test
+    /// needs.
     struct XdgEnvGuard {
         saved: Vec<(String, Option<String>)>,
         _lock: std::sync::MutexGuard<'static, ()>,
@@ -1671,7 +1672,11 @@ model = "claude-sonnet"
         fn clear() -> Self {
             let lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
             let mut saved = Vec::new();
-            for key in FORGE_ENV_KEYS.iter().copied().chain(["XDG_CONFIG_HOME"]) {
+            for key in FORGE_ENV_KEYS
+                .iter()
+                .copied()
+                .chain(["XDG_CONFIG_HOME", "HOME"])
+            {
                 saved.push((key.to_string(), env::var(key).ok()));
                 env::remove_var(key);
             }
@@ -1691,16 +1696,20 @@ model = "claude-sonnet"
     }
 
     /// The trusted-user-config layer (found via `dirs::config_dir()`, which
-    /// honours `XDG_CONFIG_HOME` on Linux) is merged first, before the
-    /// project layer and env/CLI. This is the only way to exercise
-    /// `Config::load`'s `user_config_path`/`merge_file` branch, since that
-    /// branch is skipped whenever no file exists at the discovered path.
+    /// honours `XDG_CONFIG_HOME` on Linux and `HOME` elsewhere) is merged
+    /// first, before the project layer and env/CLI. This is the only way to
+    /// exercise `Config::load`'s `user_config_path`/`merge_file` branch,
+    /// since that branch is skipped whenever no file exists at the discovered
+    /// path.
     #[test]
     fn user_config_toml_is_merged_before_project_layer() {
         let _g = XdgEnvGuard::clear();
 
-        let config_home = tempdir().unwrap();
-        let forge_dir = config_home.path().join("forge");
+        let home = tempdir().unwrap();
+        env::set_var("HOME", home.path());
+        let forge_dir = dirs::config_dir()
+            .expect("isolated HOME should yield a config dir")
+            .join("forge");
         fs::create_dir_all(&forge_dir).unwrap();
         fs::write(
             forge_dir.join("config.toml"),
@@ -1711,7 +1720,6 @@ model = "from-user-config"
 "#,
         )
         .unwrap();
-        env::set_var("XDG_CONFIG_HOME", config_home.path());
 
         // No project forge.toml at this workspace, so only the user layer applies.
         let project_dir = tempdir().unwrap();
