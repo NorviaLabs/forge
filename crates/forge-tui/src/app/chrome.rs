@@ -140,7 +140,7 @@ impl TuiApp {
             ctx_pct: self.session.context_usage_ratio(),
             busy: self.busy,
             busy_phase: self.busy_phase.clone(),
-            connect_profile: self.connect_profile.clone(),
+            connect_profile: self.connect.profile.clone(),
             provider_connected,
             web_search_label: self.web_search_label.clone(),
             tools_visible: self.session.list_tools().len(),
