@@ -109,6 +109,7 @@ impl Tool for WebSearchTool {
             return Ok(ToolOutput {
                 content: "web_search: query must be non-empty".into(),
                 is_error: true,
+                exit_code: None,
             });
         }
         if query.chars().count() > self.cfg.max_query_chars as usize {
@@ -118,6 +119,7 @@ impl Tool for WebSearchTool {
                     self.cfg.max_query_chars
                 ),
                 is_error: true,
+                exit_code: None,
             });
         }
 
@@ -126,6 +128,7 @@ impl Tool for WebSearchTool {
             return Ok(ToolOutput {
                 content: "web_search not configured (missing API key)".into(),
                 is_error: true,
+                exit_code: None,
             });
         }
 
@@ -151,17 +154,20 @@ impl Tool for WebSearchTool {
                         return Ok(ToolOutput {
                             content: "web_search: redacted unexpected secret in result".into(),
                             is_error: true,
+                            exit_code: None,
                         });
                     }
                 }
                 Ok(ToolOutput {
                     content,
                     is_error: false,
+                    exit_code: None,
                 })
             }
             Err(e) => Ok(ToolOutput {
                 content: format!("web_search failed: {e}"),
                 is_error: true,
+                exit_code: None,
             }),
         }
     }

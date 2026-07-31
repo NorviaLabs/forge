@@ -149,6 +149,7 @@ async fn open_session(
                     .unwrap_or("")
                     .to_string(),
                 is_error: false,
+                exit_code: None,
             }),
         }],
     );
