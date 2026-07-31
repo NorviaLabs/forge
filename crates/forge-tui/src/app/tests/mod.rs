@@ -13,7 +13,7 @@ mod edge;
 mod editor;
 mod explorer;
 mod focus;
-mod helpers;
+pub(crate) mod helpers;
 mod highlight;
 mod pointer;
 mod prelude;

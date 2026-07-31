@@ -7,11 +7,47 @@ use forge_config::{Config, ConfigOverrides};
 use forge_core::{AgentSession, LoopConfig};
 use forge_mcp::{register_static_mcp, McpManager, StaticMcpTool};
 use forge_model::{client_from_config, ModelClient};
+use forge_storage::{LocalRuntimeStorage, RuntimeDataKind, RuntimeStorage};
 use forge_tools::ToolRegistry;
 use forge_tui::{run_tui, ExitCode, TuiRuntimeConfig};
 use forge_types::SessionId;
 use serde_json::json;
 use tracing_subscriber::EnvFilter;
+
+/// Resolve where the session journal lives, and any startup notices the
+/// resolution itself produced. An explicit `journal.path` override (via
+/// `forge.toml`/env/CLI) is respected as-is — advanced use, not managed by
+/// the storage resolver. Otherwise, route through the centralized
+/// runtime-storage resolver: `.forge/local/sessions` inside a Git
+/// repository (natively excluded from `git status`), or the platform
+/// application-data directory outside one — surfacing a notice if
+/// repository-local storage fell back, or if legacy runtime files were
+/// found already tracked by Git (never silently migrated or altered).
+fn resolve_journal_dir(cfg: &Config) -> (std::path::PathBuf, Vec<String>) {
+    if cfg.journal.path == forge_config::default_journal_path() {
+        let storage = LocalRuntimeStorage::new(cfg.workspace_root());
+        if let Ok(dir) = storage.path_for(RuntimeDataKind::Session) {
+            let mut notices = Vec::new();
+            if let Some(reason) = storage.fallback_reason() {
+                notices.push(reason);
+            }
+            let tracked = storage.tracked_migration_conflicts();
+            if !tracked.is_empty() {
+                let paths = tracked
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                notices.push(format!(
+                    "Some Forge runtime files are already tracked by Git ({paths}). \
+                     Forge did not modify the Git index; review the tracked files before migration."
+                ));
+            }
+            return (dir, notices);
+        }
+    }
+    (cfg.journal_dir(), Vec::new())
+}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -164,10 +200,12 @@ async fn open_session(
         let _ = mgr.register_into(&mut tools).await;
     }
 
+    let (journal_dir, storage_notices) = resolve_journal_dir(cfg);
+    startup_notices.extend(storage_notices);
     let loop_cfg = LoopConfig {
         max_turns: 128,
         workspace: cfg.workspace_root().to_path_buf(),
-        journal_dir: cfg.journal_dir(),
+        journal_dir,
         enable_context_lifecycle: true,
         enable_governance: true,
         web_search: cfg.tools.web_search.clone(),
@@ -234,9 +272,31 @@ mod tests {
         }
     }
 
+    /// Git-initializes `dir` so the journal-dir resolver exercises
+    /// repository-local storage hermetically, inside the tempdir — without
+    /// this, an unconfigured journal path falls back to the platform
+    /// application-data directory (correct real-world behavior outside a
+    /// repository, but not what a test should touch on the host machine).
+    fn init_repo(dir: &std::path::Path) {
+        for args in [
+            vec!["init", "--initial-branch=main", "-q"],
+            vec!["config", "user.email", "test@example.com"],
+            vec!["config", "user.name", "Test"],
+        ] {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(&args)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+    }
+
     #[tokio::test]
     async fn open_session_with_mock_model_builds_a_session_without_notices() {
         let temp = TempDir::new().unwrap();
+        init_repo(temp.path());
         let mut cfg = Config::default();
         cfg.model.provider = forge_config::ModelProviderKind::Mock;
         cfg.model.model = "mock".into();
@@ -246,5 +306,72 @@ mod tests {
         let (session, notices) = open_session(&cfg, None).await.unwrap();
         assert!(notices.is_empty());
         assert_eq!(session.session_id.to_string().len(), 36);
+    }
+
+    #[test]
+    fn resolve_journal_dir_uses_the_storage_resolver_for_the_unconfigured_default() {
+        let temp = TempDir::new().unwrap();
+        init_repo(temp.path());
+        let cfg = Config {
+            resolved_workspace: temp.path().to_path_buf(),
+            workspace_root: Some(temp.path().display().to_string()),
+            ..Default::default()
+        };
+
+        let (dir, notices) = resolve_journal_dir(&cfg);
+        assert_eq!(
+            dir.canonicalize().unwrap(),
+            temp.path()
+                .join(".forge")
+                .join("local")
+                .join("sessions")
+                .canonicalize()
+                .unwrap()
+        );
+        assert!(notices.is_empty());
+    }
+
+    #[test]
+    fn resolve_journal_dir_respects_an_explicit_override() {
+        let temp = TempDir::new().unwrap();
+        init_repo(temp.path());
+        let cfg = Config {
+            resolved_workspace: temp.path().to_path_buf(),
+            workspace_root: Some(temp.path().display().to_string()),
+            journal: forge_config::JournalConfig {
+                path: "custom/journal".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let (dir, notices) = resolve_journal_dir(&cfg);
+        assert_eq!(dir, temp.path().join("custom/journal"));
+        assert!(notices.is_empty());
+    }
+
+    #[test]
+    fn resolve_journal_dir_reports_tracked_legacy_files_as_a_notice() {
+        let temp = TempDir::new().unwrap();
+        init_repo(temp.path());
+        std::fs::create_dir_all(temp.path().join(".forge")).unwrap();
+        std::fs::write(temp.path().join(".forge/ui-state.json"), "{}").unwrap();
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(temp.path())
+            .args(["add", ".forge/ui-state.json"])
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let cfg = Config {
+            resolved_workspace: temp.path().to_path_buf(),
+            workspace_root: Some(temp.path().display().to_string()),
+            ..Default::default()
+        };
+
+        let (_dir, notices) = resolve_journal_dir(&cfg);
+        assert_eq!(notices.len(), 1);
+        assert!(notices[0].contains("already tracked by Git"));
     }
 }

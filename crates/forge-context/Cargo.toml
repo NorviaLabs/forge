@@ -7,6 +7,7 @@ description = "Context lifecycle: offload + handoff (CTX-01/02)"
 
 [dependencies]
 forge-types = { workspace = true }
+forge-storage = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
