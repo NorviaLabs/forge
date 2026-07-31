@@ -48,7 +48,7 @@ impl TuiApp {
         };
 
         *error = None;
-        match index.find_files(query, 50, current_file.as_deref()) {
+        match index.find_files_quick_open(query, 50, current_file.as_deref()) {
             Ok(response) => {
                 *hits = response
                     .hits
