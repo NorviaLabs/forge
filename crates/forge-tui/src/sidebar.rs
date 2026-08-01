@@ -17,6 +17,10 @@ pub struct SidebarModel {
     pub role: String,
     pub provider: String,
     pub model: String,
+    pub effort: String,
+    /// Connect profile (provider route) serving `model`, e.g. `openai`,
+    /// `openrouter` — shown only when it disambiguates the active route.
+    pub route: Option<String>,
     pub objective: Option<String>,
     pub repo_name: Option<String>,
     pub branch: Option<String>,
@@ -106,6 +110,8 @@ impl SidebarModel {
             role: "generator".into(),
             provider: String::new(),
             model: session.active_model.clone(),
+            effort: String::new(),
+            route: None,
             objective,
             repo_name: None,
             branch: None,
@@ -248,6 +254,10 @@ impl SidebarWidget<'_> {
         lines.push(Line::from(Span::styled("CONTEXT", theme::metadata_style())));
         lines.push(kv("Model", present(&self.model.model)));
         lines.push(kv("Provider", present(&self.model.provider)));
+        lines.push(kv("Effort", present(&self.model.effort)));
+        if let Some(route) = self.model.route.as_deref().filter(|r| !r.is_empty()) {
+            lines.push(kv("Route", route));
+        }
         let pct = (self.model.ctx_pct * 100.0).clamp(0.0, 100.0);
         lines.push(kv("Window", format!("{pct:.0}%")));
         lines.push(kv(
@@ -438,6 +448,8 @@ mod tests {
             role: String::new(),
             provider: String::new(),
             model: String::new(),
+            effort: String::new(),
+            route: None,
             objective: None,
             repo_name: None,
             branch: None,
@@ -573,6 +585,41 @@ mod tests {
         assert!(text.contains("92% → 18%"), "{text}");
         assert!(text.contains("2 skills"), "{text}");
         assert!(text.contains("· rust"), "{text}");
+    }
+
+    #[test]
+    fn context_view_shows_effort_and_route() {
+        let mut m = model();
+        m.model = "openai/gpt-5.6".into();
+        m.provider = "native".into();
+        m.effort = "Extra High".into();
+        m.route = Some("openrouter".into());
+
+        let widget = SidebarWidget {
+            model: &m,
+            view: InspectorView::Context,
+            focused: true,
+        };
+        let text = render_lines(&widget);
+        assert!(text.contains("Extra High"), "{text}");
+        assert!(text.contains("openrouter"), "{text}");
+    }
+
+    #[test]
+    fn context_view_hides_route_line_when_not_connected() {
+        let mut m = model();
+        m.model = "mock".into();
+        m.effort = "Auto".into();
+        m.route = None;
+
+        let widget = SidebarWidget {
+            model: &m,
+            view: InspectorView::Context,
+            focused: true,
+        };
+        let text = render_lines(&widget);
+        assert!(text.contains("Auto"), "{text}");
+        assert!(!text.contains("Route"), "{text}");
     }
 
     #[test]

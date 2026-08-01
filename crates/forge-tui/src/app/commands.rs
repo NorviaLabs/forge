@@ -115,6 +115,9 @@ impl TuiApp {
             KeyCode::Char('`') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(SemanticCommand::ToggleBottomPanel)
             }
+            KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::ALT) => {
+                Some(SemanticCommand::QuickSwitchModel)
+            }
             KeyCode::F(1) if self.overlay.is_none() => Some(SemanticCommand::OpenHelp),
             _ => None,
         }
@@ -472,6 +475,7 @@ impl TuiApp {
             }
             SemanticCommand::ToggleBottomPanel => self.toggle_bottom_panel(),
             SemanticCommand::OpenQuickOpen => self.open_quick_open(),
+            SemanticCommand::QuickSwitchModel => self.quick_switch_model(),
             SemanticCommand::CycleBottomPanelTab { forward } => {
                 if forward {
                     self.bottom_panel.next_tab();
@@ -594,6 +598,7 @@ impl TuiApp {
             let items = self.model_picker_items(true);
             let mut overlay = Overlay::model_open_with(items);
             overlay.focus_model(&self.runtime.model_label);
+            overlay.set_current_effort(self.reasoning_effort);
             self.overlay = Some(overlay);
             self.status_message = "pick a model (live catalog when connected)".into();
         }
@@ -621,7 +626,7 @@ impl TuiApp {
                 "Use /connect, or pick a model from the current provider catalog.".into(),
             ]);
         } else {
-            self.apply_model_selection("native", &model_id);
+            self.apply_model_selection("native", &model_id, None);
             self.open_effort_picker_for_model(&model_id);
         }
     }
