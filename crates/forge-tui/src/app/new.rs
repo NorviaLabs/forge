@@ -45,6 +45,7 @@ impl TuiApp {
             pending_external_editor: false,
             pending_attachment: None,
             queue_selected: None,
+            tasks_selected: None,
             stream_preview: String::new(),
             stream_thinking: String::new(),
             turn_started: None,

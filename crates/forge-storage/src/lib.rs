@@ -16,6 +16,7 @@ mod exclude;
 mod git;
 mod migrate;
 mod resolver;
+pub mod worktree;
 
 pub use exclude::{ensure_managed_block, has_managed_block, resolve_exclude_path, ExcludeError};
 pub use git::{detect_repo_info, GitTopology, RepoInfo};
@@ -23,4 +24,7 @@ pub use migrate::{migrate_legacy_runtime_files, MigrationOutcome, MigrationRecor
 pub use resolver::{
     LocalRuntimeStorage, RuntimeDataKind, RuntimeIdentity, RuntimeStorage, StorageError,
     StorageMode, EXCLUDE_PATTERN,
+};
+pub use worktree::{
+    create_worktree, list_worktrees, remove_worktree, SubagentWorktree, WorktreeError,
 };
