@@ -82,6 +82,7 @@ async fn run_loop(
     while !app.should_quit {
         app.poll_file_changes();
         app.poll_run();
+        app.poll_background_tasks().await?;
         app.tick_toast();
         app.tick_notices();
         app.drain_auto_hitl().await?;
