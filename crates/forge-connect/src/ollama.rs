@@ -28,6 +28,9 @@ pub fn ollama_profile() -> ConnectProfile {
         models_dev_providers: vec![],
         auth_url: Some("https://ollama.com/download".into()),
         model_provider_prefix: "ollama".into(),
+        vendor_id: PROFILE_ID.into(),
+        vendor_label: "Ollama (local)".into(),
+        route_label: String::new(),
     }
 }
 

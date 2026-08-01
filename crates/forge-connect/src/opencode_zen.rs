@@ -35,6 +35,9 @@ pub fn opencode_zen_profile() -> ConnectProfile {
         models_dev_providers: vec![],
         auth_url: Some("https://opencode.ai/auth".into()),
         model_provider_prefix: "opencode-zen".into(),
+        vendor_id: "opencode".into(),
+        vendor_label: "OpenCode".into(),
+        route_label: "Zen".into(),
     }
 }
 

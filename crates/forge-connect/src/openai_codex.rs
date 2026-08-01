@@ -27,6 +27,9 @@ pub fn openai_codex_profile() -> ConnectProfile {
         models_dev_providers: vec![],
         auth_url: Some("https://auth.openai.com/codex/device".into()),
         model_provider_prefix: "openai-codex".into(),
+        vendor_id: "openai".into(),
+        vendor_label: "OpenAI".into(),
+        route_label: "ChatGPT sign-in".into(),
     }
 }
 

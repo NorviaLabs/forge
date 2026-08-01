@@ -595,12 +595,9 @@ impl TuiApp {
 
     async fn handle_model_command(&mut self, provider: Option<&str>, model: Option<&str>) {
         if provider.is_none() && model.is_none() {
-            let items = self.model_picker_items(true);
-            let mut overlay = Overlay::model_open_with(items);
-            overlay.focus_model(&self.runtime.model_label);
-            overlay.set_current_effort(self.reasoning_effort);
-            self.overlay = Some(overlay);
+            self.overlay = Some(self.build_connect_model_overlay(ConnectModelColumn::Models));
             self.status_message = "pick a model (live catalog when connected)".into();
+            return;
         }
 
         let connected_prefix = self.connect.profile.as_deref().and_then(|id| {
@@ -627,7 +624,9 @@ impl TuiApp {
             ]);
         } else {
             self.apply_model_selection("native", &model_id, None);
-            self.open_effort_picker_for_model(&model_id);
+            if self.resolve_effort_for_model(&model_id) {
+                self.overlay = Some(self.build_connect_model_overlay(ConnectModelColumn::Effort));
+            }
         }
     }
 
@@ -850,9 +849,8 @@ impl TuiApp {
         // Gate: no LLM chat without a live provider (slash commands already returned above).
         if !self.is_provider_connected() {
             self.input.set_text(line);
-            self.report_error(
-                "Not connected to an LLM provider. Run /connect (xAI Grok or OpenCode Go), then send again.",
-            );
+            let msg = self.disconnected_message();
+            self.report_error(&msg);
             self.refresh_connection_ui();
             return Ok(());
         }

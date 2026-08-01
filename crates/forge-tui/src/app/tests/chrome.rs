@@ -290,6 +290,8 @@ fn status_model_from_app_fields() {
         busy_phase: BusyPhase::Idle,
         connect_profile: None,
         provider_connected: true,
+        vendor_label: None,
+        route_label: None,
         web_search_label: None,
         tools_visible: 0,
         prompt_cache_hits: 0,
@@ -510,6 +512,15 @@ async fn tui09_chrome_includes_model_on_frame() {
             theme: forge_config::Theme::default(),
         },
     );
+    // Isolate from any real, ambient connect credentials on the host so the
+    // header chip this test guards against duplicating can't render.
+    app.connect.profile = None;
+    app.connect.store = CredentialStore::new(
+        tempfile::TempDir::new()
+            .unwrap()
+            .path()
+            .join("empty-creds.toml"),
+    );
     let chrome = app.refresh_status_model();
     assert_eq!(chrome.provider, "native");
     assert!(chrome.model.contains("gpt-test"));
@@ -548,6 +559,15 @@ async fn tui09_narrow_frame_still_shows_model_or_ctx() {
             mouse_capture: true,
             theme: forge_config::Theme::default(),
         },
+    );
+    // Isolate from any real, ambient connect credentials on the host so the
+    // header chip this test guards against duplicating can't render.
+    app.connect.profile = None;
+    app.connect.store = CredentialStore::new(
+        tempfile::TempDir::new()
+            .unwrap()
+            .path()
+            .join("empty-creds.toml"),
     );
     // Width 60: no sidebar per layout MIN_WIDTH 80
     let backend = TestBackend::new(60, 24);

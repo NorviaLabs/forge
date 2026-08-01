@@ -71,6 +71,9 @@ mod tests {
             models_dev_providers: vec![],
             auth_url: None,
             model_provider_prefix: "demo".into(),
+            vendor_id: "demo".into(),
+            vendor_label: "Demo".into(),
+            route_label: String::new(),
         });
         assert_eq!(r.get("DEMO").unwrap().title, "Demo");
         assert_eq!(r.ids(), vec!["demo"]);
@@ -90,6 +93,9 @@ mod tests {
             models_dev_providers: vec![],
             auth_url: None,
             model_provider_prefix: id.into(),
+            vendor_id: id.into(),
+            vendor_label: title.into(),
+            route_label: String::new(),
         }
     }
 

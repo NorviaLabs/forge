@@ -90,7 +90,7 @@ async fn disconnect_clears_credentials_and_prompts_reauth() {
     assert!(app.connect.profile.is_none());
     assert!(!app.is_provider_connected());
     assert!(!app.connect.store.is_connected("openai").unwrap());
-    assert!(matches!(app.overlay, Some(Overlay::ConnectPicker { .. })));
+    assert!(matches!(app.overlay, Some(Overlay::ConnectModel { .. })));
     assert!(
         app.notices.iter().any(|l| l.contains("disconnected"))
             || app.status_message.contains("disconnected")
@@ -122,13 +122,14 @@ async fn connect_picker_marks_saved_credentials_as_connected() {
         .unwrap();
 
     app.open_connect_picker();
-    let Some(Overlay::ConnectPicker { items, .. }) = &app.overlay else {
+    let Some(Overlay::ConnectModel { providers, .. }) = &app.overlay else {
         panic!("expected connect picker");
     };
     assert!(
-        items
+        providers
             .iter()
-            .any(|item| item.id == "openai" && item.connected),
+            .flat_map(|vendor| &vendor.routes)
+            .any(|route| route.profile_id == "openai" && route.connected),
         "saved provider should be marked connected"
     );
 }
@@ -161,18 +162,16 @@ async fn successful_connect_hands_off_to_model_picker() {
     app.session.set_active_model("openai/gpt-4.1-mini");
 
     app.open_model_picker_after_connect("openai");
-    let Some(Overlay::Model {
-        provider_selected,
-        providers,
+    let Some(Overlay::ConnectModel {
+        selected_route,
+        focus,
         ..
     }) = &app.overlay
     else {
         panic!("expected model picker");
     };
-    assert_eq!(
-        providers.get(*provider_selected).map(String::as_str),
-        Some("openai")
-    );
+    assert_eq!(selected_route.as_deref(), Some("openai"));
+    assert_eq!(*focus, ConnectModelColumn::Models);
     assert!(app.feedback.text.contains("choose a model"));
 }
 
@@ -368,7 +367,7 @@ async fn connect_alone_opens_profile_picker() {
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert!(matches!(app.overlay, Some(Overlay::ConnectPicker { .. })));
+    assert!(matches!(app.overlay, Some(Overlay::ConnectModel { .. })));
 }
 
 #[tokio::test]

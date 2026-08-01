@@ -303,7 +303,7 @@ mod tests {
             app.handle_key(press(KeyCode::Char(c))).await.unwrap();
         }
         app.handle_key(press(KeyCode::Enter)).await.unwrap();
-        assert!(matches!(app.overlay, Some(Overlay::ConnectPicker { .. })));
+        assert!(matches!(app.overlay, Some(Overlay::ConnectModel { .. })));
         let backend = TestBackend::new(100, 30);
         let mut term = Terminal::new(backend).unwrap();
         term.draw(|f| app.draw(f)).unwrap();
@@ -322,20 +322,25 @@ mod tests {
     #[tokio::test]
     async fn visual_model_picker_marks_current_config_only_switch() {
         let (_d, mut app) = app().await;
-        app.overlay = Some(Overlay::model_open_with(vec![crate::overlays::ModelItem {
+        let items = vec![crate::overlays::ModelItem {
             provider: "native".into(),
             model: "mock".into(),
             profile_id: Some("mock".into()),
             source: forge_connect::CatalogSource::Default,
-        }]));
-        if let Some(overlay) = &mut app.overlay {
-            overlay.focus_model("mock");
-        }
+        }];
+        app.overlay = Some(Overlay::connect_model_open(
+            vec![],
+            items,
+            Some("mock"),
+            "mock",
+            crate::ReasoningEffort::default(),
+            crate::overlays::ConnectModelColumn::Models,
+        ));
         let backend = TestBackend::new(100, 30);
         let mut term = Terminal::new(backend).unwrap();
         term.draw(|f| app.draw(f)).unwrap();
         let text = buffer_text(&term);
-        for expected in ["Models", "Current: mock", "current", "Esc close"] {
+        for expected in ["MODELS", "mock", "current", "Esc close"] {
             assert!(text.contains(expected), "missing {expected:?}:\n{text}");
         }
     }

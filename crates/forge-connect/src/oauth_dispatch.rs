@@ -119,6 +119,9 @@ mod tests {
             models_dev_providers: vec![],
             auth_url: None,
             model_provider_prefix: id.into(),
+            vendor_id: id.into(),
+            vendor_label: "Test".into(),
+            route_label: String::new(),
         }
     }
 

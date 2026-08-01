@@ -202,6 +202,12 @@ pub struct StatusModel {
     pub connect_profile: Option<String>,
     /// Whether an LLM provider is usable for chat (connect profile live, or mock).
     pub provider_connected: bool,
+    /// Vendor display name for `connect_profile`, e.g. "OpenAI" — `None`
+    /// until a connect profile is resolved.
+    pub vendor_label: Option<String>,
+    /// This profile's offering label, e.g. "ChatGPT sign-in" — only set when
+    /// its vendor has more than one registered route.
+    pub route_label: Option<String>,
     pub web_search_label: Option<String>,
     pub tools_visible: usize,
     pub prompt_cache_hits: u64,
@@ -441,6 +447,30 @@ impl Widget for StatusBar<'_> {
             used = width;
         }
 
+        // At-rest model/provider/effort chip — the same value the unified
+        // Connect & Model picker's Active line and `/status` read, so none of
+        // the three can ever disagree.
+        if self.model.provider_connected && !self.model.model.is_empty() {
+            if let Some(vendor) = self.model.vendor_label.as_deref() {
+                let chip = format_provider_model_effort(
+                    vendor,
+                    self.model.route_label.as_deref(),
+                    &self.model.model,
+                    &self.model.effort,
+                );
+                let available = width.saturating_sub(used + sep_len);
+                if available >= 4 {
+                    let chip = StatusModel::truncate_middle(&chip, available);
+                    let needed = sep_len + chip.chars().count();
+                    if used + needed <= width {
+                        spans.push(Span::raw(separators));
+                        spans.push(Span::styled(chip, theme::metadata_style()));
+                        used += needed;
+                    }
+                }
+            }
+        }
+
         // Optional resource (file/run view) only if leftover room remains.
         if let Some(resource) = self
             .model
@@ -476,6 +506,20 @@ impl Widget for StatusBar<'_> {
 
         theme::fill(area, buf, theme::canvas());
         buf.set_line(area.x, area.y, &Line::from(spans), area.width);
+    }
+}
+
+/// One formatting rule for "current selection", shared by the picker's
+/// Active line and the header chip so they can never disagree.
+pub fn format_provider_model_effort(
+    vendor_label: &str,
+    route_label: Option<&str>,
+    model: &str,
+    effort: &str,
+) -> String {
+    match route_label {
+        Some(route) => format!("{vendor_label} · {route} / {model} / {effort}"),
+        None => format!("{vendor_label} / {model} / {effort}"),
     }
 }
 
@@ -522,6 +566,8 @@ mod tests {
             busy_phase,
             connect_profile: None,
             provider_connected: true,
+            vendor_label: None,
+            route_label: None,
             web_search_label: None,
             tools_visible: 0,
             prompt_cache_hits: 0,
@@ -550,6 +596,8 @@ mod tests {
             busy_phase: BusyPhase::Idle,
             connect_profile: None,
             provider_connected: true,
+            vendor_label: None,
+            route_label: None,
             web_search_label: None,
             tools_visible: 0,
             prompt_cache_hits: 0,
@@ -579,6 +627,8 @@ mod tests {
             busy_phase: BusyPhase::Model,
             connect_profile: None,
             provider_connected: false,
+            vendor_label: None,
+            route_label: None,
             web_search_label: Some("mock".into()),
             tools_visible: 5,
             prompt_cache_hits: 0,
@@ -610,6 +660,8 @@ mod tests {
             busy_phase: BusyPhase::Idle,
             connect_profile: Some("xai".into()),
             provider_connected: true,
+            vendor_label: None,
+            route_label: None,
             web_search_label: Some("mock".into()),
             tools_visible: 4,
             prompt_cache_hits: 2,
@@ -644,6 +696,8 @@ mod tests {
             busy_phase: BusyPhase::Idle,
             connect_profile: Some("openai-code".into()),
             provider_connected: true,
+            vendor_label: None,
+            route_label: None,
             web_search_label: None,
             tools_visible: 0,
             prompt_cache_hits: 0,
@@ -690,6 +744,8 @@ mod tests {
             busy_phase: BusyPhase::Idle,
             connect_profile: None,
             provider_connected: true,
+            vendor_label: None,
+            route_label: None,
             web_search_label: None,
             tools_visible: 0,
             prompt_cache_hits: 0,
@@ -719,6 +775,8 @@ mod tests {
             busy_phase: BusyPhase::Idle,
             connect_profile: None,
             provider_connected: true,
+            vendor_label: None,
+            route_label: None,
             web_search_label: None,
             tools_visible: 0,
             prompt_cache_hits: 0,
@@ -756,6 +814,8 @@ mod tests {
             busy_phase: BusyPhase::Idle,
             connect_profile: None,
             provider_connected: true,
+            vendor_label: None,
+            route_label: None,
             web_search_label: None,
             tools_visible: 0,
             prompt_cache_hits: 0,

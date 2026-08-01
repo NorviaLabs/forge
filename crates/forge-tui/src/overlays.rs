@@ -13,13 +13,6 @@ use std::path::Path;
 #[derive(Debug, Clone)]
 pub enum Overlay {
     Help,
-    Effort {
-        model: String,
-        selected: usize,
-        current: ReasoningEffort,
-        default: ReasoningEffort,
-        items: Vec<ReasoningEffort>,
-    },
     StatusReport {
         title: String,
         lines: Vec<String>,
@@ -33,22 +26,28 @@ pub enum Overlay {
     TurnLimit {
         turns: u32,
     },
-    Model {
-        provider_selected: usize,
-        model_selected: usize,
-        model_input: String,
-        current_model: String,
-        /// Provider ids (connect profile ids) derived from `groups`.
-        providers: Vec<String>,
+    /// Unified Connect + Model + Effort picker (`/connect` and `/model` both
+    /// open this, differing only in `focus`) — one state source so the two
+    /// commands can never disagree about "current".
+    ConnectModel {
+        providers: Vec<ProviderVendorRow>,
+        /// Index into `flatten_provider_rows(providers)`.
+        provider_cursor: usize,
+        /// Connect profile id scoping `groups`; `None` before any route has
+        /// ever been picked (e.g. first-ever `/connect`).
+        selected_route: Option<String>,
+        /// Unscoped catalog across every reachable profile; re-filtered into
+        /// `groups` whenever `selected_route` changes.
+        all_items: Vec<ModelItem>,
         groups: Vec<ModelGroup>,
-        /// Set while disambiguating a multi-route model (Enter on a >1-route
-        /// row). A sub-mode of this same overlay rather than a separate one,
-        /// so Esc can return to the model list without losing search state.
-        route_picker: Option<RoutePickerState>,
-        /// Session's current reasoning effort, shown in the footer so effort
-        /// stays visible without leaving the picker. A snapshot taken when
-        /// the picker opens (mirrors `current_model`), not live-synced.
-        current_effort: ReasoningEffort,
+        model_input: String,
+        model_selected: usize,
+        effort_items: Vec<ReasoningEffort>,
+        effort_selected: usize,
+        active_profile_id: Option<String>,
+        active_model: String,
+        active_effort: ReasoningEffort,
+        focus: ConnectModelColumn,
     },
     /// Phase 6.1 — OpenCode Go (and other ApiKey tui_always_prompt profiles)
     ConnectApiKey {
@@ -67,11 +66,6 @@ pub enum Overlay {
         profile_id: String,
         title: String,
         instructions: String,
-    },
-    /// Phase 6/8 — pick a connect profile after `/connect`
-    ConnectPicker {
-        selected: usize,
-        items: Vec<ConnectProfileItem>,
     },
     ResumePicker {
         selected: usize,
@@ -108,13 +102,170 @@ pub struct FileExplorerItem {
     pub is_dir: bool,
 }
 
+/// Which column of the unified Connect + Model picker has focus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectModelColumn {
+    Providers,
+    Models,
+    Effort,
+}
+
+impl ConnectModelColumn {
+    fn next(self) -> Self {
+        match self {
+            Self::Providers => Self::Models,
+            Self::Models => Self::Effort,
+            Self::Effort => Self::Providers,
+        }
+    }
+
+    fn prev(self) -> Self {
+        match self {
+            Self::Providers => Self::Effort,
+            Self::Models => Self::Providers,
+            Self::Effort => Self::Models,
+        }
+    }
+}
+
+/// One offering nested under a vendor row, e.g. "API key" / "ChatGPT sign-in".
 #[derive(Debug, Clone)]
-pub struct ConnectProfileItem {
-    pub id: String,
-    pub title: String,
-    pub auth_mode: String,
-    pub auth_url: Option<String>,
+pub struct ProviderRouteRow {
+    pub profile_id: String,
+    pub label: String,
     pub connected: bool,
+    pub is_current: bool,
+}
+
+/// One vendor row in the Providers column. Vendors with a single offering
+/// carry it as `routes[0]` and render flat, with no chevron; vendors with
+/// more than one offering render as an expandable header with `routes`
+/// nested underneath — the same affordance the file tree uses.
+#[derive(Debug, Clone)]
+pub struct ProviderVendorRow {
+    pub vendor_id: String,
+    pub label: String,
+    pub routes: Vec<ProviderRouteRow>,
+    pub expanded: bool,
+}
+
+/// One visible row of the flattened Providers column: a vendor header, or
+/// (when expanded) one of its nested routes. Mirrors `file_explorer`'s
+/// `flatten`/`VisibleNode` pattern for the same chevron interaction.
+struct ProviderFlatRow {
+    vendor_idx: usize,
+    /// `None` selects the vendor header itself; `Some(i)` selects `routes[i]`.
+    route_idx: Option<usize>,
+}
+
+fn flatten_provider_rows(providers: &[ProviderVendorRow]) -> Vec<ProviderFlatRow> {
+    let mut out = Vec::new();
+    for (vendor_idx, vendor) in providers.iter().enumerate() {
+        out.push(ProviderFlatRow {
+            vendor_idx,
+            route_idx: None,
+        });
+        if vendor.routes.len() > 1 && vendor.expanded {
+            for route_idx in 0..vendor.routes.len() {
+                out.push(ProviderFlatRow {
+                    vendor_idx,
+                    route_idx: Some(route_idx),
+                });
+            }
+        }
+    }
+    out
+}
+
+/// The connect profile a flattened row represents, if any — `None` for a
+/// multi-route vendor's header row, which only toggles expand/collapse.
+fn flat_row_profile<'a>(
+    providers: &'a [ProviderVendorRow],
+    row: &ProviderFlatRow,
+) -> Option<&'a ProviderRouteRow> {
+    let vendor = providers.get(row.vendor_idx)?;
+    match row.route_idx {
+        Some(i) => vendor.routes.get(i),
+        None if vendor.routes.len() == 1 => vendor.routes.first(),
+        None => None,
+    }
+}
+
+/// Build the Providers column from the registry, grouped by vendor. Only the
+/// vendor owning `current_profile_id` starts expanded — the same "expand the
+/// active path, collapse the rest" rule the file tree already uses.
+pub fn build_provider_rows(
+    registry: &forge_connect::ConnectRegistry,
+    connected: &std::collections::HashSet<String>,
+    current_profile_id: Option<&str>,
+) -> Vec<ProviderVendorRow> {
+    let mut vendor_order: Vec<(String, String)> = Vec::new();
+    let mut routes_by_vendor: std::collections::BTreeMap<String, Vec<ProviderRouteRow>> =
+        std::collections::BTreeMap::new();
+    for p in registry.profiles() {
+        if !vendor_order.iter().any(|(id, _)| id == &p.vendor_id) {
+            vendor_order.push((p.vendor_id.clone(), p.vendor_label.clone()));
+        }
+        routes_by_vendor
+            .entry(p.vendor_id.clone())
+            .or_default()
+            .push(ProviderRouteRow {
+                profile_id: p.id.clone(),
+                label: if p.route_label.is_empty() {
+                    p.title.clone()
+                } else {
+                    p.route_label.clone()
+                },
+                connected: connected.contains(&p.id),
+                is_current: current_profile_id == Some(p.id.as_str()),
+            });
+    }
+    vendor_order.sort_by_key(|(_, label)| label.to_ascii_lowercase());
+    let current_vendor_id = current_profile_id
+        .and_then(|pid| registry.get(pid))
+        .map(|p| p.vendor_id.clone());
+    vendor_order
+        .into_iter()
+        .map(|(vendor_id, label)| {
+            let routes = routes_by_vendor.remove(&vendor_id).unwrap_or_default();
+            let expanded =
+                routes.len() > 1 && current_vendor_id.as_deref() == Some(vendor_id.as_str());
+            ProviderVendorRow {
+                vendor_id,
+                label,
+                routes,
+                expanded,
+            }
+        })
+        .collect()
+}
+
+/// The active vendor/route labels for the picker's box title and Active
+/// line — `None` route means the vendor has only one offering.
+fn active_vendor_route_labels<'a>(
+    providers: &'a [ProviderVendorRow],
+    active_profile_id: Option<&str>,
+) -> Option<(&'a str, Option<&'a str>)> {
+    let pid = active_profile_id?;
+    providers.iter().find_map(|vendor| {
+        vendor
+            .routes
+            .iter()
+            .find(|r| r.profile_id == pid)
+            .map(|route| {
+                let route_label = (vendor.routes.len() > 1).then_some(route.label.as_str());
+                (vendor.label.as_str(), route_label)
+            })
+    })
+}
+
+/// First visible index so `selected` stays on-screen within `visible` rows.
+fn window_start(selected: usize, total: usize, visible: usize) -> usize {
+    if visible == 0 || total <= visible || selected < visible {
+        0
+    } else {
+        (selected + 1).saturating_sub(visible)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -154,16 +305,6 @@ pub struct ModelGroup {
     /// Bare model name shared by every route, e.g. `gpt-5.6` (no provider prefix).
     pub model_id: String,
     pub routes: Vec<ModelItem>,
-    /// Tab-reveal state: whether routes are shown inline under this row.
-    pub expanded: bool,
-}
-
-/// Active state while disambiguating a multi-route model in the picker.
-#[derive(Debug, Clone)]
-pub struct RoutePickerState {
-    pub model_id: String,
-    pub selected: usize,
-    pub routes: Vec<ModelItem>,
 }
 
 /// Group picker rows by their bare model name, preserving every route.
@@ -179,7 +320,6 @@ fn group_model_items(items: Vec<ModelItem>) -> Vec<ModelGroup> {
                 out.push(ModelGroup {
                     model_id,
                     routes: vec![item],
-                    expanded: false,
                 });
             }
         }
@@ -323,28 +463,6 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
     ]
 }
 
-/// Model list from cached provider catalogs (no network).
-pub fn default_models() -> Vec<ModelItem> {
-    let mut items = Vec::new();
-    for p in forge_connect::builtin_registry().profiles() {
-        // Dedup within this profile's own default list only — two profiles
-        // offering the same model id are distinct, independently reachable
-        // routes, not duplicates (see forge_connect::group_routes).
-        let mut seen = std::collections::BTreeSet::new();
-        for m in &p.default_models {
-            if seen.insert(m.clone()) {
-                items.push(ModelItem {
-                    provider: "native".into(),
-                    model: m.clone(),
-                    profile_id: Some(p.id.clone()),
-                    source: forge_connect::CatalogSource::Default,
-                });
-            }
-        }
-    }
-    items
-}
-
 /// Build picker rows from live or cached catalog entries.
 pub fn models_from_catalog(entries: &[forge_connect::CatalogEntry]) -> Vec<ModelItem> {
     entries
@@ -367,127 +485,75 @@ impl Overlay {
         Self::Help
     }
 
-    pub fn model_open() -> Self {
-        Self::model_open_with(default_models())
-    }
-
-    pub fn model_open_with(items: Vec<ModelItem>) -> Self {
-        let mut providers: Vec<String> = items
-            .iter()
-            .filter_map(|m| {
-                if let Some(ref pid) = m.profile_id {
-                    Some(pid.clone())
-                } else {
-                    let pfx = m.model.split('/').next().unwrap_or("").trim();
-                    if pfx.is_empty() {
-                        None
-                    } else {
-                        Some(pfx.to_string())
-                    }
-                }
-            })
-            .collect();
-        providers.sort();
-        providers.dedup();
-        if providers.is_empty() {
-            providers.push("all".into());
-        }
-        Self::Model {
-            provider_selected: 0,
-            model_selected: 0,
-            model_input: String::new(),
-            current_model: String::new(),
-            providers,
-            groups: group_model_items(items),
-            route_picker: None,
-            current_effort: ReasoningEffort::default(),
-        }
-    }
-
-    /// Snapshot the session's current effort into an open model picker, so
-    /// its footer reflects the real value instead of the `Auto` default.
-    pub fn set_current_effort(&mut self, effort: ReasoningEffort) {
-        if let Self::Model { current_effort, .. } = self {
-            *current_effort = effort;
-        }
-    }
-
-    pub fn effort_open(model: impl Into<String>, current: ReasoningEffort) -> Self {
-        let model = model.into();
-        let items = effort_options(&model);
-        let default = ReasoningEffort::default_for_model(&model);
-        let selected = items
-            .iter()
-            .position(|item| *item == current)
-            .or_else(|| items.iter().position(|item| *item == default))
-            .unwrap_or(0);
-        Self::Effort {
-            model,
-            selected,
-            current,
-            default,
-            items,
-        }
-    }
-
-    /// Focus the model picker on the given model id (best-effort).
-    pub fn focus_model(&mut self, model_id: &str) {
-        let needle = model_id.trim();
-        if needle.is_empty() {
-            return;
-        }
-        let Self::Model {
-            provider_selected,
-            model_selected,
-            current_model,
-            providers,
-            groups,
-            route_picker,
-            ..
-        } = self
-        else {
-            return;
+    /// Build items scoped to `route` (or every reachable item when `route`
+    /// is `None`, e.g. before any provider has ever been picked).
+    fn scoped_groups(items: &[ModelItem], route: Option<&str>) -> Vec<ModelGroup> {
+        let filtered: Vec<ModelItem> = match route {
+            Some(pid) => items
+                .iter()
+                .filter(|m| m.profile_id.as_deref() == Some(pid))
+                .cloned()
+                .collect(),
+            None => items.to_vec(),
         };
-        *current_model = needle.to_string();
-        *route_picker = None;
+        group_model_items(filtered)
+    }
 
-        // Find exact model first.
-        if let Some(found) = groups
+    fn index_of_model(groups: &[ModelGroup], model: &str) -> usize {
+        if model.is_empty() {
+            return 0;
+        }
+        groups
             .iter()
-            .find(|g| g.routes.iter().any(|m| m.model == needle))
-        {
-            let pid = found
-                .routes
-                .iter()
-                .find(|m| m.model == needle)
-                .and_then(|m| m.profile_id.clone())
-                .unwrap_or_else(|| needle.split('/').next().unwrap_or("").to_string());
-            if let Some(pi) = providers.iter().position(|p| p == &pid) {
-                *provider_selected = pi;
-            }
-            let active_pid = providers
-                .get(*provider_selected)
-                .map(|s| s.as_str())
-                .unwrap_or("all");
-            let found_model_id = found.model_id.clone();
-            if let Some(gi) = groups
-                .iter()
-                .filter(|g| group_matches_provider(active_pid, g))
-                .position(|g| g.model_id == found_model_id)
-            {
-                *model_selected = gi;
-            }
-            return;
-        }
+            .position(|g| g.routes.iter().any(|m| m.model == model))
+            .unwrap_or(0)
+    }
 
-        // Fallback: focus provider by prefix.
-        let prefix = needle.split('/').next().unwrap_or("").trim();
-        if prefix.is_empty() {
-            return;
-        }
-        if let Some(pi) = providers.iter().position(|p| p == prefix) {
-            *provider_selected = pi;
-            *model_selected = 0;
+    fn provider_cursor_for(providers: &[ProviderVendorRow], profile_id: Option<&str>) -> usize {
+        let Some(pid) = profile_id else { return 0 };
+        flatten_provider_rows(providers)
+            .iter()
+            .position(|row| {
+                flat_row_profile(providers, row).is_some_and(|route| route.profile_id == pid)
+            })
+            .unwrap_or(0)
+    }
+
+    /// Build the unified Connect + Model + Effort picker. `/connect` and
+    /// `/model` both call this, differing only in `focus`.
+    pub fn connect_model_open(
+        providers: Vec<ProviderVendorRow>,
+        items: Vec<ModelItem>,
+        current_profile_id: Option<&str>,
+        current_model: &str,
+        current_effort: ReasoningEffort,
+        focus: ConnectModelColumn,
+    ) -> Self {
+        let selected_route = current_profile_id.map(str::to_string);
+        let groups = Self::scoped_groups(&items, selected_route.as_deref());
+        let model_selected = Self::index_of_model(&groups, current_model);
+        let effort_items = effort_options(current_model);
+        let default_effort = ReasoningEffort::default_for_model(current_model);
+        let effort_selected = effort_items
+            .iter()
+            .position(|e| *e == current_effort)
+            .or_else(|| effort_items.iter().position(|e| *e == default_effort))
+            .unwrap_or(0);
+        let provider_cursor = Self::provider_cursor_for(&providers, current_profile_id);
+        Self::ConnectModel {
+            providers,
+            provider_cursor,
+            selected_route,
+            all_items: items,
+            groups,
+            model_input: String::new(),
+            model_selected,
+            effort_items,
+            effort_selected,
+            active_profile_id: current_profile_id.map(str::to_string),
+            active_model: current_model.to_string(),
+            active_effort: current_effort,
+            focus,
         }
     }
 
@@ -539,17 +605,6 @@ impl Overlay {
         }
     }
 
-    pub fn connect_picker(items: Vec<ConnectProfileItem>) -> Self {
-        let mut items = items;
-        items.sort_by(|a, b| {
-            a.title
-                .to_ascii_lowercase()
-                .cmp(&b.title.to_ascii_lowercase())
-                .then_with(|| a.id.cmp(&b.id))
-        });
-        Self::ConnectPicker { selected: 0, items }
-    }
-
     pub fn resume_picker(items: Vec<ResumeSessionItem>) -> Self {
         Self::ResumePicker { selected: 0, items }
     }
@@ -599,50 +654,37 @@ impl Overlay {
 
     pub fn move_sel(&mut self, delta: i32) {
         match self {
-            Self::Effort {
-                selected, items, ..
-            } => {
-                if !items.is_empty() {
-                    let n = items.len() as i32;
-                    *selected = ((*selected as i32 + delta).rem_euclid(n)) as usize;
-                }
-            }
-            Self::Model {
-                provider_selected,
-                model_selected,
-                model_input,
+            Self::ConnectModel {
                 providers,
+                provider_cursor,
                 groups,
-                route_picker,
+                model_input,
+                model_selected,
+                effort_items,
+                effort_selected,
+                focus,
                 ..
-            } => {
-                if let Some(rp) = route_picker {
-                    if rp.routes.is_empty() {
-                        return;
+            } => match focus {
+                ConnectModelColumn::Providers => {
+                    let n = flatten_provider_rows(providers).len().max(1) as i32;
+                    *provider_cursor = ((*provider_cursor as i32 + delta).rem_euclid(n)) as usize;
+                }
+                ConnectModelColumn::Models => {
+                    let n = groups
+                        .iter()
+                        .filter(|g| group_matches_input(model_input, g))
+                        .count()
+                        .max(1) as i32;
+                    *model_selected = ((*model_selected as i32 + delta).rem_euclid(n)) as usize;
+                }
+                ConnectModelColumn::Effort => {
+                    if !effort_items.is_empty() {
+                        let n = effort_items.len() as i32;
+                        *effort_selected =
+                            ((*effort_selected as i32 + delta).rem_euclid(n)) as usize;
                     }
-                    let n = rp.routes.len() as i32;
-                    rp.selected = ((rp.selected as i32 + delta).rem_euclid(n)) as usize;
-                    return;
                 }
-                if groups.is_empty() {
-                    return;
-                }
-                let pid = providers
-                    .get(*provider_selected)
-                    .map(|s| s.as_str())
-                    .unwrap_or("all");
-                let n = filtered_groups_len(pid, model_input, groups).max(1) as i32;
-                *model_selected = ((*model_selected as i32 + delta).rem_euclid(n)) as usize;
-            }
-            Self::ConnectPicker {
-                selected, items, ..
-            } => {
-                if items.is_empty() {
-                    return;
-                }
-                let n = items.len() as i32;
-                *selected = ((*selected as i32 + delta).rem_euclid(n)) as usize;
-            }
+            },
             Self::ResumePicker {
                 selected, items, ..
             } => {
@@ -689,30 +731,9 @@ impl Overlay {
     }
 }
 
-fn model_matches_provider(provider_id: &str, m: &ModelItem) -> bool {
-    if provider_id == "all" {
-        return true;
-    }
-    if let Some(ref pid) = m.profile_id {
-        if pid == provider_id {
-            return true;
-        }
-    }
-    let pfx = m.model.split('/').next().unwrap_or("").trim();
-    pfx == provider_id
-}
-
 fn model_matches_input(model_input: &str, item: &ModelItem) -> bool {
     let needle = model_input.trim().to_ascii_lowercase();
     needle.is_empty() || item.model.to_ascii_lowercase().contains(&needle)
-}
-
-fn group_matches_provider(provider_id: &str, group: &ModelGroup) -> bool {
-    provider_id == "all"
-        || group
-            .routes
-            .iter()
-            .any(|m| model_matches_provider(provider_id, m))
 }
 
 fn group_matches_input(model_input: &str, group: &ModelGroup) -> bool {
@@ -723,13 +744,6 @@ fn group_matches_input(model_input: &str, group: &ModelGroup) -> bool {
             .routes
             .iter()
             .any(|m| model_matches_input(model_input, m))
-}
-
-fn filtered_groups_len(provider_id: &str, model_input: &str, groups: &[ModelGroup]) -> usize {
-    groups
-        .iter()
-        .filter(|g| group_matches_provider(provider_id, g) && group_matches_input(model_input, g))
-        .count()
 }
 
 pub fn filter_palette(filter: &str) -> Vec<PaletteItem> {
@@ -812,20 +826,6 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
     match key {
         Key::Esc if matches!(overlay, Overlay::TurnLimit { .. }) => OverlayAction::StopTurns,
         Key::Esc if matches!(overlay, Overlay::Hitl { .. }) => OverlayAction::HitlDeny,
-        Key::Esc
-            if matches!(
-                overlay,
-                Overlay::Model {
-                    route_picker: Some(_),
-                    ..
-                }
-            ) =>
-        {
-            if let Overlay::Model { route_picker, .. } = overlay {
-                *route_picker = None;
-            }
-            OverlayAction::None
-        }
         Key::Esc => OverlayAction::Close,
         Key::Up => {
             overlay.move_sel(-1);
@@ -847,20 +847,6 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             } {
                 return OverlayAction::FilePick { path, is_dir: true };
             }
-            if let Overlay::Model {
-                provider_selected,
-                model_selected,
-                providers,
-                route_picker: None,
-                ..
-            } = overlay
-            {
-                if !providers.is_empty() {
-                    let n = providers.len() as i32;
-                    *provider_selected = ((*provider_selected as i32 - 1).rem_euclid(n)) as usize;
-                    *model_selected = 0;
-                }
-            }
             OverlayAction::None
         }
         Key::Right => {
@@ -868,93 +854,114 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                 approval.focus_next(1);
                 return OverlayAction::None;
             }
-            if let Overlay::Model {
-                provider_selected,
-                model_selected,
-                providers,
-                route_picker: None,
-                ..
-            } = overlay
-            {
-                if !providers.is_empty() {
-                    let n = providers.len() as i32;
-                    *provider_selected = ((*provider_selected as i32 + 1).rem_euclid(n)) as usize;
-                    *model_selected = 0;
-                }
-            }
             OverlayAction::None
         }
         Key::Enter => match overlay {
             Overlay::Help => OverlayAction::BeginOnboarding,
-            Overlay::Effort {
-                selected, items, ..
-            } => items
-                .get(*selected)
-                .copied()
-                .map(OverlayAction::SelectEffort)
-                .unwrap_or(OverlayAction::None),
             Overlay::StatusReport { .. } => OverlayAction::Close,
             Overlay::TurnLimit { .. } => OverlayAction::ContinueTurns,
-            Overlay::Model {
-                route_picker: Some(rp),
-                ..
-            } => rp
-                .routes
-                .get(rp.selected)
-                .map(|m| OverlayAction::SelectModel {
-                    provider: m.provider.clone(),
-                    model: m.model.clone(),
-                    profile_id: m.profile_id.clone(),
-                })
-                .unwrap_or(OverlayAction::None),
-            Overlay::Model {
-                provider_selected,
-                model_selected,
-                model_input,
+            Overlay::ConnectModel {
                 providers,
+                provider_cursor,
+                selected_route,
+                all_items,
                 groups,
-                route_picker,
-                ..
-            } => {
-                let pid = providers
-                    .get(*provider_selected)
-                    .map(|s| s.as_str())
-                    .unwrap_or("all");
-                let chosen = groups
-                    .iter()
-                    .filter(|g| {
-                        group_matches_provider(pid, g) && group_matches_input(model_input, g)
-                    })
-                    .nth(*model_selected);
-                if !model_input.trim().is_empty()
-                    && !chosen.is_some_and(|g| {
-                        g.routes
-                            .iter()
-                            .any(|m| m.model.eq_ignore_ascii_case(model_input.trim()))
-                    })
-                {
-                    OverlayAction::RunCommand(format!("/model {}", model_input.trim()))
-                } else if let Some(g) = chosen {
-                    match g.routes.as_slice() {
-                        [] => OverlayAction::None,
-                        [single] => OverlayAction::SelectModel {
-                            provider: single.provider.clone(),
-                            model: single.model.clone(),
-                            profile_id: single.profile_id.clone(),
-                        },
-                        many => {
-                            *route_picker = Some(RoutePickerState {
-                                model_id: g.model_id.clone(),
-                                selected: 0,
-                                routes: many.to_vec(),
-                            });
-                            OverlayAction::None
-                        }
+                model_input,
+                model_selected,
+                effort_items,
+                effort_selected,
+                active_profile_id,
+                active_model,
+                active_effort,
+                focus,
+            } => match focus {
+                ConnectModelColumn::Providers => {
+                    let rows = flatten_provider_rows(providers);
+                    let Some(row) = rows.get(*provider_cursor) else {
+                        return OverlayAction::None;
+                    };
+                    let vendor = &providers[row.vendor_idx];
+                    if row.route_idx.is_none() && vendor.routes.len() > 1 {
+                        // Multi-route vendor header: toggle expand/collapse in place.
+                        let expanded = !vendor.expanded;
+                        providers[row.vendor_idx].expanded = expanded;
+                        return OverlayAction::None;
                     }
-                } else {
+                    let Some(route) = flat_row_profile(providers, row) else {
+                        return OverlayAction::None;
+                    };
+                    if !route.connected {
+                        return OverlayAction::ConnectPickProfile {
+                            profile_id: route.profile_id.clone(),
+                        };
+                    }
+                    // Already connected: scope the Models column to this route
+                    // in place, no app-level action needed.
+                    let profile_id = route.profile_id.clone();
+                    *selected_route = Some(profile_id.clone());
+                    *groups = Overlay::scoped_groups(all_items, Some(profile_id.as_str()));
+                    model_input.clear();
+                    *model_selected = Overlay::index_of_model(groups, active_model);
+                    *focus = ConnectModelColumn::Models;
                     OverlayAction::None
                 }
-            }
+                ConnectModelColumn::Models => {
+                    let chosen = groups
+                        .iter()
+                        .filter(|g| group_matches_input(model_input, g))
+                        .nth(*model_selected);
+                    let typed = model_input.trim();
+                    if !typed.is_empty()
+                        && !chosen.is_some_and(|g| {
+                            g.routes.iter().any(|m| m.model.eq_ignore_ascii_case(typed))
+                        })
+                    {
+                        // No catalog match for the typed text — let the caller
+                        // re-dispatch it as a free-text `/model <arg>` for
+                        // advanced users naming an unlisted model.
+                        return OverlayAction::RunCommand(format!("/model {typed}"));
+                    }
+                    let Some(g) = chosen else {
+                        return OverlayAction::None;
+                    };
+                    // A route was already resolved via the Providers column, so
+                    // there should be exactly one; if a catalog quirk still
+                    // yields more than one, prefer the account-verified entry.
+                    let Some(route) = g
+                        .routes
+                        .iter()
+                        .find(|r| r.source == forge_connect::CatalogSource::Live)
+                        .or_else(|| g.routes.first())
+                    else {
+                        return OverlayAction::None;
+                    };
+                    *active_model = route.model.clone();
+                    if let Some(pid) = route.profile_id.clone().or_else(|| selected_route.clone()) {
+                        *active_profile_id = Some(pid);
+                    }
+                    let opts = effort_options(&route.model);
+                    let default_effort = ReasoningEffort::default_for_model(&route.model);
+                    let use_effort = if opts.contains(active_effort) {
+                        *active_effort
+                    } else {
+                        default_effort
+                    };
+                    *effort_selected = opts.iter().position(|e| *e == use_effort).unwrap_or(0);
+                    *active_effort = use_effort;
+                    *effort_items = opts;
+                    *focus = ConnectModelColumn::Effort;
+                    OverlayAction::SelectModel {
+                        provider: route.provider.clone(),
+                        model: route.model.clone(),
+                        profile_id: route.profile_id.clone(),
+                    }
+                }
+                ConnectModelColumn::Effort => effort_items
+                    .get(*effort_selected)
+                    .copied()
+                    .map(OverlayAction::SelectEffort)
+                    .unwrap_or(OverlayAction::None),
+            },
             Overlay::ConnectApiKey {
                 profile_id,
                 key_input,
@@ -972,17 +979,6 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             Overlay::ConnectOauth { profile_id, .. } => OverlayAction::ConnectCompleteOauth {
                 profile_id: profile_id.clone(),
             },
-            Overlay::ConnectPicker {
-                selected, items, ..
-            } => {
-                if let Some(it) = items.get(*selected) {
-                    OverlayAction::ConnectPickProfile {
-                        profile_id: it.id.clone(),
-                    }
-                } else {
-                    OverlayAction::None
-                }
-            }
             Overlay::ResumePicker {
                 selected, items, ..
             } => {
@@ -1069,13 +1065,13 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
         Key::Char(c)
             if matches!(
                 overlay,
-                Overlay::Model {
-                    route_picker: None,
+                Overlay::ConnectModel {
+                    focus: ConnectModelColumn::Models,
                     ..
                 }
             ) =>
         {
-            if let Overlay::Model {
+            if let Overlay::ConnectModel {
                 model_input,
                 model_selected,
                 ..
@@ -1103,13 +1099,13 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
         Key::Paste(ref data)
             if matches!(
                 overlay,
-                Overlay::Model {
-                    route_picker: None,
+                Overlay::ConnectModel {
+                    focus: ConnectModelColumn::Models,
                     ..
                 }
             ) =>
         {
-            if let Overlay::Model {
+            if let Overlay::ConnectModel {
                 model_input,
                 model_selected,
                 ..
@@ -1141,13 +1137,13 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
         Key::Backspace
             if matches!(
                 overlay,
-                Overlay::Model {
-                    route_picker: None,
+                Overlay::ConnectModel {
+                    focus: ConnectModelColumn::Models,
                     ..
                 }
             ) =>
         {
-            if let Overlay::Model {
+            if let Overlay::ConnectModel {
                 model_input,
                 model_selected,
                 ..
@@ -1188,37 +1184,15 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             .map(|path| OverlayAction::FilePick { path, is_dir: true })
             .unwrap_or(OverlayAction::None)
         }
-        Key::Tab
-            if matches!(
-                overlay,
-                Overlay::Model {
-                    route_picker: None,
-                    ..
-                }
-            ) =>
-        {
-            if let Overlay::Model {
-                provider_selected,
-                model_selected,
-                model_input,
-                providers,
-                groups,
-                ..
-            } = overlay
-            {
-                let pid = providers
-                    .get(*provider_selected)
-                    .map(|s| s.as_str())
-                    .unwrap_or("all");
-                if let Some(g) = groups
-                    .iter_mut()
-                    .filter(|g| {
-                        group_matches_provider(pid, g) && group_matches_input(model_input, g)
-                    })
-                    .nth(*model_selected)
-                {
-                    g.expanded = !g.expanded;
-                }
+        Key::Tab if matches!(overlay, Overlay::ConnectModel { .. }) => {
+            if let Overlay::ConnectModel { focus, .. } = overlay {
+                *focus = focus.next();
+            }
+            OverlayAction::None
+        }
+        Key::BackTab if matches!(overlay, Overlay::ConnectModel { .. }) => {
+            if let Overlay::ConnectModel { focus, .. } = overlay {
+                *focus = focus.prev();
             }
             OverlayAction::None
         }
@@ -1662,8 +1636,12 @@ pub struct OverlayWidget<'a> {
 
 impl Widget for OverlayWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        if !matches!(self.overlay, Overlay::Hitl { .. }) {
-            theme::fill(area, buf, theme::canvas());
+        match self.overlay {
+            Overlay::Hitl { .. } => {}
+            // Dim the transcript in place instead of blanking it, so it stays
+            // legible-but-muted behind the picker rather than disappearing.
+            Overlay::ConnectModel { .. } => theme::dim_region(area, buf),
+            _ => theme::fill(area, buf, theme::canvas()),
         }
         match self.overlay {
             Overlay::Help => {
@@ -1680,62 +1658,6 @@ impl Widget for OverlayWidget<'_> {
                         .title(Span::styled(" Help ", theme::brand())),
                 )
                 .render(r, buf);
-            }
-            Overlay::Effort {
-                model,
-                selected,
-                current,
-                default,
-                items,
-            } => {
-                let r = centered_capped_rect(area, 54, 14);
-                let list_items: Vec<ListItem> = items
-                    .iter()
-                    .enumerate()
-                    .map(|(index, effort)| {
-                        let marker = if index == *selected { "▶ " } else { "  " };
-                        let current = if effort == current { " current" } else { "" };
-                        let default_label = if effort == default {
-                            " (provider default)"
-                        } else {
-                            ""
-                        };
-                        let style = if index == *selected {
-                            theme::focused_selection_style()
-                        } else {
-                            theme::text()
-                        };
-                        ListItem::new(Span::styled(
-                            format!("{marker}{}{current}{default_label}", effort.label()),
-                            style,
-                        ))
-                    })
-                    .collect();
-                let block = Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(theme::border())
-                    .style(theme::panel())
-                    .title(Span::styled(
-                        " Reasoning effort · ↑↓ select · Enter use ",
-                        theme::brand(),
-                    ));
-                let inner = block.inner(r);
-                block.render(r, buf);
-                let regions = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([
-                        Constraint::Length(1),
-                        Constraint::Min(1),
-                        Constraint::Length(1),
-                    ])
-                    .split(inner);
-                Paragraph::new(format!("Model: {model}"))
-                    .style(theme::muted())
-                    .render(regions[0], buf);
-                List::new(list_items).render(regions[1], buf);
-                Paragraph::new("Esc close")
-                    .style(theme::dim())
-                    .render(regions[2], buf);
             }
             Overlay::StatusReport { title, lines } => {
                 let r = centered_capped_rect(area, 74, 30);
@@ -1792,198 +1714,253 @@ impl Widget for OverlayWidget<'_> {
                     )
                     .render(r, buf);
             }
-            Overlay::Model {
-                provider_selected,
-                model_selected,
-                model_input,
-                current_model,
+            Overlay::ConnectModel {
                 providers,
+                provider_cursor,
                 groups,
-                route_picker,
-                current_effort,
+                model_input,
+                model_selected,
+                effort_items,
+                effort_selected,
+                active_profile_id,
+                active_model,
+                active_effort,
+                focus,
+                ..
             } => {
-                if let Some(rp) = route_picker {
-                    let r = centered_capped_rect(area, 60, 12);
-                    let list_items: Vec<ListItem> = rp
-                        .routes
-                        .iter()
-                        .enumerate()
-                        .map(|(i, route)| {
-                            let marker = if i == rp.selected { "▶ " } else { "  " };
-                            let style = if i == rp.selected {
-                                theme::focused_selection_style()
-                            } else {
-                                theme::text()
-                            };
-                            let label = route.profile_id.as_deref().unwrap_or_else(|| {
-                                route.model.split('/').next().unwrap_or("provider")
-                            });
-                            ListItem::new(Span::styled(format!("{marker}{label}"), style))
-                        })
-                        .collect();
-                    let title = format!(" {} · Select Route · ↑↓ select · Enter use ", rp.model_id);
-                    let block = Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(theme::border())
-                        .style(theme::panel())
-                        .title(Span::styled(title, theme::brand()));
-                    let inner = block.inner(r);
-                    block.render(r, buf);
-                    let regions = Layout::default()
-                        .direction(Direction::Vertical)
-                        .constraints([Constraint::Min(1), Constraint::Length(1)])
-                        .split(inner);
-                    List::new(list_items).render(regions[0], buf);
-                    Paragraph::new("Esc back")
-                        .style(theme::dim())
-                        .render(regions[1], buf);
-                    return;
-                }
-                let r = centered_capped_rect(area, 88, 20);
-                let pid = providers
-                    .get(*provider_selected)
-                    .map(|s| s.as_str())
-                    .unwrap_or("all");
-                let filtered: Vec<&ModelGroup> = groups
-                    .iter()
-                    .filter(|g| {
-                        group_matches_provider(pid, g) && group_matches_input(model_input, g)
-                    })
-                    .collect();
-                let total = filtered.len();
-                let visible = r.height.saturating_sub(6).max(1) as usize;
-                let start = if *model_selected < visible {
-                    0
-                } else if *model_selected + 1 > visible {
-                    (*model_selected).saturating_add(1).saturating_sub(visible)
-                } else {
-                    0
+                let r = centered_capped_rect(area, 100, 22);
+                let active = active_vendor_route_labels(providers, active_profile_id.as_deref());
+                let label_suffix = match active {
+                    Some((vendor, Some(route))) => format!(" · {vendor} · {route}"),
+                    Some((vendor, None)) => format!(" · {vendor}"),
+                    None => String::new(),
                 };
-                let end = (start + visible).min(filtered.len());
-                let window = &filtered[start..end];
-                let list_items: Vec<ListItem> = if window.is_empty() {
-                    vec![ListItem::new(Span::styled(
-                        if groups.is_empty() {
-                            "No models are available. Connect a provider or start a local model runtime."
-                        } else {
-                            "No models match this provider or filter."
-                        },
-                        theme::muted(),
-                    ))]
-                } else {
-                    window
-                        .iter()
-                        .enumerate()
-                        .flat_map(|(i, g)| {
-                            let idx = start + i;
-                            let marker = if idx == *model_selected { "▶ " } else { "  " };
-                            let style = if idx == *model_selected {
-                                theme::focused_selection_style()
-                            } else {
-                                theme::text()
-                            };
-                            let is_current = g.routes.iter().any(|m| m.model == *current_model);
-                            let route_count = g.routes.len();
-                            let tag = if route_count > 1 {
-                                format!("{route_count} routes")
-                            } else {
-                                let m = &g.routes[0];
-                                let provider =
-                                    m.model.split_once('/').map(|(p, _)| p).unwrap_or_else(|| {
-                                        m.profile_id.as_deref().unwrap_or("model")
-                                    });
-                                if is_current {
-                                    "current".to_string()
-                                } else if m.source == forge_connect::CatalogSource::Registry {
-                                    "known".to_string()
-                                } else if provider == "ollama" || provider.contains("local") {
-                                    "local".to_string()
-                                } else {
-                                    "cloud".to_string()
-                                }
-                            };
-                            let label = if route_count > 1 {
-                                g.model_id.clone()
-                            } else {
-                                let m = &g.routes[0];
-                                let (provider, model) = m.model.split_once('/').unwrap_or((
-                                    m.profile_id.as_deref().unwrap_or("model"),
-                                    &m.model,
-                                ));
-                                format!("{provider} / {model}")
-                            };
-                            let mut row = format!("{marker}{label}");
-                            let tag_display = if is_current && route_count > 1 {
-                                format!("current · {tag}")
-                            } else {
-                                tag
-                            };
-                            let target = (r.width.saturating_sub(5) as usize)
-                                .saturating_sub(tag_display.chars().count());
-                            while row.chars().count() < target {
-                                row.push(' ');
-                            }
-                            row.push_str(&tag_display);
-                            let mut rows = vec![ListItem::new(Span::styled(row, style))];
-                            if g.expanded {
-                                rows.extend(g.routes.iter().map(|route| {
-                                    let provider_label =
-                                        route.profile_id.as_deref().unwrap_or_else(|| {
-                                            route.model.split('/').next().unwrap_or("provider")
-                                        });
-                                    ListItem::new(Span::styled(
-                                        format!("      via {provider_label}"),
-                                        theme::dim(),
-                                    ))
-                                }));
-                            }
-                            rows
-                        })
-                        .collect()
-                };
-                let prov_hint = if providers.len() > 1 {
-                    " · ←/→ provider"
-                } else {
-                    ""
-                };
-                let page = if total == 0 {
-                    "0/0".into()
-                } else {
-                    format!("{}/{}", (*model_selected + 1).min(total), total)
-                };
-                let title = format!(
-                    " Models · {pid} · {page}{prov_hint} · ↑↓ select · Enter use · Tab routes "
-                );
                 let block = Block::default()
                     .borders(Borders::ALL)
                     .border_style(theme::border())
                     .style(theme::panel())
-                    .title(Span::styled(title, theme::brand()));
+                    .title(Span::styled(
+                        format!(" Connect & Model{label_suffix} "),
+                        theme::brand(),
+                    ));
                 let inner = block.inner(r);
                 block.render(r, buf);
                 let regions = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([
                         Constraint::Length(1),
-                        Constraint::Length(2),
-                        Constraint::Min(1),
+                        Constraint::Min(3),
                         Constraint::Length(1),
                         Constraint::Length(1),
                     ])
                     .split(inner);
-                Paragraph::new(format!("Current: {current_model}"))
-                    .style(theme::muted())
-                    .render(regions[0], buf);
-                Paragraph::new(format!("/model {model_input}█"))
+                let col_constraints = [
+                    Constraint::Percentage(30),
+                    Constraint::Length(2),
+                    Constraint::Percentage(38),
+                    Constraint::Length(2),
+                    Constraint::Percentage(30),
+                ];
+                let header_cols = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints(col_constraints)
+                    .split(regions[0]);
+                let body_cols = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints(col_constraints)
+                    .split(regions[1]);
+                let (providers_header, models_header, effort_header) =
+                    (header_cols[0], header_cols[2], header_cols[4]);
+                let (providers_area, models_area, effort_area) =
+                    (body_cols[0], body_cols[2], body_cols[4]);
+
+                let head_style = |col: ConnectModelColumn| {
+                    if *focus == col {
+                        theme::brand()
+                    } else {
+                        theme::muted()
+                    }
+                };
+                Paragraph::new("PROVIDERS")
+                    .style(head_style(ConnectModelColumn::Providers))
+                    .render(providers_header, buf);
+                Paragraph::new("MODELS")
+                    .style(head_style(ConnectModelColumn::Models))
+                    .render(models_header, buf);
+                Paragraph::new("EFFORT")
+                    .style(head_style(ConnectModelColumn::Effort))
+                    .render(effort_header, buf);
+
+                // Providers column.
+                let flat = flatten_provider_rows(providers);
+                let visible = providers_area.height.max(1) as usize;
+                let start = window_start(*provider_cursor, flat.len(), visible);
+                let end = (start + visible).min(flat.len());
+                let provider_items: Vec<ListItem> = flat[start..end]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, row)| {
+                        let idx = start + i;
+                        let vendor = &providers[row.vendor_idx];
+                        let selected = idx == *provider_cursor;
+                        let style = if selected {
+                            theme::focused_selection_style()
+                        } else {
+                            theme::text()
+                        };
+                        let indent = if row.route_idx.is_some() { "  " } else { "" };
+                        let glyph = match row.route_idx {
+                            None if vendor.routes.len() > 1 => {
+                                if vendor.expanded {
+                                    "▾"
+                                } else {
+                                    "▸"
+                                }
+                            }
+                            _ => " ",
+                        };
+                        let label = match row.route_idx {
+                            Some(i) => vendor.routes[i].label.as_str(),
+                            None => vendor.label.as_str(),
+                        };
+                        let tag = match flat_row_profile(providers, row) {
+                            Some(route) if route.is_current => "current",
+                            Some(route) if route.connected => "connected",
+                            _ => "",
+                        };
+                        let marker = if selected { "▶ " } else { "  " };
+                        let mut text = format!("{marker}{indent}{glyph} {label}");
+                        if !tag.is_empty() {
+                            let target = (providers_area.width as usize)
+                                .saturating_sub(tag.chars().count() + 1);
+                            while text.chars().count() < target {
+                                text.push(' ');
+                            }
+                            text.push_str(tag);
+                        }
+                        ListItem::new(Span::styled(text, style))
+                    })
+                    .collect();
+                List::new(provider_items).render(providers_area, buf);
+
+                // Models column: a type-ahead filter line, then the scoped catalog.
+                let models_regions = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Length(1), Constraint::Min(1)])
+                    .split(models_area);
+                let filter_text = if model_input.is_empty() {
+                    "type to filter…".to_string()
+                } else {
+                    model_input.clone()
+                };
+                Paragraph::new(filter_text)
+                    .style(if model_input.is_empty() {
+                        theme::dim()
+                    } else {
+                        theme::text()
+                    })
+                    .render(models_regions[0], buf);
+                let models_list_area = models_regions[1];
+                let filtered: Vec<&ModelGroup> = groups
+                    .iter()
+                    .filter(|g| group_matches_input(model_input, g))
+                    .collect();
+                let visible = models_list_area.height.max(1) as usize;
+                let start = window_start(*model_selected, filtered.len(), visible);
+                let end = (start + visible).min(filtered.len());
+                let model_items: Vec<ListItem> = if filtered.is_empty() {
+                    vec![ListItem::new(Span::styled(
+                        if active_profile_id.is_none() {
+                            "Pick a provider first."
+                        } else {
+                            "No models match this filter."
+                        },
+                        theme::muted(),
+                    ))]
+                } else {
+                    filtered[start..end]
+                        .iter()
+                        .enumerate()
+                        .map(|(i, g)| {
+                            let idx = start + i;
+                            let selected = idx == *model_selected;
+                            let style = if selected {
+                                theme::focused_selection_style()
+                            } else {
+                                theme::text()
+                            };
+                            let is_current = g.routes.iter().any(|m| m.model == *active_model);
+                            let tag = if is_current {
+                                "current"
+                            } else {
+                                match g.routes.first().map(|m| m.source) {
+                                    Some(forge_connect::CatalogSource::Registry) => "known",
+                                    _ => "cloud",
+                                }
+                            };
+                            let marker = if selected { "▶ " } else { "  " };
+                            let mut row = format!("{marker}{}", g.model_id);
+                            let target = (models_list_area.width as usize)
+                                .saturating_sub(tag.chars().count() + 1);
+                            while row.chars().count() < target {
+                                row.push(' ');
+                            }
+                            row.push_str(tag);
+                            ListItem::new(Span::styled(row, style))
+                        })
+                        .collect()
+                };
+                List::new(model_items).render(models_list_area, buf);
+
+                // Effort column.
+                let default_effort = ReasoningEffort::default_for_model(active_model);
+                let effort_list_items: Vec<ListItem> = effort_items
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, effort)| {
+                        let selected = idx == *effort_selected;
+                        let style = if selected {
+                            theme::focused_selection_style()
+                        } else {
+                            theme::text()
+                        };
+                        let marker = if selected { "▶ " } else { "  " };
+                        let current = if *effort == *active_effort {
+                            " current"
+                        } else {
+                            ""
+                        };
+                        let default_label = if *effort == default_effort {
+                            " (default)"
+                        } else {
+                            ""
+                        };
+                        ListItem::new(Span::styled(
+                            format!("{marker}{}{current}{default_label}", effort.label()),
+                            style,
+                        ))
+                    })
+                    .collect();
+                List::new(effort_list_items).render(effort_area, buf);
+
+                let active_line = match active {
+                    Some((vendor, route)) => format!(
+                        "Active: {}",
+                        crate::widgets::status::format_provider_model_effort(
+                            vendor,
+                            route,
+                            active_model,
+                            active_effort.label(),
+                        )
+                    ),
+                    None => "Active: not connected".to_string(),
+                };
+                Paragraph::new(active_line)
                     .style(theme::text())
-                    .render(regions[1], buf);
-                List::new(list_items).render(regions[2], buf);
-                Paragraph::new(format!("Effort: {}", current_effort.label()))
-                    .style(theme::muted())
-                    .render(regions[3], buf);
-                Paragraph::new("known = public registry · Esc close")
+                    .render(regions[2], buf);
+                Paragraph::new("↑↓ navigate · Tab switch pane · Enter select · Esc close")
                     .style(theme::dim())
-                    .render(regions[4], buf);
+                    .render(regions[3], buf);
             }
             Overlay::ConnectApiKey {
                 title,
@@ -2285,45 +2262,6 @@ impl Widget for OverlayWidget<'_> {
                     )
                     .render(r, buf);
             }
-            Overlay::ConnectPicker { selected, items } => {
-                let r = centered_rect(58, 42, area);
-                let list_items: Vec<ListItem> = items
-                    .iter()
-                    .enumerate()
-                    .map(|(i, it)| {
-                        let marker = if i == *selected { "▶ " } else { "  " };
-                        let style = if i == *selected {
-                            theme::selected_row()
-                        } else {
-                            theme::text()
-                        };
-                        let mode = match it.auth_mode.as_str() {
-                            "oauth" => "Sign in",
-                            "api_key" if it.id == "ollama" => "Local",
-                            "api_key" => "API key",
-                            other => other,
-                        };
-                        let state = if it.connected { "✓ connected" } else { mode };
-                        let mut row = format!("{marker}{:<30} {state}", it.title);
-                        while row.chars().count() < 48 {
-                            row.push(' ');
-                        }
-                        ListItem::new(Span::styled(row, style))
-                    })
-                    .collect();
-                List::new(list_items)
-                    .block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .border_style(theme::border())
-                            .style(theme::panel())
-                            .title(Span::styled(
-                                " Choose a provider · ↑↓ Enter ",
-                                theme::brand(),
-                            )),
-                    )
-                    .render(r, buf);
-            }
         }
     }
 }
@@ -2541,9 +2479,34 @@ mod tests {
         );
     }
 
+    /// Build a `ConnectModel` overlay the way `/model` would, unscoped to any
+    /// route (mirrors the old `model_open_with`) — used by tests that only
+    /// care about the Models column.
+    fn model_overlay(items: Vec<ModelItem>, focus: ConnectModelColumn) -> Overlay {
+        Overlay::connect_model_open(vec![], items, None, "", ReasoningEffort::default(), focus)
+    }
+
+    fn sample_default_models() -> Vec<ModelItem> {
+        let mut items = Vec::new();
+        for p in forge_connect::builtin_registry().profiles() {
+            let mut seen = std::collections::BTreeSet::new();
+            for m in &p.default_models {
+                if seen.insert(m.clone()) {
+                    items.push(ModelItem {
+                        provider: "native".into(),
+                        model: m.clone(),
+                        profile_id: Some(p.id.clone()),
+                        source: forge_connect::CatalogSource::Default,
+                    });
+                }
+            }
+        }
+        items
+    }
+
     #[test]
     fn model_select() {
-        let mut o = Overlay::model_open();
+        let mut o = model_overlay(sample_default_models(), ConnectModelColumn::Models);
         let a = handle_overlay_key(&mut o, Key::Enter);
         match a {
             OverlayAction::SelectModel {
@@ -2558,7 +2521,7 @@ mod tests {
 
     #[test]
     fn model_accepts_typed_custom_model() {
-        let mut overlay = Overlay::model_open();
+        let mut overlay = model_overlay(sample_default_models(), ConnectModelColumn::Models);
         for c in "openai/custom-model".chars() {
             assert_eq!(
                 handle_overlay_key(&mut overlay, Key::Char(c)),
@@ -2573,7 +2536,7 @@ mod tests {
 
     #[test]
     fn model_input_supports_paste_and_backspace() {
-        let mut overlay = Overlay::model_open();
+        let mut overlay = model_overlay(sample_default_models(), ConnectModelColumn::Models);
         handle_overlay_key(&mut overlay, Key::Paste("anthropic/custom-modelx\n".into()));
         handle_overlay_key(&mut overlay, Key::Backspace);
         assert_eq!(
@@ -2729,52 +2692,117 @@ mod tests {
     }
 
     #[test]
-    fn connect_picker_sorts_providers_alphabetically() {
-        let overlay = Overlay::connect_picker(vec![
-            ConnectProfileItem {
-                id: "xai".into(),
-                title: "xAI Grok".into(),
-                auth_mode: "oauth".into(),
-                auth_url: None,
-                connected: false,
-            },
-            ConnectProfileItem {
-                id: "anthropic".into(),
-                title: "Anthropic".into(),
-                auth_mode: "api_key".into(),
-                auth_url: None,
-                connected: false,
-            },
-            ConnectProfileItem {
-                id: "openai".into(),
-                title: "OpenAI".into(),
-                auth_mode: "api_key".into(),
-                auth_url: None,
-                connected: false,
-            },
-        ]);
+    fn build_provider_rows_sorts_vendors_and_groups_multi_offering_ones() {
+        let registry = forge_connect::builtin_registry();
+        let connected = std::collections::HashSet::new();
+        let rows = build_provider_rows(&registry, &connected, None);
 
-        let Overlay::ConnectPicker { items, .. } = overlay else {
-            panic!("expected connect picker");
-        };
+        let labels: Vec<String> = rows.iter().map(|r| r.label.to_ascii_lowercase()).collect();
+        let mut sorted = labels.clone();
+        sorted.sort();
+        assert_eq!(labels, sorted, "vendor rows sort alphabetically by label");
+
+        let openai = rows
+            .iter()
+            .find(|r| r.vendor_id == "openai")
+            .expect("openai vendor row");
+        assert_eq!(openai.routes.len(), 2, "API key + ChatGPT sign-in");
+        let opencode = rows
+            .iter()
+            .find(|r| r.vendor_id == "opencode")
+            .expect("opencode vendor row");
+        assert_eq!(opencode.routes.len(), 2, "Go + Zen");
+        let anthropic = rows
+            .iter()
+            .find(|r| r.vendor_id == "anthropic")
+            .expect("anthropic vendor row");
         assert_eq!(
-            items
-                .iter()
-                .map(|item| item.id.as_str())
-                .collect::<Vec<_>>(),
-            ["anthropic", "openai", "xai"]
+            anthropic.routes.len(),
+            1,
+            "single-offering vendors don't nest"
         );
     }
 
     #[test]
-    fn model_picker_filters_moves_providers_and_focuses_current_model() {
-        let mut overlay = Overlay::model_open_with(vec![
-            ModelItem {
-                provider: "native".into(),
-                model: "openai/gpt-5".into(),
-                profile_id: Some("openai".into()),
-                source: forge_connect::CatalogSource::Live,
-            },
+    fn providers_column_enter_toggles_expand_for_multi_route_vendor() {
+        let registry = forge_connect::builtin_registry();
+        let connected = std::collections::HashSet::new();
+        let providers = build_provider_rows(&registry, &connected, None);
+        let openai_idx = providers
+            .iter()
+            .position(|p| p.vendor_id == "openai")
+            .unwrap();
+        assert!(!providers[openai_idx].expanded);
+
+        let mut overlay = Overlay::connect_model_open(
+            providers,
+            vec![],
+            None,
+            "",
+            ReasoningEffort::default(),
+            ConnectModelColumn::Providers,
+        );
+        if let Overlay::ConnectModel {
+            provider_cursor, ..
+        } = &mut overlay
+        {
+            *provider_cursor = openai_idx;
+        }
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::None
+        );
+        let Overlay::ConnectModel { providers, .. } = &overlay else {
+            panic!("expected connect model overlay");
+        };
+        assert!(
+            providers[openai_idx].expanded,
+            "Enter on a multi-route vendor header toggles expand"
+        );
+    }
+
+    #[test]
+    fn providers_column_enter_on_unconnected_route_requests_connect() {
+        let registry = forge_connect::builtin_registry();
+        let connected = std::collections::HashSet::new();
+        let providers = build_provider_rows(&registry, &connected, None);
+        let anthropic_idx = providers
+            .iter()
+            .position(|p| p.vendor_id == "anthropic")
+            .unwrap();
+        let mut overlay = Overlay::connect_model_open(
+            providers,
+            vec![],
+            None,
+            "",
+            ReasoningEffort::default(),
+            ConnectModelColumn::Providers,
+        );
+        if let Overlay::ConnectModel {
+            provider_cursor, ..
+        } = &mut overlay
+        {
+            *provider_cursor = anthropic_idx;
+        }
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::ConnectPickProfile {
+                profile_id: "anthropic".into()
+            }
+        );
+    }
+
+    #[test]
+    fn providers_column_enter_on_connected_route_scopes_models_and_focuses_models() {
+        let mut registry = forge_connect::ConnectRegistry::new();
+        registry.register(forge_connect::anthropic_profile());
+        registry.register(forge_connect::ollama_profile());
+        let connected: std::collections::HashSet<String> =
+            ["anthropic".to_string(), "ollama".to_string()]
+                .into_iter()
+                .collect();
+        let providers = build_provider_rows(&registry, &connected, Some("ollama"));
+        let items = vec![
             ModelItem {
                 provider: "native".into(),
                 model: "anthropic/claude-sonnet".into(),
@@ -2787,39 +2815,43 @@ mod tests {
                 profile_id: Some("ollama".into()),
                 source: forge_connect::CatalogSource::Default,
             },
-        ]);
-
-        overlay.focus_model("ollama/llama3");
-        let Overlay::Model {
-            provider_selected,
-            model_selected,
-            current_model,
+        ];
+        let mut overlay = Overlay::connect_model_open(
             providers,
-            ..
-        } = &overlay
-        else {
-            panic!("expected model overlay");
-        };
-        assert_eq!(providers[*provider_selected], "ollama");
-        assert_eq!(*model_selected, 0);
-        assert_eq!(current_model, "ollama/llama3");
-
+            items,
+            Some("ollama"),
+            "ollama/llama3",
+            ReasoningEffort::default(),
+            ConnectModelColumn::Providers,
+        );
+        // Cursor starts on the active profile's vendor (Ollama); move up to Anthropic.
         assert_eq!(
-            handle_overlay_key(&mut overlay, Key::Left),
+            handle_overlay_key(&mut overlay, Key::Up),
             OverlayAction::None
         );
-        let Overlay::Model {
-            provider_selected,
-            model_selected,
-            providers,
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::None,
+            "picking an already-connected route mutates the overlay in place"
+        );
+        let Overlay::ConnectModel {
+            selected_route,
+            groups,
+            focus,
             ..
         } = &overlay
         else {
-            panic!("expected model overlay");
+            panic!("expected connect model overlay");
         };
-        assert_eq!(providers[*provider_selected], "anthropic");
-        assert_eq!(*model_selected, 0);
+        assert_eq!(selected_route.as_deref(), Some("anthropic"));
+        assert_eq!(*focus, ConnectModelColumn::Models);
+        assert!(groups.iter().all(|g| g
+            .routes
+            .iter()
+            .all(|m| m.profile_id.as_deref() == Some("anthropic"))));
 
+        // Typed text that matches nothing in the scoped catalog still falls
+        // back to a free-text `/model <arg>` re-dispatch.
         assert_eq!(
             handle_overlay_key(&mut overlay, Key::Char('g')),
             OverlayAction::None
@@ -2828,6 +2860,42 @@ mod tests {
             handle_overlay_key(&mut overlay, Key::Enter),
             OverlayAction::RunCommand("/model g".into())
         );
+    }
+
+    #[test]
+    fn tab_and_backtab_cycle_column_focus() {
+        let mut overlay = Overlay::connect_model_open(
+            vec![],
+            vec![],
+            None,
+            "",
+            ReasoningEffort::default(),
+            ConnectModelColumn::Providers,
+        );
+        handle_overlay_key(&mut overlay, Key::Tab);
+        assert!(matches!(
+            &overlay,
+            Overlay::ConnectModel {
+                focus: ConnectModelColumn::Models,
+                ..
+            }
+        ));
+        handle_overlay_key(&mut overlay, Key::Tab);
+        assert!(matches!(
+            &overlay,
+            Overlay::ConnectModel {
+                focus: ConnectModelColumn::Effort,
+                ..
+            }
+        ));
+        handle_overlay_key(&mut overlay, Key::BackTab);
+        assert!(matches!(
+            &overlay,
+            Overlay::ConnectModel {
+                focus: ConnectModelColumn::Models,
+                ..
+            }
+        ));
     }
 
     fn shared_route_items() -> Vec<ModelItem> {
@@ -2848,69 +2916,36 @@ mod tests {
     }
 
     #[test]
-    fn enter_on_multi_route_model_opens_route_picker_instead_of_selecting() {
-        let mut overlay = Overlay::model_open_with(shared_route_items());
+    fn models_column_enter_prefers_live_source_when_a_group_still_has_multiple_routes() {
+        // A route is normally resolved via the Providers column before the
+        // Models column is ever scoped, so a group should have exactly one
+        // route in practice — but if a catalog quirk still yields two (e.g.
+        // the same bare model from two sources), Enter must pick one
+        // deterministically instead of reviving a disambiguation submode.
+        let mut items = shared_route_items();
+        items[1].source = forge_connect::CatalogSource::Cached;
+        let mut overlay = model_overlay(items, ConnectModelColumn::Models);
         assert_eq!(
             handle_overlay_key(&mut overlay, Key::Enter),
-            OverlayAction::None,
-            "an ambiguous model must not be applied without disambiguation"
-        );
-        let Overlay::Model { route_picker, .. } = &overlay else {
-            panic!("expected model overlay");
-        };
-        let rp = route_picker.as_ref().expect("route picker should open");
-        assert_eq!(rp.model_id, "gpt-5.6");
-        assert_eq!(rp.routes.len(), 2);
-    }
-
-    #[test]
-    fn route_picker_enter_selects_the_highlighted_route() {
-        let mut overlay = Overlay::model_open_with(shared_route_items());
-        handle_overlay_key(&mut overlay, Key::Enter); // open route picker
-        handle_overlay_key(&mut overlay, Key::Down); // move to the second route
-        let action = handle_overlay_key(&mut overlay, Key::Enter);
-        assert_eq!(
-            action,
             OverlayAction::SelectModel {
                 provider: "native".into(),
                 model: "openai/gpt-5.6".into(),
-                profile_id: Some("openrouter".into()),
+                profile_id: Some("openai".into()),
             }
         );
-    }
-
-    #[test]
-    fn route_picker_esc_returns_to_model_list_without_closing_overlay() {
-        let mut overlay = Overlay::model_open_with(shared_route_items());
-        handle_overlay_key(&mut overlay, Key::Enter);
-        assert!(matches!(
-            &overlay,
-            Overlay::Model {
-                route_picker: Some(_),
-                ..
-            }
-        ));
-        assert_eq!(
-            handle_overlay_key(&mut overlay, Key::Esc),
-            OverlayAction::None
-        );
-        assert!(matches!(
-            &overlay,
-            Overlay::Model {
-                route_picker: None,
-                ..
-            }
-        ));
     }
 
     #[test]
     fn single_route_model_still_selects_immediately_on_enter() {
-        let mut overlay = Overlay::model_open_with(vec![ModelItem {
-            provider: "native".into(),
-            model: "openai/gpt-4.1-mini".into(),
-            profile_id: Some("openai".into()),
-            source: forge_connect::CatalogSource::Live,
-        }]);
+        let mut overlay = model_overlay(
+            vec![ModelItem {
+                provider: "native".into(),
+                model: "openai/gpt-4.1-mini".into(),
+                profile_id: Some("openai".into()),
+                source: forge_connect::CatalogSource::Live,
+            }],
+            ConnectModelColumn::Models,
+        );
         assert_eq!(
             handle_overlay_key(&mut overlay, Key::Enter),
             OverlayAction::SelectModel {
@@ -2922,67 +2957,67 @@ mod tests {
     }
 
     #[test]
-    fn tab_toggles_route_reveal_for_the_highlighted_group() {
-        let mut overlay = Overlay::model_open_with(shared_route_items());
-        assert_eq!(
-            handle_overlay_key(&mut overlay, Key::Tab),
-            OverlayAction::None
+    fn effort_column_shows_current_effort_with_extra_high_label() {
+        let overlay = Overlay::connect_model_open(
+            vec![],
+            shared_route_items(),
+            None,
+            "openai/gpt-5.6",
+            ReasoningEffort::XHigh,
+            ConnectModelColumn::Effort,
         );
-        let Overlay::Model { groups, .. } = &overlay else {
-            panic!("expected model overlay");
-        };
-        assert!(groups[0].expanded, "Tab should reveal routes inline");
-        let expanded_text = render_text(&overlay);
-        assert!(expanded_text.contains("via openai"));
-        assert!(expanded_text.contains("via openrouter"));
-
-        handle_overlay_key(&mut overlay, Key::Tab);
-        let Overlay::Model { groups, .. } = &overlay else {
-            panic!("expected model overlay");
-        };
-        assert!(!groups[0].expanded, "a second Tab collapses it again");
-    }
-
-    #[test]
-    fn multi_route_row_shows_route_count_badge() {
-        let overlay = Overlay::model_open_with(shared_route_items());
         let text = render_text(&overlay);
-        assert!(text.contains("2 routes"));
-    }
-
-    #[test]
-    fn model_picker_footer_shows_current_effort_with_extra_high_label() {
-        let mut overlay = Overlay::model_open_with(shared_route_items());
-        overlay.set_current_effort(ReasoningEffort::XHigh);
-        let text = render_text(&overlay);
-        assert!(text.contains("Effort: Extra High"));
+        assert!(text.contains("Extra High"));
+        assert!(text.contains("current"));
     }
 
     #[test]
     fn empty_pickers_and_lists_ignore_selection_and_enter() {
-        let mut effort = Overlay::Effort {
-            model: "unknown/model".into(),
-            selected: 0,
-            current: ReasoningEffort::Auto,
-            default: ReasoningEffort::Auto,
-            items: vec![],
-        };
-        assert_eq!(
-            handle_overlay_key(&mut effort, Key::Down),
-            OverlayAction::None
-        );
-        assert_eq!(
-            handle_overlay_key(&mut effort, Key::Enter),
-            OverlayAction::None
-        );
+        for focus in [ConnectModelColumn::Providers, ConnectModelColumn::Models] {
+            let mut overlay = Overlay::connect_model_open(
+                vec![],
+                vec![],
+                None,
+                "",
+                ReasoningEffort::default(),
+                focus,
+            );
+            assert_eq!(
+                handle_overlay_key(&mut overlay, Key::Down),
+                OverlayAction::None
+            );
+            assert_eq!(
+                handle_overlay_key(&mut overlay, Key::Enter),
+                OverlayAction::None
+            );
+        }
 
-        let mut connect = Overlay::connect_picker(vec![]);
+        // `effort_items` is derived from the model string, so it's never
+        // actually empty via the normal constructor — clear it directly to
+        // exercise the defensive empty-list path.
+        let mut effort_overlay = Overlay::connect_model_open(
+            vec![],
+            vec![],
+            None,
+            "",
+            ReasoningEffort::default(),
+            ConnectModelColumn::Effort,
+        );
+        if let Overlay::ConnectModel {
+            effort_items,
+            effort_selected,
+            ..
+        } = &mut effort_overlay
+        {
+            effort_items.clear();
+            *effort_selected = 0;
+        }
         assert_eq!(
-            handle_overlay_key(&mut connect, Key::Down),
+            handle_overlay_key(&mut effort_overlay, Key::Down),
             OverlayAction::None
         );
         assert_eq!(
-            handle_overlay_key(&mut connect, Key::Enter),
+            handle_overlay_key(&mut effort_overlay, Key::Enter),
             OverlayAction::None
         );
 
@@ -3049,15 +3084,10 @@ mod tests {
     }
 
     #[test]
-    fn overlay_widget_renders_help_effort_status_and_turn_limit() {
+    fn overlay_widget_renders_help_status_and_turn_limit() {
         let help = render_text(&Overlay::Help);
         assert!(help.contains("Forge is an AI coding agent"));
         assert!(help.contains("⇧← / ⇧→"));
-
-        let effort = render_text(&Overlay::effort_open("openai/gpt-5", ReasoningEffort::High));
-        assert!(effort.contains("Reasoning effort"));
-        assert!(effort.contains("Model: openai/gpt-5"));
-        assert!(effort.contains("Esc close"));
 
         let status = render_text(&Overlay::StatusReport {
             title: "Status".into(),
@@ -3103,20 +3133,25 @@ mod tests {
 
     #[test]
     fn overlay_widget_renders_model_empty_states() {
-        let empty_model = render_text(&Overlay::model_open_with(vec![]));
-        assert!(empty_model.contains("Models · all · 0/0"));
-        assert!(empty_model.contains("No models are available"));
+        let empty_model = render_text(&model_overlay(vec![], ConnectModelColumn::Models));
+        assert!(empty_model.contains("Pick a provider first."));
 
-        let mut filtered_model = Overlay::model_open_with(vec![ModelItem {
-            provider: "native".into(),
-            model: "openai/gpt-5".into(),
-            profile_id: Some("openai".into()),
-            source: forge_connect::CatalogSource::Registry,
-        }]);
+        let mut filtered_model = Overlay::connect_model_open(
+            vec![],
+            vec![ModelItem {
+                provider: "native".into(),
+                model: "openai/gpt-5".into(),
+                profile_id: Some("openai".into()),
+                source: forge_connect::CatalogSource::Registry,
+            }],
+            Some("openai"),
+            "",
+            ReasoningEffort::default(),
+            ConnectModelColumn::Models,
+        );
         handle_overlay_key(&mut filtered_model, Key::Char('z'));
         let text = render_text(&filtered_model);
-        assert!(text.contains("/model z"));
-        assert!(text.contains("No models match"));
+        assert!(text.contains("No models match this filter."));
     }
 
     #[test]
@@ -3144,26 +3179,24 @@ mod tests {
         assert!(oauth.contains("Open the browser code"));
         assert!(oauth.contains("Enter check now"));
 
-        let picker = render_text(&Overlay::connect_picker(vec![
-            ConnectProfileItem {
-                id: "ollama".into(),
-                title: "Ollama".into(),
-                auth_mode: "api_key".into(),
-                auth_url: None,
-                connected: true,
-            },
-            ConnectProfileItem {
-                id: "xai".into(),
-                title: "xAI Grok".into(),
-                auth_mode: "oauth".into(),
-                auth_url: None,
-                connected: false,
-            },
-        ]));
-        assert!(picker.contains("Choose a provider"));
+        let mut registry = forge_connect::ConnectRegistry::new();
+        registry.register(forge_connect::ollama_profile());
+        registry.register(forge_connect::xai_grok_profile());
+        let connected: std::collections::HashSet<String> =
+            ["ollama".to_string()].into_iter().collect();
+        let providers = build_provider_rows(&registry, &connected, Some("ollama"));
+        let picker = render_text(&Overlay::connect_model_open(
+            providers,
+            vec![],
+            Some("ollama"),
+            "ollama/llama3",
+            ReasoningEffort::default(),
+            ConnectModelColumn::Providers,
+        ));
+        assert!(picker.contains("Connect & Model"));
         assert!(picker.contains("Ollama"));
-        assert!(picker.contains("connected"));
-        assert!(picker.contains("Sign in"));
+        assert!(picker.contains("current"));
+        assert!(picker.contains("xAI Grok"));
 
         let resume = render_text(&Overlay::resume_picker(vec![ResumeSessionItem {
             id: "session-123".into(),

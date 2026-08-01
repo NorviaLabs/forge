@@ -21,6 +21,9 @@ pub fn anthropic_profile() -> ConnectProfile {
         models_dev_providers: vec!["anthropic".into()],
         auth_url: Some("https://console.anthropic.com/settings/keys".into()),
         model_provider_prefix: "anthropic".into(),
+        vendor_id: PROFILE_ID.into(),
+        vendor_label: "Anthropic".into(),
+        route_label: String::new(),
     }
 }
 

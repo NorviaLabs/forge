@@ -39,7 +39,7 @@ pub use layout::{
     MIN_WIDTH,
 };
 pub use overlays::{
-    default_models, default_palette_items, filter_palette, handle_overlay_key, models_from_catalog,
+    default_palette_items, filter_palette, handle_overlay_key, models_from_catalog,
     Key as OverlayKey, Overlay, OverlayAction,
 };
 pub use run::{

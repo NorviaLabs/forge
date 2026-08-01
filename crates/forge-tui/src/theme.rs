@@ -80,6 +80,44 @@ pub fn canvas() -> Style {
     Style::default().bg(palette(active()).canvas)
 }
 
+/// Blend a color toward a translucent dark overlay tone, approximating a
+/// ~62%-opacity dark panel sitting on top of it. Ratatui cells have no alpha
+/// channel, so this is a one-shot blend rather than true compositing;
+/// non-`Rgb` colors (e.g. `Reset`) pass through unchanged.
+fn dim_toward_overlay(color: Color) -> Color {
+    const ALPHA: f32 = 0.62;
+    const OVERLAY: (f32, f32, f32) = (10.0, 9.0, 8.0);
+    match color {
+        Color::Rgb(r, g, b) => {
+            let blend = |c: u8, d: f32| ((c as f32) * (1.0 - ALPHA) + d * ALPHA).round() as u8;
+            Color::Rgb(
+                blend(r, OVERLAY.0),
+                blend(g, OVERLAY.1),
+                blend(b, OVERLAY.2),
+            )
+        }
+        other => other,
+    }
+}
+
+/// Darken every cell's fg/bg toward a translucent overlay tone in place,
+/// preserving symbols — unlike [`fill`], which blanks both. Used behind the
+/// unified Connect + Model picker so the transcript stays legible-but-dimmed
+/// instead of disappearing.
+pub fn dim_region(area: Rect, buf: &mut Buffer) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    for y in area.y..area.y.saturating_add(area.height) {
+        for x in area.x..area.x.saturating_add(area.width) {
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.fg = dim_toward_overlay(cell.fg);
+                cell.bg = dim_toward_overlay(cell.bg);
+            }
+        }
+    }
+}
+
 pub fn panel_alt_bg() -> Color {
     palette(active()).panel_alt
 }

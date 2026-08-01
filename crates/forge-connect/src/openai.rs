@@ -21,6 +21,9 @@ pub fn openai_profile() -> ConnectProfile {
         models_dev_providers: vec!["openai".into()],
         auth_url: Some("https://platform.openai.com/api-keys".into()),
         model_provider_prefix: "openai".into(),
+        vendor_id: "openai".into(),
+        vendor_label: "OpenAI".into(),
+        route_label: "API key".into(),
     }
 }
 

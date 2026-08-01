@@ -525,7 +525,7 @@ async fn switching_to_a_model_that_drops_the_current_effort_notifies_and_falls_b
 
     // claude-sonnet-4-6 does not offer XHigh (effort.rs::options_for_model).
     app.reasoning_effort = ReasoningEffort::XHigh;
-    app.open_effort_picker_for_model("anthropic/claude-sonnet-4-6");
+    app.resolve_effort_for_model("anthropic/claude-sonnet-4-6");
 
     assert_eq!(app.reasoning_effort, ReasoningEffort::Low);
     assert_eq!(
@@ -971,11 +971,13 @@ async fn multi_token_slash_connect_list_opens_picker() {
         .await
         .unwrap();
     match &app.overlay {
-        Some(Overlay::ConnectPicker { items, .. }) => {
-            assert!(items.iter().any(|i| i.id == "xai"));
-            assert!(items.iter().any(|i| i.id == "opencode_go"));
+        Some(Overlay::ConnectModel { providers, .. }) => {
+            assert!(providers.iter().any(|p| p.vendor_id == "xai"));
+            assert!(providers
+                .iter()
+                .any(|p| p.routes.iter().any(|r| r.profile_id == "opencode_go")));
         }
-        other => panic!("expected ConnectPicker, got {other:?}"),
+        other => panic!("expected ConnectModel, got {other:?}"),
     }
 }
 
@@ -1079,7 +1081,7 @@ async fn enter_on_highlighted_suggestion_runs_command() {
         .await
         .unwrap();
     assert!(
-        matches!(app.overlay, Some(Overlay::ConnectPicker { .. })),
+        matches!(app.overlay, Some(Overlay::ConnectModel { .. })),
         "Enter on highlighted /connect should open picker; overlay={:?} input={:?} status={}",
         app.overlay,
         app.input.text,

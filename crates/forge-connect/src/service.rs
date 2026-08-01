@@ -792,6 +792,9 @@ mod tests {
             models_dev_providers: vec![],
             auth_url: Some("https://example.com".into()),
             model_provider_prefix: "demo".into(),
+            vendor_id: "demo".into(),
+            vendor_label: "Demo".into(),
+            route_label: String::new(),
         });
         r
     }
@@ -809,6 +812,9 @@ mod tests {
             models_dev_providers: vec![],
             auth_url: Some("https://auth.x.ai".into()),
             model_provider_prefix: "xai".into(),
+            vendor_id: "xai".into(),
+            vendor_label: "xAI Grok".into(),
+            route_label: String::new(),
         });
         r
     }
@@ -1282,6 +1288,9 @@ mod tests {
             models_dev_providers: vec![],
             auth_url: None,
             model_provider_prefix: "custom".into(),
+            vendor_id: "custom".into(),
+            vendor_label: "Custom".into(),
+            route_label: String::new(),
         });
         store.set_api_key("custom", "secret").unwrap();
         let svc = ConnectService {
@@ -1397,6 +1406,9 @@ mod tests {
                 models_dev_providers: vec![],
                 auth_url: None,
                 model_provider_prefix: "o".into(),
+                vendor_id: "opencode".into(),
+                vendor_label: "OpenCode".into(),
+                route_label: "Go".into(),
             });
             r.register(ConnectProfile {
                 id: "xai".into(),
@@ -1409,6 +1421,9 @@ mod tests {
                 models_dev_providers: vec![],
                 auth_url: None,
                 model_provider_prefix: "xai".into(),
+                vendor_id: "xai".into(),
+                vendor_label: "Grok".into(),
+                route_label: String::new(),
             });
             r
         };

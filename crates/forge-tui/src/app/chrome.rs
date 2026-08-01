@@ -128,6 +128,12 @@ impl TuiApp {
         } else {
             id
         };
+        let (vendor_label, route_label) = self
+            .connect
+            .profile
+            .as_deref()
+            .map(|pid| self.vendor_route_labels(pid))
+            .unwrap_or((None, None));
         StatusModel {
             status: self.session.active_task.lifecycle,
             session_short: short,
@@ -139,6 +145,8 @@ impl TuiApp {
             busy_phase: self.busy_phase.clone(),
             connect_profile: self.connect.profile.clone(),
             provider_connected,
+            vendor_label,
+            route_label,
             web_search_label: self.web_search_label.clone(),
             tools_visible: self.session.list_tools().len(),
             prompt_cache_hits: self.session.token_usage.prompt_cache_hits,
