@@ -57,9 +57,9 @@ use crate::layout::is_too_small;
 use crate::layout::split_areas_full;
 use crate::layout::split_areas_with_chrome;
 use crate::overlays::{
-    centered_rect, filter_palette, handle_overlay_key, models_from_catalog, ApprovalExecutionMode,
-    ApprovalOverlayState, ConnectProfileItem, FileExplorerItem, Key, Key as OverlayKey, Overlay,
-    OverlayAction, OverlayWidget, PaletteItem, ResumeSessionItem,
+    build_provider_rows, centered_rect, filter_palette, handle_overlay_key, models_from_catalog,
+    ApprovalExecutionMode, ApprovalOverlayState, ConnectModelColumn, FileExplorerItem, Key,
+    Key as OverlayKey, Overlay, OverlayAction, OverlayWidget, PaletteItem, ResumeSessionItem,
 };
 use crate::run::{RunExecutionMode, RunHistoryFile, RunState, RunStateModel};
 use crate::sidebar::{InspectorView, SidebarModel, SidebarWidget};
