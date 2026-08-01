@@ -1937,9 +1937,7 @@ fn push_code_block(
     // Borrowed, not consumed: the highlight is shared with the cache, and
     // `render_highlighted_line` only needs a slice.
     for line_segments in highlight_to_lines(language, &code, &theme).iter() {
-        out.push(
-            Line::from(render_highlighted_line(line_segments)).style(theme::code_block()),
-        );
+        out.push(Line::from(render_highlighted_line(line_segments)).style(theme::code_block()));
     }
     code_block_lines.clear();
 }
