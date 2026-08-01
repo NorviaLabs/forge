@@ -643,6 +643,18 @@ impl TuiApp {
                 }
             } else {
                 self.last_exit = ExitCode::Failed;
+                // This error path means the turn ended without ever calling
+                // `apply_model_response` successfully (a provider/HTTP error,
+                // a join error, or `apply_model_response` itself returning
+                // `Err` before its own transition logic ran) — nothing else
+                // has moved the session lifecycle out of `Working`. Left
+                // alone, the header sticks on "Working" and the message
+                // queue's dispatch gate (which only checks lifecycle) never
+                // reopens, even across a provider switch, until the process
+                // is restarted.
+                if let Err(err) = self.session.mark_model_call_failed(&e).await {
+                    self.report_error(&err.to_string());
+                }
             }
             // Leave queue intact so the operator can fix and continue.
         } else if self.session.pending_hitl().is_some() {
