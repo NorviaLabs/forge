@@ -565,7 +565,7 @@ impl TuiApp {
             ));
             lines.push(Line::styled(
                 "Apply disabled until refresh.",
-                theme::muted(),
+                theme::disabled(),
             ));
         }
         lines.push(Line::from(""));
@@ -704,11 +704,11 @@ impl TuiApp {
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(if self.focus.block == FocusBlock::Workspace {
-                        theme::brand()
+                        theme::active_panel_border()
                     } else {
-                        theme::border_muted()
+                        theme::inactive_panel_border()
                     })
-                    .title(Span::styled(" Run ", theme::brand())),
+                    .title(Span::styled(" Run ", theme::active_panel_title())),
             )
             .render(area, buf);
     }

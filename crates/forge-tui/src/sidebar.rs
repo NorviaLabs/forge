@@ -155,16 +155,16 @@ impl Widget for SidebarWidget<'_> {
         let block = Block::default()
             .borders(Borders::LEFT)
             .border_style(if self.focused {
-                theme::brand()
+                theme::active_panel_border()
             } else {
-                theme::border_muted()
+                theme::inactive_panel_border()
             })
             .title(Span::styled(
                 title,
                 if self.focused {
-                    theme::brand()
+                    theme::active_panel_title()
                 } else {
-                    theme::muted()
+                    theme::inactive_panel_title()
                 },
             ))
             .style(theme::panel_alt());
@@ -190,13 +190,9 @@ impl SidebarWidget<'_> {
     fn tabs(&self) -> Line<'static> {
         let tab = |view, label| {
             let style = if self.view == view {
-                if self.focused {
-                    theme::brand().add_modifier(ratatui::style::Modifier::UNDERLINED)
-                } else {
-                    theme::text().add_modifier(ratatui::style::Modifier::BOLD)
-                }
+                theme::active_tab(self.focused)
             } else {
-                theme::muted()
+                theme::inactive_tab()
             };
             Span::styled(label, style)
         };

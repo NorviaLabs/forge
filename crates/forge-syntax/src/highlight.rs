@@ -91,17 +91,17 @@ impl HighlightStyle {
 impl Default for HighlightTheme {
     fn default() -> Self {
         Self {
-            comment: (139, 155, 176),
-            keyword: (61, 214, 198),
+            comment: (157, 170, 189),
+            keyword: (104, 168, 255),
             string: (227, 179, 65),
-            number: (110, 168, 254),
-            function: (210, 168, 255),
-            type_: (110, 168, 254),
+            number: (104, 168, 255),
+            function: (180, 156, 255),
+            type_: (104, 168, 255),
             variable: (230, 237, 243),
-            operator: (139, 155, 176),
-            punctuation: (139, 155, 176),
-            property: (61, 214, 198),
-            tag: (61, 214, 198),
+            operator: (157, 170, 189),
+            punctuation: (157, 170, 189),
+            property: (86, 212, 221),
+            tag: (86, 212, 221),
             attribute: (227, 179, 65),
             default: (230, 237, 243),
         }
@@ -116,19 +116,19 @@ impl HighlightTheme {
     /// Readable syntax colours on the Forge Light canvas.
     pub fn light() -> Self {
         Self {
-            comment: (100, 110, 125),
-            keyword: (0, 120, 140),
-            string: (140, 100, 20),
-            number: (30, 90, 180),
-            function: (120, 60, 160),
-            type_: (30, 90, 180),
-            variable: (32, 29, 26),
-            operator: (100, 110, 125),
-            punctuation: (100, 110, 125),
-            property: (0, 120, 140),
-            tag: (0, 120, 140),
-            attribute: (140, 100, 20),
-            default: (32, 29, 26),
+            comment: (122, 135, 152),
+            keyword: (23, 105, 204),
+            string: (153, 101, 0),
+            number: (23, 105, 204),
+            function: (112, 72, 200),
+            type_: (23, 105, 204),
+            variable: (23, 32, 44),
+            operator: (122, 135, 152),
+            punctuation: (122, 135, 152),
+            property: (8, 126, 139),
+            tag: (8, 126, 139),
+            attribute: (153, 101, 0),
+            default: (23, 32, 44),
         }
     }
 }

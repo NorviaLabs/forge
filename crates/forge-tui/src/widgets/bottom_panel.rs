@@ -114,13 +114,9 @@ impl Widget for BottomPanel<'_> {
                 .enumerate()
                 .flat_map(|(idx, tab)| {
                     let tab_style = if tab == self.model.state.active {
-                        if self.focused {
-                            theme::brand().add_modifier(ratatui::style::Modifier::UNDERLINED)
-                        } else {
-                            theme::text().add_modifier(ratatui::style::Modifier::BOLD)
-                        }
+                        theme::active_tab(self.focused)
                     } else {
-                        theme::muted()
+                        theme::inactive_tab()
                     };
                     [
                         Span::styled(format!(" {} {} ", idx + 1, tab.label()), tab_style),
@@ -132,9 +128,9 @@ impl Widget for BottomPanel<'_> {
         let block = Block::default()
             .borders(Borders::TOP)
             .border_style(if self.focused {
-                theme::brand()
+                theme::active_panel_border()
             } else {
-                theme::border_muted()
+                theme::inactive_panel_border()
             })
             .style(theme::panel())
             .title(title);

@@ -934,9 +934,9 @@ impl Widget for SourceViewerWidget<'_> {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(if self.focused {
-                theme::brand()
+                theme::active_panel_border()
             } else {
-                theme::border()
+                theme::inactive_panel_border()
             })
             .style(theme::panel());
         let inner = block.inner(area);

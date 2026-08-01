@@ -30,7 +30,7 @@ pub const BORDER: Color = Color::Rgb(43, 53, 69); // border
 pub const BORDER_MUTED: Color = Color::Rgb(32, 41, 56); // border_muted
 pub const TEXT: Color = Color::Rgb(230, 237, 243); // text_primary
 pub const MUTED: Color = Color::Rgb(157, 170, 189); // text_secondary
-pub const DIM: Color = Color::Rgb(133, 148, 168); // text_muted (clears 4.5 on surface_raised)
+pub const DIM: Color = Color::Rgb(133, 148, 168); // text_muted (nudged for 4.5:1 on raised surfaces)
 pub const ACCENT: Color = Color::Rgb(104, 168, 255); // accent
 pub const ACCENT_2: Color = Color::Rgb(86, 212, 221); // info
 pub const ACCENT_SOFT: Color = Color::Rgb(28, 53, 85); // accent_soft
@@ -68,16 +68,16 @@ pub const LIGHT_BORDER: Color = Color::Rgb(200, 208, 219); // border
 pub const LIGHT_BORDER_MUTED: Color = Color::Rgb(221, 226, 233); // border_muted
 pub const LIGHT_TEXT: Color = Color::Rgb(23, 32, 44); // text_primary
 pub const LIGHT_MUTED: Color = Color::Rgb(79, 93, 112); // text_secondary
-pub const LIGHT_DIM: Color = Color::Rgb(86, 99, 120); // text_muted (clears 4.5 on surface_raised)
+pub const LIGHT_DIM: Color = Color::Rgb(86, 99, 120); // text_muted (nudged for 4.5:1 on surface_raised)
 pub const LIGHT_ACCENT: Color = Color::Rgb(23, 105, 204); // accent
-pub const LIGHT_ACCENT_2: Color = Color::Rgb(7, 120, 132); // info
+pub const LIGHT_ACCENT_2: Color = Color::Rgb(7, 120, 132); // info (nudged for 4.5:1 on background)
 pub const LIGHT_ACCENT_SOFT: Color = Color::Rgb(220, 235, 252); // accent_soft
 pub const LIGHT_AGENT: Color = Color::Rgb(112, 72, 200); // agent
 pub const LIGHT_OK: Color = Color::Rgb(35, 122, 59); // success
 pub const LIGHT_WARN: Color = Color::Rgb(153, 101, 0); // warning
-pub const LIGHT_DANGER: Color = Color::Rgb(198, 49, 44); // error
+pub const LIGHT_DANGER: Color = Color::Rgb(196, 48, 43); // error (nudged for 4.5:1 on surface_raised)
 pub const LIGHT_TOOL: Color = Color::Rgb(8, 126, 139);
-pub const LIGHT_CURSOR: Color = TEXT;
+pub const LIGHT_CURSOR: Color = LIGHT_TEXT;
 pub const LIGHT_SELECTION: Color = Color::Rgb(201, 225, 252); // selection
 pub const LIGHT_SELECTION_FG: Color = LIGHT_TEXT;
 pub const LIGHT_TAG: Color = Color::Rgb(80, 92, 112);
@@ -196,8 +196,14 @@ pub fn agent() -> Style {
     Style::default().fg(palette(active()).agent)
 }
 
+/// Hovered/active row background.
 pub fn surface_hover() -> Style {
     Style::default().bg(palette(active()).surface_hover)
+}
+
+/// Disabled menu/action label (text_muted, no emphasis).
+pub fn disabled() -> Style {
+    dim()
 }
 
 pub fn tool() -> Style {
@@ -283,7 +289,7 @@ pub fn assistant_answer_style() -> Style {
 }
 
 pub fn progress_style() -> Style {
-    muted().add_modifier(Modifier::ITALIC)
+    agent().add_modifier(Modifier::ITALIC)
 }
 
 pub fn tool_running_style() -> Style {
@@ -299,11 +305,17 @@ pub fn metadata_style() -> Style {
 }
 
 pub fn selection_active() -> Style {
-    selected_row()
+    selected_file()
 }
 
 pub fn selection_inactive() -> Style {
-    surface_hover().fg(palette(active()).text)
+    selected_file()
+}
+
+/// Selected file row in the explorer (accent_soft + text_primary).
+pub fn selected_file() -> Style {
+    let p = palette(active());
+    Style::default().fg(p.text).bg(p.accent_soft)
 }
 
 pub fn directory() -> Style {
@@ -349,7 +361,7 @@ pub fn git_added() -> Style {
 }
 
 pub fn git_modified() -> Style {
-    info()
+    warn()
 }
 
 pub fn git_deleted() -> Style {
@@ -405,6 +417,65 @@ pub fn caret() -> Style {
 pub fn history_active() -> Style {
     let p = palette(active());
     Style::default().fg(p.text).bg(p.selection)
+}
+
+/// Active panel chrome: accent border.
+pub fn active_panel_border() -> Style {
+    Style::default().fg(palette(active()).accent)
+}
+
+/// Inactive panel chrome: muted border.
+pub fn inactive_panel_border() -> Style {
+    border_muted()
+}
+
+/// Active panel title: primary text, bold.
+pub fn active_panel_title() -> Style {
+    text().add_modifier(Modifier::BOLD)
+}
+
+/// Inactive panel title: secondary text.
+pub fn inactive_panel_title() -> Style {
+    muted()
+}
+
+/// Active tab: raised surface; accent underline when the block has focus.
+pub fn active_tab(focused: bool) -> Style {
+    let p = palette(active());
+    let mut style = Style::default().bg(p.panel_alt);
+    if focused {
+        style = style.fg(p.accent).add_modifier(Modifier::UNDERLINED);
+    } else {
+        style = style.fg(p.text).add_modifier(Modifier::BOLD);
+    }
+    style
+}
+
+/// Inactive tab: secondary text on transparent background.
+pub fn inactive_tab() -> Style {
+    muted()
+}
+
+/// Status bar surface.
+pub fn status_bar() -> Style {
+    panel_alt()
+}
+
+/// Composer surface while focused.
+pub fn composer_focused() -> Style {
+    panel_alt()
+}
+
+/// Inline code block inside chat (surface background, primary text).
+pub fn code_block() -> Style {
+    let p = palette(active());
+    Style::default().fg(p.text).bg(p.panel)
+}
+
+/// Error callout: error foreground on surface (no full red fill).
+pub fn error_callout() -> Style {
+    let p = palette(active());
+    danger().bg(p.panel)
 }
 
 #[derive(Clone, Copy)]
@@ -545,6 +616,32 @@ pub fn palette(theme: Theme) -> Palette {
 mod tests {
     use super::*;
     use forge_config::Theme;
+
+    #[test]
+    fn surface_hover_and_disabled_expose_spec_tokens() {
+        set_active(Theme::Dark);
+        assert_eq!(surface_hover().bg, Some(SURFACE_HOVER));
+        assert_eq!(disabled().fg, dim().fg);
+        assert_eq!(palette(Theme::Dark).surface_hover, SURFACE_HOVER);
+        set_active(Theme::Dark);
+    }
+
+    #[test]
+    fn selected_file_uses_accent_soft() {
+        set_active(Theme::Dark);
+        assert_eq!(selected_file().bg, Some(ACCENT_SOFT));
+        assert_eq!(selected_file().fg, Some(TEXT));
+    }
+
+    #[test]
+    fn git_modified_uses_warning() {
+        assert_eq!(git_modified().fg, warn().fg);
+    }
+
+    #[test]
+    fn progress_style_uses_agent() {
+        assert_eq!(progress_style().fg, agent().fg);
+    }
 
     #[test]
     fn tokens_are_distinct() {
@@ -731,7 +828,7 @@ mod tests {
             assert_aa("info", p.info, bg_label, bg);
             assert_aa("tag", p.tag, bg_label, bg);
         }
-        // dim and danger are additionally used on panel_alt (sidebar inspector).
+        // dim is used for low-priority labels on raised surfaces.
         assert_aa("dim", p.dim, "panel_alt", p.panel_alt);
         assert_aa("selection_fg", p.selection_fg, "selection", p.selection);
         assert_aa("tag on selection", p.tag, "selection", p.selection);

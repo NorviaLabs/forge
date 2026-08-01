@@ -815,16 +815,16 @@ impl Widget for FileExplorerWidget<'_> {
             .title(Span::styled(
                 title,
                 if self.focused {
-                    theme::brand()
+                    theme::active_panel_title()
                 } else {
-                    theme::muted()
+                    theme::inactive_panel_title()
                 },
             ))
             .borders(Borders::ALL)
             .border_style(if self.focused {
-                theme::brand()
+                theme::active_panel_border()
             } else {
-                theme::border_muted()
+                theme::inactive_panel_border()
             })
             .style(theme::panel());
         let inner = block.inner(area);
