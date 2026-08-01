@@ -40,7 +40,7 @@ async fn connect_opencode_go_opens_api_key_overlay() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     let _store_dir = tempfile::TempDir::new().unwrap();
@@ -72,7 +72,7 @@ async fn disconnect_clears_credentials_and_prompts_reauth() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     app.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
@@ -112,7 +112,7 @@ async fn connect_picker_marks_saved_credentials_as_connected() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     app.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
@@ -149,7 +149,7 @@ async fn successful_connect_hands_off_to_model_picker() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     app.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
@@ -190,7 +190,7 @@ async fn model_selection_switches_to_the_matching_connected_provider() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     app.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
@@ -225,7 +225,7 @@ async fn quick_switch_toggles_between_the_two_most_recent_deliberate_selections(
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     app.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
@@ -273,7 +273,7 @@ async fn invalid_api_key_error_stays_inside_key_modal() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     app.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
@@ -323,7 +323,7 @@ async fn connect_xai_opens_oauth_overlay() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     app.connect.store = CredentialStore::new(cred_dir.path().join("c.toml"));
@@ -356,7 +356,7 @@ async fn connect_alone_opens_profile_picker() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     for c in "/connect".chars() {
@@ -412,7 +412,7 @@ async fn blocks_chat_when_not_connected() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     // Override credential store with empty temp file so connection check fails.
@@ -461,7 +461,7 @@ async fn mock_provider_allows_chat_without_connect() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     assert!(app.is_provider_connected());

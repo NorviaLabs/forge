@@ -26,7 +26,7 @@ async fn edge_network_stream_interruption_preserves_partial_response() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     let file = dir.path().join("open.rs");

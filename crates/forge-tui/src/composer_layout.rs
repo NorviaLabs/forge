@@ -198,10 +198,10 @@ pub fn copy_buffer(text: &str) -> &str {
 mod tests {
     use super::*;
     use crate::user_message_gutter::gutter_glyph;
-    use forge_config::Theme;
+    use forge_config::THEME_FORGE_MIDNIGHT;
 
     fn glyph() -> &'static str {
-        gutter_glyph(Theme::Dark, false)
+        gutter_glyph(THEME_FORGE_MIDNIGHT, false)
     }
 
     fn prefix_width() -> usize {

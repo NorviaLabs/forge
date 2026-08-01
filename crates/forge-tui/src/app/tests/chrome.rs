@@ -322,7 +322,7 @@ async fn header_status_follows_session_lifecycle() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
 
@@ -417,7 +417,7 @@ async fn header_status_switches_with_selected_session() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     assert!(app
@@ -465,7 +465,7 @@ async fn status_chrome_shows_not_connected_badge() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     app.connect.profile = None;
@@ -509,7 +509,7 @@ async fn tui09_chrome_includes_model_on_frame() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     // Isolate from any real, ambient connect credentials on the host so the
@@ -557,7 +557,7 @@ async fn tui09_narrow_frame_still_shows_model_or_ctx() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     // Isolate from any real, ambient connect credentials on the host so the
@@ -606,7 +606,7 @@ async fn tui09_status_renders_structured_session_card() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     for c in "/status".chars() {
@@ -652,7 +652,7 @@ async fn tui08_report_error_writes_banner_feedback_and_activity() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     app.report_error("upstream returned 429 rate limit exceeded");
@@ -694,7 +694,7 @@ async fn tui08_feedback_strip_visible_on_frame() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     app.report_error("429 rate limit");
@@ -729,7 +729,7 @@ async fn tui10_activity_feed_records_model_and_error() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     app.push_activity(
@@ -768,7 +768,7 @@ async fn elapsed_status_persists_during_answer_and_tool_processing() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     app.busy = true;
@@ -800,7 +800,7 @@ async fn tui10_busy_phase_model_during_turn_clears_after() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     app.dispatch_line("hello").await.unwrap();
@@ -832,7 +832,7 @@ async fn tui08_context_sets_feedback_strip() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     for c in "/status".chars() {

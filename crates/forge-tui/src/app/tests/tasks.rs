@@ -72,7 +72,7 @@ async fn approving_the_selected_waiting_task_from_the_tasks_tab_lets_it_finish()
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
 

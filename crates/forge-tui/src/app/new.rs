@@ -7,12 +7,14 @@ use super::*;
 
 impl TuiApp {
     pub fn new(session: AgentSession, runtime: TuiRuntimeConfig) -> Self {
-        crate::theme::set_active(runtime.theme);
+        let workspace_root = session.workspace_root().to_path_buf();
+        let registry = crate::theme_registry::ThemeRegistry::load(Some(&workspace_root));
+        let theme_id = registry.resolve_startup_id(&runtime.theme_id);
+        crate::theme::install(registry, theme_id);
         let mut input = InputModel::default();
         input.hint = "Describe a task…".into();
         let startup_notices = runtime.startup_notices.clone();
         let file_icons = runtime.file_icons;
-        let workspace_root = session.workspace_root().to_path_buf();
         let run = RunStateModel::new(workspace_root.clone(), runtime.validation_command.clone());
         let (file_change_tx, file_change_rx) = mpsc::channel();
         // One synchronous read at startup so the first frame shows the real branch

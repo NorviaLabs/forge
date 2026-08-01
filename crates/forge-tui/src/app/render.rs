@@ -139,7 +139,7 @@ impl TuiApp {
             splash_dismissed: self.splash_dismissed,
             slash_mode,
             status: self.session.active_task.lifecycle,
-            theme: crate::theme::active(),
+            theme_id: crate::theme::active(),
         };
         if self.conversation_cache.as_ref().map(|cache| &cache.key) != Some(&key) {
             let mut conv = ConversationModel::from_messages(
@@ -460,7 +460,7 @@ impl TuiApp {
         }
 
         let attachment_label = self.pending_attachment.as_ref().map(|a| a.label());
-        let glyph = gutter_glyph(crate::theme::active(), false);
+        let glyph = gutter_glyph(&crate::theme::active(), false);
         let composer_content_width = regions
             .input
             .width

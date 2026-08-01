@@ -3,7 +3,6 @@
 use crate::composer_layout::{locate_cursor_in_rows, scroll_offset, ComposerVisualRow};
 use crate::theme;
 use crate::user_message_gutter::{gutter_glyph, GutterRole, GUTTER_GAP};
-use forge_config::Theme;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -325,7 +324,7 @@ fn build_input_lines(
     focused: bool,
     base: Style,
     gutter_style: Style,
-    theme: Theme,
+    theme: &str,
     force_fallback: bool,
 ) -> Vec<Line<'static>> {
     let glyph = gutter_glyph(theme, force_fallback);
@@ -405,7 +404,7 @@ impl Widget for InputBar<'_> {
             theme::text()
         };
         let theme = crate::theme::active();
-        let gutter_style = crate::user_message_gutter::gutter_style_for(theme, GutterRole::Active);
+        let gutter_style = crate::user_message_gutter::gutter_style_for(&theme, GutterRole::Active);
 
         let visible_rows = lines_area
             .height
@@ -418,7 +417,7 @@ impl Widget for InputBar<'_> {
             self.focused,
             base,
             gutter_style,
-            theme,
+            &theme,
             false,
         );
 
@@ -456,15 +455,16 @@ mod tests {
     use crate::composer_layout::{
         build_visual_rows, click_to_cursor, copy_buffer, strip_rendered_prefix,
     };
-    use crate::theme::{USER_GUTTER_ACTIVE_DARK, USER_MESSAGE_GUTTER_DARK};
+    use crate::theme;
     use crate::user_message_gutter::{
         gutter_glyph, gutter_prefix_width, gutter_style_for, GutterRole,
     };
+    use forge_config::THEME_FORGE_MIDNIGHT;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
     fn glyph() -> &'static str {
-        gutter_glyph(Theme::Dark, false)
+        gutter_glyph(THEME_FORGE_MIDNIGHT, false)
     }
 
     fn line_plain(line: &Line<'_>) -> String {
@@ -475,7 +475,7 @@ mod tests {
     }
 
     fn test_rows(model: &InputModel, width: u16) -> Vec<ComposerVisualRow> {
-        let glyph = gutter_glyph(Theme::Dark, false);
+        let glyph = gutter_glyph(THEME_FORGE_MIDNIGHT, false);
         let content_width = width
             .saturating_sub(gutter_prefix_width(glyph) as u16)
             .max(1) as usize;
@@ -700,7 +700,10 @@ mod tests {
         let rows = test_rows(&m, 48);
         let buf = draw_input_bar(&m, &rows, 48, 5, false, true, None);
         let border = &buf[(0, 0)];
-        assert_eq!(border.style().fg, Some(theme::WARN));
+        assert_eq!(
+            border.style().fg,
+            Some(theme::palette(THEME_FORGE_MIDNIGHT).warn)
+        );
         let rendered: String = (0..buf.area().height)
             .map(|y| {
                 (0..buf.area().width)
@@ -725,7 +728,7 @@ mod tests {
         let mut saw_history_bg = false;
         for y in 0..buf.area().height {
             for x in 0..buf.area().width {
-                if buf[(x, y)].style().bg == Some(theme::palette(theme::active()).selection) {
+                if buf[(x, y)].style().bg == Some(theme::palette(&theme::active()).selection) {
                     saw_history_bg = true;
                 }
             }
@@ -807,9 +810,10 @@ mod tests {
 
     #[test]
     fn active_gutter_uses_distinct_theme_from_submitted() {
-        let style = gutter_style_for(Theme::Dark, GutterRole::Active);
-        assert_eq!(style.fg, Some(USER_GUTTER_ACTIVE_DARK));
-        assert_ne!(style.fg, Some(USER_MESSAGE_GUTTER_DARK));
+        let style = gutter_style_for(THEME_FORGE_MIDNIGHT, GutterRole::Active);
+        let dark = theme::palette(THEME_FORGE_MIDNIGHT);
+        assert_eq!(style.fg, Some(dark.user_gutter_active));
+        assert_ne!(style.fg, Some(dark.user_message_gutter));
     }
 
     #[test]
@@ -886,7 +890,7 @@ mod tests {
 
     #[test]
     fn forced_fallback_gutter_renders_on_all_rows() {
-        let glyph = gutter_glyph(Theme::Dark, true);
+        let glyph = gutter_glyph(THEME_FORGE_MIDNIGHT, true);
         assert_ne!(glyph, "▎");
         let model = InputModel {
             text: "one two three four five".into(),
@@ -899,8 +903,8 @@ mod tests {
             6,
             true,
             theme::text(),
-            gutter_style_for(Theme::Dark, GutterRole::Active),
-            Theme::Dark,
+            gutter_style_for(THEME_FORGE_MIDNIGHT, GutterRole::Active),
+            THEME_FORGE_MIDNIGHT,
             true,
         );
         assert!(lines.iter().all(|line| line_plain(line).starts_with(glyph)));

@@ -20,7 +20,7 @@ async fn typing_reuses_cached_conversation_lines() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     app.splash_dismissed = true;
@@ -65,7 +65,7 @@ async fn streaming_updates_reuse_cached_transcript_lines() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     app.splash_dismissed = true;

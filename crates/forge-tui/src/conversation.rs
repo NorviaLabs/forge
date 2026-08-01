@@ -648,7 +648,7 @@ impl ConversationModel {
                     lines.extend(user_message_gutter::render_user_message_lines(
                         &p.text,
                         width,
-                        crate::theme::active(),
+                        &crate::theme::active(),
                         false,
                         wrap,
                     ));
@@ -2723,7 +2723,7 @@ mod tests {
             TaskLifecycle::Working,
             ConversationViewOpts::default(),
         );
-        let glyph = crate::user_message_gutter::gutter_glyph(crate::theme::active(), false);
+        let glyph = crate::user_message_gutter::gutter_glyph(&crate::theme::active(), false);
         let rendered = m
             .lines()
             .iter()
@@ -2739,13 +2739,11 @@ mod tests {
             rendered.starts_with(&format!("{glyph} hello world")),
             "{rendered}"
         );
+        let dark = theme::palette(forge_config::THEME_FORGE_MIDNIGHT);
         let first = m.lines().into_iter().next().expect("operator turn");
-        assert_eq!(first.style.bg, Some(theme::USER_BG));
-        assert_eq!(
-            first.spans[0].style.fg,
-            Some(theme::USER_MESSAGE_GUTTER_DARK)
-        );
-        assert_eq!(first.spans[2].style.fg, Some(theme::TEXT));
+        assert_eq!(first.style.bg, Some(dark.user_bg));
+        assert_eq!(first.spans[0].style.fg, Some(dark.user_message_gutter));
+        assert_eq!(first.spans[2].style.fg, Some(dark.text));
         assert!(!rendered.contains('›'), "{rendered}");
         assert!(rendered.contains("hello world"), "{rendered}");
     }
@@ -3212,14 +3210,15 @@ mod tests {
         let removed = &rendered[1];
         let added = &rendered[2];
 
+        let dark = theme::palette(forge_config::THEME_FORGE_MIDNIGHT);
         assert!(removed
             .spans
             .iter()
-            .all(|span| span.style.bg == Some(theme::DIFF_REMOVE_BG)));
+            .all(|span| span.style.bg == Some(dark.diff_remove)));
         assert!(added
             .spans
             .iter()
-            .all(|span| span.style.bg == Some(theme::DIFF_ADD_BG)));
+            .all(|span| span.style.bg == Some(dark.diff_add)));
         assert!(
             added.spans.len() > 3,
             "Rust tokens should be separate spans"
