@@ -460,7 +460,7 @@ impl TuiApp {
         }
 
         let attachment_label = self.pending_attachment.as_ref().map(|a| a.label());
-        let glyph = gutter_glyph(&crate::theme::active(), false);
+        let glyph = ACTIVE_GLYPH;
         let composer_content_width = regions
             .input
             .width
