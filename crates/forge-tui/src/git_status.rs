@@ -85,11 +85,13 @@ impl GitStatusCache {
 
     /// Start a background refresh of the Git status for `root`.
     /// This is fully non-blocking: any previous in-flight refresh is dropped
-    /// without waiting for its thread to finish.
+    /// without waiting for its thread to finish. The previous `status` is
+    /// kept until the refresh resolves, so callers that re-trigger a refresh
+    /// on every navigation step (e.g. expanding a directory) don't flash
+    /// stale markers to empty for a frame.
     pub fn start_refresh(&mut self, root: PathBuf) {
         self.loading = true;
         self.error = None;
-        self.status.clear();
         self.revision = self.revision.wrapping_add(1);
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
