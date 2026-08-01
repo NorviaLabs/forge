@@ -188,7 +188,7 @@ mod tests {
         let registry = ThemeRegistry::load(None);
         let midnight = registry.get(THEME_FORGE_MIDNIGHT).expect("forge-midnight");
         assert_eq!(midnight.name, "Forge Midnight");
-        assert_eq!(midnight.palette.background, Rgb(13, 17, 23));
+        assert_eq!(midnight.palette.background, Rgb(23, 23, 26));
         let daylight = registry.get(THEME_FORGE_DAYLIGHT).expect("forge-daylight");
         assert_eq!(daylight.name, "Forge Daylight");
     }
@@ -224,8 +224,8 @@ mod tests {
                 .replace("id = \"forge-midnight\"", "id = \"broken\"")
                 // Truncated hex value: 5 digits instead of 6.
                 .replace(
-                    "user_gutter_active = \"#8AC0FF\"",
-                    "user_gutter_active = \"#8AC0F\"",
+                    "user_gutter_active = \"#A3C7BC\"",
+                    "user_gutter_active = \"#A3C7B\"",
                 ),
         )
         .unwrap();

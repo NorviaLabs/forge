@@ -7,7 +7,7 @@
 # contrast against the background/surface it's actually rendered on.
 id = "forge-midnight"
 name = "Forge Midnight"
- 
+
 background = "#17171A"
 background_deep = "#0F0F11"
 surface = "#1C1C1F"
@@ -17,7 +17,7 @@ border = "#34333A"
 border_muted = "#26262A"
 text_primary = "#D8D6D0"
 text_secondary = "#A49E90"
-text_muted = "#8A877D"
+text_muted = "#908D83"
 accent = "#8FB3A8"
 accent_soft = "#1E2B28"
 agent = "#A79BB0"
@@ -29,10 +29,10 @@ diff_add = "#213026"
 diff_remove = "#332420"
 selection = "#25332F"
 cursor = "#EDEBE4"
-user_gutter_active = "#8FB3A8"
+user_gutter_active = "#A3C7BC"
 tag = "#B0AA9C"
 search_match = "#332C1E"
- 
+
 [syntax]
 comment = "#A49E90"
 keyword = "#93A4C2"

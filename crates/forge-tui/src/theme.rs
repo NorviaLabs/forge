@@ -804,7 +804,7 @@ mod tests {
         let themes = dir.path().join(".forge").join("themes");
         std::fs::create_dir_all(&themes).unwrap();
         let mut content = include_str!("../themes/forge-midnight.toml").to_string();
-        content = content.replace("accent = \"#68A8FF\"", "accent = \"#FF0000\"");
+        content = content.replace("accent = \"#8FB3A8\"", "accent = \"#FF0000\"");
         std::fs::write(themes.join("forge-midnight.toml"), content).unwrap();
         install(ThemeRegistry::load(Some(dir.path())), THEME_FORGE_MIDNIGHT);
         assert_eq!(palette(THEME_FORGE_MIDNIGHT).accent, Color::Rgb(255, 0, 0));
