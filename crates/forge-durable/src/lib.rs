@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use forge_types::{
-    JournalEvent, JournalEventType, Message, MessageRole, ModelResponse, QueueItemId,
-    QueueItemStatus, SessionId, TaskLifecycle, ToolCall, ToolOutput,
+    BackgroundTaskId, JournalEvent, JournalEventType, Message, MessageRole, ModelResponse,
+    QueueItemId, QueueItemStatus, SessionId, TaskLifecycle, ToolCall, ToolOutput,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -65,6 +65,19 @@ pub struct ReplayState {
     /// `Queued`, since that reconciliation policy belongs with the queue's
     /// own invariants, not journal replay.
     pub queue_items: Vec<RestoredQueueItem>,
+    /// Background tasks (shell jobs, subagents) reconstructed from
+    /// `BackgroundTaskStarted`/`BackgroundTaskFinished` pairs. A task with
+    /// `finished: false` was still in flight when the journal ends —
+    /// reconciliation policy (mark cancelled vs. auto-resume) belongs to the
+    /// caller (`forge-core`'s `background` module), same division of
+    /// responsibility as `queue_items`.
+    pub background_tasks: Vec<RestoredBackgroundTask>,
+    /// `BackgroundTaskId` -> worktree path, from `SubagentSpawned` payloads
+    /// (`Journal::append_subagent_spawned`'s `workspace` argument) — the
+    /// piece `background_tasks` alone can't carry, since a subagent's
+    /// worktree location is only known once the worktree is actually
+    /// created, after the generic `BackgroundTaskStarted` is journaled.
+    pub subagent_workspaces: HashMap<u64, PathBuf>,
 }
 
 /// One queue item as reconstructed from the journal — a lightweight mirror
@@ -76,6 +89,19 @@ pub struct RestoredQueueItem {
     pub text: String,
     pub created_at: DateTime<Utc>,
     pub status: QueueItemStatus,
+}
+
+/// One background task as reconstructed from the journal — a lightweight
+/// mirror of forge-core's `BackgroundTaskHandle` (no `CancellationToken`,
+/// which isn't durable and doesn't need to be).
+#[derive(Debug, Clone)]
+pub struct RestoredBackgroundTask {
+    pub id: BackgroundTaskId,
+    /// `"shell"` or `"subagent"`, from `BackgroundTaskKind::tag()`.
+    pub kind: String,
+    pub label: String,
+    pub child_session_id: Option<SessionId>,
+    pub finished: bool,
 }
 
 impl Journal {
@@ -345,6 +371,92 @@ impl Journal {
         .await
     }
 
+    /// `kind` is `"shell"` or `"subagent"` — informational only, not used by
+    /// replay. `child_session_id` is `Some` for a subagent (its own journal
+    /// records the rest), `None` for a shell job.
+    pub async fn append_background_task_started(
+        &self,
+        session_id: SessionId,
+        task_id: BackgroundTaskId,
+        kind: &str,
+        label: &str,
+        child_session_id: Option<SessionId>,
+    ) -> Result<u64, JournalError> {
+        self.append(
+            session_id,
+            JournalEventType::BackgroundTaskStarted,
+            json!({
+                "task_id": task_id.0,
+                "kind": kind,
+                "label": label,
+                "child_session_id": child_session_id,
+            }),
+        )
+        .await
+    }
+
+    pub async fn append_background_task_finished(
+        &self,
+        session_id: SessionId,
+        task_id: BackgroundTaskId,
+        status: &str,
+        summary: &str,
+    ) -> Result<u64, JournalError> {
+        self.append(
+            session_id,
+            JournalEventType::BackgroundTaskFinished,
+            json!({ "task_id": task_id.0, "status": status, "summary": summary }),
+        )
+        .await
+    }
+
+    /// `workspace` is the subagent's dedicated git worktree path — recorded
+    /// so a restart can find the same checkout again (`forge-core`'s
+    /// `reconcile_orphaned_background_tasks` reads it back via
+    /// `ReplayState::subagent_workspaces` to auto-resume an orphaned
+    /// subagent without recomputing/guessing the worktree location).
+    pub async fn append_subagent_spawned(
+        &self,
+        session_id: SessionId,
+        task_id: BackgroundTaskId,
+        child_session_id: SessionId,
+        role: &str,
+        workspace: &Path,
+    ) -> Result<u64, JournalError> {
+        self.append(
+            session_id,
+            JournalEventType::SubagentSpawned,
+            json!({
+                "task_id": task_id.0,
+                "child_session_id": child_session_id,
+                "role": role,
+                "workspace": workspace.display().to_string(),
+            }),
+        )
+        .await
+    }
+
+    pub async fn append_subagent_finished(
+        &self,
+        session_id: SessionId,
+        task_id: BackgroundTaskId,
+        child_session_id: SessionId,
+        status: &str,
+        summary: &str,
+    ) -> Result<u64, JournalError> {
+        self.append(
+            session_id,
+            JournalEventType::SubagentFinished,
+            json!({
+                "task_id": task_id.0,
+                "child_session_id": child_session_id,
+                "status": status,
+                "summary": summary,
+            }),
+        )
+        .await
+    }
+
     pub async fn replay(&self, session_id: SessionId) -> Result<ReplayState, JournalError> {
         let sid = session_id.to_string();
         let rows = sqlx::query(
@@ -369,6 +481,8 @@ impl Journal {
             events: Vec::new(),
             pending_hitl: None,
             queue_items: Vec::new(),
+            background_tasks: Vec::new(),
+            subagent_workspaces: HashMap::new(),
         };
 
         let mut open_intents: HashMap<String, String> = HashMap::new();
@@ -534,6 +648,42 @@ impl Journal {
                         {
                             item.status = QueueItemStatus::Removed;
                         }
+                    }
+                }
+                JournalEventType::BackgroundTaskStarted => {
+                    if let (Some(id), Some(kind), Some(label)) = (
+                        payload.get("task_id").and_then(|v| v.as_u64()),
+                        payload.get("kind").and_then(|v| v.as_str()),
+                        payload.get("label").and_then(|v| v.as_str()),
+                    ) {
+                        let child_session_id = payload
+                            .get("child_session_id")
+                            .and_then(|v| serde_json::from_value::<SessionId>(v.clone()).ok());
+                        state.background_tasks.push(RestoredBackgroundTask {
+                            id: BackgroundTaskId(id),
+                            kind: kind.to_string(),
+                            label: label.to_string(),
+                            child_session_id,
+                            finished: false,
+                        });
+                    }
+                }
+                JournalEventType::BackgroundTaskFinished => {
+                    if let Some(id) = payload.get("task_id").and_then(|v| v.as_u64()) {
+                        if let Some(task) = state.background_tasks.iter_mut().find(|t| t.id.0 == id)
+                        {
+                            task.finished = true;
+                        }
+                    }
+                }
+                JournalEventType::SubagentSpawned => {
+                    if let (Some(id), Some(workspace)) = (
+                        payload.get("task_id").and_then(|v| v.as_u64()),
+                        payload.get("workspace").and_then(|v| v.as_str()),
+                    ) {
+                        state
+                            .subagent_workspaces
+                            .insert(id, PathBuf::from(workspace));
                     }
                 }
                 _ => {}
@@ -810,6 +960,75 @@ mod tests {
         j.append_queue_removed(sid, QueueItemId(2)).await.unwrap();
         let state = j.replay(sid).await.unwrap();
         assert_eq!(state.queue_items[1].status, QueueItemStatus::Removed);
+    }
+
+    #[tokio::test]
+    async fn background_task_events_round_trip_through_replay() {
+        let dir = tempdir().unwrap();
+        let sid = new_session_id();
+        let j = Journal::open(dir.path(), sid).await.unwrap();
+        j.append_background_task_started(sid, BackgroundTaskId(1), "shell", "cargo check", None)
+            .await
+            .unwrap();
+        j.append_background_task_started(sid, BackgroundTaskId(2), "shell", "cargo test", None)
+            .await
+            .unwrap();
+
+        let state = j.replay(sid).await.unwrap();
+        assert_eq!(state.background_tasks.len(), 2);
+        assert_eq!(state.background_tasks[0].id, BackgroundTaskId(1));
+        assert_eq!(state.background_tasks[0].kind, "shell");
+        assert_eq!(state.background_tasks[0].label, "cargo check");
+        assert!(!state.background_tasks[0].finished);
+        assert!(!state.background_tasks[1].finished);
+
+        j.append_background_task_finished(sid, BackgroundTaskId(1), "succeeded", "ok")
+            .await
+            .unwrap();
+        let state = j.replay(sid).await.unwrap();
+        assert!(state.background_tasks[0].finished);
+        // Untouched task stays unfinished — this is exactly the "orphaned on
+        // restart" case forge-core's reconciliation acts on.
+        assert!(!state.background_tasks[1].finished);
+    }
+
+    #[tokio::test]
+    async fn subagent_background_task_carries_child_session_id_through_replay() {
+        let dir = tempdir().unwrap();
+        let sid = new_session_id();
+        let child_sid = new_session_id();
+        let j = Journal::open(dir.path(), sid).await.unwrap();
+        j.append_background_task_started(
+            sid,
+            BackgroundTaskId(1),
+            "subagent",
+            "test-fixer",
+            Some(child_sid),
+        )
+        .await
+        .unwrap();
+
+        let state = j.replay(sid).await.unwrap();
+        assert_eq!(state.background_tasks[0].kind, "subagent");
+        assert_eq!(state.background_tasks[0].child_session_id, Some(child_sid));
+    }
+
+    #[tokio::test]
+    async fn subagent_spawned_records_the_worktree_path_for_resume() {
+        let dir = tempdir().unwrap();
+        let sid = new_session_id();
+        let child_sid = new_session_id();
+        let j = Journal::open(dir.path(), sid).await.unwrap();
+        let worktree = std::path::Path::new("/repo/.forge/local/worktrees/subagent-1-fixer");
+        j.append_subagent_spawned(sid, BackgroundTaskId(1), child_sid, "fixer", worktree)
+            .await
+            .unwrap();
+
+        let state = j.replay(sid).await.unwrap();
+        assert_eq!(
+            state.subagent_workspaces.get(&1),
+            Some(&worktree.to_path_buf())
+        );
     }
 
     #[tokio::test]

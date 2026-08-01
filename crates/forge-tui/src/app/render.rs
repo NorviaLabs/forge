@@ -326,6 +326,8 @@ impl TuiApp {
                     busy_phase: &self.busy_phase,
                     activity: &self.activity,
                     run: &self.run,
+                    background: &self.session.background,
+                    tasks_selected: self.tasks_selected,
                     terminal_title: self.terminal_capture.title.as_deref(),
                     terminal_content: &self.terminal_capture.content,
                     terminal_truncated: self.terminal_capture.truncated,

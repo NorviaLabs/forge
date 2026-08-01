@@ -308,6 +308,10 @@ enum SemanticCommand {
     ToggleToolDetails,
     MoveQueueSelection(i32),
     CancelSelectedQueueMessage,
+    MoveTasksSelection(i32),
+    CancelSelectedBackgroundTask,
+    ApproveSelectedBackgroundTask,
+    DenySelectedBackgroundTask,
     QuitOrInterrupt,
     Quit,
     RunOrCancel,
@@ -530,6 +534,8 @@ pub struct TuiApp {
     pending_attachment: Option<crate::file_context::FileAttachment>,
     /// Selected queued row for keyboard cancellation.
     queue_selected: Option<usize>,
+    /// Selected row in the Tasks bottom-panel tab for keyboard cancellation.
+    tasks_selected: Option<usize>,
     /// Live assistant text while tokens stream in.
     stream_preview: String,
     /// Live thinking/reasoning text while tokens stream in.

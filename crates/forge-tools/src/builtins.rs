@@ -257,6 +257,46 @@ impl Tool for BashTool {
     }
 }
 
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct BackgroundRunArgs {
+    /// Shell command to run in the background, without blocking this turn.
+    pub command: String,
+    /// Short human-readable label shown in the Tasks panel (e.g. "cargo test").
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+/// Starts a shell command running in the background instead of executing it
+/// inline. The agent loop (`forge-core`'s `run_one_tool`) special-cases this
+/// tool name and intercepts the call *before* it ever reaches
+/// `ToolRegistry::call` — routing it to `AgentSession::spawn_background_shell`
+/// instead, so this `Tool::call` impl is a defensive fallback that should
+/// never actually run in production; it exists so the tool has a normal,
+/// schema-validated, governance-gated identity like any other tool.
+pub struct BackgroundRunTool;
+
+#[async_trait]
+impl Tool for BackgroundRunTool {
+    fn name(&self) -> &str {
+        "background_run"
+    }
+    fn description(&self) -> &str {
+        "Run a shell command in the background (e.g. compile, test, index) without blocking this turn. Reports back when finished."
+    }
+    fn input_schema(&self) -> Value {
+        schema_for::<BackgroundRunArgs>()
+    }
+    fn side_effect_class(&self) -> SideEffectClass {
+        SideEffectClass::Exec
+    }
+
+    async fn call(&self, _ctx: &ToolContext, _args: Value) -> Result<ToolOutput, ToolError> {
+        Err(ToolError::Execution(
+            "background_run must be intercepted by the agent loop, not executed directly".into(),
+        ))
+    }
+}
+
 /// Allowlisted git subcommands (not a free-form shell).
 ///
 /// Every name here must have a [`git_policy`] entry; `git_policy_covers_every_subcommand`
@@ -1132,6 +1172,7 @@ pub fn default_builtins() -> Vec<std::sync::Arc<dyn Tool>> {
         std::sync::Arc::new(crate::ApplyPatchTool),
         std::sync::Arc::new(BashTool),
         std::sync::Arc::new(GitTool),
+        std::sync::Arc::new(BackgroundRunTool),
     ];
     tools.extend(crate::fast_file_tools::fff_tools());
     tools

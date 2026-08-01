@@ -35,6 +35,12 @@ pub enum RuntimeDataKind {
     Log,
     Index,
     Checkpoint,
+    /// Per-subagent git worktrees — see `forge-storage::worktree`. Lives
+    /// under the same repository-local/application-data root as every other
+    /// runtime category, so a subagent's isolated working directory is
+    /// git-excluded exactly like session/queue state, never a user-visible
+    /// project change.
+    Worktree,
 }
 
 impl RuntimeDataKind {
@@ -48,6 +54,7 @@ impl RuntimeDataKind {
             Self::Log => "logs",
             Self::Index => "index",
             Self::Checkpoint => "checkpoints",
+            Self::Worktree => "worktrees",
         }
     }
 }

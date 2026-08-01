@@ -18,6 +18,7 @@ mod highlight;
 mod pointer;
 mod prelude;
 mod run;
+mod tasks;
 mod theme;
 mod watch;
 mod workspace;

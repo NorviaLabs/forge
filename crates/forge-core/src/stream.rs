@@ -101,6 +101,13 @@ impl AgentSession {
 
         let mut acc = ModelStepAccumulator::default();
         while !handle.is_finished() {
+            // Only ever `Some` for a subagent session (see `AgentSession::cancel_token`'s
+            // doc comment) — the foreground session is cancelled via the TUI's own
+            // `cancel_requested` bool instead, checked in `app/turn.rs`.
+            if self.cancel_token.as_ref().is_some_and(|t| t.is_cancelled()) {
+                handle.abort();
+                return Err(LoopError::Cancelled);
+            }
             drain_stream_rx(&rx, self, forward.as_ref(), &mut acc);
             tokio::task::yield_now().await;
         }

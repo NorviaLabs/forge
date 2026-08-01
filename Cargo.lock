@@ -1161,6 +1161,7 @@ dependencies = [
  "forge-durable",
  "forge-governance",
  "forge-model",
+ "forge-storage",
  "forge-tools",
  "forge-types",
  "serde",
@@ -1168,6 +1169,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.19",
  "tokio",
+ "tokio-util",
  "tracing",
  "uuid",
 ]
@@ -1330,6 +1332,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.19",
  "tokio",
+ "tokio-util",
  "uuid",
 ]
 
