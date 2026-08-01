@@ -257,6 +257,12 @@ pub enum CompletionReason {
     ExpectationUnclassifiable,
     Cancelled,
     AwaitingApproval,
+    /// The model's final text contains what looks like an unparsed/malformed
+    /// tool-call attempt (a real tool name used in call-shaped syntax,
+    /// e.g. inside a JSON-ish blob) rather than a genuine final answer, and
+    /// no structured tool call actually executed. Never resolves to
+    /// `Completed` — see `AgentSession::apply_model_response` in `lib.rs`.
+    DanglingToolCallText,
 }
 
 impl CompletionReason {
@@ -280,6 +286,7 @@ impl CompletionReason {
             Self::ExpectationUnclassifiable => "expectation_unclassifiable",
             Self::Cancelled => "cancelled",
             Self::AwaitingApproval => "awaiting_approval",
+            Self::DanglingToolCallText => "dangling_tool_call_text",
         }
     }
 }
