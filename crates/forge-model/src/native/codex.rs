@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::NativeModelClient;
-use crate::prompt_cache::{apply_codex_prompt_cache, usage_from_provider};
+use crate::prompt_cache::usage_from_provider;
 use crate::{ModelError, ModelRequest, StreamEventTx};
 
 pub const DEFAULT_BASE_URL: &str = "https://chatgpt.com/backend-api";
@@ -43,11 +43,14 @@ pub(super) async fn complete(
             )
         })?;
     let aliases = tool_aliases(&req);
+    // Unlike the Anthropic and OpenAI-compatible transports, the ChatGPT
+    // backend-api Codex endpoint (`DEFAULT_BASE_URL` above) rejects an
+    // `input[].content[].cache_control` field outright with `HTTP 400
+    // "Unknown parameter"` — it is not the same Responses API surface as
+    // api.openai.com's, despite the shared request shape. Do not apply
+    // `apply_codex_prompt_cache` here; prompt caching for this profile isn't
+    // supported, not merely disabled.
     let body = request_body(client, &req, model, &aliases);
-    let mut body = body;
-    if req.prompt_cache {
-        apply_codex_prompt_cache(&mut body);
-    }
     let request_id = Uuid::new_v4().to_string();
     let response = client
         .http
@@ -482,6 +485,56 @@ mod tests {
             .iter()
             .any(|item| item["type"] == "function_call_output"));
         assert_eq!(body["tools"][0]["name"], "read_file");
+    }
+
+    // Regression test for the P0 found in the 2026-08-01 usability audit:
+    // the ChatGPT backend-api Codex endpoint rejects an
+    // `input[].content[].cache_control` field with `HTTP 400 "Unknown
+    // parameter"`, unlike the Anthropic and OpenAI-compatible transports.
+    // The request body this crate actually sends must never contain that
+    // field for this profile — there is no per-provider capability check to
+    // rely on here, so the only correct fix is to never apply it in the
+    // first place (see `complete`, which now calls `request_body` directly
+    // with no `apply_codex_prompt_cache` step).
+    #[test]
+    fn codex_request_body_never_contains_cache_control() {
+        let mut request = request_with_tool("read_file"); // prompt_cache: true by default
+        request.messages = vec![
+            Message::new(MessageRole::System, "system prompt"),
+            Message::new(MessageRole::User, "hello"),
+            Message {
+                role: MessageRole::Assistant,
+                content: "working".into(),
+                tool_call_id: None,
+                name: None,
+                thinking: None,
+                thinking_duration_secs: None,
+                tool_calls: vec![ToolCall {
+                    id: "c1".into(),
+                    name: "read_file".into(),
+                    arguments: json!({"path":"README.md"}),
+                }],
+            },
+            Message {
+                role: MessageRole::Tool,
+                content: "contents".into(),
+                tool_call_id: Some("c1".into()),
+                name: Some("read_file".into()),
+                thinking: None,
+                thinking_duration_secs: None,
+                tool_calls: vec![],
+            },
+            Message::new(MessageRole::User, "and now?"),
+        ];
+        let client = NativeModelClient::from_config(&Config::default()).unwrap();
+        let aliases = tool_aliases(&request);
+
+        let body = request_body(&client, &request, &request.model, &aliases);
+
+        assert!(
+            !body.to_string().contains("cache_control"),
+            "codex request body must never contain cache_control: {body}"
+        );
     }
 
     #[test]
