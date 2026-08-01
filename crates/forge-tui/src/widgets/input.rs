@@ -2,7 +2,7 @@
 
 use crate::composer_layout::{locate_cursor_in_rows, scroll_offset, ComposerVisualRow};
 use crate::theme;
-use crate::user_message_gutter::{gutter_glyph, GutterRole, GUTTER_GAP};
+use crate::user_message_gutter::{gutter_prefix_width, GutterRole, ACTIVE_GLYPH, GUTTER_GAP};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -316,7 +316,6 @@ fn render_content_spans(
     spans
 }
 
-#[allow(clippy::too_many_arguments)]
 fn build_input_lines(
     model: &InputModel,
     rows: &[ComposerVisualRow],
@@ -324,10 +323,9 @@ fn build_input_lines(
     focused: bool,
     base: Style,
     gutter_style: Style,
-    theme: &str,
-    force_fallback: bool,
 ) -> Vec<Line<'static>> {
-    let glyph = gutter_glyph(theme, force_fallback);
+    let glyph = ACTIVE_GLYPH;
+    let blank_prefix = " ".repeat(gutter_prefix_width(glyph));
     let text = &model.text;
     let cursor = model.cursor.min(text.len());
 
@@ -355,10 +353,18 @@ fn build_input_lines(
         .map(|(visible_idx, row)| {
             let row_idx = offset + visible_idx;
             let cursor_in_row = (row_idx == cursor_row).then_some(cursor_col);
-            let mut spans = vec![
-                Span::styled(glyph, gutter_style),
-                Span::styled(GUTTER_GAP, base),
-            ];
+            // Non-repeating prompt marker: only the composer's true first
+            // row (row_idx == 0) carries the glyph. Wrapped/continuation
+            // rows get blank padding of the same width so content still
+            // aligns, rather than a `>` on every visual row.
+            let mut spans = if row_idx == 0 {
+                vec![
+                    Span::styled(glyph, gutter_style),
+                    Span::styled(GUTTER_GAP, base),
+                ]
+            } else {
+                vec![Span::styled(blank_prefix.clone(), base)]
+            };
             spans.extend(render_content_spans(
                 row.fragment(text),
                 cursor_in_row,
@@ -417,8 +423,6 @@ impl Widget for InputBar<'_> {
             self.focused,
             base,
             gutter_style,
-            &theme,
-            false,
         );
 
         let border = if self.focused {
@@ -456,15 +460,13 @@ mod tests {
         build_visual_rows, click_to_cursor, copy_buffer, strip_rendered_prefix,
     };
     use crate::theme;
-    use crate::user_message_gutter::{
-        gutter_glyph, gutter_prefix_width, gutter_style_for, GutterRole,
-    };
+    use crate::user_message_gutter::{gutter_prefix_width, gutter_style_for, GutterRole};
     use forge_config::THEME_FORGE_MIDNIGHT;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
     fn glyph() -> &'static str {
-        gutter_glyph(THEME_FORGE_MIDNIGHT, false)
+        ACTIVE_GLYPH
     }
 
     fn line_plain(line: &Line<'_>) -> String {
@@ -475,9 +477,8 @@ mod tests {
     }
 
     fn test_rows(model: &InputModel, width: u16) -> Vec<ComposerVisualRow> {
-        let glyph = gutter_glyph(THEME_FORGE_MIDNIGHT, false);
         let content_width = width
-            .saturating_sub(gutter_prefix_width(glyph) as u16)
+            .saturating_sub(gutter_prefix_width(ACTIVE_GLYPH) as u16)
             .max(1) as usize;
         build_visual_rows(&model.text, content_width)
     }
@@ -743,7 +744,9 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(rendered.contains("file.txt"));
-        assert_eq!(rendered.matches(glyph()).count(), 2);
+        // Non-repeating prompt marker: exactly one `>`, on the true first
+        // row, not one per wrapped/continuation line.
+        assert_eq!(rendered.matches(glyph()).count(), 1);
     }
 
     #[test]
@@ -773,7 +776,7 @@ mod tests {
     }
 
     #[test]
-    fn wrapped_input_has_gutter_on_every_row() {
+    fn wrapped_input_has_gutter_only_on_first_row() {
         let m = InputModel {
             text: "word ".repeat(30).trim().to_string(),
             cursor: 0,
@@ -781,11 +784,18 @@ mod tests {
         };
         let rows = render_lines(&m, 24, 8, true);
         assert!(rows.len() >= 3);
-        assert!(rows.iter().all(|row| row.starts_with(glyph())));
+        assert!(rows[0].starts_with(glyph()));
+        // Continuation rows get blank padding of the same width, not a
+        // repeated `>` — but text still lines up under the first row.
+        let prefix_width = gutter_prefix_width(glyph());
+        for row in &rows[1..] {
+            assert!(!row.starts_with(glyph()), "continuation row: {row}");
+            assert!(row.starts_with(&" ".repeat(prefix_width)), "row: {row}");
+        }
     }
 
     #[test]
-    fn explicit_newlines_each_have_gutter() {
+    fn explicit_newlines_have_gutter_only_on_first_row() {
         let m = InputModel {
             text: "one\ntwo\nthree".into(),
             ..Default::default()
@@ -793,19 +803,37 @@ mod tests {
         let rows = render_lines(&m, 60, 8, true);
         assert_eq!(
             rows.iter().filter(|row| row.starts_with(glyph())).count(),
-            3
+            1
         );
+        assert!(rows[0].starts_with(glyph()));
     }
 
+    // A rendered blank row is all whitespace once it has no glyph of its own,
+    // which `render_lines`'s trim-and-drop-empty helper (built for other
+    // tests' convenience) would misread as an absent row. Inspect
+    // `build_input_lines`'s own `Line`s directly instead, so this test
+    // reflects the real per-row content rather than that helper's shortcut.
     #[test]
-    fn blank_line_renders_gutter_row() {
-        let m = InputModel {
+    fn blank_line_renders_as_its_own_row_without_repeating_gutter() {
+        let model = InputModel {
             text: "First.\n\nSecond.".into(),
             ..Default::default()
         };
-        let rows = render_lines(&m, 60, 8, true);
+        let rows = build_visual_rows(&model.text, 60);
         assert_eq!(rows.len(), 3);
-        assert!(rows[1].starts_with(glyph()));
+        let lines = build_input_lines(
+            &model,
+            &rows,
+            8,
+            true,
+            theme::text(),
+            gutter_style_for(THEME_FORGE_MIDNIGHT, GutterRole::Active),
+        );
+        assert_eq!(lines.len(), 3);
+        let blank_prefix = " ".repeat(gutter_prefix_width(glyph()));
+        assert_eq!(line_plain(&lines[0]), format!("{} First.", glyph()));
+        assert_eq!(line_plain(&lines[1]), blank_prefix);
+        assert_eq!(line_plain(&lines[2]), format!("{blank_prefix}Second."));
     }
 
     #[test]
@@ -860,7 +888,7 @@ mod tests {
         let rows = render_lines(&m, 60, 8, true);
         assert_eq!(
             rows.iter().filter(|row| row.starts_with(glyph())).count(),
-            2
+            1
         );
         assert_eq!(m.copy_text(), text);
     }
@@ -885,29 +913,9 @@ mod tests {
         };
         let rows = render_lines(&m, 60, 5, true);
         assert!(rows.iter().any(|row| row.contains("line5")));
-        assert!(rows.iter().all(|row| row.starts_with(glyph())));
-    }
-
-    #[test]
-    fn forced_fallback_gutter_renders_on_all_rows() {
-        let glyph = gutter_glyph(THEME_FORGE_MIDNIGHT, true);
-        assert_ne!(glyph, "▎");
-        let model = InputModel {
-            text: "one two three four five".into(),
-            ..Default::default()
-        };
-        let rows = build_visual_rows(&model.text, 10);
-        let lines = build_input_lines(
-            &model,
-            &rows,
-            6,
-            true,
-            theme::text(),
-            gutter_style_for(THEME_FORGE_MIDNIGHT, GutterRole::Active),
-            THEME_FORGE_MIDNIGHT,
-            true,
-        );
-        assert!(lines.iter().all(|line| line_plain(line).starts_with(glyph)));
-        assert!(gutter_prefix_width(glyph) >= 2);
+        // Scrolled past the true first row (to keep the cursor on line5
+        // visible): none of the currently-visible rows carry the `>`, since
+        // it marks the buffer's first line specifically, not every viewport.
+        assert!(rows.iter().all(|row| !row.starts_with(glyph())));
     }
 }
