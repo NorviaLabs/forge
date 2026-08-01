@@ -452,7 +452,6 @@ impl Widget for InputBar<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use forge_config::THEME_FORGE_MIDNIGHT;
     use crate::composer_layout::{
         build_visual_rows, click_to_cursor, copy_buffer, strip_rendered_prefix,
     };
@@ -460,6 +459,7 @@ mod tests {
     use crate::user_message_gutter::{
         gutter_glyph, gutter_prefix_width, gutter_style_for, GutterRole,
     };
+    use forge_config::THEME_FORGE_MIDNIGHT;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
@@ -700,7 +700,10 @@ mod tests {
         let rows = test_rows(&m, 48);
         let buf = draw_input_bar(&m, &rows, 48, 5, false, true, None);
         let border = &buf[(0, 0)];
-        assert_eq!(border.style().fg, Some(theme::palette(THEME_FORGE_MIDNIGHT).warn));
+        assert_eq!(
+            border.style().fg,
+            Some(theme::palette(THEME_FORGE_MIDNIGHT).warn)
+        );
         let rendered: String = (0..buf.area().height)
             .map(|y| {
                 (0..buf.area().width)

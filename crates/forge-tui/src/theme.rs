@@ -610,7 +610,14 @@ mod tests {
         let dark = midnight_palette();
         assert_eq!(surface_hover().bg, Some(to_color(dark.surface_hover)));
         assert_eq!(disabled().fg, dim().fg);
-        assert_eq!(registry().get(THEME_FORGE_MIDNIGHT).unwrap().palette.surface_hover, dark.surface_hover);
+        assert_eq!(
+            registry()
+                .get(THEME_FORGE_MIDNIGHT)
+                .unwrap()
+                .palette
+                .surface_hover,
+            dark.surface_hover
+        );
     }
 
     #[test]

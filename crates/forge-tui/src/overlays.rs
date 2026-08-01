@@ -610,10 +610,7 @@ impl Overlay {
 
     pub fn theme_open(current: &str) -> Self {
         let items = theme_registry::picker_entries(&theme::registry());
-        let selected = items
-            .iter()
-            .position(|(id, _)| id == current)
-            .unwrap_or(0);
+        let selected = items.iter().position(|(id, _)| id == current).unwrap_or(0);
         Self::Theme {
             selected,
             current: current.to_string(),

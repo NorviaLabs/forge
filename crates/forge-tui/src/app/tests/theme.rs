@@ -7,24 +7,17 @@ use super::prelude::*;
 #[tokio::test]
 async fn theme_change_updates_active_palette_immediately() {
     let (_dir, mut app) = focus_test_app().await;
-    assert_eq!(
-        crate::theme::active(),
-        forge_config::THEME_FORGE_MIDNIGHT
-    );
+    assert_eq!(crate::theme::active(), forge_config::THEME_FORGE_MIDNIGHT);
     assert_eq!(
         crate::theme::text().fg,
-        Some(
-            crate::theme::palette(forge_config::THEME_FORGE_MIDNIGHT).text
-        )
+        Some(crate::theme::palette(forge_config::THEME_FORGE_MIDNIGHT).text)
     );
 
     app.handle_theme_command(Some("light"));
     assert_eq!(crate::theme::active(), forge_config::THEME_FORGE_DAYLIGHT);
     assert_eq!(
         crate::theme::text().fg,
-        Some(
-            crate::theme::palette(forge_config::THEME_FORGE_DAYLIGHT).text
-        )
+        Some(crate::theme::palette(forge_config::THEME_FORGE_DAYLIGHT).text)
     );
     assert!(app.conversation_cache.is_none());
 }
@@ -51,7 +44,10 @@ async fn theme_persists_per_repository() {
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
-    assert_eq!(restored.runtime.theme_id, forge_config::THEME_FORGE_DAYLIGHT);
+    assert_eq!(
+        restored.runtime.theme_id,
+        forge_config::THEME_FORGE_DAYLIGHT
+    );
     assert_eq!(crate::theme::active(), forge_config::THEME_FORGE_DAYLIGHT);
 }
 
@@ -69,9 +65,7 @@ async fn light_theme_paints_root_canvas_on_draw() {
     let corner = term.backend().buffer()[(0, 0)].style().bg;
     assert_eq!(
         corner,
-        Some(
-            crate::theme::palette(forge_config::THEME_FORGE_DAYLIGHT).canvas
-        )
+        Some(crate::theme::palette(forge_config::THEME_FORGE_DAYLIGHT).canvas)
     );
 }
 

@@ -426,7 +426,10 @@ mod tests {
         let text = "legacy\nmulti\nline";
         let model = user_model(text);
         let rows = rendered_rows(text, 80);
-        assert_eq!(gutter_rows(&rows, gutter_glyph(THEME_FORGE_MIDNIGHT, false)), 3);
+        assert_eq!(
+            gutter_rows(&rows, gutter_glyph(THEME_FORGE_MIDNIGHT, false)),
+            3
+        );
         let block = model
             .semantic_blocks()
             .into_iter()
@@ -547,8 +550,13 @@ mod tests {
 
     #[test]
     fn snapshot_dark_theme_gutter_colour() {
-        let lines =
-            render_user_message_lines("hello", 40, THEME_FORGE_MIDNIGHT, false, crate::conversation::wrap);
+        let lines = render_user_message_lines(
+            "hello",
+            40,
+            THEME_FORGE_MIDNIGHT,
+            false,
+            crate::conversation::wrap,
+        );
         assert_eq!(
             lines[0].spans[0].style.fg,
             Some(theme::palette(THEME_FORGE_MIDNIGHT).user_message_gutter)
@@ -557,8 +565,13 @@ mod tests {
 
     #[test]
     fn snapshot_light_theme_gutter_colour() {
-        let lines =
-            render_user_message_lines("hello", 40, THEME_FORGE_DAYLIGHT, false, crate::conversation::wrap);
+        let lines = render_user_message_lines(
+            "hello",
+            40,
+            THEME_FORGE_DAYLIGHT,
+            false,
+            crate::conversation::wrap,
+        );
         assert_eq!(
             lines[0].spans[0].style.fg,
             Some(theme::palette(THEME_FORGE_DAYLIGHT).user_message_gutter)
@@ -575,8 +588,13 @@ mod tests {
     #[test]
     fn snapshot_forced_fallback_gutter() {
         let glyph = gutter_glyph(THEME_FORGE_MIDNIGHT, true);
-        let lines =
-            render_user_message_lines("hello", 40, THEME_FORGE_MIDNIGHT, true, crate::conversation::wrap);
+        let lines = render_user_message_lines(
+            "hello",
+            40,
+            THEME_FORGE_MIDNIGHT,
+            true,
+            crate::conversation::wrap,
+        );
         assert_eq!(lines[0].spans[0].content, glyph);
         assert_ne!(glyph, PRIMARY_GLYPH);
     }
