@@ -220,7 +220,7 @@ pub fn build_provider_rows(
                 is_current: current_profile_id == Some(p.id.as_str()),
             });
     }
-    vendor_order.sort_by(|a, b| a.1.to_ascii_lowercase().cmp(&b.1.to_ascii_lowercase()));
+    vendor_order.sort_by_key(|(_, label)| label.to_ascii_lowercase());
     let current_vendor_id = current_profile_id
         .and_then(|pid| registry.get(pid))
         .map(|p| p.vendor_id.clone());
@@ -261,9 +261,7 @@ fn active_vendor_route_labels<'a>(
 
 /// First visible index so `selected` stays on-screen within `visible` rows.
 fn window_start(selected: usize, total: usize, visible: usize) -> usize {
-    if visible == 0 || total <= visible {
-        0
-    } else if selected < visible {
+    if visible == 0 || total <= visible || selected < visible {
         0
     } else {
         (selected + 1).saturating_sub(visible)
