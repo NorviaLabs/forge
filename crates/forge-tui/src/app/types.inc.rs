@@ -288,6 +288,7 @@ enum SemanticCommand {
     },
     ToggleBottomPanel,
     OpenQuickOpen,
+    QuickSwitchModel,
     CycleBottomPanelTab {
         forward: bool,
     },

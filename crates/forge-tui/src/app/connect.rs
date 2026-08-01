@@ -296,20 +296,42 @@ impl TuiApp {
     pub(super) fn open_effort_picker_for_model(&mut self, model: &str) {
         let options = ReasoningEffort::options_for_model(model);
         let default = ReasoningEffort::default_for_model(model);
+        let previous = self.reasoning_effort;
+        let unsupported = !options.contains(&previous);
         if options.len() <= 1 {
             // Nothing useful to choose; keep current if still valid, else provider default.
-            if !options.contains(&self.reasoning_effort) {
+            if unsupported {
                 self.reasoning_effort = default;
                 self.persist_selection();
+                self.note_unsupported_effort_fallback(previous, default);
             }
             self.overlay = None;
             return;
         }
-        if !options.contains(&self.reasoning_effort) {
+        if unsupported {
             self.reasoning_effort = default;
+            self.note_unsupported_effort_fallback(previous, default);
+        } else {
+            self.set_feedback(FeedbackSeverity::Info, "choose reasoning effort");
         }
         self.overlay = Some(Overlay::effort_open(model, self.reasoning_effort));
-        self.set_feedback(FeedbackSeverity::Info, "choose reasoning effort");
+    }
+
+    /// Spec'd copy for switching to a model that can't run the current
+    /// effort: "{old} effort is not supported by this model. Using {new}."
+    fn note_unsupported_effort_fallback(
+        &mut self,
+        previous: ReasoningEffort,
+        fallback: ReasoningEffort,
+    ) {
+        self.set_feedback(
+            FeedbackSeverity::Warn,
+            format!(
+                "{} effort is not supported by this model. Using {}.",
+                previous.label(),
+                fallback.label()
+            ),
+        );
     }
 
     pub(super) fn persist_selection(&self) {
@@ -323,6 +345,61 @@ impl TuiApp {
             .connect
             .store
             .set_last_effort(&self.reasoning_effort.to_string());
+    }
+
+    /// Record a deliberate model/route/effort switch for Quick Switch.
+    ///
+    /// Unlike `persist_selection`, this rotates the prior selection into the
+    /// Quick Switch history — call only from user-driven selection
+    /// completion (a picker pick, a typed `/model`, an effort pick), never
+    /// from automatic fallbacks or on shell exit.
+    pub(super) fn record_deliberate_selection(&self) {
+        let Some(profile_id) = self.connect.profile.clone() else {
+            return;
+        };
+        if profile_id.trim().is_empty() || self.runtime.model_label.trim().is_empty() {
+            return;
+        }
+        let _ = self.connect.store.record_switch((
+            &profile_id,
+            &self.runtime.model_label,
+            &self.reasoning_effort.to_string(),
+        ));
+    }
+
+    /// Toggle to the previously, deliberately selected model/route/effort
+    /// combo — no picker, applies immediately at session scope.
+    pub(super) fn quick_switch_model(&mut self) {
+        match self.connect.store.quick_switch() {
+            Ok(Some((profile_id, model, effort))) => {
+                self.connect.auth_suspended = false;
+                self.connect.profile = Some(profile_id.clone());
+                self.runtime.provider = "native".into();
+                self.runtime.model_label = model.clone();
+                self.session.set_active_model(&model);
+                self.apply_connect_credentials(&profile_id);
+                if let Ok(effort) = effort.parse::<ReasoningEffort>() {
+                    self.reasoning_effort = effort;
+                }
+                self.feedback = FeedbackModel::default();
+                self.status_message.clear();
+                self.notices.clear();
+                self.push_activity(
+                    ActivityKind::System,
+                    FeedbackSeverity::Ok,
+                    format!("quick switch → {model}"),
+                );
+            }
+            Ok(None) => {
+                self.set_feedback(FeedbackSeverity::Info, "no previous model to switch to");
+            }
+            Err(_) => {
+                self.set_feedback(
+                    FeedbackSeverity::Warn,
+                    "could not read the saved model selection",
+                );
+            }
+        }
     }
 
     pub(super) fn open_connect_picker(&mut self) {
@@ -392,6 +469,7 @@ impl TuiApp {
         let items = self.model_picker_items(true);
         let mut overlay = Overlay::model_open_with(items);
         overlay.focus_model(&self.runtime.model_label);
+        overlay.set_current_effort(self.reasoning_effort);
         self.overlay = Some(overlay);
         let title = self
             .connect
@@ -684,7 +762,18 @@ impl TuiApp {
     }
 
     /// Apply a provider/model id to this session (no restart required).
-    pub(super) fn apply_model_selection(&mut self, provider: &str, model: &str) {
+    ///
+    /// `profile_id`, when known, names the exact connect profile the caller
+    /// picked (e.g. from route disambiguation in the picker) and is applied
+    /// directly. Without it, the profile is re-derived from the model
+    /// string's prefix — the only option for the free-text `/model <arg>`
+    /// path, but ambiguous once two profiles can offer the same prefix.
+    pub(super) fn apply_model_selection(
+        &mut self,
+        provider: &str,
+        model: &str,
+        profile_id: Option<&str>,
+    ) {
         let model = model.trim();
         if model.is_empty() {
             return;
@@ -697,29 +786,33 @@ impl TuiApp {
         self.connect.auth_suspended = false;
         self.runtime.model_label = model.to_string();
         self.session.set_active_model(model);
-        // Match the selected model to its connected profile even when a
-        // different provider was active before opening the picker.
-        let prefix = model.split('/').next().unwrap_or("");
-        let svc = ConnectService {
-            registry: &self.connect.registry,
-            store: &self.connect.store,
-            active_profile_id: None,
-            active_model: None,
-        };
-        if let Ok(connected) = svc.connected_profiles() {
-            if let Some(profile) = connected.iter().find(|p| {
-                p.model_provider_prefix == prefix
-                    || p.id == prefix
-                    || (prefix == "opencode-go" && p.id == "opencode_go")
-                    || (prefix == "opencode-zen" && p.id == "opencode_zen")
-            }) {
-                self.connect.profile = Some(profile.id.clone());
+        if let Some(profile_id) = profile_id {
+            self.connect.profile = Some(profile_id.to_string());
+        } else {
+            // Match the selected model to its connected profile even when a
+            // different provider was active before opening the picker.
+            let prefix = model.split('/').next().unwrap_or("");
+            let svc = ConnectService {
+                registry: &self.connect.registry,
+                store: &self.connect.store,
+                active_profile_id: None,
+                active_model: None,
+            };
+            if let Ok(connected) = svc.connected_profiles() {
+                if let Some(profile) = connected.iter().find(|p| {
+                    p.model_provider_prefix == prefix
+                        || p.id == prefix
+                        || (prefix == "opencode-go" && p.id == "opencode_go")
+                        || (prefix == "opencode-zen" && p.id == "opencode_zen")
+                }) {
+                    self.connect.profile = Some(profile.id.clone());
+                }
             }
         }
         if let Some(profile_id) = self.connect.profile.clone() {
             self.apply_connect_credentials(&profile_id);
         }
-        self.persist_selection();
+        self.record_deliberate_selection();
         self.feedback = FeedbackModel::default();
         self.status_message.clear();
         self.notices.clear();

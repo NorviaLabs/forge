@@ -205,10 +205,58 @@ async fn model_selection_switches_to_the_matching_connected_provider() {
         .unwrap();
     app.connect.profile = Some("openai".into());
 
-    app.apply_model_selection("native", "anthropic/claude-sonnet-4-5");
+    app.apply_model_selection("native", "anthropic/claude-sonnet-4-5", None);
 
     assert_eq!(app.connect.profile.as_deref(), Some("anthropic"));
     assert_eq!(app.runtime.model_label, "anthropic/claude-sonnet-4-5");
+}
+
+#[tokio::test]
+async fn quick_switch_toggles_between_the_two_most_recent_deliberate_selections() {
+    let (_dir, session) = test_session().await;
+    let cred_dir = tempfile::tempdir().unwrap();
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "openai/gpt-4.1-mini".into(),
+            provider: "native".into(),
+            cwd: PathBuf::from("."),
+            version: "0.6.1".into(),
+            startup_notices: Vec::new(),
+            validation_command: None,
+            file_icons: FileIconMode::Unicode,
+            mouse_capture: true,
+            theme: forge_config::Theme::default(),
+        },
+    );
+    app.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
+    app.connect
+        .store
+        .set_api_key("openai", "sk-test-openai-credential")
+        .unwrap();
+    app.connect
+        .store
+        .set_api_key("anthropic", "sk-test-anthropic-credential")
+        .unwrap();
+    app.connect.profile = Some("openai".into());
+
+    // No deliberate selection recorded yet: nothing to switch to.
+    app.quick_switch_model();
+    assert_eq!(app.status_message, "no previous model to switch to");
+
+    app.apply_model_selection("native", "openai/gpt-4.1-mini", Some("openai"));
+    app.apply_model_selection("native", "anthropic/claude-sonnet-4-5", Some("anthropic"));
+    assert_eq!(app.runtime.model_label, "anthropic/claude-sonnet-4-5");
+
+    app.quick_switch_model();
+    assert_eq!(app.runtime.model_label, "openai/gpt-4.1-mini");
+    assert_eq!(app.connect.profile.as_deref(), Some("openai"));
+
+    // A second Quick Switch toggles back — no picker opened at any point.
+    app.quick_switch_model();
+    assert_eq!(app.runtime.model_label, "anthropic/claude-sonnet-4-5");
+    assert_eq!(app.connect.profile.as_deref(), Some("anthropic"));
+    assert!(app.overlay.is_none());
 }
 
 #[tokio::test]

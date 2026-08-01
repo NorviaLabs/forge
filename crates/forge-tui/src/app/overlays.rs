@@ -144,15 +144,22 @@ impl TuiApp {
                 })
                 .await?;
             }
-            OverlayAction::SelectModel { provider, model } => {
-                self.apply_model_selection(&provider, &model);
+            OverlayAction::SelectModel {
+                provider,
+                model,
+                profile_id,
+            } => {
+                self.apply_model_selection(&provider, &model, profile_id.as_deref());
                 self.open_effort_picker_for_model(&model);
             }
             OverlayAction::SelectEffort(level) => {
                 self.overlay = None;
                 self.reasoning_effort = level;
-                self.persist_selection();
-                self.set_feedback(FeedbackSeverity::Ok, format!("reasoning effort: {level}"));
+                self.record_deliberate_selection();
+                self.set_feedback(
+                    FeedbackSeverity::Ok,
+                    format!("reasoning effort: {}", level.label()),
+                );
             }
             OverlayAction::SelectTheme(theme) => {
                 self.apply_theme(theme, true);

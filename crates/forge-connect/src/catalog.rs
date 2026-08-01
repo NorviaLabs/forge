@@ -791,7 +791,6 @@ pub fn models_for_picker(
     refresh_stale: bool,
 ) -> Vec<CatalogEntry> {
     let mut out = Vec::new();
-    let mut seen = std::collections::BTreeSet::new();
 
     if refresh_stale && !cache.registry_is_fresh() {
         // Registry availability must never prevent opening the picker. The existing
@@ -848,6 +847,12 @@ pub fn models_for_picker(
                     .map(|id| (id, CatalogSource::Default)),
             );
         }
+        // Dedup within this profile's own sourcing tiers (live/cached/registry/
+        // default can overlap on the same id), but never across profiles — two
+        // profiles offering the same model id are distinct, independently
+        // reachable routes, not duplicates. See `group_routes` for the
+        // route-aware view the picker renders.
+        let mut seen = std::collections::BTreeSet::new();
         for (id, source) in entries {
             if seen.insert(id.clone()) {
                 out.push(CatalogEntry {
@@ -859,6 +864,64 @@ pub fn models_for_picker(
         }
     }
 
+    out
+}
+
+/// One user-facing model, grouped from every [`CatalogEntry`] route that offers it.
+///
+/// `models_for_picker` preserves every profile's route as a separate flat entry;
+/// this groups those routes by their bare model name so the picker can show one
+/// row per model with a route count, instead of one row per route.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelPickerEntry {
+    /// Bare model name shared by every route, e.g. `gpt-5.6` (no provider prefix).
+    pub model_id: String,
+    pub routes: Vec<ModelRoute>,
+}
+
+/// One way to reach a [`ModelPickerEntry`]'s model: a specific connect profile.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelRoute {
+    /// Bare model name (matches the owning `ModelPickerEntry::model_id`).
+    pub model_id: String,
+    pub profile_id: String,
+    /// The `provider/model` string sent downstream to select this route.
+    pub display_id: String,
+    pub source: CatalogSource,
+}
+
+/// The bare model name grouping key: the id's suffix after its last `/`, or the
+/// whole id when it has none.
+pub fn route_model_id(id: &str) -> &str {
+    id.rsplit('/').next().unwrap_or(id)
+}
+
+/// Group flat catalog routes by model, preserving every profile's route.
+///
+/// Grouping (not dropping) is the fix for the bug where two profiles offering
+/// the same model id used to leave only the first profile's route reachable.
+pub fn group_routes(entries: &[CatalogEntry]) -> Vec<ModelPickerEntry> {
+    let mut out: Vec<ModelPickerEntry> = Vec::new();
+    let mut index: BTreeMap<&str, usize> = BTreeMap::new();
+    for entry in entries {
+        let model_id = route_model_id(&entry.id);
+        let route = ModelRoute {
+            model_id: model_id.to_string(),
+            profile_id: entry.profile_id.clone(),
+            display_id: entry.id.clone(),
+            source: entry.source,
+        };
+        match index.get(model_id) {
+            Some(&i) => out[i].routes.push(route),
+            None => {
+                index.insert(model_id, out.len());
+                out.push(ModelPickerEntry {
+                    model_id: model_id.to_string(),
+                    routes: vec![route],
+                });
+            }
+        }
+    }
     out
 }
 
@@ -1051,26 +1114,105 @@ mod tests {
     }
 
     #[test]
-    fn picker_deduplicates_across_profiles_and_preserves_first_owner() {
+    fn picker_preserves_routes_across_profiles_with_shared_model_ids() {
+        // Two profiles offering the identical model id used to leave only the
+        // first profile's route reachable (the second was silently dropped by
+        // a dedup keyed on the bare id across all profiles). Both routes must
+        // now survive as separate flat entries, disambiguated by profile_id.
         let dir = tempdir().unwrap();
         let cache = ModelCatalogCache::new(dir.path().join("c.toml"));
         let store = CredentialStore::new(dir.path().join("k.toml"));
         let mut first = openai_profile();
         first.id = "first".into();
-        first.default_models = vec!["shared/model".into(), "first/only".into()];
+        first.default_models = vec!["shared/model".into(), "first/alpha".into()];
         let mut second = openai_profile();
         second.id = "second".into();
-        second.default_models = vec!["shared/model".into(), "second/only".into()];
+        second.default_models = vec!["shared/model".into(), "second/beta".into()];
 
         let entries = models_for_picker(&[first, second], &store, &cache, false);
         assert_eq!(
             entries
                 .iter()
-                .map(|entry| entry.id.as_str())
+                .map(|entry| (entry.id.as_str(), entry.profile_id.as_str()))
                 .collect::<Vec<_>>(),
-            ["shared/model", "first/only", "second/only"]
+            [
+                ("shared/model", "first"),
+                ("first/alpha", "first"),
+                ("shared/model", "second"),
+                ("second/beta", "second"),
+            ]
         );
-        assert_eq!(entries[0].profile_id, "first");
+    }
+
+    #[test]
+    fn group_routes_groups_shared_model_ids_across_profiles() {
+        let dir = tempdir().unwrap();
+        let cache = ModelCatalogCache::new(dir.path().join("c.toml"));
+        let store = CredentialStore::new(dir.path().join("k.toml"));
+        let mut first = openai_profile();
+        first.id = "first".into();
+        first.default_models = vec!["shared/model".into(), "first/alpha".into()];
+        let mut second = openai_profile();
+        second.id = "second".into();
+        second.default_models = vec!["shared/model".into(), "second/beta".into()];
+
+        let entries = models_for_picker(&[first, second], &store, &cache, false);
+        let grouped = group_routes(&entries);
+
+        let shared = grouped
+            .iter()
+            .find(|e| e.model_id == "model")
+            .expect("shared/model grouped by its bare model id");
+        assert_eq!(shared.routes.len(), 2, "both routes must be preserved");
+        assert_eq!(
+            shared
+                .routes
+                .iter()
+                .map(|r| r.profile_id.as_str())
+                .collect::<Vec<_>>(),
+            ["first", "second"]
+        );
+        assert!(shared.routes.iter().all(|r| r.display_id == "shared/model"));
+
+        let first_exclusive = grouped
+            .iter()
+            .find(|e| e.model_id == "alpha" && e.routes[0].profile_id == "first")
+            .expect("first/alpha present with a single route");
+        assert_eq!(first_exclusive.routes.len(), 1);
+    }
+
+    #[test]
+    fn group_routes_single_route_per_model_is_unaffected() {
+        let entries = vec![CatalogEntry {
+            id: "openai/gpt-4.1-mini".into(),
+            profile_id: "openai".into(),
+            source: CatalogSource::Live,
+        }];
+        let grouped = group_routes(&entries);
+        assert_eq!(grouped.len(), 1);
+        assert_eq!(grouped[0].model_id, "gpt-4.1-mini");
+        assert_eq!(grouped[0].routes.len(), 1);
+        assert_eq!(grouped[0].routes[0].display_id, "openai/gpt-4.1-mini");
+    }
+
+    #[test]
+    fn group_routes_bare_id_without_slash_groups_on_whole_string() {
+        let entries = vec![
+            CatalogEntry {
+                id: "local-model".into(),
+                profile_id: "ollama".into(),
+                source: CatalogSource::Live,
+            },
+            CatalogEntry {
+                id: "local-model".into(),
+                profile_id: "lmstudio".into(),
+                source: CatalogSource::Live,
+            },
+        ];
+        let grouped = group_routes(&entries);
+        assert_eq!(grouped.len(), 1);
+        assert_eq!(grouped[0].model_id, "local-model");
+        assert_eq!(grouped[0].routes.len(), 2);
     }
 
     #[test]

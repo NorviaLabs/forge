@@ -38,9 +38,17 @@ pub enum Overlay {
         model_selected: usize,
         model_input: String,
         current_model: String,
-        /// Provider ids (connect profile ids) derived from `items`.
+        /// Provider ids (connect profile ids) derived from `groups`.
         providers: Vec<String>,
-        items: Vec<ModelItem>,
+        groups: Vec<ModelGroup>,
+        /// Set while disambiguating a multi-route model (Enter on a >1-route
+        /// row). A sub-mode of this same overlay rather than a separate one,
+        /// so Esc can return to the model list without losing search state.
+        route_picker: Option<RoutePickerState>,
+        /// Session's current reasoning effort, shown in the footer so effort
+        /// stays visible without leaving the picker. A snapshot taken when
+        /// the picker opens (mirrors `current_model`), not live-synced.
+        current_effort: ReasoningEffort,
     },
     /// Phase 6.1 — OpenCode Go (and other ApiKey tui_always_prompt profiles)
     ConnectApiKey {
@@ -136,6 +144,47 @@ pub struct ModelItem {
     pub profile_id: Option<String>,
     /// Whether this is account-verified or public registry metadata.
     pub source: forge_connect::CatalogSource,
+}
+
+/// One user-facing model in the picker, grouped from every [`ModelItem`] route
+/// that offers it (by bare model name) so a model with several provider routes
+/// renders as a single row instead of one row per route.
+#[derive(Debug, Clone)]
+pub struct ModelGroup {
+    /// Bare model name shared by every route, e.g. `gpt-5.6` (no provider prefix).
+    pub model_id: String,
+    pub routes: Vec<ModelItem>,
+    /// Tab-reveal state: whether routes are shown inline under this row.
+    pub expanded: bool,
+}
+
+/// Active state while disambiguating a multi-route model in the picker.
+#[derive(Debug, Clone)]
+pub struct RoutePickerState {
+    pub model_id: String,
+    pub selected: usize,
+    pub routes: Vec<ModelItem>,
+}
+
+/// Group picker rows by their bare model name, preserving every route.
+fn group_model_items(items: Vec<ModelItem>) -> Vec<ModelGroup> {
+    let mut out: Vec<ModelGroup> = Vec::new();
+    let mut index: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for item in items {
+        let model_id = forge_connect::route_model_id(&item.model).to_string();
+        match index.get(&model_id) {
+            Some(&i) => out[i].routes.push(item),
+            None => {
+                index.insert(model_id.clone(), out.len());
+                out.push(ModelGroup {
+                    model_id,
+                    routes: vec![item],
+                    expanded: false,
+                });
+            }
+        }
+    }
+    out
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -277,8 +326,11 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
 /// Model list from cached provider catalogs (no network).
 pub fn default_models() -> Vec<ModelItem> {
     let mut items = Vec::new();
-    let mut seen = std::collections::BTreeSet::new();
     for p in forge_connect::builtin_registry().profiles() {
+        // Dedup within this profile's own default list only — two profiles
+        // offering the same model id are distinct, independently reachable
+        // routes, not duplicates (see forge_connect::group_routes).
+        let mut seen = std::collections::BTreeSet::new();
         for m in &p.default_models {
             if seen.insert(m.clone()) {
                 items.push(ModelItem {
@@ -346,7 +398,17 @@ impl Overlay {
             model_input: String::new(),
             current_model: String::new(),
             providers,
-            items,
+            groups: group_model_items(items),
+            route_picker: None,
+            current_effort: ReasoningEffort::default(),
+        }
+    }
+
+    /// Snapshot the session's current effort into an open model picker, so
+    /// its footer reflects the real value instead of the `Auto` default.
+    pub fn set_current_effort(&mut self, effort: ReasoningEffort) {
+        if let Self::Model { current_effort, .. } = self {
+            *current_effort = effort;
         }
     }
 
@@ -379,19 +441,26 @@ impl Overlay {
             model_selected,
             current_model,
             providers,
-            items,
+            groups,
+            route_picker,
             ..
         } = self
         else {
             return;
         };
         *current_model = needle.to_string();
+        *route_picker = None;
 
         // Find exact model first.
-        if let Some(found) = items.iter().find(|m| m.model == needle) {
+        if let Some(found) = groups
+            .iter()
+            .find(|g| g.routes.iter().any(|m| m.model == needle))
+        {
             let pid = found
-                .profile_id
-                .clone()
+                .routes
+                .iter()
+                .find(|m| m.model == needle)
+                .and_then(|m| m.profile_id.clone())
                 .unwrap_or_else(|| needle.split('/').next().unwrap_or("").to_string());
             if let Some(pi) = providers.iter().position(|p| p == &pid) {
                 *provider_selected = pi;
@@ -400,12 +469,13 @@ impl Overlay {
                 .get(*provider_selected)
                 .map(|s| s.as_str())
                 .unwrap_or("all");
-            if let Some(mi) = items
+            let found_model_id = found.model_id.clone();
+            if let Some(gi) = groups
                 .iter()
-                .filter(|m| model_matches_provider(active_pid, m))
-                .position(|m| m.model == needle)
+                .filter(|g| group_matches_provider(active_pid, g))
+                .position(|g| g.model_id == found_model_id)
             {
-                *model_selected = mi;
+                *model_selected = gi;
             }
             return;
         }
@@ -542,17 +612,26 @@ impl Overlay {
                 model_selected,
                 model_input,
                 providers,
-                items,
+                groups,
+                route_picker,
                 ..
             } => {
-                if items.is_empty() {
+                if let Some(rp) = route_picker {
+                    if rp.routes.is_empty() {
+                        return;
+                    }
+                    let n = rp.routes.len() as i32;
+                    rp.selected = ((rp.selected as i32 + delta).rem_euclid(n)) as usize;
+                    return;
+                }
+                if groups.is_empty() {
                     return;
                 }
                 let pid = providers
                     .get(*provider_selected)
                     .map(|s| s.as_str())
                     .unwrap_or("all");
-                let n = filtered_models_len(pid, model_input, items).max(1) as i32;
+                let n = filtered_groups_len(pid, model_input, groups).max(1) as i32;
                 *model_selected = ((*model_selected as i32 + delta).rem_euclid(n)) as usize;
             }
             Self::ConnectPicker {
@@ -628,10 +707,28 @@ fn model_matches_input(model_input: &str, item: &ModelItem) -> bool {
     needle.is_empty() || item.model.to_ascii_lowercase().contains(&needle)
 }
 
-fn filtered_models_len(provider_id: &str, model_input: &str, items: &[ModelItem]) -> usize {
-    items
+fn group_matches_provider(provider_id: &str, group: &ModelGroup) -> bool {
+    provider_id == "all"
+        || group
+            .routes
+            .iter()
+            .any(|m| model_matches_provider(provider_id, m))
+}
+
+fn group_matches_input(model_input: &str, group: &ModelGroup) -> bool {
+    let needle = model_input.trim().to_ascii_lowercase();
+    needle.is_empty()
+        || group.model_id.to_ascii_lowercase().contains(&needle)
+        || group
+            .routes
+            .iter()
+            .any(|m| model_matches_input(model_input, m))
+}
+
+fn filtered_groups_len(provider_id: &str, model_input: &str, groups: &[ModelGroup]) -> usize {
+    groups
         .iter()
-        .filter(|m| model_matches_provider(provider_id, m) && model_matches_input(model_input, m))
+        .filter(|g| group_matches_provider(provider_id, g) && group_matches_input(model_input, g))
         .count()
 }
 
@@ -678,6 +775,10 @@ pub enum OverlayAction {
     SelectModel {
         provider: String,
         model: String,
+        /// The connect profile that owns the chosen route, when known — lets
+        /// the app apply the exact route instead of re-guessing a profile
+        /// from the model string's prefix (ambiguous once routes share ids).
+        profile_id: Option<String>,
     },
     SelectEffort(ReasoningEffort),
     SelectTheme(Theme),
@@ -711,6 +812,20 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
     match key {
         Key::Esc if matches!(overlay, Overlay::TurnLimit { .. }) => OverlayAction::StopTurns,
         Key::Esc if matches!(overlay, Overlay::Hitl { .. }) => OverlayAction::HitlDeny,
+        Key::Esc
+            if matches!(
+                overlay,
+                Overlay::Model {
+                    route_picker: Some(_),
+                    ..
+                }
+            ) =>
+        {
+            if let Overlay::Model { route_picker, .. } = overlay {
+                *route_picker = None;
+            }
+            OverlayAction::None
+        }
         Key::Esc => OverlayAction::Close,
         Key::Up => {
             overlay.move_sel(-1);
@@ -736,6 +851,7 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                 provider_selected,
                 model_selected,
                 providers,
+                route_picker: None,
                 ..
             } = overlay
             {
@@ -756,6 +872,7 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                 provider_selected,
                 model_selected,
                 providers,
+                route_picker: None,
                 ..
             } = overlay
             {
@@ -779,31 +896,60 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             Overlay::StatusReport { .. } => OverlayAction::Close,
             Overlay::TurnLimit { .. } => OverlayAction::ContinueTurns,
             Overlay::Model {
+                route_picker: Some(rp),
+                ..
+            } => rp
+                .routes
+                .get(rp.selected)
+                .map(|m| OverlayAction::SelectModel {
+                    provider: m.provider.clone(),
+                    model: m.model.clone(),
+                    profile_id: m.profile_id.clone(),
+                })
+                .unwrap_or(OverlayAction::None),
+            Overlay::Model {
                 provider_selected,
                 model_selected,
                 model_input,
                 providers,
-                items,
+                groups,
+                route_picker,
                 ..
             } => {
                 let pid = providers
                     .get(*provider_selected)
                     .map(|s| s.as_str())
                     .unwrap_or("all");
-                let chosen = items
+                let chosen = groups
                     .iter()
-                    .filter(|m| {
-                        model_matches_provider(pid, m) && model_matches_input(model_input, m)
+                    .filter(|g| {
+                        group_matches_provider(pid, g) && group_matches_input(model_input, g)
                     })
                     .nth(*model_selected);
                 if !model_input.trim().is_empty()
-                    && !chosen.is_some_and(|m| m.model.eq_ignore_ascii_case(model_input.trim()))
+                    && !chosen.is_some_and(|g| {
+                        g.routes
+                            .iter()
+                            .any(|m| m.model.eq_ignore_ascii_case(model_input.trim()))
+                    })
                 {
                     OverlayAction::RunCommand(format!("/model {}", model_input.trim()))
-                } else if let Some(m) = chosen {
-                    OverlayAction::SelectModel {
-                        provider: m.provider.clone(),
-                        model: m.model.clone(),
+                } else if let Some(g) = chosen {
+                    match g.routes.as_slice() {
+                        [] => OverlayAction::None,
+                        [single] => OverlayAction::SelectModel {
+                            provider: single.provider.clone(),
+                            model: single.model.clone(),
+                            profile_id: single.profile_id.clone(),
+                        },
+                        many => {
+                            *route_picker = Some(RoutePickerState {
+                                model_id: g.model_id.clone(),
+                                selected: 0,
+                                routes: many.to_vec(),
+                            });
+                            OverlayAction::None
+                        }
                     }
                 } else {
                     OverlayAction::None
@@ -920,7 +1066,15 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             }
             OverlayAction::None
         }
-        Key::Char(c) if matches!(overlay, Overlay::Model { .. }) => {
+        Key::Char(c)
+            if matches!(
+                overlay,
+                Overlay::Model {
+                    route_picker: None,
+                    ..
+                }
+            ) =>
+        {
             if let Overlay::Model {
                 model_input,
                 model_selected,
@@ -946,7 +1100,15 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             }
             OverlayAction::None
         }
-        Key::Paste(ref data) if matches!(overlay, Overlay::Model { .. }) => {
+        Key::Paste(ref data)
+            if matches!(
+                overlay,
+                Overlay::Model {
+                    route_picker: None,
+                    ..
+                }
+            ) =>
+        {
             if let Overlay::Model {
                 model_input,
                 model_selected,
@@ -976,7 +1138,15 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             }
             OverlayAction::None
         }
-        Key::Backspace if matches!(overlay, Overlay::Model { .. }) => {
+        Key::Backspace
+            if matches!(
+                overlay,
+                Overlay::Model {
+                    route_picker: None,
+                    ..
+                }
+            ) =>
+        {
             if let Overlay::Model {
                 model_input,
                 model_selected,
@@ -1017,6 +1187,40 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             }
             .map(|path| OverlayAction::FilePick { path, is_dir: true })
             .unwrap_or(OverlayAction::None)
+        }
+        Key::Tab
+            if matches!(
+                overlay,
+                Overlay::Model {
+                    route_picker: None,
+                    ..
+                }
+            ) =>
+        {
+            if let Overlay::Model {
+                provider_selected,
+                model_selected,
+                model_input,
+                providers,
+                groups,
+                ..
+            } = overlay
+            {
+                let pid = providers
+                    .get(*provider_selected)
+                    .map(|s| s.as_str())
+                    .unwrap_or("all");
+                if let Some(g) = groups
+                    .iter_mut()
+                    .filter(|g| {
+                        group_matches_provider(pid, g) && group_matches_input(model_input, g)
+                    })
+                    .nth(*model_selected)
+                {
+                    g.expanded = !g.expanded;
+                }
+            }
+            OverlayAction::None
         }
         Key::Tab if matches!(overlay, Overlay::Hitl { .. }) => {
             if let Overlay::Hitl { approval, .. } = overlay {
@@ -1502,7 +1706,7 @@ impl Widget for OverlayWidget<'_> {
                             theme::text()
                         };
                         ListItem::new(Span::styled(
-                            format!("{marker}{effort}{current}{default_label}"),
+                            format!("{marker}{}{current}{default_label}", effort.label()),
                             style,
                         ))
                     })
@@ -1594,17 +1798,56 @@ impl Widget for OverlayWidget<'_> {
                 model_input,
                 current_model,
                 providers,
-                items,
+                groups,
+                route_picker,
+                current_effort,
             } => {
+                if let Some(rp) = route_picker {
+                    let r = centered_capped_rect(area, 60, 12);
+                    let list_items: Vec<ListItem> = rp
+                        .routes
+                        .iter()
+                        .enumerate()
+                        .map(|(i, route)| {
+                            let marker = if i == rp.selected { "▶ " } else { "  " };
+                            let style = if i == rp.selected {
+                                theme::focused_selection_style()
+                            } else {
+                                theme::text()
+                            };
+                            let label = route.profile_id.as_deref().unwrap_or_else(|| {
+                                route.model.split('/').next().unwrap_or("provider")
+                            });
+                            ListItem::new(Span::styled(format!("{marker}{label}"), style))
+                        })
+                        .collect();
+                    let title = format!(" {} · Select Route · ↑↓ select · Enter use ", rp.model_id);
+                    let block = Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(theme::border())
+                        .style(theme::panel())
+                        .title(Span::styled(title, theme::brand()));
+                    let inner = block.inner(r);
+                    block.render(r, buf);
+                    let regions = Layout::default()
+                        .direction(Direction::Vertical)
+                        .constraints([Constraint::Min(1), Constraint::Length(1)])
+                        .split(inner);
+                    List::new(list_items).render(regions[0], buf);
+                    Paragraph::new("Esc back")
+                        .style(theme::dim())
+                        .render(regions[1], buf);
+                    return;
+                }
                 let r = centered_capped_rect(area, 88, 20);
                 let pid = providers
                     .get(*provider_selected)
                     .map(|s| s.as_str())
                     .unwrap_or("all");
-                let filtered: Vec<&ModelItem> = items
+                let filtered: Vec<&ModelGroup> = groups
                     .iter()
-                    .filter(|m| {
-                        model_matches_provider(pid, m) && model_matches_input(model_input, m)
+                    .filter(|g| {
+                        group_matches_provider(pid, g) && group_matches_input(model_input, g)
                     })
                     .collect();
                 let total = filtered.len();
@@ -1620,8 +1863,8 @@ impl Widget for OverlayWidget<'_> {
                 let window = &filtered[start..end];
                 let list_items: Vec<ListItem> = if window.is_empty() {
                     vec![ListItem::new(Span::styled(
-                        if items.is_empty() {
-                            "No connected provider models. Use /connect first."
+                        if groups.is_empty() {
+                            "No models are available. Connect a provider or start a local model runtime."
                         } else {
                             "No models match this provider or filter."
                         },
@@ -1631,7 +1874,7 @@ impl Widget for OverlayWidget<'_> {
                     window
                         .iter()
                         .enumerate()
-                        .map(|(i, m)| {
+                        .flat_map(|(i, g)| {
                             let idx = start + i;
                             let marker = if idx == *model_selected { "▶ " } else { "  " };
                             let style = if idx == *model_selected {
@@ -1639,27 +1882,62 @@ impl Widget for OverlayWidget<'_> {
                             } else {
                                 theme::text()
                             };
-                            let (provider, model) = m
-                                .model
-                                .split_once('/')
-                                .unwrap_or((m.profile_id.as_deref().unwrap_or("model"), &m.model));
-                            let state = if m.model == *current_model {
-                                "current"
-                            } else if m.source == forge_connect::CatalogSource::Registry {
-                                "known"
-                            } else if provider == "ollama" || provider.contains("local") {
-                                "local"
+                            let is_current = g.routes.iter().any(|m| m.model == *current_model);
+                            let route_count = g.routes.len();
+                            let tag = if route_count > 1 {
+                                format!("{route_count} routes")
                             } else {
-                                "cloud"
+                                let m = &g.routes[0];
+                                let provider =
+                                    m.model.split_once('/').map(|(p, _)| p).unwrap_or_else(|| {
+                                        m.profile_id.as_deref().unwrap_or("model")
+                                    });
+                                if is_current {
+                                    "current".to_string()
+                                } else if m.source == forge_connect::CatalogSource::Registry {
+                                    "known".to_string()
+                                } else if provider == "ollama" || provider.contains("local") {
+                                    "local".to_string()
+                                } else {
+                                    "cloud".to_string()
+                                }
                             };
-                            let mut row = format!("{marker}{provider} / {model}");
+                            let label = if route_count > 1 {
+                                g.model_id.clone()
+                            } else {
+                                let m = &g.routes[0];
+                                let (provider, model) = m.model.split_once('/').unwrap_or((
+                                    m.profile_id.as_deref().unwrap_or("model"),
+                                    &m.model,
+                                ));
+                                format!("{provider} / {model}")
+                            };
+                            let mut row = format!("{marker}{label}");
+                            let tag_display = if is_current && route_count > 1 {
+                                format!("current · {tag}")
+                            } else {
+                                tag
+                            };
                             let target = (r.width.saturating_sub(5) as usize)
-                                .saturating_sub(state.chars().count());
+                                .saturating_sub(tag_display.chars().count());
                             while row.chars().count() < target {
                                 row.push(' ');
                             }
-                            row.push_str(state);
-                            ListItem::new(Span::styled(row, style))
+                            row.push_str(&tag_display);
+                            let mut rows = vec![ListItem::new(Span::styled(row, style))];
+                            if g.expanded {
+                                rows.extend(g.routes.iter().map(|route| {
+                                    let provider_label =
+                                        route.profile_id.as_deref().unwrap_or_else(|| {
+                                            route.model.split('/').next().unwrap_or("provider")
+                                        });
+                                    ListItem::new(Span::styled(
+                                        format!("      via {provider_label}"),
+                                        theme::dim(),
+                                    ))
+                                }));
+                            }
+                            rows
                         })
                         .collect()
                 };
@@ -1673,7 +1951,9 @@ impl Widget for OverlayWidget<'_> {
                 } else {
                     format!("{}/{}", (*model_selected + 1).min(total), total)
                 };
-                let title = format!(" Models · {pid} · {page}{prov_hint} · ↑↓ select · Enter use ");
+                let title = format!(
+                    " Models · {pid} · {page}{prov_hint} · ↑↓ select · Enter use · Tab routes "
+                );
                 let block = Block::default()
                     .borders(Borders::ALL)
                     .border_style(theme::border())
@@ -1688,6 +1968,7 @@ impl Widget for OverlayWidget<'_> {
                         Constraint::Length(2),
                         Constraint::Min(1),
                         Constraint::Length(1),
+                        Constraint::Length(1),
                     ])
                     .split(inner);
                 Paragraph::new(format!("Current: {current_model}"))
@@ -1697,9 +1978,12 @@ impl Widget for OverlayWidget<'_> {
                     .style(theme::text())
                     .render(regions[1], buf);
                 List::new(list_items).render(regions[2], buf);
+                Paragraph::new(format!("Effort: {}", current_effort.label()))
+                    .style(theme::muted())
+                    .render(regions[3], buf);
                 Paragraph::new("known = public registry · Esc close")
                     .style(theme::dim())
-                    .render(regions[3], buf);
+                    .render(regions[4], buf);
             }
             Overlay::ConnectApiKey {
                 title,
@@ -2262,7 +2546,9 @@ mod tests {
         let mut o = Overlay::model_open();
         let a = handle_overlay_key(&mut o, Key::Enter);
         match a {
-            OverlayAction::SelectModel { provider, model } => {
+            OverlayAction::SelectModel {
+                provider, model, ..
+            } => {
                 assert_eq!(provider, "native");
                 assert!(model.contains('/') || !model.is_empty());
             }
@@ -2544,6 +2830,134 @@ mod tests {
         );
     }
 
+    fn shared_route_items() -> Vec<ModelItem> {
+        vec![
+            ModelItem {
+                provider: "native".into(),
+                model: "openai/gpt-5.6".into(),
+                profile_id: Some("openai".into()),
+                source: forge_connect::CatalogSource::Live,
+            },
+            ModelItem {
+                provider: "native".into(),
+                model: "openai/gpt-5.6".into(),
+                profile_id: Some("openrouter".into()),
+                source: forge_connect::CatalogSource::Live,
+            },
+        ]
+    }
+
+    #[test]
+    fn enter_on_multi_route_model_opens_route_picker_instead_of_selecting() {
+        let mut overlay = Overlay::model_open_with(shared_route_items());
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::None,
+            "an ambiguous model must not be applied without disambiguation"
+        );
+        let Overlay::Model { route_picker, .. } = &overlay else {
+            panic!("expected model overlay");
+        };
+        let rp = route_picker.as_ref().expect("route picker should open");
+        assert_eq!(rp.model_id, "gpt-5.6");
+        assert_eq!(rp.routes.len(), 2);
+    }
+
+    #[test]
+    fn route_picker_enter_selects_the_highlighted_route() {
+        let mut overlay = Overlay::model_open_with(shared_route_items());
+        handle_overlay_key(&mut overlay, Key::Enter); // open route picker
+        handle_overlay_key(&mut overlay, Key::Down); // move to the second route
+        let action = handle_overlay_key(&mut overlay, Key::Enter);
+        assert_eq!(
+            action,
+            OverlayAction::SelectModel {
+                provider: "native".into(),
+                model: "openai/gpt-5.6".into(),
+                profile_id: Some("openrouter".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn route_picker_esc_returns_to_model_list_without_closing_overlay() {
+        let mut overlay = Overlay::model_open_with(shared_route_items());
+        handle_overlay_key(&mut overlay, Key::Enter);
+        assert!(matches!(
+            &overlay,
+            Overlay::Model {
+                route_picker: Some(_),
+                ..
+            }
+        ));
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Esc),
+            OverlayAction::None
+        );
+        assert!(matches!(
+            &overlay,
+            Overlay::Model {
+                route_picker: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn single_route_model_still_selects_immediately_on_enter() {
+        let mut overlay = Overlay::model_open_with(vec![ModelItem {
+            provider: "native".into(),
+            model: "openai/gpt-4.1-mini".into(),
+            profile_id: Some("openai".into()),
+            source: forge_connect::CatalogSource::Live,
+        }]);
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::SelectModel {
+                provider: "native".into(),
+                model: "openai/gpt-4.1-mini".into(),
+                profile_id: Some("openai".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn tab_toggles_route_reveal_for_the_highlighted_group() {
+        let mut overlay = Overlay::model_open_with(shared_route_items());
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Tab),
+            OverlayAction::None
+        );
+        let Overlay::Model { groups, .. } = &overlay else {
+            panic!("expected model overlay");
+        };
+        assert!(groups[0].expanded, "Tab should reveal routes inline");
+        let expanded_text = render_text(&overlay);
+        assert!(expanded_text.contains("via openai"));
+        assert!(expanded_text.contains("via openrouter"));
+
+        handle_overlay_key(&mut overlay, Key::Tab);
+        let Overlay::Model { groups, .. } = &overlay else {
+            panic!("expected model overlay");
+        };
+        assert!(!groups[0].expanded, "a second Tab collapses it again");
+    }
+
+    #[test]
+    fn multi_route_row_shows_route_count_badge() {
+        let overlay = Overlay::model_open_with(shared_route_items());
+        let text = render_text(&overlay);
+        assert!(text.contains("2 routes"));
+    }
+
+    #[test]
+    fn model_picker_footer_shows_current_effort_with_extra_high_label() {
+        let mut overlay = Overlay::model_open_with(shared_route_items());
+        overlay.set_current_effort(ReasoningEffort::XHigh);
+        let text = render_text(&overlay);
+        assert!(text.contains("Effort: Extra High"));
+    }
+
     #[test]
     fn empty_pickers_and_lists_ignore_selection_and_enter() {
         let mut effort = Overlay::Effort {
@@ -2691,7 +3105,7 @@ mod tests {
     fn overlay_widget_renders_model_empty_states() {
         let empty_model = render_text(&Overlay::model_open_with(vec![]));
         assert!(empty_model.contains("Models · all · 0/0"));
-        assert!(empty_model.contains("No connected provider models"));
+        assert!(empty_model.contains("No models are available"));
 
         let mut filtered_model = Overlay::model_open_with(vec![ModelItem {
             provider: "native".into(),

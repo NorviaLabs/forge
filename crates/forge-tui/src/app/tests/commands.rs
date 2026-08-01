@@ -504,6 +504,37 @@ async fn effort_selection_persists_across_tui_instances() {
 }
 
 #[tokio::test]
+async fn switching_to_a_model_that_drops_the_current_effort_notifies_and_falls_back() {
+    let (_dir, session) = test_session().await;
+    let credential_dir = tempfile::tempdir().unwrap();
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "mock".into(),
+            provider: "mock".into(),
+            cwd: PathBuf::from("."),
+            version: "0.12.0".into(),
+            startup_notices: Vec::new(),
+            validation_command: None,
+            file_icons: FileIconMode::Unicode,
+            mouse_capture: true,
+            theme: forge_config::Theme::default(),
+        },
+    );
+    app.connect.store = CredentialStore::new(credential_dir.path().join("credentials.toml"));
+
+    // claude-sonnet-4-6 does not offer XHigh (effort.rs::options_for_model).
+    app.reasoning_effort = ReasoningEffort::XHigh;
+    app.open_effort_picker_for_model("anthropic/claude-sonnet-4-6");
+
+    assert_eq!(app.reasoning_effort, ReasoningEffort::Low);
+    assert_eq!(
+        app.status_message,
+        "Extra High effort is not supported by this model. Using Low."
+    );
+}
+
+#[tokio::test]
 async fn model_command_applies_provider_id_to_session() {
     let (_dir, session) = test_session().await;
     let cred_dir = tempfile::tempdir().unwrap();
@@ -529,7 +560,7 @@ async fn model_command_applies_provider_id_to_session() {
     app.connect.profile = Some("openai".into());
     app.runtime.model_label = "openai/gpt-4.1-mini".into();
     app.session.set_active_model("openai/gpt-4.1-mini");
-    app.apply_model_selection("native", "openai/gpt-4.1-mini");
+    app.apply_model_selection("native", "openai/gpt-4.1-mini", None);
     assert_eq!(app.runtime.model_label, "openai/gpt-4.1-mini");
     assert_eq!(app.session.active_model, "openai/gpt-4.1-mini");
     assert!(app.pending_prompt.is_none());

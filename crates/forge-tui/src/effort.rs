@@ -37,6 +37,21 @@ impl ReasoningEffort {
         Self::Auto
     }
 
+    /// Display label for the picker UI. Differs from `Display`/the wire
+    /// value only for `XHigh`, which reads "Extra High" on screen while the
+    /// internal value and transport string stay `xhigh`.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "Auto",
+            Self::Minimal => "Minimal",
+            Self::Low => "Low",
+            Self::Medium => "Medium",
+            Self::High => "High",
+            Self::XHigh => "Extra High",
+            Self::Max => "Max",
+        }
+    }
+
     /// Empty means providers should choose their own default.
     pub fn transport_value(self) -> &'static str {
         match self {
@@ -161,6 +176,14 @@ mod tests {
         assert_eq!("extra-high".parse(), Ok(ReasoningEffort::XHigh));
         assert_eq!(ReasoningEffort::XHigh.to_string(), "xhigh");
         assert_eq!(ReasoningEffort::Auto.transport_value(), "");
+    }
+
+    #[test]
+    fn xhigh_label_reads_extra_high_while_wire_value_is_unchanged() {
+        assert_eq!(ReasoningEffort::XHigh.label(), "Extra High");
+        assert_eq!(ReasoningEffort::XHigh.to_string(), "xhigh");
+        assert_eq!(ReasoningEffort::XHigh.transport_value(), "xhigh");
+        assert_eq!(ReasoningEffort::High.label(), "High");
     }
 
     #[test]
