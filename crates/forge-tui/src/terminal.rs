@@ -6,7 +6,9 @@ use std::panic;
 use std::sync::Arc;
 
 use crossterm::cursor::Show;
-use crossterm::event::{DisableBracketedPaste, DisableMouseCapture, PopKeyboardEnhancementFlags};
+use crossterm::event::{
+    DisableBracketedPaste, DisableMouseCapture, EnableMouseCapture, PopKeyboardEnhancementFlags,
+};
 use crossterm::terminal::{disable_raw_mode, LeaveAlternateScreen};
 use crossterm::ExecutableCommand;
 
@@ -45,6 +47,20 @@ pub fn reinit_terminal(mouse_capture: bool) -> Result<(), Box<dyn std::error::Er
         KeyboardEnhancementFlags::REPORT_EVENT_TYPES
             | KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
     ))?;
+    Ok(())
+}
+
+/// Toggle mouse capture on the running terminal without a full re-init.
+/// While disabled, the terminal emulator sees mouse events directly, so its
+/// native click-drag text selection and copy work; the TUI's own mouse
+/// handling (scrolling, clicking, hit-testing) is inert until re-enabled.
+pub fn set_mouse_capture(enabled: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let mut stdout = stdout();
+    if enabled {
+        stdout.execute(EnableMouseCapture)?;
+    } else {
+        stdout.execute(DisableMouseCapture)?;
+    }
     Ok(())
 }
 

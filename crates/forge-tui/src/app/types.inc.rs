@@ -283,6 +283,7 @@ enum SemanticCommand {
         forward: bool,
     },
     ToggleInspector,
+    ToggleMouseCapture,
     CycleInspectorTab {
         forward: bool,
     },
