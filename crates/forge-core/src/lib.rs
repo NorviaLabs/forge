@@ -1,10 +1,12 @@
 //! Agent loop — Phase 1 base + Phase 2 hooks (context, HITL, governance).
 
+mod background;
 mod completion;
 mod lifecycle;
 mod queue;
 mod resume;
 mod stream;
+mod subagent;
 
 pub use stream::{
     accumulate_stream_event, merge_streamed_response, observe_stream_event, stream_turn_event,
@@ -16,8 +18,12 @@ pub use completion::{
     EvidenceEntry, EvidenceSummary, ExecutionEvent, ExecutionEvidence, FileEffectExpectation,
     FileEffectKind, GitEffectExpectation, GitEffectKind, TaskExpectation, ToolExpectation,
 };
+pub use background::{
+    BackgroundTaskHandle, BackgroundTaskKind, BackgroundTaskRegistry, BackgroundTaskStatus,
+};
 pub use lifecycle::{ActiveTaskState, TransitionError, TransitionReason};
 pub use queue::{QueuedTask, TaskQueue};
+pub use subagent::{SubagentOutcome, SubagentSpec};
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -32,11 +38,13 @@ use forge_tools::{
     default_builtins_with_web_search, ToolContext, ToolError, ToolRegistry, ValidationBudget,
 };
 use forge_types::{
-    HitlDecision, HitlPayload, Message, MessageRole, ModelResponse, PolicyDecision, SessionId,
-    SideEffectClass, TaskId, TaskLifecycle, ToolCall, ToolOutput, Usage, WaitReason,
+    BackgroundTaskId, HitlDecision, HitlPayload, Message, MessageRole, ModelResponse,
+    PolicyDecision, SessionId, SideEffectClass, TaskId, TaskLifecycle, ToolCall, ToolOutput,
+    Usage, WaitReason,
 };
 use serde_json::json;
 use thiserror::Error;
+use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 const SYSTEM_PROMPT: &str = include_str!("system_prompt.md");
@@ -349,6 +357,11 @@ pub enum LoopError {
     NoPendingHitl,
     #[error(transparent)]
     Transition(#[from] TransitionError),
+    /// A `cancel_token` (subagent cancellation) fired mid-step — distinct
+    /// from `Other` so callers can react without string-matching an error
+    /// message.
+    #[error("cancelled")]
+    Cancelled,
     #[error("{0}")]
     Other(String),
 }
@@ -478,10 +491,33 @@ pub struct AgentSession {
     /// TUI) so promotion/journaling/restoration go through one store with
     /// direct `Journal` access.
     pub queue: TaskQueue,
+    /// In-flight/recently-finished background tasks (shell jobs, subagents),
+    /// separate from `active_task` on purpose — see `background` module docs.
+    pub background: BackgroundTaskRegistry,
+    /// Non-blocking result channels for in-flight background tasks, polled
+    /// once per tick by `poll_background_tasks` — mirrors
+    /// `forge-tui`'s `GitStatusCache` spawn+poll pattern. Kept off
+    /// `BackgroundTaskHandle` itself since `Receiver` isn't `Clone`/`Debug`.
+    /// Wrapped in a `Mutex` (never actually contended — every access is from
+    /// `poll_background_tasks`, always sequential) purely so `Receiver`'s
+    /// `!Sync` doesn't make `&AgentSession` `!Send`, which would otherwise
+    /// block spawning a subagent's `AgentSession` into its own tokio task.
+    background_receivers: HashMap<
+        BackgroundTaskId,
+        std::sync::Mutex<std::sync::mpsc::Receiver<background::BackgroundTaskOutcome>>,
+    >,
+    /// One decision channel per currently-waiting subagent — the send half
+    /// `AgentSession::resolve_subagent_hitl` uses to deliver an approve/deny
+    /// decision into that subagent's spawned task. Entries are removed once
+    /// the task finishes (see `poll_background_tasks`).
+    subagent_hitl_senders: HashMap<BackgroundTaskId, tokio::sync::mpsc::UnboundedSender<HitlDecision>>,
     /// Provider/model id for the next completion (empty → client default).
     pub active_model: String,
     journal: Journal,
-    tools: ToolRegistry,
+    /// Shared across a parent session and every subagent spawned from it —
+    /// `register` only ever runs during `create`/`resume` setup, so sharing
+    /// via `Arc` after that point is a type change, not a behavior change.
+    tools: Arc<ToolRegistry>,
     model: Arc<dyn ModelClient>,
     tool_ctx: ToolContext,
     max_turns: u32,
@@ -489,6 +525,12 @@ pub struct AgentSession {
     context: ContextEngine,
     enable_context: bool,
     enable_gov: bool,
+    /// `Some` only for a subagent session — flipped by the parent's
+    /// `BackgroundTaskRegistry::cancel`, checked in
+    /// `run_model_step_with_stream`'s streaming poll loop. `None` for the
+    /// top-level/foreground session, which is cancelled via the TUI's own
+    /// `cancel_requested` bool instead.
+    cancel_token: Option<CancellationToken>,
     /// Cumulative provider token usage for this session.
     pub token_usage: SessionTokenUsage,
     /// Validation failures within the current user turn (not persisted).
@@ -621,9 +663,12 @@ impl AgentSession {
             events: vec![],
             active_task: ActiveTaskState::new(session_id),
             queue: TaskQueue::new(),
+            background: BackgroundTaskRegistry::new(),
+            background_receivers: HashMap::new(),
+            subagent_hitl_senders: HashMap::new(),
             active_model: String::new(),
             journal,
-            tools,
+            tools: Arc::new(tools),
             model,
             tool_ctx: ToolContext::new(active_root),
             max_turns: loop_cfg.max_turns,
@@ -631,6 +676,7 @@ impl AgentSession {
             context,
             enable_context: loop_cfg.enable_context_lifecycle,
             enable_gov: loop_cfg.enable_governance,
+            cancel_token: None,
             token_usage: SessionTokenUsage::default(),
             validation_budget: ValidationBudget::with_default_max(),
             turn_calls: Vec::new(),
@@ -697,9 +743,12 @@ impl AgentSession {
             }],
             active_task: ActiveTaskState::from_restored(session_id, state.status, wait_reason),
             queue,
+            background: BackgroundTaskRegistry::new(),
+            background_receivers: HashMap::new(),
+            subagent_hitl_senders: HashMap::new(),
             active_model: String::new(),
             journal,
-            tools,
+            tools: Arc::new(tools),
             model,
             tool_ctx: ToolContext::new(active_root),
             max_turns: loop_cfg.max_turns,
@@ -707,6 +756,7 @@ impl AgentSession {
             context,
             enable_context: loop_cfg.enable_context_lifecycle,
             enable_gov: loop_cfg.enable_governance,
+            cancel_token: None,
             token_usage,
             validation_budget: ValidationBudget::with_default_max(),
             turn_calls: Vec::new(),
@@ -715,6 +765,12 @@ impl AgentSession {
             journaled_tool_results: state.tool_results.clone(),
         };
         session.reconcile_incomplete_intents(&incomplete).await?;
+        session
+            .reconcile_orphaned_background_tasks(
+                &state.background_tasks,
+                &state.subagent_workspaces,
+            )
+            .await?;
         // Legacy fallback: Running with no runtime becomes Interrupted (not guessed from text).
         session.mark_interrupted_if_stale().await?;
         Ok(session)
@@ -1291,6 +1347,17 @@ impl AgentSession {
                     kind: "cancelled".into(),
                     detail: "foreground task cancelled".into(),
                 });
+                // Cancelling the foreground task must not leave its
+                // subagents/background jobs running unsupervised — flip
+                // every still-in-flight child's `CancellationToken` too.
+                let child_ids: Vec<_> = self
+                    .background
+                    .children_of(self.active_task.task_id)
+                    .map(|t| t.id)
+                    .collect();
+                for id in child_ids {
+                    self.background.cancel(id);
+                }
                 Ok(())
             }
             _ => Ok(()),
@@ -1776,6 +1843,13 @@ impl AgentSession {
         self.journal
             .append_tool_intent(self.session_id, call)
             .await?;
+
+        // `background_run` never reaches `ToolRegistry::call` — it's
+        // intercepted here and routed to `spawn_background_shell` instead,
+        // so starting it doesn't block this turn. See `background.rs`.
+        if call.name == "background_run" {
+            return self.dispatch_background_run(call).await;
+        }
 
         let (pre_edit, pre_git) = self.pre_tool_state(call).await;
 

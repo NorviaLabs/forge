@@ -259,6 +259,111 @@ impl TuiApp {
         self.cancel_queued_at(idx).await;
     }
 
+    /// Non-blocking; call once per tick (mirrors `git_status.poll()`, just
+    /// async since finishing a background task journals a result). Toasts
+    /// each task that newly reached a terminal state this tick.
+    pub(super) async fn poll_background_tasks(&mut self) -> Result<(), TuiError> {
+        let running_before: std::collections::HashSet<_> = self
+            .session
+            .background
+            .list()
+            .filter(|t| !t.status.is_terminal())
+            .map(|t| t.id)
+            .collect();
+        self.session.poll_background_tasks().await?;
+        for id in running_before {
+            if let Some(task) = self.session.background.get(id) {
+                if task.status.is_terminal() {
+                    self.push_toast(format!("background task #{} finished: {}", id.0, task.label));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn clamp_tasks_selection(&mut self) {
+        let len = self.session.background.list().count();
+        self.tasks_selected = match (len, self.tasks_selected) {
+            (0, _) => None,
+            (_, Some(i)) if i < len => Some(i),
+            (_, Some(_)) => Some(len - 1),
+            (_, None) => Some(0),
+        };
+    }
+
+    pub(super) fn move_tasks_selection(&mut self, delta: i32) {
+        let len = self.session.background.list().count();
+        if len == 0 {
+            self.tasks_selected = None;
+            return;
+        }
+        let cur = self.tasks_selected.unwrap_or(0) as i32;
+        let next = (cur + delta).rem_euclid(len as i32) as usize;
+        self.tasks_selected = Some(next);
+    }
+
+    /// Cancel the background task at the currently selected row. Rows are
+    /// sorted by id ascending, matching `tasks_lines`'s render order.
+    pub(super) async fn cancel_selected_task(&mut self) {
+        let Some(idx) = self.tasks_selected else {
+            self.set_feedback(FeedbackSeverity::Warn, "no background tasks");
+            return;
+        };
+        let mut ids: Vec<_> = self.session.background.list().map(|t| t.id).collect();
+        ids.sort_by_key(|id| id.0);
+        let Some(id) = ids.get(idx).copied() else {
+            self.clamp_tasks_selection();
+            return;
+        };
+        if self.session.background.cancel(id) {
+            self.set_feedback(FeedbackSeverity::Ok, format!("cancelling task #{}", id.0));
+            self.push_activity(
+                ActivityKind::System,
+                FeedbackSeverity::Ok,
+                format!("background task cancel #{}", id.0),
+            );
+        } else {
+            self.set_feedback(FeedbackSeverity::Warn, "task already finished");
+        }
+        self.clamp_tasks_selection();
+    }
+
+    /// Approve/deny whatever the currently selected background task is
+    /// waiting on. A no-op (with feedback) if nothing is selected or the
+    /// selected task isn't actually waiting — e.g. it finished between the
+    /// last redraw and this keypress, a race the selection index alone
+    /// can't detect, which is exactly why `resolve_subagent_hitl` reports
+    /// success/failure rather than being fire-and-forget.
+    pub(super) fn resolve_selected_task_hitl(&mut self, decision: HitlDecision) {
+        let Some(idx) = self.tasks_selected else {
+            self.set_feedback(FeedbackSeverity::Warn, "no background tasks");
+            return;
+        };
+        let mut ids: Vec<_> = self.session.background.list().map(|t| t.id).collect();
+        ids.sort_by_key(|id| id.0);
+        let Some(id) = ids.get(idx).copied() else {
+            return;
+        };
+        let verb = match decision {
+            HitlDecision::Approve => "approve",
+            HitlDecision::Deny => "deny",
+            _ => "deny",
+        };
+        if self.session.resolve_subagent_hitl(id, decision) {
+            self.set_feedback(FeedbackSeverity::Ok, format!("{verb} sent to task #{}", id.0));
+            self.push_activity(
+                ActivityKind::System,
+                FeedbackSeverity::Ok,
+                format!("background task #{} {verb}d", id.0),
+            );
+        } else {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                format!("task #{} isn't waiting for approval", id.0),
+            );
+        }
+    }
+
     /// Run a queued user prompt with streaming + intermediate redraws.
     /// When `terminal` is `None` (unit tests), runs without intermediate draws.
     pub async fn drain_pending_prompt(
