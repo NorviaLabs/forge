@@ -195,6 +195,40 @@ fn dedup_keep_last<T: Clone>(items: Vec<T>, key_fn: impl Fn(&T) -> String) -> Ve
         .collect()
 }
 
+/// True when `text` contains what looks like an unparsed tool-call attempt —
+/// a real, registered tool name used in call-shaped syntax (a JSON object
+/// key, or a bare `{"tool_name", ...}` element) — rather than genuine prose.
+/// This is exactly what a model emits when it tries to invoke a tool as plain
+/// text instead of through the real structured tool-calling wire format (most
+/// often a smaller/local model that doesn't reliably follow the function-call
+/// API shape): the response has zero real `ToolCall`s, so without this check
+/// it looks identical to a legitimate no-op chat answer and would otherwise
+/// be marked `Completed` under `TaskExpectation::ReadOnly`.
+///
+/// Deliberately conservative: prose that merely *mentions* a tool by name
+/// (e.g. "you can use the write_file tool") does not match, because the quoted
+/// name isn't immediately followed by `:` or `,` the way a JSON key or a bare
+/// call argument would be.
+fn looks_like_dangling_tool_call(text: &str, tool_names: &[String]) -> bool {
+    for name in tool_names {
+        let needle = format!("\"{name}\"");
+        let mut search_from = 0;
+        while let Some(offset) = text[search_from..].find(needle.as_str()) {
+            let match_end = search_from + offset + needle.len();
+            let next_non_space = text[match_end..]
+                .find(|c: char| !c.is_whitespace())
+                .map(|i| match_end + i);
+            if let Some(i) = next_non_space {
+                if matches!(text.as_bytes()[i], b':' | b',') {
+                    return true;
+                }
+            }
+            search_from = search_from + offset + 1;
+        }
+    }
+    false
+}
+
 /// Classify a finished turn's expectation from the tool calls the model
 /// actually issued — not from natural-language intent inference over the
 /// user's request. Precedence (a turn can only be one category):
@@ -1192,6 +1226,29 @@ impl AgentSession {
                 self.finalize_turn_failure("Forge couldn't complete this turn.", "no_final_answer")
                     .await?;
                 return Ok(ApplyOutcome::Done(last));
+            }
+            // The model issued zero real tool calls this turn (in this step
+            // or any earlier one), but its final text looks like an attempt
+            // to invoke one anyway (e.g. a JSON-ish blob naming a real tool).
+            // Left unchecked, this is indistinguishable from a legitimate
+            // no-op chat answer and falls through to `TaskExpectation::ReadOnly`,
+            // which completes on any non-empty text — reporting success while
+            // nothing actually happened. Fail explicitly instead.
+            if self.turn_calls.is_empty() {
+                let tool_names: Vec<String> = self
+                    .tools
+                    .list_descriptors()
+                    .into_iter()
+                    .map(|d| d.name)
+                    .collect();
+                if looks_like_dangling_tool_call(&final_text, &tool_names) {
+                    self.finalize_turn_failure(
+                        "The model attempted to call a tool but didn't format the call correctly, so no changes were made.",
+                        CompletionReason::DanglingToolCallText.as_category(),
+                    )
+                    .await?;
+                    return Ok(ApplyOutcome::Done(last));
+                }
             }
             self.turn_evidence.push(EvidenceEntry::new(
                 ExecutionEvent::AssistantResponseProduced,
@@ -3742,6 +3799,77 @@ mod tests {
             .await
             .unwrap();
         s.run_user_message("what is this repo?").await.unwrap();
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Completed);
+        assert_eq!(
+            s.last_completion.as_ref().unwrap().reason,
+            CompletionReason::NoChangesRequired
+        );
+    }
+
+    // Regression test for the false-completion bug found in the 2026-08-01
+    // usability audit: a small/local model that doesn't reliably use the
+    // structured tool-calling wire format instead dumps a JSON-ish blob
+    // naming a real tool as plain assistant text. `last.tool_calls` is empty
+    // (the model never actually invoked anything), so before this fix it fell
+    // through to `TaskExpectation::ReadOnly`, which completes on any
+    // non-empty text — reporting success while `greeter.py` was never
+    // touched. It must now fail instead.
+    #[tokio::test]
+    async fn dangling_tool_call_text_does_not_complete() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("greeter.py"),
+            "def greet(name):\n    return f\"Hello, {name}!\"\n",
+        )
+        .unwrap();
+        let model = script(vec![text_only(
+            "```json\n{\"write_file\", {\"path\": \"greeter.py\", \"content\": \"class Greeter:\\n\\tdef greet(self, name):\\n\\t\\treturn f'Hi there, {name}!'\"}}\n```",
+        )]);
+        let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        s.run_user_message("change the greeting in greeter.py")
+            .await
+            .unwrap();
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Failed);
+        // This path bypasses the evidence-based evaluator entirely (same as
+        // the sibling `no_final_answer` branch just above it in
+        // `apply_model_response`), so `last_completion` stays `None` — the
+        // real signal is the terminal lifecycle plus the journalled event
+        // category, checked below.
+        assert!(s.events.iter().any(|e| e.kind == "turn_failed"
+            && e.detail
+                .starts_with(CompletionReason::DanglingToolCallText.as_category())));
+        // The file must be provably untouched — no silent partial write.
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("greeter.py")).unwrap(),
+            "def greet(name):\n    return f\"Hello, {name}!\"\n"
+        );
+        let failure = s
+            .messages
+            .iter()
+            .find(|m| m.content.starts_with(TURN_FAILED_MARKER))
+            .unwrap();
+        assert!(
+            failure.content.contains("didn't format the call correctly"),
+            "{}",
+            failure.content
+        );
+    }
+
+    // A legitimate answer that merely *mentions* a tool by name in prose
+    // (no call-shaped quote+punctuation adjacency) must still complete
+    // normally — the detection heuristic must not be trigger-happy.
+    #[tokio::test]
+    async fn prose_mentioning_a_tool_name_still_completes() {
+        let dir = tempdir().unwrap();
+        let model = script(vec![text_only(
+            "You can ask me to use \"write_file\" to create that for you.",
+        )]);
+        let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        s.run_user_message("how do I create a file?").await.unwrap();
         assert_eq!(s.active_task.lifecycle, TaskLifecycle::Completed);
         assert_eq!(
             s.last_completion.as_ref().unwrap().reason,
