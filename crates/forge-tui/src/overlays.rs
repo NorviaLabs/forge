@@ -1830,15 +1830,19 @@ impl Widget for OverlayWidget<'_> {
                         };
                         let marker = if selected { "▶ " } else { "  " };
                         let mut text = format!("{marker}{indent}{glyph} {label}");
-                        if !tag.is_empty() {
+                        if tag.is_empty() {
+                            ListItem::new(Span::styled(text, style))
+                        } else {
                             let target = (providers_area.width as usize)
                                 .saturating_sub(tag.chars().count() + 1);
                             while text.chars().count() < target {
                                 text.push(' ');
                             }
-                            text.push_str(tag);
+                            ListItem::new(Line::from(vec![
+                                Span::styled(text, style),
+                                Span::styled(tag, theme::tag_style(selected)),
+                            ]))
                         }
-                        ListItem::new(Span::styled(text, style))
                     })
                     .collect();
                 List::new(provider_items).render(providers_area, buf);
@@ -1905,8 +1909,10 @@ impl Widget for OverlayWidget<'_> {
                             while row.chars().count() < target {
                                 row.push(' ');
                             }
-                            row.push_str(tag);
-                            ListItem::new(Span::styled(row, style))
+                            ListItem::new(Line::from(vec![
+                                Span::styled(row, style),
+                                Span::styled(tag, theme::tag_style(selected)),
+                            ]))
                         })
                         .collect()
                 };
@@ -1925,20 +1931,21 @@ impl Widget for OverlayWidget<'_> {
                             theme::text()
                         };
                         let marker = if selected { "▶ " } else { "  " };
-                        let current = if *effort == *active_effort {
-                            " current"
-                        } else {
-                            ""
-                        };
+                        let is_current = *effort == *active_effort;
                         let default_label = if *effort == default_effort {
                             " (default)"
                         } else {
                             ""
                         };
-                        ListItem::new(Span::styled(
-                            format!("{marker}{}{current}{default_label}", effort.label()),
-                            style,
-                        ))
+                        let base = format!("{marker}{}{default_label}", effort.label());
+                        if is_current {
+                            ListItem::new(Line::from(vec![
+                                Span::styled(base, style),
+                                Span::styled(" current", theme::tag_style(selected)),
+                            ]))
+                        } else {
+                            ListItem::new(Span::styled(base, style))
+                        }
                     })
                     .collect();
                 List::new(effort_list_items).render(effort_area, buf);
@@ -2139,20 +2146,22 @@ impl Widget for OverlayWidget<'_> {
                     .enumerate()
                     .map(|(index, choice)| {
                         let marker = if index == *selected { "▶ " } else { "  " };
-                        let current = if *choice == *current {
-                            " · current"
-                        } else {
-                            ""
-                        };
-                        let style = if index == *selected {
+                        let is_current = *choice == *current;
+                        let selected_row = index == *selected;
+                        let style = if selected_row {
                             theme::focused_selection_style()
                         } else {
                             theme::text()
                         };
-                        ListItem::new(Span::styled(
-                            format!("{marker}{} ({}){current}", choice.title(), choice.label()),
-                            style,
-                        ))
+                        let base = format!("{marker}{} ({})", choice.title(), choice.label());
+                        if is_current {
+                            ListItem::new(Line::from(vec![
+                                Span::styled(base, style),
+                                Span::styled(" · current", theme::tag_style(selected_row)),
+                            ]))
+                        } else {
+                            ListItem::new(Span::styled(base, style))
+                        }
                     })
                     .collect();
                 List::new(list_items)
