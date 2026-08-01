@@ -1422,6 +1422,36 @@ impl AgentSession {
         }
     }
 
+    /// A model/provider request failed before ever producing a
+    /// `ModelResponse` (e.g. an HTTP error from `ModelClient::complete_with_stream`,
+    /// or a `LoopError` surfacing from `apply_model_response` itself before it
+    /// reached its own transition logic). There is no assistant turn for
+    /// `apply_model_response`'s evaluator to judge in that case, so nothing
+    /// else moves the lifecycle out of `Working` — and because the message
+    /// queue's dispatch gate and `start_new_task` both refuse to act while
+    /// `Working`, an unhandled error here previously left the session stuck
+    /// forever (every later message queuing, never sending) until the whole
+    /// process was killed and restarted, even after switching to a healthy
+    /// provider. Mirrors `mark_cancelled`'s shape: a lifecycle-only
+    /// transition, no synthetic assistant message — the caller (the TUI)
+    /// already shows the error to the operator through its own error-banner
+    /// mechanism, so duplicating it into the transcript here would just be
+    /// noise.
+    pub async fn mark_model_call_failed(&mut self, detail: &str) -> Result<(), LoopError> {
+        match self.active_task.lifecycle {
+            TaskLifecycle::Working | TaskLifecycle::Waiting => {
+                self.transition(TaskLifecycle::Failed, TransitionReason::TurnFailure)
+                    .await?;
+                self.events.push(TurnEvent {
+                    kind: "turn_failed".into(),
+                    detail: format!("model_call_failed: {detail}"),
+                });
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
     /// On resume/reload: a durable Running/AwaitingHitl task with no live runtime
     /// cannot safely continue as Working. HITL remains Waiting; bare Running becomes
     /// Interrupted. Legacy sessions with no terminal metadata stay Interrupted rather
