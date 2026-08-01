@@ -55,6 +55,9 @@ impl TuiApp {
         text.push_str("• Tab / Shift+Tab  Move between visible blocks\n");
         text.push_str("• Ctrl+E  Toggle Files\n");
         text.push_str("• F2  Toggle mouse capture (select/copy in terminal)\n");
+        text.push_str(
+            "• Hold Shift (⌥ on iTerm2) while dragging to select/copy without toggling\n",
+        );
         text.push_str("• ?  Help\n");
         text.push_str("• Esc  Leave one interaction level\n\n");
         text.push_str("Active block\n");
