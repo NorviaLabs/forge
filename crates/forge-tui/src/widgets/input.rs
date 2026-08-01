@@ -423,17 +423,19 @@ impl Widget for InputBar<'_> {
         );
 
         let border = if self.focused {
-            theme::brand()
+            theme::active_panel_border()
         } else if self.not_connected {
             theme::warn()
         } else {
-            theme::border()
+            theme::inactive_panel_border()
         };
         let block = Block::default()
             .borders(Borders::TOP)
             .border_style(border)
-            .style(if self.model.history_browse {
-                theme::panel_alt()
+            .style(if self.dimmed {
+                theme::surface_hover()
+            } else if self.focused || self.model.history_browse {
+                theme::composer_focused()
             } else {
                 theme::panel()
             });
