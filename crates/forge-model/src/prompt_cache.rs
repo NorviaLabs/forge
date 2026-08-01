@@ -128,34 +128,6 @@ pub fn apply_anthropic_prompt_cache(body: &mut Value) {
     }
 }
 
-fn attach_codex_cache_to_input_item(item: &mut Value) {
-    let Some(obj) = item.as_object_mut() else {
-        return;
-    };
-    if let Some(content) = obj.get_mut("content") {
-        attach_anthropic_cache_to_content(content);
-    }
-}
-
-/// Codex responses bodies: cache instructions and the stable input prefix.
-pub fn apply_codex_prompt_cache(body: &mut Value) {
-    if let Some(instructions) = body.get("instructions").and_then(Value::as_str) {
-        if !instructions.is_empty() {
-            body["instructions"] = json!([{
-                "type": "input_text",
-                "text": instructions,
-                "cache_control": ephemeral_cache_control()
-            }]);
-        }
-    }
-    let Some(input) = body.get_mut("input").and_then(Value::as_array_mut) else {
-        return;
-    };
-    if let Some(index) = prefix_breakpoint_index(input.len()) {
-        attach_codex_cache_to_input_item(&mut input[index]);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
