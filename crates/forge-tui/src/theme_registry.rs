@@ -46,8 +46,20 @@ impl Default for ThemeRegistry {
 
 impl ThemeRegistry {
     /// Load built-in themes plus any `.toml` files from discovery directories.
+    ///
+    /// Drop-in files that fail to parse are skipped without feedback; use
+    /// [`ThemeRegistry::load_with_diagnostics`] when the caller can surface
+    /// the resulting error messages to the user.
     pub fn load(workspace: Option<&Path>) -> Self {
+        Self::load_with_diagnostics(workspace).0
+    }
+
+    /// Same as [`ThemeRegistry::load`], but also returns a human-readable
+    /// message for every drop-in file that failed to parse, so a bad
+    /// `theme.toml` doesn't vanish from the picker with no explanation.
+    pub fn load_with_diagnostics(workspace: Option<&Path>) -> (Self, Vec<String>) {
         let mut by_id: HashMap<String, ThemeDefinition> = HashMap::new();
+        let mut diagnostics = Vec::new();
 
         for (label, content) in BUILTIN_THEMES {
             match parse_theme_toml(content) {
@@ -61,12 +73,12 @@ impl ThemeRegistry {
         }
 
         for dir in discovery_directories(workspace) {
-            merge_directory(&mut by_id, &dir);
+            merge_directory(&mut by_id, &dir, &mut diagnostics);
         }
 
         let mut themes: Vec<ThemeDefinition> = by_id.into_values().collect();
         themes.sort_by(|a, b| a.name.cmp(&b.name));
-        Self { themes }
+        (Self { themes }, diagnostics)
     }
 
     #[allow(dead_code)] // public registry surface for theme authors and tooling
@@ -138,7 +150,11 @@ fn discovery_directories(workspace: Option<&Path>) -> Vec<PathBuf> {
     dirs
 }
 
-fn merge_directory(by_id: &mut HashMap<String, ThemeDefinition>, dir: &Path) {
+fn merge_directory(
+    by_id: &mut HashMap<String, ThemeDefinition>,
+    dir: &Path,
+    diagnostics: &mut Vec<String>,
+) {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(_) => return,
@@ -155,8 +171,8 @@ fn merge_directory(by_id: &mut HashMap<String, ThemeDefinition>, dir: &Path) {
             Ok(theme) => {
                 by_id.insert(theme.id.clone(), theme);
             }
-            Err(_) => {
-                // Skip invalid drop-in files; authors can fix their theme.toml.
+            Err(error) => {
+                diagnostics.push(format!("theme: skipped {} ({error})", path.display()));
             }
         }
     }
@@ -195,6 +211,28 @@ mod tests {
             registry.get(THEME_FORGE_MIDNIGHT).unwrap().name,
             "Forge Midnight (Custom)"
         );
+    }
+
+    #[test]
+    fn invalid_drop_in_is_skipped_but_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let themes = dir.path().join(".forge").join("themes");
+        fs::create_dir_all(&themes).unwrap();
+        fs::write(
+            themes.join("broken.toml"),
+            include_str!("../themes/forge-midnight.toml")
+                .replace("id = \"forge-midnight\"", "id = \"broken\"")
+                // Truncated hex value: 5 digits instead of 6.
+                .replace(
+                    "user_gutter_active = \"#8AC0FF\"",
+                    "user_gutter_active = \"#8AC0F\"",
+                ),
+        )
+        .unwrap();
+        let (registry, diagnostics) = ThemeRegistry::load_with_diagnostics(Some(dir.path()));
+        assert!(!registry.contains("broken"));
+        assert_eq!(diagnostics.len(), 1);
+        assert!(diagnostics[0].contains("broken.toml"));
     }
 
     #[test]
