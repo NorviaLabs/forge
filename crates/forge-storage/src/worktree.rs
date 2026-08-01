@@ -242,9 +242,7 @@ mod tests {
 
         let listed = list_worktrees(repo.path()).unwrap();
         let canon = |p: &Path| p.canonicalize().unwrap();
-        assert!(listed
-            .iter()
-            .any(|p| canon(p) == canon(&repo.path().to_path_buf())));
+        assert!(listed.iter().any(|p| canon(p) == canon(repo.path())));
         assert!(listed.iter().any(|p| canon(p) == canon(&a.path)));
         assert!(listed.iter().any(|p| canon(p) == canon(&b.path)));
     }
