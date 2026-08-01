@@ -1,11 +1,19 @@
 //! Configuration: TOML + env overrides.
 
+mod theme;
+
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+pub use theme::{
+    is_system_theme, normalize_theme_id, parse_hex_color, parse_theme_preference, parse_theme_toml,
+    Rgb, SyntaxPalette, ThemeDefinition, ThemePalette, DEFAULT_THEME_ID, THEME_FORGE_DAYLIGHT,
+    THEME_FORGE_MIDNIGHT, THEME_SYSTEM,
+};
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -205,48 +213,8 @@ impl FileIconMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum Theme {
-    #[default]
-    Dark,
-    Light,
-    System,
-}
-
-impl Theme {
-    pub fn parse(s: &str) -> Result<Self, ConfigError> {
-        Self::parse_strict(s).or(Ok(Self::Dark))
-    }
-
-    pub fn parse_strict(s: &str) -> Result<Self, ConfigError> {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "dark" => Ok(Self::Dark),
-            "light" => Ok(Self::Light),
-            "system" => Ok(Self::System),
-            other => Err(ConfigError::Message(format!(
-                "invalid theme `{other}` (expected dark | light | system)"
-            ))),
-        }
-    }
-
-    pub const ALL: [Self; 3] = [Self::Dark, Self::Light, Self::System];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Dark => "dark",
-            Self::Light => "light",
-            Self::System => "system",
-        }
-    }
-
-    pub fn title(self) -> &'static str {
-        match self {
-            Self::Dark => "Forge Dark",
-            Self::Light => "Forge Light",
-            Self::System => "System",
-        }
-    }
+fn default_theme_id() -> String {
+    DEFAULT_THEME_ID.to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -255,8 +223,9 @@ pub struct TuiConfig {
     pub file_icons: FileIconMode,
     #[serde(default = "default_mouse_capture")]
     pub mouse_capture: bool,
-    #[serde(default)]
-    pub theme: Theme,
+    /// Optional `[tui] theme` preference (theme id, e.g. `forge-midnight`).
+    #[serde(default = "default_theme_id")]
+    pub theme: String,
 }
 
 impl Default for TuiConfig {
@@ -264,7 +233,7 @@ impl Default for TuiConfig {
         Self {
             file_icons: FileIconMode::Unicode,
             mouse_capture: default_mouse_capture(),
-            theme: Theme::default(),
+            theme: default_theme_id(),
         }
     }
 }
@@ -715,8 +684,8 @@ impl ConfigFile {
                 cfg.tui.mouse_capture = mouse_capture;
             }
             if let Some(theme) = tui.theme {
-                if let Ok(th) = Theme::parse(&theme) {
-                    cfg.tui.theme = th;
+                if let Some(id) = parse_theme_preference(&theme) {
+                    cfg.tui.theme = id;
                 }
             }
         }
@@ -982,7 +951,7 @@ mod tests {
         assert!(cfg.model.model.is_empty());
         assert_eq!(cfg.model.request_timeout_secs, 300);
         assert_eq!(cfg.journal.backend, "sqlite");
-        assert_eq!(cfg.tui.theme, Theme::Dark);
+        assert_eq!(cfg.tui.theme, THEME_FORGE_MIDNIGHT);
     }
 
     #[test]
@@ -1028,7 +997,7 @@ theme = "light"
         assert_eq!(cfg.mcp.servers[0].id, "demo");
         assert_eq!(cfg.resolved_workspace, dir.path());
         assert!(!cfg.tui.mouse_capture);
-        assert_eq!(cfg.tui.theme, Theme::Light);
+        assert_eq!(cfg.tui.theme, THEME_FORGE_DAYLIGHT);
     }
 
     /// The hostile-repo payload: a checked-in `forge.toml` that redirects the
@@ -1264,16 +1233,20 @@ model = "from-file"
     }
 
     #[test]
-    fn theme_parse_strict_rejects_unknown() {
-        assert!(Theme::parse_strict("bogus").is_err());
-        assert_eq!(Theme::parse("bogus").unwrap(), Theme::Dark);
+    fn theme_id_normalization_maps_legacy_aliases() {
+        assert_eq!(normalize_theme_id("dark"), THEME_FORGE_MIDNIGHT);
+        assert_eq!(normalize_theme_id("light"), THEME_FORGE_DAYLIGHT);
+        assert_eq!(normalize_theme_id("system"), THEME_SYSTEM);
+        assert_eq!(normalize_theme_id("forge-daylight"), THEME_FORGE_DAYLIGHT);
     }
 
     #[test]
-    fn theme_labels_round_trip() {
-        for theme in Theme::ALL {
-            assert_eq!(Theme::parse_strict(theme.label()).unwrap(), theme);
-        }
+    fn parse_theme_preference_rejects_unknown() {
+        assert!(parse_theme_preference("bogus").is_none());
+        assert_eq!(
+            parse_theme_preference("light").as_deref(),
+            Some(THEME_FORGE_DAYLIGHT)
+        );
     }
 
     #[test]
@@ -1481,24 +1454,19 @@ max_query_chars = 0
         assert!(matches!(err, ConfigError::Message(_)));
     }
 
-    /// Every theme resolves to its own distinct title, so a mis-wired match
-    /// arm cannot pass by coincidence.
     #[test]
-    fn theme_title_maps_every_variant_to_a_distinct_label() {
-        let cases = [
-            (Theme::Dark, "Forge Dark"),
-            (Theme::Light, "Forge Light"),
-            (Theme::System, "System"),
-        ];
-        let mut seen = std::collections::HashSet::new();
-        for (theme, expected) in cases {
-            assert_eq!(theme.title(), expected);
-            assert!(
-                seen.insert(theme.title()),
-                "title {:?} was not unique across variants",
-                theme.title()
-            );
-        }
+    fn project_toml_theme_preference_applies() {
+        let _g = EnvGuard::clear_forge_env();
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("forge.toml");
+        fs::write(&path, "[tui]\ntheme = \"light\"\n").unwrap();
+        let cfg = Config::load(ConfigOverrides {
+            config_path: Some(path),
+            workspace: None,
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(cfg.tui.theme, THEME_FORGE_DAYLIGHT);
     }
 
     #[test]
@@ -1515,7 +1483,7 @@ max_query_chars = 0
         file.apply(&mut cfg, ConfigScope::Trusted);
         assert_eq!(cfg.tui.file_icons, FileIconMode::Off);
         assert!(!cfg.tui.mouse_capture);
-        assert_eq!(cfg.tui.theme, Theme::System);
+        assert_eq!(cfg.tui.theme, THEME_SYSTEM);
     }
 
     /// An invalid `file_icons` / `theme` string in the file is silently
@@ -1533,7 +1501,7 @@ max_query_chars = 0
         };
         file.apply(&mut cfg, ConfigScope::Trusted);
         assert_eq!(cfg.tui.file_icons, FileIconMode::Unicode);
-        assert_eq!(cfg.tui.theme, Theme::Dark);
+        assert_eq!(cfg.tui.theme, THEME_FORGE_MIDNIGHT);
     }
 
     /// A `[validation]` section in the file replaces the whole

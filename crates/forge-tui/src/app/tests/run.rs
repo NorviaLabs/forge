@@ -66,7 +66,7 @@ async fn restored_running_run_becomes_cancelled() {
             }),
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     app.run.draft.command_input = "true".into();

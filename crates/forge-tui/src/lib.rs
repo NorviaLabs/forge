@@ -19,6 +19,7 @@ mod sidebar;
 mod source_viewer;
 mod terminal;
 mod theme;
+mod theme_registry;
 mod user_message_gutter;
 mod validation;
 #[cfg(test)]

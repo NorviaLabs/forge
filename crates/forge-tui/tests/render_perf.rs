@@ -38,7 +38,7 @@ use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
-use forge_config::{FileIconMode, Theme};
+use forge_config::FileIconMode;
 use forge_core::{AgentSession, LoopConfig};
 use forge_model::MockModelClient;
 use forge_tools::ToolRegistry;
@@ -178,7 +178,7 @@ async fn app_with_turns(turns: usize) -> (TempDir, TuiApp) {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: false,
-            theme: Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     (dir, app)

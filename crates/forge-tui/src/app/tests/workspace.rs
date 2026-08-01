@@ -260,7 +260,7 @@ async fn files_visibility_persists_per_repository() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     assert!(restored.files_visible);

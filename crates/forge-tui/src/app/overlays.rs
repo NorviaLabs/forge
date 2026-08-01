@@ -163,8 +163,8 @@ impl TuiApp {
                     format!("reasoning effort: {}", level.label()),
                 );
             }
-            OverlayAction::SelectTheme(theme) => {
-                self.apply_theme(theme, true);
+            OverlayAction::SelectTheme(theme_id) => {
+                self.apply_theme(theme_id, true);
             }
             OverlayAction::ConnectSubmitKey {
                 profile_id,
@@ -221,15 +221,16 @@ impl TuiApp {
         Ok(())
     }
 
-    pub(super) fn apply_theme(&mut self, theme: forge_config::Theme, persist: bool) {
-        crate::theme::set_active(theme);
-        self.runtime.theme = theme;
+    pub(super) fn apply_theme(&mut self, theme_id: String, persist: bool) {
+        crate::theme::set_active(&theme_id);
+        self.runtime.theme_id = theme_id.clone();
         self.conversation_cache = None;
         self.overlay = None;
         self.invalidate_hit_regions();
         if persist {
             self.save_ui_state();
-            self.set_feedback(FeedbackSeverity::Ok, format!("theme · {}", theme.title()));
+            let label = crate::theme::registry().display_name(&theme_id);
+            self.set_feedback(FeedbackSeverity::Ok, format!("theme · {label}"));
         }
     }
 }
