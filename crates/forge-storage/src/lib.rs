@@ -25,4 +25,6 @@ pub use resolver::{
     LocalRuntimeStorage, RuntimeDataKind, RuntimeIdentity, RuntimeStorage, StorageError,
     StorageMode, EXCLUDE_PATTERN,
 };
-pub use worktree::{create_worktree, list_worktrees, remove_worktree, SubagentWorktree, WorktreeError};
+pub use worktree::{
+    create_worktree, list_worktrees, remove_worktree, SubagentWorktree, WorktreeError,
+};

@@ -45,9 +45,15 @@ pub enum BackgroundTaskStatus {
     /// `TaskLifecycle::Waiting` on a HITL request. Not terminal — the
     /// subagent's spawned task is still alive, blocked on
     /// `AgentSession::resolve_subagent_hitl` supplying a decision.
-    WaitingForApproval { payload: HitlPayload },
-    Succeeded { summary: String },
-    Failed { error: String },
+    WaitingForApproval {
+        payload: HitlPayload,
+    },
+    Succeeded {
+        summary: String,
+    },
+    Failed {
+        error: String,
+    },
     Cancelled,
 }
 
@@ -239,7 +245,10 @@ impl BackgroundTaskRegistry {
 
     /// All non-terminal tasks spawned under a given foreground task —
     /// used to propagate cancellation when that foreground task ends.
-    pub fn children_of(&self, parent_task_id: TaskId) -> impl Iterator<Item = &BackgroundTaskHandle> {
+    pub fn children_of(
+        &self,
+        parent_task_id: TaskId,
+    ) -> impl Iterator<Item = &BackgroundTaskHandle> {
         self.tasks
             .values()
             .filter(move |t| t.parent_task_id == parent_task_id && !t.status.is_terminal())
@@ -287,7 +296,10 @@ pub enum BackgroundTaskOutcome {
     WaitingForApproval(HitlPayload),
 }
 
-async fn run_shell_job(command: String, workspace_root: std::path::PathBuf) -> BackgroundTaskOutcome {
+async fn run_shell_job(
+    command: String,
+    workspace_root: std::path::PathBuf,
+) -> BackgroundTaskOutcome {
     let mut cmd = Command::new("bash");
     cmd.arg("-lc")
         .arg(&command)
@@ -427,7 +439,8 @@ impl AgentSession {
             };
             let _ = tx.send(outcome);
         });
-        self.background_receivers.insert(id, std::sync::Mutex::new(rx));
+        self.background_receivers
+            .insert(id, std::sync::Mutex::new(rx));
         Ok(id)
     }
 
@@ -474,7 +487,11 @@ impl AgentSession {
     /// it. Returns `false` if `id` isn't a subagent currently waiting (e.g.
     /// it already finished, or was never a subagent) — a stale UI selection
     /// must not silently no-op without the caller knowing.
-    pub fn resolve_subagent_hitl(&mut self, id: BackgroundTaskId, decision: forge_types::HitlDecision) -> bool {
+    pub fn resolve_subagent_hitl(
+        &mut self,
+        id: BackgroundTaskId,
+        decision: forge_types::HitlDecision,
+    ) -> bool {
         match self.subagent_hitl_senders.get(&id) {
             Some(tx) => tx.send(decision).is_ok(),
             None => false,
@@ -500,7 +517,9 @@ impl AgentSession {
                 let label = args
                     .label
                     .unwrap_or_else(|| crate::truncate(&args.command, 40));
-                let id = self.spawn_background_shell(args.command, label.clone()).await?;
+                let id = self
+                    .spawn_background_shell(args.command, label.clone())
+                    .await?;
                 forge_types::ToolOutput {
                     content: format!(
                         "Started background task #{} ('{label}'). You'll see the result once it finishes.",
@@ -555,9 +574,7 @@ impl AgentSession {
                 exit_code,
             }) => {
                 let summary = if is_error {
-                    format!(
-                        "Background task '{label}' failed (exit {exit_code:?}):\n{output}"
-                    )
+                    format!("Background task '{label}' failed (exit {exit_code:?}):\n{output}")
                 } else {
                     format!("Background task '{label}' finished:\n{output}")
                 };

@@ -670,8 +670,7 @@ impl Journal {
                 }
                 JournalEventType::BackgroundTaskFinished => {
                     if let Some(id) = payload.get("task_id").and_then(|v| v.as_u64()) {
-                        if let Some(task) =
-                            state.background_tasks.iter_mut().find(|t| t.id.0 == id)
+                        if let Some(task) = state.background_tasks.iter_mut().find(|t| t.id.0 == id)
                         {
                             task.finished = true;
                         }

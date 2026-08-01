@@ -87,7 +87,10 @@ async fn approving_the_selected_waiting_task_from_the_tasks_tab_lets_it_finish()
         .await
         .unwrap();
     wait_for_task_status(&mut app, id, |s| {
-        matches!(s, forge_core::BackgroundTaskStatus::WaitingForApproval { .. })
+        matches!(
+            s,
+            forge_core::BackgroundTaskStatus::WaitingForApproval { .. }
+        )
     })
     .await;
 

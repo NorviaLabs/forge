@@ -274,7 +274,10 @@ impl TuiApp {
         for id in running_before {
             if let Some(task) = self.session.background.get(id) {
                 if task.status.is_terminal() {
-                    self.push_toast(format!("background task #{} finished: {}", id.0, task.label));
+                    self.push_toast(format!(
+                        "background task #{} finished: {}",
+                        id.0, task.label
+                    ));
                 }
             }
         }
@@ -350,7 +353,10 @@ impl TuiApp {
             _ => "deny",
         };
         if self.session.resolve_subagent_hitl(id, decision) {
-            self.set_feedback(FeedbackSeverity::Ok, format!("{verb} sent to task #{}", id.0));
+            self.set_feedback(
+                FeedbackSeverity::Ok,
+                format!("{verb} sent to task #{}", id.0),
+            );
             self.push_activity(
                 ActivityKind::System,
                 FeedbackSeverity::Ok,

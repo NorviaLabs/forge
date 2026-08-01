@@ -13,13 +13,13 @@ pub use stream::{
     ModelStepAccumulator,
 };
 
+pub use background::{
+    BackgroundTaskHandle, BackgroundTaskKind, BackgroundTaskRegistry, BackgroundTaskStatus,
+};
 pub use completion::{
     CompletionDecision, CompletionEvaluator, CompletionReason, DefaultCompletionEvaluator,
     EvidenceEntry, EvidenceSummary, ExecutionEvent, ExecutionEvidence, FileEffectExpectation,
     FileEffectKind, GitEffectExpectation, GitEffectKind, TaskExpectation, ToolExpectation,
-};
-pub use background::{
-    BackgroundTaskHandle, BackgroundTaskKind, BackgroundTaskRegistry, BackgroundTaskStatus,
 };
 pub use lifecycle::{ActiveTaskState, TransitionError, TransitionReason};
 pub use queue::{QueuedTask, TaskQueue};
@@ -39,8 +39,8 @@ use forge_tools::{
 };
 use forge_types::{
     BackgroundTaskId, HitlDecision, HitlPayload, Message, MessageRole, ModelResponse,
-    PolicyDecision, SessionId, SideEffectClass, TaskId, TaskLifecycle, ToolCall, ToolOutput,
-    Usage, WaitReason,
+    PolicyDecision, SessionId, SideEffectClass, TaskId, TaskLifecycle, ToolCall, ToolOutput, Usage,
+    WaitReason,
 };
 use serde_json::json;
 use thiserror::Error;
@@ -510,7 +510,8 @@ pub struct AgentSession {
     /// `AgentSession::resolve_subagent_hitl` uses to deliver an approve/deny
     /// decision into that subagent's spawned task. Entries are removed once
     /// the task finishes (see `poll_background_tasks`).
-    subagent_hitl_senders: HashMap<BackgroundTaskId, tokio::sync::mpsc::UnboundedSender<HitlDecision>>,
+    subagent_hitl_senders:
+        HashMap<BackgroundTaskId, tokio::sync::mpsc::UnboundedSender<HitlDecision>>,
     /// Provider/model id for the next completion (empty → client default).
     pub active_model: String,
     journal: Journal,

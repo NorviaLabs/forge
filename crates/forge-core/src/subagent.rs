@@ -268,7 +268,10 @@ impl AgentSession {
                     .append_background_task_finished(
                         self.session_id,
                         id,
-                        BackgroundTaskStatus::Failed { error: error.clone() }.tag(),
+                        BackgroundTaskStatus::Failed {
+                            error: error.clone(),
+                        }
+                        .tag(),
                         &error,
                     )
                     .await?;
@@ -322,7 +325,10 @@ impl AgentSession {
     /// Create a worktree, spin up a child session in it, and drive the
     /// child's agent loop to completion in the background. Returns as soon
     /// as the child is spawned — does not wait for it to finish.
-    pub async fn spawn_subagent(&mut self, spec: SubagentSpec) -> Result<BackgroundTaskId, LoopError> {
+    pub async fn spawn_subagent(
+        &mut self,
+        spec: SubagentSpec,
+    ) -> Result<BackgroundTaskId, LoopError> {
         let repo_root = forge_storage::detect_repo_info(&self.tool_ctx.workspace_root)
             .worktree_root
             .ok_or_else(|| {
@@ -424,13 +430,20 @@ impl AgentSession {
         task_id: BackgroundTaskId,
         error: String,
     ) -> Result<BackgroundTaskId, LoopError> {
-        self.background
-            .set_status(task_id, BackgroundTaskStatus::Failed { error: error.clone() });
+        self.background.set_status(
+            task_id,
+            BackgroundTaskStatus::Failed {
+                error: error.clone(),
+            },
+        );
         self.journal
             .append_background_task_finished(
                 self.session_id,
                 task_id,
-                BackgroundTaskStatus::Failed { error: error.clone() }.tag(),
+                BackgroundTaskStatus::Failed {
+                    error: error.clone(),
+                }
+                .tag(),
                 &error,
             )
             .await?;
@@ -689,7 +702,9 @@ mod tests {
         assert_eq!(payload.tool, "bash");
         assert_eq!(
             s.background.get(id).unwrap().status,
-            BackgroundTaskStatus::WaitingForApproval { payload: payload.clone() }
+            BackgroundTaskStatus::WaitingForApproval {
+                payload: payload.clone()
+            }
         );
 
         assert!(s.resolve_subagent_hitl(id, forge_types::HitlDecision::Approve));

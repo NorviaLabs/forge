@@ -348,10 +348,7 @@ fn tasks_lines(background: &BackgroundTaskRegistry, selected: Option<usize>) -> 
             theme::muted(),
         ));
     } else {
-        lines.push(Line::styled(
-            "Up/Down select · x cancel",
-            theme::muted(),
-        ));
+        lines.push(Line::styled("Up/Down select · x cancel", theme::muted()));
     }
     lines
 }
@@ -575,8 +572,8 @@ mod tests {
                 activity: &activity,
                 run: &run_model(),
                 background: &BackgroundTaskRegistry::default(),
-            tasks_selected: None,
-            terminal_title: None,
+                tasks_selected: None,
+                terminal_title: None,
                 terminal_content: "",
                 terminal_truncated: false,
             };
@@ -692,12 +689,8 @@ mod tests {
             std::path::PathBuf::from("/repo/.forge/local/worktrees/subagent-1-test-fixer"),
             "forge/subagent/subagent-1-test-fixer".into(),
         );
-        *background
-            .get(id)
-            .unwrap()
-            .latest_message
-            .lock()
-            .unwrap() = Some("Running the test suite now".into());
+        *background.get(id).unwrap().latest_message.lock().unwrap() =
+            Some("Running the test suite now".into());
 
         let state = BottomPanelState {
             open: true,
@@ -721,7 +714,10 @@ mod tests {
             rendered.contains("forge/subagent/subagent-1-test-fixer"),
             "{rendered}"
         );
-        assert!(rendered.contains("Running the test suite now"), "{rendered}");
+        assert!(
+            rendered.contains("Running the test suite now"),
+            "{rendered}"
+        );
     }
 
     #[test]
