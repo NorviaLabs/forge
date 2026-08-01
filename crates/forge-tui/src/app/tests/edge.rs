@@ -51,6 +51,72 @@ async fn edge_network_stream_interruption_preserves_partial_response() {
             && message.content.contains("partial answer")
             && message.content.contains("Interrupted")
     }));
+    // Regression: a provider/stream error must move the session lifecycle
+    // out of `Working`, not just clear the TUI-local `busy` flag — otherwise
+    // the header sticks on "Working" forever and the message queue's
+    // dispatch gate (which only checks this lifecycle) never reopens.
+    assert_eq!(
+        app.session.active_task.lifecycle,
+        forge_types::TaskLifecycle::Failed
+    );
+}
+
+// Regression test for the "permanently stuck Working" bug found in the
+// 2026-08-01 usability audit: a model/provider request that fails before
+// producing any `ModelResponse` (no partial stream content this time, so the
+// plain `report_error` display path runs rather than the interrupted-partial
+// one exercised above) must still unstick the session — both the lifecycle
+// itself and, critically, the ability to send the *next* message immediately
+// rather than have it silently join a queue that can never dispatch.
+#[tokio::test]
+async fn edge_provider_error_unsticks_session_for_the_next_message() {
+    let dir = TempDir::new().unwrap();
+    let session = session_for_workspace_with_model(
+        dir.path(),
+        Arc::new(MockModelClient::stream_error(
+            vec![],
+            "HTTP 400 Bad Request",
+        )),
+    )
+    .await;
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "mock".into(),
+            provider: "mock".into(),
+            cwd: dir.path().to_path_buf(),
+            version: "test".into(),
+            startup_notices: Vec::new(),
+            validation_command: None,
+            file_icons: FileIconMode::Unicode,
+            mouse_capture: true,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+
+    app.dispatch_line("first message").await.unwrap();
+    app.drain_pending_prompt(None).await.unwrap();
+    assert!(!app.busy);
+    assert_eq!(
+        app.session.active_task.lifecycle,
+        forge_types::TaskLifecycle::Failed,
+        "a request that errors before any ModelResponse must still fail the turn, \
+         not leave the session stuck on Working"
+    );
+
+    // The mock client's scripted error was a one-shot; the next call falls
+    // back to a plain successful response. This message must dispatch and
+    // complete on its own — it must NOT still be sitting in the queue.
+    app.dispatch_line("second message").await.unwrap();
+    app.drain_pending_prompt(None).await.unwrap();
+    assert!(
+        app.session.queue.is_empty(),
+        "the second message must have been sent, not queued behind the stuck turn"
+    );
+    assert_eq!(
+        app.session.active_task.lifecycle,
+        forge_types::TaskLifecycle::Completed
+    );
 }
 
 #[tokio::test]
