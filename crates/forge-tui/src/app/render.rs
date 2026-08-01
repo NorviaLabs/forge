@@ -508,7 +508,7 @@ impl TuiApp {
         buf: &mut ratatui::buffer::Buffer,
     ) {
         let gs = &self.file_explorer.git_status;
-        if gs.loading && !self.diff_snapshot.stale {
+        if gs.loading && gs.status.is_empty() && !self.diff_snapshot.stale {
             Paragraph::new("Loading changes…")
                 .style(theme::muted())
                 .alignment(ratatui::layout::Alignment::Center)
