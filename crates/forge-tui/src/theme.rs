@@ -22,25 +22,36 @@ pub fn active() -> Theme {
 
 pub const CANVAS: Color = Color::Rgb(24, 23, 22);
 pub const CANVAS_DEEP: Color = Color::Rgb(17, 17, 16);
-pub const ACCENT: Color = Color::Rgb(83, 214, 227);
-pub const ACCENT_2: Color = Color::Rgb(125, 168, 245);
+// Dark-theme accent/status/success/error/tool tokens. Each has a distinct
+// LIGHT_* counterpart below (rather than sharing one constant across both
+// themes) because the same RGB value cannot clear 4.5:1 against both a near-
+// black and a near-white canvas — see theme.rs tests for the contrast checks.
+pub const ACCENT: Color = Color::Rgb(110, 198, 218);
+pub const ACCENT_2: Color = Color::Rgb(122, 168, 224);
 pub const USER_MESSAGE_GUTTER_DARK: Color = Color::Rgb(96, 145, 220);
 pub const USER_MESSAGE_GUTTER_LIGHT: Color = Color::Rgb(37, 99, 175);
 pub const USER_GUTTER_ACTIVE_DARK: Color = Color::Rgb(112, 168, 245);
 pub const USER_GUTTER_ACTIVE_LIGHT: Color = Color::Rgb(25, 82, 155);
-pub const OK: Color = Color::Rgb(97, 207, 139);
+pub const OK: Color = Color::Rgb(127, 201, 127);
 pub const WARN: Color = Color::Rgb(229, 185, 79);
-pub const DANGER: Color = Color::Rgb(239, 112, 120);
+pub const DANGER: Color = Color::Rgb(229, 107, 99);
 pub const TOOL: Color = Color::Rgb(132, 231, 239);
-pub const MUTED: Color = Color::Rgb(145, 139, 130);
-pub const DIM: Color = Color::Rgb(111, 106, 99);
-pub const TEXT: Color = Color::Rgb(242, 239, 232);
-pub const TEXT_STRONG: Color = Color::Rgb(255, 255, 255);
+pub const MUTED: Color = Color::Rgb(150, 144, 135);
+pub const DIM: Color = Color::Rgb(147, 144, 140);
+pub const TEXT: Color = Color::Rgb(232, 230, 226);
 pub const BORDER: Color = Color::Rgb(69, 65, 60);
 pub const BORDER_MUTED: Color = Color::Rgb(53, 50, 47);
 pub const PANEL: Color = Color::Rgb(35, 33, 31);
 pub const PANEL_ALT: Color = Color::Rgb(44, 41, 38);
-pub const SELECTED_BG: Color = Color::Rgb(42, 58, 60);
+/// Highlighted-row background (selected list rows, focused picker rows).
+pub const SELECTED_BG: Color = Color::Rgb(31, 50, 56);
+/// Foreground painted on top of [`SELECTED_BG`] — distinct from `text`
+/// (used for bold assistant text) so the two roles can be tuned
+/// independently.
+pub const SELECTION_FG: Color = Color::Rgb(189, 234, 245);
+/// "current" / "connected" tag label color, tuned to clear 4.5:1 against
+/// both the normal panel background and [`SELECTED_BG`].
+pub const TAG: Color = Color::Rgb(148, 153, 148);
 pub const USER_BG: Color = CANVAS_DEEP;
 pub const RESPONSE_BG: Color = CANVAS;
 pub const DIFF_ADD_BG: Color = Color::Rgb(41, 75, 55);
@@ -48,15 +59,26 @@ pub const DIFF_REMOVE_BG: Color = Color::Rgb(91, 44, 49);
 pub const DIFF_HUNK_BG: Color = Color::Rgb(45, 63, 97);
 
 pub const LIGHT_CANVAS: Color = Color::Rgb(253, 250, 242);
-pub const LIGHT_TEXT: Color = Color::Rgb(32, 29, 26);
-pub const LIGHT_MUTED: Color = Color::Rgb(119, 113, 102);
-pub const LIGHT_SELECTION: Color = Color::Rgb(203, 225, 245);
+pub const LIGHT_TEXT: Color = Color::Rgb(43, 40, 32);
+// Light-theme counterparts of the dark accent/status/success/error/tool
+// tokens above — darkened/desaturated per role so each still clears 4.5:1
+// against LIGHT_CANVAS (and, for DIM/DANGER, against LIGHT_PANEL_ALT too).
+pub const LIGHT_ACCENT: Color = Color::Rgb(50, 121, 135);
+pub const LIGHT_ACCENT_2: Color = Color::Rgb(73, 111, 180);
+pub const LIGHT_OK: Color = Color::Rgb(55, 125, 72);
+pub const LIGHT_WARN: Color = Color::Rgb(139, 105, 21);
+pub const LIGHT_DANGER: Color = Color::Rgb(187, 71, 56);
+pub const LIGHT_TOOL: Color = Color::Rgb(17, 121, 130);
+pub const LIGHT_MUTED: Color = Color::Rgb(92, 87, 80);
+pub const LIGHT_SELECTION: Color = Color::Rgb(220, 236, 236);
+pub const LIGHT_SELECTION_FG: Color = Color::Rgb(13, 92, 92);
+pub const LIGHT_TAG: Color = Color::Rgb(108, 104, 93);
 pub const LIGHT_DIFF_ADD: Color = Color::Rgb(209, 240, 223);
 pub const LIGHT_DIFF_REMOVE: Color = Color::Rgb(255, 223, 223);
 pub const LIGHT_DIFF_HUNK: Color = Color::Rgb(220, 230, 255);
 pub const LIGHT_BORDER: Color = Color::Rgb(201, 195, 185);
 pub const LIGHT_BORDER_MUTED: Color = Color::Rgb(221, 216, 208);
-pub const LIGHT_DIM: Color = Color::Rgb(92, 87, 80);
+pub const LIGHT_DIM: Color = Color::Rgb(115, 108, 96);
 pub const LIGHT_PANEL_ALT: Color = Color::Rgb(245, 242, 234);
 pub const LIGHT_SEARCH_MATCH_BG: Color = Color::Rgb(255, 244, 200);
 pub const DARK_SEARCH_MATCH_BG: Color = Color::Rgb(72, 64, 40);
@@ -337,9 +359,23 @@ pub fn focused_selection_style() -> Style {
 pub fn selected_row() -> Style {
     let p = palette(active());
     Style::default()
-        .fg(p.text_strong)
+        .fg(p.selection_fg)
         .bg(p.selection)
         .add_modifier(Modifier::BOLD)
+}
+
+/// "current" / "connected" tag label. `selected` should match whatever
+/// determined the row's own base style, so the tag's background always
+/// agrees with the row it sits in (plain panel bg vs. [`selected_row`]'s
+/// highlighted bg) — both are pre-verified to clear 4.5:1 contrast.
+pub fn tag_style(selected: bool) -> Style {
+    let p = palette(active());
+    let style = Style::default().fg(p.tag);
+    if selected {
+        style.bg(p.selection)
+    } else {
+        style
+    }
 }
 
 /// Input block cursor: solid inverted cell (bg fills the whole character cell).
@@ -377,12 +413,15 @@ pub struct Palette {
     pub panel_alt: Color,
     pub user_bg: Color,
     pub response_bg: Color,
-    pub text_strong: Color,
     pub user_message_gutter: Color,
     pub user_gutter_active: Color,
     pub border: Color,
     pub border_muted: Color,
     pub search_match: Color,
+    /// Foreground for text painted on top of `selection` (see [`SELECTION_FG`]).
+    pub selection_fg: Color,
+    /// "current" / "connected" tag label color (see [`TAG`]).
+    pub tag: Color,
 }
 
 pub fn palette(theme: Theme) -> Palette {
@@ -406,24 +445,25 @@ pub fn palette(theme: Theme) -> Palette {
             panel_alt: PANEL_ALT,
             user_bg: USER_BG,
             response_bg: RESPONSE_BG,
-            text_strong: TEXT_STRONG,
             user_message_gutter: USER_MESSAGE_GUTTER_DARK,
             user_gutter_active: USER_GUTTER_ACTIVE_DARK,
             border: BORDER,
             border_muted: BORDER_MUTED,
             search_match: DARK_SEARCH_MATCH_BG,
+            selection_fg: SELECTION_FG,
+            tag: TAG,
         },
         Theme::Light => Palette {
             canvas: LIGHT_CANVAS,
             text: LIGHT_TEXT,
             muted: LIGHT_MUTED,
             dim: LIGHT_DIM,
-            accent: ACCENT,
-            ok: OK,
-            warn: WARN,
-            danger: DANGER,
-            info: ACCENT_2,
-            tool: TOOL,
+            accent: LIGHT_ACCENT,
+            ok: LIGHT_OK,
+            warn: LIGHT_WARN,
+            danger: LIGHT_DANGER,
+            info: LIGHT_ACCENT_2,
+            tool: LIGHT_TOOL,
             selection: LIGHT_SELECTION,
             diff_add: LIGHT_DIFF_ADD,
             diff_remove: LIGHT_DIFF_REMOVE,
@@ -432,12 +472,13 @@ pub fn palette(theme: Theme) -> Palette {
             panel_alt: LIGHT_PANEL_ALT,
             user_bg: LIGHT_CANVAS,
             response_bg: LIGHT_CANVAS,
-            text_strong: LIGHT_TEXT,
             user_message_gutter: USER_MESSAGE_GUTTER_LIGHT,
             user_gutter_active: USER_GUTTER_ACTIVE_LIGHT,
             border: LIGHT_BORDER,
             border_muted: LIGHT_BORDER_MUTED,
             search_match: LIGHT_SEARCH_MATCH_BG,
+            selection_fg: LIGHT_SELECTION_FG,
+            tag: LIGHT_TAG,
         },
         Theme::System => Palette {
             canvas: Color::Reset,
@@ -458,12 +499,13 @@ pub fn palette(theme: Theme) -> Palette {
             panel_alt: Color::Reset,
             user_bg: Color::Reset,
             response_bg: Color::Reset,
-            text_strong: Color::White,
             user_message_gutter: Color::Blue,
             user_gutter_active: Color::LightBlue,
             border: Color::Reset,
             border_muted: Color::Reset,
             search_match: Color::Reset,
+            selection_fg: Color::White,
+            tag: Color::Gray,
         },
     }
 }
@@ -484,7 +526,15 @@ mod tests {
     fn selected_and_caret_use_background() {
         assert_eq!(selected_row().bg, Some(SELECTED_BG));
         assert_eq!(caret().bg, Some(TEXT));
-        assert_eq!(selected_row().fg, Some(TEXT_STRONG));
+        assert_eq!(selected_row().fg, Some(SELECTION_FG));
+    }
+
+    #[test]
+    fn tag_style_matches_row_selection_state() {
+        assert_eq!(tag_style(false).fg, Some(TAG));
+        assert_eq!(tag_style(false).bg, None);
+        assert_eq!(tag_style(true).fg, Some(TAG));
+        assert_eq!(tag_style(true).bg, Some(SELECTED_BG));
     }
 
     #[test]
@@ -595,5 +645,80 @@ mod tests {
         assert_eq!(text().fg, Some(LIGHT_TEXT));
         set_active(Theme::Dark);
         assert_eq!(text().fg, Some(TEXT));
+    }
+
+    // WCAG AA (4.5:1, normal text) contrast checks. These pin down the
+    // actual rendered backgrounds each role appears on (canvas/panel/
+    // panel_alt for the general case, plus SELECTED_BG for tag/selection_fg)
+    // so a future palette edit that quietly breaks contrast fails CI instead
+    // of a screenshot.
+    fn srgb_to_linear(c: u8) -> f64 {
+        let c = c as f64 / 255.0;
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    fn relative_luminance(c: Color) -> f64 {
+        let Color::Rgb(r, g, b) = c else {
+            panic!("expected Color::Rgb, got {c:?}");
+        };
+        0.2126 * srgb_to_linear(r) + 0.7152 * srgb_to_linear(g) + 0.0722 * srgb_to_linear(b)
+    }
+
+    fn contrast_ratio(a: Color, b: Color) -> f64 {
+        let (l1, l2) = (relative_luminance(a), relative_luminance(b));
+        let (lighter, darker) = if l1 >= l2 { (l1, l2) } else { (l2, l1) };
+        (lighter + 0.05) / (darker + 0.05)
+    }
+
+    fn assert_aa(role: &str, fg: Color, bg_label: &str, bg: Color) {
+        let ratio = contrast_ratio(fg, bg);
+        assert!(
+            ratio >= 4.5,
+            "{role} on {bg_label} only has {ratio:.2}:1 contrast (need >= 4.5:1)"
+        );
+    }
+
+    #[test]
+    fn dark_text_roles_meet_wcag_aa() {
+        let p = palette(Theme::Dark);
+        for (bg_label, bg) in [
+            ("canvas", p.canvas),
+            ("panel", p.panel),
+            ("panel_alt", p.panel_alt),
+        ] {
+            assert_aa("text", p.text, bg_label, bg);
+            assert_aa("muted", p.muted, bg_label, bg);
+            assert_aa("accent", p.accent, bg_label, bg);
+            assert_aa("ok", p.ok, bg_label, bg);
+            assert_aa("danger", p.danger, bg_label, bg);
+            assert_aa("info", p.info, bg_label, bg);
+            assert_aa("tag", p.tag, bg_label, bg);
+        }
+        // dim and danger are additionally used on panel_alt (sidebar inspector).
+        assert_aa("dim", p.dim, "panel_alt", p.panel_alt);
+        assert_aa("selection_fg", p.selection_fg, "selection", p.selection);
+        assert_aa("tag on selection", p.tag, "selection", p.selection);
+    }
+
+    #[test]
+    fn light_text_roles_meet_wcag_aa() {
+        let p = palette(Theme::Light);
+        for (bg_label, bg) in [("canvas", p.canvas), ("panel_alt", p.panel_alt)] {
+            assert_aa("text", p.text, bg_label, bg);
+            assert_aa("muted", p.muted, bg_label, bg);
+            assert_aa("tag", p.tag, bg_label, bg);
+        }
+        assert_aa("accent", p.accent, "canvas", p.canvas);
+        assert_aa("ok", p.ok, "canvas", p.canvas);
+        assert_aa("danger", p.danger, "canvas", p.canvas);
+        assert_aa("info", p.info, "canvas", p.canvas);
+        assert_aa("dim", p.dim, "panel_alt", p.panel_alt);
+        assert_aa("danger", p.danger, "panel_alt", p.panel_alt);
+        assert_aa("selection_fg", p.selection_fg, "selection", p.selection);
+        assert_aa("tag on selection", p.tag, "selection", p.selection);
     }
 }
