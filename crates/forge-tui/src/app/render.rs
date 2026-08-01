@@ -269,6 +269,8 @@ impl TuiApp {
             let mut sidebar = SidebarModel::from_session_with_activity(&self.session, &activity);
             sidebar.provider = self.runtime.provider.clone();
             sidebar.model = self.runtime.model_label.clone();
+            sidebar.effort = self.reasoning_effort.label().to_string();
+            sidebar.route = self.connect.profile.clone();
             sidebar.busy = self.busy;
             sidebar.step = match &self.busy_phase {
                 BusyPhase::Model => "model_stream",
