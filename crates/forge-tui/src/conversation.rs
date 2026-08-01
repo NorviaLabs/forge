@@ -740,7 +740,7 @@ impl ConversationModel {
                     let st = match p.kind {
                         BannerKind::Info => theme::info(),
                         BannerKind::Warn => theme::warn(),
-                        BannerKind::Error => theme::danger(),
+                        BannerKind::Error => theme::error_callout(),
                         BannerKind::Ok => theme::ok(),
                     };
                     for l in wrap(&p.text, width) {
@@ -752,7 +752,7 @@ impl ConversationModel {
                 }
                 ConversationBlock::CodeBlock(p) => {
                     for line in assistant_lines(&p.text, width) {
-                        lines.push(line);
+                        lines.push(line.style(theme::code_block()));
                     }
                     if gap {
                         lines.push(Line::from(""));
@@ -1937,7 +1937,9 @@ fn push_code_block(
     // Borrowed, not consumed: the highlight is shared with the cache, and
     // `render_highlighted_line` only needs a slice.
     for line_segments in highlight_to_lines(language, &code, &theme).iter() {
-        out.push(Line::from(render_highlighted_line(line_segments)));
+        out.push(
+            Line::from(render_highlighted_line(line_segments)).style(theme::code_block()),
+        );
     }
     code_block_lines.clear();
 }
@@ -1990,11 +1992,13 @@ fn render_md_line(line: &str) -> Vec<Span<'static>> {
 type HighlightSegment = (String, (u8, u8, u8), bool, bool);
 
 fn render_highlighted_line(segments: &[HighlightSegment]) -> Vec<Span<'static>> {
+    let block = theme::code_block();
     segments
         .iter()
         .map(|(text, rgb, bold, italic)| {
             let mut style = ratatui::style::Style::default()
-                .fg(ratatui::style::Color::Rgb(rgb.0, rgb.1, rgb.2));
+                .fg(ratatui::style::Color::Rgb(rgb.0, rgb.1, rgb.2))
+                .bg(block.bg.unwrap_or_default());
             if *bold {
                 style = style.add_modifier(Modifier::BOLD);
             }

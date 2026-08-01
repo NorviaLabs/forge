@@ -132,7 +132,7 @@ impl TurnLifecycle {
     pub fn style(self) -> ratatui::style::Style {
         match self {
             Self::Ready => theme::muted(),
-            Self::Working => theme::info().add_modifier(Modifier::BOLD),
+            Self::Working => theme::agent().add_modifier(Modifier::BOLD),
             Self::Waiting => theme::warn().add_modifier(Modifier::BOLD),
             Self::Completed => theme::ok(),
             Self::Failed => theme::danger(),
@@ -504,7 +504,7 @@ impl Widget for StatusBar<'_> {
             }
         }
 
-        theme::fill(area, buf, theme::canvas());
+        theme::fill(area, buf, theme::status_bar());
         buf.set_line(area.x, area.y, &Line::from(spans), area.width);
     }
 }
