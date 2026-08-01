@@ -149,8 +149,10 @@ impl TuiApp {
                 model,
                 profile_id,
             } => {
+                // The picker already moved its own focus to the Effort column
+                // in place (see `handle_overlay_key`); this only needs to
+                // apply the runtime/session-level effect of the pick.
                 self.apply_model_selection(&provider, &model, profile_id.as_deref());
-                self.open_effort_picker_for_model(&model);
             }
             OverlayAction::SelectEffort(level) => {
                 self.overlay = None;

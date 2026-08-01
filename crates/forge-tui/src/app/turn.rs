@@ -155,7 +155,8 @@ impl TuiApp {
             return;
         }
         if !self.is_provider_connected() {
-            self.report_error("Not connected — cannot send queued message. Run /connect.");
+            let msg = format!("{} · cannot send queued message", self.disconnected_message());
+            self.report_error(&msg);
             return;
         }
         match self.session.promote_next_queued().await {

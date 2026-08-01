@@ -68,6 +68,24 @@ impl TuiApp {
         }
     }
 
+    /// Vendor label for `profile_id`, and its route label when the vendor
+    /// has more than one registered offering — the same rule the picker's
+    /// Providers column and Active line use, so the header chip can't drift.
+    pub(super) fn vendor_route_labels(&self, profile_id: &str) -> (Option<String>, Option<String>) {
+        let Some(profile) = self.connect.registry.get(profile_id) else {
+            return (None, None);
+        };
+        let sibling_count = self
+            .connect
+            .registry
+            .profiles()
+            .iter()
+            .filter(|p| p.vendor_id == profile.vendor_id)
+            .count();
+        let route = (sibling_count > 1).then(|| profile.route_label.clone());
+        (Some(profile.vendor_label.clone()), route)
+    }
+
     /// Drop a stale `connect.profile` if credentials were cleared out-of-band.
     fn sync_provider_connection(&mut self) {
         if self.connect.auth_suspended {
@@ -108,23 +126,17 @@ impl TuiApp {
                 )
             });
         } else {
-            self.input.hint = "Not connected · run /connect before chatting".into();
-            let has_banner = self.ui_banners.iter().any(|b| {
-                matches!(
-                    b,
-                    ChatItem::Banner {
-                        kind: BannerKind::Warn,
-                        text
-                    } if text.contains("Not connected")
-                )
-            });
-            if !has_banner {
-                self.ui_banners.push(ChatItem::Banner {
-                    text: "Not connected to an LLM provider. Run /connect (xAI Grok or OpenCode Go) before sending a message.".into(),
-                    kind: BannerKind::Warn,
-                });
-            }
+            self.input.hint = self.disconnected_message();
         }
+    }
+
+    /// One message for every "you need to connect first" surface — the
+    /// input hint, a direct-send attempt, and a queued-message dequeue
+    /// attempt all read this instead of each hardcoding their own wording
+    /// (previously three near-duplicate strings, one of them naming
+    /// `xAI Grok`/`OpenCode Go` even when neither was configured).
+    pub(super) fn disconnected_message(&self) -> String {
+        "Not connected · run /connect to choose a provider".into()
     }
 
     pub(super) fn disconnect_auth(&mut self, profile_id: Option<&str>) -> Result<String, TuiError> {
@@ -293,28 +305,22 @@ impl TuiApp {
         self
     }
 
-    pub(super) fn open_effort_picker_for_model(&mut self, model: &str) {
+    /// After applying a model switch outside the picker (the free-text
+    /// `/model <arg>` path), resolve reasoning effort for the new model:
+    /// falls back silently to the provider default when the previous effort
+    /// isn't supported, persisting that fallback immediately since there's no
+    /// picker open to commit it on close. Returns whether the model offers a
+    /// real effort choice worth surfacing.
+    pub(super) fn resolve_effort_for_model(&mut self, model: &str) -> bool {
         let options = ReasoningEffort::options_for_model(model);
         let default = ReasoningEffort::default_for_model(model);
         let previous = self.reasoning_effort;
-        let unsupported = !options.contains(&previous);
-        if options.len() <= 1 {
-            // Nothing useful to choose; keep current if still valid, else provider default.
-            if unsupported {
-                self.reasoning_effort = default;
-                self.persist_selection();
-                self.note_unsupported_effort_fallback(previous, default);
-            }
-            self.overlay = None;
-            return;
-        }
-        if unsupported {
+        if !options.contains(&previous) {
             self.reasoning_effort = default;
+            self.persist_selection();
             self.note_unsupported_effort_fallback(previous, default);
-        } else {
-            self.set_feedback(FeedbackSeverity::Info, "choose reasoning effort");
         }
-        self.overlay = Some(Overlay::effort_open(model, self.reasoning_effort));
+        options.len() > 1
     }
 
     /// Spec'd copy for switching to a model that can't run the current
@@ -402,7 +408,9 @@ impl TuiApp {
         }
     }
 
-    pub(super) fn open_connect_picker(&mut self) {
+    /// Build the unified Connect + Model + Effort picker: one state source
+    /// for both `/connect` and `/model`, differing only in `focus`.
+    pub(super) fn build_connect_model_overlay(&self, focus: ConnectModelColumn) -> Overlay {
         let connected: HashSet<String> = {
             let svc = ConnectService {
                 registry: &self.connect.registry,
@@ -416,20 +424,21 @@ impl TuiApp {
                 .map(|p| p.id)
                 .collect()
         };
-        let items: Vec<ConnectProfileItem> = self
-            .connect
-            .registry
-            .profiles()
-            .iter()
-            .map(|p| ConnectProfileItem {
-                id: p.id.clone(),
-                title: p.title.clone(),
-                auth_mode: p.auth_mode.label().into(),
-                auth_url: p.auth_url.clone(),
-                connected: connected.contains(&p.id),
-            })
-            .collect();
-        self.overlay = Some(Overlay::connect_picker(items));
+        let providers =
+            build_provider_rows(&self.connect.registry, &connected, self.connect.profile.as_deref());
+        let items = self.model_picker_items(true);
+        Overlay::connect_model_open(
+            providers,
+            items,
+            self.connect.profile.as_deref(),
+            &self.runtime.model_label,
+            self.reasoning_effort,
+            focus,
+        )
+    }
+
+    pub(super) fn open_connect_picker(&mut self) {
+        self.overlay = Some(self.build_connect_model_overlay(ConnectModelColumn::Providers));
         self.status_message = "Choose a provider".into();
         self.notices.clear();
     }
@@ -466,11 +475,7 @@ impl TuiApp {
     }
 
     pub(super) fn open_model_picker_after_connect(&mut self, profile_id: &str) {
-        let items = self.model_picker_items(true);
-        let mut overlay = Overlay::model_open_with(items);
-        overlay.focus_model(&self.runtime.model_label);
-        overlay.set_current_effort(self.reasoning_effort);
-        self.overlay = Some(overlay);
+        self.overlay = Some(self.build_connect_model_overlay(ConnectModelColumn::Models));
         let title = self
             .connect
             .registry

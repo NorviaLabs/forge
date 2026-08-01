@@ -93,7 +93,7 @@ pub(crate) async fn session_for_workspace_with_model(
 
 pub(crate) async fn focus_test_app() -> (TempDir, TuiApp) {
     let (dir, session) = test_session().await;
-    let app = TuiApp::new(
+    let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
             model_label: "mock".into(),
@@ -106,6 +106,17 @@ pub(crate) async fn focus_test_app() -> (TempDir, TuiApp) {
             mouse_capture: true,
             theme: forge_config::Theme::default(),
         },
+    );
+    // `TuiApp::new` restores any real, ambient connect credentials from the
+    // host's credential store (correct in production) — isolate that here so
+    // rendering assertions never depend on whichever provider the machine
+    // running the suite happens to have connected.
+    app.connect.profile = None;
+    app.connect.store = CredentialStore::new(
+        tempfile::TempDir::new()
+            .unwrap()
+            .path()
+            .join("empty-creds.toml"),
     );
     (dir, app)
 }
