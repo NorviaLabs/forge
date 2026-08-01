@@ -119,7 +119,6 @@ impl TuiApp {
                 Some(SemanticCommand::QuickSwitchModel)
             }
             KeyCode::F(1) if self.overlay.is_none() => Some(SemanticCommand::OpenHelp),
-            KeyCode::F(2) => Some(SemanticCommand::ToggleMouseCapture),
             _ => None,
         }
     }
@@ -466,15 +465,6 @@ impl TuiApp {
                     self.restore_focus_after_closing(FocusBlock::Inspector);
                     self.normalize_focus();
                 }
-            }
-            SemanticCommand::ToggleMouseCapture => {
-                self.runtime.mouse_capture = !self.runtime.mouse_capture;
-                let _ = crate::terminal::set_mouse_capture(self.runtime.mouse_capture);
-                self.push_toast(if self.runtime.mouse_capture {
-                    "Mouse capture on — click and drag control Forge again"
-                } else {
-                    "Mouse capture off — select and copy text with your terminal"
-                });
             }
             SemanticCommand::CycleInspectorTab { forward } => {
                 self.inspector_view = if forward {
@@ -1058,10 +1048,6 @@ mod tests {
                 key(KeyCode::Char('`'), CTRL),
                 SemanticCommand::ToggleBottomPanel,
             ),
-            (
-                key(KeyCode::F(2), NONE),
-                SemanticCommand::ToggleMouseCapture,
-            ),
         ];
         for (k, expected) in cases {
             assert_eq!(
@@ -1080,21 +1066,6 @@ mod tests {
             app.semantic_command_for_global_key(key(KeyCode::Char('c'), NONE)),
             None
         );
-    }
-
-    #[tokio::test]
-    async fn toggle_mouse_capture_flips_runtime_flag_and_toasts() {
-        let (_d, mut app) = app().await;
-        assert!(app.runtime.mouse_capture);
-        app.execute_semantic_command(SemanticCommand::ToggleMouseCapture)
-            .await
-            .unwrap();
-        assert!(!app.runtime.mouse_capture);
-        assert!(app.toast.is_some());
-        app.execute_semantic_command(SemanticCommand::ToggleMouseCapture)
-            .await
-            .unwrap();
-        assert!(app.runtime.mouse_capture);
     }
 
     #[tokio::test]
