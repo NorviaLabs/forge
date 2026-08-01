@@ -24,11 +24,37 @@ pub struct ConnectProfile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_url: Option<String>,
     pub model_provider_prefix: String,
+    /// Groups profiles that are really one provider with multiple offerings
+    /// (e.g. `openai` API key vs. ChatGPT sign-in). Equal to `id` for
+    /// providers with only one offering.
+    #[serde(default)]
+    pub vendor_id: String,
+    /// Vendor-level display name for the collapsed picker row, e.g. "OpenAI",
+    /// "OpenCode" — the same value repeated across every profile sharing a
+    /// `vendor_id`.
+    #[serde(default)]
+    pub vendor_label: String,
+    /// This profile's offering label under its vendor, e.g. "API key",
+    /// "ChatGPT sign-in", "Go", "Zen". Unused (empty) for vendors with only
+    /// one offering, since those never render a nested route row.
+    #[serde(default)]
+    pub route_label: String,
 }
 
 impl ConnectProfile {
     pub fn default_model(&self) -> Option<&str> {
         self.default_models.first().map(|s| s.as_str())
+    }
+
+    /// True when this vendor has more than one offering registered alongside
+    /// it — the only case where the picker nests routes under a chevron.
+    pub fn has_multiple_routes(&self, registry: &crate::registry::ConnectRegistry) -> bool {
+        registry
+            .profiles()
+            .iter()
+            .filter(|p| p.vendor_id == self.vendor_id)
+            .count()
+            > 1
     }
 
     pub fn needs_tui_api_key_prompt(&self) -> bool {
@@ -93,6 +119,9 @@ mod tests {
             models_dev_providers: vec![],
             auth_url: None,
             model_provider_prefix: "demo".into(),
+            vendor_id: "demo".into(),
+            vendor_label: "Demo".into(),
+            route_label: String::new(),
         }
     }
 
