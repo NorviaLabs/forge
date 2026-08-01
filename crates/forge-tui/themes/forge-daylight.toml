@@ -1,43 +1,53 @@
-# Forge Daylight — default light palette for the Forge TUI.
+# Forge Daylight (Calm) — recolored light palette for the Forge TUI.
+# Same key structure as forge-midnight(-calm).toml, so it's a drop-in
+# replacement for whatever light theme file currently ships (rename the
+# id/name below to match your actual light-theme file if different).
+# Consolidated to the same ~6 hues as the calm dark theme (neutral warm
+# paper, sage accent, slate blue status/info, muted mauve agent, ochre
+# warning, terracotta error, sage green success) instead of the current
+# theme's flat black-text-on-pale-blue-gray with orange/red file icons.
+# Every value verified >=4.5:1 contrast against the background/surface
+# it's actually rendered on.
 id = "forge-daylight"
 name = "Forge Daylight"
-
-background = "#F4F6F8"
-background_deep = "#F4F6F8"
-surface = "#FFFFFF"
-surface_raised = "#E9EDF2"
-surface_hover = "#E2E8F0"
-border = "#C8D0DB"
-border_muted = "#DDE2E9"
-text_primary = "#17202C"
-text_secondary = "#4F5D70"
-text_muted = "#566378"
-accent = "#1769CC"
-accent_soft = "#DCEBFC"
-agent = "#7048C8"
-success = "#237A3B"
-warning = "#996500"
-error = "#C4302B"
-info = "#077884"
-diff_add = "#DDF4E4"
-diff_remove = "#FBE1E3"
-selection = "#C9E1FC"
-cursor = "#17202C"
-user_gutter_active = "#1769CC"
-tag = "#505C70"
-search_match = "#FFF4C8"
-
+ 
+background = "#F6F2EA"
+background_deep = "#EDE6D6"
+surface = "#FAF7F1"
+surface_raised = "#FFFFFF"
+surface_hover = "#F0EBDD"
+border = "#DDD6C8"
+border_muted = "#E8E2D4"
+text_primary = "#33312B"
+text_secondary = "#665F52"
+text_muted = "#746E5F"
+accent = "#4B776B"
+accent_soft = "#E3ECE8"
+agent = "#7A6880"
+success = "#5A774C"
+warning = "#886A34"
+error = "#A15B41"
+info = "#5B6F92"
+diff_add = "#E6EEE1"
+diff_remove = "#F3E4DD"
+selection = "#E3E8E0"
+cursor = "#1F1E1B"
+user_gutter_active = "#4B776B"
+tag = "#5F5749"
+search_match = "#F1E7D2"
+ 
 [syntax]
-comment = "#7A8798"
-keyword = "#1769CC"
-string = "#996500"
-number = "#1769CC"
-function = "#7048C8"
-type = "#1769CC"
-variable = "#17202C"
-operator = "#7A8798"
-punctuation = "#7A8798"
-property = "#077884"
-tag = "#077884"
-attribute = "#996500"
-default = "#17202C"
+comment = "#665F52"
+keyword = "#5B6F92"
+string = "#886A34"
+number = "#5B6F92"
+function = "#7A6880"
+type = "#4B776B"
+variable = "#33312B"
+operator = "#665F52"
+punctuation = "#665F52"
+property = "#5B6F92"
+tag = "#5B6F92"
+attribute = "#886A34"
+default = "#33312B"
+ 
