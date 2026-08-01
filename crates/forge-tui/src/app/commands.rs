@@ -583,13 +583,18 @@ impl TuiApp {
 
     pub(super) fn handle_theme_command(&mut self, name: Option<&str>) {
         if let Some(name) = name.filter(|name| !name.trim().is_empty()) {
-            match forge_config::Theme::parse_strict(name) {
-                Ok(theme) => self.apply_theme(theme, true),
-                Err(error) => self.set_feedback(FeedbackSeverity::Warn, error.to_string()),
+            let theme_id = forge_config::normalize_theme_id(name);
+            if crate::theme::registry().contains(&theme_id) {
+                self.apply_theme(theme_id, true);
+            } else {
+                self.set_feedback(
+                    FeedbackSeverity::Warn,
+                    format!("unknown theme `{name}` (use /theme to pick from installed themes)"),
+                );
             }
             return;
         }
-        self.overlay = Some(Overlay::theme_open(crate::theme::active()));
+        self.overlay = Some(Overlay::theme_open(&crate::theme::active()));
         self.status_message = "pick a theme".into();
     }
 
@@ -941,7 +946,7 @@ mod tests {
                 validation_command: None,
                 file_icons: forge_config::FileIconMode::Unicode,
                 mouse_capture: true,
-                theme: forge_config::Theme::default(),
+                theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
             },
         );
         (dir, app)

@@ -1,7 +1,6 @@
 //! Overlays: HITL, slash palette, model picker (TUI-04).
 
-use crate::{effort::ReasoningEffort, theme};
-use forge_config::Theme;
+use crate::{effort::ReasoningEffort, theme, theme_registry};
 use forge_types::HitlPayload;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -73,8 +72,8 @@ pub enum Overlay {
     },
     Theme {
         selected: usize,
-        current: Theme,
-        items: Vec<Theme>,
+        current: String,
+        items: Vec<(String, String)>,
     },
     FileExplorer {
         cwd: String,
@@ -609,15 +608,15 @@ impl Overlay {
         Self::ResumePicker { selected: 0, items }
     }
 
-    pub fn theme_open(current: Theme) -> Self {
-        let items = Theme::ALL.to_vec();
+    pub fn theme_open(current: &str) -> Self {
+        let items = theme_registry::picker_entries(&theme::registry());
         let selected = items
             .iter()
-            .position(|theme| *theme == current)
+            .position(|(id, _)| id == current)
             .unwrap_or(0);
         Self::Theme {
             selected,
-            current,
+            current: current.to_string(),
             items,
         }
     }
@@ -795,7 +794,7 @@ pub enum OverlayAction {
         profile_id: Option<String>,
     },
     SelectEffort(ReasoningEffort),
-    SelectTheme(Theme),
+    SelectTheme(String),
     /// Submit API key from ConnectApiKey overlay
     ConnectSubmitKey {
         profile_id: String,
@@ -998,8 +997,7 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                 selected, items, ..
             } => items
                 .get(*selected)
-                .copied()
-                .map(OverlayAction::SelectTheme)
+                .map(|(id, _)| OverlayAction::SelectTheme(id.clone()))
                 .unwrap_or(OverlayAction::None),
             Overlay::FileExplorer {
                 selected, items, ..
@@ -2144,16 +2142,16 @@ impl Widget for OverlayWidget<'_> {
                 let list_items: Vec<ListItem> = items
                     .iter()
                     .enumerate()
-                    .map(|(index, choice)| {
+                    .map(|(index, (id, name))| {
                         let marker = if index == *selected { "▶ " } else { "  " };
-                        let is_current = *choice == *current;
+                        let is_current = id == current;
                         let selected_row = index == *selected;
                         let style = if selected_row {
                             theme::focused_selection_style()
                         } else {
                             theme::text()
                         };
-                        let base = format!("{marker}{} ({})", choice.title(), choice.label());
+                        let base = format!("{marker}{name} ({id})");
                         if is_current {
                             ListItem::new(Line::from(vec![
                                 Span::styled(base, style),
@@ -2279,6 +2277,7 @@ impl Widget for OverlayWidget<'_> {
 mod tests {
     use super::*;
     use crate::commands::{parse_slash, SlashCommand};
+    use forge_config::THEME_FORGE_DAYLIGHT;
     use forge_types::HitlPayload;
     use ratatui::widgets::Widget;
     use serde_json::json;
@@ -3053,11 +3052,24 @@ mod tests {
 
     #[test]
     fn theme_picker_selects_choice() {
-        let mut overlay = Overlay::theme_open(Theme::Dark);
-        handle_overlay_key(&mut overlay, Key::Down);
+        crate::theme::install(
+            crate::theme_registry::ThemeRegistry::load(None),
+            forge_config::THEME_FORGE_MIDNIGHT,
+        );
+        let mut overlay = Overlay::theme_open(forge_config::THEME_FORGE_MIDNIGHT);
+        let daylight_index = match &overlay {
+            Overlay::Theme { items, .. } => items
+                .iter()
+                .position(|(id, _)| id == THEME_FORGE_DAYLIGHT)
+                .expect("forge-daylight in picker"),
+            _ => panic!("expected theme overlay"),
+        };
+        if let Overlay::Theme { selected, .. } = &mut overlay {
+            *selected = daylight_index;
+        }
         assert_eq!(
             handle_overlay_key(&mut overlay, Key::Enter),
-            OverlayAction::SelectTheme(Theme::Light)
+            OverlayAction::SelectTheme(THEME_FORGE_DAYLIGHT.to_string())
         );
     }
 

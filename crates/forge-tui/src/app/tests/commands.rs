@@ -112,7 +112,7 @@ async fn resume_command_replaces_active_conversation_in_app() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     app.dispatch_line(&format!("/resume {previous_id}"))
@@ -148,7 +148,7 @@ async fn compact_reports_context_handoff_in_chat_and_activity() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
 
@@ -183,7 +183,7 @@ async fn enter_while_busy_enqueues_user_message() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     // Input routing keys off the authoritative session lifecycle, not the
@@ -221,7 +221,7 @@ async fn typing_while_busy_updates_input_buffer() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     app.busy = true;
@@ -249,7 +249,7 @@ async fn ctrl_p_toggles_bottom_panel_without_touching_input() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     app.input.set_text("draft");
@@ -282,7 +282,7 @@ async fn alt_number_opens_selected_bottom_panel_tab() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
 
@@ -308,7 +308,7 @@ async fn focused_bottom_panel_cycles_without_typing_into_chat() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     app.input.set_text("draft");
@@ -343,7 +343,7 @@ async fn editor_uppercase_g_does_not_reach_chat_input() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     app.input.set_text("draft");
@@ -371,7 +371,7 @@ async fn question_mark_opens_help_overlay() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     app.handle_key(press(KeyCode::F(1), KeyModifiers::NONE))
@@ -397,7 +397,7 @@ async fn empty_enter_when_idle_dequeues_and_sends() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     // Simulate a message enqueued while processing.
@@ -437,7 +437,7 @@ async fn ctrl_backspace_cancels_selected_queue_message() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     app.enqueue_user_message("a".into()).await;
@@ -469,7 +469,7 @@ async fn effort_selection_persists_across_tui_instances() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     app.connect.store = CredentialStore::new(credential_path.clone());
@@ -494,7 +494,7 @@ async fn effort_selection_persists_across_tui_instances() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     restarted.connect.store = CredentialStore::new(credential_path);
@@ -518,7 +518,7 @@ async fn switching_to_a_model_that_drops_the_current_effort_notifies_and_falls_b
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     app.connect.store = CredentialStore::new(credential_dir.path().join("credentials.toml"));
@@ -549,7 +549,7 @@ async fn model_command_applies_provider_id_to_session() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     app.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
@@ -581,7 +581,7 @@ async fn model_command_rejects_cross_provider_selection_without_matching_connect
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     app.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
@@ -630,7 +630,7 @@ async fn app_dispatch_user_message() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     app.dispatch_line("hi").await.unwrap();
@@ -663,7 +663,7 @@ async fn app_status_command() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     app.dispatch_line("/status").await.unwrap();
@@ -685,7 +685,7 @@ async fn clear_hides_existing_chat_without_deleting_context() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     app.dispatch_line("hi").await.unwrap();
@@ -720,7 +720,7 @@ async fn app_quit_command() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     app.dispatch_line("/quit").await.unwrap();
@@ -742,7 +742,7 @@ async fn history_records_submitted_lines_and_up_recalls() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     let enter = KeyEvent {
@@ -782,7 +782,7 @@ async fn history_up_via_key_when_no_overlay() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     app.history.push("alpha");
@@ -823,7 +823,7 @@ async fn slash_stays_in_textbox_does_not_open_palette() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     app.handle_key(press(KeyCode::Char('/'), KeyModifiers::NONE))
@@ -856,7 +856,7 @@ async fn enter_runs_slash_from_main_textbox() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     for c in "/status".chars() {
@@ -887,7 +887,7 @@ async fn inspector_is_closed_by_default_and_opens_on_demand() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     assert!(!app.sidebar_visible);
@@ -929,7 +929,7 @@ async fn inspector_view_shortcuts_cycle_without_opening_sidebar() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     assert_eq!(app.inspector_view, InspectorView::Task);
@@ -959,7 +959,7 @@ async fn multi_token_slash_connect_list_opens_picker() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     for c in "/connect list".chars() {
@@ -996,7 +996,7 @@ async fn slash_tab_autocompletes_command() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     for c in "/res".chars() {
@@ -1029,7 +1029,7 @@ async fn startup_notices_seed_notice_panel() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
 
@@ -1051,7 +1051,7 @@ async fn enter_on_highlighted_suggestion_runs_command() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     // Partial type; suggestions include /connect and /status.
@@ -1109,7 +1109,7 @@ async fn bare_slash_lists_all_palette_commands() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     app.handle_key(press(KeyCode::Char('/'), KeyModifiers::NONE))
@@ -1154,7 +1154,7 @@ async fn enter_on_status_suggestion_runs_immediately() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     for c in "/sta".chars() {
