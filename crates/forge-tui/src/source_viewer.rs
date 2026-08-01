@@ -1118,8 +1118,9 @@ impl SourceViewerWidget<'_> {
             let mut line_spans = vec![Span::styled(gutter_text, gutter_style)];
             if selected && self.viewer.focused {
                 // Subtle dark tint behind the current line so syntax colours stay readable.
+                let base = theme::accent_soft_bg();
                 line_spans.extend(spans.into_iter().map(|span| {
-                    let style = span.style.bg(theme::panel_alt_bg());
+                    let style = span.style.bg(base);
                     Span::styled(span.content.into_owned(), style)
                 }));
             } else {
