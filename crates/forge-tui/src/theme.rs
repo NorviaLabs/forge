@@ -20,68 +20,71 @@ pub fn active() -> Theme {
     ACTIVE_THEME.with(|t| t.get())
 }
 
-pub const CANVAS: Color = Color::Rgb(24, 23, 22);
-pub const CANVAS_DEEP: Color = Color::Rgb(17, 17, 16);
-// Dark-theme accent/status/success/error/tool tokens. Each has a distinct
-// LIGHT_* counterpart below (rather than sharing one constant across both
-// themes) because the same RGB value cannot clear 4.5:1 against both a near-
-// black and a near-white canvas — see theme.rs tests for the contrast checks.
-pub const ACCENT: Color = Color::Rgb(110, 198, 218);
-pub const ACCENT_2: Color = Color::Rgb(122, 168, 224);
-pub const USER_MESSAGE_GUTTER_DARK: Color = Color::Rgb(96, 145, 220);
-pub const USER_MESSAGE_GUTTER_LIGHT: Color = Color::Rgb(37, 99, 175);
-pub const USER_GUTTER_ACTIVE_DARK: Color = Color::Rgb(112, 168, 245);
-pub const USER_GUTTER_ACTIVE_LIGHT: Color = Color::Rgb(25, 82, 155);
-pub const OK: Color = Color::Rgb(127, 201, 127);
-pub const WARN: Color = Color::Rgb(229, 185, 79);
-pub const DANGER: Color = Color::Rgb(229, 107, 99);
-pub const TOOL: Color = Color::Rgb(132, 231, 239);
-pub const MUTED: Color = Color::Rgb(150, 144, 135);
-pub const DIM: Color = Color::Rgb(147, 144, 140);
-pub const TEXT: Color = Color::Rgb(232, 230, 226);
-pub const BORDER: Color = Color::Rgb(69, 65, 60);
-pub const BORDER_MUTED: Color = Color::Rgb(53, 50, 47);
-pub const PANEL: Color = Color::Rgb(35, 33, 31);
-pub const PANEL_ALT: Color = Color::Rgb(44, 41, 38);
+// Forge Midnight — dark theme tokens (spec hex → RGB decimal).
+pub const CANVAS: Color = Color::Rgb(13, 17, 23); // background
+pub const CANVAS_DEEP: Color = Color::Rgb(9, 12, 17); // deepest canvas
+pub const PANEL: Color = Color::Rgb(19, 25, 34); // surface
+pub const PANEL_ALT: Color = Color::Rgb(26, 34, 48); // surface_raised
+pub const SURFACE_HOVER: Color = Color::Rgb(32, 42, 57); // surface_hover
+pub const BORDER: Color = Color::Rgb(43, 53, 69); // border
+pub const BORDER_MUTED: Color = Color::Rgb(32, 41, 56); // border_muted
+pub const TEXT: Color = Color::Rgb(230, 237, 243); // text_primary
+pub const MUTED: Color = Color::Rgb(157, 170, 189); // text_secondary
+pub const DIM: Color = Color::Rgb(133, 148, 168); // text_muted (clears 4.5 on surface_raised)
+pub const ACCENT: Color = Color::Rgb(104, 168, 255); // accent
+pub const ACCENT_2: Color = Color::Rgb(86, 212, 221); // info
+pub const ACCENT_SOFT: Color = Color::Rgb(28, 53, 85); // accent_soft
+pub const AGENT: Color = Color::Rgb(180, 156, 255); // agent
+pub const OK: Color = Color::Rgb(86, 211, 100); // success
+pub const WARN: Color = Color::Rgb(227, 179, 65); // warning
+pub const DANGER: Color = Color::Rgb(255, 123, 114); // error
+pub const TOOL: Color = Color::Rgb(86, 212, 221); // informational tool state
+pub const CURSOR: Color = Color::Rgb(240, 246, 252); // cursor
+/// User message left gutter marker — the accent (blue) interaction colour.
+pub const USER_MESSAGE_GUTTER_DARK: Color = ACCENT;
+/// Active-input gutter marker — brighter than the submitted marker.
+pub const USER_GUTTER_ACTIVE_DARK: Color = Color::Rgb(138, 192, 255);
+pub const USER_GUTTER_ACTIVE_LIGHT: Color = Color::Rgb(23, 105, 204);
+pub const USER_MESSAGE_GUTTER_LIGHT: Color = LIGHT_ACCENT;
 /// Highlighted-row background (selected list rows, focused picker rows).
-pub const SELECTED_BG: Color = Color::Rgb(31, 50, 56);
-/// Foreground painted on top of [`SELECTED_BG`] — distinct from `text`
-/// (used for bold assistant text) so the two roles can be tuned
-/// independently.
-pub const SELECTION_FG: Color = Color::Rgb(189, 234, 245);
-/// "current" / "connected" tag label color, tuned to clear 4.5:1 against
-/// both the normal panel background and [`SELECTED_BG`].
-pub const TAG: Color = Color::Rgb(148, 153, 148);
+pub const SELECTED_BG: Color = Color::Rgb(41, 72, 111); // selection
+/// Foreground painted on top of [`SELECTED_BG`].
+pub const SELECTION_FG: Color = TEXT;
+/// "current" / "connected" tag label colour.
+pub const TAG: Color = Color::Rgb(192, 198, 208);
 pub const USER_BG: Color = CANVAS_DEEP;
 pub const RESPONSE_BG: Color = CANVAS;
-pub const DIFF_ADD_BG: Color = Color::Rgb(41, 75, 55);
-pub const DIFF_REMOVE_BG: Color = Color::Rgb(91, 44, 49);
-pub const DIFF_HUNK_BG: Color = Color::Rgb(45, 63, 97);
+pub const DIFF_ADD_BG: Color = Color::Rgb(36, 74, 50);
+pub const DIFF_REMOVE_BG: Color = Color::Rgb(84, 43, 49);
+pub const DIFF_HUNK_BG: Color = ACCENT_SOFT;
+pub const DARK_SEARCH_MATCH_BG: Color = Color::Rgb(51, 66, 87);
 
-pub const LIGHT_CANVAS: Color = Color::Rgb(253, 250, 242);
-pub const LIGHT_TEXT: Color = Color::Rgb(43, 40, 32);
-// Light-theme counterparts of the dark accent/status/success/error/tool
-// tokens above — darkened/desaturated per role so each still clears 4.5:1
-// against LIGHT_CANVAS (and, for DIM/DANGER, against LIGHT_PANEL_ALT too).
-pub const LIGHT_ACCENT: Color = Color::Rgb(50, 121, 135);
-pub const LIGHT_ACCENT_2: Color = Color::Rgb(73, 111, 180);
-pub const LIGHT_OK: Color = Color::Rgb(55, 125, 72);
-pub const LIGHT_WARN: Color = Color::Rgb(139, 105, 21);
-pub const LIGHT_DANGER: Color = Color::Rgb(187, 71, 56);
-pub const LIGHT_TOOL: Color = Color::Rgb(17, 121, 130);
-pub const LIGHT_MUTED: Color = Color::Rgb(92, 87, 80);
-pub const LIGHT_SELECTION: Color = Color::Rgb(220, 236, 236);
-pub const LIGHT_SELECTION_FG: Color = Color::Rgb(13, 92, 92);
-pub const LIGHT_TAG: Color = Color::Rgb(108, 104, 93);
-pub const LIGHT_DIFF_ADD: Color = Color::Rgb(209, 240, 223);
-pub const LIGHT_DIFF_REMOVE: Color = Color::Rgb(255, 223, 223);
-pub const LIGHT_DIFF_HUNK: Color = Color::Rgb(220, 230, 255);
-pub const LIGHT_BORDER: Color = Color::Rgb(201, 195, 185);
-pub const LIGHT_BORDER_MUTED: Color = Color::Rgb(221, 216, 208);
-pub const LIGHT_DIM: Color = Color::Rgb(115, 108, 96);
-pub const LIGHT_PANEL_ALT: Color = Color::Rgb(245, 242, 234);
+// Forge Daylight — light theme tokens.
+pub const LIGHT_CANVAS: Color = Color::Rgb(244, 246, 248); // background
+pub const LIGHT_PANEL: Color = Color::Rgb(255, 255, 255); // surface
+pub const LIGHT_PANEL_ALT: Color = Color::Rgb(233, 237, 242); // surface_raised
+pub const LIGHT_SURFACE_HOVER: Color = Color::Rgb(226, 232, 240); // surface_hover
+pub const LIGHT_BORDER: Color = Color::Rgb(200, 208, 219); // border
+pub const LIGHT_BORDER_MUTED: Color = Color::Rgb(221, 226, 233); // border_muted
+pub const LIGHT_TEXT: Color = Color::Rgb(23, 32, 44); // text_primary
+pub const LIGHT_MUTED: Color = Color::Rgb(79, 93, 112); // text_secondary
+pub const LIGHT_DIM: Color = Color::Rgb(86, 99, 120); // text_muted (clears 4.5 on surface_raised)
+pub const LIGHT_ACCENT: Color = Color::Rgb(23, 105, 204); // accent
+pub const LIGHT_ACCENT_2: Color = Color::Rgb(7, 120, 132); // info
+pub const LIGHT_ACCENT_SOFT: Color = Color::Rgb(220, 235, 252); // accent_soft
+pub const LIGHT_AGENT: Color = Color::Rgb(112, 72, 200); // agent
+pub const LIGHT_OK: Color = Color::Rgb(35, 122, 59); // success
+pub const LIGHT_WARN: Color = Color::Rgb(153, 101, 0); // warning
+pub const LIGHT_DANGER: Color = Color::Rgb(198, 49, 44); // error
+pub const LIGHT_TOOL: Color = Color::Rgb(8, 126, 139);
+pub const LIGHT_CURSOR: Color = TEXT;
+pub const LIGHT_SELECTION: Color = Color::Rgb(201, 225, 252); // selection
+pub const LIGHT_SELECTION_FG: Color = LIGHT_TEXT;
+pub const LIGHT_TAG: Color = Color::Rgb(80, 92, 112);
+pub const LIGHT_DIFF_ADD: Color = Color::Rgb(221, 244, 228);
+pub const LIGHT_DIFF_REMOVE: Color = Color::Rgb(251, 225, 227);
+pub const LIGHT_DIFF_HUNK: Color = LIGHT_ACCENT_SOFT;
 pub const LIGHT_SEARCH_MATCH_BG: Color = Color::Rgb(255, 244, 200);
-pub const DARK_SEARCH_MATCH_BG: Color = Color::Rgb(72, 64, 40);
 
 /// Paint every cell in `area` with `style` (used for root canvas and overlay backdrops).
 pub fn fill(area: Rect, buf: &mut Buffer, style: Style) {
@@ -108,7 +111,7 @@ pub fn canvas() -> Style {
 /// non-`Rgb` colors (e.g. `Reset`) pass through unchanged.
 fn dim_toward_overlay(color: Color) -> Color {
     const ALPHA: f32 = 0.62;
-    const OVERLAY: (f32, f32, f32) = (10.0, 9.0, 8.0);
+    const OVERLAY: (f32, f32, f32) = (9.0, 12.0, 17.0);
     match color {
         Color::Rgb(r, g, b) => {
             let blend = |c: u8, d: f32| ((c as f32) * (1.0 - ALPHA) + d * ALPHA).round() as u8;
@@ -142,6 +145,10 @@ pub fn dim_region(area: Rect, buf: &mut Buffer) {
 
 pub fn panel_alt_bg() -> Color {
     palette(active()).panel_alt
+}
+
+pub fn accent_soft_bg() -> Color {
+    palette(active()).accent_soft
 }
 
 pub fn syntax_theme() -> forge_syntax::HighlightTheme {
@@ -183,6 +190,14 @@ pub fn danger() -> Style {
 
 pub fn info() -> Style {
     Style::default().fg(palette(active()).info)
+}
+
+pub fn agent() -> Style {
+    Style::default().fg(palette(active()).agent)
+}
+
+pub fn surface_hover() -> Style {
+    Style::default().bg(palette(active()).surface_hover)
 }
 
 pub fn tool() -> Style {
@@ -272,7 +287,7 @@ pub fn progress_style() -> Style {
 }
 
 pub fn tool_running_style() -> Style {
-    info().add_modifier(Modifier::BOLD)
+    warn().add_modifier(Modifier::BOLD)
 }
 
 pub fn tool_success_style() -> Style {
@@ -288,8 +303,7 @@ pub fn selection_active() -> Style {
 }
 
 pub fn selection_inactive() -> Style {
-    let p = palette(active());
-    Style::default().fg(p.text).bg(p.panel_alt)
+    surface_hover().fg(palette(active()).text)
 }
 
 pub fn directory() -> Style {
@@ -383,7 +397,7 @@ pub fn caret() -> Style {
     let p = palette(active());
     Style::default()
         .fg(p.panel)
-        .bg(p.text)
+        .bg(p.cursor)
         .add_modifier(Modifier::BOLD)
 }
 
@@ -400,6 +414,8 @@ pub struct Palette {
     pub muted: Color,
     pub dim: Color,
     pub accent: Color,
+    pub accent_soft: Color,
+    pub agent: Color,
     pub ok: Color,
     pub warn: Color,
     pub danger: Color,
@@ -411,6 +427,7 @@ pub struct Palette {
     pub diff_hunk: Color,
     pub panel: Color,
     pub panel_alt: Color,
+    pub surface_hover: Color,
     pub user_bg: Color,
     pub response_bg: Color,
     pub user_message_gutter: Color,
@@ -422,6 +439,8 @@ pub struct Palette {
     pub selection_fg: Color,
     /// "current" / "connected" tag label color (see [`TAG`]).
     pub tag: Color,
+    /// Editor/input cursor color (see [`caret`]).
+    pub cursor: Color,
 }
 
 pub fn palette(theme: Theme) -> Palette {
@@ -432,6 +451,8 @@ pub fn palette(theme: Theme) -> Palette {
             muted: MUTED,
             dim: DIM,
             accent: ACCENT,
+            accent_soft: ACCENT_SOFT,
+            agent: AGENT,
             ok: OK,
             warn: WARN,
             danger: DANGER,
@@ -443,6 +464,7 @@ pub fn palette(theme: Theme) -> Palette {
             diff_hunk: DIFF_HUNK_BG,
             panel: PANEL,
             panel_alt: PANEL_ALT,
+            surface_hover: SURFACE_HOVER,
             user_bg: USER_BG,
             response_bg: RESPONSE_BG,
             user_message_gutter: USER_MESSAGE_GUTTER_DARK,
@@ -452,6 +474,7 @@ pub fn palette(theme: Theme) -> Palette {
             search_match: DARK_SEARCH_MATCH_BG,
             selection_fg: SELECTION_FG,
             tag: TAG,
+            cursor: CURSOR,
         },
         Theme::Light => Palette {
             canvas: LIGHT_CANVAS,
@@ -459,6 +482,8 @@ pub fn palette(theme: Theme) -> Palette {
             muted: LIGHT_MUTED,
             dim: LIGHT_DIM,
             accent: LIGHT_ACCENT,
+            accent_soft: LIGHT_ACCENT_SOFT,
+            agent: LIGHT_AGENT,
             ok: LIGHT_OK,
             warn: LIGHT_WARN,
             danger: LIGHT_DANGER,
@@ -468,8 +493,9 @@ pub fn palette(theme: Theme) -> Palette {
             diff_add: LIGHT_DIFF_ADD,
             diff_remove: LIGHT_DIFF_REMOVE,
             diff_hunk: LIGHT_DIFF_HUNK,
-            panel: LIGHT_CANVAS,
+            panel: LIGHT_PANEL,
             panel_alt: LIGHT_PANEL_ALT,
+            surface_hover: LIGHT_SURFACE_HOVER,
             user_bg: LIGHT_CANVAS,
             response_bg: LIGHT_CANVAS,
             user_message_gutter: USER_MESSAGE_GUTTER_LIGHT,
@@ -479,6 +505,7 @@ pub fn palette(theme: Theme) -> Palette {
             search_match: LIGHT_SEARCH_MATCH_BG,
             selection_fg: LIGHT_SELECTION_FG,
             tag: LIGHT_TAG,
+            cursor: LIGHT_CURSOR,
         },
         Theme::System => Palette {
             canvas: Color::Reset,
@@ -486,6 +513,8 @@ pub fn palette(theme: Theme) -> Palette {
             muted: Color::Reset,
             dim: Color::Reset,
             accent: Color::Cyan,
+            accent_soft: Color::Reset,
+            agent: Color::Magenta,
             ok: Color::Green,
             warn: Color::Yellow,
             danger: Color::Red,
@@ -497,6 +526,7 @@ pub fn palette(theme: Theme) -> Palette {
             diff_hunk: Color::Blue,
             panel: Color::Reset,
             panel_alt: Color::Reset,
+            surface_hover: Color::Reset,
             user_bg: Color::Reset,
             response_bg: Color::Reset,
             user_message_gutter: Color::Blue,
@@ -506,6 +536,7 @@ pub fn palette(theme: Theme) -> Palette {
             search_match: Color::Reset,
             selection_fg: Color::White,
             tag: Color::Gray,
+            cursor: Color::White,
         },
     }
 }
@@ -525,7 +556,7 @@ mod tests {
     #[test]
     fn selected_and_caret_use_background() {
         assert_eq!(selected_row().bg, Some(SELECTED_BG));
-        assert_eq!(caret().bg, Some(TEXT));
+        assert_eq!(caret().bg, Some(CURSOR));
         assert_eq!(selected_row().fg, Some(SELECTION_FG));
     }
 
@@ -592,17 +623,19 @@ mod tests {
     }
 
     #[test]
-    fn user_gutter_active_is_distinct_from_submitted() {
+    fn user_message_gutter_uses_accent() {
         let dark = palette(Theme::Dark);
-        assert_ne!(dark.user_gutter_active, dark.user_message_gutter);
-        assert_ne!(dark.user_gutter_active, dark.accent);
+        assert_eq!(
+            dark.user_message_gutter, dark.accent,
+            "user gutter marker uses accent"
+        );
+        assert_ne!(dark.user_message_gutter, dark.info);
     }
 
     #[test]
-    fn user_message_gutter_is_distinct_from_info() {
+    fn user_gutter_active_is_distinct_from_submitted() {
         let dark = palette(Theme::Dark);
-        assert_ne!(dark.user_message_gutter, dark.info);
-        assert_ne!(dark.user_message_gutter, dark.accent);
+        assert_ne!(dark.user_gutter_active, dark.user_message_gutter);
     }
 
     #[test]
