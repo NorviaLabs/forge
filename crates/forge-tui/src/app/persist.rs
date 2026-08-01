@@ -95,8 +95,9 @@ impl TuiApp {
         {
             self.files_visible = state.files_visibility.is_open();
             if let Some(ref name) = state.theme {
-                if let Ok(theme) = forge_config::Theme::parse_strict(name) {
-                    self.apply_theme(theme, false);
+                let theme_id = forge_config::normalize_theme_id(name);
+                if crate::theme::registry().contains(&theme_id) {
+                    self.apply_theme(theme_id, false);
                 }
             }
         }
@@ -108,7 +109,7 @@ impl TuiApp {
             version: UI_STATE_VERSION,
             repository_or_workspace_id: self.repository_or_workspace_id(),
             files_visibility: FilesVisibility::from_open(self.files_visible),
-            theme: Some(self.runtime.theme.label().to_string()),
+            theme: Some(self.runtime.theme_id.clone()),
         };
         let result = fs::create_dir_all(path.parent().unwrap_or_else(|| Path::new(".")))
             .and_then(|_| fs::write(&path, serde_json::to_vec_pretty(&state).unwrap_or_default()));
@@ -140,7 +141,7 @@ mod tests {
                 validation_command: None,
                 file_icons: forge_config::FileIconMode::Unicode,
                 mouse_capture: true,
-                theme: forge_config::Theme::default(),
+                theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
             },
         )
     }

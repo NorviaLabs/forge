@@ -433,7 +433,7 @@ async fn helper_labels_reflect_focus_mode() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     assert!(app.help_text().contains("Conversation"));

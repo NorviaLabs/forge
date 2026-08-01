@@ -73,7 +73,7 @@ mod tests {
                 validation_command: None,
                 file_icons: forge_config::FileIconMode::Unicode,
                 mouse_capture: true,
-                theme: forge_config::Theme::default(),
+                theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
             },
         );
         (dir, app)
@@ -276,7 +276,7 @@ mod tests {
         for y in 0..area.height {
             for x in 0..area.width {
                 let cell = &buf[(x, y)];
-                if cell.style().bg == Some(crate::theme::palette(crate::theme::active()).selection)
+                if cell.style().bg == Some(crate::theme::palette(&crate::theme::active()).selection)
                 {
                     found_sel_bg = true;
                 }

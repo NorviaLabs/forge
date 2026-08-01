@@ -18,7 +18,7 @@ async fn external_editor_keybind_sets_flag() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     assert!(!app.pending_external_editor);
@@ -45,7 +45,7 @@ async fn external_editor_preconditions_no_file() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     app.pending_external_editor = true;
@@ -68,7 +68,7 @@ async fn external_editor_preconditions_binary_file() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     app.source_viewer.status = crate::source_viewer::ViewerStatus::Binary;
@@ -93,7 +93,7 @@ async fn external_editor_rejects_during_tool_execution() {
             validation_command: None,
             file_icons: FileIconMode::Unicode,
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
     app.busy_phase = BusyPhase::Tool {

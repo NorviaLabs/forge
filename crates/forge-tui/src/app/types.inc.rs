@@ -434,7 +434,7 @@ pub struct TuiRuntimeConfig {
     pub validation_command: Option<CommandConfig>,
     pub file_icons: FileIconMode,
     pub mouse_capture: bool,
-    pub theme: forge_config::Theme,
+    pub theme_id: String,
 }
 
 impl Default for TuiRuntimeConfig {
@@ -448,7 +448,7 @@ impl Default for TuiRuntimeConfig {
             validation_command: None,
             file_icons: FileIconMode::default(),
             mouse_capture: true,
-            theme: forge_config::Theme::default(),
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         }
     }
 }
@@ -481,7 +481,7 @@ struct ConversationRenderKey {
     splash_dismissed: bool,
     slash_mode: bool,
     status: forge_types::TaskLifecycle,
-    theme: forge_config::Theme,
+    theme_id: String,
 }
 
 struct ConversationRenderCache {
