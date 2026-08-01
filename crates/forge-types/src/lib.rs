@@ -204,6 +204,15 @@ pub enum JournalEventType {
     QueuePromoting,
     QueuePromoted,
     QueueRemoved,
+    /// Background task lifecycle (shell jobs and subagents alike) — see
+    /// `forge-core`'s `BackgroundTaskRegistry`.
+    BackgroundTaskStarted,
+    BackgroundTaskFinished,
+    /// Subagent spawn/completion, appended to the *parent's* journal only —
+    /// the child records its own full turn-by-turn history in its own
+    /// journal under its own `SessionId`.
+    SubagentSpawned,
+    SubagentFinished,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -310,7 +319,7 @@ pub enum HitlDecision {
     Deny,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HitlPayload {
     pub call_id: String,
     pub tool: String,
@@ -387,6 +396,14 @@ pub enum QueueItemStatus {
     Promoted,
     Removed,
 }
+
+/// Stable identifier for one background task (shell job or subagent),
+/// distinct from `TaskId` — a background task is not the single foreground
+/// attempt tracked by `ActiveTaskState`, it's one entry in
+/// `forge-core`'s `BackgroundTaskRegistry`. Scoped to one session, like
+/// `TaskId`/`QueueItemId`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct BackgroundTaskId(pub u64);
 
 #[cfg(test)]
 mod tests {

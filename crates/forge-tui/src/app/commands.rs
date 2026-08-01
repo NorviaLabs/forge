@@ -298,6 +298,21 @@ impl TuiApp {
             KeyCode::Char('d') if self.bottom_panel.active == BottomPanelTab::Run => {
                 Some(SemanticCommand::EditRunDirectory)
             }
+            KeyCode::Up if self.bottom_panel.active == BottomPanelTab::Tasks => {
+                Some(SemanticCommand::MoveTasksSelection(-1))
+            }
+            KeyCode::Down if self.bottom_panel.active == BottomPanelTab::Tasks => {
+                Some(SemanticCommand::MoveTasksSelection(1))
+            }
+            KeyCode::Char('x') if self.bottom_panel.active == BottomPanelTab::Tasks => {
+                Some(SemanticCommand::CancelSelectedBackgroundTask)
+            }
+            KeyCode::Char('a') if self.bottom_panel.active == BottomPanelTab::Tasks => {
+                Some(SemanticCommand::ApproveSelectedBackgroundTask)
+            }
+            KeyCode::Char('d') if self.bottom_panel.active == BottomPanelTab::Tasks => {
+                Some(SemanticCommand::DenySelectedBackgroundTask)
+            }
             KeyCode::Esc if key.modifiers.is_empty() => {
                 Some(SemanticCommand::CancelCurrentInteraction)
             }
@@ -507,6 +522,14 @@ impl TuiApp {
             SemanticCommand::ToggleToolDetails => self.tool_expanded = !self.tool_expanded,
             SemanticCommand::MoveQueueSelection(delta) => self.move_queue_selection(delta),
             SemanticCommand::CancelSelectedQueueMessage => self.cancel_selected_queue().await,
+            SemanticCommand::MoveTasksSelection(delta) => self.move_tasks_selection(delta),
+            SemanticCommand::CancelSelectedBackgroundTask => self.cancel_selected_task().await,
+            SemanticCommand::ApproveSelectedBackgroundTask => {
+                self.resolve_selected_task_hitl(HitlDecision::Approve)
+            }
+            SemanticCommand::DenySelectedBackgroundTask => {
+                self.resolve_selected_task_hitl(HitlDecision::Deny)
+            }
             SemanticCommand::QuitOrInterrupt => {
                 if self.busy {
                     if self.cancel_requested {
