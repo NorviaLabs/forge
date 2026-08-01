@@ -90,7 +90,11 @@ fn dim_toward_overlay(color: Color) -> Color {
     match color {
         Color::Rgb(r, g, b) => {
             let blend = |c: u8, d: f32| ((c as f32) * (1.0 - ALPHA) + d * ALPHA).round() as u8;
-            Color::Rgb(blend(r, OVERLAY.0), blend(g, OVERLAY.1), blend(b, OVERLAY.2))
+            Color::Rgb(
+                blend(r, OVERLAY.0),
+                blend(g, OVERLAY.1),
+                blend(b, OVERLAY.2),
+            )
         }
         other => other,
     }

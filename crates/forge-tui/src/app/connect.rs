@@ -424,8 +424,11 @@ impl TuiApp {
                 .map(|p| p.id)
                 .collect()
         };
-        let providers =
-            build_provider_rows(&self.connect.registry, &connected, self.connect.profile.as_deref());
+        let providers = build_provider_rows(
+            &self.connect.registry,
+            &connected,
+            self.connect.profile.as_deref(),
+        );
         let items = self.model_picker_items(true);
         Overlay::connect_model_open(
             providers,

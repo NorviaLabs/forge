@@ -682,7 +682,8 @@ impl Overlay {
                 ConnectModelColumn::Effort => {
                     if !effort_items.is_empty() {
                         let n = effort_items.len() as i32;
-                        *effort_selected = ((*effort_selected as i32 + delta).rem_euclid(n)) as usize;
+                        *effort_selected =
+                            ((*effort_selected as i32 + delta).rem_euclid(n)) as usize;
                     }
                 }
             },
@@ -937,8 +938,7 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                         return OverlayAction::None;
                     };
                     *active_model = route.model.clone();
-                    if let Some(pid) = route.profile_id.clone().or_else(|| selected_route.clone())
-                    {
+                    if let Some(pid) = route.profile_id.clone().or_else(|| selected_route.clone()) {
                         *active_profile_id = Some(pid);
                     }
                     let opts = effort_options(&route.model);
@@ -948,10 +948,7 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                     } else {
                         default_effort
                     };
-                    *effort_selected = opts
-                        .iter()
-                        .position(|e| *e == use_effort)
-                        .unwrap_or(0);
+                    *effort_selected = opts.iter().position(|e| *e == use_effort).unwrap_or(0);
                     *active_effort = use_effort;
                     *effort_items = opts;
                     *focus = ConnectModelColumn::Effort;
@@ -2721,7 +2718,11 @@ mod tests {
             .iter()
             .find(|r| r.vendor_id == "anthropic")
             .expect("anthropic vendor row");
-        assert_eq!(anthropic.routes.len(), 1, "single-offering vendors don't nest");
+        assert_eq!(
+            anthropic.routes.len(),
+            1,
+            "single-offering vendors don't nest"
+        );
     }
 
     #[test]
@@ -2729,7 +2730,10 @@ mod tests {
         let registry = forge_connect::builtin_registry();
         let connected = std::collections::HashSet::new();
         let providers = build_provider_rows(&registry, &connected, None);
-        let openai_idx = providers.iter().position(|p| p.vendor_id == "openai").unwrap();
+        let openai_idx = providers
+            .iter()
+            .position(|p| p.vendor_id == "openai")
+            .unwrap();
         assert!(!providers[openai_idx].expanded);
 
         let mut overlay = Overlay::connect_model_open(
@@ -2796,7 +2800,9 @@ mod tests {
         registry.register(forge_connect::anthropic_profile());
         registry.register(forge_connect::ollama_profile());
         let connected: std::collections::HashSet<String> =
-            ["anthropic".to_string(), "ollama".to_string()].into_iter().collect();
+            ["anthropic".to_string(), "ollama".to_string()]
+                .into_iter()
+                .collect();
         let providers = build_provider_rows(&registry, &connected, Some("ollama"));
         let items = vec![
             ModelItem {
@@ -3178,7 +3184,8 @@ mod tests {
         let mut registry = forge_connect::ConnectRegistry::new();
         registry.register(forge_connect::ollama_profile());
         registry.register(forge_connect::xai_grok_profile());
-        let connected: std::collections::HashSet<String> = ["ollama".to_string()].into_iter().collect();
+        let connected: std::collections::HashSet<String> =
+            ["ollama".to_string()].into_iter().collect();
         let providers = build_provider_rows(&registry, &connected, Some("ollama"));
         let picker = render_text(&Overlay::connect_model_open(
             providers,

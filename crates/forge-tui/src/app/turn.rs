@@ -155,7 +155,10 @@ impl TuiApp {
             return;
         }
         if !self.is_provider_connected() {
-            let msg = format!("{} · cannot send queued message", self.disconnected_message());
+            let msg = format!(
+                "{} · cannot send queued message",
+                self.disconnected_message()
+            );
             self.report_error(&msg);
             return;
         }
