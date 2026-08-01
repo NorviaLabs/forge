@@ -12,7 +12,7 @@ id = "forge-daylight"
 name = "Forge Daylight"
  
 background = "#F6F2EA"
-background_deep = "#EDE6D6"
+background_deep = "#F6F2EA"
 surface = "#FAF7F1"
 surface_raised = "#FFFFFF"
 surface_hover = "#F0EBDD"
