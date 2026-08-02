@@ -7,6 +7,15 @@ use super::*;
 
 impl TuiApp {
     pub fn new(session: AgentSession, runtime: TuiRuntimeConfig) -> Self {
+        Self::new_with_startup_resume_picker(session, runtime, None)
+    }
+
+    pub fn new_with_startup_resume_picker(
+        session: AgentSession,
+        runtime: TuiRuntimeConfig,
+        startup_items: Option<Vec<ResumeSessionItem>>,
+    ) -> Self {
+        let startup_resume_session_id = startup_items.as_ref().map(|_| session.session_id);
         let workspace_root = session.workspace_root().to_path_buf();
         let (registry, theme_notices) =
             crate::theme_registry::ThemeRegistry::load_with_diagnostics(Some(&workspace_root));
@@ -26,8 +35,10 @@ impl TuiApp {
         let mut app = Self {
             session,
             input,
-            overlay: None,
+            overlay: startup_items.clone().map(Overlay::resume_picker),
             should_quit: false,
+            startup_resume_picker: startup_items.is_some(),
+            startup_resume_session_id,
             busy: false,
             status_message: String::new(),
             runtime,
