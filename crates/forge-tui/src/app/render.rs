@@ -297,7 +297,8 @@ impl TuiApp {
             .into();
             sidebar.context_reset = self.conversation_view.context_reset_snapshot;
             sidebar.session_allows = self
-                .hitl_session_allow
+                .hitl_session
+                .allowed
                 .iter()
                 .map(ApprovalIdentity::label)
                 .collect();

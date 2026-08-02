@@ -608,6 +608,10 @@ struct ExitState {
     code: ExitCode,
 }
 
+struct HitlSessionState {
+    allowed: HashSet<ApprovalIdentity>,
+}
+
 struct RenderCacheState {
     conversation: Option<ConversationRenderCache>,
     composer_layout: ComposerLayoutCache,
@@ -671,8 +675,7 @@ pub struct TuiApp {
     /// Selected index in the changed-files inventory for Diff workspace.
     diff_view: DiffViewState,
     cancellation: CancellationState,
-    /// Exact Direct invocations remembered for this Forge session only.
-    hitl_session_allow: HashSet<ApprovalIdentity>,
+    hitl_session: HitlSessionState,
     /// Transient toast (auto-clears).
     toast: Option<(Instant, String)>,
     editor_viewport: EditorViewportState,

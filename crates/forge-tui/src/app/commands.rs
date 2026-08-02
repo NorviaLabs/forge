@@ -809,7 +809,7 @@ impl TuiApp {
                             self.conversation_view.event_start = 0;
                             self.conversation_view.scroll = 0;
                             self.conversation_view.follow = true;
-                            self.hitl_session_allow.clear();
+                            self.hitl_session.allowed.clear();
                             self.maybe_open_hitl();
                         }
                         Err(error) => {

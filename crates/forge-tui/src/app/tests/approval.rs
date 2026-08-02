@@ -62,7 +62,7 @@ async fn approval_direct_allow_once_resolves_without_remembering() {
         .unwrap();
 
     assert!(app.session.pending_hitl().is_none());
-    assert!(app.hitl_session_allow.is_empty());
+    assert!(app.hitl_session.allowed.is_empty());
     assert!(app
         .session
         .messages
@@ -83,8 +83,8 @@ async fn approval_remembered_direct_invocation_matches_exact_identity() {
         .unwrap();
 
     let identity = app.approval_identity_for_payload(&payload).unwrap();
-    assert!(app.hitl_session_allow.contains(&identity));
-    assert!(!app.hitl_session_allow.contains(
+    assert!(app.hitl_session.allowed.contains(&identity));
+    assert!(!app.hitl_session.allowed.contains(
         &app.approval_identity_for_payload(&direct_hitl_payload("arg", "other.txt"))
             .unwrap()
     ));
@@ -94,7 +94,8 @@ async fn approval_remembered_direct_invocation_matches_exact_identity() {
         ..direct_hitl_payload("env", "remember.txt")
     };
     assert!(!app
-        .hitl_session_allow
+        .hitl_session
+        .allowed
         .contains(&app.approval_identity_for_payload(&env_payload).unwrap()));
 
     let cwd_payload = HitlPayload {
@@ -102,13 +103,15 @@ async fn approval_remembered_direct_invocation_matches_exact_identity() {
         ..direct_hitl_payload("cwd", "remember.txt")
     };
     assert!(!app
-        .hitl_session_allow
+        .hitl_session
+        .allowed
         .contains(&app.approval_identity_for_payload(&cwd_payload).unwrap()));
 
     let (other_dir, other_app) = focus_test_app().await;
     fs::write(other_dir.path().join("remember.txt"), "ok").unwrap();
     assert!(!app
-        .hitl_session_allow
+        .hitl_session
+        .allowed
         .contains(&other_app.approval_identity_for_payload(&payload).unwrap()));
 }
 
@@ -139,7 +142,7 @@ async fn approval_remembered_direct_expires_with_session() {
         },
     );
 
-    assert!(next_app.hitl_session_allow.is_empty());
+    assert!(next_app.hitl_session.allowed.is_empty());
     assert_ne!(
         app.approval_identity_for_payload(&payload),
         next_app.approval_identity_for_payload(&payload)
