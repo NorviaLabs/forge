@@ -62,7 +62,7 @@ impl TuiApp {
             format!("fresh context prepared · {before} → {after} tokens"),
         );
         self.status_message = "Continuing in a fresh context".into();
-        self.notices.clear();
+        self.notice_state.items.clear();
         self.busy_phase = BusyPhase::Idle;
         if let Some(term) = terminal {
             let _ = term.draw(|f| self.draw(f));
@@ -199,7 +199,7 @@ impl TuiApp {
         } else {
             format!("{changed} files changed")
         };
-        self.notices.clear();
+        self.notice_state.items.clear();
         self.push_notice(vec!["Returned from external editor".into(), gs_text]);
     }
 }

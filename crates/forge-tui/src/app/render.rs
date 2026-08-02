@@ -357,8 +357,10 @@ impl TuiApp {
         );
 
         // Notices (help, connect list, multi-line status) just above input
-        if !self.notices.is_empty() && self.overlay.is_none() {
-            let notice_h = (self.notices.len() as u16).min(18).saturating_add(1);
+        if !self.notice_state.items.is_empty() && self.overlay.is_none() {
+            let notice_h = (self.notice_state.items.len() as u16)
+                .min(18)
+                .saturating_add(1);
             // Render into bottom of chat area
             let chat = regions.chat;
             if chat.height > notice_h {
@@ -369,7 +371,8 @@ impl TuiApp {
                     height: notice_h,
                 };
                 let text = self
-                    .notices
+                    .notice_state
+                    .items
                     .iter()
                     .take(18)
                     .cloned()
