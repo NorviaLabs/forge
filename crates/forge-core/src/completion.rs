@@ -463,14 +463,15 @@ fn evaluate_tool_execution(
                     ExecutionEvent::ToolFinished | ExecutionEvent::ToolFailed
                 ) =>
             {
-                failed.push(format!(
-                    "{} exited with code {}",
-                    expectation.tool_name,
-                    entry
-                        .exit_code
-                        .map(|c| c.to_string())
-                        .unwrap_or_else(|| "unknown".into())
-                ));
+                // `exit_code` is only ever `None` for calls the runtime
+                // refused to execute at all (HITL/ACL denial) — nothing ever
+                // ran, so "exited with code unknown" is actively misleading
+                // (it implies a process started and its result is merely
+                // unknown). Say plainly that it didn't run instead.
+                failed.push(match entry.exit_code {
+                    Some(code) => format!("{} exited with code {code}", expectation.tool_name),
+                    None => format!("{} was not run (denied or blocked)", expectation.tool_name),
+                });
             }
             _ => failed.push(format!("{} did not run", expectation.tool_name)),
         }
@@ -848,6 +849,39 @@ mod tests {
             .evidence_summary
             .detail
             .contains("cargo test exited with code 101"));
+    }
+
+    /// F-RECOVERY-02: a denied (never-executed) call left `exit_code: None`,
+    /// which previously rendered as "{tool} exited with code unknown" —
+    /// contradicting the model's own honest "was not run because denied"
+    /// message shown right next to it. `exit_code: None` must read as "did
+    /// not run", not as an indeterminate exit from a process that started.
+    #[test]
+    fn denied_call_reads_as_not_run_not_exited_with_unknown_code() {
+        let expectation = TaskExpectation::ToolExecution {
+            required_tools: vec![ToolExpectation {
+                operation_id: "call-1".into(),
+                tool_name: "bash".into(),
+            }],
+        };
+        let mut evidence = ExecutionEvidence::new();
+        evidence.push(
+            EvidenceEntry::new(ExecutionEvent::ToolFailed)
+                .operation_id("call-1")
+                .error("HITL denied by tui"),
+        );
+        let d = eval(&expectation, &evidence);
+        assert_eq!(d.state, TaskLifecycle::Failed);
+        assert!(
+            d.evidence_summary.detail.contains("bash was not run"),
+            "{}",
+            d.evidence_summary.detail
+        );
+        assert!(
+            !d.evidence_summary.detail.contains("exited with code"),
+            "{}",
+            d.evidence_summary.detail
+        );
     }
 
     // 7. Tool succeeds but was unrelated to the expected operation (no

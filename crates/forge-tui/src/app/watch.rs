@@ -103,8 +103,38 @@ impl TuiApp {
         self.diff_snapshot.stale = false;
     }
 
+    /// Whether the set of changed paths currently known to git status differs
+    /// from the set captured when the review was last (re)opened. Order
+    /// doesn't matter — only membership does.
+    fn diff_review_paths_changed(&self) -> bool {
+        let mut current = self.current_changed_paths();
+        let mut captured = self.diff_snapshot.paths.clone();
+        current.sort();
+        captured.sort();
+        current != captured
+    }
+
+    /// Called on every raw filesystem-watch event. A single external write
+    /// can fire several watch events (and, on some platforms, replay recent
+    /// history once the watcher attaches) well before the async git-status
+    /// refresh they trigger has actually landed — so this only flags the
+    /// review as stale when the *currently known* changed-path set already
+    /// disagrees with what's under review, not on every raw notification.
+    /// [`reconcile_diff_staleness`] catches the remaining case where the
+    /// disagreement only becomes visible once that refresh completes.
     pub(super) fn mark_diff_stale_if_reviewing(&mut self) {
-        if self.current_workspace_is_diff() {
+        if self.current_workspace_is_diff() && self.diff_review_paths_changed() {
+            self.diff_snapshot.stale = true;
+        }
+    }
+
+    /// Re-checks diff staleness once a git-status refresh has actually
+    /// resolved. Call after `git_status.poll()` returns `true`.
+    pub(super) fn reconcile_diff_staleness(&mut self) {
+        if self.current_workspace_is_diff()
+            && !self.diff_snapshot.stale
+            && self.diff_review_paths_changed()
+        {
             self.diff_snapshot.stale = true;
         }
     }

@@ -122,6 +122,7 @@ impl AgentSession {
             validation_budget: ValidationBudget::with_default_max(),
             turn_calls: Vec::new(),
             turn_evidence: ExecutionEvidence::new(),
+            consecutive_hitl_denials: 0,
             last_completion: None,
             journaled_tool_results: HashMap::new(),
         })
@@ -204,6 +205,7 @@ impl AgentSession {
             validation_budget: ValidationBudget::with_default_max(),
             turn_calls: Vec::new(),
             turn_evidence: ExecutionEvidence::new(),
+            consecutive_hitl_denials: 0,
             last_completion: None,
             journaled_tool_results: state.tool_results.clone(),
         };

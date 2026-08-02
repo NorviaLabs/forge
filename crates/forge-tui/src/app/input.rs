@@ -544,6 +544,14 @@ impl TuiApp {
                 self.clamp_slash_suggest();
                 true
             }
+            // Standard readline "clear line" — previously unbound, so the
+            // only way to clear a long/garbled composer was repeated
+            // Backspace.
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.input.clear();
+                self.slash_suggest_idx = 0;
+                true
+            }
             KeyCode::Left if key.modifiers.is_empty() => {
                 self.input.move_left();
                 true

@@ -74,7 +74,9 @@ impl TuiApp {
             );
             self.register_file_hit_regions(files);
         }
-        self.file_explorer.git_status.poll();
+        if self.file_explorer.git_status.poll() {
+            self.reconcile_diff_staleness();
+        }
 
         let stream_wait = if self.busy && self.pending_prompt.is_none() {
             let elapsed = if !self.stream_thinking.is_empty() {

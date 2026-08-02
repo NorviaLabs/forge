@@ -216,3 +216,114 @@ async fn edge_diff_becomes_stale_and_refresh_clears_it() {
     assert!(!app.diff_snapshot.stale);
     assert_eq!(app.diff_selected, 0);
 }
+
+/// Regression test for F-REVIEW-01/F-REVIEW-02: a raw filesystem-watch event
+/// fires (and can even be replayed by the OS well after the write it
+/// describes) *before* the async git-status refresh it triggers has landed.
+/// Marking the review stale on that raw event alone meant the "stale" banner
+/// could resurrect itself faster than a user's `r` (refresh) or Escape could
+/// ever resolve it, making the panel feel permanently stuck. Staleness must
+/// only be flagged once the changed-path set actually, verifiably differs
+/// from what's under review.
+#[tokio::test]
+async fn edge_diff_stale_marking_waits_for_confirmed_status_change() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.file_explorer
+        .git_status
+        .status
+        .insert(PathBuf::from("one.rs"), GitStatusKind::Modified);
+    app.execute_semantic_command(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
+        .await
+        .unwrap();
+    assert!(!app.diff_snapshot.stale);
+
+    // A raw watch event fires (e.g. unrelated churn, or a replayed historical
+    // FSEvent) while `git_status` still holds the same data the review was
+    // opened with. This must NOT flag staleness — there is nothing to refresh
+    // to yet, so a refresh key press would have no visible effect.
+    app.note_workspace_changed();
+    assert!(
+        !app.diff_snapshot.stale,
+        "an fs event that doesn't change the known status set must not mark the review stale"
+    );
+
+    // Now the underlying status genuinely changes and a fresh event arrives.
+    app.file_explorer
+        .git_status
+        .status
+        .insert(PathBuf::from("two.rs"), GitStatusKind::Added);
+    app.note_workspace_changed();
+    assert!(
+        app.diff_snapshot.stale,
+        "a confirmed change to the tracked path set must mark the review stale"
+    );
+
+    // 'r' and 'R' both refresh and clear staleness.
+    assert_eq!(
+        app.semantic_command_for_workspace_key(press(KeyCode::Char('R'), KeyModifiers::NONE)),
+        Some(SemanticCommand::RefreshDiff)
+    );
+    app.execute_semantic_command(SemanticCommand::RefreshDiff)
+        .await
+        .unwrap();
+    assert!(!app.diff_snapshot.stale);
+
+    // Escape always leaves the diff workspace, stale or not.
+    app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(
+        app.workspace_navigation.current,
+        WorkspaceView::Conversation
+    );
+}
+
+/// A git-status refresh resolving asynchronously (via `poll()`) after the
+/// review was opened must re-check staleness against the now-current data,
+/// even though no raw filesystem-watch event drove this specific tick.
+#[tokio::test]
+async fn edge_diff_reconciles_staleness_after_async_poll_resolves() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.file_explorer
+        .git_status
+        .status
+        .insert(PathBuf::from("one.rs"), GitStatusKind::Modified);
+    app.execute_semantic_command(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
+        .await
+        .unwrap();
+    assert!(!app.diff_snapshot.stale);
+
+    // Simulate an async git-status refresh landing with genuinely different
+    // data, without going through the fs-watch event path at all.
+    app.file_explorer
+        .git_status
+        .status
+        .insert(PathBuf::from("two.rs"), GitStatusKind::Added);
+    app.reconcile_diff_staleness();
+    assert!(app.diff_snapshot.stale);
+}
+
+/// F-HELP-01: `/help` used to return "unknown command" even though the
+/// help overlay itself existed and was reachable via `?` on an empty
+/// composer — `/help` just wasn't wired to it, and there was no other
+/// visible hint that `?` did anything special.
+#[tokio::test]
+async fn slash_help_opens_the_help_overlay() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.dispatch_line("/help").await.unwrap();
+    assert!(matches!(app.overlay, Some(Overlay::Help)), "{:?}", app.overlay);
+}
+
+/// F-COMPOSER-01: Ctrl+U (standard readline "clear line") had no binding at
+/// all, so a garbled or long composer buffer could only be cleared one
+/// character at a time via repeated Backspace.
+#[tokio::test]
+async fn ctrl_u_clears_the_composer() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.input.set_text("some garbled /model text".to_string());
+    assert!(!app.input.text.is_empty());
+    app.handle_key(press(KeyCode::Char('u'), KeyModifiers::CONTROL))
+        .await
+        .unwrap();
+    assert!(app.input.text.is_empty(), "{:?}", app.input.text);
+}
