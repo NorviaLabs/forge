@@ -240,7 +240,7 @@ async fn enter_while_busy_enqueues_user_message() {
     // Input routing keys off the authoritative session lifecycle, not the
     // UI `busy` flag — a real task must be Working for Enter to enqueue.
     app.session.append_user_message("first").await.unwrap();
-    app.busy = true;
+    app.busy_state.active = true;
     for c in "queued later".chars() {
         app.handle_key(press(KeyCode::Char(c), KeyModifiers::NONE))
             .await
@@ -279,7 +279,7 @@ async fn typing_while_busy_updates_input_buffer() {
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
-    app.busy = true;
+    app.busy_state.active = true;
     for c in "next".chars() {
         app.handle_key(press(KeyCode::Char(c), KeyModifiers::NONE))
             .await
@@ -457,7 +457,7 @@ async fn empty_enter_when_idle_dequeues_and_sends() {
     );
     // Simulate a message enqueued while processing.
     app.session.enqueue_task("from queue").await.unwrap();
-    app.busy = false;
+    app.busy_state.active = false;
     assert!(app.pending_turn.prompt.is_none());
     // Empty Enter = user action to dequeue + send
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
@@ -469,7 +469,7 @@ async fn empty_enter_when_idle_dequeues_and_sends() {
     // (that would double-append).
     assert!(app.pending_turn.prompt.is_none());
     assert!(app.pending_turn.continue_turn);
-    assert!(app.busy);
+    assert!(app.busy_state.active);
     assert!(app
         .session
         .messages

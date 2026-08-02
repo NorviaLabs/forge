@@ -44,7 +44,7 @@ impl TuiApp {
                 picker: startup_items.is_some(),
                 session_id: startup_resume_session_id,
             },
-            busy: false,
+            busy_state: BusyState { active: false },
             status_message: String::new(),
             runtime,
             connect: connect::ConnectionModel::new(),

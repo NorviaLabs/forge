@@ -142,7 +142,7 @@ impl TuiApp {
             provider: self.runtime.provider.clone(),
             effort: self.reasoning_effort.value.to_string(),
             ctx_pct: self.session.context_usage_ratio(),
-            busy: self.busy,
+            busy: self.busy_state.active,
             busy_phase: self.busy_phase.clone(),
             connect_profile: self.connect.profile.clone(),
             provider_connected,
@@ -166,7 +166,7 @@ impl TuiApp {
 
     /// Typed progress for the header while Working. Structured sources only.
     fn header_progress_description(&self) -> Option<String> {
-        if !self.busy {
+        if !self.busy_state.active {
             return None;
         }
         // Prefer durable progress.json in_progress when present.
@@ -187,7 +187,7 @@ impl TuiApp {
         {
             return Some("Approval required".into());
         }
-        if self.busy && matches!(self.busy_phase, BusyPhase::Connect) {
+        if self.busy_state.active && matches!(self.busy_phase, BusyPhase::Connect) {
             return Some("Your input required".into());
         }
         None
@@ -324,7 +324,7 @@ impl TuiApp {
             });
         }
 
-        if self.busy && matches!(self.busy_phase, BusyPhase::Model) {
+        if self.busy_state.active && matches!(self.busy_phase, BusyPhase::Model) {
             return Some(ActivitySummaryModel {
                 label: "Forge is thinking".into(),
                 action_label: None,
@@ -428,7 +428,7 @@ impl TuiApp {
 
     #[cfg(test)]
     pub(super) fn busy_status_detail(&self) -> Option<String> {
-        self.busy.then(|| {
+        self.busy_state.active.then(|| {
             let label = if !self.stream_thinking.is_empty() && self.stream_preview.is_empty() {
                 "Thinking..."
             } else {

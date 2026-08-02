@@ -149,7 +149,7 @@ impl TuiApp {
     /// its next tick.
     fn resume_turn_after_hitl(&mut self) {
         self.pending_turn.continue_turn = true;
-        self.busy = true;
+        self.busy_state.active = true;
         self.busy_phase = BusyPhase::Model;
         self.timing.started = Some(Instant::now());
         self.stream_preview.clear();

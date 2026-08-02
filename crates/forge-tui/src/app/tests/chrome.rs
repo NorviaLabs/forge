@@ -122,7 +122,7 @@ async fn final_shell_rendering_matrix_covers_v31_states_without_obsolete_chrome(
     scenarios.push(("conversation idle", dir, app, vec!["Describe a task"]));
 
     let (dir, mut app) = focus_test_app().await;
-    app.busy = true;
+    app.busy_state.active = true;
     app.busy_phase = BusyPhase::Model;
     app.timing.started = Some(Instant::now());
     scenarios.push(("agent thinking", dir, app, vec!["thinking"]));
@@ -339,7 +339,7 @@ async fn header_status_follows_session_lifecycle() {
         .append_user_message("do something")
         .await
         .unwrap();
-    app.busy = true;
+    app.busy_state.active = true;
     app.busy_phase = BusyPhase::Tool {
         name: "read_file".into(),
     };
@@ -352,7 +352,7 @@ async fn header_status_follows_session_lifecycle() {
         working.status_label().0
     );
 
-    app.busy = false;
+    app.busy_state.active = false;
     app.busy_phase = BusyPhase::Idle;
     app.session.active_task.lifecycle = forge_types::TaskLifecycle::Completed;
     assert_eq!(
@@ -774,7 +774,7 @@ async fn elapsed_status_persists_during_answer_and_tool_processing() {
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
-    app.busy = true;
+    app.busy_state.active = true;
     app.timing.started = Some(Instant::now() - Duration::from_millis(1200));
     app.stream_preview = "partial answer".into();
     assert_eq!(app.busy_status_detail().as_deref(), Some("Working... 1.2s"));

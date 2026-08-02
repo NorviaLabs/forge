@@ -14,7 +14,7 @@ async fn agent_streaming_while_viewing_file_does_not_navigate() {
         .unwrap();
     let before = app.workspace_navigation.clone();
 
-    app.busy = true;
+    app.busy_state.active = true;
     app.busy_phase = BusyPhase::Model;
     app.pending_turn.prompt = None;
     app.stream_preview = "partial answer".into();
@@ -32,7 +32,7 @@ async fn agent_streaming_while_viewing_file_does_not_navigate() {
 #[tokio::test]
 async fn agent_thinking_keeps_composer_usable() {
     let (_dir, mut app) = focus_test_app().await;
-    app.busy = true;
+    app.busy_state.active = true;
     app.busy_phase = BusyPhase::Model;
     app.stream_thinking = "planning".into();
     app.focus_block(FocusBlock::Composer);
@@ -57,7 +57,7 @@ async fn activity_summary_priority_renders_one_actionable_row() {
         .git_status
         .status
         .insert(PathBuf::from("changed.rs"), GitStatusKind::Modified);
-    app.busy = true;
+    app.busy_state.active = true;
     app.busy_phase = BusyPhase::Model;
     app.run.draft.command_input = "cargo test".into();
     app.run_current_draft();

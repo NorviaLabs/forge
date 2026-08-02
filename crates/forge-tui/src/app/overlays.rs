@@ -137,7 +137,7 @@ impl TuiApp {
             OverlayAction::ContinueTurns => {
                 self.overlay = None;
                 self.pending_turn.continue_turn = true;
-                self.busy = true;
+                self.busy_state.active = true;
                 self.push_toast("continuing");
             }
             OverlayAction::StopTurns => {

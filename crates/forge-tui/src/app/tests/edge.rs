@@ -40,7 +40,7 @@ async fn edge_network_stream_interruption_preserves_partial_response() {
     app.drain_pending_prompt(None).await.unwrap();
 
     assert_eq!(app.workspace_navigation, before);
-    assert!(!app.busy);
+    assert!(!app.busy_state.active);
     app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
         .await
         .unwrap();
@@ -96,7 +96,7 @@ async fn edge_provider_error_unsticks_session_for_the_next_message() {
 
     app.dispatch_line("first message").await.unwrap();
     app.drain_pending_prompt(None).await.unwrap();
-    assert!(!app.busy);
+    assert!(!app.busy_state.active);
     assert_eq!(
         app.session.active_task.lifecycle,
         forge_types::TaskLifecycle::Failed,

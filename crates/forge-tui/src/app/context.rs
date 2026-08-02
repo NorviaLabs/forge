@@ -7,7 +7,7 @@ use super::*;
 
 impl TuiApp {
     pub(super) fn queue_context_reset(&mut self) {
-        if self.busy
+        if self.busy_state.active
             || self.pending_turn.prompt.is_some()
             || self.pending_interaction.hitl_decision.is_some()
             || self.pending_interaction.context_reset
