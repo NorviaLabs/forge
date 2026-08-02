@@ -442,9 +442,9 @@ impl TuiApp {
             let mut step_acc = ModelStepAccumulator::default();
             // Pump stream events + redraw until the model call finishes
             loop {
-                if self.cancel_requested {
+                if self.cancellation.requested {
                     handle.abort();
-                    self.cancel_requested = false;
+                    self.cancellation.requested = false;
                     self.timing.started = None;
                     outcome_err = Some("interrupted".into());
                     break 'turns;
