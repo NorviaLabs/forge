@@ -43,12 +43,12 @@ async fn characterization_files_selection_and_expansion_survive_focus_roundtrip(
     let (dir, mut app) = focus_test_app().await;
     fs::create_dir(dir.path().join("src")).unwrap();
     fs::write(dir.path().join("src/lib.rs"), "").unwrap();
-    app.file_explorer.refresh_workspace();
+    app.workspace_files.explorer.refresh_workspace();
     let src = dir.path().join("src").canonicalize().unwrap();
     app.workspace_files.visible = true;
     app.focus_block(FocusBlock::Files);
-    app.file_explorer.selected_path = Some(src.clone());
-    app.file_explorer.expand_selected();
+    app.workspace_files.explorer.selected_path = Some(src.clone());
+    app.workspace_files.explorer.expand_selected();
 
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await
@@ -60,11 +60,12 @@ async fn characterization_files_selection_and_expansion_survive_focus_roundtrip(
 
     assert_eq!(app.focus.block, FocusBlock::Files);
     assert_eq!(
-        app.file_explorer.selected_path.as_deref(),
+        app.workspace_files.explorer.selected_path.as_deref(),
         Some(src.as_path())
     );
     assert!(app
-        .file_explorer
+        .workspace_files
+        .explorer
         .visible_nodes()
         .iter()
         .any(|node| node.display_name == "lib.rs"));

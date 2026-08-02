@@ -331,11 +331,13 @@ async fn switching_to_diff_focuses_workspace_for_navigation() {
     app.execute_semantic_command(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
         .await
         .unwrap();
-    app.file_explorer
+    app.workspace_files
+        .explorer
         .git_status
         .status
         .insert(std::path::PathBuf::from("a.txt"), GitStatusKind::Modified);
-    app.file_explorer
+    app.workspace_files
+        .explorer
         .git_status
         .status
         .insert(std::path::PathBuf::from("b.txt"), GitStatusKind::Modified);

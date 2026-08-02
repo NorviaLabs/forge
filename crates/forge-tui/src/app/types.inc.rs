@@ -542,6 +542,7 @@ struct WorkspaceSearchState {
 
 pub(crate) struct WorkspaceFilesState {
     pub(crate) visible: bool,
+    pub(crate) explorer: FileExplorer,
 }
 
 struct InspectorState {
@@ -692,7 +693,6 @@ pub struct TuiApp {
     run: RunStateModel,
     run_exec: run::RunExecution,
     pub(crate) workspace_files: WorkspaceFilesState,
-    pub(crate) file_explorer: FileExplorer,
     explorer_dialog: ExplorerDialogState,
     /// Authoritative keyboard ownership. Legacy component `focused` flags are
     /// synchronised from this state for rendering only.

@@ -62,7 +62,7 @@ impl TuiApp {
     pub(super) fn note_workspace_changed(&mut self) {
         self.clear_pending_double_click();
         self.mark_diff_stale_if_reviewing();
-        self.file_explorer.refresh_workspace();
+        self.workspace_files.explorer.refresh_workspace();
     }
 
     fn tool_may_mutate_workspace(name: &str) -> bool {
@@ -90,7 +90,8 @@ impl TuiApp {
     }
 
     pub(super) fn current_changed_paths(&self) -> Vec<PathBuf> {
-        self.file_explorer
+        self.workspace_files
+            .explorer
             .git_status
             .changed_files()
             .into_iter()
@@ -140,7 +141,7 @@ impl TuiApp {
     }
 
     pub(super) fn refresh_diff_review(&mut self) {
-        self.file_explorer.refresh_git_status();
+        self.workspace_files.explorer.refresh_git_status();
         self.capture_diff_snapshot();
     }
 
@@ -154,7 +155,7 @@ impl TuiApp {
             self.notice_state.items.clear();
         }
         if self.focus.block == FocusBlock::Files && self.focus.mode == FocusMode::Navigation {
-            self.file_explorer.refresh_git_status();
+            self.workspace_files.explorer.refresh_git_status();
         } else {
             self.note_workspace_changed();
         }

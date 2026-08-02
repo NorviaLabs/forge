@@ -252,7 +252,7 @@ impl TuiApp {
     fn workspace_activity_label(&self) -> Option<String> {
         match &self.workspace_navigation.current {
             WorkspaceView::Diff(DiffCommandContext::Current) => {
-                let total = self.file_explorer.git_status.status.len();
+                let total = self.workspace_files.explorer.git_status.status.len();
                 (total > 0).then(|| format!("{} of {} changes", self.diff_view.selected + 1, total))
             }
             WorkspaceView::Run(id) => self
@@ -273,7 +273,7 @@ impl TuiApp {
                     .to_string()
                 }),
             _ => {
-                let changes = self.file_explorer.git_status.status.len();
+                let changes = self.workspace_files.explorer.git_status.status.len();
                 if changes > 0 {
                     Some(format!("{changes} changes · Review"))
                 } else {
@@ -313,7 +313,7 @@ impl TuiApp {
             }
         }
 
-        let changes = self.file_explorer.git_status.status.len();
+        let changes = self.workspace_files.explorer.git_status.status.len();
         if changes > 0 {
             let files = if changes == 1 { "file" } else { "files" };
             return Some(ActivitySummaryModel {

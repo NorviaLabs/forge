@@ -447,30 +447,43 @@ impl TuiApp {
             SemanticCommand::ActivateActivitySummary => self.activate_activity_summary(),
             SemanticCommand::SelectEntry(path) => {
                 if self
-                    .file_explorer
+                    .workspace_files
+                    .explorer
                     .visible_nodes()
                     .iter()
                     .any(|node| node.path == path)
                 {
-                    self.file_explorer.selected_path = Some(path);
+                    self.workspace_files.explorer.selected_path = Some(path);
                     if self.workspace_files.visible {
                         self.focus_block(FocusBlock::Files);
                     }
                 }
             }
-            SemanticCommand::MoveFileSelection(delta) => self.file_explorer.move_selection(delta),
-            SemanticCommand::ExpandSelectedDirectory => self.file_explorer.expand_selected(),
-            SemanticCommand::CollapseSelectedDirectory => self.file_explorer.collapse_selected(),
+            SemanticCommand::MoveFileSelection(delta) => {
+                self.workspace_files.explorer.move_selection(delta)
+            }
+            SemanticCommand::ExpandSelectedDirectory => {
+                self.workspace_files.explorer.expand_selected()
+            }
+            SemanticCommand::CollapseSelectedDirectory => {
+                self.workspace_files.explorer.collapse_selected()
+            }
             SemanticCommand::ToggleDirectory(path) => {
-                if self.file_explorer.visible_nodes().iter().any(|node| {
-                    node.path == path && node.kind == crate::file_explorer::FileKind::Directory
-                }) {
-                    self.file_explorer.selected_path = Some(path);
-                    self.file_explorer.activate_selected();
+                if self
+                    .workspace_files
+                    .explorer
+                    .visible_nodes()
+                    .iter()
+                    .any(|node| {
+                        node.path == path && node.kind == crate::file_explorer::FileKind::Directory
+                    })
+                {
+                    self.workspace_files.explorer.selected_path = Some(path);
+                    self.workspace_files.explorer.activate_selected();
                 }
             }
             SemanticCommand::OpenSelectedEntry | SemanticCommand::ConfirmCurrentInteraction => {
-                if let Some(path) = self.file_explorer.selected_file_path() {
+                if let Some(path) = self.workspace_files.explorer.selected_file_path() {
                     if path.is_file() || path.is_symlink() {
                         self.open_file_in_editor(&path);
                     } else {
@@ -480,7 +493,7 @@ impl TuiApp {
                         );
                     }
                 } else {
-                    self.file_explorer.activate_selected();
+                    self.workspace_files.explorer.activate_selected();
                 }
             }
             SemanticCommand::DispatchSlash { origin, line } => {
@@ -517,10 +530,10 @@ impl TuiApp {
                 }
             }
             SemanticCommand::OpenBottomPanel(tab) => self.open_bottom_panel(Some(tab)),
-            SemanticCommand::RefreshFiles => self.file_explorer.refresh_selected(),
+            SemanticCommand::RefreshFiles => self.workspace_files.explorer.refresh_selected(),
             SemanticCommand::RefreshEditor => {
                 self.source_viewer.refresh(self.session.workspace_root());
-                self.file_explorer.refresh_git_status();
+                self.workspace_files.explorer.refresh_git_status();
                 if self.current_workspace_is_diff() {
                     self.refresh_diff_review();
                 }
@@ -540,7 +553,12 @@ impl TuiApp {
                 self.diff_view.selected = self.diff_view.selected.saturating_sub(1);
             }
             SemanticCommand::SelectNextChange => {
-                let count = self.file_explorer.git_status.changed_files().len();
+                let count = self
+                    .workspace_files
+                    .explorer
+                    .git_status
+                    .changed_files()
+                    .len();
                 self.diff_view.selected = self
                     .diff_view
                     .selected

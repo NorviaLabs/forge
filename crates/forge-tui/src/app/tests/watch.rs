@@ -9,8 +9,8 @@ use super::super::watch::path_is_under_dot_forge;
 #[tokio::test]
 async fn file_change_event_refreshes_git_status() {
     let (_dir, mut app) = focus_test_app().await;
-    app.file_explorer.git_status = crate::git_status::GitStatusCache::new();
-    assert!(!app.file_explorer.git_status.loading);
+    app.workspace_files.explorer.git_status = crate::git_status::GitStatusCache::new();
+    assert!(!app.workspace_files.explorer.git_status.loading);
 
     app.file_watch
         .change_tx
@@ -20,7 +20,7 @@ async fn file_change_event_refreshes_git_status() {
         .unwrap();
     app.poll_file_changes();
 
-    assert!(app.file_explorer.git_status.loading);
+    assert!(app.workspace_files.explorer.git_status.loading);
 }
 
 #[tokio::test]
@@ -29,15 +29,16 @@ async fn file_change_does_not_reload_tree_while_files_sidebar_is_focused() {
     fs::create_dir(dir.path().join("crates")).unwrap();
     fs::create_dir(dir.path().join("crates/forge-tui")).unwrap();
     fs::write(dir.path().join("crates/forge-tui/Cargo.toml"), "").unwrap();
-    app.file_explorer.refresh_selected();
-    app.file_explorer.selected_path = Some(dir.path().join("crates").canonicalize().unwrap());
-    app.file_explorer.expand_selected();
-    app.file_explorer.selected_path =
+    app.workspace_files.explorer.refresh_selected();
+    app.workspace_files.explorer.selected_path =
+        Some(dir.path().join("crates").canonicalize().unwrap());
+    app.workspace_files.explorer.expand_selected();
+    app.workspace_files.explorer.selected_path =
         Some(dir.path().join("crates/forge-tui").canonicalize().unwrap());
-    app.file_explorer.expand_selected();
+    app.workspace_files.explorer.expand_selected();
     app.workspace_files.visible = true;
     app.focus_block(FocusBlock::Files);
-    app.file_explorer.git_status = crate::git_status::GitStatusCache::new();
+    app.workspace_files.explorer.git_status = crate::git_status::GitStatusCache::new();
 
     app.file_watch
         .change_tx
@@ -47,9 +48,10 @@ async fn file_change_does_not_reload_tree_while_files_sidebar_is_focused() {
         .unwrap();
     app.poll_file_changes();
 
-    assert!(app.file_explorer.git_status.loading);
+    assert!(app.workspace_files.explorer.git_status.loading);
     assert!(app
-        .file_explorer
+        .workspace_files
+        .explorer
         .visible_nodes()
         .iter()
         .any(|node| node.display_name == "Cargo.toml"));

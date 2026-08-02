@@ -53,7 +53,8 @@ async fn agent_thinking_keeps_composer_usable() {
 #[tokio::test]
 async fn activity_summary_priority_renders_one_actionable_row() {
     let (_dir, mut app) = focus_test_app().await;
-    app.file_explorer
+    app.workspace_files
+        .explorer
         .git_status
         .status
         .insert(PathBuf::from("changed.rs"), GitStatusKind::Modified);
@@ -110,7 +111,8 @@ async fn summary_action_opens_expected_workspace_view() {
 #[tokio::test]
 async fn changes_summary_action_uses_review_changes_command() {
     let (_dir, mut app) = focus_test_app().await;
-    app.file_explorer
+    app.workspace_files
+        .explorer
         .git_status
         .status
         .insert(PathBuf::from("changed.rs"), GitStatusKind::Modified);

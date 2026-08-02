@@ -30,7 +30,7 @@ async fn mouse_click_file_row_selects_and_chevron_toggles() {
     let (dir, mut app) = focus_test_app().await;
     fs::create_dir(dir.path().join("src")).unwrap();
     fs::write(dir.path().join("src/lib.rs"), "pub fn demo() {}\n").unwrap();
-    app.file_explorer.refresh_workspace();
+    app.workspace_files.explorer.refresh_workspace();
     app.workspace_files.visible = true;
     draw_app(&mut app, 140, 30);
 
@@ -44,7 +44,7 @@ async fn mouse_click_file_row_selects_and_chevron_toggles() {
         .await
         .unwrap();
     assert_eq!(
-        app.file_explorer.selected_path.as_deref(),
+        app.workspace_files.explorer.selected_path.as_deref(),
         Some(src.as_path())
     );
 
@@ -58,7 +58,8 @@ async fn mouse_click_file_row_selects_and_chevron_toggles() {
         .await
         .unwrap();
     assert!(app
-        .file_explorer
+        .workspace_files
+        .explorer
         .visible_nodes()
         .iter()
         .any(|node| node.display_name == "lib.rs"));
@@ -140,10 +141,11 @@ async fn mouse_stale_regions_are_ignored_after_resize_or_list_mutation() {
     let (dir, mut app) = focus_test_app().await;
     fs::create_dir(dir.path().join("src")).unwrap();
     fs::write(dir.path().join("src/lib.rs"), "pub fn demo() {}\n").unwrap();
-    app.file_explorer.refresh_workspace();
+    app.workspace_files.explorer.refresh_workspace();
     app.workspace_files.visible = true;
-    app.file_explorer.selected_path = Some(dir.path().join("src").canonicalize().unwrap());
-    app.file_explorer.expand_selected();
+    app.workspace_files.explorer.selected_path =
+        Some(dir.path().join("src").canonicalize().unwrap());
+    app.workspace_files.explorer.expand_selected();
     draw_app(&mut app, 140, 30);
 
     let lib = dir.path().join("src/lib.rs").canonicalize().unwrap();
@@ -152,9 +154,14 @@ async fn mouse_stale_regions_are_ignored_after_resize_or_list_mutation() {
         |target, path| matches!(target, HitTarget::FileEntry(p) if p == path),
         &lib,
     );
-    app.file_explorer.selected_path = Some(dir.path().join("src").canonicalize().unwrap());
-    app.file_explorer.collapse_selected();
-    app.file_explorer.selected_path = app.file_explorer.root_path().map(Path::to_path_buf);
+    app.workspace_files.explorer.selected_path =
+        Some(dir.path().join("src").canonicalize().unwrap());
+    app.workspace_files.explorer.collapse_selected();
+    app.workspace_files.explorer.selected_path = app
+        .workspace_files
+        .explorer
+        .root_path()
+        .map(Path::to_path_buf);
     app.handle_mouse(mouse(
         MouseEventKind::Down(MouseButton::Left),
         stale_lib_point.0,
@@ -163,7 +170,7 @@ async fn mouse_stale_regions_are_ignored_after_resize_or_list_mutation() {
     .await
     .unwrap();
     assert_ne!(
-        app.file_explorer.selected_path.as_deref(),
+        app.workspace_files.explorer.selected_path.as_deref(),
         Some(lib.as_path())
     );
 
@@ -200,7 +207,7 @@ async fn mouse_double_click_same_file_opens_it_like_enter() {
     let (dir, mut app) = focus_test_app().await;
     let file = dir.path().join("main.rs");
     fs::write(&file, "fn main() {}\n").unwrap();
-    app.file_explorer.refresh_workspace();
+    app.workspace_files.explorer.refresh_workspace();
     app.workspace_files.visible = true;
     draw_app(&mut app, 140, 30);
 
@@ -230,9 +237,9 @@ async fn mouse_double_click_same_file_opens_it_like_enter() {
     let (enter_dir, mut enter_app) = focus_test_app().await;
     let enter_file = enter_dir.path().join("main.rs");
     fs::write(&enter_file, "fn main() {}\n").unwrap();
-    enter_app.file_explorer.refresh_workspace();
+    enter_app.workspace_files.explorer.refresh_workspace();
     enter_app.workspace_files.visible = true;
-    enter_app.file_explorer.selected_path = Some(enter_file.canonicalize().unwrap());
+    enter_app.workspace_files.explorer.selected_path = Some(enter_file.canonicalize().unwrap());
     assert_eq!(
         enter_app.semantic_command_for_file_key(press(KeyCode::Enter, KeyModifiers::NONE)),
         Some(SemanticCommand::OpenSelectedEntry)
@@ -255,7 +262,7 @@ async fn mouse_double_click_slow_or_different_rows_only_selects() {
     let second = dir.path().join("second.rs");
     fs::write(&first, "fn first() {}\n").unwrap();
     fs::write(&second, "fn second() {}\n").unwrap();
-    app.file_explorer.refresh_workspace();
+    app.workspace_files.explorer.refresh_workspace();
     app.workspace_files.visible = true;
     draw_app(&mut app, 140, 30);
 
@@ -293,7 +300,7 @@ async fn mouse_double_click_slow_or_different_rows_only_selects() {
         WorkspaceView::Conversation
     );
     assert_eq!(
-        app.file_explorer.selected_path.as_deref(),
+        app.workspace_files.explorer.selected_path.as_deref(),
         Some(first.as_path())
     );
 
@@ -309,7 +316,7 @@ async fn mouse_double_click_slow_or_different_rows_only_selects() {
         WorkspaceView::Conversation
     );
     assert_eq!(
-        app.file_explorer.selected_path.as_deref(),
+        app.workspace_files.explorer.selected_path.as_deref(),
         Some(second.as_path())
     );
 }
@@ -319,7 +326,7 @@ async fn mouse_double_click_cancels_on_scroll_resize_list_or_modal_change() {
     let (dir, mut app) = focus_test_app().await;
     let file = dir.path().join("main.rs");
     fs::write(&file, "fn main() {}\n").unwrap();
-    app.file_explorer.refresh_workspace();
+    app.workspace_files.explorer.refresh_workspace();
     app.workspace_files.visible = true;
     draw_app(&mut app, 140, 30);
 
@@ -449,7 +456,7 @@ async fn mouse_double_click_uses_semantic_identity_for_truncated_names() {
     let long_name = format!("{}-forge-mouse.rs", "very-long-name".repeat(8));
     let file = dir.path().join(long_name);
     fs::write(&file, "fn main() {}\n").unwrap();
-    app.file_explorer.refresh_workspace();
+    app.workspace_files.explorer.refresh_workspace();
     app.workspace_files.visible = true;
     draw_app(&mut app, 120, 30);
 
@@ -474,7 +481,7 @@ async fn mouse_double_click_folder_row_toggles_once() {
     let (dir, mut app) = focus_test_app().await;
     fs::create_dir(dir.path().join("src")).unwrap();
     fs::write(dir.path().join("src/lib.rs"), "pub fn demo() {}\n").unwrap();
-    app.file_explorer.refresh_workspace();
+    app.workspace_files.explorer.refresh_workspace();
     app.workspace_files.visible = true;
     draw_app(&mut app, 140, 30);
 
@@ -492,11 +499,12 @@ async fn mouse_double_click_folder_row_toggles_once() {
         .unwrap();
 
     assert_eq!(
-        app.file_explorer.selected_path.as_deref(),
+        app.workspace_files.explorer.selected_path.as_deref(),
         Some(src.as_path())
     );
     assert!(app
-        .file_explorer
+        .workspace_files
+        .explorer
         .visible_nodes()
         .iter()
         .any(|node| node.display_name == "lib.rs"));
@@ -529,9 +537,9 @@ async fn mouse_double_click_cannot_bypass_delete_confirmation() {
     let (dir, mut app) = focus_test_app().await;
     let file = dir.path().join("delete-me.rs");
     fs::write(&file, "fn main() {}\n").unwrap();
-    app.file_explorer.refresh_workspace();
+    app.workspace_files.explorer.refresh_workspace();
     app.workspace_files.visible = true;
-    app.file_explorer.selected_path = Some(file.canonicalize().unwrap());
+    app.workspace_files.explorer.selected_path = Some(file.canonicalize().unwrap());
     app.open_explorer_delete_dialog();
     draw_app(&mut app, 120, 30);
 
@@ -556,9 +564,9 @@ async fn edge_mouse_disabled_keeps_keyboard_workflow_and_no_mouse_hint() {
     fs::write(&path, "fn main() {}\n").unwrap();
     app.runtime.mouse_capture = false;
     app.workspace_files.visible = true;
-    app.file_explorer.refresh_workspace();
+    app.workspace_files.explorer.refresh_workspace();
     let canonical = path.canonicalize().unwrap();
-    app.file_explorer.selected_path = Some(canonical.clone());
+    app.workspace_files.explorer.selected_path = Some(canonical.clone());
     app.focus_block(FocusBlock::Files);
 
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
@@ -581,7 +589,7 @@ async fn edge_hit_target_invalidated_cancels_double_click_state() {
     let (dir, mut app) = focus_test_app().await;
     let path = dir.path().join("main.rs");
     fs::write(&path, "fn main() {}\n").unwrap();
-    app.file_explorer.refresh_workspace();
+    app.workspace_files.explorer.refresh_workspace();
     app.workspace_files.visible = true;
     draw_app(&mut app, 120, 30);
     let canonical = path.canonicalize().unwrap();
@@ -621,7 +629,8 @@ async fn edge_end_to_end_recovery_flow_mouse_enabled_and_disabled() {
         let path = dir.path().join("flow.rs");
         fs::write(&path, "fn flow() {}\n").unwrap();
 
-        app.file_explorer
+        app.workspace_files
+            .explorer
             .git_status
             .status
             .insert(PathBuf::from("flow.rs"), GitStatusKind::Modified);
@@ -678,7 +687,8 @@ async fn edge_end_to_end_recovery_flow_mouse_enabled_and_disabled() {
         );
 
         fs::write(&path, "fn flow() {}\nfn changed() {}\n").unwrap();
-        app.file_explorer
+        app.workspace_files
+            .explorer
             .git_status
             .status
             .insert(PathBuf::from("extra.rs"), GitStatusKind::Added);

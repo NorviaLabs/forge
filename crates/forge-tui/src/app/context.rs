@@ -190,7 +190,7 @@ impl TuiApp {
         self.note_workspace_changed();
 
         // Show a compact notice.
-        let gs = &self.file_explorer.git_status;
+        let gs = &self.workspace_files.explorer.git_status;
         let changed = gs.status.len();
         let gs_text = if changed == 0 {
             "No repository changes detected".into()
