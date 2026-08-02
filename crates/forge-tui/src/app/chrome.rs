@@ -434,7 +434,8 @@ impl TuiApp {
                 "Working..."
             };
             let elapsed = self
-                .turn_started
+                .timing
+                .started
                 .map(|started| started.elapsed().as_secs_f64())
                 .unwrap_or(0.0);
             format!("{label} {}", format_elapsed_tenths(elapsed))
