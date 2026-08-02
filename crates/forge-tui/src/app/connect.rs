@@ -171,7 +171,7 @@ impl TuiApp {
         // The future-task queue is durable session state (owned by
         // `AgentSession`, not the TUI) — a provider disconnect must not
         // silently drop queued instructions.
-        self.queue_selected = None;
+        self.task_selection.queue = None;
         self.stream_preview.clear();
         self.stream_thinking.clear();
         self.turn_started = None;

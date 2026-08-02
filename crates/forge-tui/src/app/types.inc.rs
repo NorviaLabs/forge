@@ -545,6 +545,11 @@ struct InspectorState {
     view: InspectorView,
 }
 
+struct TaskSelectionState {
+    queue: Option<usize>,
+    tasks: Option<usize>,
+}
+
 struct RenderCacheState {
     conversation: Option<ConversationRenderCache>,
     composer_layout: ComposerLayoutCache,
@@ -588,9 +593,7 @@ pub struct TuiApp {
     /// Active-file context attachment for the next user message.
     pending_attachment: Option<crate::file_context::FileAttachment>,
     /// Selected queued row for keyboard cancellation.
-    queue_selected: Option<usize>,
-    /// Selected row in the Tasks bottom-panel tab for keyboard cancellation.
-    tasks_selected: Option<usize>,
+    task_selection: TaskSelectionState,
     /// Live assistant text while tokens stream in.
     stream_preview: String,
     /// Live thinking/reasoning text while tokens stream in.
