@@ -576,6 +576,14 @@ pub struct AgentSession {
     /// Runtime-observed evidence collected so far in the current user turn —
     /// reset in `append_user_message`. Never derived from assistant text.
     turn_evidence: ExecutionEvidence,
+    /// How many HITL approvals in a row the user has denied within the
+    /// current user turn — reset in `append_user_message` and on any
+    /// approval. `resolve_hitl` uses this to stop the turn after a small
+    /// number of consecutive denials instead of letting the model keep
+    /// autonomously searching for a workaround all the way to `max_turns`
+    /// (previously up to 128 model steps for a single denied trivial
+    /// command).
+    consecutive_hitl_denials: u32,
     /// The `CompletionEvaluator` decision for the most recently finished
     /// turn, for callers/tests that want the machine-readable reason behind
     /// `status` without re-deriving it from messages.
@@ -585,6 +593,10 @@ pub struct AgentSession {
 }
 
 impl AgentSession {
+    /// How many HITL denials in a row within one user turn are tolerated
+    /// before the turn is stopped outright (see `consecutive_hitl_denials`).
+    const MAX_CONSECUTIVE_HITL_DENIALS: u32 = 2;
+
     /// Replace the active conversation by replaying another session journal.
     pub async fn resume_session(
         &mut self,
@@ -716,6 +728,7 @@ impl AgentSession {
             validation_budget: ValidationBudget::with_default_max(),
             turn_calls: Vec::new(),
             turn_evidence: ExecutionEvidence::new(),
+            consecutive_hitl_denials: 0,
             last_completion: None,
             journaled_tool_results: HashMap::new(),
         })
@@ -796,6 +809,7 @@ impl AgentSession {
             validation_budget: ValidationBudget::with_default_max(),
             turn_calls: Vec::new(),
             turn_evidence: ExecutionEvidence::new(),
+            consecutive_hitl_denials: 0,
             last_completion: None,
             journaled_tool_results: state.tool_results.clone(),
         };
@@ -1124,6 +1138,7 @@ impl AgentSession {
         // turn's tool calls/evidence must never leak into this one's decision.
         self.turn_calls = Vec::new();
         self.turn_evidence = ExecutionEvidence::new();
+        self.consecutive_hitl_denials = 0;
         self.last_completion = None;
         Ok(())
     }
@@ -2095,11 +2110,28 @@ impl AgentSession {
             self.turn_evidence
                 .0
                 .retain(|e| e.event() != ExecutionEvent::WaitingForUser);
+
             self.transition(TaskLifecycle::Working, TransitionReason::HitlResolved)
                 .await?;
+
+            self.consecutive_hitl_denials = self.consecutive_hitl_denials.saturating_add(1);
+            if self.consecutive_hitl_denials >= Self::MAX_CONSECUTIVE_HITL_DENIALS {
+                // A denial is a strong signal the user does not want this
+                // approach pursued at all. Without this, the model would
+                // keep autonomously searching for a workaround for up to
+                // `max_turns` (128 by default) model steps before yielding
+                // control back — expensive, slow, and surprising for what
+                // was a single "no". Stop the turn now instead.
+                self.finalize_turn_failure(
+                    "Forge stopped after repeated denied approvals for this turn.",
+                    "hitl_denied",
+                )
+                .await?;
+            }
             return Ok(());
         }
 
+        self.consecutive_hitl_denials = 0;
         // Re-authorize
         let call = ToolCall {
             id: payload.call_id.clone(),
@@ -2957,6 +2989,66 @@ mod tests {
             .await
             .unwrap();
         assert!(state.incomplete_intents.is_empty());
+    }
+
+    /// F-RECOVERY-01: denying one trivial approval used to let the model
+    /// keep autonomously retrying for up to `max_turns` (128 by default)
+    /// steps before yielding control back — a single "no" shouldn't cost
+    /// that much. Two denials in a row within the same turn must now stop
+    /// the turn outright instead of continuing to churn.
+    #[tokio::test]
+    async fn repeated_hitl_denials_stop_the_turn_instead_of_retrying_to_max_turns() {
+        let dir = tempdir().unwrap();
+        let push = ToolCall {
+            id: "1".into(),
+            name: "bash".into(),
+            arguments: json!({"command": "git push origin main"}),
+        };
+        let model = Arc::new(MockModelClient::script(vec![
+            ModelResponse {
+                text: "".into(),
+                tool_calls: vec![push.clone()],
+                usage: None,
+                thinking: None,
+            },
+            ModelResponse {
+                text: "".into(),
+                tool_calls: vec![ToolCall {
+                    id: "2".into(),
+                    ..push.clone()
+                }],
+                usage: None,
+                thinking: None,
+            },
+        ]));
+        let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        s.run_user_message("push").await.unwrap();
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Waiting);
+
+        s.resolve_hitl(HitlDecision::Deny, "test").await.unwrap();
+        assert_eq!(
+            s.active_task.lifecycle,
+            TaskLifecycle::Working,
+            "a single denial must not fail the turn"
+        );
+
+        s.run_agent_turns(None).await.unwrap();
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Waiting);
+
+        s.resolve_hitl(HitlDecision::Deny, "test").await.unwrap();
+        assert_eq!(
+            s.active_task.lifecycle,
+            TaskLifecycle::Failed,
+            "a second consecutive denial must stop the turn"
+        );
+        assert!(s
+            .messages
+            .last()
+            .unwrap()
+            .content
+            .contains("repeated denied approvals"));
     }
 
     #[tokio::test]

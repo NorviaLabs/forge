@@ -209,7 +209,9 @@ impl TuiApp {
             KeyCode::Down if key.modifiers.is_empty() && self.current_workspace_is_diff() => {
                 Some(SemanticCommand::SelectNextChange)
             }
-            KeyCode::Char('r') if key.modifiers.is_empty() && self.current_workspace_is_diff() => {
+            KeyCode::Char('r' | 'R')
+                if key.modifiers.is_empty() && self.current_workspace_is_diff() =>
+            {
                 Some(SemanticCommand::RefreshDiff)
             }
             KeyCode::Esc if key.modifiers.is_empty() => {
@@ -699,6 +701,13 @@ impl TuiApp {
             let slash_name = line.split_whitespace().next().unwrap_or("/");
             self.push_activity(ActivityKind::Slash, FeedbackSeverity::Info, slash_name);
             match cmd_res {
+                Ok(SlashCommand::Help) => {
+                    self.overlay = Some(Overlay::welcome());
+                    self.set_feedback(
+                        FeedbackSeverity::Info,
+                        "Help · press Enter to get started or Esc to dismiss",
+                    );
+                }
                 Ok(SlashCommand::Quit) => {
                     self.should_quit = true;
                     self.status_message = "quitting…".into();

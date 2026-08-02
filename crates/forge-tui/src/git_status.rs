@@ -102,25 +102,34 @@ impl GitStatusCache {
 
     /// Check whether the pending refresh has completed and update the cache.
     /// This is non-blocking and safe to call from the render loop.
-    pub fn poll(&mut self) {
+    ///
+    /// Returns `true` when a refresh resolved this call (successfully or not),
+    /// so callers can react to freshly-landed status (e.g. re-checking diff
+    /// staleness) instead of on every raw filesystem-watch event, which fires
+    /// well before the async refresh it triggered has actually completed.
+    pub fn poll(&mut self) -> bool {
         let Some(rx) = self.pending.take() else {
-            return;
+            return false;
         };
         match rx.try_recv() {
             Ok(Ok(map)) => {
                 self.loading = false;
                 self.status = map;
+                true
             }
             Ok(Err(err)) => {
                 self.loading = false;
                 self.error = Some(err);
+                true
             }
             Err(TryRecvError::Empty) => {
                 self.pending = Some(rx);
+                false
             }
             Err(TryRecvError::Disconnected) => {
                 self.loading = false;
                 self.error = Some("Git status refresh disconnected".into());
+                true
             }
         }
     }
