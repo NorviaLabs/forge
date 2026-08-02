@@ -206,7 +206,7 @@ impl TuiApp {
         } else {
             (None, String::new())
         };
-        self.explorer_dialog = Some(ExplorerDialog::Name {
+        self.explorer_dialog.current = Some(ExplorerDialog::Name {
             action,
             parent,
             source,
@@ -246,7 +246,7 @@ impl TuiApp {
                 return;
             }
         };
-        self.explorer_dialog = Some(ExplorerDialog::ConfirmDelete {
+        self.explorer_dialog.current = Some(ExplorerDialog::ConfirmDelete {
             source: node.path.clone(),
             name: node.display_name.clone(),
             kind,
@@ -330,7 +330,7 @@ impl TuiApp {
                         .file_ops()
                         .and_then(|ops| ops.is_non_empty_directory(&node.path))
                         .unwrap_or(false);
-                    self.explorer_dialog = Some(ExplorerDialog::ConfirmDelete {
+                    self.explorer_dialog.current = Some(ExplorerDialog::ConfirmDelete {
                         source: node.path.clone(),
                         name: node.display_name.clone(),
                         kind,
