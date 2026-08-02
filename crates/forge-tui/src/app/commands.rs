@@ -341,6 +341,12 @@ impl TuiApp {
             KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(SemanticCommand::InsertComposerNewline)
             }
+            // Help's own advertised shortcut ("? Help") only applies to a
+            // truly empty composer, so a real message that happens to end in
+            // "?" is never intercepted — F1 remains the fallback either way.
+            KeyCode::Char('?') if key.modifiers.is_empty() && self.input.text.is_empty() => {
+                Some(SemanticCommand::OpenHelp)
+            }
             _ => None,
         }
     }
@@ -354,7 +360,32 @@ impl TuiApp {
             SemanticCommand::GoBack => self.go_back_workspace(),
             SemanticCommand::PushView(view) => self.push_workspace_view(view),
             SemanticCommand::ReplaceView(view) => self.replace_workspace_view(view),
-            SemanticCommand::CancelCurrentInteraction => self.escape_navigation(),
+            SemanticCommand::CancelCurrentInteraction => {
+                // While a turn is running, Esc is the scoped, low-risk way to
+                // interrupt just this turn — mirrors the graceful first press
+                // of Ctrl+C (`QuitOrInterrupt`) without its second-press quit
+                // escalation. Previously nothing bound Esc to this at all, so
+                // the only way to stop a stuck turn was to kill the whole app.
+                if self.busy {
+                    if !self.cancel_requested {
+                        self.cancel_requested = true;
+                        self.push_toast("interrupt requested");
+                    }
+                }
+                // An open slash-command palette/suggestion is its own
+                // interaction level: the first Esc must close *that* and
+                // keep composer focus, not silently move focus away while
+                // leaving the "/" text and dropdown rendered but orphaned
+                // (nothing left routes Backspace/Enter/Tab back to them).
+                else if self.focus.block == FocusBlock::Composer
+                    && self.input.text.starts_with('/')
+                {
+                    self.input.clear();
+                    self.slash_suggest_idx = 0;
+                } else {
+                    self.escape_navigation();
+                }
+            }
             SemanticCommand::OpenFile(path) => {
                 if path.is_file() || path.is_symlink() {
                     self.open_file_in_editor(&path);
@@ -618,7 +649,7 @@ impl TuiApp {
         }
         let target_prefix = Self::model_prefix(&model_id);
         let matching_profile = self.connected_profile_for_model_prefix(target_prefix);
-        if matching_profile.is_none() {
+        let Some(matching_profile) = matching_profile else {
             self.set_feedback(
                 FeedbackSeverity::Warn,
                 format!("connect `{target_prefix}` first before selecting {model_id}"),
@@ -627,11 +658,39 @@ impl TuiApp {
                 format!("No connected provider matches `{target_prefix}`."),
                 "Use /connect, or pick a model from the current provider catalog.".into(),
             ]);
-        } else {
-            self.apply_model_selection("native", &model_id, None);
-            if self.resolve_effort_for_model(&model_id) {
-                self.overlay = Some(self.build_connect_model_overlay(ConnectModelColumn::Effort));
-            }
+            return;
+        };
+        // The provider is connected, but that alone doesn't mean `model_id` is
+        // a real model — free-text `/model <name>` (including the picker's own
+        // "no catalog match" fallback) previously applied *any* string here as
+        // long as its prefix matched a connected provider, corrupting the
+        // active selection to non-existent models (e.g. `xai/connect`).
+        // Reject when this provider has a known, non-empty catalog and the
+        // typed id isn't in it; only fall through for providers whose catalog
+        // can't be enumerated (genuinely unlisted/custom models).
+        let catalog = self.model_picker_items(false);
+        let profile_catalog: Vec<&crate::overlays::ModelItem> = catalog
+            .iter()
+            .filter(|item| item.profile_id.as_deref() == Some(matching_profile.as_str()))
+            .collect();
+        if !profile_catalog.is_empty()
+            && !profile_catalog
+                .iter()
+                .any(|item| item.model.eq_ignore_ascii_case(&model_id))
+        {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                format!("`{model_id}` is not in {target_prefix}'s model catalog"),
+            );
+            self.push_notice(vec![
+                format!("`{model_id}` was not found for the connected `{target_prefix}` provider."),
+                "Pick a model from the catalog with /model, or check the spelling.".into(),
+            ]);
+            return;
+        }
+        self.apply_model_selection("native", &model_id, None);
+        if self.resolve_effort_for_model(&model_id) {
+            self.overlay = Some(self.build_connect_model_overlay(ConnectModelColumn::Effort));
         }
     }
 
@@ -1363,5 +1422,147 @@ mod tests {
             "an unknown theme name should surface feedback"
         );
         assert_eq!(app.feedback.severity, FeedbackSeverity::Warn);
+    }
+
+    #[tokio::test]
+    async fn quit_or_interrupt_requests_cancel_before_quitting_while_busy() {
+        let (_d, mut app) = app().await;
+        app.busy = true;
+        assert!(!app.cancel_requested);
+        app.execute_semantic_command(SemanticCommand::QuitOrInterrupt)
+            .await
+            .unwrap();
+        assert!(
+            app.cancel_requested,
+            "first Ctrl+C while busy should request a graceful cancel, not quit"
+        );
+        assert!(
+            !app.should_quit,
+            "first Ctrl+C while busy must not quit the whole app"
+        );
+
+        app.execute_semantic_command(SemanticCommand::QuitOrInterrupt)
+            .await
+            .unwrap();
+        assert!(
+            app.should_quit,
+            "second Ctrl+C while still busy and already cancel-requested should quit"
+        );
+    }
+
+    #[tokio::test]
+    async fn esc_requests_cancel_while_busy_instead_of_navigating_focus() {
+        let (_d, mut app) = app().await;
+        app.busy = true;
+        app.focus.block = FocusBlock::Composer;
+        assert!(!app.cancel_requested);
+        app.execute_semantic_command(SemanticCommand::CancelCurrentInteraction)
+            .await
+            .unwrap();
+        assert!(
+            app.cancel_requested,
+            "Esc while a turn is busy should request cancellation"
+        );
+        assert!(
+            !app.should_quit,
+            "Esc must never quit the app, unlike a second Ctrl+C"
+        );
+    }
+
+    /// Before this fix, `resolve_hitl_overlay` only executed the approved
+    /// tool and returned — nothing re-armed the turn loop, so the follow-up
+    /// model call never happened. The header kept reading "Working" forever
+    /// (reflecting the core's lifecycle, not the TUI's own idle `busy: false`)
+    /// while the session sat permanently stalled, uncancellable because
+    /// nothing was actually running to cancel.
+    #[tokio::test]
+    async fn approving_a_hitl_gated_tool_resumes_the_turn_instead_of_stalling_forever() {
+        let dir = TempDir::new().unwrap();
+        init_repo(dir.path());
+        let model = Arc::new(MockModelClient::script(vec![
+            ModelResponse {
+                text: "".into(),
+                tool_calls: vec![forge_types::ToolCall {
+                    id: "1".into(),
+                    name: "bash".into(),
+                    arguments: serde_json::json!({"command": "git push origin main"}),
+                }],
+                usage: None,
+                thinking: None,
+            },
+            ModelResponse {
+                text: "pushed".into(),
+                tool_calls: vec![],
+                usage: None,
+                thinking: None,
+            },
+        ]));
+        let session = AgentSession::create(
+            LoopConfig {
+                max_turns: 4,
+                workspace: dir.path().to_path_buf(),
+                journal_dir: dir.path().join("j"),
+                enable_context_lifecycle: true,
+                enable_governance: true,
+                ..Default::default()
+            },
+            model,
+            ToolRegistry::new(),
+        )
+        .await
+        .unwrap();
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "mock".into(),
+                provider: "mock".into(),
+                cwd: dir.path().to_path_buf(),
+                version: "forge test".into(),
+                startup_notices: Vec::new(),
+                validation_command: None,
+                file_icons: forge_config::FileIconMode::Unicode,
+                mouse_capture: true,
+                theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+            },
+        );
+
+        app.pending_prompt = Some("push it".into());
+        app.drain_pending_prompt(None).await.unwrap();
+        assert!(
+            !app.busy,
+            "drain_pending_prompt exits (busy=false) once a tool call needs approval"
+        );
+        assert!(app.session.pending_hitl().is_some());
+
+        app.resolve_hitl_overlay(HitlDecision::Approve, false)
+            .await
+            .unwrap();
+        assert!(
+            app.busy && app.pending_turn_continue,
+            "approving the tool call must re-arm the turn loop, not leave the session idle \
+             while still displaying a busy/Working state"
+        );
+
+        // Mirrors `run_loop` noticing `pending_turn_continue` on its next tick.
+        app.drain_pending_prompt(None).await.unwrap();
+        assert!(
+            !app.busy,
+            "the turn must reach a terminal state, not stay stuck on Working forever"
+        );
+        assert_ne!(
+            app.session.active_task.lifecycle,
+            forge_types::TaskLifecycle::Working,
+            "a Working lifecycle with busy=false is exactly the misleading stuck state this fixes"
+        );
+        // The mock's second scripted response only gets consumed if a real
+        // follow-up model call happened — proof the turn actually resumed
+        // rather than the session silently going idle after approval.
+        assert!(
+            app.session
+                .messages
+                .iter()
+                .any(|m| m.content.contains("pushed")),
+            "the follow-up model call's response should be recorded"
+        );
     }
 }
