@@ -121,6 +121,12 @@ struct FileChangeEvent {
     path: PathBuf,
 }
 
+struct FileWatchState {
+    watcher: Option<RecommendedWatcher>,
+    change_rx: Receiver<FileChangeEvent>,
+    change_tx: Sender<FileChangeEvent>,
+}
+
 #[derive(Debug)]
 enum RunEvent {
     Output(Vec<u8>),
@@ -357,6 +363,13 @@ struct PendingDoubleClick {
 
 const DOUBLE_CLICK_THRESHOLD: Duration = Duration::from_millis(400);
 
+#[derive(Debug, Default)]
+struct PointerState {
+    hit_regions: Vec<HitRegion>,
+    frame_generation: u64,
+    pending_double_click: Option<PendingDoubleClick>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct DiffSnapshot {
     paths: Vec<PathBuf>,
@@ -561,9 +574,7 @@ pub struct TuiApp {
     workspace_navigation: WorkspaceNavigation,
     /// Read-only source viewer state for the File workspace view.
     pub(crate) source_viewer: SourceViewer,
-    file_watcher: Option<RecommendedWatcher>,
-    file_change_rx: Receiver<FileChangeEvent>,
-    file_change_tx: Sender<FileChangeEvent>,
+    file_watch: FileWatchState,
     bottom_panel: BottomPanelState,
     run: RunStateModel,
     run_exec: run::RunExecution,
@@ -601,15 +612,9 @@ pub struct TuiApp {
     footer_limits_rx: Option<std::sync::mpsc::Receiver<(String, FooterLimits)>>,
     /// Last known repo header. Refreshed off-thread by `poll_repo_header`; the
     /// render path only ever reads it, never derives it.
-    repo_header: RepoHeaderCache,
-    repo_header_rx: Option<std::sync::mpsc::Receiver<RepoHeaderCache>>,
-    repo_header_refreshed_at: Instant,
-    /// Directory the cached header describes, so a cwd change invalidates it.
-    repo_header_cwd: PathBuf,
+    repo_header_state: RepoHeaderState,
     terminal_capture: TerminalCapture,
-    hit_regions: Vec<HitRegion>,
-    frame_generation: u64,
-    pending_double_click: Option<PendingDoubleClick>,
+    pointer: PointerState,
     diff_snapshot: DiffSnapshot,
     workspace_index: Option<Arc<forge_search::WorkspaceIndex>>,
     workspace_index_error: Option<String>,
@@ -620,4 +625,12 @@ pub(crate) struct RepoHeaderCache {
     pub(crate) repo_name: Option<String>,
     pub(crate) branch: Option<String>,
     pub(crate) dirty: bool,
+}
+
+struct RepoHeaderState {
+    cache: RepoHeaderCache,
+    refresh_rx: Option<std::sync::mpsc::Receiver<RepoHeaderCache>>,
+    refreshed_at: Instant,
+    /// Directory the cached header describes, so a cwd change invalidates it.
+    cwd: PathBuf,
 }

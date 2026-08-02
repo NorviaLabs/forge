@@ -132,7 +132,8 @@ async fn edge_open_file_external_rename_updates_path_when_identity_matches() {
     app.source_viewer.top_line = 1;
     fs::rename(&old, &new).unwrap();
 
-    app.file_change_tx
+    app.file_watch
+        .change_tx
         .send(FileChangeEvent { path: new.clone() })
         .unwrap();
     app.poll_file_changes();
@@ -160,7 +161,8 @@ async fn edge_open_file_external_delete_keeps_file_view_and_buffer() {
     let lines = app.source_viewer.lines.clone();
     fs::remove_file(&path).unwrap();
 
-    app.file_change_tx
+    app.file_watch
+        .change_tx
         .send(FileChangeEvent {
             path: opened.clone(),
         })

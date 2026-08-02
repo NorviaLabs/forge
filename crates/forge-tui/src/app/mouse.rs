@@ -9,21 +9,21 @@ use super::*;
 
 impl TuiApp {
     pub(super) fn begin_hit_frame(&mut self) {
-        self.frame_generation = self.frame_generation.saturating_add(1);
-        if self.frame_generation == 0 {
-            self.frame_generation = 1;
+        self.pointer.frame_generation = self.pointer.frame_generation.saturating_add(1);
+        if self.pointer.frame_generation == 0 {
+            self.pointer.frame_generation = 1;
         }
-        self.hit_regions.clear();
+        self.pointer.hit_regions.clear();
     }
 
     pub(super) fn invalidate_hit_regions(&mut self) {
-        self.frame_generation = self.frame_generation.saturating_add(1);
-        self.hit_regions.clear();
-        self.pending_double_click = None;
+        self.pointer.frame_generation = self.pointer.frame_generation.saturating_add(1);
+        self.pointer.hit_regions.clear();
+        self.pointer.pending_double_click = None;
     }
 
     pub(super) fn clear_pending_double_click(&mut self) {
-        self.pending_double_click = None;
+        self.pointer.pending_double_click = None;
     }
 
     fn register_hit_region(
@@ -35,10 +35,10 @@ impl TuiApp {
         if area.width == 0 || area.height == 0 {
             return;
         }
-        self.hit_regions.push(HitRegion {
+        self.pointer.hit_regions.push(HitRegion {
             area,
             target,
-            generation: self.frame_generation,
+            generation: self.pointer.frame_generation,
             z_order,
         });
     }
@@ -226,9 +226,10 @@ impl TuiApp {
     }
 
     fn resolve_hit_target(&self, x: u16, y: u16) -> Option<HitTarget> {
-        self.hit_regions
+        self.pointer
+            .hit_regions
             .iter()
-            .filter(|region| region.generation == self.frame_generation)
+            .filter(|region| region.generation == self.pointer.frame_generation)
             .filter(|region| rect_contains(region.area, x, y))
             .max_by_key(|region| region.z_order)
             .map(|region| region.target.clone())
@@ -266,13 +267,13 @@ impl TuiApp {
         button: MouseButton,
         now: Instant,
     ) -> bool {
-        let Some(pending) = self.pending_double_click.as_ref() else {
+        let Some(pending) = self.pointer.pending_double_click.as_ref() else {
             return false;
         };
         pending.button == button
             && pending.target == *target
             && now.duration_since(pending.timestamp) <= DOUBLE_CLICK_THRESHOLD
-            && pending.frame_generation <= self.frame_generation
+            && pending.frame_generation <= self.pointer.frame_generation
             && self.double_click_target_exists(&pending.target)
             && self.double_click_target_exists(target)
     }
@@ -304,11 +305,11 @@ impl TuiApp {
         button: MouseButton,
         timestamp: Instant,
     ) {
-        self.pending_double_click = Some(PendingDoubleClick {
+        self.pointer.pending_double_click = Some(PendingDoubleClick {
             target,
             button,
             timestamp,
-            frame_generation: self.frame_generation,
+            frame_generation: self.pointer.frame_generation,
         });
     }
 
