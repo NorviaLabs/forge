@@ -322,7 +322,7 @@ async fn global_palette_selection_uses_semantic_dispatch() {
     .await
     .unwrap();
 
-    assert_eq!(app.status_message, "Refreshing git status...");
+    assert_eq!(app.status_state.message, "Refreshing git status...");
 }
 
 #[tokio::test]

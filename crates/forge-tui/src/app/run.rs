@@ -69,7 +69,7 @@ impl TuiApp {
         self.run.error = None;
         self.run_exec.pending_validation = true;
         self.busy_state.phase = BusyPhase::Tool { name: "run".into() };
-        self.status_message = format!("run: {}", invocation.summary());
+        self.status_state.message = format!("run: {}", invocation.summary());
         self.push_activity(
             ActivityKind::Run,
             FeedbackSeverity::Info,

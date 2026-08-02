@@ -125,7 +125,7 @@ async fn resume_command_replaces_active_conversation_in_app() {
         .messages
         .iter()
         .any(|message| message.content == "restored conversation"));
-    assert!(app.status_message.contains("resumed"));
+    assert!(app.status_state.message.contains("resumed"));
     assert!(app.notice_state.items.is_empty());
     assert!(app
         .activity
@@ -211,7 +211,7 @@ async fn compact_reports_context_handoff_in_chat_and_activity() {
         .all()
         .iter()
         .any(|item| item.kind == ActivityKind::Context));
-    assert_eq!(app.status_message, "Continuing in a fresh context");
+    assert_eq!(app.status_state.message, "Continuing in a fresh context");
     assert!(app
         .banner_state
         .items
@@ -588,7 +588,7 @@ async fn switching_to_a_model_that_drops_the_current_effort_notifies_and_falls_b
 
     assert_eq!(app.reasoning_effort.value, ReasoningEffort::Low);
     assert_eq!(
-        app.status_message,
+        app.status_state.message,
         "Extra High effort is not supported by this model. Using Low."
     );
 }
@@ -667,14 +667,16 @@ async fn model_command_rejects_cross_provider_selection_without_matching_connect
     assert_eq!(app.connect.profile.as_deref(), Some("openai_codex"));
     assert_eq!(app.runtime.model_label, "openai-codex/gpt-5.6-sol");
     assert!(
-        app.status_message.contains("connect `not-connected` first")
+        app.status_state
+            .message
+            .contains("connect `not-connected` first")
             || app
                 .notice_state
                 .items
                 .iter()
                 .any(|l| l.contains("not-connected")),
         "expected rejection notice, got status={} notices={:?}",
-        app.status_message,
+        app.status_state.message,
         app.notice_state.items
     );
 }
@@ -1148,7 +1150,7 @@ async fn enter_on_highlighted_suggestion_runs_command() {
         "Enter on highlighted /connect should open picker; overlay={:?} input={:?} status={}",
         app.overlay,
         app.input.text,
-        app.status_message
+        app.status_state.message
     );
     assert!(
         app.input.text.is_empty(),
