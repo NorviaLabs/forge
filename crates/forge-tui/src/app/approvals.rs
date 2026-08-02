@@ -73,7 +73,7 @@ impl TuiApp {
         &mut self,
         mut terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
     ) -> Result<(), TuiError> {
-        let Some(decision) = self.pending_hitl_decision.take() else {
+        let Some(decision) = self.pending_interaction.hitl_decision.take() else {
             return Ok(());
         };
         if let Some(term) = terminal.as_deref_mut() {

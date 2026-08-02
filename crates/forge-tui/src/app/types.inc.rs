@@ -570,6 +570,11 @@ struct PendingTurnState {
     continue_turn: bool,
 }
 
+struct PendingInteractionState {
+    hitl_decision: Option<HitlDecision>,
+    context_reset: bool,
+}
+
 struct RenderCacheState {
     conversation: Option<ConversationRenderCache>,
     composer_layout: ComposerLayoutCache,
@@ -600,10 +605,7 @@ pub struct TuiApp {
     /// Phase 10 / TUI-10 — progressive busy phase for chrome.
     busy_phase: BusyPhase,
     pending_turn: PendingTurnState,
-    /// HITL resolve queued to run on the event loop (journals + state updates).
-    pending_hitl_decision: Option<HitlDecision>,
-    /// Context reset queued to run on the event loop.
-    pending_context_reset: bool,
+    pending_interaction: PendingInteractionState,
     /// External-editor request queued for the event loop (terminal suspend/resume).
     external_editor: ExternalEditorState,
     /// Active-file context attachment for the next user message.
