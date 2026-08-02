@@ -206,7 +206,7 @@ impl TuiApp {
 
         let line = self.input.take();
         if line.trim().is_empty() {
-            if !self.busy && !self.session.queue.is_empty() {
+            if !self.busy && !self.session.queue().is_empty() {
                 self.dequeue_and_send_next().await;
             }
             return Ok(());

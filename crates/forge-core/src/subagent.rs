@@ -16,14 +16,15 @@ use std::sync::Arc;
 use forge_durable::Journal;
 use forge_governance::AclPolicy;
 use forge_storage::RuntimeStorage;
-use forge_tools::{ToolContext, ValidationBudget};
+use forge_tools::ToolContext;
 use forge_types::{BackgroundTaskId, HitlDecision, Message, MessageRole, SessionId, TaskLifecycle};
 use tokio_util::sync::CancellationToken;
 
 use crate::background::{BackgroundTaskKind, BackgroundTaskOutcome, BackgroundTaskStatus};
+use crate::persistence::SessionPersistence;
+use crate::turn_state::TurnState;
 use crate::{
-    assemble_system_prompt, ActiveTaskState, AgentSession, BackgroundTaskRegistry,
-    ExecutionEvidence, LoopError, SessionTokenUsage, TaskQueue,
+    assemble_system_prompt, ActiveTaskState, AgentSession, LoopError, SessionTokenUsage, TaskQueue,
 };
 
 /// What to hand a new subagent.
@@ -103,12 +104,9 @@ impl AgentSession {
             }],
             events: vec![],
             active_task: ActiveTaskState::new(session_id),
-            queue: TaskQueue::new(),
-            background: BackgroundTaskRegistry::new(),
-            background_receivers: HashMap::new(),
-            subagent_hitl_senders: HashMap::new(),
+            tasks: crate::task_runtime::TaskRuntime::new(),
             active_model: self.active_model.clone(),
-            journal,
+            journal: SessionPersistence::new(journal),
             tools: self.tools.clone(),
             model: self.model.clone(),
             tool_ctx: ToolContext::new(workspace),
@@ -119,10 +117,7 @@ impl AgentSession {
             enable_gov: self.enable_gov,
             cancel_token: Some(cancel_token),
             token_usage: SessionTokenUsage::default(),
-            validation_budget: ValidationBudget::with_default_max(),
-            turn_calls: Vec::new(),
-            turn_evidence: ExecutionEvidence::new(),
-            consecutive_hitl_denials: 0,
+            turn: TurnState::new(),
             last_completion: None,
             journaled_tool_results: HashMap::new(),
         })
@@ -186,12 +181,9 @@ impl AgentSession {
                 detail: format!("seq={}", state.last_seq),
             }],
             active_task: ActiveTaskState::from_restored(session_id, state.status, wait_reason),
-            queue,
-            background: BackgroundTaskRegistry::new(),
-            background_receivers: HashMap::new(),
-            subagent_hitl_senders: HashMap::new(),
+            tasks: crate::task_runtime::TaskRuntime::with_queue(queue),
             active_model: self.active_model.clone(),
-            journal,
+            journal: SessionPersistence::new(journal),
             tools: self.tools.clone(),
             model: self.model.clone(),
             tool_ctx: ToolContext::new(workspace),
@@ -202,10 +194,7 @@ impl AgentSession {
             enable_gov: self.enable_gov,
             cancel_token: Some(cancel_token),
             token_usage,
-            validation_budget: ValidationBudget::with_default_max(),
-            turn_calls: Vec::new(),
-            turn_evidence: ExecutionEvidence::new(),
-            consecutive_hitl_denials: 0,
+            turn: TurnState::new(),
             last_completion: None,
             journaled_tool_results: state.tool_results.clone(),
         };
@@ -244,7 +233,7 @@ impl AgentSession {
         // below or the normal `drive_subagent` -> `finish_background_task`
         // path once this subagent actually finishes) close the SAME pair
         // `BackgroundTaskStarted` opened under.
-        let id = self.background.resume_slot(
+        let id = self.tasks.background.resume_slot(
             task.id,
             BackgroundTaskKind::Subagent {
                 role: task.label.clone(),
@@ -260,7 +249,7 @@ impl AgentSession {
             Ok(child) => child,
             Err(e) => {
                 let error = format!("could not resume subagent: {e}");
-                self.background.set_status(
+                self.tasks.background.set_status(
                     id,
                     BackgroundTaskStatus::Failed {
                         error: error.clone(),
@@ -280,7 +269,7 @@ impl AgentSession {
                 return Ok(());
             }
         };
-        self.background.mark_running(id);
+        self.tasks.background.mark_running(id);
 
         // Branch name follows `create_worktree`'s naming convention
         // (`forge/subagent/<dir-basename>`) — reconstructing it from the
@@ -291,14 +280,19 @@ impl AgentSession {
             .file_name()
             .map(|name| format!("forge/subagent/{}", name.to_string_lossy()));
         if let Some(branch) = branch {
-            self.background
+            self.tasks
+                .background
                 .set_worktree(id, child.workspace_root().to_path_buf(), branch);
         }
-        let latest_message = self.background.latest_message_cell(id).unwrap_or_default();
+        let latest_message = self
+            .tasks
+            .background
+            .latest_message_cell(id)
+            .unwrap_or_default();
 
         let (tx, rx) = std::sync::mpsc::channel();
         let (hitl_tx, hitl_rx) = tokio::sync::mpsc::unbounded_channel::<HitlDecision>();
-        self.subagent_hitl_senders.insert(id, hitl_tx);
+        self.tasks.subagent_hitl_senders.insert(id, hitl_tx);
         tokio::spawn(async move {
             let mut child = child;
             // A resumed child continues the SAME turn (its messages/tool
@@ -319,8 +313,7 @@ impl AgentSession {
             };
             drive_subagent(child, result, child_session_id, tx, hitl_rx, latest_message).await;
         });
-        self.background_receivers
-            .insert(id, std::sync::Mutex::new(rx));
+        self.tasks.receivers.insert(id, std::sync::Mutex::new(rx));
         Ok(())
     }
 
@@ -345,7 +338,7 @@ impl AgentSession {
 
         let child_session_id = forge_durable::new_session_id();
         let cancel = CancellationToken::new();
-        let task_id = self.background.spawn_slot(
+        let task_id = self.tasks.background.spawn_slot(
             BackgroundTaskKind::Subagent {
                 role: spec.role.clone(),
                 prompt: spec.prompt.clone(),
@@ -400,24 +393,27 @@ impl AgentSession {
             }
         };
 
-        self.background.mark_running(task_id);
-        self.background
+        self.tasks.background.mark_running(task_id);
+        self.tasks
+            .background
             .set_worktree(task_id, worktree.path.clone(), worktree.branch.clone());
         let latest_message = self
+            .tasks
             .background
             .latest_message_cell(task_id)
             .unwrap_or_default();
 
         let (tx, rx) = std::sync::mpsc::channel();
         let (hitl_tx, hitl_rx) = tokio::sync::mpsc::unbounded_channel::<HitlDecision>();
-        self.subagent_hitl_senders.insert(task_id, hitl_tx);
+        self.tasks.subagent_hitl_senders.insert(task_id, hitl_tx);
         let prompt = spec.prompt.clone();
         tokio::spawn(async move {
             let mut child = child;
             let result = child.run_user_message(&prompt).await;
             drive_subagent(child, result, child_session_id, tx, hitl_rx, latest_message).await;
         });
-        self.background_receivers
+        self.tasks
+            .receivers
             .insert(task_id, std::sync::Mutex::new(rx));
 
         Ok(task_id)
@@ -432,7 +428,7 @@ impl AgentSession {
         task_id: BackgroundTaskId,
         error: String,
     ) -> Result<BackgroundTaskId, LoopError> {
-        self.background.set_status(
+        self.tasks.background.set_status(
             task_id,
             BackgroundTaskStatus::Failed {
                 error: error.clone(),
@@ -642,7 +638,7 @@ mod tests {
     ) -> BackgroundTaskStatus {
         for _ in 0..300 {
             session.poll_background_tasks().await.unwrap();
-            if let Some(task) = session.background.get(id) {
+            if let Some(task) = session.tasks.background.get(id) {
                 if task.status.is_terminal() {
                     return task.status.clone();
                 }
@@ -658,7 +654,7 @@ mod tests {
     ) -> forge_types::HitlPayload {
         for _ in 0..300 {
             session.poll_background_tasks().await.unwrap();
-            if let Some(task) = session.background.get(id) {
+            if let Some(task) = session.tasks.background.get(id) {
                 if let BackgroundTaskStatus::WaitingForApproval { payload } = &task.status {
                     return payload.clone();
                 }
@@ -703,7 +699,7 @@ mod tests {
         let payload = wait_for_waiting(&mut s, id).await;
         assert_eq!(payload.tool, "bash");
         assert_eq!(
-            s.background.get(id).unwrap().status,
+            s.background().get(id).unwrap().status,
             BackgroundTaskStatus::WaitingForApproval {
                 payload: payload.clone()
             }
@@ -848,8 +844,8 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(resumed.background.list().count(), 1);
-        let task = resumed.background.list().next().unwrap();
+        assert_eq!(resumed.background().list().count(), 1);
+        let task = resumed.background().list().next().unwrap();
         assert!(matches!(task.kind, BackgroundTaskKind::Subagent { .. }));
         assert_ne!(
             task.status,
@@ -883,7 +879,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            resumed_again.background.list().count(),
+            resumed_again.background().list().count(),
             0,
             "the already-finished subagent must not be re-resumed"
         );
@@ -903,7 +899,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("git repository"));
-        assert_eq!(s.background.list().count(), 0);
+        assert_eq!(s.background().list().count(), 0);
     }
 
     #[tokio::test]
@@ -922,8 +918,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(s.background.list().count(), 1);
-        let handle = s.background.get(id).unwrap();
+        assert_eq!(s.background().list().count(), 1);
+        let handle = s.background().get(id).unwrap();
         assert!(matches!(handle.kind, BackgroundTaskKind::Subagent { .. }));
         assert!(handle.child_session_id.is_some());
 
@@ -936,7 +932,7 @@ mod tests {
         }
         // Result delivery: next-turn-boundary via the existing queue, same
         // as a finished shell job.
-        assert_eq!(s.queue.len(), 1);
+        assert_eq!(s.queue().len(), 1);
     }
 
     #[tokio::test]
@@ -981,7 +977,7 @@ mod tests {
             .await
             .unwrap();
 
-        let task = s.background.get(id).unwrap();
+        let task = s.background().get(id).unwrap();
         let branch = task.worktree_branch.clone().unwrap();
         assert!(branch.starts_with("forge/subagent/"));
         let worktree_path = task.worktree_path.clone().unwrap();
@@ -991,7 +987,7 @@ mod tests {
         );
 
         wait_terminal(&mut s, id).await;
-        let task = s.background.get(id).unwrap();
+        let task = s.background().get(id).unwrap();
         assert_eq!(
             task.latest_message.lock().unwrap().as_deref(),
             Some("here's what I found")
@@ -1018,7 +1014,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert!(s.background.cancel(id));
+        assert!(s.cancel_background_task(id));
 
         let status = wait_terminal(&mut s, id).await;
         assert_eq!(status, BackgroundTaskStatus::Cancelled);
@@ -1042,7 +1038,7 @@ mod tests {
             .unwrap();
 
         s.mark_cancelled().await.unwrap();
-        assert!(s.background.get(id).unwrap().cancel.is_cancelled());
+        assert!(s.background().get(id).unwrap().cancel.is_cancelled());
     }
 
     #[tokio::test]

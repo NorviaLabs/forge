@@ -28,7 +28,7 @@ async fn wait_for_task_status(
 ) {
     for _ in 0..300 {
         app.poll_background_tasks().await.unwrap();
-        if let Some(task) = app.session.background.get(id) {
+        if let Some(task) = app.session.background().get(id) {
             if matches_status(&task.status) {
                 return;
             }
@@ -104,7 +104,7 @@ async fn approving_the_selected_waiting_task_from_the_tasks_tab_lets_it_finish()
         .unwrap();
 
     wait_for_task_status(&mut app, id, |s| s.is_terminal()).await;
-    let task = app.session.background.get(id).unwrap();
+    let task = app.session.background().get(id).unwrap();
     match &task.status {
         forge_core::BackgroundTaskStatus::Succeeded { summary } => {
             assert_eq!(summary, "finished after tui approval");
@@ -142,7 +142,7 @@ async fn tasks_tab_down_then_cancel_targets_the_selected_row() {
     // reacts and `poll_background_tasks` drains the result.
     let second_id = app
         .session
-        .background
+        .background()
         .list()
         .find(|t| t.label == "second")
         .unwrap()
@@ -151,7 +151,7 @@ async fn tasks_tab_down_then_cancel_targets_the_selected_row() {
         app.poll_background_tasks().await.unwrap();
         if app
             .session
-            .background
+            .background()
             .get(second_id)
             .is_some_and(|t| t.status.is_terminal())
         {
@@ -160,9 +160,9 @@ async fn tasks_tab_down_then_cancel_targets_the_selected_row() {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
 
-    let first_task = app.session.background.get(first).unwrap();
+    let first_task = app.session.background().get(first).unwrap();
     assert_eq!(first_task.status, forge_core::BackgroundTaskStatus::Running);
-    let second_task = app.session.background.get(second_id).unwrap();
+    let second_task = app.session.background().get(second_id).unwrap();
     assert_eq!(
         second_task.status,
         forge_core::BackgroundTaskStatus::Cancelled
@@ -185,7 +185,7 @@ async fn cancel_key_is_a_no_op_outside_the_tasks_tab() {
         .unwrap();
 
     assert_eq!(
-        app.session.background.get(id).unwrap().status,
+        app.session.background().get(id).unwrap().status,
         forge_core::BackgroundTaskStatus::Running
     );
 }
@@ -203,7 +203,7 @@ async fn poll_background_tasks_surfaces_a_finished_job_in_the_tasks_tab() {
         app.poll_background_tasks().await.unwrap();
         if app
             .session
-            .background
+            .background()
             .get(id)
             .is_some_and(|t| t.status.is_terminal())
         {
@@ -212,7 +212,7 @@ async fn poll_background_tasks_surfaces_a_finished_job_in_the_tasks_tab() {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
 
-    let task = app.session.background.get(id).unwrap();
+    let task = app.session.background().get(id).unwrap();
     assert!(matches!(
         task.status,
         forge_core::BackgroundTaskStatus::Succeeded { .. }

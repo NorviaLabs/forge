@@ -110,7 +110,7 @@ async fn edge_provider_error_unsticks_session_for_the_next_message() {
     app.dispatch_line("second message").await.unwrap();
     app.drain_pending_prompt(None).await.unwrap();
     assert!(
-        app.session.queue.is_empty(),
+        app.session.queue().is_empty(),
         "the second message must have been sent, not queued behind the stuck turn"
     );
     assert_eq!(

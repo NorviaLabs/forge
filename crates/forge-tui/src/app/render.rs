@@ -130,7 +130,7 @@ impl TuiApp {
             events: visible_events.len(),
             last_event_detail: visible_events.last().map_or(0, |event| event.detail.len()),
             banners: self.ui_banners.len(),
-            queue: self.session.queue.len(),
+            queue: self.session.queue().len(),
             queue_selected: self.queue_selected,
             chat_message_start: self.chat_message_start,
             chat_event_start: self.chat_event_start,
@@ -171,7 +171,7 @@ impl TuiApp {
             }
             conv = conv.with_queued_messages(
                 self.session
-                    .queue
+                    .queue()
                     .visible()
                     .map(|item| item.text.clone())
                     .collect::<Vec<_>>(),
@@ -330,7 +330,7 @@ impl TuiApp {
                     busy_phase: &self.busy_phase,
                     activity: &self.activity,
                     run: &self.run,
-                    background: &self.session.background,
+                    background: self.session.background(),
                     tasks_selected: self.tasks_selected,
                     terminal_title: self.terminal_capture.title.as_deref(),
                     terminal_content: &self.terminal_capture.content,
