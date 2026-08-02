@@ -29,7 +29,7 @@ impl TuiApp {
             self.focus.block = FocusBlock::Workspace;
             self.focus.mode = FocusMode::Transient(TransientOwner::JumpToLine);
         }
-        self.file_explorer.focused = self.focus.block == FocusBlock::Files
+        self.workspace_files.explorer.focused = self.focus.block == FocusBlock::Files
             && self.focus.mode == FocusMode::Navigation
             && self.workspace_files.visible;
         self.bottom_panel.focused = self.focus.block == FocusBlock::BottomPanel

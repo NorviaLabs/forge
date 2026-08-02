@@ -166,7 +166,7 @@ impl TuiApp {
         self.focus_block(FocusBlock::Workspace);
         self.status_state.message = "Viewing file (readonly)".into();
         // Keep the file explorer in sync with the active file.
-        self.file_explorer.selected_path = Some(path.to_path_buf());
+        self.workspace_files.explorer.selected_path = Some(path.to_path_buf());
     }
 
     pub(super) fn open_file_in_editor(&mut self, path: &Path) {
@@ -189,16 +189,16 @@ impl TuiApp {
     }
 
     pub(super) fn open_explorer_name_dialog(&mut self, action: ExplorerNameAction) {
-        let Some(parent) = self.file_explorer.selected_creation_parent() else {
+        let Some(parent) = self.workspace_files.explorer.selected_creation_parent() else {
             self.set_feedback(FeedbackSeverity::Warn, "No workspace folder selected");
             return;
         };
         let (source, input) = if action == ExplorerNameAction::Rename {
-            let Some(node) = self.file_explorer.selected_node() else {
+            let Some(node) = self.workspace_files.explorer.selected_node() else {
                 self.set_feedback(FeedbackSeverity::Warn, "No file or folder selected");
                 return;
             };
-            if self.file_explorer.root_path() == Some(node.path.as_path()) {
+            if self.workspace_files.explorer.root_path() == Some(node.path.as_path()) {
                 self.set_feedback(FeedbackSeverity::Warn, "Cannot rename the workspace root");
                 return;
             }
@@ -217,11 +217,11 @@ impl TuiApp {
     }
 
     pub(super) fn open_explorer_delete_dialog(&mut self) {
-        let Some(node) = self.file_explorer.selected_node() else {
+        let Some(node) = self.workspace_files.explorer.selected_node() else {
             self.set_feedback(FeedbackSeverity::Warn, "No file or folder selected");
             return;
         };
-        if self.file_explorer.root_path() == Some(node.path.as_path()) {
+        if self.workspace_files.explorer.root_path() == Some(node.path.as_path()) {
             self.set_feedback(FeedbackSeverity::Warn, "Cannot delete the workspace root");
             return;
         }
@@ -321,7 +321,7 @@ impl TuiApp {
         match result {
             Ok(result) => self.reconcile_file_operation(result),
             Err(FileOperationError::TrashUnavailable(reason)) if mode == DeleteMode::Trash => {
-                if let Some(node) = self.file_explorer.selected_node() {
+                if let Some(node) = self.workspace_files.explorer.selected_node() {
                     let kind = self
                         .file_ops()
                         .and_then(|ops| ops.entry_kind(&node.path))
@@ -351,7 +351,8 @@ impl TuiApp {
         let root = self.session.workspace_root().to_path_buf();
         match result.kind {
             FileOperationKind::CreateFile | FileOperationKind::CreateDirectory => {
-                self.file_explorer
+                self.workspace_files
+                    .explorer
                     .refresh_parent_and_select(&result.parent, &result.path);
                 self.set_feedback(
                     FeedbackSeverity::Ok,
@@ -361,7 +362,8 @@ impl TuiApp {
             FileOperationKind::RenameEntry => {
                 if let Some(new_path) = result.new_path.as_ref() {
                     self.reconcile_path_rename(&result.path, new_path);
-                    self.file_explorer
+                    self.workspace_files
+                        .explorer
                         .refresh_parent_and_select(&result.parent, new_path);
                     self.set_feedback(
                         FeedbackSeverity::Ok,
@@ -371,7 +373,8 @@ impl TuiApp {
             }
             FileOperationKind::DeleteEntry => {
                 self.reconcile_path_delete(&result.path);
-                self.file_explorer
+                self.workspace_files
+                    .explorer
                     .refresh_after_delete(&result.parent, &result.path);
                 self.set_feedback(
                     FeedbackSeverity::Ok,
@@ -380,7 +383,8 @@ impl TuiApp {
             }
         }
         self.diff_view.selected = self.diff_view.selected.min(
-            self.file_explorer
+            self.workspace_files
+                .explorer
                 .git_status
                 .changed_files()
                 .len()
@@ -402,7 +406,7 @@ impl TuiApp {
                 att.rel_path = relative_display(&root, &rebased);
             }
         }
-        self.file_explorer.refresh_git_status();
+        self.workspace_files.explorer.refresh_git_status();
     }
 
     fn reconcile_path_delete(&mut self, deleted_path: &Path) {
@@ -418,7 +422,7 @@ impl TuiApp {
         }) {
             self.attachment.pending = None;
         }
-        self.file_explorer.refresh_git_status();
+        self.workspace_files.explorer.refresh_git_status();
     }
 
     /// Toggle attachment of the current source-viewer file to the next message.

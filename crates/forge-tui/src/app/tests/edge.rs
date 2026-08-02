@@ -185,7 +185,8 @@ async fn edge_open_file_external_delete_keeps_file_view_and_buffer() {
 #[tokio::test]
 async fn edge_diff_becomes_stale_and_refresh_clears_it() {
     let (_dir, mut app) = focus_test_app().await;
-    app.file_explorer
+    app.workspace_files
+        .explorer
         .git_status
         .status
         .insert(PathBuf::from("one.rs"), GitStatusKind::Modified);
@@ -193,7 +194,8 @@ async fn edge_diff_becomes_stale_and_refresh_clears_it() {
         .await
         .unwrap();
     app.diff_view.selected = 0;
-    app.file_explorer
+    app.workspace_files
+        .explorer
         .git_status
         .status
         .insert(PathBuf::from("two.rs"), GitStatusKind::Added);
@@ -230,7 +232,8 @@ async fn edge_diff_becomes_stale_and_refresh_clears_it() {
 #[tokio::test]
 async fn edge_diff_stale_marking_waits_for_confirmed_status_change() {
     let (_dir, mut app) = focus_test_app().await;
-    app.file_explorer
+    app.workspace_files
+        .explorer
         .git_status
         .status
         .insert(PathBuf::from("one.rs"), GitStatusKind::Modified);
@@ -250,7 +253,8 @@ async fn edge_diff_stale_marking_waits_for_confirmed_status_change() {
     );
 
     // Now the underlying status genuinely changes and a fresh event arrives.
-    app.file_explorer
+    app.workspace_files
+        .explorer
         .git_status
         .status
         .insert(PathBuf::from("two.rs"), GitStatusKind::Added);
@@ -286,7 +290,8 @@ async fn edge_diff_stale_marking_waits_for_confirmed_status_change() {
 #[tokio::test]
 async fn edge_diff_reconciles_staleness_after_async_poll_resolves() {
     let (_dir, mut app) = focus_test_app().await;
-    app.file_explorer
+    app.workspace_files
+        .explorer
         .git_status
         .status
         .insert(PathBuf::from("one.rs"), GitStatusKind::Modified);
@@ -297,7 +302,8 @@ async fn edge_diff_reconciles_staleness_after_async_poll_resolves() {
 
     // Simulate an async git-status refresh landing with genuinely different
     // data, without going through the fs-watch event path at all.
-    app.file_explorer
+    app.workspace_files
+        .explorer
         .git_status
         .status
         .insert(PathBuf::from("two.rs"), GitStatusKind::Added);

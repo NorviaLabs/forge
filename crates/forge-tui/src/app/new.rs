@@ -100,8 +100,10 @@ impl TuiApp {
             bottom_panel: BottomPanelState::default(),
             run,
             run_exec: run::RunExecution::default(),
-            workspace_files: WorkspaceFilesState { visible: false },
-            file_explorer: FileExplorer::new(Some(workspace_root), file_icons),
+            workspace_files: WorkspaceFilesState {
+                visible: false,
+                explorer: FileExplorer::new(Some(workspace_root), file_icons),
+            },
             explorer_dialog: ExplorerDialogState::default(),
             focus: FocusState::default(),
             inspector: InspectorState {
