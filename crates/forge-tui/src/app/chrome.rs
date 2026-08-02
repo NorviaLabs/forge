@@ -359,6 +359,13 @@ impl TuiApp {
                 self.navigate_to_workspace_view(WorkspaceView::Run(id));
             }
             Some(ActivitySummaryAction::ReviewChanges) => {
+                // Unlike the Alt+-> / `ReviewChanges` command path, entering
+                // here skipped `capture_diff_snapshot()`, so a review opened
+                // via the inline "N files changed" summary could start
+                // already marked stale (with Apply disabled) even though
+                // nothing has changed since. Snapshot on entry here too so
+                // both paths start from the same fresh baseline.
+                self.capture_diff_snapshot();
                 self.navigate_to_workspace_view(WorkspaceView::Diff(DiffCommandContext::Current));
             }
             None => {}
