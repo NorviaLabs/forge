@@ -654,6 +654,10 @@ struct StreamState {
     thinking: String,
 }
 
+struct RunExecutionState {
+    execution: run::RunExecution,
+}
+
 pub struct TuiApp {
     pub(crate) session: AgentSession,
     input: InputModel,
@@ -694,7 +698,7 @@ pub struct TuiApp {
     file_watch: FileWatchState,
     bottom_panel: BottomPanelState,
     run: RunStateModel,
-    run_exec: run::RunExecution,
+    run_execution: RunExecutionState,
     pub(crate) workspace_files: WorkspaceFilesState,
     explorer_dialog: ExplorerDialogState,
     /// Authoritative keyboard ownership. Legacy component `focused` flags are
