@@ -575,6 +575,10 @@ struct PendingInteractionState {
     context_reset: bool,
 }
 
+struct AttachmentState {
+    pending: Option<crate::file_context::FileAttachment>,
+}
+
 struct RenderCacheState {
     conversation: Option<ConversationRenderCache>,
     composer_layout: ComposerLayoutCache,
@@ -608,8 +612,7 @@ pub struct TuiApp {
     pending_interaction: PendingInteractionState,
     /// External-editor request queued for the event loop (terminal suspend/resume).
     external_editor: ExternalEditorState,
-    /// Active-file context attachment for the next user message.
-    pending_attachment: Option<crate::file_context::FileAttachment>,
+    attachment: AttachmentState,
     /// Selected queued row for keyboard cancellation.
     task_selection: TaskSelectionState,
     /// Live assistant text while tokens stream in.

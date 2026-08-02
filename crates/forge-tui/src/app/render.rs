@@ -475,7 +475,7 @@ impl TuiApp {
             );
         }
 
-        let attachment_label = self.pending_attachment.as_ref().map(|a| a.label());
+        let attachment_label = self.attachment.pending.as_ref().map(|a| a.label());
         let glyph = ACTIVE_GLYPH;
         let composer_content_width = regions
             .input

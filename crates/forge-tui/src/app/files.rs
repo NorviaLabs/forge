@@ -396,7 +396,7 @@ impl TuiApp {
                     .reconcile_renamed_path(&root, &open_path, &rebased);
             }
         }
-        if let Some(att) = self.pending_attachment.as_mut() {
+        if let Some(att) = self.attachment.pending.as_mut() {
             let abs = root.join(&att.rel_path);
             if let Some(rebased) = rebase_path(&abs, old_path, new_path) {
                 att.rel_path = relative_display(&root, &rebased);
@@ -412,19 +412,19 @@ impl TuiApp {
                 self.source_viewer.reconcile_deleted_path(&open_path);
             }
         }
-        if self.pending_attachment.as_ref().is_some_and(|att| {
+        if self.attachment.pending.as_ref().is_some_and(|att| {
             let abs = root.join(&att.rel_path);
             abs == deleted_path || abs.starts_with(deleted_path)
         }) {
-            self.pending_attachment = None;
+            self.attachment.pending = None;
         }
         self.file_explorer.refresh_git_status();
     }
 
     /// Toggle attachment of the current source-viewer file to the next message.
     pub(super) fn toggle_file_attachment(&mut self) {
-        if self.pending_attachment.is_some() {
-            self.pending_attachment = None;
+        if self.attachment.pending.is_some() {
+            self.attachment.pending = None;
             self.set_feedback(FeedbackSeverity::Info, "Attachment removed");
             return;
         }
@@ -450,11 +450,11 @@ impl TuiApp {
         };
 
         let cursor_line = self.source_viewer.current_line;
-        self.pending_attachment = Some(crate::file_context::FileAttachment::new(
+        self.attachment.pending = Some(crate::file_context::FileAttachment::new(
             rel_path,
             cursor_line,
         ));
-        if let Some(ref att) = self.pending_attachment {
+        if let Some(ref att) = self.attachment.pending {
             self.set_feedback(
                 FeedbackSeverity::Info,
                 format!("File attached · {}", att.label()),

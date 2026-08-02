@@ -872,7 +872,7 @@ impl TuiApp {
 
         // Build the final message text, prepending file context if attached.
         let mut final_line = line.to_string();
-        let attachment = self.pending_attachment.take();
+        let attachment = self.attachment.pending.take();
         if let Some(ref att) = attachment {
             if let Some(p) = self.source_viewer.path.as_ref() {
                 match crate::file_context::build_attachment_text(
