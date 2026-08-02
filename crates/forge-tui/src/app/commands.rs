@@ -573,18 +573,18 @@ impl TuiApp {
             SemanticCommand::QuitOrInterrupt => {
                 if self.busy {
                     if self.cancellation.requested {
-                        self.should_quit = true;
-                        self.last_exit = ExitCode::Canceled;
+                        self.exit.requested = true;
+                        self.exit.code = ExitCode::Canceled;
                     } else {
                         self.cancellation.requested = true;
                         self.push_toast("interrupt requested · Ctrl+C again to quit");
                     }
                 } else {
-                    self.should_quit = true;
-                    self.last_exit = ExitCode::Canceled;
+                    self.exit.requested = true;
+                    self.exit.code = ExitCode::Canceled;
                 }
             }
-            SemanticCommand::Quit => self.should_quit = true,
+            SemanticCommand::Quit => self.exit.requested = true,
             SemanticCommand::RunOrCancel => {
                 if self
                     .run
@@ -712,7 +712,7 @@ impl TuiApp {
                     );
                 }
                 Ok(SlashCommand::Quit) => {
-                    self.should_quit = true;
+                    self.exit.requested = true;
                     self.status_message = "quitting…".into();
                 }
                 Ok(SlashCommand::Compact) => {
@@ -767,7 +767,7 @@ impl TuiApp {
                             self.notices.clear();
                             self.busy = false;
                             self.busy_phase = BusyPhase::Idle;
-                            self.last_exit = match self.session.active_task.lifecycle {
+                            self.exit.code = match self.session.active_task.lifecycle {
                                 forge_types::TaskLifecycle::Failed => ExitCode::Failed,
                                 forge_types::TaskLifecycle::Waiting => ExitCode::AwaitingHitl,
                                 forge_types::TaskLifecycle::Cancelled => ExitCode::Canceled,
@@ -1451,7 +1451,7 @@ mod tests {
             "first Ctrl+C while busy should request a graceful cancel, not quit"
         );
         assert!(
-            !app.should_quit,
+            !app.exit.requested,
             "first Ctrl+C while busy must not quit the whole app"
         );
 
@@ -1459,7 +1459,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            app.should_quit,
+            app.exit.requested,
             "second Ctrl+C while still busy and already cancel-requested should quit"
         );
     }
@@ -1478,7 +1478,7 @@ mod tests {
             "Esc while a turn is busy should request cancellation"
         );
         assert!(
-            !app.should_quit,
+            !app.exit.requested,
             "Esc must never quit the app, unlike a second Ctrl+C"
         );
     }
