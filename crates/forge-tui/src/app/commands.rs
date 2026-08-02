@@ -934,7 +934,7 @@ impl TuiApp {
         self.pending_prompt = Some(final_line);
         self.busy = true;
         self.busy_phase = BusyPhase::Model;
-        self.turn_started = Some(Instant::now());
+        self.timing.started = Some(Instant::now());
         // A new user turn should always follow the live conversation tail.
         // This also ensures its thinking block is visible after the user has
         // previously scrolled up to inspect an older response.

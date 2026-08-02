@@ -151,7 +151,7 @@ impl TuiApp {
         self.pending_turn_continue = true;
         self.busy = true;
         self.busy_phase = BusyPhase::Model;
-        self.turn_started = Some(Instant::now());
+        self.timing.started = Some(Instant::now());
         self.stream_preview.clear();
         self.stream_thinking.clear();
     }

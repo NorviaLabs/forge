@@ -81,12 +81,14 @@ impl TuiApp {
         let stream_wait = if self.busy && self.pending_prompt.is_none() {
             let elapsed = if !self.stream_thinking.is_empty() {
                 // Thinking timer runs from first thinking token
-                self.thinking_started
-                    .or(self.turn_started)
+                self.timing
+                    .thinking_started
+                    .or(self.timing.started)
                     .map(|t| t.elapsed().as_secs_f64())
                     .unwrap_or(0.0)
             } else {
-                self.turn_started
+                self.timing
+                    .started
                     .map(|t| t.elapsed().as_secs_f64())
                     .unwrap_or(0.0)
             };
@@ -107,7 +109,7 @@ impl TuiApp {
             tool_expanded: self.tool_expanded,
             compact: false,
             stream_wait,
-            stream_thought_secs: self.thought_secs,
+            stream_thought_secs: self.timing.thought_secs,
         };
         // `/clear` only clears the viewport; the full session remains available to the model.
         let visible_messages = &self.session.messages[self
@@ -321,8 +323,9 @@ impl TuiApp {
                 )
             });
             sidebar.elapsed = self
-                .turn_started
-                .or(self.thinking_started)
+                .timing
+                .started
+                .or(self.timing.thinking_started)
                 .map(|started| format_elapsed_tenths(started.elapsed().as_secs_f64()));
             frame.render_widget(
                 SidebarWidget {

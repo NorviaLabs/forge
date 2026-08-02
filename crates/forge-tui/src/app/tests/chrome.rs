@@ -124,7 +124,7 @@ async fn final_shell_rendering_matrix_covers_v31_states_without_obsolete_chrome(
     let (dir, mut app) = focus_test_app().await;
     app.busy = true;
     app.busy_phase = BusyPhase::Model;
-    app.turn_started = Some(Instant::now());
+    app.timing.started = Some(Instant::now());
     scenarios.push(("agent thinking", dir, app, vec!["thinking"]));
 
     let (dir, mut app) = focus_test_app().await;
@@ -775,7 +775,7 @@ async fn elapsed_status_persists_during_answer_and_tool_processing() {
         },
     );
     app.busy = true;
-    app.turn_started = Some(Instant::now() - Duration::from_millis(1200));
+    app.timing.started = Some(Instant::now() - Duration::from_millis(1200));
     app.stream_preview = "partial answer".into();
     assert_eq!(app.busy_status_detail().as_deref(), Some("Working... 1.2s"));
 
