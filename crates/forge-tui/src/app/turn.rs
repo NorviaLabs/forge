@@ -686,7 +686,7 @@ impl TuiApp {
                 self.persist_turn_thinking_duration(turn_thought_secs);
             }
             self.clear_error_chrome();
-            self.tool_expanded = false;
+            self.tool_detail.expanded = false;
             if self.session.queue().is_empty() {
                 self.feedback = FeedbackModel::default();
                 self.status_message.clear();

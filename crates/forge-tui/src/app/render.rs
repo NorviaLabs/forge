@@ -106,7 +106,7 @@ impl TuiApp {
         let opts = ConversationViewOpts {
             busy: self.busy,
             // Don't force-expand finished thinking just because busy (answer may be streaming)
-            tool_expanded: self.tool_expanded,
+            tool_expanded: self.tool_detail.expanded,
             compact: false,
             stream_wait,
             stream_thought_secs: self.timing.thought_secs,
@@ -143,7 +143,7 @@ impl TuiApp {
             busy: self.busy,
             busy_phase: self.busy_phase.label(),
             activity_summary: activity_summary_key,
-            tool_expanded: self.tool_expanded,
+            tool_expanded: self.tool_detail.expanded,
             splash_dismissed: self.conversation_view.splash_dismissed,
             slash_mode,
             status: self.session.active_task.lifecycle,

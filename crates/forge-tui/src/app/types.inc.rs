@@ -583,6 +583,10 @@ struct CancellationState {
     requested: bool,
 }
 
+struct ToolDetailState {
+    expanded: bool,
+}
+
 struct RenderCacheState {
     conversation: Option<ConversationRenderCache>,
     composer_layout: ComposerLayoutCache,
@@ -630,8 +634,7 @@ pub struct TuiApp {
     activity: ActivityFeed,
     /// Reasoning effort sent to model providers (`auto` omits the parameter).
     reasoning_effort: ReasoningEffort,
-    /// Expand last tool detail (Ctrl+O).
-    tool_expanded: bool,
+    tool_detail: ToolDetailState,
     /// V3.1 contextual workspace navigation.
     workspace_navigation: WorkspaceNavigation,
     /// Read-only source viewer state for the File workspace view.

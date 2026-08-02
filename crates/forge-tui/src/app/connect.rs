@@ -180,7 +180,7 @@ impl TuiApp {
         self.cancellation.requested = false;
         self.busy = false;
         self.busy_phase = BusyPhase::Idle;
-        self.tool_expanded = false;
+        self.tool_detail.expanded = false;
         self.conversation_view.follow = true;
         self.conversation_view.scroll = 0;
         self.connect.profile = None;

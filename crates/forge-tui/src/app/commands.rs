@@ -557,7 +557,9 @@ impl TuiApp {
             }
             SemanticCommand::OpenExternalEditor => self.external_editor.requested = true,
             SemanticCommand::ToggleCurrentFileAttachment => self.toggle_file_attachment(),
-            SemanticCommand::ToggleToolDetails => self.tool_expanded = !self.tool_expanded,
+            SemanticCommand::ToggleToolDetails => {
+                self.tool_detail.expanded = !self.tool_detail.expanded
+            }
             SemanticCommand::MoveQueueSelection(delta) => self.move_queue_selection(delta),
             SemanticCommand::CancelSelectedQueueMessage => self.cancel_selected_queue().await,
             SemanticCommand::MoveTasksSelection(delta) => self.move_tasks_selection(delta),
