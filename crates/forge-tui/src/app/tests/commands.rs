@@ -134,6 +134,56 @@ async fn resume_command_replaces_active_conversation_in_app() {
         .any(|item| item.summary.contains("session resumed")));
 }
 
+/// F-RESUME-01: the bare `/resume` list previously showed only a raw UUID
+/// and timestamp per session, giving the user no way to tell sessions
+/// apart without opening each one. It now shows a title hint derived from
+/// the session's first user message.
+#[tokio::test]
+async fn bare_resume_list_shows_title_hint_from_first_user_message() {
+    let (dir, session) = test_session().await;
+    let model = Arc::new(MockModelClient::script(vec![]));
+    let mut previous = AgentSession::create(
+        LoopConfig {
+            max_turns: 4,
+            workspace: dir.path().to_path_buf(),
+            journal_dir: dir.path().join("j"),
+            enable_context_lifecycle: true,
+            enable_governance: true,
+            ..Default::default()
+        },
+        model,
+        ToolRegistry::new(),
+    )
+    .await
+    .unwrap();
+    previous
+        .append_user_message("fix the login bug please")
+        .await
+        .unwrap();
+
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "mock".into(),
+            provider: "mock".into(),
+            cwd: dir.path().to_path_buf(),
+            version: "0.12.0".into(),
+            startup_notices: Vec::new(),
+            validation_command: None,
+            file_icons: FileIconMode::Unicode,
+            mouse_capture: true,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+    app.dispatch_line("/resume").await.unwrap();
+
+    let Some(Overlay::ResumePicker { items, .. }) = &app.overlay else {
+        panic!("expected ResumePicker overlay, got {:?}", app.overlay);
+    };
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].title.as_deref(), Some("fix the login bug please"));
+}
+
 #[tokio::test]
 async fn compact_reports_context_handoff_in_chat_and_activity() {
     let (_dir, session) = test_session().await;
