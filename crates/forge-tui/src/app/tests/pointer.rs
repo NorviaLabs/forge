@@ -279,7 +279,7 @@ async fn mouse_double_click_slow_or_different_rows_only_selects() {
     ))
     .await
     .unwrap();
-    app.pending_double_click.as_mut().unwrap().timestamp =
+    app.pointer.pending_double_click.as_mut().unwrap().timestamp =
         Instant::now() - DOUBLE_CLICK_THRESHOLD - Duration::from_millis(1);
     app.handle_mouse(mouse(
         MouseEventKind::Down(MouseButton::Left),
@@ -521,7 +521,7 @@ async fn mouse_double_click_controls_do_not_gain_row_activation() {
         .unwrap();
 
     assert_eq!(app.bottom_panel.active, BottomPanelTab::Activity);
-    assert!(app.pending_double_click.is_none());
+    assert!(app.pointer.pending_double_click.is_none());
 }
 
 #[tokio::test]
@@ -594,9 +594,9 @@ async fn edge_hit_target_invalidated_cancels_double_click_state() {
     app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), x, y))
         .await
         .unwrap();
-    assert!(app.pending_double_click.is_some());
+    assert!(app.pointer.pending_double_click.is_some());
     app.invalidate_hit_regions();
-    assert!(app.pending_double_click.is_none());
+    assert!(app.pointer.pending_double_click.is_none());
     draw_app(&mut app, 120, 30);
     let (x, y) = hit_point_for_path(
         &app,
@@ -682,7 +682,8 @@ async fn edge_end_to_end_recovery_flow_mouse_enabled_and_disabled() {
             .git_status
             .status
             .insert(PathBuf::from("extra.rs"), GitStatusKind::Added);
-        app.file_change_tx
+        app.file_watch
+            .change_tx
             .send(FileChangeEvent { path: path.clone() })
             .unwrap();
         app.poll_file_changes();

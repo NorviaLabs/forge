@@ -12,7 +12,7 @@ use super::super::util::footer_provider_id;
 #[tokio::test]
 async fn repo_header_reads_cache_without_shelling_out() {
     let (_dir, mut app) = focus_test_app().await;
-    app.repo_header = RepoHeaderCache {
+    app.repo_header_state.cache = RepoHeaderCache {
         repo_name: Some("sentinel-repo".into()),
         branch: Some("sentinel-branch".into()),
         dirty: true,
@@ -30,19 +30,19 @@ async fn repo_header_reads_cache_without_shelling_out() {
 #[tokio::test]
 async fn drawing_does_not_rederive_repo_header() {
     let (_dir, mut app) = focus_test_app().await;
-    app.repo_header = RepoHeaderCache {
+    app.repo_header_state.cache = RepoHeaderCache {
         repo_name: Some("sentinel-repo".into()),
         branch: Some("sentinel-branch".into()),
         dirty: true,
     };
     // Keep the TTL from firing a background refresh during the assertions.
-    app.repo_header_refreshed_at = Instant::now();
+    app.repo_header_state.refreshed_at = Instant::now();
 
     for _ in 0..3 {
         draw_app(&mut app, 120, 40);
     }
 
-    assert_eq!(app.repo_header.branch.as_deref(), Some("sentinel-branch"));
+    assert_eq!(app.repo_header().branch.as_deref(), Some("sentinel-branch"));
 }
 
 /// FORGE-DESIGN 9.7: do not clear visible Git information during a refresh.
@@ -50,21 +50,21 @@ async fn drawing_does_not_rederive_repo_header() {
 #[tokio::test]
 async fn failed_repo_header_refresh_keeps_last_known_value() {
     let (_dir, mut app) = focus_test_app().await;
-    app.repo_header = RepoHeaderCache {
+    app.repo_header_state.cache = RepoHeaderCache {
         repo_name: Some("kept-repo".into()),
         branch: Some("kept-branch".into()),
         dirty: true,
     };
     let (tx, rx) = mpsc::channel::<RepoHeaderCache>();
     drop(tx); // simulate a refresh worker that died
-    app.repo_header_rx = Some(rx);
+    app.repo_header_state.refresh_rx = Some(rx);
 
     app.poll_repo_header();
 
-    assert_eq!(app.repo_header.branch.as_deref(), Some("kept-branch"));
-    assert_eq!(app.repo_header.repo_name.as_deref(), Some("kept-repo"));
-    assert!(app.repo_header.dirty);
-    assert!(app.repo_header_rx.is_none());
+    assert_eq!(app.repo_header().branch.as_deref(), Some("kept-branch"));
+    assert_eq!(app.repo_header().repo_name.as_deref(), Some("kept-repo"));
+    assert!(app.repo_header().dirty);
+    assert!(app.repo_header_state.refresh_rx.is_none());
 }
 
 /// Changing the working directory must invalidate the cached header on the
@@ -72,7 +72,7 @@ async fn failed_repo_header_refresh_keeps_last_known_value() {
 #[tokio::test]
 async fn cwd_change_refreshes_repo_header_immediately() {
     let (dir, mut app) = focus_test_app().await;
-    app.repo_header = RepoHeaderCache {
+    app.repo_header_state.cache = RepoHeaderCache {
         repo_name: Some("stale-repo".into()),
         branch: Some("stale-branch".into()),
         dirty: true,
@@ -83,11 +83,11 @@ async fn cwd_change_refreshes_repo_header_immediately() {
     app.runtime.cwd = moved.clone();
     app.poll_repo_header();
 
-    assert_eq!(app.repo_header_cwd, moved);
-    assert_eq!(app.repo_header.repo_name.as_deref(), Some("elsewhere"));
+    assert_eq!(app.repo_header_state.cwd, moved);
+    assert_eq!(app.repo_header().repo_name.as_deref(), Some("elsewhere"));
     // Plain directory, no git metadata: no branch, and not reported dirty.
-    assert!(app.repo_header.branch.is_none());
-    assert!(!app.repo_header.dirty);
+    assert!(app.repo_header().branch.is_none());
+    assert!(!app.repo_header().dirty);
 }
 
 /// An in-flight refresh that has not produced a value yet must be retained
@@ -95,18 +95,21 @@ async fn cwd_change_refreshes_repo_header_immediately() {
 #[tokio::test]
 async fn pending_repo_header_refresh_is_retained() {
     let (_dir, mut app) = focus_test_app().await;
-    app.repo_header = RepoHeaderCache {
+    app.repo_header_state.cache = RepoHeaderCache {
         repo_name: Some("kept-repo".into()),
         branch: Some("kept-branch".into()),
         dirty: false,
     };
     let (tx, rx) = mpsc::channel::<RepoHeaderCache>();
-    app.repo_header_rx = Some(rx);
+    app.repo_header_state.refresh_rx = Some(rx);
 
     app.poll_repo_header();
 
-    assert!(app.repo_header_rx.is_some(), "pending refresh must survive");
-    assert_eq!(app.repo_header.branch.as_deref(), Some("kept-branch"));
+    assert!(
+        app.repo_header_state.refresh_rx.is_some(),
+        "pending refresh must survive"
+    );
+    assert_eq!(app.repo_header().branch.as_deref(), Some("kept-branch"));
     drop(tx);
 }
 

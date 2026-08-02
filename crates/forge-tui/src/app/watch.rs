@@ -15,7 +15,7 @@ pub(super) fn path_is_under_dot_forge(path: &Path) -> bool {
 
 impl TuiApp {
     pub(super) fn init_file_watcher(&mut self) {
-        let tx = self.file_change_tx.clone();
+        let tx = self.file_watch.change_tx.clone();
         let mut watcher = match RecommendedWatcher::new(
             move |result: notify::Result<notify::Event>| {
                 if let Ok(event) = result {
@@ -40,13 +40,13 @@ impl TuiApp {
             Err(_) => return,
         };
         let _ = watcher.watch(self.session.workspace_root(), RecursiveMode::Recursive);
-        self.file_watcher = Some(watcher);
+        self.file_watch.watcher = Some(watcher);
     }
 
     pub(super) fn poll_file_changes(&mut self) {
         let mut active_file_changed = false;
         let mut workspace_changed = false;
-        while let Ok(change) = self.file_change_rx.try_recv() {
+        while let Ok(change) = self.file_watch.change_rx.try_recv() {
             workspace_changed = true;
             if let Some(path) = &self.source_viewer.path {
                 if change.path == *path {

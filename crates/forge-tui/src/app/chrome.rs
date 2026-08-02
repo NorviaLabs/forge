@@ -375,7 +375,7 @@ impl TuiApp {
     /// Read the cached repo header. This is a plain field read: it must never
     /// spawn a subprocess, because callers sit on the render path.
     pub(super) fn repo_header(&self) -> RepoHeaderCache {
-        self.repo_header.clone()
+        self.repo_header_state.cache.clone()
     }
 
     /// Advance the off-thread repo-header refresh. Non-blocking and safe to call
@@ -387,33 +387,33 @@ impl TuiApp {
         // A cwd change makes the cached header describe the wrong directory, so
         // read through synchronously: the next frame must be correct, and this
         // only happens on a workspace switch, never frame to frame.
-        if self.repo_header_cwd != self.runtime.cwd {
-            self.repo_header_cwd = self.runtime.cwd.clone();
-            self.repo_header = load_repo_header(&self.repo_header_cwd);
-            self.repo_header_refreshed_at = Instant::now();
+        if self.repo_header_state.cwd != self.runtime.cwd {
+            self.repo_header_state.cwd = self.runtime.cwd.clone();
+            self.repo_header_state.cache = load_repo_header(&self.repo_header_state.cwd);
+            self.repo_header_state.refreshed_at = Instant::now();
             // Drop any refresh still in flight for the previous directory.
-            self.repo_header_rx = None;
+            self.repo_header_state.refresh_rx = None;
             return;
         }
 
-        if let Some(rx) = self.repo_header_rx.take() {
+        if let Some(rx) = self.repo_header_state.refresh_rx.take() {
             match rx.try_recv() {
                 Ok(header) => {
-                    self.repo_header = header;
-                    self.repo_header_refreshed_at = Instant::now();
+                    self.repo_header_state.cache = header;
+                    self.repo_header_state.refreshed_at = Instant::now();
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    self.repo_header_rx = Some(rx);
+                    self.repo_header_state.refresh_rx = Some(rx);
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     // Keep the last known header; retry after the next TTL window.
-                    self.repo_header_refreshed_at = Instant::now();
+                    self.repo_header_state.refreshed_at = Instant::now();
                 }
             }
             return;
         }
 
-        if self.repo_header_refreshed_at.elapsed() < REPO_HEADER_TTL {
+        if self.repo_header_state.refreshed_at.elapsed() < REPO_HEADER_TTL {
             return;
         }
 
@@ -422,7 +422,7 @@ impl TuiApp {
         std::thread::spawn(move || {
             let _ = tx.send(load_repo_header(&cwd));
         });
-        self.repo_header_rx = Some(rx);
+        self.repo_header_state.refresh_rx = Some(rx);
     }
 
     #[cfg(test)]
