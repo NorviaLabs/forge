@@ -10,7 +10,7 @@ impl TuiApp {
     pub(super) fn focus_availability(&self) -> FocusAvailability {
         FocusAvailability {
             files: self.files_visible,
-            inspector: self.sidebar_visible,
+            inspector: self.inspector.visible,
             bottom_panel: self.bottom_panel.open,
         }
     }

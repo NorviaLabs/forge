@@ -491,8 +491,8 @@ impl TuiApp {
             }
             SemanticCommand::CycleFocus { forward } => self.cycle_focus_block(forward),
             SemanticCommand::ToggleInspector => {
-                self.sidebar_visible = !self.sidebar_visible;
-                if self.sidebar_visible {
+                self.inspector.visible = !self.inspector.visible;
+                if self.inspector.visible {
                     self.focus_block(FocusBlock::Inspector);
                 } else {
                     self.restore_focus_after_closing(FocusBlock::Inspector);
@@ -500,10 +500,10 @@ impl TuiApp {
                 }
             }
             SemanticCommand::CycleInspectorTab { forward } => {
-                self.inspector_view = if forward {
-                    self.inspector_view.next()
+                self.inspector.view = if forward {
+                    self.inspector.view.next()
                 } else {
-                    self.inspector_view.previous()
+                    self.inspector.view.previous()
                 };
             }
             SemanticCommand::ToggleBottomPanel => self.toggle_bottom_panel(),

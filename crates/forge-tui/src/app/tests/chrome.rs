@@ -191,11 +191,11 @@ async fn final_shell_rendering_matrix_covers_v31_states_without_obsolete_chrome(
     ));
 
     let (dir, mut app) = focus_test_app().await;
-    app.sidebar_visible = false;
+    app.inspector.visible = false;
     scenarios.push(("inspector closed", dir, app, vec!["Describe a task"]));
 
     let (dir, mut app) = focus_test_app().await;
-    app.sidebar_visible = true;
+    app.inspector.visible = true;
     app.focus_block(FocusBlock::Inspector);
     scenarios.push((
         "inspector open",

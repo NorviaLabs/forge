@@ -43,7 +43,7 @@ impl TuiApp {
             fb_h,
             input_h,
             !slash_mode && self.files_visible,
-            !slash_mode && self.sidebar_visible,
+            !slash_mode && self.inspector.visible,
             0,
             panel_h,
             hint_h,
@@ -327,7 +327,7 @@ impl TuiApp {
             frame.render_widget(
                 SidebarWidget {
                     model: &sidebar,
-                    view: self.inspector_view,
+                    view: self.inspector.view,
                     focused: self.focus.block == FocusBlock::Inspector,
                 },
                 sidebar_area,
