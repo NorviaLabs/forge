@@ -9,13 +9,13 @@ impl TuiApp {
     pub(super) fn queue_context_reset(&mut self) {
         if self.busy
             || self.pending_turn.prompt.is_some()
-            || self.pending_hitl_decision.is_some()
-            || self.pending_context_reset
+            || self.pending_interaction.hitl_decision.is_some()
+            || self.pending_interaction.context_reset
         {
             self.set_feedback(FeedbackSeverity::Warn, "busy — wait before /compact");
             return;
         }
-        self.pending_context_reset = true;
+        self.pending_interaction.context_reset = true;
         self.busy_phase = BusyPhase::Other("context reset".into());
         self.status_message = "resetting context…".into();
         self.set_feedback(FeedbackSeverity::Info, "resetting context…");
@@ -25,10 +25,10 @@ impl TuiApp {
         &mut self,
         mut terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
     ) -> Result<(), TuiError> {
-        if !self.pending_context_reset {
+        if !self.pending_interaction.context_reset {
             return Ok(());
         }
-        self.pending_context_reset = false;
+        self.pending_interaction.context_reset = false;
         if let Some(term) = terminal.as_deref_mut() {
             let _ = term.draw(|f| self.draw(f));
         }
