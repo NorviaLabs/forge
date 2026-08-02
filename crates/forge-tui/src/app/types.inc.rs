@@ -535,6 +535,11 @@ struct DiffViewState {
     snapshot: DiffSnapshot,
 }
 
+struct WorkspaceSearchState {
+    index: Option<Arc<forge_search::WorkspaceIndex>>,
+    error: Option<String>,
+}
+
 struct RenderCacheState {
     conversation: Option<ConversationRenderCache>,
     composer_layout: ComposerLayoutCache,
@@ -636,8 +641,7 @@ pub struct TuiApp {
     repo_header_state: RepoHeaderState,
     terminal_capture: TerminalCapture,
     pointer: PointerState,
-    workspace_index: Option<Arc<forge_search::WorkspaceIndex>>,
-    workspace_index_error: Option<String>,
+    workspace_search: WorkspaceSearchState,
 }
 
 #[derive(Debug, Clone)]

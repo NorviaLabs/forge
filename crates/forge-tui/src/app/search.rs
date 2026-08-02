@@ -74,20 +74,20 @@ impl TuiApp {
     }
 
     fn workspace_search_index(&mut self) -> Result<Arc<WorkspaceIndex>, SearchError> {
-        if let Some(index) = &self.workspace_index {
+        if let Some(index) = &self.workspace_search.index {
             return Ok(index.clone());
         }
-        if let Some(message) = &self.workspace_index_error {
+        if let Some(message) = &self.workspace_search.error {
             return Err(SearchError::Init(message.clone()));
         }
 
         match WorkspaceIndex::open(self.session.workspace_root()) {
             Ok(index) => {
-                self.workspace_index = Some(index.clone());
+                self.workspace_search.index = Some(index.clone());
                 Ok(index)
             }
             Err(err) => {
-                self.workspace_index_error = Some(err.to_string());
+                self.workspace_search.error = Some(err.to_string());
                 Err(err)
             }
         }
