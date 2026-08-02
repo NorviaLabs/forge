@@ -114,8 +114,8 @@ impl TuiApp {
         match self.session.enqueue_task(&line).await {
             Ok(_item) => {
                 let n = self.session.queue().len();
-                if self.queue_selected.is_none() {
-                    self.queue_selected = Some(0);
+                if self.task_selection.queue.is_none() {
+                    self.task_selection.queue = Some(0);
                 }
                 self.push_toast(format!("queued #{n}"));
                 self.set_feedback(
@@ -239,7 +239,7 @@ impl TuiApp {
 
     fn clamp_queue_selection(&mut self) {
         let len = self.session.queue().len();
-        self.queue_selected = match (len, self.queue_selected) {
+        self.task_selection.queue = match (len, self.task_selection.queue) {
             (0, _) => None,
             (_, Some(i)) if i < len => Some(i),
             (_, Some(_)) => Some(len - 1),
@@ -250,16 +250,16 @@ impl TuiApp {
     pub(super) fn move_queue_selection(&mut self, delta: i32) {
         let len = self.session.queue().len();
         if len == 0 {
-            self.queue_selected = None;
+            self.task_selection.queue = None;
             return;
         }
-        let cur = self.queue_selected.unwrap_or(0) as i32;
+        let cur = self.task_selection.queue.unwrap_or(0) as i32;
         let next = (cur + delta).rem_euclid(len as i32) as usize;
-        self.queue_selected = Some(next);
+        self.task_selection.queue = Some(next);
     }
 
     pub(super) async fn cancel_selected_queue(&mut self) {
-        let Some(idx) = self.queue_selected else {
+        let Some(idx) = self.task_selection.queue else {
             self.set_feedback(FeedbackSeverity::Warn, "queue empty");
             return;
         };
@@ -293,7 +293,7 @@ impl TuiApp {
 
     fn clamp_tasks_selection(&mut self) {
         let len = self.session.background().list().count();
-        self.tasks_selected = match (len, self.tasks_selected) {
+        self.task_selection.tasks = match (len, self.task_selection.tasks) {
             (0, _) => None,
             (_, Some(i)) if i < len => Some(i),
             (_, Some(_)) => Some(len - 1),
@@ -304,18 +304,18 @@ impl TuiApp {
     pub(super) fn move_tasks_selection(&mut self, delta: i32) {
         let len = self.session.background().list().count();
         if len == 0 {
-            self.tasks_selected = None;
+            self.task_selection.tasks = None;
             return;
         }
-        let cur = self.tasks_selected.unwrap_or(0) as i32;
+        let cur = self.task_selection.tasks.unwrap_or(0) as i32;
         let next = (cur + delta).rem_euclid(len as i32) as usize;
-        self.tasks_selected = Some(next);
+        self.task_selection.tasks = Some(next);
     }
 
     /// Cancel the background task at the currently selected row. Rows are
     /// sorted by id ascending, matching `tasks_lines`'s render order.
     pub(super) async fn cancel_selected_task(&mut self) {
-        let Some(idx) = self.tasks_selected else {
+        let Some(idx) = self.task_selection.tasks else {
             self.set_feedback(FeedbackSeverity::Warn, "no background tasks");
             return;
         };
@@ -345,7 +345,7 @@ impl TuiApp {
     /// can't detect, which is exactly why `resolve_subagent_hitl` reports
     /// success/failure rather than being fire-and-forget.
     pub(super) fn resolve_selected_task_hitl(&mut self, decision: HitlDecision) {
-        let Some(idx) = self.tasks_selected else {
+        let Some(idx) = self.task_selection.tasks else {
             self.set_feedback(FeedbackSeverity::Warn, "no background tasks");
             return;
         };
