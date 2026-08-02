@@ -47,7 +47,7 @@ impl TuiApp {
             last_exit: ExitCode::Success,
             connect: connect::ConnectionModel::new(),
             history: InputHistory::default(),
-            slash_suggest_idx: 0,
+            slash_suggestions: SlashSuggestionState { selected: 0 },
             notices: startup_notices,
             notices_until: None,
             feedback: FeedbackModel::default(),

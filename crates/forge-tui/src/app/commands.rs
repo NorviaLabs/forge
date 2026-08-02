@@ -22,9 +22,9 @@ impl TuiApp {
     pub(super) fn clamp_slash_suggest(&mut self) {
         let n = self.slash_suggestions().len();
         if n == 0 {
-            self.slash_suggest_idx = 0;
+            self.slash_suggestions.selected = 0;
         } else {
-            self.slash_suggest_idx = self.slash_suggest_idx.min(n - 1);
+            self.slash_suggestions.selected = self.slash_suggestions.selected.min(n - 1);
         }
     }
 
@@ -33,7 +33,7 @@ impl TuiApp {
         if items.is_empty() {
             return;
         }
-        let idx = self.slash_suggest_idx.min(items.len() - 1);
+        let idx = self.slash_suggestions.selected.min(items.len() - 1);
         let cmd = items[idx].cmd.clone();
         // If user already typed more than the bare cmd (has args), don't clobber args
         let cur = self.input.text.trim();
@@ -41,7 +41,7 @@ impl TuiApp {
             return;
         }
         self.input.set_text(format!("{cmd} "));
-        self.slash_suggest_idx = 0;
+        self.slash_suggestions.selected = 0;
         self.clamp_slash_suggest();
     }
 
@@ -383,7 +383,7 @@ impl TuiApp {
                     && self.input.text.starts_with('/')
                 {
                     self.input.clear();
-                    self.slash_suggest_idx = 0;
+                    self.slash_suggestions.selected = 0;
                 } else {
                     self.escape_navigation();
                 }
@@ -1378,17 +1378,17 @@ mod tests {
         let count = app.slash_suggestions().len();
         assert!(count > 0, "a bare slash should suggest commands");
 
-        app.slash_suggest_idx = count + 10;
+        app.slash_suggestions.selected = count + 10;
         app.clamp_slash_suggest();
-        assert_eq!(app.slash_suggest_idx, count - 1);
+        assert_eq!(app.slash_suggestions.selected, count - 1);
 
         // With no suggestions the index collapses to zero rather than staying
         // out of range.
         app.input.set_text("not a slash command");
         assert!(app.slash_suggestions().is_empty());
-        app.slash_suggest_idx = 5;
+        app.slash_suggestions.selected = 5;
         app.clamp_slash_suggest();
-        assert_eq!(app.slash_suggest_idx, 0);
+        assert_eq!(app.slash_suggestions.selected, 0);
     }
 
     #[tokio::test]
