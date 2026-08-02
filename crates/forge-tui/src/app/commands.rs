@@ -829,7 +829,7 @@ impl TuiApp {
                     self.clear_error_chrome();
                     self.feedback = FeedbackModel::default();
                     self.status_message.clear();
-                    self.toast = None;
+                    self.toast.current = None;
                     self.conversation_view.scroll = 0;
                     self.conversation_view.follow = true;
                 }
