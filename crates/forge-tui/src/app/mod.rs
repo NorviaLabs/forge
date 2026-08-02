@@ -106,12 +106,15 @@ mod workspace;
 
 include!("types.inc.rs");
 
+pub(crate) use chrome::format_exit_token_usage;
+pub(crate) use chrome::recent_resume_sessions;
+pub use chrome::resume_session_items;
 /// Only the in-crate tests reach these directly; the runtime paths call them
 /// from inside `chrome.rs`.
 #[cfg(test)]
 use chrome::{footer_limits_from_report, footer_usage_summary_with_cost};
-pub(crate) use chrome::{format_exit_token_usage, recent_resume_sessions};
 pub use shell::run_tui;
+pub use shell::run_tui_with_resume_picker;
 
 #[cfg(test)]
 mod tests;
