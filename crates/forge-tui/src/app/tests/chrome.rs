@@ -620,7 +620,7 @@ async fn tui09_status_renders_structured_session_card() {
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert!(app.notices.is_empty());
+    assert!(app.notice_state.items.is_empty());
     assert!(app.overlay.is_none());
 
     use ratatui::backend::TestBackend;
