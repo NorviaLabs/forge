@@ -136,7 +136,7 @@ impl TuiApp {
                 index: None,
                 error: None,
             },
-            last_editor_height: 24,
+            editor_viewport: EditorViewportState { height: 24 },
         };
         app.init_file_watcher();
         app.load_run_history();

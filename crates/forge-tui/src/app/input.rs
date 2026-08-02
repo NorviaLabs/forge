@@ -266,7 +266,7 @@ impl TuiApp {
             return false;
         }
 
-        let height = self.last_editor_height.saturating_sub(2) as usize;
+        let height = self.editor_viewport.height.saturating_sub(2) as usize;
         // Navigation shortcuts are plain keys so modified combinations can
         // continue to control contextual workspace and chrome commands.
         match key.code {
