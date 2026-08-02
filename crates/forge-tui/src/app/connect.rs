@@ -179,7 +179,7 @@ impl TuiApp {
         self.timing.thought_secs = None;
         self.cancellation.requested = false;
         self.busy_state.active = false;
-        self.busy_phase = BusyPhase::Idle;
+        self.busy_state.phase = BusyPhase::Idle;
         self.tool_detail.expanded = false;
         self.conversation_view.follow = true;
         self.conversation_view.scroll = 0;
