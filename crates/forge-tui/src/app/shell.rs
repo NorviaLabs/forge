@@ -83,7 +83,7 @@ async fn run_tui_inner(
 
     app.persist_selection();
 
-    if let Some(session_id) = app.startup_resume_session_id {
+    if let Some(session_id) = app.startup_resume.session_id {
         let path = app.session.journal_dir().join(format!("{session_id}.db"));
         let _ = std::fs::remove_file(path);
     }
