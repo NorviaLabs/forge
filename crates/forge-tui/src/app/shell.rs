@@ -34,6 +34,25 @@ pub async fn run_tui(
     session: AgentSession,
     runtime: TuiRuntimeConfig,
 ) -> Result<ExitSummary, TuiError> {
+    run_tui_inner(session, runtime, None).await
+}
+
+/// Run the TUI with a startup session picker. The temporary session created
+/// before entering the TUI is removed after the picker is cancelled or a
+/// previous session is selected.
+pub async fn run_tui_with_resume_picker(
+    session: AgentSession,
+    runtime: TuiRuntimeConfig,
+    items: Vec<ResumeSessionItem>,
+) -> Result<ExitSummary, TuiError> {
+    run_tui_inner(session, runtime, Some(items)).await
+}
+
+async fn run_tui_inner(
+    session: AgentSession,
+    runtime: TuiRuntimeConfig,
+    startup_items: Option<Vec<ResumeSessionItem>>,
+) -> Result<ExitSummary, TuiError> {
     enable_raw_mode()?;
     // Ensure the terminal is restored on panic, returned errors and normal exit.
     let _guard = TerminalGuard::install();
@@ -52,8 +71,8 @@ pub async fn run_tui(
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = TuiApp::new(session, runtime);
-    if !app.is_provider_connected() {
+    let mut app = TuiApp::new_with_startup_resume_picker(session, runtime, startup_items);
+    if app.overlay.is_none() && !app.is_provider_connected() {
         app.overlay = Some(Overlay::welcome());
         app.set_feedback(
             FeedbackSeverity::Info,
@@ -63,6 +82,11 @@ pub async fn run_tui(
     let result = run_loop(&mut terminal, &mut app).await;
 
     app.persist_selection();
+
+    if let Some(session_id) = app.startup_resume_session_id {
+        let path = app.session.journal_dir().join(format!("{session_id}.db"));
+        let _ = std::fs::remove_file(path);
+    }
 
     result.map(|_| {
         let report = app.session.token_usage_report();

@@ -503,6 +503,8 @@ pub struct TuiApp {
     input: InputModel,
     pub(crate) overlay: Option<Overlay>,
     should_quit: bool,
+    startup_resume_picker: bool,
+    startup_resume_session_id: Option<uuid::Uuid>,
     busy: bool,
     pub(crate) status_message: String,
     pub(crate) runtime: TuiRuntimeConfig,

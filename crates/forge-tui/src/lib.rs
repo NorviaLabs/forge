@@ -27,7 +27,10 @@ mod visual_test;
 mod widgets;
 
 pub use activity::{ActivityFeed, ActivityItem, ActivityKind};
-pub use app::{run_tui, ExitSummary, TuiApp, TuiError, TuiRuntimeConfig};
+pub use app::{
+    resume_session_items, run_tui, run_tui_with_resume_picker, ExitSummary, TuiApp, TuiError,
+    TuiRuntimeConfig,
+};
 pub use commands::{parse_slash, CommandError, SlashCommand};
 pub use conversation::{
     BannerKind, ChatItem, ConversationModel, ConversationViewOpts, StreamWaitPhase, ToolCardState,
@@ -41,7 +44,7 @@ pub use layout::{
 };
 pub use overlays::{
     default_palette_items, filter_palette, handle_overlay_key, models_from_catalog,
-    Key as OverlayKey, Overlay, OverlayAction,
+    Key as OverlayKey, Overlay, OverlayAction, ResumeSessionItem,
 };
 pub use run::{
     command_text as run_command_text, legacy_command_text, RunDraft, RunEnvironmentChange,

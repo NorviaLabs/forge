@@ -112,7 +112,13 @@ impl TuiApp {
     ) -> Result<(), TuiError> {
         match action {
             OverlayAction::None => {}
-            OverlayAction::Close => self.overlay = None,
+            OverlayAction::Close => {
+                if self.startup_resume_picker {
+                    self.should_quit = true;
+                    self.last_exit = ExitCode::Canceled;
+                }
+                self.overlay = None;
+            }
             OverlayAction::BeginOnboarding => {
                 self.open_connect_picker();
                 self.set_feedback(FeedbackSeverity::Info, "Step 1 of 2 · choose a provider");
@@ -140,6 +146,7 @@ impl TuiApp {
                 self.set_feedback(FeedbackSeverity::Info, "stopped at turn limit");
             }
             OverlayAction::RunCommand(cmd) => {
+                self.startup_resume_picker = false;
                 self.overlay = None;
                 self.execute_semantic_command(SemanticCommand::DispatchSlash {
                     origin: SlashCommandOrigin::GlobalPalette,
