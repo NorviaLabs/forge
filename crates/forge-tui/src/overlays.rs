@@ -271,6 +271,10 @@ fn window_start(selected: usize, total: usize, visible: usize) -> usize {
 pub struct ResumeSessionItem {
     pub id: String,
     pub modified: String,
+    /// First user message of the session, truncated — `None` when the
+    /// journal couldn't be read/replayed cheaply. Falls back to showing
+    /// just `id`/`modified` in that case.
+    pub title: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -2120,7 +2124,10 @@ impl Widget for OverlayWidget<'_> {
                         } else {
                             theme::text()
                         };
-                        let row = format!("{marker}{}  ·  {}", item.id, item.modified);
+                        let row = match &item.title {
+                            Some(title) => format!("{marker}{title}  ·  {}", item.modified),
+                            None => format!("{marker}{}  ·  {}", item.id, item.modified),
+                        };
                         ListItem::new(Span::styled(row, style))
                     })
                     .collect();
@@ -2679,10 +2686,12 @@ mod tests {
             ResumeSessionItem {
                 id: "first".into(),
                 modified: "newest".into(),
+                title: None,
             },
             ResumeSessionItem {
                 id: "second".into(),
                 modified: "older".into(),
+                title: None,
             },
         ]);
         assert_eq!(
@@ -3199,10 +3208,12 @@ mod tests {
             ResumeSessionItem {
                 id: "one".into(),
                 modified: "now".into(),
+                title: None,
             },
             ResumeSessionItem {
                 id: "two".into(),
                 modified: "then".into(),
+                title: None,
             },
         ]);
 
@@ -3342,9 +3353,21 @@ mod tests {
         let resume = render_text(&Overlay::resume_picker(vec![ResumeSessionItem {
             id: "session-123".into(),
             modified: "2026-07-29 05:00".into(),
+            title: None,
         }]));
         assert!(resume.contains("Resume a session"));
         assert!(resume.contains("session-123"));
+    }
+
+    #[test]
+    fn resume_picker_shows_title_hint_when_present_instead_of_raw_id() {
+        let resume = render_text(&Overlay::resume_picker(vec![ResumeSessionItem {
+            id: "session-123".into(),
+            modified: "2026-07-29 05:00".into(),
+            title: Some("fix the login bug".into()),
+        }]));
+        assert!(resume.contains("fix the login bug"), "{resume}");
+        assert!(!resume.contains("session-123"), "{resume}");
     }
 
     #[test]
