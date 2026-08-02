@@ -26,16 +26,27 @@ async fn typing_reuses_cached_conversation_lines() {
     app.splash_dismissed = true;
     let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
     terminal.draw(|frame| app.draw(frame)).unwrap();
-    Arc::get_mut(&mut app.conversation_cache.as_mut().unwrap().lines)
+    Arc::get_mut(&mut app.render_cache.conversation.as_mut().unwrap().lines)
         .expect("cache handle is unshared between frames")
         .reserve(1_000);
-    let cached_capacity = app.conversation_cache.as_ref().unwrap().lines.capacity();
+    let cached_capacity = app
+        .render_cache
+        .conversation
+        .as_ref()
+        .unwrap()
+        .lines
+        .capacity();
 
     app.input.insert('x');
     terminal.draw(|frame| app.draw(frame)).unwrap();
 
     assert_eq!(
-        app.conversation_cache.as_ref().unwrap().lines.capacity(),
+        app.render_cache
+            .conversation
+            .as_ref()
+            .unwrap()
+            .lines
+            .capacity(),
         cached_capacity
     );
 }
@@ -74,16 +85,27 @@ async fn streaming_updates_reuse_cached_transcript_lines() {
     app.stream_preview = "first chunk".into();
     let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
     terminal.draw(|frame| app.draw(frame)).unwrap();
-    Arc::get_mut(&mut app.conversation_cache.as_mut().unwrap().lines)
+    Arc::get_mut(&mut app.render_cache.conversation.as_mut().unwrap().lines)
         .expect("cache handle is unshared between frames")
         .reserve(1_000);
-    let cached_capacity = app.conversation_cache.as_ref().unwrap().lines.capacity();
+    let cached_capacity = app
+        .render_cache
+        .conversation
+        .as_ref()
+        .unwrap()
+        .lines
+        .capacity();
 
     app.stream_preview.push_str(" and updated tail");
     terminal.draw(|frame| app.draw(frame)).unwrap();
 
     assert_eq!(
-        app.conversation_cache.as_ref().unwrap().lines.capacity(),
+        app.render_cache
+            .conversation
+            .as_ref()
+            .unwrap()
+            .lines
+            .capacity(),
         cached_capacity,
         "stream deltas must not rebuild historical transcript lines"
     );
@@ -113,12 +135,12 @@ async fn cache_hit_shares_transcript_lines_without_copying() {
         "cached transcript body",
     ));
     draw_app(&mut app, 100, 30);
-    let first = Arc::clone(&app.conversation_cache.as_ref().unwrap().lines);
+    let first = Arc::clone(&app.render_cache.conversation.as_ref().unwrap().lines);
 
     // Typing does not change the render key, so this is a cache hit.
     app.input.insert('x');
     draw_app(&mut app, 100, 30);
-    let second = Arc::clone(&app.conversation_cache.as_ref().unwrap().lines);
+    let second = Arc::clone(&app.render_cache.conversation.as_ref().unwrap().lines);
 
     assert!(
         Arc::ptr_eq(&first, &second),
