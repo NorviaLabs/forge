@@ -3,10 +3,14 @@
 mod background;
 mod completion;
 mod lifecycle;
+mod persistence;
 mod queue;
 mod resume;
 mod stream;
 mod subagent;
+mod task_runtime;
+mod turn;
+pub(crate) mod turn_state;
 
 pub use stream::{
     accumulate_stream_event, merge_streamed_response, observe_stream_event, stream_turn_event,
@@ -46,6 +50,11 @@ use serde_json::json;
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
+
+use crate::persistence::SessionPersistence;
+use crate::task_runtime::TaskRuntime;
+use crate::turn::TurnCoordinator;
+use crate::turn_state::TurnState;
 
 const SYSTEM_PROMPT: &str = include_str!("system_prompt.md");
 
@@ -521,34 +530,12 @@ pub struct AgentSession {
     /// flags. All mutation goes through `AgentSession::transition`/
     /// `enter_waiting`/`start_new_task`, never a direct field write.
     pub active_task: ActiveTaskState,
-    /// Explicit FIFO queue of future-task instructions, owned here (not the
-    /// TUI) so promotion/journaling/restoration go through one store with
-    /// direct `Journal` access.
-    pub queue: TaskQueue,
-    /// In-flight/recently-finished background tasks (shell jobs, subagents),
-    /// separate from `active_task` on purpose — see `background` module docs.
-    pub background: BackgroundTaskRegistry,
-    /// Non-blocking result channels for in-flight background tasks, polled
-    /// once per tick by `poll_background_tasks` — mirrors
-    /// `forge-tui`'s `GitStatusCache` spawn+poll pattern. Kept off
-    /// `BackgroundTaskHandle` itself since `Receiver` isn't `Clone`/`Debug`.
-    /// Wrapped in a `Mutex` (never actually contended — every access is from
-    /// `poll_background_tasks`, always sequential) purely so `Receiver`'s
-    /// `!Sync` doesn't make `&AgentSession` `!Send`, which would otherwise
-    /// block spawning a subagent's `AgentSession` into its own tokio task.
-    background_receivers: HashMap<
-        BackgroundTaskId,
-        std::sync::Mutex<std::sync::mpsc::Receiver<background::BackgroundTaskOutcome>>,
-    >,
-    /// One decision channel per currently-waiting subagent — the send half
-    /// `AgentSession::resolve_subagent_hitl` uses to deliver an approve/deny
-    /// decision into that subagent's spawned task. Entries are removed once
-    /// the task finishes (see `poll_background_tasks`).
-    subagent_hitl_senders:
-        HashMap<BackgroundTaskId, tokio::sync::mpsc::UnboundedSender<HitlDecision>>,
+    /// Queue and background-task runtime stores. Public access is provided by
+    /// read-only accessors so their ownership stays inside the session.
+    tasks: TaskRuntime,
     /// Provider/model id for the next completion (empty → client default).
     pub active_model: String,
-    journal: Journal,
+    journal: SessionPersistence,
     /// Shared across a parent session and every subagent spawned from it —
     /// `register` only ever runs during `create`/`resume` setup, so sharing
     /// via `Arc` after that point is a type change, not a behavior change.
@@ -568,22 +555,10 @@ pub struct AgentSession {
     cancel_token: Option<CancellationToken>,
     /// Cumulative provider token usage for this session.
     pub token_usage: SessionTokenUsage,
-    /// Validation failures within the current user turn (not persisted).
-    validation_budget: ValidationBudget,
-    /// Tool calls issued so far in the current user turn — reset in
-    /// `append_user_message`. Feeds `classify_turn` at the end of the turn.
-    turn_calls: Vec<ToolCall>,
-    /// Runtime-observed evidence collected so far in the current user turn —
-    /// reset in `append_user_message`. Never derived from assistant text.
-    turn_evidence: ExecutionEvidence,
-    /// How many HITL approvals in a row the user has denied within the
-    /// current user turn — reset in `append_user_message` and on any
-    /// approval. `resolve_hitl` uses this to stop the turn after a small
-    /// number of consecutive denials instead of letting the model keep
-    /// autonomously searching for a workaround all the way to `max_turns`
-    /// (previously up to 128 model steps for a single denied trivial
-    /// command).
-    consecutive_hitl_denials: u32,
+    /// Runtime bookkeeping scoped to the current user turn. It is reset when
+    /// a new user message starts and is intentionally not persisted as its
+    /// own journal state.
+    turn: TurnState,
     /// The `CompletionEvaluator` decision for the most recently finished
     /// turn, for callers/tests that want the machine-readable reason behind
     /// `status` without re-deriving it from messages.
@@ -685,13 +660,13 @@ impl AgentSession {
         };
         self.session_id = session_id;
         self.active_task = ActiveTaskState::from_restored(session_id, state.status, wait_reason);
-        self.queue = queue;
+        self.tasks = TaskRuntime::with_queue(queue);
         self.messages = messages;
         self.events = vec![TurnEvent {
             kind: "resume".into(),
             detail: format!("seq={}", state.last_seq),
         }];
-        self.journal = journal;
+        self.journal = SessionPersistence::new(journal);
         self.tool_ctx = ToolContext::new(active_root);
         self.context = context;
         self.token_usage = token_usage;
@@ -735,12 +710,9 @@ impl AgentSession {
             }],
             events: vec![],
             active_task: ActiveTaskState::new(session_id),
-            queue: TaskQueue::new(),
-            background: BackgroundTaskRegistry::new(),
-            background_receivers: HashMap::new(),
-            subagent_hitl_senders: HashMap::new(),
+            tasks: TaskRuntime::new(),
             active_model: String::new(),
-            journal,
+            journal: SessionPersistence::new(journal),
             tools: Arc::new(tools),
             model,
             tool_ctx: ToolContext::new(active_root),
@@ -751,10 +723,7 @@ impl AgentSession {
             enable_gov: loop_cfg.enable_governance,
             cancel_token: None,
             token_usage: SessionTokenUsage::default(),
-            validation_budget: ValidationBudget::with_default_max(),
-            turn_calls: Vec::new(),
-            turn_evidence: ExecutionEvidence::new(),
-            consecutive_hitl_denials: 0,
+            turn: TurnState::new(),
             last_completion: None,
             journaled_tool_results: HashMap::new(),
         })
@@ -816,12 +785,9 @@ impl AgentSession {
                 detail: format!("seq={}", state.last_seq),
             }],
             active_task: ActiveTaskState::from_restored(session_id, state.status, wait_reason),
-            queue,
-            background: BackgroundTaskRegistry::new(),
-            background_receivers: HashMap::new(),
-            subagent_hitl_senders: HashMap::new(),
+            tasks: TaskRuntime::with_queue(queue),
             active_model: String::new(),
-            journal,
+            journal: SessionPersistence::new(journal),
             tools: Arc::new(tools),
             model,
             tool_ctx: ToolContext::new(active_root),
@@ -832,10 +798,7 @@ impl AgentSession {
             enable_gov: loop_cfg.enable_governance,
             cancel_token: None,
             token_usage,
-            validation_budget: ValidationBudget::with_default_max(),
-            turn_calls: Vec::new(),
-            turn_evidence: ExecutionEvidence::new(),
-            consecutive_hitl_denials: 0,
+            turn: TurnState::new(),
             last_completion: None,
             journaled_tool_results: state.tool_results.clone(),
         };
@@ -853,6 +816,22 @@ impl AgentSession {
 
     pub fn set_governance(&mut self, g: Governance) {
         self.governance = g;
+    }
+
+    /// Read-only view of queued future-task instructions.
+    pub fn queue(&self) -> &TaskQueue {
+        &self.tasks.queue
+    }
+
+    /// Read-only view of in-flight and recently-finished background tasks.
+    pub fn background(&self) -> &BackgroundTaskRegistry {
+        &self.tasks.background
+    }
+
+    /// Request cancellation of a background task through the session-owned
+    /// runtime. Returns `false` for unknown or already-terminal tasks.
+    pub fn cancel_background_task(&mut self, id: BackgroundTaskId) -> bool {
+        self.tasks.background.cancel(id)
     }
 
     /// The HITL payload the active task is waiting on, if any — a
@@ -949,7 +928,7 @@ impl AgentSession {
     /// returning — callers must not report "queued" to the user until this
     /// succeeds.
     pub async fn enqueue_task(&mut self, text: &str) -> Result<QueuedTask, LoopError> {
-        let item = self.queue.enqueue(self.session_id, text);
+        let item = self.tasks.queue.enqueue(self.session_id, text);
         self.journal
             .append_queue_enqueued(self.session_id, item.id, &item.text)
             .await?;
@@ -964,7 +943,7 @@ impl AgentSession {
         &mut self,
         one_based: usize,
     ) -> Result<Option<QueuedTask>, LoopError> {
-        let Some(item) = self.queue.remove_at_visible_position(one_based) else {
+        let Some(item) = self.tasks.queue.remove_at_visible_position(one_based) else {
             return Ok(None);
         };
         self.journal
@@ -978,10 +957,10 @@ impl AgentSession {
     /// the new task, the item is rolled back to `Queued` (never lost) and
     /// the error propagated.
     pub async fn promote_next_queued(&mut self) -> Result<Option<TaskId>, LoopError> {
-        let Some(item) = self.queue.peek_next_queued().cloned() else {
+        let Some(item) = self.tasks.queue.peek_next_queued().cloned() else {
             return Ok(None);
         };
-        if !self.queue.mark_promoting(item.id) {
+        if !self.tasks.queue.mark_promoting(item.id) {
             // Lost the race to another caller — nothing to do.
             return Ok(None);
         }
@@ -991,14 +970,14 @@ impl AgentSession {
 
         match self.append_user_message(&item.text).await {
             Ok(()) => {
-                self.queue.mark_promoted(item.id);
+                self.tasks.queue.mark_promoted(item.id);
                 self.journal
                     .append_queue_promoted(self.session_id, item.id, self.active_task.task_id.0)
                     .await?;
                 Ok(Some(self.active_task.task_id))
             }
             Err(err) => {
-                self.queue.revert_promoting(item.id);
+                self.tasks.queue.revert_promoting(item.id);
                 Err(err)
             }
         }
@@ -1158,13 +1137,9 @@ impl AgentSession {
         }
         let next_id = TaskId(self.active_task.task_id.0 + 1);
         self.transition_to_new_task(next_id).await?;
-        // Fresh validation budget for each user turn.
-        self.validation_budget = ValidationBudget::with_default_max();
-        // Fresh completion-evidence bookkeeping for each user turn — a prior
-        // turn's tool calls/evidence must never leak into this one's decision.
-        self.turn_calls = Vec::new();
-        self.turn_evidence = ExecutionEvidence::new();
-        self.consecutive_hitl_denials = 0;
+        // Fresh turn-local bookkeeping — a prior turn's tool calls/evidence
+        // must never leak into this one's decision.
+        self.turn.reset();
         self.last_completion = None;
         Ok(())
     }
@@ -1275,7 +1250,7 @@ impl AgentSession {
             // no-op chat answer and falls through to `TaskExpectation::ReadOnly`,
             // which completes on any non-empty text — reporting success while
             // nothing actually happened. Fail explicitly instead.
-            if self.turn_calls.is_empty() {
+            if self.turn.calls().is_empty() {
                 let tool_names: Vec<String> = self
                     .tools
                     .list_descriptors()
@@ -1291,18 +1266,18 @@ impl AgentSession {
                     return Ok(ApplyOutcome::Done(last));
                 }
             }
-            self.turn_evidence.push(EvidenceEntry::new(
+            self.turn.push_evidence(EvidenceEntry::new(
                 ExecutionEvent::AssistantResponseProduced,
             ));
 
             // The model's own words never decide this — only the expectation
             // derived from tool calls actually issued this turn, and the
             // evidence those calls produced.
-            let expectation = classify_turn(&self.turn_calls);
-            let decision = DefaultCompletionEvaluator.evaluate(&expectation, &self.turn_evidence);
+            let expectation = classify_turn(self.turn.calls());
+            let decision = DefaultCompletionEvaluator.evaluate(&expectation, self.turn.evidence());
             tracing::debug!(
                 expectation = ?expectation,
-                evidence_count = self.turn_evidence.0.len(),
+                evidence_count = self.turn.evidence().0.len(),
                 reason = decision.reason.as_category(),
                 state = ?decision.state,
                 "turn completion decision"
@@ -1353,7 +1328,7 @@ impl AgentSession {
 
         // Budget spans the whole user turn so repeated invalid calls across
         // model steps still exhaust instead of looping forever.
-        let mut budget = std::mem::take(&mut self.validation_budget);
+        let mut budget = self.turn.take_validation_budget();
         let tool_result = async {
             for call in &last.tool_calls {
                 if let Some(pause) = self.run_one_tool(call, &mut budget).await? {
@@ -1367,7 +1342,7 @@ impl AgentSession {
             Ok(ApplyOutcome::Continue)
         }
         .await;
-        self.validation_budget = budget;
+        self.turn.restore_validation_budget(budget);
         tool_result
     }
 
@@ -1450,12 +1425,12 @@ impl AgentSession {
                 // subagents/background jobs running unsupervised — flip
                 // every still-in-flight child's `CancellationToken` too.
                 let child_ids: Vec<_> = self
-                    .background
+                    .background()
                     .children_of(self.active_task.task_id)
                     .map(|t| t.id)
                     .collect();
                 for id in child_ids {
-                    self.background.cancel(id);
+                    self.tasks.background.cancel(id);
                 }
                 Ok(())
             }
@@ -1579,24 +1554,7 @@ impl AgentSession {
         &mut self,
         stream_tx: Option<StreamEventTx>,
     ) -> Result<ModelResponse, LoopError> {
-        if self.active_task.lifecycle == TaskLifecycle::Waiting {
-            return Err(LoopError::AwaitingHitl);
-        }
-
-        for turn in 0..self.max_turns {
-            let last = self
-                .run_model_step_with_stream(turn, stream_tx.clone())
-                .await?;
-
-            match self.apply_model_response(last).await? {
-                ApplyOutcome::Done(resp) => return Ok(resp),
-                ApplyOutcome::Hitl(resp) => return Ok(resp),
-                ApplyOutcome::Continue => continue,
-            }
-        }
-
-        self.fail_max_turns().await?;
-        Err(LoopError::Other("max_turns exceeded".into()))
+        TurnCoordinator::run(self, stream_tx).await
     }
 
     async fn hash_workspace_path(&self, relative: &str) -> Option<u64> {
@@ -1705,7 +1663,7 @@ impl AgentSession {
                 if output.is_error {
                     entry = entry.error(truncate(&output.content, 200));
                 }
-                self.turn_evidence.push(entry);
+                self.turn.push_evidence(entry);
             }
             "apply_patch" => {
                 for (path, pre_hash) in pre {
@@ -1724,7 +1682,7 @@ impl AgentSession {
                     if output.is_error {
                         entry = entry.error(truncate(&output.content, 200));
                     }
-                    self.turn_evidence.push(entry);
+                    self.turn.push_evidence(entry);
                 }
             }
             _ => {}
@@ -1754,7 +1712,7 @@ impl AgentSession {
 
         if output.is_error {
             entry = entry.error(truncate(&output.content, 200));
-            self.turn_evidence.push(entry);
+            self.turn.push_evidence(entry);
             return;
         }
 
@@ -1786,7 +1744,7 @@ impl AgentSession {
             _ => None,
         };
         entry = entry.git_effect_verified(verified);
-        self.turn_evidence.push(entry);
+        self.turn.push_evidence(entry);
     }
 
     fn push_search_evidence(&mut self, call: &ToolCall, output: &ToolOutput) {
@@ -1804,7 +1762,7 @@ impl AgentSession {
             let count = search_result_count(&output.content);
             entry = entry.count(count);
         }
-        self.turn_evidence.push(entry);
+        self.turn.push_evidence(entry);
     }
 
     fn push_bash_evidence(&mut self, call: &ToolCall, output: &ToolOutput) {
@@ -1822,7 +1780,7 @@ impl AgentSession {
         if output.is_error {
             entry = entry.error(truncate(&output.content, 200));
         }
-        self.turn_evidence.push(entry);
+        self.turn.push_evidence(entry);
     }
 
     /// Dispatches to the right evidence builder for a successfully-dispatched
@@ -1867,7 +1825,7 @@ impl AgentSession {
                 entry = entry.git_command(a.subcommand.trim().to_ascii_lowercase());
             }
         }
-        self.turn_evidence.push(entry);
+        self.turn.push_evidence(entry);
     }
 
     /// Returns Some(response) if paused for HITL.
@@ -1879,7 +1837,7 @@ impl AgentSession {
         if self.try_serve_journaled_tool(call).await? {
             return Ok(None);
         }
-        self.turn_calls.push(call.clone());
+        self.turn.record_call(call.clone());
         let class = self
             .tools
             .get(&call.name)
@@ -1924,7 +1882,7 @@ impl AgentSession {
                         kind: "hitl_wait".into(),
                         detail: payload.tool.clone(),
                     });
-                    self.turn_evidence.push(
+                    self.turn.push_evidence(
                         EvidenceEntry::new(ExecutionEvent::WaitingForUser)
                             .operation_id(call.id.clone())
                             .tool_name(call.name.clone()),
@@ -2113,7 +2071,7 @@ impl AgentSession {
                 name: payload.tool.clone(),
                 arguments: payload.args_redacted.clone(),
             };
-            self.turn_calls.push(call.clone());
+            self.turn.record_call(call.clone());
             self.push_denied_evidence(&call, &output.content);
             self.journal
                 .append_tool_intent(self.session_id, &call)
@@ -2133,15 +2091,15 @@ impl AgentSession {
             });
             // Stale evidence from the paused call must not leak into a later
             // completion decision within this same turn (see `apply_model_response`).
-            self.turn_evidence
+            self.turn
+                .evidence_mut()
                 .0
                 .retain(|e| e.event() != ExecutionEvent::WaitingForUser);
 
             self.transition(TaskLifecycle::Working, TransitionReason::HitlResolved)
                 .await?;
 
-            self.consecutive_hitl_denials = self.consecutive_hitl_denials.saturating_add(1);
-            if self.consecutive_hitl_denials >= Self::MAX_CONSECUTIVE_HITL_DENIALS {
+            if self.turn.record_hitl_denial() >= Self::MAX_CONSECUTIVE_HITL_DENIALS {
                 // A denial is a strong signal the user does not want this
                 // approach pursued at all. Without this, the model would
                 // keep autonomously searching for a workaround for up to
@@ -2157,7 +2115,7 @@ impl AgentSession {
             return Ok(());
         }
 
-        self.consecutive_hitl_denials = 0;
+        self.turn.reset_hitl_denials();
         // Re-authorize
         let call = ToolCall {
             id: payload.call_id.clone(),
@@ -2178,7 +2136,8 @@ impl AgentSession {
             // refused. Behaviour is unchanged for Allow, Hitl and Deny.
             let refuse = !matches!(d, PolicyDecision::Allow | PolicyDecision::Hitl);
             if refuse {
-                self.turn_evidence
+                self.turn
+                    .evidence_mut()
                     .0
                     .retain(|e| e.event() != ExecutionEvent::WaitingForUser);
                 self.transition(TaskLifecycle::Working, TransitionReason::HitlResolved)
@@ -2191,7 +2150,8 @@ impl AgentSession {
 
         // Restore args from pending — we only have redacted; for tests use redacted as args
         let mut budget = ValidationBudget::with_default_max();
-        self.turn_evidence
+        self.turn
+            .evidence_mut()
             .0
             .retain(|e| e.event() != ExecutionEvent::WaitingForUser);
         self.transition(TaskLifecycle::Working, TransitionReason::HitlResolved)
@@ -2211,7 +2171,7 @@ impl AgentSession {
         if self.try_serve_journaled_tool(call).await? {
             return Ok(());
         }
-        self.turn_calls.push(call.clone());
+        self.turn.record_call(call.clone());
         self.journal
             .append_tool_intent(self.session_id, call)
             .await?;
@@ -2430,14 +2390,14 @@ mod tests {
         assert_eq!(s.active_task.lifecycle, TaskLifecycle::Ready);
 
         let item = s.enqueue_task("do the next thing").await.unwrap();
-        assert_eq!(s.queue.len(), 1);
+        assert_eq!(s.queue().len(), 1);
 
         let task_id = s.promote_next_queued().await.unwrap().unwrap();
         assert_eq!(s.active_task.lifecycle, TaskLifecycle::Working);
         assert_eq!(s.active_task.task_id, task_id);
         // Promotion removed exactly the one item from the visible queue.
-        assert_eq!(s.queue.len(), 0);
-        assert!(s.queue.visible().all(|q| q.id != item.id));
+        assert_eq!(s.queue().len(), 0);
+        assert!(s.queue().visible().all(|q| q.id != item.id));
         assert!(s.messages.iter().any(|m| m.content == "do the next thing"));
     }
 
@@ -2459,7 +2419,7 @@ mod tests {
 
         let removed = s.cancel_queued_at(2).await.unwrap().unwrap();
         assert_eq!(removed.id, b.id);
-        let remaining: Vec<&str> = s.queue.visible().map(|q| q.text.as_str()).collect();
+        let remaining: Vec<&str> = s.queue().visible().map(|q| q.text.as_str()).collect();
         assert_eq!(remaining, vec!["a", "c"]);
     }
 
@@ -2473,7 +2433,7 @@ mod tests {
         s.append_user_message("first task").await.unwrap();
         s.enqueue_task("queued one").await.unwrap();
         s.enqueue_task("queued two").await.unwrap();
-        assert_eq!(s.queue.len(), 2);
+        assert_eq!(s.queue().len(), 2);
 
         let resumed = AgentSession::resume(
             base_cfg(dir.path()),
@@ -2483,8 +2443,8 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(resumed.queue.len(), 2);
-        let texts: Vec<&str> = resumed.queue.visible().map(|q| q.text.as_str()).collect();
+        assert_eq!(resumed.queue().len(), 2);
+        let texts: Vec<&str> = resumed.queue().visible().map(|q| q.text.as_str()).collect();
         assert_eq!(texts, vec!["queued one", "queued two"]);
     }
 
@@ -2528,8 +2488,8 @@ mod tests {
         .unwrap();
 
         // Not visible in the queue again — the task was already created.
-        assert!(resumed.queue.is_empty());
-        assert!(resumed.queue.peek_next_queued().is_none());
+        assert!(resumed.queue().is_empty());
+        assert!(resumed.queue().peek_next_queued().is_none());
         // The task's user message did survive, exactly once.
         assert_eq!(
             resumed
@@ -2570,9 +2530,9 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(resumed.queue.len(), 1);
+        assert_eq!(resumed.queue().len(), 1);
         assert_eq!(
-            resumed.queue.peek_next_queued().map(|q| q.text.as_str()),
+            resumed.queue().peek_next_queued().map(|q| q.text.as_str()),
             Some("not started yet")
         );
     }
@@ -2586,12 +2546,12 @@ mod tests {
             .unwrap();
         s.append_user_message("first task").await.unwrap();
         s.enqueue_task("queued while busy").await.unwrap();
-        assert_eq!(s.queue.len(), 1);
+        assert_eq!(s.queue().len(), 1);
 
         s.mark_cancelled().await.unwrap();
         assert_eq!(s.active_task.lifecycle, TaskLifecycle::Cancelled);
         // Cancellation must not silently clear the queue.
-        assert_eq!(s.queue.len(), 1);
+        assert_eq!(s.queue().len(), 1);
     }
 
     #[tokio::test]
@@ -3142,7 +3102,8 @@ mod tests {
         // The stale WaitingForUser entry from the pause must be gone —
         // otherwise the next completion decision would misread it.
         assert!(!s
-            .turn_evidence
+            .turn
+            .evidence()
             .0
             .iter()
             .any(|e| e.event() == ExecutionEvent::WaitingForUser));
