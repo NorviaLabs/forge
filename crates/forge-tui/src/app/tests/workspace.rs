@@ -162,7 +162,7 @@ async fn files_visibility_is_independent_of_workspace_navigation() {
     let (dir, mut app) = focus_test_app().await;
     let path = dir.path().join("main.rs");
     fs::write(&path, "fn main() {}\n").unwrap();
-    app.files_visible = true;
+    app.workspace_files.visible = true;
 
     app.execute_semantic_command(SemanticCommand::OpenFile(path))
         .await
@@ -174,7 +174,7 @@ async fn files_visibility_is_independent_of_workspace_navigation() {
         .await
         .unwrap();
 
-    assert!(app.files_visible);
+    assert!(app.workspace_files.visible);
     assert_eq!(
         app.workspace_navigation.current,
         WorkspaceView::Conversation
@@ -192,7 +192,7 @@ async fn files_visibility_renders_independently_in_each_workspace_view() {
         WorkspaceView::File(path.clone()),
         WorkspaceView::Diff(DiffCommandContext::Current),
     ] {
-        app.files_visible = true;
+        app.workspace_files.visible = true;
         app.navigate_to_workspace_view(view.clone());
         let rendered = render_app_text(&mut app, 160, 50);
         assert!(
@@ -200,7 +200,7 @@ async fn files_visibility_renders_independently_in_each_workspace_view() {
             "Files should render for {view:?} when preference is open:\n{rendered}"
         );
 
-        app.files_visible = false;
+        app.workspace_files.visible = false;
         let rendered = render_app_text(&mut app, 160, 50);
         assert!(
             !rendered.contains("FILES"),
@@ -212,28 +212,31 @@ async fn files_visibility_renders_independently_in_each_workspace_view() {
 #[tokio::test]
 async fn files_visibility_auto_collapses_and_restores_without_mutating_preference() {
     let (_dir, mut app) = focus_test_app().await;
-    app.files_visible = true;
+    app.workspace_files.visible = true;
     app.focus_block(FocusBlock::Files);
 
     let narrow = render_app_text(&mut app, 80, 24);
     assert!(!narrow.contains("FILES"), "{narrow}");
-    assert!(app.files_visible, "auto-collapse must not persist close");
+    assert!(
+        app.workspace_files.visible,
+        "auto-collapse must not persist close"
+    );
     assert_eq!(app.focus.block, FocusBlock::Workspace);
 
     let wide = render_app_text(&mut app, 160, 50);
     assert!(wide.contains("FILES"), "{wide}");
-    assert!(app.files_visible);
+    assert!(app.workspace_files.visible);
 }
 
 #[tokio::test]
 async fn files_explicit_close_remains_closed_after_resizing() {
     let (_dir, mut app) = focus_test_app().await;
-    app.files_visible = true;
+    app.workspace_files.visible = true;
     app.execute_semantic_command(SemanticCommand::ToggleFiles)
         .await
         .unwrap();
 
-    assert!(!app.files_visible);
+    assert!(!app.workspace_files.visible);
     let narrow = render_app_text(&mut app, 80, 24);
     let wide = render_app_text(&mut app, 160, 50);
     assert!(!narrow.contains("FILES"), "{narrow}");
@@ -246,7 +249,7 @@ async fn files_visibility_persists_per_repository() {
     app.execute_semantic_command(SemanticCommand::ToggleFiles)
         .await
         .unwrap();
-    assert!(app.files_visible);
+    assert!(app.workspace_files.visible);
 
     let session = session_for_workspace(dir.path()).await;
     let restored = TuiApp::new(
@@ -263,11 +266,11 @@ async fn files_visibility_persists_per_repository() {
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
-    assert!(restored.files_visible);
+    assert!(restored.workspace_files.visible);
 
     let (_other_dir, other) = focus_test_app().await;
     assert!(
-        !other.files_visible,
+        !other.workspace_files.visible,
         "Files preference must not leak across repositories"
     );
 }
@@ -277,20 +280,20 @@ async fn opening_file_does_not_open_closed_files_preference() {
     let (dir, mut app) = focus_test_app().await;
     let path = dir.path().join("main.rs");
     fs::write(&path, "fn main() {}\n").unwrap();
-    app.files_visible = false;
+    app.workspace_files.visible = false;
 
     app.execute_semantic_command(SemanticCommand::OpenFile(path.clone()))
         .await
         .unwrap();
 
-    assert!(!app.files_visible);
+    assert!(!app.workspace_files.visible);
     assert_eq!(app.workspace_navigation.current, WorkspaceView::File(path));
 }
 
 #[tokio::test]
 async fn responsive_sizes_render_without_panic_and_follow_files_policy() {
     let (_dir, mut app) = focus_test_app().await;
-    app.files_visible = true;
+    app.workspace_files.visible = true;
     app.conversation_view.splash_dismissed = true;
     for (width, height, expect_files) in [
         (80, 24, false),
