@@ -516,6 +516,11 @@ struct FooterLimitsState {
     refresh_rx: Option<std::sync::mpsc::Receiver<(String, FooterLimits)>>,
 }
 
+struct RenderCacheState {
+    conversation: Option<ConversationRenderCache>,
+    composer_layout: ComposerLayoutCache,
+}
+
 pub struct TuiApp {
     pub(crate) session: AgentSession,
     input: InputModel,
@@ -610,8 +615,7 @@ pub struct TuiApp {
     chat_follow: bool,
     context_reset_snapshot: Option<(f64, f64)>,
     splash_dismissed: bool,
-    conversation_cache: Option<ConversationRenderCache>,
-    composer_layout_cache: ComposerLayoutCache,
+    render_cache: RenderCacheState,
     model_cost_cache: Option<(String, Option<forge_connect::CatalogCost>)>,
     footer_limits: FooterLimitsState,
     /// Last known repo header. Refreshed off-thread by `poll_repo_header`; the
