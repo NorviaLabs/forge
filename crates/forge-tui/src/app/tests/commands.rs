@@ -249,7 +249,7 @@ async fn enter_while_busy_enqueues_user_message() {
         .await
         .unwrap();
     assert_eq!(app.session.queue().len(), 1);
-    assert!(app.pending_prompt.is_none());
+    assert!(app.pending_turn.prompt.is_none());
     assert_eq!(
         app.session
             .queue()
@@ -457,17 +457,17 @@ async fn empty_enter_when_idle_dequeues_and_sends() {
     // Simulate a message enqueued while processing.
     app.session.enqueue_task("from queue").await.unwrap();
     app.busy = false;
-    assert!(app.pending_prompt.is_none());
+    assert!(app.pending_turn.prompt.is_none());
     // Empty Enter = user action to dequeue + send
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
     assert!(app.session.queue().is_empty());
     // Promotion already appended the message and started the task; the
-    // turn continues via `pending_turn_continue`, not a re-appended
-    // `pending_prompt` (that would double-append).
-    assert!(app.pending_prompt.is_none());
-    assert!(app.pending_turn_continue);
+    // turn continues via `PendingTurnState`, not a re-appended prompt
+    // (that would double-append).
+    assert!(app.pending_turn.prompt.is_none());
+    assert!(app.pending_turn.continue_turn);
     assert!(app.busy);
     assert!(app
         .session
@@ -621,7 +621,7 @@ async fn model_command_applies_provider_id_to_session() {
     app.apply_model_selection("native", "openai/gpt-4.1-mini", None);
     assert_eq!(app.runtime.model_label, "openai/gpt-4.1-mini");
     assert_eq!(app.session.active_model, "openai/gpt-4.1-mini");
-    assert!(app.pending_prompt.is_none());
+    assert!(app.pending_turn.prompt.is_none());
 }
 
 #[tokio::test]

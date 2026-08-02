@@ -16,7 +16,7 @@ async fn agent_streaming_while_viewing_file_does_not_navigate() {
 
     app.busy = true;
     app.busy_phase = BusyPhase::Model;
-    app.pending_prompt = None;
+    app.pending_turn.prompt = None;
     app.stream_preview = "partial answer".into();
     let rendered = render_app_text(&mut app, 100, 30);
 

@@ -146,7 +146,7 @@ impl TuiApp {
     /// — the queue store owns the atomic Queued->Promoting->Promoted pipeline;
     /// this only decides when to call it and how to kick off streaming.
     pub(super) async fn dequeue_and_send_next(&mut self) {
-        if self.busy || self.pending_prompt.is_some() {
+        if self.busy || self.pending_turn.prompt.is_some() {
             self.set_feedback(
                 FeedbackSeverity::Warn,
                 "still processing — wait before sending the next queued message",
@@ -189,7 +189,7 @@ impl TuiApp {
                 if let Some(pid) = self.connect.profile.clone() {
                     self.apply_connect_credentials(&pid);
                 }
-                self.pending_turn_continue = true;
+                self.pending_turn.continue_turn = true;
                 self.busy = true;
                 self.busy_phase = BusyPhase::Model;
                 self.timing.started = Some(Instant::now());
@@ -386,8 +386,8 @@ impl TuiApp {
         &mut self,
         mut terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
     ) -> Result<(), TuiError> {
-        let continuing = std::mem::take(&mut self.pending_turn_continue);
-        let line = self.pending_prompt.take();
+        let continuing = std::mem::take(&mut self.pending_turn.continue_turn);
+        let line = self.pending_turn.prompt.take();
         if line.is_none() && !continuing {
             return Ok(());
         }

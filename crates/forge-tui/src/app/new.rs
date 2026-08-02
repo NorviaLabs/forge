@@ -55,8 +55,10 @@ impl TuiApp {
             busy_phase: BusyPhase::Idle,
             web_search_label: Some("mock".into()),
             activity: ActivityFeed::default(),
-            pending_prompt: None,
-            pending_turn_continue: false,
+            pending_turn: PendingTurnState {
+                prompt: None,
+                continue_turn: false,
+            },
             pending_hitl_decision: None,
             pending_context_reset: false,
             external_editor: ExternalEditorState { requested: false },
