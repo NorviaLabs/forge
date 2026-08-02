@@ -349,7 +349,7 @@ impl TuiApp {
                 }
             }
             WorkspaceView::File(_) => {
-                let height = self.last_editor_height.saturating_sub(2) as usize;
+                let height = self.editor_viewport.height.saturating_sub(2) as usize;
                 let delta = if up { -3 } else { 3 };
                 self.source_viewer.move_cursor_vertical(delta, height);
             }

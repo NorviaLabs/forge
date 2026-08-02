@@ -258,7 +258,7 @@ impl TuiApp {
                 );
             }
             WorkspaceView::File(_) => {
-                self.last_editor_height = regions.chat.height;
+                self.editor_viewport.height = regions.chat.height;
                 frame.render_widget(
                     SourceViewerWidget {
                         viewer: &mut self.source_viewer,
