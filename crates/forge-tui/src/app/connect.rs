@@ -166,8 +166,8 @@ impl TuiApp {
         self.connect.oauth_pending = None;
         self.connect.oauth_last_poll = None;
         self.pending_turn.prompt = None;
-        self.pending_hitl_decision = None;
-        self.pending_context_reset = false;
+        self.pending_interaction.hitl_decision = None;
+        self.pending_interaction.context_reset = false;
         // The future-task queue is durable session state (owned by
         // `AgentSession`, not the TUI) — a provider disconnect must not
         // silently drop queued instructions.
