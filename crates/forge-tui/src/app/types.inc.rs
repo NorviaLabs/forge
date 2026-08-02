@@ -540,6 +540,11 @@ struct WorkspaceSearchState {
     error: Option<String>,
 }
 
+struct InspectorState {
+    visible: bool,
+    view: InspectorView,
+}
+
 struct RenderCacheState {
     conversation: Option<ConversationRenderCache>,
     composer_layout: ComposerLayoutCache,
@@ -619,8 +624,7 @@ pub struct TuiApp {
     /// synchronised from this state for rendering only.
     focus: FocusState,
     /// User preference; narrow terminals still hide the sidebar responsively.
-    sidebar_visible: bool,
-    inspector_view: InspectorView,
+    inspector: InspectorState,
     /// Selected index in the changed-files inventory for Diff workspace.
     diff_view: DiffViewState,
     /// Soft-cancel in-flight turn (Esc while busy).
