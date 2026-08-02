@@ -7,13 +7,11 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::process::Stdio;
 use std::sync::mpsc::TryRecvError;
 use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
 use forge_types::{BackgroundTaskId, HitlPayload, SessionId, TaskId};
-use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
 use crate::{AgentSession, LoopError};
@@ -300,37 +298,12 @@ async fn run_shell_job(
     command: String,
     workspace_root: std::path::PathBuf,
 ) -> BackgroundTaskOutcome {
-    let mut cmd = Command::new("bash");
-    cmd.arg("-lc")
-        .arg(&command)
-        .current_dir(&workspace_root)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        // Without this, cancellation (the `tokio::select!` in
-        // `spawn_background_shell`) drops this future — and the `Child`
-        // inside `cmd.output()` — without killing the OS process, leaking a
-        // still-running subprocess. `kill_on_drop` makes `Child`'s `Drop`
-        // send SIGKILL, so cancelling actually stops the command.
-        .kill_on_drop(true);
-    for name in forge_tools::PROVIDER_CREDENTIAL_ENV {
-        cmd.env_remove(name);
-    }
-    match cmd.output().await {
-        Ok(out) => {
-            let mut content = String::from_utf8_lossy(&out.stdout).into_owned();
-            let err = String::from_utf8_lossy(&out.stderr);
-            if !err.is_empty() {
-                if !content.is_empty() {
-                    content.push('\n');
-                }
-                content.push_str(&err);
-            }
-            BackgroundTaskOutcome::Shell {
-                output: content,
-                is_error: !out.status.success(),
-                exit_code: out.status.code(),
-            }
-        }
+    match forge_tools::run_shell_command(&command, &workspace_root).await {
+        Ok(out) => BackgroundTaskOutcome::Shell {
+            output: out.content,
+            is_error: out.is_error,
+            exit_code: out.exit_code,
+        },
         Err(e) => BackgroundTaskOutcome::Shell {
             output: format!("failed to start background command: {e}"),
             is_error: true,

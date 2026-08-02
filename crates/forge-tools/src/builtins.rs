@@ -3,7 +3,7 @@ use forge_types::{SideEffectClass, ToolOutput};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::process::Command;
@@ -209,6 +209,42 @@ pub const PROVIDER_CREDENTIAL_ENV: &[&str] = &[
     "FORGE_CODEX_ACCOUNT_ID",
 ];
 
+pub async fn run_shell_command(
+    command: &str,
+    workspace_root: &Path,
+) -> Result<ToolOutput, ToolError> {
+    let mut shell = Command::new("bash");
+    shell
+        .arg("-lc")
+        .arg(command)
+        .current_dir(workspace_root)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    for name in PROVIDER_CREDENTIAL_ENV {
+        shell.env_remove(name);
+    }
+
+    let out = shell
+        .output()
+        .await
+        .map_err(|e| ToolError::Execution(e.to_string()))?;
+    let mut content = String::from_utf8_lossy(&out.stdout).into_owned();
+    let err = String::from_utf8_lossy(&out.stderr);
+    if !err.is_empty() {
+        if !content.is_empty() {
+            content.push('\n');
+        }
+        content.push_str(&err);
+    }
+
+    Ok(ToolOutput {
+        content,
+        is_error: !out.status.success(),
+        exit_code: out.status.code(),
+    })
+}
+
 #[async_trait]
 impl Tool for BashTool {
     fn name(&self) -> &str {
@@ -227,33 +263,7 @@ impl Tool for BashTool {
     async fn call(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
         let a: BashArgs =
             serde_json::from_value(args).map_err(|e| ToolError::Execution(e.to_string()))?;
-        let mut command = Command::new("bash");
-        command
-            .arg("-lc")
-            .arg(&a.command)
-            .current_dir(&ctx.workspace_root)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        for name in PROVIDER_CREDENTIAL_ENV {
-            command.env_remove(name);
-        }
-        let out = command
-            .output()
-            .await
-            .map_err(|e| ToolError::Execution(e.to_string()))?;
-        let mut content = String::from_utf8_lossy(&out.stdout).into_owned();
-        let err = String::from_utf8_lossy(&out.stderr);
-        if !err.is_empty() {
-            if !content.is_empty() {
-                content.push('\n');
-            }
-            content.push_str(&err);
-        }
-        Ok(ToolOutput {
-            content,
-            is_error: !out.status.success(),
-            exit_code: out.status.code(),
-        })
+        run_shell_command(&a.command, &ctx.workspace_root).await
     }
 }
 
