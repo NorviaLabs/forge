@@ -511,6 +511,11 @@ struct FooterLimitsCache {
     limits: FooterLimits,
 }
 
+struct FooterLimitsState {
+    cache: Option<FooterLimitsCache>,
+    refresh_rx: Option<std::sync::mpsc::Receiver<(String, FooterLimits)>>,
+}
+
 pub struct TuiApp {
     pub(crate) session: AgentSession,
     input: InputModel,
@@ -608,8 +613,7 @@ pub struct TuiApp {
     conversation_cache: Option<ConversationRenderCache>,
     composer_layout_cache: ComposerLayoutCache,
     model_cost_cache: Option<(String, Option<forge_connect::CatalogCost>)>,
-    footer_limits_cache: Option<FooterLimitsCache>,
-    footer_limits_rx: Option<std::sync::mpsc::Receiver<(String, FooterLimits)>>,
+    footer_limits: FooterLimitsState,
     /// Last known repo header. Refreshed off-thread by `poll_repo_header`; the
     /// render path only ever reads it, never derives it.
     repo_header_state: RepoHeaderState,
