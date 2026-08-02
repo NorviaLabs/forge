@@ -9,7 +9,7 @@ use super::*;
 
 impl TuiApp {
     fn handle_explorer_dialog_key(&mut self, key: event::KeyEvent) -> bool {
-        let Some(dialog) = self.explorer_dialog.take() else {
+        let Some(dialog) = self.explorer_dialog.current.take() else {
             return false;
         };
         let next = match dialog {
@@ -141,13 +141,15 @@ impl TuiApp {
                 }),
             },
         };
-        self.explorer_dialog = next;
+        self.explorer_dialog.current = next;
         true
     }
 
     /// Insert bracketed-paste text into the current explicit text owner.
     pub(super) fn handle_paste(&mut self, data: &str) {
-        if let Some(ExplorerDialog::Name { input, error, .. }) = self.explorer_dialog.as_mut() {
+        if let Some(ExplorerDialog::Name { input, error, .. }) =
+            self.explorer_dialog.current.as_mut()
+        {
             for ch in data.chars().filter(|ch| !ch.is_control()) {
                 input.push(ch);
             }
@@ -596,7 +598,7 @@ impl TuiApp {
             }
         }
 
-        if self.explorer_dialog.is_some() {
+        if self.explorer_dialog.current.is_some() {
             self.handle_explorer_dialog_key(key);
             return Ok(());
         }

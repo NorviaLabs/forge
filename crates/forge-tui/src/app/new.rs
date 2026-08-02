@@ -98,7 +98,7 @@ impl TuiApp {
             run_exec: run::RunExecution::default(),
             files_visible: false,
             file_explorer: FileExplorer::new(Some(workspace_root), file_icons),
-            explorer_dialog: None,
+            explorer_dialog: ExplorerDialogState::default(),
             focus: FocusState::default(),
             inspector: InspectorState {
                 visible: false,
