@@ -188,7 +188,7 @@ impl TuiApp {
         self.runtime.model_label.clear();
         self.session.set_active_model(String::new());
         self.feedback = FeedbackModel::default();
-        self.status_message = "disconnected".into();
+        self.status_state.message = "disconnected".into();
         self.notice_state.items.clear();
         self.banner_state.items.retain(|b| {
             !matches!(
@@ -300,7 +300,8 @@ impl TuiApp {
                 self.session
                     .set_active_model(self.runtime.model_label.clone());
             }
-            self.status_message = format!("restored {} · {}", profile.id, self.runtime.model_label);
+            self.status_state.message =
+                format!("restored {} · {}", profile.id, self.runtime.model_label);
         }
         self
     }
@@ -388,7 +389,7 @@ impl TuiApp {
                     self.reasoning_effort.value = effort;
                 }
                 self.feedback = FeedbackModel::default();
-                self.status_message.clear();
+                self.status_state.message.clear();
                 self.notice_state.items.clear();
                 self.push_activity(
                     ActivityKind::System,
@@ -442,7 +443,7 @@ impl TuiApp {
 
     pub(super) fn open_connect_picker(&mut self) {
         self.overlay = Some(self.build_connect_model_overlay(ConnectModelColumn::Providers));
-        self.status_message = "Choose a provider".into();
+        self.status_state.message = "Choose a provider".into();
         self.notice_state.items.clear();
     }
 
@@ -473,7 +474,7 @@ impl TuiApp {
             *overlay_error = error;
         }
         self.overlay = Some(overlay);
-        self.status_message = format!("Connect {profile_id}");
+        self.status_state.message = format!("Connect {profile_id}");
         self.notice_state.items.clear();
     }
 
@@ -558,13 +559,13 @@ impl TuiApp {
                     self.apply_connect_credentials(&pid);
                 }
                 let lines: Vec<String> = msg.lines().map(|s| s.to_string()).collect();
-                self.status_message = lines.first().cloned().unwrap_or_default();
+                self.status_state.message = lines.first().cloned().unwrap_or_default();
                 self.notice_state.items.clear();
                 self.notice_state.until = None;
                 self.push_activity(
                     ActivityKind::Connect,
                     FeedbackSeverity::Ok,
-                    self.status_message.clone(),
+                    self.status_state.message.clone(),
                 );
                 if let Some(line) = lines.first() {
                     self.push_toast(line.clone());
@@ -585,7 +586,7 @@ impl TuiApp {
                 {
                     self.open_api_key_prompt(&profile_id, Some(error));
                 } else {
-                    self.status_message = error.clone();
+                    self.status_state.message = error.clone();
                     self.push_notice(vec![error]);
                 }
             }
@@ -605,7 +606,7 @@ impl TuiApp {
             }
             Ok(Err(pending)) => self.show_oauth_pending(pending),
             Err(e) => {
-                self.status_message = e.to_string();
+                self.status_state.message = e.to_string();
                 self.push_notice(vec![e.to_string()]);
                 self.report_error(&e.to_string());
             }
@@ -658,7 +659,7 @@ impl TuiApp {
             .unwrap_or_else(|| pending.profile_id.clone());
         let instructions = pending.operator_instructions();
         let lines: Vec<String> = instructions.lines().map(|s| s.to_string()).collect();
-        self.status_message = lines
+        self.status_state.message = lines
             .first()
             .cloned()
             .unwrap_or_else(|| format!("OAuth for {}", pending.profile_id));
@@ -747,7 +748,7 @@ impl TuiApp {
                 if let Some(pid) = self.connect.profile.clone() {
                     self.apply_connect_credentials(&pid);
                 }
-                self.status_message = msg.lines().next().unwrap_or_default().to_string();
+                self.status_state.message = msg.lines().next().unwrap_or_default().to_string();
                 self.refresh_connection_ui();
                 self.open_model_picker_after_connect(profile_id);
             }
@@ -757,7 +758,7 @@ impl TuiApp {
                 if let Some(Overlay::ConnectApiKey { error, .. }) = &mut self.overlay {
                     *error = Some(err.clone());
                 }
-                self.status_message = err;
+                self.status_state.message = err;
                 self.push_activity(
                     ActivityKind::Connect,
                     FeedbackSeverity::Error,
@@ -820,7 +821,7 @@ impl TuiApp {
         }
         self.record_deliberate_selection();
         self.feedback = FeedbackModel::default();
-        self.status_message.clear();
+        self.status_state.message.clear();
         self.notice_state.items.clear();
         self.push_activity(
             ActivityKind::System,

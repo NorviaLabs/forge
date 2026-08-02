@@ -142,7 +142,7 @@ impl TuiApp {
             }
             OverlayAction::StopTurns => {
                 self.overlay = None;
-                self.status_message = "agent stopped at turn limit".into();
+                self.status_state.message = "agent stopped at turn limit".into();
                 self.set_feedback(FeedbackSeverity::Info, "stopped at turn limit");
             }
             OverlayAction::RunCommand(cmd) => {
@@ -190,7 +190,7 @@ impl TuiApp {
                     self.connect.oauth_last_poll = None;
                     self.poll_oauth_tick();
                     if self.connect.oauth_pending.is_some() {
-                        self.status_message =
+                        self.status_state.message =
                             format!("Still waiting for login… (code for {profile_id})");
                     }
                 } else if std::env::var("FORGE_CONNECT_OAUTH_FIXTURE").is_ok() {

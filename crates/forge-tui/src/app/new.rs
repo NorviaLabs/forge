@@ -48,7 +48,9 @@ impl TuiApp {
                 active: false,
                 phase: BusyPhase::Idle,
             },
-            status_message: String::new(),
+            status_state: StatusMessageState {
+                message: String::new(),
+            },
             runtime,
             connect: connect::ConnectionModel::new(),
             history: InputHistory::default(),

@@ -689,7 +689,7 @@ impl TuiApp {
             self.tool_detail.expanded = false;
             if self.session.queue().is_empty() {
                 self.feedback = FeedbackModel::default();
-                self.status_message.clear();
+                self.status_state.message.clear();
             } else {
                 self.push_toast(format!(
                     "{} queued · sending next",

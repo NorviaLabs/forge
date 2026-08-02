@@ -48,7 +48,7 @@ impl TuiApp {
                 self.toast.current = None;
                 if self.feedback.severity == FeedbackSeverity::Ok {
                     self.feedback = FeedbackModel::default();
-                    self.status_message.clear();
+                    self.status_state.message.clear();
                 }
             }
         }
@@ -57,7 +57,7 @@ impl TuiApp {
     /// Phase 10: set strip + keep `status_message` in sync for tests/compat.
     pub fn set_feedback(&mut self, severity: FeedbackSeverity, text: impl Into<String>) {
         let text = text.into();
-        self.status_message = text.clone();
+        self.status_state.message = text.clone();
         self.feedback = FeedbackModel { text, severity };
     }
 
@@ -97,7 +97,7 @@ impl TuiApp {
         });
         if self.feedback.severity == FeedbackSeverity::Error {
             self.feedback = FeedbackModel::default();
-            self.status_message.clear();
+            self.status_state.message.clear();
         }
     }
 

@@ -17,7 +17,7 @@ impl TuiApp {
         }
         self.pending_interaction.context_reset = true;
         self.busy_state.phase = BusyPhase::Other("context reset".into());
-        self.status_message = "resetting context…".into();
+        self.status_state.message = "resetting context…".into();
         self.set_feedback(FeedbackSeverity::Info, "resetting context…");
     }
 
@@ -61,7 +61,7 @@ impl TuiApp {
             FeedbackSeverity::Ok,
             format!("fresh context prepared · {before} → {after} tokens"),
         );
-        self.status_message = "Continuing in a fresh context".into();
+        self.status_state.message = "Continuing in a fresh context".into();
         self.notice_state.items.clear();
         self.busy_state.phase = BusyPhase::Idle;
         if let Some(term) = terminal {

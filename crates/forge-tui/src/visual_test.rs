@@ -358,9 +358,10 @@ mod tests {
         let text = buffer_text(&term);
         let _ = std::fs::write("/tmp/forge_tui_visual_status.txt", &text);
         assert!(
-            app.status_message.contains("unknown command") || app.notice_state.items.is_empty(),
+            app.status_state.message.contains("unknown command")
+                || app.notice_state.items.is_empty(),
             "status frame:\n{text}\nstatus_msg={}",
-            app.status_message
+            app.status_state.message
         );
     }
 

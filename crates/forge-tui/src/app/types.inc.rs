@@ -644,6 +644,10 @@ struct BusyState {
     phase: BusyPhase,
 }
 
+pub(crate) struct StatusMessageState {
+    pub(crate) message: String,
+}
+
 pub struct TuiApp {
     pub(crate) session: AgentSession,
     input: InputModel,
@@ -651,7 +655,7 @@ pub struct TuiApp {
     exit: ExitState,
     startup_resume: StartupResumeState,
     busy_state: BusyState,
-    pub(crate) status_message: String,
+    pub(crate) status_state: StatusMessageState,
     pub(crate) runtime: TuiRuntimeConfig,
     connect: connect::ConnectionModel,
     /// Phase 7 — submitted command history (Up/Down when no overlay).

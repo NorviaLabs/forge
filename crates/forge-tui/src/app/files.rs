@@ -140,7 +140,7 @@ impl TuiApp {
             items,
             error,
         ));
-        self.status_message = "File explorer (readonly)".into();
+        self.status_state.message = "File explorer (readonly)".into();
         self.notice_state.items.clear();
     }
 
@@ -154,7 +154,7 @@ impl TuiApp {
         }) {
             Ok((path, contents)) => {
                 self.overlay = Some(Overlay::file_viewer(path.display().to_string(), contents));
-                self.status_message = "Viewing file (readonly)".into();
+                self.status_state.message = "Viewing file (readonly)".into();
             }
             Err(err) => self.open_file_explorer(None, Some(format!("Could not open file: {err}"))),
         }
@@ -164,7 +164,7 @@ impl TuiApp {
         let root = self.session.workspace_root().to_path_buf();
         self.source_viewer.open(&root, path);
         self.focus_block(FocusBlock::Workspace);
-        self.status_message = "Viewing file (readonly)".into();
+        self.status_state.message = "Viewing file (readonly)".into();
         // Keep the file explorer in sync with the active file.
         self.file_explorer.selected_path = Some(path.to_path_buf());
     }

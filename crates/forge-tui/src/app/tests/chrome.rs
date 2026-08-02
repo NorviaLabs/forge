@@ -661,7 +661,7 @@ async fn tui08_report_error_writes_banner_feedback_and_activity() {
     app.report_error("upstream returned 429 rate limit exceeded");
     assert_eq!(app.feedback.severity, FeedbackSeverity::Error);
     assert!(app.feedback.text.contains("429"));
-    assert!(app.status_message.contains("429"));
+    assert!(app.status_state.message.contains("429"));
     assert!(
         app.banner_state.items.iter().any(|b| matches!(
             b,
