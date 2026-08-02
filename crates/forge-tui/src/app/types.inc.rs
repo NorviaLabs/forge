@@ -595,6 +595,10 @@ struct ReasoningEffortState {
     value: ReasoningEffort,
 }
 
+struct EditorViewportState {
+    height: u16,
+}
+
 struct RenderCacheState {
     conversation: Option<ConversationRenderCache>,
     composer_layout: ComposerLayoutCache,
@@ -664,8 +668,7 @@ pub struct TuiApp {
     hitl_session_allow: HashSet<ApprovalIdentity>,
     /// Transient toast (auto-clears).
     toast: Option<(Instant, String)>,
-    /// Last measured height of the editor viewport for page scrolling.
-    last_editor_height: u16,
+    editor_viewport: EditorViewportState,
     /// Session message/event offsets hidden by the most recent `/clear`.
     conversation_view: ConversationViewState,
     render_cache: RenderCacheState,
