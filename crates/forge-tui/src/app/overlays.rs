@@ -114,8 +114,8 @@ impl TuiApp {
             OverlayAction::None => {}
             OverlayAction::Close => {
                 if self.startup_resume.picker {
-                    self.should_quit = true;
-                    self.last_exit = ExitCode::Canceled;
+                    self.exit.requested = true;
+                    self.exit.code = ExitCode::Canceled;
                 }
                 self.overlay = None;
             }

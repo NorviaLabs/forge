@@ -36,7 +36,10 @@ impl TuiApp {
             session,
             input,
             overlay: startup_items.clone().map(Overlay::resume_picker),
-            should_quit: false,
+            exit: ExitState {
+                requested: false,
+                code: ExitCode::Success,
+            },
             startup_resume: StartupResumeState {
                 picker: startup_items.is_some(),
                 session_id: startup_resume_session_id,
@@ -44,7 +47,6 @@ impl TuiApp {
             busy: false,
             status_message: String::new(),
             runtime,
-            last_exit: ExitCode::Success,
             connect: connect::ConnectionModel::new(),
             history: InputHistory::default(),
             slash_suggestions: SlashSuggestionState { selected: 0 },
