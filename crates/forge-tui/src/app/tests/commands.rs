@@ -782,7 +782,7 @@ async fn app_quit_command() {
         },
     );
     app.dispatch_line("/quit").await.unwrap();
-    assert!(app.should_quit);
+    assert!(app.exit.requested);
 }
 
 #[tokio::test]

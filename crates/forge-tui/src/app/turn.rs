@@ -410,7 +410,7 @@ impl TuiApp {
                 self.busy = false;
                 self.busy_phase = BusyPhase::Idle;
                 self.report_error(&e.to_string());
-                self.last_exit = ExitCode::Failed;
+                self.exit.code = ExitCode::Failed;
                 return Ok(());
             }
         }
@@ -465,7 +465,7 @@ impl TuiApp {
                 // that -- roughly 200ms plus two draws from keypress to glyph.
                 if terminal.is_some() {
                     drain_events(self).await?;
-                    if self.should_quit {
+                    if self.exit.requested {
                         handle.abort();
                         self.busy = false;
                         self.busy_phase = BusyPhase::Idle;
@@ -474,7 +474,7 @@ impl TuiApp {
                         self.timing.started = None;
                         self.timing.thinking_started = None;
                         self.timing.thought_secs = None;
-                        self.last_exit = ExitCode::Canceled;
+                        self.exit.code = ExitCode::Canceled;
                         let _ = self.session.mark_cancelled().await;
                         return Ok(());
                     }
@@ -613,7 +613,7 @@ impl TuiApp {
             self.timing.thinking_started = None;
             self.timing.thought_secs = None;
             self.overlay = Some(Overlay::turn_limit(max_turns));
-            self.last_exit = ExitCode::Success;
+            self.exit.code = ExitCode::Success;
             self.set_feedback(
                 FeedbackSeverity::Warn,
                 format!("{max_turns} steps reached — continue?"),
@@ -643,12 +643,12 @@ impl TuiApp {
             self.timing.thinking_started = None;
             self.timing.thought_secs = None;
             if was_cancel {
-                self.last_exit = ExitCode::Canceled;
+                self.exit.code = ExitCode::Canceled;
                 if let Err(err) = self.session.mark_cancelled().await {
                     self.report_error(&err.to_string());
                 }
             } else {
-                self.last_exit = ExitCode::Failed;
+                self.exit.code = ExitCode::Failed;
                 // This error path means the turn ended without ever calling
                 // `apply_model_response` successfully (a provider/HTTP error,
                 // a join error, or `apply_model_response` itself returning
@@ -672,7 +672,7 @@ impl TuiApp {
             if let Some(p) = self.session.pending_hitl().cloned() {
                 self.open_hitl_overlay(p);
             }
-            self.last_exit = ExitCode::AwaitingHitl;
+            self.exit.code = ExitCode::AwaitingHitl;
             self.set_feedback(FeedbackSeverity::Warn, "awaiting human approval");
             self.push_activity(ActivityKind::Hitl, FeedbackSeverity::Warn, "hitl waiting");
             // Do not auto-dequeue until HITL is resolved.
