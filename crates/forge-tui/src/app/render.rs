@@ -521,7 +521,7 @@ impl TuiApp {
         buf: &mut ratatui::buffer::Buffer,
     ) {
         let gs = &self.file_explorer.git_status;
-        if gs.loading && gs.status.is_empty() && !self.diff_snapshot.stale {
+        if gs.loading && gs.status.is_empty() && !self.diff_view.snapshot.stale {
             Paragraph::new("Loading changes…")
                 .style(theme::muted())
                 .alignment(ratatui::layout::Alignment::Center)
@@ -534,7 +534,7 @@ impl TuiApp {
                 .render(area, buf);
             return;
         }
-        if gs.error.is_some() && !self.diff_snapshot.stale {
+        if gs.error.is_some() && !self.diff_view.snapshot.stale {
             Paragraph::new("Changes unavailable\n\nGit status could not be read.\nThe rest of Forge remains usable.")
                 .style(theme::muted())
                 .alignment(ratatui::layout::Alignment::Center)
@@ -547,7 +547,7 @@ impl TuiApp {
                 .render(area, buf);
             return;
         }
-        if gs.status.is_empty() && !self.diff_snapshot.stale {
+        if gs.status.is_empty() && !self.diff_view.snapshot.stale {
             Paragraph::new("No changes\n\nThe working tree is clean.")
                 .style(theme::muted())
                 .alignment(ratatui::layout::Alignment::Center)
@@ -562,16 +562,20 @@ impl TuiApp {
         }
 
         let changed = gs.changed_files();
-        let review_paths = if self.diff_snapshot.stale && !self.diff_snapshot.paths.is_empty() {
-            self.diff_snapshot.paths.clone()
-        } else {
-            changed.iter().map(|f| f.path.clone()).collect()
-        };
-        let selected = self.diff_selected.min(review_paths.len().saturating_sub(1));
+        let review_paths =
+            if self.diff_view.snapshot.stale && !self.diff_view.snapshot.paths.is_empty() {
+                self.diff_view.snapshot.paths.clone()
+            } else {
+                changed.iter().map(|f| f.path.clone()).collect()
+            };
+        let selected = self
+            .diff_view
+            .selected
+            .min(review_paths.len().saturating_sub(1));
         let selected_path = review_paths.get(selected);
 
         let mut lines = vec![Line::from(Span::styled("CHANGES", theme::brand()))];
-        if self.diff_snapshot.stale {
+        if self.diff_view.snapshot.stale {
             lines.push(Line::styled(
                 "Stale review · changes updated externally · press r to Refresh",
                 theme::warn(),

@@ -192,15 +192,15 @@ async fn edge_diff_becomes_stale_and_refresh_clears_it() {
     app.execute_semantic_command(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
         .await
         .unwrap();
-    app.diff_selected = 0;
+    app.diff_view.selected = 0;
     app.file_explorer
         .git_status
         .status
         .insert(PathBuf::from("two.rs"), GitStatusKind::Added);
 
     app.note_workspace_changed();
-    assert!(app.diff_snapshot.stale);
-    assert_eq!(app.diff_selected, 0);
+    assert!(app.diff_view.snapshot.stale);
+    assert_eq!(app.diff_view.selected, 0);
     let rendered = render_app_text(&mut app, 100, 30);
     assert!(rendered.contains("Stale review"), "{rendered}");
     assert!(
@@ -215,8 +215,8 @@ async fn edge_diff_becomes_stale_and_refresh_clears_it() {
     app.execute_semantic_command(SemanticCommand::RefreshDiff)
         .await
         .unwrap();
-    assert!(!app.diff_snapshot.stale);
-    assert_eq!(app.diff_selected, 0);
+    assert!(!app.diff_view.snapshot.stale);
+    assert_eq!(app.diff_view.selected, 0);
 }
 
 /// Regression test for F-REVIEW-01/F-REVIEW-02: a raw filesystem-watch event
@@ -237,7 +237,7 @@ async fn edge_diff_stale_marking_waits_for_confirmed_status_change() {
     app.execute_semantic_command(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
         .await
         .unwrap();
-    assert!(!app.diff_snapshot.stale);
+    assert!(!app.diff_view.snapshot.stale);
 
     // A raw watch event fires (e.g. unrelated churn, or a replayed historical
     // FSEvent) while `git_status` still holds the same data the review was
@@ -245,7 +245,7 @@ async fn edge_diff_stale_marking_waits_for_confirmed_status_change() {
     // to yet, so a refresh key press would have no visible effect.
     app.note_workspace_changed();
     assert!(
-        !app.diff_snapshot.stale,
+        !app.diff_view.snapshot.stale,
         "an fs event that doesn't change the known status set must not mark the review stale"
     );
 
@@ -256,7 +256,7 @@ async fn edge_diff_stale_marking_waits_for_confirmed_status_change() {
         .insert(PathBuf::from("two.rs"), GitStatusKind::Added);
     app.note_workspace_changed();
     assert!(
-        app.diff_snapshot.stale,
+        app.diff_view.snapshot.stale,
         "a confirmed change to the tracked path set must mark the review stale"
     );
 
@@ -268,7 +268,7 @@ async fn edge_diff_stale_marking_waits_for_confirmed_status_change() {
     app.execute_semantic_command(SemanticCommand::RefreshDiff)
         .await
         .unwrap();
-    assert!(!app.diff_snapshot.stale);
+    assert!(!app.diff_view.snapshot.stale);
 
     // Escape always leaves the diff workspace, stale or not.
     app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
@@ -293,7 +293,7 @@ async fn edge_diff_reconciles_staleness_after_async_poll_resolves() {
     app.execute_semantic_command(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
         .await
         .unwrap();
-    assert!(!app.diff_snapshot.stale);
+    assert!(!app.diff_view.snapshot.stale);
 
     // Simulate an async git-status refresh landing with genuinely different
     // data, without going through the fs-watch event path at all.
@@ -302,7 +302,7 @@ async fn edge_diff_reconciles_staleness_after_async_poll_resolves() {
         .status
         .insert(PathBuf::from("two.rs"), GitStatusKind::Added);
     app.reconcile_diff_staleness();
-    assert!(app.diff_snapshot.stale);
+    assert!(app.diff_view.snapshot.stale);
 }
 
 /// F-HELP-01: `/help` used to return "unknown command" even though the

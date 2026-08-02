@@ -379,7 +379,7 @@ impl TuiApp {
                 );
             }
         }
-        self.diff_selected = self.diff_selected.min(
+        self.diff_view.selected = self.diff_view.selected.min(
             self.file_explorer
                 .git_status
                 .changed_files()

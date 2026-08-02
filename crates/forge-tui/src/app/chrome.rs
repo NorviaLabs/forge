@@ -252,7 +252,7 @@ impl TuiApp {
         match &self.workspace_navigation.current {
             WorkspaceView::Diff(DiffCommandContext::Current) => {
                 let total = self.file_explorer.git_status.status.len();
-                (total > 0).then(|| format!("{} of {} changes", self.diff_selected + 1, total))
+                (total > 0).then(|| format!("{} of {} changes", self.diff_view.selected + 1, total))
             }
             WorkspaceView::Run(id) => self
                 .run

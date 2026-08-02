@@ -99,8 +99,8 @@ impl TuiApp {
     }
 
     pub(super) fn capture_diff_snapshot(&mut self) {
-        self.diff_snapshot.paths = self.current_changed_paths();
-        self.diff_snapshot.stale = false;
+        self.diff_view.snapshot.paths = self.current_changed_paths();
+        self.diff_view.snapshot.stale = false;
     }
 
     /// Whether the set of changed paths currently known to git status differs
@@ -108,7 +108,7 @@ impl TuiApp {
     /// doesn't matter — only membership does.
     fn diff_review_paths_changed(&self) -> bool {
         let mut current = self.current_changed_paths();
-        let mut captured = self.diff_snapshot.paths.clone();
+        let mut captured = self.diff_view.snapshot.paths.clone();
         current.sort();
         captured.sort();
         current != captured
@@ -124,7 +124,7 @@ impl TuiApp {
     /// disagreement only becomes visible once that refresh completes.
     pub(super) fn mark_diff_stale_if_reviewing(&mut self) {
         if self.current_workspace_is_diff() && self.diff_review_paths_changed() {
-            self.diff_snapshot.stale = true;
+            self.diff_view.snapshot.stale = true;
         }
     }
 
@@ -132,10 +132,10 @@ impl TuiApp {
     /// resolved. Call after `git_status.poll()` returns `true`.
     pub(super) fn reconcile_diff_staleness(&mut self) {
         if self.current_workspace_is_diff()
-            && !self.diff_snapshot.stale
+            && !self.diff_view.snapshot.stale
             && self.diff_review_paths_changed()
         {
-            self.diff_snapshot.stale = true;
+            self.diff_view.snapshot.stale = true;
         }
     }
 

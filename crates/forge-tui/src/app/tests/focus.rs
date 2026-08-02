@@ -349,7 +349,7 @@ async fn switching_to_diff_focuses_workspace_for_navigation() {
         WorkspaceView::Diff(DiffCommandContext::Current)
     );
     assert_eq!(app.focus.block, FocusBlock::Workspace);
-    assert_eq!(app.diff_selected, 1);
+    assert_eq!(app.diff_view.selected, 1);
 }
 
 #[tokio::test]
