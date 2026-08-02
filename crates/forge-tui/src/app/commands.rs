@@ -369,8 +369,8 @@ impl TuiApp {
                 // escalation. Previously nothing bound Esc to this at all, so
                 // the only way to stop a stuck turn was to kill the whole app.
                 if self.busy {
-                    if !self.cancel_requested {
-                        self.cancel_requested = true;
+                    if !self.cancellation.requested {
+                        self.cancellation.requested = true;
                         self.push_toast("interrupt requested");
                     }
                 }
@@ -570,11 +570,11 @@ impl TuiApp {
             }
             SemanticCommand::QuitOrInterrupt => {
                 if self.busy {
-                    if self.cancel_requested {
+                    if self.cancellation.requested {
                         self.should_quit = true;
                         self.last_exit = ExitCode::Canceled;
                     } else {
-                        self.cancel_requested = true;
+                        self.cancellation.requested = true;
                         self.push_toast("interrupt requested · Ctrl+C again to quit");
                     }
                 } else {
@@ -1440,12 +1440,12 @@ mod tests {
     async fn quit_or_interrupt_requests_cancel_before_quitting_while_busy() {
         let (_d, mut app) = app().await;
         app.busy = true;
-        assert!(!app.cancel_requested);
+        assert!(!app.cancellation.requested);
         app.execute_semantic_command(SemanticCommand::QuitOrInterrupt)
             .await
             .unwrap();
         assert!(
-            app.cancel_requested,
+            app.cancellation.requested,
             "first Ctrl+C while busy should request a graceful cancel, not quit"
         );
         assert!(
@@ -1467,12 +1467,12 @@ mod tests {
         let (_d, mut app) = app().await;
         app.busy = true;
         app.focus.block = FocusBlock::Composer;
-        assert!(!app.cancel_requested);
+        assert!(!app.cancellation.requested);
         app.execute_semantic_command(SemanticCommand::CancelCurrentInteraction)
             .await
             .unwrap();
         assert!(
-            app.cancel_requested,
+            app.cancellation.requested,
             "Esc while a turn is busy should request cancellation"
         );
         assert!(

@@ -579,6 +579,10 @@ struct AttachmentState {
     pending: Option<crate::file_context::FileAttachment>,
 }
 
+struct CancellationState {
+    requested: bool,
+}
+
 struct RenderCacheState {
     conversation: Option<ConversationRenderCache>,
     composer_layout: ComposerLayoutCache,
@@ -646,8 +650,7 @@ pub struct TuiApp {
     inspector: InspectorState,
     /// Selected index in the changed-files inventory for Diff workspace.
     diff_view: DiffViewState,
-    /// Soft-cancel in-flight turn (Esc while busy).
-    cancel_requested: bool,
+    cancellation: CancellationState,
     /// Exact Direct invocations remembered for this Forge session only.
     hitl_session_allow: HashSet<ApprovalIdentity>,
     /// Transient toast (auto-clears).

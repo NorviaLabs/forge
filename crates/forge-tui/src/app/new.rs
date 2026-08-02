@@ -100,7 +100,7 @@ impl TuiApp {
                 selected: 0,
                 snapshot: DiffSnapshot::default(),
             },
-            cancel_requested: false,
+            cancellation: CancellationState { requested: false },
             hitl_session_allow: HashSet::new(),
             toast: None,
             conversation_view: ConversationViewState {

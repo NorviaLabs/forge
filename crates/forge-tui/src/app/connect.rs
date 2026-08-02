@@ -177,7 +177,7 @@ impl TuiApp {
         self.timing.started = None;
         self.timing.thinking_started = None;
         self.timing.thought_secs = None;
-        self.cancel_requested = false;
+        self.cancellation.requested = false;
         self.busy = false;
         self.busy_phase = BusyPhase::Idle;
         self.tool_expanded = false;
