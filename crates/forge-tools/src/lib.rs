@@ -10,8 +10,8 @@ pub mod web_search;
 
 pub use apply_patch::{ApplyPatchArgs, ApplyPatchTool};
 pub use builtins::{
-    default_builtins, default_builtins_with_web_search, BashTool, GitTool, ReadFileTool,
-    WriteFileTool, PROVIDER_CREDENTIAL_ENV,
+    default_builtins, default_builtins_with_web_search, run_shell_command, BashTool, GitTool,
+    ReadFileTool, WriteFileTool, PROVIDER_CREDENTIAL_ENV,
 };
 pub use registry::{ToolContext, ToolRegistry};
 pub use validation::{validate_args, validation_error_signature, ValidationBudget};
