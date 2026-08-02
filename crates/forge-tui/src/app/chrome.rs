@@ -139,7 +139,7 @@ impl TuiApp {
             session_short: short,
             model: self.runtime.model_label.clone(),
             provider: self.runtime.provider.clone(),
-            effort: self.reasoning_effort.to_string(),
+            effort: self.reasoning_effort.value.to_string(),
             ctx_pct: self.session.context_usage_ratio(),
             busy: self.busy,
             busy_phase: self.busy_phase.clone(),

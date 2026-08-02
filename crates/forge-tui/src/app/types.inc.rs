@@ -591,6 +591,10 @@ struct SearchStatusState {
     label: Option<String>,
 }
 
+struct ReasoningEffortState {
+    value: ReasoningEffort,
+}
+
 struct RenderCacheState {
     conversation: Option<ConversationRenderCache>,
     composer_layout: ComposerLayoutCache,
@@ -635,8 +639,7 @@ pub struct TuiApp {
     search_status: SearchStatusState,
     /// Phase 10 / TUI-10 — activity ring buffer.
     activity: ActivityFeed,
-    /// Reasoning effort sent to model providers (`auto` omits the parameter).
-    reasoning_effort: ReasoningEffort,
+    reasoning_effort: ReasoningEffortState,
     tool_detail: ToolDetailState,
     /// V3.1 contextual workspace navigation.
     workspace_navigation: WorkspaceNavigation,

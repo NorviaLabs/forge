@@ -166,7 +166,7 @@ impl TuiApp {
             }
             OverlayAction::SelectEffort(level) => {
                 self.overlay = None;
-                self.reasoning_effort = level;
+                self.reasoning_effort.value = level;
                 self.record_deliberate_selection();
                 self.set_feedback(
                     FeedbackSeverity::Ok,

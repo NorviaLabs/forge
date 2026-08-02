@@ -532,7 +532,7 @@ async fn effort_selection_persists_across_tui_instances() {
     );
     app.connect.store = CredentialStore::new(credential_path.clone());
 
-    app.reasoning_effort = ReasoningEffort::High;
+    app.reasoning_effort.value = ReasoningEffort::High;
     app.persist_selection();
 
     assert_eq!(
@@ -558,7 +558,7 @@ async fn effort_selection_persists_across_tui_instances() {
     restarted.connect.store = CredentialStore::new(credential_path);
     restarted = restarted.restore_saved_auth();
 
-    assert_eq!(restarted.reasoning_effort, ReasoningEffort::High);
+    assert_eq!(restarted.reasoning_effort.value, ReasoningEffort::High);
 }
 
 #[tokio::test]
@@ -582,10 +582,10 @@ async fn switching_to_a_model_that_drops_the_current_effort_notifies_and_falls_b
     app.connect.store = CredentialStore::new(credential_dir.path().join("credentials.toml"));
 
     // claude-sonnet-4-6 does not offer XHigh (effort.rs::options_for_model).
-    app.reasoning_effort = ReasoningEffort::XHigh;
+    app.reasoning_effort.value = ReasoningEffort::XHigh;
     app.resolve_effort_for_model("anthropic/claude-sonnet-4-6");
 
-    assert_eq!(app.reasoning_effort, ReasoningEffort::Low);
+    assert_eq!(app.reasoning_effort.value, ReasoningEffort::Low);
     assert_eq!(
         app.status_message,
         "Extra High effort is not supported by this model. Using Low."

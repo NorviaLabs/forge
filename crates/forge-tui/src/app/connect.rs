@@ -254,7 +254,7 @@ impl TuiApp {
             .flatten()
             .and_then(|effort| effort.parse().ok())
         {
-            self.reasoning_effort = effort;
+            self.reasoning_effort.value = effort;
         }
         // Restore the last usable provider; otherwise fall back to a deterministic
         // connected profile instead of silently preferring one backend family.
@@ -314,9 +314,9 @@ impl TuiApp {
     pub(super) fn resolve_effort_for_model(&mut self, model: &str) -> bool {
         let options = ReasoningEffort::options_for_model(model);
         let default = ReasoningEffort::default_for_model(model);
-        let previous = self.reasoning_effort;
+        let previous = self.reasoning_effort.value;
         if !options.contains(&previous) {
-            self.reasoning_effort = default;
+            self.reasoning_effort.value = default;
             self.persist_selection();
             self.note_unsupported_effort_fallback(previous, default);
         }
@@ -350,7 +350,7 @@ impl TuiApp {
         let _ = self
             .connect
             .store
-            .set_last_effort(&self.reasoning_effort.to_string());
+            .set_last_effort(&self.reasoning_effort.value.to_string());
     }
 
     /// Record a deliberate model/route/effort switch for Quick Switch.
@@ -369,7 +369,7 @@ impl TuiApp {
         let _ = self.connect.store.record_switch((
             &profile_id,
             &self.runtime.model_label,
-            &self.reasoning_effort.to_string(),
+            &self.reasoning_effort.value.to_string(),
         ));
     }
 
@@ -385,7 +385,7 @@ impl TuiApp {
                 self.session.set_active_model(&model);
                 self.apply_connect_credentials(&profile_id);
                 if let Ok(effort) = effort.parse::<ReasoningEffort>() {
-                    self.reasoning_effort = effort;
+                    self.reasoning_effort.value = effort;
                 }
                 self.feedback = FeedbackModel::default();
                 self.status_message.clear();
@@ -435,7 +435,7 @@ impl TuiApp {
             items,
             self.connect.profile.as_deref(),
             &self.runtime.model_label,
-            self.reasoning_effort,
+            self.reasoning_effort.value,
             focus,
         )
     }
