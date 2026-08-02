@@ -122,7 +122,7 @@ impl TuiApp {
     }
 
     pub(super) fn contextual_hint(&self) -> Option<String> {
-        if self.explorer_dialog.is_some() {
+        if self.explorer_dialog.current.is_some() {
             return Some("Enter confirm · Esc cancel".into());
         }
         if let Some(overlay) = self.overlay.as_ref() {
