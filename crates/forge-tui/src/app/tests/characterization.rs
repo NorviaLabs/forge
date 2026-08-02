@@ -45,7 +45,7 @@ async fn characterization_files_selection_and_expansion_survive_focus_roundtrip(
     fs::write(dir.path().join("src/lib.rs"), "").unwrap();
     app.file_explorer.refresh_workspace();
     let src = dir.path().join("src").canonicalize().unwrap();
-    app.files_visible = true;
+    app.workspace_files.visible = true;
     app.focus_block(FocusBlock::Files);
     app.file_explorer.selected_path = Some(src.clone());
     app.file_explorer.expand_selected();

@@ -26,9 +26,9 @@ impl TuiApp {
         matches!(self.workspace_navigation.current, WorkspaceView::Run(_))
     }
     pub(super) fn toggle_files_panel(&mut self) {
-        self.files_visible = !self.files_visible;
+        self.workspace_files.visible = !self.workspace_files.visible;
         self.save_ui_state();
-        if self.files_visible {
+        if self.workspace_files.visible {
             self.focus_block(FocusBlock::Files);
         } else {
             self.restore_focus_after_closing(FocusBlock::Files);
