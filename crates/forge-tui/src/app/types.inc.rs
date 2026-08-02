@@ -504,7 +504,6 @@ pub struct TuiApp {
     pub(crate) overlay: Option<Overlay>,
     should_quit: bool,
     startup_resume_picker: bool,
-    startup_resume_cancelled: bool,
     startup_resume_session_id: Option<uuid::Uuid>,
     busy: bool,
     pub(crate) status_message: String,

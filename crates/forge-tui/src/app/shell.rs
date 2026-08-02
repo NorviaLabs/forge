@@ -38,7 +38,8 @@ pub async fn run_tui(
 }
 
 /// Run the TUI with a startup session picker. The temporary session created
-/// before entering the TUI is removed if the picker is cancelled.
+/// before entering the TUI is removed after the picker is cancelled or a
+/// previous session is selected.
 pub async fn run_tui_with_resume_picker(
     session: AgentSession,
     runtime: TuiRuntimeConfig,
@@ -82,11 +83,9 @@ async fn run_tui_inner(
 
     app.persist_selection();
 
-    if app.startup_resume_cancelled {
-        if let Some(session_id) = app.startup_resume_session_id {
-            let path = app.session.journal_dir().join(format!("{session_id}.db"));
-            let _ = std::fs::remove_file(path);
-        }
+    if let Some(session_id) = app.startup_resume_session_id {
+        let path = app.session.journal_dir().join(format!("{session_id}.db"));
+        let _ = std::fs::remove_file(path);
     }
 
     result.map(|_| {

@@ -38,7 +38,6 @@ impl TuiApp {
             overlay: startup_items.clone().map(Overlay::resume_picker),
             should_quit: false,
             startup_resume_picker: startup_items.is_some(),
-            startup_resume_cancelled: false,
             startup_resume_session_id,
             busy: false,
             status_message: String::new(),
