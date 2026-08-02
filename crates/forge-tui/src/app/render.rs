@@ -510,7 +510,7 @@ impl TuiApp {
         };
         frame.render_widget(FooterBar { model: &footer }, regions.footer);
 
-        if let Some(ref dialog) = self.explorer_dialog {
+        if let Some(ref dialog) = self.explorer_dialog.current {
             self.render_explorer_dialog(dialog, area, frame.buffer_mut());
             self.register_overlay_hit_regions(area);
         } else if let Some(ref ov) = self.overlay {

@@ -579,6 +579,11 @@ struct AttachmentState {
     pending: Option<crate::file_context::FileAttachment>,
 }
 
+#[derive(Default)]
+struct ExplorerDialogState {
+    current: Option<ExplorerDialog>,
+}
+
 struct CancellationState {
     requested: bool,
 }
@@ -676,7 +681,7 @@ pub struct TuiApp {
     run_exec: run::RunExecution,
     pub(crate) files_visible: bool,
     pub(crate) file_explorer: FileExplorer,
-    explorer_dialog: Option<ExplorerDialog>,
+    explorer_dialog: ExplorerDialogState,
     /// Authoritative keyboard ownership. Legacy component `focused` flags are
     /// synchronised from this state for rendering only.
     focus: FocusState,

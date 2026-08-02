@@ -543,7 +543,7 @@ async fn mouse_double_click_cannot_bypass_delete_confirmation() {
         .unwrap();
 
     assert!(matches!(
-        app.explorer_dialog,
+        app.explorer_dialog.current,
         Some(ExplorerDialog::ConfirmDelete { .. })
     ));
     assert!(file.exists());

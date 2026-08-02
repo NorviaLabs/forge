@@ -160,7 +160,7 @@ impl TuiApp {
     }
 
     pub(super) fn register_overlay_hit_regions(&mut self, area: ratatui::layout::Rect) {
-        if self.explorer_dialog.is_some() {
+        if self.explorer_dialog.current.is_some() {
             self.register_hit_region(
                 area,
                 HitTarget::VisibleControl(SemanticCommand::CloseOverlay),
@@ -399,7 +399,7 @@ impl TuiApp {
                     self.clear_pending_double_click();
                     return Ok(());
                 };
-                if (self.overlay.is_some() || self.explorer_dialog.is_some())
+                if (self.overlay.is_some() || self.explorer_dialog.current.is_some())
                     && !matches!(target, HitTarget::OverlayAction(_))
                 {
                     self.clear_pending_double_click();
@@ -432,7 +432,7 @@ impl TuiApp {
             }
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                 self.clear_pending_double_click();
-                if self.overlay.is_some() || self.explorer_dialog.is_some() {
+                if self.overlay.is_some() || self.explorer_dialog.current.is_some() {
                     return Ok(());
                 }
                 let up = matches!(mouse.kind, MouseEventKind::ScrollUp);
