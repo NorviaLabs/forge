@@ -78,7 +78,9 @@ impl TuiApp {
                 thinking_started: None,
                 thought_secs: None,
             },
-            reasoning_effort: ReasoningEffort::Auto,
+            reasoning_effort: ReasoningEffortState {
+                value: ReasoningEffort::Auto,
+            },
             tool_detail: ToolDetailState { expanded: false },
             workspace_navigation: WorkspaceNavigation::default(),
             source_viewer: SourceViewer::new(),
