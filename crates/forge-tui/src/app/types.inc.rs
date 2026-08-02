@@ -530,6 +530,11 @@ struct ConversationViewState {
     splash_dismissed: bool,
 }
 
+struct DiffViewState {
+    selected: usize,
+    snapshot: DiffSnapshot,
+}
+
 struct RenderCacheState {
     conversation: Option<ConversationRenderCache>,
     composer_layout: ComposerLayoutCache,
@@ -612,7 +617,7 @@ pub struct TuiApp {
     sidebar_visible: bool,
     inspector_view: InspectorView,
     /// Selected index in the changed-files inventory for Diff workspace.
-    diff_selected: usize,
+    diff_view: DiffViewState,
     /// Soft-cancel in-flight turn (Esc while busy).
     cancel_requested: bool,
     /// Exact Direct invocations remembered for this Forge session only.
@@ -631,7 +636,6 @@ pub struct TuiApp {
     repo_header_state: RepoHeaderState,
     terminal_capture: TerminalCapture,
     pointer: PointerState,
-    diff_snapshot: DiffSnapshot,
     workspace_index: Option<Arc<forge_search::WorkspaceIndex>>,
     workspace_index_error: Option<String>,
 }
