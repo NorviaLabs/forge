@@ -80,14 +80,14 @@ impl TuiApp {
             let _ = term.draw(|f| self.draw(f));
         }
         self.session.resolve_hitl(decision.clone(), "tui").await?;
-        self.status_message = match decision {
+        self.status_state.message = match decision {
             HitlDecision::Approve => "Action approved".into(),
             HitlDecision::Deny => "Action denied".into(),
             // `HitlDecision` is `#[non_exhaustive]`. Report an unrecognised decision as
             // denied so the operator sees what `resolve_hitl` actually did with it.
             _ => "Action denied".into(),
         };
-        self.push_notice(vec![self.status_message.clone()]);
+        self.push_notice(vec![self.status_state.message.clone()]);
         self.busy_state.phase = BusyPhase::Idle;
         if let Some(term) = terminal {
             let _ = term.draw(|f| self.draw(f));

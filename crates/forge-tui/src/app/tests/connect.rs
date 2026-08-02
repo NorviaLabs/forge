@@ -96,7 +96,7 @@ async fn disconnect_clears_credentials_and_prompts_reauth() {
             .items
             .iter()
             .any(|l| l.contains("disconnected"))
-            || app.status_message.contains("disconnected")
+            || app.status_state.message.contains("disconnected")
     );
 }
 
@@ -244,7 +244,7 @@ async fn quick_switch_toggles_between_the_two_most_recent_deliberate_selections(
 
     // No deliberate selection recorded yet: nothing to switch to.
     app.quick_switch_model();
-    assert_eq!(app.status_message, "no previous model to switch to");
+    assert_eq!(app.status_state.message, "no previous model to switch to");
 
     app.apply_model_selection("native", "openai/gpt-4.1-mini", Some("openai"));
     app.apply_model_selection("native", "anthropic/claude-sonnet-4-5", Some("anthropic"));

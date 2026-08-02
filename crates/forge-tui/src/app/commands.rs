@@ -631,13 +631,13 @@ impl TuiApp {
             return;
         }
         self.overlay = Some(Overlay::theme_open(&crate::theme::active()));
-        self.status_message = "pick a theme".into();
+        self.status_state.message = "pick a theme".into();
     }
 
     async fn handle_model_command(&mut self, provider: Option<&str>, model: Option<&str>) {
         if provider.is_none() && model.is_none() {
             self.overlay = Some(self.build_connect_model_overlay(ConnectModelColumn::Models));
-            self.status_message = "pick a model (live catalog when connected)".into();
+            self.status_state.message = "pick a model (live catalog when connected)".into();
             return;
         }
 
@@ -713,7 +713,7 @@ impl TuiApp {
                 }
                 Ok(SlashCommand::Quit) => {
                     self.exit.requested = true;
-                    self.status_message = "quitting…".into();
+                    self.status_state.message = "quitting…".into();
                 }
                 Ok(SlashCommand::Compact) => {
                     self.queue_context_reset();
@@ -732,13 +732,14 @@ impl TuiApp {
                         10,
                     ) {
                         Ok(sessions) if sessions.is_empty() => {
-                            self.status_message = "no previous sessions".into();
+                            self.status_state.message = "no previous sessions".into();
                             self.push_notice(vec![
                                 "No previous sessions found for this workspace.".into(),
                             ]);
                         }
                         Ok(sessions) => {
-                            self.status_message = format!("{} resumable sessions", sessions.len());
+                            self.status_state.message =
+                                format!("{} resumable sessions", sessions.len());
                             let journal_dir = self.session.journal_dir().to_path_buf();
                             let mut items = Vec::with_capacity(sessions.len());
                             for session in sessions {
@@ -780,13 +781,13 @@ impl TuiApp {
                             if self.session.active_task.lifecycle
                                 == forge_types::TaskLifecycle::Interrupted
                             {
-                                self.status_message = "session interrupted".into();
+                                self.status_state.message = "session interrupted".into();
                                 self.set_feedback(
                                     FeedbackSeverity::Warn,
                                     "previous task interrupted · ready for a new request",
                                 );
                             } else {
-                                self.status_message = "session resumed".into();
+                                self.status_state.message = "session resumed".into();
                                 self.set_feedback(
                                     FeedbackSeverity::Ok,
                                     "session restored · ready for the next action",
@@ -828,7 +829,7 @@ impl TuiApp {
                     self.notice_state.items.clear();
                     self.clear_error_chrome();
                     self.feedback = FeedbackModel::default();
-                    self.status_message.clear();
+                    self.status_state.message.clear();
                     self.toast.current = None;
                     self.conversation_view.scroll = 0;
                     self.conversation_view.follow = true;
@@ -836,7 +837,7 @@ impl TuiApp {
                 Ok(SlashCommand::Disconnect { profile_id }) => {
                     let msg = self.disconnect_auth(profile_id.as_deref())?;
                     self.open_connect_picker();
-                    self.status_message = msg;
+                    self.status_state.message = msg;
                 }
                 Ok(SlashCommand::Connect(action)) => {
                     self.handle_connect(action);
@@ -847,7 +848,7 @@ impl TuiApp {
                     } else {
                         self.note_workspace_changed();
                     }
-                    self.status_message = "Refreshing git status...".into();
+                    self.status_state.message = "Refreshing git status...".into();
                 }
                 Ok(SlashCommand::Edit) => {
                     self.external_editor.requested = true;
@@ -1417,7 +1418,7 @@ mod tests {
         let (_d, mut app) = app().await;
         app.handle_theme_command(None);
         assert!(matches!(app.overlay, Some(Overlay::Theme { .. })));
-        assert_eq!(app.status_message, "pick a theme");
+        assert_eq!(app.status_state.message, "pick a theme");
 
         // A blank name is treated as "no name" rather than as an invalid theme.
         app.overlay = None;
