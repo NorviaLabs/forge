@@ -197,7 +197,7 @@ impl TuiApp {
             if !line.is_empty() {
                 self.history.push(&line);
                 self.slash_suggestions.selected = 0;
-                self.notices.clear();
+                self.notice_state.items.clear();
                 self.input.history_browse = false;
                 self.dispatch_line(&line).await?;
             }
@@ -214,7 +214,7 @@ impl TuiApp {
 
         self.history.push(&line);
         self.slash_suggestions.selected = 0;
-        self.notices.clear();
+        self.notice_state.items.clear();
         self.input.history_browse = false;
 
         // Slash commands always dispatch immediately regardless of lifecycle.

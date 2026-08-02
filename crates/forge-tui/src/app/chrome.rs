@@ -19,17 +19,18 @@ use super::util::relative_display;
 
 impl TuiApp {
     pub(super) fn push_notice(&mut self, lines: Vec<String>) {
-        self.notices = lines;
-        self.notices_until = Some(Instant::now() + Duration::from_secs(3));
+        self.notice_state.items = lines;
+        self.notice_state.until = Some(Instant::now() + Duration::from_secs(3));
     }
 
     pub(super) fn tick_notices(&mut self) {
         if self
-            .notices_until
+            .notice_state
+            .until
             .is_some_and(|until| Instant::now() >= until)
         {
-            self.notices.clear();
-            self.notices_until = None;
+            self.notice_state.items.clear();
+            self.notice_state.until = None;
         }
     }
 

@@ -141,7 +141,7 @@ impl TuiApp {
             error,
         ));
         self.status_message = "File explorer (readonly)".into();
-        self.notices.clear();
+        self.notice_state.items.clear();
     }
 
     pub(super) fn open_file_viewer(&mut self, path: &str) {

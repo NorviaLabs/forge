@@ -50,8 +50,10 @@ impl TuiApp {
             connect: connect::ConnectionModel::new(),
             history: InputHistory::default(),
             slash_suggestions: SlashSuggestionState { selected: 0 },
-            notices: startup_notices,
-            notices_until: None,
+            notice_state: NoticeState {
+                items: startup_notices,
+                until: None,
+            },
             feedback: FeedbackModel::default(),
             ui_banners: Vec::new(),
             busy_phase: BusyPhase::Idle,

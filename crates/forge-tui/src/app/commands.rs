@@ -752,7 +752,7 @@ impl TuiApp {
                                     title,
                                 });
                             }
-                            self.notices.clear();
+                            self.notice_state.items.clear();
                             self.overlay = Some(Overlay::resume_picker(items));
                         }
                         Err(error) => {
@@ -764,7 +764,7 @@ impl TuiApp {
                     match self.session.resume_session(session_id).await {
                         Ok(_report) => {
                             self.overlay = None;
-                            self.notices.clear();
+                            self.notice_state.items.clear();
                             self.busy = false;
                             self.busy_phase = BusyPhase::Idle;
                             self.exit.code = match self.session.active_task.lifecycle {
@@ -825,7 +825,7 @@ impl TuiApp {
                     self.conversation_view.message_start = self.session.messages.len();
                     self.conversation_view.event_start = self.session.events.len();
                     self.ui_banners.clear();
-                    self.notices.clear();
+                    self.notice_state.items.clear();
                     self.clear_error_chrome();
                     self.feedback = FeedbackModel::default();
                     self.status_message.clear();
@@ -861,7 +861,7 @@ impl TuiApp {
                 Err(e) => {
                     let msg = e.to_string();
                     self.set_feedback(FeedbackSeverity::Warn, msg.clone());
-                    self.notices.clear();
+                    self.notice_state.items.clear();
                     self.push_toast(msg);
                 }
             }

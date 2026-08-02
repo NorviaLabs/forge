@@ -149,9 +149,9 @@ impl TuiApp {
         let renamed_notice = renamed_open_file.then(|| "File renamed externally".to_string());
         if active_file_changed {
             self.refresh_active_source_viewer();
-            self.notices.clear();
+            self.notice_state.items.clear();
         } else if renamed_open_file {
-            self.notices.clear();
+            self.notice_state.items.clear();
         }
         if self.focus.block == FocusBlock::Files && self.focus.mode == FocusMode::Navigation {
             self.file_explorer.refresh_git_status();

@@ -189,7 +189,7 @@ impl TuiApp {
         self.session.set_active_model(String::new());
         self.feedback = FeedbackModel::default();
         self.status_message = "disconnected".into();
-        self.notices.clear();
+        self.notice_state.items.clear();
         self.ui_banners.retain(|b| {
             !matches!(
                 b,
@@ -389,7 +389,7 @@ impl TuiApp {
                 }
                 self.feedback = FeedbackModel::default();
                 self.status_message.clear();
-                self.notices.clear();
+                self.notice_state.items.clear();
                 self.push_activity(
                     ActivityKind::System,
                     FeedbackSeverity::Ok,
@@ -443,7 +443,7 @@ impl TuiApp {
     pub(super) fn open_connect_picker(&mut self) {
         self.overlay = Some(self.build_connect_model_overlay(ConnectModelColumn::Providers));
         self.status_message = "Choose a provider".into();
-        self.notices.clear();
+        self.notice_state.items.clear();
     }
 
     fn open_api_key_prompt(&mut self, profile_id: &str, error: Option<String>) {
@@ -474,7 +474,7 @@ impl TuiApp {
         }
         self.overlay = Some(overlay);
         self.status_message = format!("Connect {profile_id}");
-        self.notices.clear();
+        self.notice_state.items.clear();
     }
 
     pub(super) fn open_model_picker_after_connect(&mut self, profile_id: &str) {
@@ -489,7 +489,7 @@ impl TuiApp {
             FeedbackSeverity::Ok,
             format!("{title} connected · choose a model"),
         );
-        self.notices.clear();
+        self.notice_state.items.clear();
     }
 
     pub(super) fn handle_connect(&mut self, action: ConnectAction) {
@@ -559,10 +559,8 @@ impl TuiApp {
                 }
                 let lines: Vec<String> = msg.lines().map(|s| s.to_string()).collect();
                 self.status_message = lines.first().cloned().unwrap_or_default();
-                self.notices.clear();
-                self.notices_until = None;
-                self.notices_until = None;
-                self.notices_until = None;
+                self.notice_state.items.clear();
+                self.notice_state.until = None;
                 self.push_activity(
                     ActivityKind::Connect,
                     FeedbackSeverity::Ok,
@@ -823,7 +821,7 @@ impl TuiApp {
         self.record_deliberate_selection();
         self.feedback = FeedbackModel::default();
         self.status_message.clear();
-        self.notices.clear();
+        self.notice_state.items.clear();
         self.push_activity(
             ActivityKind::System,
             FeedbackSeverity::Ok,
