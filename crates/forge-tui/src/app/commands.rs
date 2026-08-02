@@ -377,7 +377,8 @@ impl TuiApp {
                 // keep composer focus, not silently move focus away while
                 // leaving the "/" text and dropdown rendered but orphaned
                 // (nothing left routes Backspace/Enter/Tab back to them).
-                else if self.focus.block == FocusBlock::Composer && self.input.text.starts_with('/')
+                else if self.focus.block == FocusBlock::Composer
+                    && self.input.text.starts_with('/')
                 {
                     self.input.clear();
                     self.slash_suggest_idx = 0;
