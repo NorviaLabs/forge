@@ -79,10 +79,10 @@ impl TuiApp {
         &mut self,
         mut terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
     ) -> Result<(), TuiError> {
-        if !self.pending_external_editor {
+        if !self.external_editor.requested {
             return Ok(());
         }
-        self.pending_external_editor = false;
+        self.external_editor.requested = false;
 
         // 1. Guard: must have a valid text file open.
         let file_path = match &self.source_viewer.path {

@@ -59,7 +59,7 @@ impl TuiApp {
             pending_turn_continue: false,
             pending_hitl_decision: None,
             pending_context_reset: false,
-            pending_external_editor: false,
+            external_editor: ExternalEditorState { requested: false },
             pending_attachment: None,
             task_selection: TaskSelectionState {
                 queue: None,

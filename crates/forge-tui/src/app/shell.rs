@@ -132,7 +132,7 @@ async fn run_loop(
             app.drain_pending_context_reset(Some(terminal)).await?;
             continue;
         }
-        if app.pending_external_editor {
+        if app.external_editor.requested {
             app.drain_pending_external_editor(Some(terminal)).await?;
             continue;
         }
