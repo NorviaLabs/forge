@@ -107,7 +107,9 @@ impl TuiApp {
                 snapshot: DiffSnapshot::default(),
             },
             cancellation: CancellationState { requested: false },
-            hitl_session_allow: HashSet::new(),
+            hitl_session: HitlSessionState {
+                allowed: HashSet::new(),
+            },
             toast: None,
             conversation_view: ConversationViewState {
                 message_start: 0,

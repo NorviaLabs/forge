@@ -120,7 +120,7 @@ impl TuiApp {
 
         self.session.resolve_hitl(decision.clone(), "tui").await?;
         if let Some(identity) = identity_to_remember {
-            self.hitl_session_allow.insert(identity);
+            self.hitl_session.allowed.insert(identity);
         }
         self.overlay = None;
         match decision {
@@ -161,7 +161,7 @@ impl TuiApp {
             if let Some(p) = self.session.pending_hitl() {
                 if self
                     .approval_identity_for_payload(p)
-                    .is_some_and(|identity| self.hitl_session_allow.contains(&identity))
+                    .is_some_and(|identity| self.hitl_session.allowed.contains(&identity))
                 {
                     // Will be drained by `drain_auto_hitl` in the event loop.
                     return;
@@ -175,7 +175,7 @@ impl TuiApp {
     pub async fn drain_auto_hitl(&mut self) -> Result<(), TuiError> {
         if let Some(ref p) = self.session.pending_hitl().cloned() {
             if let Some(identity) = self.approval_identity_for_payload(p) {
-                if !self.hitl_session_allow.contains(&identity) {
+                if !self.hitl_session.allowed.contains(&identity) {
                     return Ok(());
                 }
                 self.session
