@@ -66,7 +66,7 @@ impl TuiApp {
         let msg = classify_operator_error(raw);
         self.set_feedback(FeedbackSeverity::Error, msg.clone());
         // Replace prior error banners — don't accumulate red clutter in the chat.
-        self.ui_banners.retain(|b| {
+        self.banner_state.items.retain(|b| {
             !matches!(
                 b,
                 ChatItem::Banner {
@@ -75,7 +75,7 @@ impl TuiApp {
                 }
             )
         });
-        self.ui_banners.push(ChatItem::Banner {
+        self.banner_state.items.push(ChatItem::Banner {
             text: msg.clone(),
             kind: BannerKind::Error,
         });
@@ -86,7 +86,7 @@ impl TuiApp {
 
     /// Drop ephemeral error UI (call on new user turn / Esc).
     pub(super) fn clear_error_chrome(&mut self) {
-        self.ui_banners.retain(|b| {
+        self.banner_state.items.retain(|b| {
             !matches!(
                 b,
                 ChatItem::Banner {
