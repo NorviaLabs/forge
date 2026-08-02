@@ -101,7 +101,9 @@ impl TuiApp {
             },
             bottom_panel: BottomPanelState::default(),
             run,
-            run_exec: run::RunExecution::default(),
+            run_execution: RunExecutionState {
+                execution: run::RunExecution::default(),
+            },
             workspace_files: WorkspaceFilesState {
                 visible: false,
                 explorer: FileExplorer::new(Some(workspace_root), file_icons),
