@@ -156,9 +156,12 @@ pub(crate) fn mouse(kind: MouseEventKind, x: u16, y: u16) -> MouseEvent {
 
 pub(crate) fn hit_point(app: &TuiApp, predicate: impl Fn(&HitTarget) -> bool) -> (u16, u16) {
     let region = app
+        .pointer
         .hit_regions
         .iter()
-        .find(|region| region.generation == app.frame_generation && predicate(&region.target))
+        .find(|region| {
+            region.generation == app.pointer.frame_generation && predicate(&region.target)
+        })
         .expect("expected hit region");
     (region.area.x, region.area.y)
 }

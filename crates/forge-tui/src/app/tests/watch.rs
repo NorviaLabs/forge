@@ -12,7 +12,8 @@ async fn file_change_event_refreshes_git_status() {
     app.file_explorer.git_status = crate::git_status::GitStatusCache::new();
     assert!(!app.file_explorer.git_status.loading);
 
-    app.file_change_tx
+    app.file_watch
+        .change_tx
         .send(FileChangeEvent {
             path: app.session.workspace_root().join("changed.txt"),
         })
@@ -38,7 +39,8 @@ async fn file_change_does_not_reload_tree_while_files_sidebar_is_focused() {
     app.focus_block(FocusBlock::Files);
     app.file_explorer.git_status = crate::git_status::GitStatusCache::new();
 
-    app.file_change_tx
+    app.file_watch
+        .change_tx
         .send(FileChangeEvent {
             path: app.session.workspace_root().join("changed.txt"),
         })
