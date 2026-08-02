@@ -5,6 +5,7 @@ use std::sync::Arc;
 use clap::Parser;
 use forge_config::{Config, ConfigOverrides};
 use forge_core::{AgentSession, LoopConfig};
+use forge_durable::latest_session_id;
 use forge_mcp::{register_static_mcp, McpManager, StaticMcpTool};
 use forge_model::{client_from_config, ModelClient};
 use forge_storage::{LocalRuntimeStorage, RuntimeDataKind, RuntimeStorage};
