@@ -29,9 +29,9 @@ impl TuiApp {
                 record.finished_at = Some(std::time::SystemTime::now());
             }
         }
-        self.run_exec.pending_validation = false;
-        self.run_exec.rx = None;
-        self.run_exec.abort = None;
+        self.run_execution.execution.pending_validation = false;
+        self.run_execution.execution.rx = None;
+        self.run_execution.execution.abort = None;
     }
 
     pub(super) fn run_current_draft(&mut self) {
@@ -67,7 +67,7 @@ impl TuiApp {
         record.started_at = Some(std::time::SystemTime::now());
         self.run.current = Some(record);
         self.run.error = None;
-        self.run_exec.pending_validation = true;
+        self.run_execution.execution.pending_validation = true;
         self.busy_state.phase = BusyPhase::Tool { name: "run".into() };
         self.status_state.message = format!("run: {}", invocation.summary());
         self.push_activity(
@@ -118,7 +118,7 @@ impl TuiApp {
         let mut cancelled = None;
         if let Some(record) = self.run.current.as_mut() {
             if record.state == RunState::Running {
-                if let Some(handle) = self.run_exec.abort.take() {
+                if let Some(handle) = self.run_execution.execution.abort.take() {
                     handle.abort();
                 }
                 record.state = RunState::Cancelled;
@@ -128,8 +128,8 @@ impl TuiApp {
                         .finished_at
                         .and_then(|end| end.duration_since(start).ok())
                 });
-                self.run_exec.rx = None;
-                self.run_exec.pending_validation = false;
+                self.run_execution.execution.rx = None;
+                self.run_execution.execution.pending_validation = false;
                 self.busy_state.phase = BusyPhase::Idle;
                 cancelled = Some(record.clone());
             }
@@ -149,7 +149,7 @@ impl TuiApp {
         &mut self,
         terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
     ) -> Result<(), TuiError> {
-        if !self.run_exec.pending_validation
+        if !self.run_execution.execution.pending_validation
             || !self
                 .run
                 .current
@@ -158,7 +158,7 @@ impl TuiApp {
         {
             return Ok(());
         }
-        self.run_exec.pending_validation = false;
+        self.run_execution.execution.pending_validation = false;
         let Some(record) = self.run.current.as_ref() else {
             return Ok(());
         };
@@ -170,8 +170,8 @@ impl TuiApp {
         self.terminal_capture.content.clear();
         self.terminal_capture.truncated = false;
         let (tx, rx) = std::sync::mpsc::channel();
-        self.run_exec.rx = Some(rx);
-        self.run_exec.abort = Some(tokio::spawn(async move {
+        self.run_execution.execution.rx = Some(rx);
+        self.run_execution.execution.abort = Some(tokio::spawn(async move {
             use tokio::io::AsyncReadExt;
             let mut cmd = tokio::process::Command::new(&invocation.executable);
             cmd.args(&invocation.arguments)
@@ -257,17 +257,17 @@ impl TuiApp {
     }
 
     pub(super) fn poll_run(&mut self) {
-        let Some(rx) = self.run_exec.rx.take() else {
+        let Some(rx) = self.run_execution.execution.rx.take() else {
             return;
         };
         match rx.try_recv() {
             Ok(RunEvent::Output(chunk)) => {
                 self.append_terminal_output(&chunk);
-                self.run_exec.rx = Some(rx);
+                self.run_execution.execution.rx = Some(rx);
             }
             Ok(RunEvent::Finished { exit_code, success }) => {
-                self.run_exec.abort = None;
-                self.run_exec.pending_validation = false;
+                self.run_execution.execution.abort = None;
+                self.run_execution.execution.pending_validation = false;
                 self.busy_state.phase = BusyPhase::Idle;
                 if let Some(mut record) = self.run.current.take() {
                     record.state = if success {
@@ -301,8 +301,8 @@ impl TuiApp {
                 }
             }
             Ok(RunEvent::SpawnFailed(error)) => {
-                self.run_exec.abort = None;
-                self.run_exec.pending_validation = false;
+                self.run_execution.execution.abort = None;
+                self.run_execution.execution.pending_validation = false;
                 self.busy_state.phase = BusyPhase::Idle;
                 if let Some(mut record) = self.run.current.take() {
                     record.state = RunState::StartFailed;
@@ -326,8 +326,8 @@ impl TuiApp {
                 self.report_error(&format!("run launch failed: {error}"));
             }
             Ok(RunEvent::CaptureFailed(error)) => {
-                self.run_exec.abort = None;
-                self.run_exec.pending_validation = false;
+                self.run_execution.execution.abort = None;
+                self.run_execution.execution.pending_validation = false;
                 self.busy_state.phase = BusyPhase::Idle;
                 if let Some(mut record) = self.run.current.take() {
                     record.state = RunState::CaptureFailed;
@@ -351,11 +351,11 @@ impl TuiApp {
                 self.report_error(&format!("run output capture failed: {error}"));
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {
-                self.run_exec.rx = Some(rx);
+                self.run_execution.execution.rx = Some(rx);
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                self.run_exec.abort = None;
-                self.run_exec.pending_validation = false;
+                self.run_execution.execution.abort = None;
+                self.run_execution.execution.pending_validation = false;
                 self.busy_state.phase = BusyPhase::Idle;
                 if let Some(record) = self.run.current.as_mut() {
                     record.state = RunState::CaptureFailed;
