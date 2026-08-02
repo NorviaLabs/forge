@@ -428,6 +428,10 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
     // Keep in sync with `commands::parse_slash`.
     vec![
         PaletteItem {
+            cmd: "/help".into(),
+            desc: "Show help and keyboard shortcuts".into(),
+        },
+        PaletteItem {
             cmd: "/connect".into(),
             desc: "Connect provider (xAI, OpenCode Go/Zen, OpenAI, Anthropic, Ollama)".into(),
         },
@@ -1798,7 +1802,8 @@ impl Widget for OverlayWidget<'_> {
                         let idx = start + i;
                         let vendor = &providers[row.vendor_idx];
                         let selected = idx == *provider_cursor;
-                        let style = if selected {
+                        let highlighted = selected && *focus == ConnectModelColumn::Providers;
+                        let style = if highlighted {
                             theme::focused_selection_style()
                         } else {
                             theme::text()
@@ -1835,7 +1840,7 @@ impl Widget for OverlayWidget<'_> {
                             }
                             ListItem::new(Line::from(vec![
                                 Span::styled(text, style),
-                                Span::styled(tag, theme::tag_style(selected)),
+                                Span::styled(tag, theme::tag_style(highlighted)),
                             ]))
                         }
                     })
@@ -1883,7 +1888,8 @@ impl Widget for OverlayWidget<'_> {
                         .map(|(i, g)| {
                             let idx = start + i;
                             let selected = idx == *model_selected;
-                            let style = if selected {
+                            let highlighted = selected && *focus == ConnectModelColumn::Models;
+                            let style = if highlighted {
                                 theme::focused_selection_style()
                             } else {
                                 theme::text()
@@ -1906,7 +1912,7 @@ impl Widget for OverlayWidget<'_> {
                             }
                             ListItem::new(Line::from(vec![
                                 Span::styled(row, style),
-                                Span::styled(tag, theme::tag_style(selected)),
+                                Span::styled(tag, theme::tag_style(highlighted)),
                             ]))
                         })
                         .collect()
@@ -1920,7 +1926,8 @@ impl Widget for OverlayWidget<'_> {
                     .enumerate()
                     .map(|(idx, effort)| {
                         let selected = idx == *effort_selected;
-                        let style = if selected {
+                        let highlighted = selected && *focus == ConnectModelColumn::Effort;
+                        let style = if highlighted {
                             theme::focused_selection_style()
                         } else {
                             theme::text()
@@ -1936,7 +1943,7 @@ impl Widget for OverlayWidget<'_> {
                         if is_current {
                             ListItem::new(Line::from(vec![
                                 Span::styled(base, style),
-                                Span::styled(" current", theme::tag_style(selected)),
+                                Span::styled(" current", theme::tag_style(highlighted)),
                             ]))
                         } else {
                             ListItem::new(Span::styled(base, style))
@@ -2507,6 +2514,122 @@ mod tests {
             }
         }
         items
+    }
+
+    #[test]
+    fn tab_cycles_connect_model_focus_forward_and_back_tab_cycles_backward() {
+        let mut o = model_overlay(sample_default_models(), ConnectModelColumn::Providers);
+        let focus_of = |o: &Overlay| {
+            let Overlay::ConnectModel { focus, .. } = o else {
+                panic!("expected connect model overlay");
+            };
+            *focus
+        };
+        handle_overlay_key(&mut o, Key::Tab);
+        assert_eq!(focus_of(&o), ConnectModelColumn::Models);
+        handle_overlay_key(&mut o, Key::Tab);
+        assert_eq!(focus_of(&o), ConnectModelColumn::Effort);
+        handle_overlay_key(&mut o, Key::Tab);
+        assert_eq!(focus_of(&o), ConnectModelColumn::Providers);
+        handle_overlay_key(&mut o, Key::BackTab);
+        assert_eq!(focus_of(&o), ConnectModelColumn::Effort);
+    }
+
+    /// F-MODEL-01: only the column that actually has keyboard focus should
+    /// render its cursor row with the bold selection-highlight background —
+    /// all three previously highlighted their cursor row unconditionally,
+    /// making it impossible to tell which column Tab/arrows/typing would
+    /// affect (Tab itself worked correctly the whole time).
+    #[test]
+    fn only_the_focused_column_renders_a_highlighted_cursor_row() {
+        fn render(overlay: &Overlay) -> Buffer {
+            let area = Rect::new(0, 0, 100, 48);
+            let mut buf = Buffer::empty(area);
+            OverlayWidget { overlay }.render(area, &mut buf);
+            buf
+        }
+        // Restrict the search to the MODELS column's horizontal slice (see
+        // `col_constraints`: Providers 30% | gap | Models 38% | gap | Effort
+        // 30%), so this can't accidentally match another column's own
+        // "▶ " marker on the same text row.
+        fn find_in_models_column(buf: &Buffer, needle: &str) -> (u16, u16) {
+            let x0 = 32u16;
+            let x1 = 70.min(buf.area.width);
+            for y in 0..buf.area.height {
+                let mut row = String::new();
+                for x in x0..x1 {
+                    row.push_str(buf[(x, y)].symbol());
+                }
+                if let Some(rel_x) = row.find(needle) {
+                    return (x0 + rel_x as u16, y);
+                }
+            }
+            panic!("{needle:?} not found in the MODELS column");
+        }
+
+        // `model_overlay` passes an empty provider list, so start focus on
+        // MODELS (which does have rows from `sample_default_models()`).
+        let mut o = model_overlay(sample_default_models(), ConnectModelColumn::Models);
+        let buf = render(&o);
+        let (hx, hy) = find_in_models_column(&buf, "MODELS");
+        assert_eq!(buf[(hx, hy)].style().fg, theme::brand().fg);
+        let (cx, cy) = find_in_models_column(&buf, "▶ ");
+        assert_eq!(
+            buf[(cx, cy)].style().bg,
+            theme::focused_selection_style().bg,
+            "MODELS cursor row must be highlighted while it has focus"
+        );
+
+        if let Overlay::ConnectModel { focus, .. } = &mut o {
+            *focus = ConnectModelColumn::Effort;
+        }
+        let buf = render(&o);
+        assert_eq!(
+            buf[(hx, hy)].style().fg,
+            theme::muted().fg,
+            "MODELS header must not read as focused once focus moves to EFFORT"
+        );
+        // The models column no longer has focus, so its cursor row must no
+        // longer carry the bold selection-highlight background, even though
+        // the "▶ " marker (position memory) can still be present.
+        assert_ne!(
+            buf[(cx, cy)].style().bg,
+            theme::focused_selection_style().bg,
+            "unfocused MODELS column must not show the focused-selection highlight"
+        );
+    }
+
+    /// F-VIS-01: only the column that has real keyboard focus may show the
+    /// selection-highlight background — this covers both a row's own style
+    /// and its "current" tag span, which used an unconditional selection
+    /// check (`idx == cursor`) independent of `focus` and so could paint a
+    /// highlighted "current" badge in an unfocused column purely because
+    /// that column's cursor happened to already sit on its current value
+    /// (a very common starting state).
+    #[test]
+    fn unfocused_columns_never_paint_the_selection_highlight() {
+        let o = model_overlay(sample_default_models(), ConnectModelColumn::Models);
+        let area = Rect::new(0, 0, 160, 45);
+        let mut buf = Buffer::empty(area);
+        OverlayWidget { overlay: &o }.render(area, &mut buf);
+        let panel_bg = theme::panel().bg;
+        let highlight_bg = theme::focused_selection_style().bg;
+
+        // The picker body sits at inner x in [31, 129); MODELS owns roughly
+        // [62, 99) per `col_constraints`, so PROVIDERS/EFFORT are anything
+        // else inside the dialog. With focus on MODELS, no cell outside its
+        // column may carry the highlight background.
+        for y in 0..area.height {
+            for x in 0..area.width {
+                let bg = buf[(x, y)].style().bg;
+                if bg == highlight_bg && bg != panel_bg {
+                    assert!(
+                        (62..99).contains(&x),
+                        "unexpected selection highlight at x={x} y={y}, outside the focused MODELS column"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

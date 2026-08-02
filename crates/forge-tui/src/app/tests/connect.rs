@@ -448,6 +448,30 @@ async fn blocks_chat_when_not_connected() {
 }
 
 #[tokio::test]
+async fn bare_model_command_opens_on_models_column() {
+    let (_dir, session) = test_session().await;
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "mock".into(),
+            provider: "mock".into(),
+            cwd: PathBuf::from("."),
+            version: "0.11.0".into(),
+            startup_notices: Vec::new(),
+            validation_command: None,
+            file_icons: FileIconMode::Unicode,
+            mouse_capture: true,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+    app.dispatch_line("/model").await.unwrap();
+    let Some(Overlay::ConnectModel { focus, .. }) = &app.overlay else {
+        panic!("expected ConnectModel overlay, got {:?}", app.overlay);
+    };
+    assert_eq!(*focus, ConnectModelColumn::Models);
+}
+
+#[tokio::test]
 async fn mock_provider_allows_chat_without_connect() {
     let (_dir, session) = test_session().await;
     let mut app = TuiApp::new(
