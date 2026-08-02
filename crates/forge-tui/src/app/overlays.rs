@@ -234,7 +234,7 @@ impl TuiApp {
     pub(super) fn apply_theme(&mut self, theme_id: String, persist: bool) {
         crate::theme::set_active(&theme_id);
         self.runtime.theme_id = theme_id.clone();
-        self.conversation_cache = None;
+        self.render_cache.conversation = None;
         self.overlay = None;
         self.invalidate_hit_regions();
         if persist {
