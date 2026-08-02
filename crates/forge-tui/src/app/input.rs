@@ -495,7 +495,7 @@ impl TuiApp {
         if let Some(command) = self.semantic_command_for_composer_key(key) {
             let consumed = self.execute_semantic_command(command).await?;
             if input_was_empty && !self.input.text.is_empty() {
-                self.splash_dismissed = true;
+                self.conversation_view.splash_dismissed = true;
             }
             return Ok(consumed);
         }
@@ -573,7 +573,7 @@ impl TuiApp {
             _ => false,
         };
         if input_was_empty && !self.input.text.is_empty() {
-            self.splash_dismissed = true;
+            self.conversation_view.splash_dismissed = true;
         }
         Ok(consumed)
     }
@@ -864,7 +864,7 @@ mod tests {
     async fn typing_into_the_composer_inserts_and_dismisses_the_splash() {
         let (_dir, mut app) = app().await;
         focus_composer(&mut app);
-        assert!(!app.splash_dismissed);
+        assert!(!app.conversation_view.splash_dismissed);
 
         for c in "hi".chars() {
             app.handle_key(press(KeyCode::Char(c))).await.unwrap();
@@ -872,7 +872,7 @@ mod tests {
 
         assert_eq!(app.input.text, "hi");
         assert!(
-            app.splash_dismissed,
+            app.conversation_view.splash_dismissed,
             "first typed character should dismiss the splash"
         );
     }

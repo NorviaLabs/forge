@@ -802,10 +802,10 @@ impl TuiApp {
                             self.queue_selected = None;
                             self.stream_preview.clear();
                             self.stream_thinking.clear();
-                            self.chat_message_start = 0;
-                            self.chat_event_start = 0;
-                            self.chat_scroll = 0;
-                            self.chat_follow = true;
+                            self.conversation_view.message_start = 0;
+                            self.conversation_view.event_start = 0;
+                            self.conversation_view.scroll = 0;
+                            self.conversation_view.follow = true;
                             self.hitl_session_allow.clear();
                             self.maybe_open_hitl();
                         }
@@ -819,16 +819,16 @@ impl TuiApp {
                 Ok(SlashCommand::Clear) => {
                     // Hide everything currently in the transcript without deleting session
                     // context, so subsequent model turns still see the full conversation.
-                    self.chat_message_start = self.session.messages.len();
-                    self.chat_event_start = self.session.events.len();
+                    self.conversation_view.message_start = self.session.messages.len();
+                    self.conversation_view.event_start = self.session.events.len();
                     self.ui_banners.clear();
                     self.notices.clear();
                     self.clear_error_chrome();
                     self.feedback = FeedbackModel::default();
                     self.status_message.clear();
                     self.toast = None;
-                    self.chat_scroll = 0;
-                    self.chat_follow = true;
+                    self.conversation_view.scroll = 0;
+                    self.conversation_view.follow = true;
                 }
                 Ok(SlashCommand::Disconnect { profile_id }) => {
                     let msg = self.disconnect_auth(profile_id.as_deref())?;
@@ -937,8 +937,8 @@ impl TuiApp {
         // A new user turn should always follow the live conversation tail.
         // This also ensures its thinking block is visible after the user has
         // previously scrolled up to inspect an older response.
-        self.chat_follow = true;
-        self.chat_scroll = 0;
+        self.conversation_view.follow = true;
+        self.conversation_view.scroll = 0;
         self.stream_preview.clear();
         self.stream_thinking.clear();
         self.push_activity(

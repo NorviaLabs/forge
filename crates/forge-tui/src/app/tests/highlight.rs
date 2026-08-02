@@ -43,8 +43,8 @@ async fn scrollback_does_not_recompute_highlights() {
     draw_app(&mut app, 100, 30);
     let before = forge_syntax::highlight_cache_stats();
 
-    app.chat_follow = false;
-    app.chat_scroll = 3;
+    app.conversation_view.follow = false;
+    app.conversation_view.scroll = 3;
     draw_app(&mut app, 100, 30);
     let after = forge_syntax::highlight_cache_stats();
 

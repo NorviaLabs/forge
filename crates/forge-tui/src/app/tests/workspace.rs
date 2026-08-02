@@ -291,7 +291,7 @@ async fn opening_file_does_not_open_closed_files_preference() {
 async fn responsive_sizes_render_without_panic_and_follow_files_policy() {
     let (_dir, mut app) = focus_test_app().await;
     app.files_visible = true;
-    app.splash_dismissed = true;
+    app.conversation_view.splash_dismissed = true;
     for (width, height, expect_files) in [
         (80, 24, false),
         (120, 40, true),

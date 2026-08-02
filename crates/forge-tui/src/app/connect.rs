@@ -181,8 +181,8 @@ impl TuiApp {
         self.busy = false;
         self.busy_phase = BusyPhase::Idle;
         self.tool_expanded = false;
-        self.chat_follow = true;
-        self.chat_scroll = 0;
+        self.conversation_view.follow = true;
+        self.conversation_view.scroll = 0;
         self.connect.profile = None;
         self.runtime.provider.clear();
         self.runtime.model_label.clear();
