@@ -555,7 +555,7 @@ impl TuiApp {
                 self.source_viewer.start_jump();
                 self.enter_transient(TransientOwner::JumpToLine);
             }
-            SemanticCommand::OpenExternalEditor => self.pending_external_editor = true,
+            SemanticCommand::OpenExternalEditor => self.external_editor.requested = true,
             SemanticCommand::ToggleCurrentFileAttachment => self.toggle_file_attachment(),
             SemanticCommand::ToggleToolDetails => self.tool_expanded = !self.tool_expanded,
             SemanticCommand::MoveQueueSelection(delta) => self.move_queue_selection(delta),
@@ -848,7 +848,7 @@ impl TuiApp {
                     self.status_message = "Refreshing git status...".into();
                 }
                 Ok(SlashCommand::Edit) => {
-                    self.pending_external_editor = true;
+                    self.external_editor.requested = true;
                 }
                 Ok(SlashCommand::ContextFile) => {
                     self.toggle_file_attachment();
