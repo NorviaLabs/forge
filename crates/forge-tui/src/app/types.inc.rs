@@ -612,6 +612,10 @@ struct HitlSessionState {
     allowed: HashSet<ApprovalIdentity>,
 }
 
+struct ToastState {
+    current: Option<(Instant, String)>,
+}
+
 struct RenderCacheState {
     conversation: Option<ConversationRenderCache>,
     composer_layout: ComposerLayoutCache,
@@ -676,8 +680,7 @@ pub struct TuiApp {
     diff_view: DiffViewState,
     cancellation: CancellationState,
     hitl_session: HitlSessionState,
-    /// Transient toast (auto-clears).
-    toast: Option<(Instant, String)>,
+    toast: ToastState,
     editor_viewport: EditorViewportState,
     /// Session message/event offsets hidden by the most recent `/clear`.
     conversation_view: ConversationViewState,

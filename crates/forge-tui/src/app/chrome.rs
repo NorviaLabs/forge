@@ -34,17 +34,17 @@ impl TuiApp {
     }
 
     pub(super) fn push_toast(&mut self, text: impl Into<String>) {
-        self.toast = Some((Instant::now(), text.into()));
+        self.toast.current = Some((Instant::now(), text.into()));
         // Also mirror briefly into feedback (auto-cleared in draw/tick)
-        if let Some((_, ref t)) = self.toast {
+        if let Some((_, ref t)) = self.toast.current {
             self.set_feedback(FeedbackSeverity::Ok, t.clone());
         }
     }
 
     pub(super) fn tick_toast(&mut self) {
-        if let Some((at, _)) = &self.toast {
+        if let Some((at, _)) = &self.toast.current {
             if at.elapsed() > Duration::from_secs(2) {
-                self.toast = None;
+                self.toast.current = None;
                 if self.feedback.severity == FeedbackSeverity::Ok {
                     self.feedback = FeedbackModel::default();
                     self.status_message.clear();

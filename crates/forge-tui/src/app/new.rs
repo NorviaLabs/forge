@@ -110,7 +110,7 @@ impl TuiApp {
             hitl_session: HitlSessionState {
                 allowed: HashSet::new(),
             },
-            toast: None,
+            toast: ToastState { current: None },
             conversation_view: ConversationViewState {
                 message_start: 0,
                 event_start: 0,
