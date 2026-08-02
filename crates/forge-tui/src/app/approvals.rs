@@ -132,7 +132,28 @@ impl TuiApp {
             // `HitlDecision` is `#[non_exhaustive]`; an unrecognised decision is denied.
             _ => self.push_toast("denied"),
         }
+        self.resume_turn_after_hitl();
         Ok(())
+    }
+
+    /// `resolve_hitl` only executes the tool (or records a denial) and
+    /// transitions the session lifecycle back to `Working` — it does not, by
+    /// itself, make the follow-up model call. `drain_pending_prompt` already
+    /// exited (via `ApplyOutcome::Hitl`) and cleared `busy` before the
+    /// approval overlay was ever shown, so without this, nothing re-enters
+    /// the turn loop: the header keeps reading "Working" (from the core's
+    /// lifecycle) forever while the TUI itself sits fully idle, and no
+    /// amount of waiting, Ctrl+C's graceful interrupt, or Esc can act on a
+    /// turn that isn't actually running. Re-arm the same continuation flag
+    /// `dequeue_and_send_next` uses so `run_loop` restarts the model call on
+    /// its next tick.
+    fn resume_turn_after_hitl(&mut self) {
+        self.pending_turn_continue = true;
+        self.busy = true;
+        self.busy_phase = BusyPhase::Model;
+        self.turn_started = Some(Instant::now());
+        self.stream_preview.clear();
+        self.stream_thinking.clear();
     }
 
     pub fn maybe_open_hitl(&mut self) {
@@ -161,6 +182,7 @@ impl TuiApp {
                     .resolve_hitl(HitlDecision::Approve, "tui-session")
                     .await?;
                 self.push_toast(format!("auto-approved {}", identity.label()));
+                self.resume_turn_after_hitl();
             }
         }
         Ok(())
