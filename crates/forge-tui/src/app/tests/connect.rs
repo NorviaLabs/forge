@@ -438,7 +438,7 @@ async fn blocks_chat_when_not_connected() {
         app.pending_turn.prompt.is_none(),
         "must not queue a model turn"
     );
-    assert!(!app.busy);
+    assert!(!app.busy_state.active);
     assert_eq!(app.input.text, "hello world");
     assert!(
         app.banner_state.items.iter().any(|b| matches!(

@@ -368,7 +368,7 @@ impl TuiApp {
                 // of Ctrl+C (`QuitOrInterrupt`) without its second-press quit
                 // escalation. Previously nothing bound Esc to this at all, so
                 // the only way to stop a stuck turn was to kill the whole app.
-                if self.busy {
+                if self.busy_state.active {
                     if !self.cancellation.requested {
                         self.cancellation.requested = true;
                         self.push_toast("interrupt requested");
@@ -571,7 +571,7 @@ impl TuiApp {
                 self.resolve_selected_task_hitl(HitlDecision::Deny)
             }
             SemanticCommand::QuitOrInterrupt => {
-                if self.busy {
+                if self.busy_state.active {
                     if self.cancellation.requested {
                         self.exit.requested = true;
                         self.exit.code = ExitCode::Canceled;
@@ -765,7 +765,7 @@ impl TuiApp {
                         Ok(_report) => {
                             self.overlay = None;
                             self.notice_state.items.clear();
-                            self.busy = false;
+                            self.busy_state.active = false;
                             self.busy_phase = BusyPhase::Idle;
                             self.exit.code = match self.session.active_task.lifecycle {
                                 forge_types::TaskLifecycle::Failed => ExitCode::Failed,
@@ -934,7 +934,7 @@ impl TuiApp {
         }
 
         self.pending_turn.prompt = Some(final_line);
-        self.busy = true;
+        self.busy_state.active = true;
         self.busy_phase = BusyPhase::Model;
         self.timing.started = Some(Instant::now());
         // A new user turn should always follow the live conversation tail.
@@ -1441,7 +1441,7 @@ mod tests {
     #[tokio::test]
     async fn quit_or_interrupt_requests_cancel_before_quitting_while_busy() {
         let (_d, mut app) = app().await;
-        app.busy = true;
+        app.busy_state.active = true;
         assert!(!app.cancellation.requested);
         app.execute_semantic_command(SemanticCommand::QuitOrInterrupt)
             .await
@@ -1467,7 +1467,7 @@ mod tests {
     #[tokio::test]
     async fn esc_requests_cancel_while_busy_instead_of_navigating_focus() {
         let (_d, mut app) = app().await;
-        app.busy = true;
+        app.busy_state.active = true;
         app.focus.block = FocusBlock::Composer;
         assert!(!app.cancellation.requested);
         app.execute_semantic_command(SemanticCommand::CancelCurrentInteraction)
@@ -1543,7 +1543,7 @@ mod tests {
         app.pending_turn.prompt = Some("push it".into());
         app.drain_pending_prompt(None).await.unwrap();
         assert!(
-            !app.busy,
+            !app.busy_state.active,
             "drain_pending_prompt exits (busy=false) once a tool call needs approval"
         );
         assert!(app.session.pending_hitl().is_some());
@@ -1552,7 +1552,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            app.busy && app.pending_turn.continue_turn,
+            app.busy_state.active && app.pending_turn.continue_turn,
             "approving the tool call must re-arm the turn loop, not leave the session idle \
              while still displaying a busy/Working state"
         );
@@ -1560,7 +1560,7 @@ mod tests {
         // Mirrors `run_loop` noticing `pending_turn_continue` on its next tick.
         app.drain_pending_prompt(None).await.unwrap();
         assert!(
-            !app.busy,
+            !app.busy_state.active,
             "the turn must reach a terminal state, not stay stuck on Working forever"
         );
         assert_ne!(

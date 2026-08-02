@@ -78,7 +78,7 @@ impl TuiApp {
             self.reconcile_diff_staleness();
         }
 
-        let stream_wait = if self.busy && self.pending_turn.prompt.is_none() {
+        let stream_wait = if self.busy_state.active && self.pending_turn.prompt.is_none() {
             let elapsed = if !self.stream_thinking.is_empty() {
                 // Thinking timer runs from first thinking token
                 self.timing
@@ -104,7 +104,7 @@ impl TuiApp {
             None
         };
         let opts = ConversationViewOpts {
-            busy: self.busy,
+            busy: self.busy_state.active,
             // Don't force-expand finished thinking just because busy (answer may be streaming)
             tool_expanded: self.tool_detail.expanded,
             compact: false,
@@ -140,7 +140,7 @@ impl TuiApp {
             queue_selected: self.task_selection.queue,
             chat_message_start: self.conversation_view.message_start,
             chat_event_start: self.conversation_view.event_start,
-            busy: self.busy,
+            busy: self.busy_state.active,
             busy_phase: self.busy_phase.label(),
             activity_summary: activity_summary_key,
             tool_expanded: self.tool_detail.expanded,
@@ -210,7 +210,7 @@ impl TuiApp {
             });
         }
         let width = regions.chat.width.saturating_sub(2) as usize;
-        let live_lines = if self.busy && self.pending_turn.prompt.is_none() {
+        let live_lines = if self.busy_state.active && self.pending_turn.prompt.is_none() {
             ConversationModel::from_messages(
                 &[],
                 &[],
@@ -286,7 +286,7 @@ impl TuiApp {
             sidebar.model = self.runtime.model_label.clone();
             sidebar.effort = self.reasoning_effort.value.label().to_string();
             sidebar.route = self.connect.profile.clone();
-            sidebar.busy = self.busy;
+            sidebar.busy = self.busy_state.active;
             sidebar.step = match &self.busy_phase {
                 BusyPhase::Model => "model_stream",
                 BusyPhase::Tool { .. } => "tool_execution",
@@ -496,7 +496,7 @@ impl TuiApp {
                 model: &self.input,
                 rows: composer_rows,
                 attachment: attachment_label.as_deref(),
-                dimmed: self.busy && self.input.text.is_empty(),
+                dimmed: self.busy_state.active && self.input.text.is_empty(),
                 not_connected: !connected,
                 focused: self.focus.mode == FocusMode::Navigation
                     && self.focus.block == FocusBlock::Composer,

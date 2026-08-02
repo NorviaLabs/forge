@@ -639,13 +639,17 @@ struct RenderCacheState {
     composer_layout: ComposerLayoutCache,
 }
 
+struct BusyState {
+    active: bool,
+}
+
 pub struct TuiApp {
     pub(crate) session: AgentSession,
     input: InputModel,
     pub(crate) overlay: Option<Overlay>,
     exit: ExitState,
     startup_resume: StartupResumeState,
-    busy: bool,
+    busy_state: BusyState,
     pub(crate) status_message: String,
     pub(crate) runtime: TuiRuntimeConfig,
     connect: connect::ConnectionModel,
