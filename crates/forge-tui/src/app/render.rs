@@ -78,7 +78,7 @@ impl TuiApp {
             self.reconcile_diff_staleness();
         }
 
-        let stream_wait = if self.busy && self.pending_prompt.is_none() {
+        let stream_wait = if self.busy && self.pending_turn.prompt.is_none() {
             let elapsed = if !self.stream_thinking.is_empty() {
                 // Thinking timer runs from first thinking token
                 self.timing
@@ -210,7 +210,7 @@ impl TuiApp {
             });
         }
         let width = regions.chat.width.saturating_sub(2) as usize;
-        let live_lines = if self.busy && self.pending_prompt.is_none() {
+        let live_lines = if self.busy && self.pending_turn.prompt.is_none() {
             ConversationModel::from_messages(
                 &[],
                 &[],

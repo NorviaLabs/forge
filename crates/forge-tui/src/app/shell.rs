@@ -116,11 +116,11 @@ async fn run_loop(
         terminal.draw(|f| app.draw(f))?;
 
         // Drain queued user prompt with streaming redraws (YOU paints before first token)
-        if app.pending_prompt.is_some() {
+        if app.pending_turn.prompt.is_some() {
             app.drain_pending_prompt(Some(terminal)).await?;
             continue;
         }
-        if app.pending_turn_continue {
+        if app.pending_turn.continue_turn {
             app.drain_pending_prompt(Some(terminal)).await?;
             continue;
         }

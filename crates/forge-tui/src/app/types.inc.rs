@@ -565,6 +565,11 @@ struct ExternalEditorState {
     requested: bool,
 }
 
+struct PendingTurnState {
+    prompt: Option<String>,
+    continue_turn: bool,
+}
+
 struct RenderCacheState {
     conversation: Option<ConversationRenderCache>,
     composer_layout: ComposerLayoutCache,
@@ -594,10 +599,7 @@ pub struct TuiApp {
     ui_banners: Vec<ChatItem>,
     /// Phase 10 / TUI-10 — progressive busy phase for chrome.
     busy_phase: BusyPhase,
-    /// User prompt queued on Enter; drained by the event loop so the YOU bubble paints first.
-    pending_prompt: Option<String>,
-    /// Resume the current agent loop after an interactive turn-limit checkpoint.
-    pending_turn_continue: bool,
+    pending_turn: PendingTurnState,
     /// HITL resolve queued to run on the event loop (journals + state updates).
     pending_hitl_decision: Option<HitlDecision>,
     /// Context reset queued to run on the event loop.

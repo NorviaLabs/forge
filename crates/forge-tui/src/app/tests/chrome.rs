@@ -808,7 +808,7 @@ async fn tui10_busy_phase_model_during_turn_clears_after() {
     );
     app.dispatch_line("hello").await.unwrap();
     assert_eq!(app.busy_phase, BusyPhase::Model);
-    assert!(app.pending_prompt.is_some());
+    assert!(app.pending_turn.prompt.is_some());
     app.drain_pending_prompt(None).await.unwrap();
     assert_eq!(app.busy_phase, BusyPhase::Idle);
     assert!(
