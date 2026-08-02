@@ -776,10 +776,10 @@ async fn elapsed_status_persists_during_answer_and_tool_processing() {
     );
     app.busy_state.active = true;
     app.timing.started = Some(Instant::now() - Duration::from_millis(1200));
-    app.stream_preview = "partial answer".into();
+    app.stream.preview = "partial answer".into();
     assert_eq!(app.busy_status_detail().as_deref(), Some("Working... 1.2s"));
 
-    app.stream_preview.clear();
+    app.stream.preview.clear();
     app.busy_state.phase = BusyPhase::Tool {
         name: "read_file".into(),
     };

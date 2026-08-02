@@ -649,6 +649,11 @@ pub(crate) struct StatusMessageState {
     pub(crate) message: String,
 }
 
+struct StreamState {
+    preview: String,
+    thinking: String,
+}
+
 pub struct TuiApp {
     pub(crate) session: AgentSession,
     input: InputModel,
@@ -675,9 +680,7 @@ pub struct TuiApp {
     /// Selected queued row for keyboard cancellation.
     task_selection: TaskSelectionState,
     /// Live assistant text while tokens stream in.
-    stream_preview: String,
-    /// Live thinking/reasoning text while tokens stream in.
-    stream_thinking: String,
+    stream: StreamState,
     timing: TurnTimingState,
     search_status: SearchStatusState,
     /// Phase 10 / TUI-10 — activity ring buffer.

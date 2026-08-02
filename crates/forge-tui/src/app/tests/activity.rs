@@ -17,7 +17,7 @@ async fn agent_streaming_while_viewing_file_does_not_navigate() {
     app.busy_state.active = true;
     app.busy_state.phase = BusyPhase::Model;
     app.pending_turn.prompt = None;
-    app.stream_preview = "partial answer".into();
+    app.stream.preview = "partial answer".into();
     let rendered = render_app_text(&mut app, 100, 30);
 
     assert_eq!(app.workspace_navigation, before);
@@ -34,7 +34,7 @@ async fn agent_thinking_keeps_composer_usable() {
     let (_dir, mut app) = focus_test_app().await;
     app.busy_state.active = true;
     app.busy_state.phase = BusyPhase::Model;
-    app.stream_thinking = "planning".into();
+    app.stream.thinking = "planning".into();
     app.focus_block(FocusBlock::Composer);
 
     app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))

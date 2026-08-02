@@ -429,7 +429,7 @@ impl TuiApp {
     #[cfg(test)]
     pub(super) fn busy_status_detail(&self) -> Option<String> {
         self.busy_state.active.then(|| {
-            let label = if !self.stream_thinking.is_empty() && self.stream_preview.is_empty() {
+            let label = if !self.stream.thinking.is_empty() && self.stream.preview.is_empty() {
                 "Thinking..."
             } else {
                 "Working..."

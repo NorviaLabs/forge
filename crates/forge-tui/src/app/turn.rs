@@ -18,7 +18,7 @@ impl TuiApp {
         if self.timing.thought_secs.is_some() {
             return;
         }
-        if self.stream_thinking.is_empty() {
+        if self.stream.thinking.is_empty() {
             return;
         }
         let from_think = self
@@ -53,14 +53,14 @@ impl TuiApp {
         match event {
             ModelStreamEvent::TextDelta { text } => {
                 self.close_thinking_timer();
-                self.stream_preview.push_str(text);
+                self.stream.preview.push_str(text);
             }
             ModelStreamEvent::ThinkingDelta { text } => {
                 if self.timing.thinking_started.is_none() {
                     self.timing.thinking_started =
                         self.timing.started.or_else(|| Some(Instant::now()));
                 }
-                self.stream_thinking.push_str(text);
+                self.stream.thinking.push_str(text);
             }
             ModelStreamEvent::ToolCallStart { name, .. } => {
                 self.busy_state.phase = BusyPhase::Tool { name: name.clone() };
@@ -86,15 +86,15 @@ impl TuiApp {
     }
 
     fn record_interrupted_stream(&mut self, error: &str) {
-        let text = self.stream_preview.trim_end().to_string();
+        let text = self.stream.preview.trim_end().to_string();
         if !text.is_empty() {
             self.session.messages.push(Message {
                 role: MessageRole::Assistant,
                 content: format!("{text}\n\n[Interrupted: {error}]"),
                 tool_call_id: None,
                 name: None,
-                thinking: (!self.stream_thinking.trim().is_empty())
-                    .then(|| self.stream_thinking.clone()),
+                thinking: (!self.stream.thinking.trim().is_empty())
+                    .then(|| self.stream.thinking.clone()),
                 thinking_duration_secs: self.timing.thought_secs,
                 tool_calls: Vec::new(),
             });
@@ -193,8 +193,8 @@ impl TuiApp {
                 self.busy_state.active = true;
                 self.busy_state.phase = BusyPhase::Model;
                 self.timing.started = Some(Instant::now());
-                self.stream_preview.clear();
-                self.stream_thinking.clear();
+                self.stream.preview.clear();
+                self.stream.thinking.clear();
                 self.push_activity(
                     ActivityKind::Model,
                     FeedbackSeverity::Info,
@@ -399,8 +399,8 @@ impl TuiApp {
 
         self.busy_state.active = true;
         self.busy_state.phase = BusyPhase::Model;
-        self.stream_preview.clear();
-        self.stream_thinking.clear();
+        self.stream.preview.clear();
+        self.stream.thinking.clear();
         self.timing.started.get_or_insert_with(Instant::now);
         self.timing.thinking_started = None;
         self.timing.thought_secs = None;
@@ -469,8 +469,8 @@ impl TuiApp {
                         handle.abort();
                         self.busy_state.active = false;
                         self.busy_state.phase = BusyPhase::Idle;
-                        self.stream_preview.clear();
-                        self.stream_thinking.clear();
+                        self.stream.preview.clear();
+                        self.stream.thinking.clear();
                         self.timing.started = None;
                         self.timing.thinking_started = None;
                         self.timing.thought_secs = None;
@@ -519,13 +519,13 @@ impl TuiApp {
             };
 
             // Provider may attach reasoning only on the final object (no stream deltas).
-            if self.stream_thinking.is_empty() {
+            if self.stream.thinking.is_empty() {
                 if let Some(ref th) = last.thinking {
                     if !th.is_empty() {
                         if self.timing.thinking_started.is_none() {
                             self.timing.thinking_started = self.timing.started;
                         }
-                        self.stream_thinking = th.clone();
+                        self.stream.thinking = th.clone();
                         self.close_thinking_timer();
                         // One paint so the user can see thinking before collapse
                         if let Some(term) = terminal.as_deref_mut() {
@@ -535,13 +535,13 @@ impl TuiApp {
                 }
             } else if last.thinking.as_ref().map(|t| t.is_empty()).unwrap_or(true) {
                 // Prefer streamed thinking body on the final message
-                last.thinking = Some(self.stream_thinking.clone());
+                last.thinking = Some(self.stream.thinking.clone());
             }
             self.close_thinking_timer();
 
             let thought = self.timing.thought_secs.take();
-            self.stream_preview.clear();
-            self.stream_thinking.clear();
+            self.stream.preview.clear();
+            self.stream.thinking.clear();
             // Keep turn_started until full agent turn ends (multi-tool steps).
             if let Some(call) = last.tool_calls.first() {
                 self.busy_state.phase = BusyPhase::Tool {
@@ -600,15 +600,15 @@ impl TuiApp {
             && self.session.active_task.lifecycle != forge_types::TaskLifecycle::Waiting;
         let interrupted_partial = outcome_err
             .as_ref()
-            .filter(|_| !self.stream_preview.trim().is_empty())
+            .filter(|_| !self.stream.preview.trim().is_empty())
             .cloned();
 
         self.busy_state.active = false;
         self.busy_state.phase = BusyPhase::Idle;
 
         if turn_limit_reached {
-            self.stream_preview.clear();
-            self.stream_thinking.clear();
+            self.stream.preview.clear();
+            self.stream.thinking.clear();
             self.timing.started = None;
             self.timing.thinking_started = None;
             self.timing.thought_secs = None;
@@ -637,8 +637,8 @@ impl TuiApp {
             } else {
                 self.report_error(&e);
             }
-            self.stream_preview.clear();
-            self.stream_thinking.clear();
+            self.stream.preview.clear();
+            self.stream.thinking.clear();
             self.timing.started = None;
             self.timing.thinking_started = None;
             self.timing.thought_secs = None;
@@ -664,8 +664,8 @@ impl TuiApp {
             }
             // Leave queue intact so the operator can fix and continue.
         } else if self.session.pending_hitl().is_some() {
-            self.stream_preview.clear();
-            self.stream_thinking.clear();
+            self.stream.preview.clear();
+            self.stream.thinking.clear();
             self.timing.started = None;
             self.timing.thinking_started = None;
             self.timing.thought_secs = None;
@@ -677,8 +677,8 @@ impl TuiApp {
             self.push_activity(ActivityKind::Hitl, FeedbackSeverity::Warn, "hitl waiting");
             // Do not auto-dequeue until HITL is resolved.
         } else {
-            self.stream_preview.clear();
-            self.stream_thinking.clear();
+            self.stream.preview.clear();
+            self.stream.thinking.clear();
             self.timing.started = None;
             self.timing.thinking_started = None;
             self.timing.thought_secs = None;

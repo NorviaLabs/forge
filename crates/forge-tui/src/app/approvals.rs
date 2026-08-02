@@ -152,8 +152,8 @@ impl TuiApp {
         self.busy_state.active = true;
         self.busy_state.phase = BusyPhase::Model;
         self.timing.started = Some(Instant::now());
-        self.stream_preview.clear();
-        self.stream_thinking.clear();
+        self.stream.preview.clear();
+        self.stream.thinking.clear();
     }
 
     pub fn maybe_open_hitl(&mut self) {

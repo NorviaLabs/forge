@@ -82,7 +82,7 @@ async fn streaming_updates_reuse_cached_transcript_lines() {
     app.conversation_view.splash_dismissed = true;
     app.busy_state.active = true;
     app.busy_state.phase = BusyPhase::Model;
-    app.stream_preview = "first chunk".into();
+    app.stream.preview = "first chunk".into();
     let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
     terminal.draw(|frame| app.draw(frame)).unwrap();
     Arc::get_mut(&mut app.render_cache.conversation.as_mut().unwrap().lines)
@@ -96,7 +96,7 @@ async fn streaming_updates_reuse_cached_transcript_lines() {
         .lines
         .capacity();
 
-    app.stream_preview.push_str(" and updated tail");
+    app.stream.preview.push_str(" and updated tail");
     terminal.draw(|frame| app.draw(frame)).unwrap();
 
     assert_eq!(
