@@ -124,11 +124,11 @@ async fn run_loop(
             app.drain_pending_prompt(Some(terminal)).await?;
             continue;
         }
-        if app.pending_hitl_decision.is_some() {
+        if app.pending_interaction.hitl_decision.is_some() {
             app.drain_pending_hitl(Some(terminal)).await?;
             continue;
         }
-        if app.pending_context_reset {
+        if app.pending_interaction.context_reset {
             app.drain_pending_context_reset(Some(terminal)).await?;
             continue;
         }
