@@ -146,7 +146,7 @@ impl TuiApp {
     /// — the queue store owns the atomic Queued->Promoting->Promoted pipeline;
     /// this only decides when to call it and how to kick off streaming.
     pub(super) async fn dequeue_and_send_next(&mut self) {
-        if self.busy || self.pending_turn.prompt.is_some() {
+        if self.busy_state.active || self.pending_turn.prompt.is_some() {
             self.set_feedback(
                 FeedbackSeverity::Warn,
                 "still processing — wait before sending the next queued message",
@@ -190,7 +190,7 @@ impl TuiApp {
                     self.apply_connect_credentials(&pid);
                 }
                 self.pending_turn.continue_turn = true;
-                self.busy = true;
+                self.busy_state.active = true;
                 self.busy_phase = BusyPhase::Model;
                 self.timing.started = Some(Instant::now());
                 self.stream_preview.clear();
@@ -397,7 +397,7 @@ impl TuiApp {
             self.apply_connect_credentials(&profile_id);
         }
 
-        self.busy = true;
+        self.busy_state.active = true;
         self.busy_phase = BusyPhase::Model;
         self.stream_preview.clear();
         self.stream_thinking.clear();
@@ -407,7 +407,7 @@ impl TuiApp {
 
         if let Some(ref line) = line {
             if let Err(e) = self.session.append_user_message(line).await {
-                self.busy = false;
+                self.busy_state.active = false;
                 self.busy_phase = BusyPhase::Idle;
                 self.report_error(&e.to_string());
                 self.exit.code = ExitCode::Failed;
@@ -467,7 +467,7 @@ impl TuiApp {
                     drain_events(self).await?;
                     if self.exit.requested {
                         handle.abort();
-                        self.busy = false;
+                        self.busy_state.active = false;
                         self.busy_phase = BusyPhase::Idle;
                         self.stream_preview.clear();
                         self.stream_thinking.clear();
@@ -603,7 +603,7 @@ impl TuiApp {
             .filter(|_| !self.stream_preview.trim().is_empty())
             .cloned();
 
-        self.busy = false;
+        self.busy_state.active = false;
         self.busy_phase = BusyPhase::Idle;
 
         if turn_limit_reached {
