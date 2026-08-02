@@ -174,9 +174,9 @@ impl TuiApp {
         self.task_selection.queue = None;
         self.stream_preview.clear();
         self.stream_thinking.clear();
-        self.turn_started = None;
-        self.thinking_started = None;
-        self.thought_secs = None;
+        self.timing.started = None;
+        self.timing.thinking_started = None;
+        self.timing.thought_secs = None;
         self.cancel_requested = false;
         self.busy = false;
         self.busy_phase = BusyPhase::Idle;
