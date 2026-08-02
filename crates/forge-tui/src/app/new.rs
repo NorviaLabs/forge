@@ -53,7 +53,9 @@ impl TuiApp {
             feedback: FeedbackModel::default(),
             ui_banners: Vec::new(),
             busy_phase: BusyPhase::Idle,
-            web_search_label: Some("mock".into()),
+            search_status: SearchStatusState {
+                label: Some("mock".into()),
+            },
             activity: ActivityFeed::default(),
             pending_turn: PendingTurnState {
                 prompt: None,

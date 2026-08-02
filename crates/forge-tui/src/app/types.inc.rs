@@ -587,6 +587,10 @@ struct ToolDetailState {
     expanded: bool,
 }
 
+struct SearchStatusState {
+    label: Option<String>,
+}
+
 struct RenderCacheState {
     conversation: Option<ConversationRenderCache>,
     composer_layout: ComposerLayoutCache,
@@ -628,8 +632,7 @@ pub struct TuiApp {
     /// Live thinking/reasoning text while tokens stream in.
     stream_thinking: String,
     timing: TurnTimingState,
-    /// Optional web_search label for chrome (`mock` / `off` / provider id).
-    web_search_label: Option<String>,
+    search_status: SearchStatusState,
     /// Phase 10 / TUI-10 — activity ring buffer.
     activity: ActivityFeed,
     /// Reasoning effort sent to model providers (`auto` omits the parameter).

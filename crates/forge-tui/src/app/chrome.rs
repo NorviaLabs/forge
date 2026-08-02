@@ -147,7 +147,7 @@ impl TuiApp {
             provider_connected,
             vendor_label,
             route_label,
-            web_search_label: self.web_search_label.clone(),
+            web_search_label: self.search_status.label.clone(),
             tools_visible: self.session.list_tools().len(),
             prompt_cache_hits: self.session.token_usage.prompt_cache_hits,
             prompt_cache_writes: self.session.token_usage.prompt_cache_writes,
