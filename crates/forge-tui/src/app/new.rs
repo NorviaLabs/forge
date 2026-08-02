@@ -44,7 +44,10 @@ impl TuiApp {
                 picker: startup_items.is_some(),
                 session_id: startup_resume_session_id,
             },
-            busy_state: BusyState { active: false },
+            busy_state: BusyState {
+                active: false,
+                phase: BusyPhase::Idle,
+            },
             status_message: String::new(),
             runtime,
             connect: connect::ConnectionModel::new(),
@@ -56,7 +59,6 @@ impl TuiApp {
             },
             feedback: FeedbackModel::default(),
             banner_state: BannerState { items: Vec::new() },
-            busy_phase: BusyPhase::Idle,
             search_status: SearchStatusState {
                 label: Some("mock".into()),
             },

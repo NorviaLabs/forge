@@ -641,6 +641,7 @@ struct RenderCacheState {
 
 struct BusyState {
     active: bool,
+    phase: BusyPhase,
 }
 
 pub struct TuiApp {
@@ -661,7 +662,6 @@ pub struct TuiApp {
     feedback: FeedbackModel,
     banner_state: BannerState,
     /// Phase 10 / TUI-10 — progressive busy phase for chrome.
-    busy_phase: BusyPhase,
     pending_turn: PendingTurnState,
     pending_interaction: PendingInteractionState,
     /// External-editor request queued for the event loop (terminal suspend/resume).

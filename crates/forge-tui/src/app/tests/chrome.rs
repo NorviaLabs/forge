@@ -123,7 +123,7 @@ async fn final_shell_rendering_matrix_covers_v31_states_without_obsolete_chrome(
 
     let (dir, mut app) = focus_test_app().await;
     app.busy_state.active = true;
-    app.busy_phase = BusyPhase::Model;
+    app.busy_state.phase = BusyPhase::Model;
     app.timing.started = Some(Instant::now());
     scenarios.push(("agent thinking", dir, app, vec!["thinking"]));
 
@@ -340,7 +340,7 @@ async fn header_status_follows_session_lifecycle() {
         .await
         .unwrap();
     app.busy_state.active = true;
-    app.busy_phase = BusyPhase::Tool {
+    app.busy_state.phase = BusyPhase::Tool {
         name: "read_file".into(),
     };
     let working = app.refresh_status_model();
@@ -353,7 +353,7 @@ async fn header_status_follows_session_lifecycle() {
     );
 
     app.busy_state.active = false;
-    app.busy_phase = BusyPhase::Idle;
+    app.busy_state.phase = BusyPhase::Idle;
     app.session.active_task.lifecycle = forge_types::TaskLifecycle::Completed;
     assert_eq!(
         app.refresh_status_model().turn_lifecycle(),
@@ -754,7 +754,7 @@ async fn tui10_activity_feed_records_model_and_error() {
             .any(|s| s.contains("rate") || s.contains("429") || s.contains("Model")),
         "recent={recent:?}"
     );
-    assert_eq!(app.busy_phase, BusyPhase::Idle);
+    assert_eq!(app.busy_state.phase, BusyPhase::Idle);
 }
 
 #[tokio::test]
@@ -780,7 +780,7 @@ async fn elapsed_status_persists_during_answer_and_tool_processing() {
     assert_eq!(app.busy_status_detail().as_deref(), Some("Working... 1.2s"));
 
     app.stream_preview.clear();
-    app.busy_phase = BusyPhase::Tool {
+    app.busy_state.phase = BusyPhase::Tool {
         name: "read_file".into(),
     };
     assert!(app
@@ -807,10 +807,10 @@ async fn tui10_busy_phase_model_during_turn_clears_after() {
         },
     );
     app.dispatch_line("hello").await.unwrap();
-    assert_eq!(app.busy_phase, BusyPhase::Model);
+    assert_eq!(app.busy_state.phase, BusyPhase::Model);
     assert!(app.pending_turn.prompt.is_some());
     app.drain_pending_prompt(None).await.unwrap();
-    assert_eq!(app.busy_phase, BusyPhase::Idle);
+    assert_eq!(app.busy_state.phase, BusyPhase::Idle);
     assert!(
         app.activity
             .all()
