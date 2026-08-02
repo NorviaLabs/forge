@@ -9,7 +9,7 @@ use super::*;
 impl TuiApp {
     pub(super) fn focus_availability(&self) -> FocusAvailability {
         FocusAvailability {
-            files: self.files_visible,
+            files: self.workspace_files.visible,
             inspector: self.inspector.visible,
             bottom_panel: self.bottom_panel.open,
         }
@@ -31,7 +31,7 @@ impl TuiApp {
         }
         self.file_explorer.focused = self.focus.block == FocusBlock::Files
             && self.focus.mode == FocusMode::Navigation
-            && self.files_visible;
+            && self.workspace_files.visible;
         self.bottom_panel.focused = self.focus.block == FocusBlock::BottomPanel
             && self.focus.mode == FocusMode::Navigation
             && self.bottom_panel.open;

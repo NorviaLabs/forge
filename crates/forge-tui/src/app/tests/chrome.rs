@@ -128,11 +128,11 @@ async fn final_shell_rendering_matrix_covers_v31_states_without_obsolete_chrome(
     scenarios.push(("agent thinking", dir, app, vec!["thinking"]));
 
     let (dir, mut app) = focus_test_app().await;
-    app.files_visible = true;
+    app.workspace_files.visible = true;
     scenarios.push(("files open", dir, app, vec!["FILES", "Describe a task"]));
 
     let (dir, mut app) = focus_test_app().await;
-    app.files_visible = false;
+    app.workspace_files.visible = false;
     scenarios.push(("files closed", dir, app, vec!["Describe a task"]));
 
     let (dir, mut app) = focus_test_app().await;

@@ -42,7 +42,7 @@ impl TuiApp {
             area,
             fb_h,
             input_h,
-            !slash_mode && self.files_visible,
+            !slash_mode && self.workspace_files.visible,
             !slash_mode && self.inspector.visible,
             0,
             panel_h,
