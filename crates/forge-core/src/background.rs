@@ -316,7 +316,7 @@ impl AgentSession {
     /// Reconcile background tasks left in flight by a crash/restart. A shell
     /// job's process cannot survive a process restart (no PID
     /// resurrection), so every orphaned (`finished: false`) shell task is
-    /// marked `Cancelled` and re-registered in `self.background` purely for
+    /// marked `Cancelled` and re-registered in the session task store purely for
     /// display — nothing is re-spawned. A subagent orphan is different: its
     /// state lives entirely in its own journal (not an OS process), so it
     /// can genuinely be auto-resumed — see `resume_subagent_task`.
@@ -354,14 +354,15 @@ impl AgentSession {
             // `lifecycle.rs`'s doc comment on why task/attempt ids aren't
             // persisted across restarts either) — `task.id` is the journaled
             // id, `new_id` is this process's display id for the same task.
-            let new_id = self.background.spawn_slot(
+            let new_id = self.tasks.background.spawn_slot(
                 kind,
                 task.label.clone(),
                 self.active_task.task_id,
                 CancellationToken::new(),
                 task.child_session_id,
             );
-            self.background
+            self.tasks
+                .background
                 .set_status(new_id, BackgroundTaskStatus::Cancelled);
             let summary = format!(
                 "Background task '{}' was interrupted by a restart and was not resumed.",
@@ -389,7 +390,7 @@ impl AgentSession {
         label: String,
     ) -> Result<BackgroundTaskId, LoopError> {
         let cancel = CancellationToken::new();
-        let id = self.background.spawn_slot(
+        let id = self.tasks.background.spawn_slot(
             BackgroundTaskKind::Shell {
                 command: command.clone(),
             },
@@ -401,7 +402,7 @@ impl AgentSession {
         self.journal
             .append_background_task_started(self.session_id, id, "shell", &label, None)
             .await?;
-        self.background.mark_running(id);
+        self.tasks.background.mark_running(id);
 
         let (tx, rx) = std::sync::mpsc::channel();
         let workspace_root = self.tool_ctx.workspace_root.clone();
@@ -412,8 +413,7 @@ impl AgentSession {
             };
             let _ = tx.send(outcome);
         });
-        self.background_receivers
-            .insert(id, std::sync::Mutex::new(rx));
+        self.tasks.receivers.insert(id, std::sync::Mutex::new(rx));
         Ok(id)
     }
 
@@ -425,7 +425,7 @@ impl AgentSession {
     pub async fn poll_background_tasks(&mut self) -> Result<(), LoopError> {
         let mut live_updates: Vec<(BackgroundTaskId, HitlPayload)> = Vec::new();
         let mut finished: Vec<(BackgroundTaskId, Option<BackgroundTaskOutcome>)> = Vec::new();
-        for (id, rx) in self.background_receivers.iter() {
+        for (id, rx) in self.tasks.receivers.iter() {
             let rx = rx.lock().unwrap();
             loop {
                 match rx.try_recv() {
@@ -445,12 +445,13 @@ impl AgentSession {
             }
         }
         for (id, payload) in live_updates {
-            self.background
+            self.tasks
+                .background
                 .set_status(id, BackgroundTaskStatus::WaitingForApproval { payload });
         }
         for (id, outcome) in finished {
-            self.background_receivers.remove(&id);
-            self.subagent_hitl_senders.remove(&id);
+            self.tasks.receivers.remove(&id);
+            self.tasks.subagent_hitl_senders.remove(&id);
             self.finish_background_task(id, outcome).await?;
         }
         Ok(())
@@ -465,7 +466,7 @@ impl AgentSession {
         id: BackgroundTaskId,
         decision: forge_types::HitlDecision,
     ) -> bool {
-        match self.subagent_hitl_senders.get(&id) {
+        match self.tasks.subagent_hitl_senders.get(&id) {
             Some(tx) => tx.send(decision).is_ok(),
             None => false,
         }
@@ -535,6 +536,7 @@ impl AgentSession {
         outcome: Option<BackgroundTaskOutcome>,
     ) -> Result<(), LoopError> {
         let label = self
+            .tasks
             .background
             .get(id)
             .map(|t| t.label.clone())
@@ -599,7 +601,7 @@ impl AgentSession {
         self.journal
             .append_background_task_finished(self.session_id, id, status.tag(), &summary)
             .await?;
-        self.background.set_status(id, status);
+        self.tasks.background.set_status(id, status);
         self.enqueue_task(&summary).await?;
         Ok(())
     }
@@ -656,7 +658,7 @@ mod tests {
         ) -> super::BackgroundTaskStatus {
             for _ in 0..200 {
                 session.poll_background_tasks().await.unwrap();
-                if let Some(task) = session.background.get(id) {
+                if let Some(task) = session.tasks.background.get(id) {
                     if task.status.is_terminal() {
                         return task.status.clone();
                     }
@@ -683,7 +685,7 @@ mod tests {
                 other => panic!("expected Succeeded, got {other:?}"),
             }
             // Result delivery: next-turn-boundary via the existing queue.
-            assert_eq!(s.queue.len(), 1);
+            assert_eq!(s.queue().len(), 1);
         }
 
         #[tokio::test]
@@ -707,7 +709,7 @@ mod tests {
                 .spawn_background_shell("sleep 5".into(), "sleep".into())
                 .await
                 .unwrap();
-            assert!(s.background.cancel(id));
+            assert!(s.cancel_background_task(id));
 
             let status = wait_terminal(&mut s, id).await;
             assert_eq!(status, super::BackgroundTaskStatus::Cancelled);
@@ -724,8 +726,8 @@ mod tests {
             };
             let response = s.dispatch_background_run(&call).await.unwrap();
             assert!(response.is_none());
-            assert_eq!(s.background.list().count(), 1);
-            let task = s.background.list().next().unwrap();
+            assert_eq!(s.background().list().count(), 1);
+            let task = s.background().list().next().unwrap();
             assert_eq!(task.label, "greet");
 
             let last = s.messages.last().unwrap();
@@ -765,8 +767,8 @@ mod tests {
             let resumed = AgentSession::resume(cfg, model, ToolRegistry::new(), session_id)
                 .await
                 .unwrap();
-            assert_eq!(resumed.background.list().count(), 1);
-            let task = resumed.background.list().next().unwrap();
+            assert_eq!(resumed.background().list().count(), 1);
+            let task = resumed.background().list().next().unwrap();
             assert_eq!(task.label, "long-job");
             assert_eq!(task.status, super::BackgroundTaskStatus::Cancelled);
         }
@@ -781,7 +783,7 @@ mod tests {
                 arguments: serde_json::json!({ "not_command": "oops" }),
             };
             s.dispatch_background_run(&call).await.unwrap();
-            assert_eq!(s.background.list().count(), 0);
+            assert_eq!(s.background().list().count(), 0);
             let last = s.messages.last().unwrap();
             assert!(last.content.contains("invalid background_run arguments"));
         }

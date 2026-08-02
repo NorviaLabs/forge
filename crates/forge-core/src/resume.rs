@@ -49,7 +49,7 @@ impl AgentSession {
         let Some(cached) = self.journaled_tool_results.get(&call.id).cloned() else {
             return Ok(false);
         };
-        self.turn_calls.push(call.clone());
+        self.turn.record_call(call.clone());
         if !self.has_tool_message(&call.id) {
             self.messages.push(Message {
                 role: MessageRole::Tool,
@@ -131,7 +131,7 @@ impl AgentSession {
         if self.try_serve_journaled_tool(call).await? {
             return Ok(());
         }
-        self.turn_calls.push(call.clone());
+        self.turn.record_call(call.clone());
         let (pre_edit, pre_git) = self.pre_tool_state(call).await;
         match self
             .tools
