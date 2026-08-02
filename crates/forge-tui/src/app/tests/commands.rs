@@ -126,7 +126,7 @@ async fn resume_command_replaces_active_conversation_in_app() {
         .iter()
         .any(|message| message.content == "restored conversation"));
     assert!(app.status_message.contains("resumed"));
-    assert!(app.notices.is_empty());
+    assert!(app.notice_state.items.is_empty());
     assert!(app
         .activity
         .all()
@@ -204,7 +204,7 @@ async fn compact_reports_context_handoff_in_chat_and_activity() {
 
     app.dispatch_line("/compact").await.unwrap();
 
-    assert!(app.notices.is_empty());
+    assert!(app.notice_state.items.is_empty());
     assert!(app.ui_banners.is_empty());
     assert!(app
         .activity
@@ -667,10 +667,14 @@ async fn model_command_rejects_cross_provider_selection_without_matching_connect
     assert_eq!(app.runtime.model_label, "openai-codex/gpt-5.6-sol");
     assert!(
         app.status_message.contains("connect `not-connected` first")
-            || app.notices.iter().any(|l| l.contains("not-connected")),
+            || app
+                .notice_state
+                .items
+                .iter()
+                .any(|l| l.contains("not-connected")),
         "expected rejection notice, got status={} notices={:?}",
         app.status_message,
-        app.notices
+        app.notice_state.items
     );
 }
 
@@ -726,7 +730,7 @@ async fn app_status_command() {
     );
     app.dispatch_line("/status").await.unwrap();
     assert!(app.overlay.is_none());
-    assert!(app.notices.is_empty());
+    assert!(app.notice_state.items.is_empty());
 }
 
 #[tokio::test]
@@ -759,7 +763,7 @@ async fn clear_hides_existing_chat_without_deleting_context() {
     assert_eq!(app.session.messages.len(), message_count);
     assert_eq!(app.session.events.len(), event_count);
     assert!(app.ui_banners.is_empty());
-    assert!(app.notices.is_empty());
+    assert!(app.notice_state.items.is_empty());
     assert_eq!(app.conversation_view.scroll, 0);
     assert!(app.conversation_view.follow);
 }
@@ -927,7 +931,7 @@ async fn enter_runs_slash_from_main_textbox() {
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert!(app.notices.is_empty());
+    assert!(app.notice_state.items.is_empty());
     assert!(app.history.entries().iter().any(|e| e == "/status"));
 }
 
@@ -1091,7 +1095,7 @@ async fn startup_notices_seed_notice_panel() {
         },
     );
 
-    assert_eq!(app.notices, vec!["mcp: failed"]);
+    assert_eq!(app.notice_state.items, vec!["mcp: failed"]);
 }
 
 #[tokio::test]

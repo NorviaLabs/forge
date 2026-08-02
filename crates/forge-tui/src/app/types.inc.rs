@@ -616,6 +616,11 @@ struct ToastState {
     current: Option<(Instant, String)>,
 }
 
+pub(crate) struct NoticeState {
+    pub(crate) items: Vec<String>,
+    until: Option<Instant>,
+}
+
 struct RenderCacheState {
     conversation: Option<ConversationRenderCache>,
     composer_layout: ComposerLayoutCache,
@@ -634,9 +639,7 @@ pub struct TuiApp {
     /// Phase 7 — submitted command history (Up/Down when no overlay).
     history: InputHistory,
     slash_suggestions: SlashSuggestionState,
-    /// Multi-line notices (e.g. /connect list) shown above the input.
-    pub(crate) notices: Vec<String>,
-    notices_until: Option<Instant>,
+    pub(crate) notice_state: NoticeState,
     /// Phase 10 / TUI-08 — always-visible feedback strip model.
     feedback: FeedbackModel,
     /// Phase 10 / TUI-08 — durable UI error/info banners in chat.
