@@ -36,7 +36,7 @@ async fn tab_cycles_visible_blocks_and_skips_hidden_ones() {
         .unwrap();
     assert_eq!(app.focus.block, FocusBlock::Workspace);
 
-    app.sidebar_visible = false;
+    app.inspector.visible = false;
     app.normalize_focus();
     app.handle_key(press(KeyCode::BackTab, KeyModifiers::NONE))
         .await
@@ -88,13 +88,13 @@ async fn shift_arrow_tabs_only_apply_to_the_active_navigation_block() {
         WorkspaceView::Diff(DiffCommandContext::Current)
     );
 
-    app.sidebar_visible = true;
+    app.inspector.visible = true;
     app.focus_block(FocusBlock::Inspector);
     assert_eq!(app.focus.block, FocusBlock::Inspector);
     app.handle_key(press(KeyCode::Right, KeyModifiers::SHIFT))
         .await
         .unwrap();
-    assert_eq!(app.inspector_view, InspectorView::Context);
+    assert_eq!(app.inspector.view, InspectorView::Context);
 
     app.open_bottom_panel(None);
     app.handle_key(press(KeyCode::Right, KeyModifiers::SHIFT))
@@ -142,7 +142,7 @@ async fn esc_from_composer_returns_to_previous_block_and_keeps_draft() {
         FocusBlock::BottomPanel,
     ] {
         app.files_visible = true;
-        app.sidebar_visible = true;
+        app.inspector.visible = true;
         app.bottom_panel.open = true;
         app.focus_block(block);
         app.enter_chat_composer();
@@ -467,7 +467,7 @@ async fn tab_nav_command_recognizes_shifted_plain_arrows_only() {
 async fn focus_availability_and_restore_skip_hidden_blocks() {
     let (_dir, mut app) = focus_test_app().await;
     app.files_visible = true;
-    app.sidebar_visible = false;
+    app.inspector.visible = false;
     app.bottom_panel.open = false;
     let availability = app.focus_availability();
     assert!(availability.contains(FocusBlock::Files));

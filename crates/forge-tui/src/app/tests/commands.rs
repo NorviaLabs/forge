@@ -948,16 +948,16 @@ async fn inspector_is_closed_by_default_and_opens_on_demand() {
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
-    assert!(!app.sidebar_visible);
+    assert!(!app.inspector.visible);
     app.handle_key(press(KeyCode::Char('b'), KeyModifiers::CONTROL))
         .await
         .unwrap();
-    assert!(app.sidebar_visible);
+    assert!(app.inspector.visible);
     assert!(split_areas_full(
         ratatui::layout::Rect::new(0, 0, 120, 30),
         0,
         3,
-        app.sidebar_visible,
+        app.inspector.visible,
         0
     )
     .sidebar
@@ -965,7 +965,7 @@ async fn inspector_is_closed_by_default_and_opens_on_demand() {
     app.handle_key(press(KeyCode::Char('b'), KeyModifiers::CONTROL))
         .await
         .unwrap();
-    assert!(!app.sidebar_visible);
+    assert!(!app.inspector.visible);
     assert!(
         split_areas_full(ratatui::layout::Rect::new(0, 0, 80, 24), 0, 3, true, 0)
             .sidebar
@@ -990,16 +990,16 @@ async fn inspector_view_shortcuts_cycle_without_opening_sidebar() {
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
-    assert_eq!(app.inspector_view, InspectorView::Task);
+    assert_eq!(app.inspector.view, InspectorView::Task);
     app.handle_key(press(KeyCode::Char(']'), KeyModifiers::ALT))
         .await
         .unwrap();
-    assert_eq!(app.inspector_view, InspectorView::Context);
+    assert_eq!(app.inspector.view, InspectorView::Context);
     app.handle_key(press(KeyCode::Char('['), KeyModifiers::ALT))
         .await
         .unwrap();
-    assert_eq!(app.inspector_view, InspectorView::Task);
-    assert!(!app.sidebar_visible);
+    assert_eq!(app.inspector.view, InspectorView::Task);
+    assert!(!app.inspector.visible);
 }
 
 #[tokio::test]

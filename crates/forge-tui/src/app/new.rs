@@ -82,8 +82,10 @@ impl TuiApp {
             file_explorer: FileExplorer::new(Some(workspace_root), file_icons),
             explorer_dialog: None,
             focus: FocusState::default(),
-            sidebar_visible: false,
-            inspector_view: InspectorView::default(),
+            inspector: InspectorState {
+                visible: false,
+                view: InspectorView::default(),
+            },
             diff_view: DiffViewState {
                 selected: 0,
                 snapshot: DiffSnapshot::default(),
