@@ -143,7 +143,13 @@ impl TuiApp {
             status: self.session.active_task.lifecycle,
             theme_id: crate::theme::active(),
         };
-        if self.conversation_cache.as_ref().map(|cache| &cache.key) != Some(&key) {
+        if self
+            .render_cache
+            .conversation
+            .as_ref()
+            .map(|cache| &cache.key)
+            != Some(&key)
+        {
             let mut conv = ConversationModel::from_messages(
                 visible_messages,
                 visible_events,
@@ -192,7 +198,7 @@ impl TuiApp {
                 conv = conv.with_blocked_tool(payload.tool.clone(), args);
             }
             let width = regions.chat.width.saturating_sub(2) as usize;
-            self.conversation_cache = Some(ConversationRenderCache {
+            self.render_cache.conversation = Some(ConversationRenderCache {
                 key,
                 lines: Arc::new(conv.lines_for_width(width)),
             });
@@ -211,7 +217,8 @@ impl TuiApp {
             Vec::new()
         };
         let cached = self
-            .conversation_cache
+            .render_cache
+            .conversation
             .as_ref()
             .expect("conversation cache populated");
         // Clones the shared handle, not the line data. This exists so the
@@ -468,7 +475,7 @@ impl TuiApp {
             .width
             .saturating_sub(gutter_prefix_width(glyph) as u16)
             .max(1) as usize;
-        let composer_rows = self.composer_layout_cache.rows(
+        let composer_rows = self.render_cache.composer_layout.rows(
             self.input.layout_revision,
             &self.input.text,
             composer_content_width,

@@ -19,7 +19,7 @@ async fn theme_change_updates_active_palette_immediately() {
         crate::theme::text().fg,
         Some(crate::theme::palette(forge_config::THEME_FORGE_DAYLIGHT).text)
     );
-    assert!(app.conversation_cache.is_none());
+    assert!(app.render_cache.conversation.is_none());
 }
 
 #[tokio::test]
@@ -109,7 +109,7 @@ async fn light_theme_representative_layout_snapshot() {
         tool_calls: vec![],
     });
     app.feedback = FeedbackModel::error("Model error: rate limited (HTTP 429).");
-    app.conversation_cache = None;
+    app.render_cache.conversation = None;
     app.input.set_text("draft reply");
     app.input.cursor = app.input.text.len();
 

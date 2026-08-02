@@ -94,8 +94,10 @@ impl TuiApp {
             chat_follow: true,
             context_reset_snapshot: None,
             splash_dismissed: false,
-            conversation_cache: None,
-            composer_layout_cache: ComposerLayoutCache::default(),
+            render_cache: RenderCacheState {
+                conversation: None,
+                composer_layout: ComposerLayoutCache::default(),
+            },
             model_cost_cache: None,
             footer_limits: FooterLimitsState {
                 cache: None,
