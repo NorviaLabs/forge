@@ -200,7 +200,7 @@ mod tests {
         fs::write(workspace.join("x.txt"), "changed").unwrap();
         app.session = rebuild_session(dir.path(), &workspace).await;
         app.runtime.cwd = workspace.clone();
-        app.file_explorer = crate::file_explorer::FileExplorer::new(
+        app.workspace_files.explorer = crate::file_explorer::FileExplorer::new(
             Some(workspace.clone()),
             forge_config::FileIconMode::Unicode,
         );
@@ -210,9 +210,9 @@ mod tests {
             .unwrap();
 
         // Wait for the background git-status thread.
-        while app.file_explorer.git_status.loading {
+        while app.workspace_files.explorer.git_status.loading {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            app.file_explorer.git_status.poll();
+            app.workspace_files.explorer.git_status.poll();
         }
 
         let backend = TestBackend::new(120, 40);
@@ -449,14 +449,14 @@ mod tests {
         .unwrap();
         app.session = rebuild_session(dir.path(), &workspace).await;
         app.runtime.cwd = workspace.clone();
-        app.file_explorer = crate::file_explorer::FileExplorer::new(
+        app.workspace_files.explorer = crate::file_explorer::FileExplorer::new(
             Some(workspace.clone()),
             forge_config::FileIconMode::Unicode,
         );
         app.workspace_files.visible = true;
         app.focus_block(FocusBlock::Files);
         // Select the file and open it.
-        app.file_explorer.move_selection(1);
+        app.workspace_files.explorer.move_selection(1);
         app.handle_key(press(KeyCode::Enter)).await.unwrap();
 
         let expected = workspace.join("main.rs").canonicalize().unwrap();
@@ -480,13 +480,13 @@ mod tests {
             .unwrap();
         app.session = rebuild_session(dir.path(), &workspace).await;
         app.runtime.cwd = workspace.clone();
-        app.file_explorer = crate::file_explorer::FileExplorer::new(
+        app.workspace_files.explorer = crate::file_explorer::FileExplorer::new(
             Some(workspace.clone()),
             forge_config::FileIconMode::Unicode,
         );
         app.workspace_files.visible = true;
         app.focus_block(FocusBlock::Files);
-        app.file_explorer.move_selection(1);
+        app.workspace_files.explorer.move_selection(1);
         app.handle_key(press(KeyCode::Enter)).await.unwrap();
 
         let backend = TestBackend::new(120, 40);
@@ -677,7 +677,7 @@ mod tests {
 
         app.session = rebuild_session(dir.path(), &workspace).await;
         app.runtime.cwd = workspace.clone();
-        app.file_explorer = crate::file_explorer::FileExplorer::new(
+        app.workspace_files.explorer = crate::file_explorer::FileExplorer::new(
             Some(workspace.clone()),
             forge_config::FileIconMode::Unicode,
         );
@@ -685,9 +685,9 @@ mod tests {
         app.focus_block(FocusBlock::Files);
 
         // Wait for the background git-status thread.
-        while app.file_explorer.git_status.loading {
+        while app.workspace_files.explorer.git_status.loading {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            app.file_explorer.git_status.poll();
+            app.workspace_files.explorer.git_status.poll();
         }
 
         let backend = TestBackend::new(120, 40);
@@ -739,7 +739,7 @@ mod tests {
 
         app.session = rebuild_session(dir.path(), &workspace).await;
         app.runtime.cwd = workspace.clone();
-        app.file_explorer = crate::file_explorer::FileExplorer::new(
+        app.workspace_files.explorer = crate::file_explorer::FileExplorer::new(
             Some(workspace),
             forge_config::FileIconMode::Unicode,
         );
@@ -748,7 +748,7 @@ mod tests {
 
         let backend = TestBackend::new(120, 40);
         let mut term = Terminal::new(backend).unwrap();
-        while app.file_explorer.git_status.loading {
+        while app.workspace_files.explorer.git_status.loading {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             term.draw(|f| app.draw(f)).unwrap();
         }
@@ -793,20 +793,20 @@ mod tests {
         fs::write(workspace.join("a.txt"), "hello").unwrap();
         app.session = rebuild_session(dir.path(), &workspace).await;
         app.runtime.cwd = workspace.clone();
-        app.file_explorer = crate::file_explorer::FileExplorer::new(
+        app.workspace_files.explorer = crate::file_explorer::FileExplorer::new(
             Some(workspace.clone()),
             forge_config::FileIconMode::Unicode,
         );
         app.workspace_files.visible = true;
 
-        let before = app.file_explorer.visible_nodes().len();
+        let before = app.workspace_files.explorer.visible_nodes().len();
         assert!(before > 1, "explorer should have files before turn");
 
         // Simulate a chat turn the app would process while files are open.
         app.handle_key(press(KeyCode::Char('x'))).await.unwrap();
         app.handle_key(press(KeyCode::Enter)).await.unwrap();
 
-        let after = app.file_explorer.visible_nodes().len();
+        let after = app.workspace_files.explorer.visible_nodes().len();
         assert!(
             after >= before,
             "explorer tree must not shrink after turn: {before} → {after}"
@@ -897,7 +897,7 @@ mod tests {
         app.session = rebuild_session(dir.path(), &workspace).await;
         app.runtime.cwd = workspace.clone();
         // Create an explorer whose root cannot be read.
-        app.file_explorer = crate::file_explorer::FileExplorer::new(
+        app.workspace_files.explorer = crate::file_explorer::FileExplorer::new(
             Some(workspace.join("nonexistent")),
             forge_config::FileIconMode::Unicode,
         );

@@ -67,13 +67,13 @@ impl TuiApp {
             .borders(ratatui::widgets::Borders::ALL)
             .inner(area);
         let height = inner.height.saturating_sub(1) as usize;
-        let error_shown = self.file_explorer.git_status.error.is_some();
+        let error_shown = self.workspace_files.explorer.git_status.error.is_some();
         let list_height = height.saturating_sub(error_shown as usize);
         let y_offset = error_shown as u16;
-        let visible = self.file_explorer.visible_nodes();
+        let visible = self.workspace_files.explorer.visible_nodes();
         for (row, node) in visible
             .iter()
-            .skip(self.file_explorer.scroll)
+            .skip(self.workspace_files.explorer.scroll)
             .take(list_height)
             .enumerate()
         {
@@ -248,7 +248,8 @@ impl TuiApp {
     }
 
     fn file_entry_kind(&self, path: &Path) -> Option<FileKind> {
-        self.file_explorer
+        self.workspace_files
+            .explorer
             .visible_nodes()
             .iter()
             .find(|node| node.path == path)
@@ -327,12 +328,14 @@ impl TuiApp {
     }
 
     fn scroll_files(&mut self, up: bool, amount: usize) {
-        let visible_len = self.file_explorer.visible_nodes().len();
+        let visible_len = self.workspace_files.explorer.visible_nodes().len();
         if up {
-            self.file_explorer.scroll = self.file_explorer.scroll.saturating_sub(amount);
+            self.workspace_files.explorer.scroll =
+                self.workspace_files.explorer.scroll.saturating_sub(amount);
         } else {
-            self.file_explorer.scroll = self
-                .file_explorer
+            self.workspace_files.explorer.scroll = self
+                .workspace_files
+                .explorer
                 .scroll
                 .saturating_add(amount)
                 .min(visible_len.saturating_sub(1));
