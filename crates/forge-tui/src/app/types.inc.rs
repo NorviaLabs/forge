@@ -550,6 +550,11 @@ struct TaskSelectionState {
     tasks: Option<usize>,
 }
 
+struct StartupResumeState {
+    picker: bool,
+    session_id: Option<uuid::Uuid>,
+}
+
 struct RenderCacheState {
     conversation: Option<ConversationRenderCache>,
     composer_layout: ComposerLayoutCache,
@@ -560,8 +565,7 @@ pub struct TuiApp {
     input: InputModel,
     pub(crate) overlay: Option<Overlay>,
     should_quit: bool,
-    startup_resume_picker: bool,
-    startup_resume_session_id: Option<uuid::Uuid>,
+    startup_resume: StartupResumeState,
     busy: bool,
     pub(crate) status_message: String,
     pub(crate) runtime: TuiRuntimeConfig,

@@ -113,7 +113,7 @@ impl TuiApp {
         match action {
             OverlayAction::None => {}
             OverlayAction::Close => {
-                if self.startup_resume_picker {
+                if self.startup_resume.picker {
                     self.should_quit = true;
                     self.last_exit = ExitCode::Canceled;
                 }
@@ -146,7 +146,7 @@ impl TuiApp {
                 self.set_feedback(FeedbackSeverity::Info, "stopped at turn limit");
             }
             OverlayAction::RunCommand(cmd) => {
-                self.startup_resume_picker = false;
+                self.startup_resume.picker = false;
                 self.overlay = None;
                 self.execute_semantic_command(SemanticCommand::DispatchSlash {
                     origin: SlashCommandOrigin::GlobalPalette,
