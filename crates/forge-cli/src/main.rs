@@ -5,6 +5,7 @@ use std::sync::Arc;
 use clap::Parser;
 use forge_config::{Config, ConfigOverrides};
 use forge_core::{AgentSession, LoopConfig};
+use forge_durable::latest_session_id;
 use forge_mcp::{register_static_mcp, McpManager, StaticMcpTool};
 use forge_model::{client_from_config, ModelClient};
 use forge_storage::{LocalRuntimeStorage, RuntimeDataKind, RuntimeStorage};
@@ -57,8 +58,8 @@ fn resolve_journal_dir(cfg: &Config) -> (std::path::PathBuf, Vec<String>) {
     long_about = "Open the full-screen TUI by default.\n\nUse --help or --version for CLI info."
 )]
 struct Cli {
-    #[arg(long = "resume", value_name = "SESSION_ID")]
-    resume: Option<SessionId>,
+    #[arg(long = "resume", value_name = "SESSION_ID", num_args = 0..=1)]
+    resume: Option<Option<SessionId>>,
 }
 
 #[tokio::main]
@@ -157,7 +158,7 @@ fn connect_credentials() -> Vec<(String, String)> {
 
 async fn open_session(
     cfg: &Config,
-    resume: Option<SessionId>,
+    resume: Option<Option<SessionId>>,
 ) -> anyhow::Result<(AgentSession, Vec<String>)> {
     let model: Arc<dyn ModelClient> =
         Arc::from(client_from_config(cfg).map_err(|e| anyhow::anyhow!(e))?);
@@ -202,6 +203,11 @@ async fn open_session(
 
     let (journal_dir, storage_notices) = resolve_journal_dir(cfg);
     startup_notices.extend(storage_notices);
+    let resume_id = match resume {
+        Some(Some(session_id)) => Some(session_id),
+        Some(None) => latest_session_id(&journal_dir).map_err(|e| anyhow::anyhow!(e))?,
+        None => None,
+    };
     let loop_cfg = LoopConfig {
         max_turns: 128,
         workspace: cfg.workspace_root().to_path_buf(),
@@ -211,15 +217,15 @@ async fn open_session(
         web_search: cfg.tools.web_search.clone(),
     };
 
-    let mut session = AgentSession::create(loop_cfg, model, tools)
-        .await
-        .map_err(|e| anyhow::anyhow!(e))?;
-    if let Some(session_id) = resume {
-        session
-            .resume_session(session_id)
+    let mut session = if let Some(session_id) = resume_id {
+        AgentSession::resume(loop_cfg, model, tools, session_id)
             .await
-            .map_err(|e| anyhow::anyhow!(e))?;
-    }
+            .map_err(|e| anyhow::anyhow!(e))?
+    } else {
+        AgentSession::create(loop_cfg, model, tools)
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?
+    };
     if !cfg.model.model.is_empty() {
         session.set_active_model(cfg.model.model.clone());
     }
@@ -235,7 +241,13 @@ mod tests {
     fn cli_resume_parses_session_id() {
         let session_id = SessionId::new_v4();
         let cli = Cli::try_parse_from(["forge", "--resume", &session_id.to_string()]).unwrap();
-        assert_eq!(cli.resume, Some(session_id));
+        assert_eq!(cli.resume, Some(Some(session_id)));
+    }
+
+    #[test]
+    fn cli_resume_without_session_id_is_accepted() {
+        let cli = Cli::try_parse_from(["forge", "--resume"]).unwrap();
+        assert_eq!(cli.resume, Some(None));
     }
 
     /// `forge-tools` cannot see `forge-connect`, so the list of credential

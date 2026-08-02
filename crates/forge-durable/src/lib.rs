@@ -34,6 +34,41 @@ pub struct Journal {
     db_path: PathBuf,
 }
 
+/// Return the most recently modified session journal in `dir`.
+///
+/// Session journals are one database per session, and SQLite updates the
+/// database file whenever a journal event is written. Invalid or unrelated
+/// files are ignored so a stale runtime artifact cannot prevent startup.
+pub fn latest_session_id(dir: &Path) -> Result<Option<SessionId>, JournalError> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let mut latest: Option<(std::time::SystemTime, SessionId)> = None;
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("db") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let Ok(session_id) = Uuid::parse_str(stem) else {
+            continue;
+        };
+        let modified = entry
+            .metadata()?
+            .modified()
+            .unwrap_or(std::time::UNIX_EPOCH);
+        if latest.as_ref().is_none_or(|(time, _)| modified > *time) {
+            latest = Some((modified, session_id));
+        }
+    }
+    Ok(latest.map(|(_, session_id)| session_id))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResultPayload {
     pub call_id: String,
