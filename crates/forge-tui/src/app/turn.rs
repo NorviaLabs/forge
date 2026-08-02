@@ -113,7 +113,7 @@ impl TuiApp {
     pub(super) async fn enqueue_user_message(&mut self, line: String) {
         match self.session.enqueue_task(&line).await {
             Ok(_item) => {
-                let n = self.session.queue.len();
+                let n = self.session.queue().len();
                 if self.queue_selected.is_none() {
                     self.queue_selected = Some(0);
                 }
@@ -168,11 +168,14 @@ impl TuiApp {
                 self.push_activity(
                     ActivityKind::System,
                     FeedbackSeverity::Info,
-                    format!("queue dequeue · {} left", self.session.queue.len()),
+                    format!("queue dequeue · {} left", self.session.queue().len()),
                 );
                 self.set_feedback(
                     FeedbackSeverity::Info,
-                    format!("sending dequeued · {} remaining", self.session.queue.len()),
+                    format!(
+                        "sending dequeued · {} remaining",
+                        self.session.queue().len()
+                    ),
                 );
                 // Start the turn the same way as a normal Enter send (no dispatch
                 // recursion). The user message was already appended by
@@ -215,7 +218,7 @@ impl TuiApp {
                     FeedbackSeverity::Ok,
                     format!(
                         "cancelled queued #{one_based} · {} left",
-                        self.session.queue.len()
+                        self.session.queue().len()
                     ),
                 );
                 self.push_activity(
@@ -235,7 +238,7 @@ impl TuiApp {
     }
 
     fn clamp_queue_selection(&mut self) {
-        let len = self.session.queue.len();
+        let len = self.session.queue().len();
         self.queue_selected = match (len, self.queue_selected) {
             (0, _) => None,
             (_, Some(i)) if i < len => Some(i),
@@ -245,7 +248,7 @@ impl TuiApp {
     }
 
     pub(super) fn move_queue_selection(&mut self, delta: i32) {
-        let len = self.session.queue.len();
+        let len = self.session.queue().len();
         if len == 0 {
             self.queue_selected = None;
             return;
@@ -269,14 +272,14 @@ impl TuiApp {
     pub(super) async fn poll_background_tasks(&mut self) -> Result<(), TuiError> {
         let running_before: std::collections::HashSet<_> = self
             .session
-            .background
+            .background()
             .list()
             .filter(|t| !t.status.is_terminal())
             .map(|t| t.id)
             .collect();
         self.session.poll_background_tasks().await?;
         for id in running_before {
-            if let Some(task) = self.session.background.get(id) {
+            if let Some(task) = self.session.background().get(id) {
                 if task.status.is_terminal() {
                     self.push_toast(format!(
                         "background task #{} finished: {}",
@@ -289,7 +292,7 @@ impl TuiApp {
     }
 
     fn clamp_tasks_selection(&mut self) {
-        let len = self.session.background.list().count();
+        let len = self.session.background().list().count();
         self.tasks_selected = match (len, self.tasks_selected) {
             (0, _) => None,
             (_, Some(i)) if i < len => Some(i),
@@ -299,7 +302,7 @@ impl TuiApp {
     }
 
     pub(super) fn move_tasks_selection(&mut self, delta: i32) {
-        let len = self.session.background.list().count();
+        let len = self.session.background().list().count();
         if len == 0 {
             self.tasks_selected = None;
             return;
@@ -316,13 +319,13 @@ impl TuiApp {
             self.set_feedback(FeedbackSeverity::Warn, "no background tasks");
             return;
         };
-        let mut ids: Vec<_> = self.session.background.list().map(|t| t.id).collect();
+        let mut ids: Vec<_> = self.session.background().list().map(|t| t.id).collect();
         ids.sort_by_key(|id| id.0);
         let Some(id) = ids.get(idx).copied() else {
             self.clamp_tasks_selection();
             return;
         };
-        if self.session.background.cancel(id) {
+        if self.session.cancel_background_task(id) {
             self.set_feedback(FeedbackSeverity::Ok, format!("cancelling task #{}", id.0));
             self.push_activity(
                 ActivityKind::System,
@@ -346,7 +349,7 @@ impl TuiApp {
             self.set_feedback(FeedbackSeverity::Warn, "no background tasks");
             return;
         };
-        let mut ids: Vec<_> = self.session.background.list().map(|t| t.id).collect();
+        let mut ids: Vec<_> = self.session.background().list().map(|t| t.id).collect();
         ids.sort_by_key(|id| id.0);
         let Some(id) = ids.get(idx).copied() else {
             return;
@@ -681,21 +684,21 @@ impl TuiApp {
             }
             self.clear_error_chrome();
             self.tool_expanded = false;
-            if self.session.queue.is_empty() {
+            if self.session.queue().is_empty() {
                 self.feedback = FeedbackModel::default();
                 self.status_message.clear();
             } else {
                 self.push_toast(format!(
                     "{} queued · sending next",
-                    self.session.queue.len()
+                    self.session.queue().len()
                 ));
                 self.set_feedback(
                     FeedbackSeverity::Info,
-                    format!("{} in queue — sending next", self.session.queue.len()),
+                    format!("{} in queue — sending next", self.session.queue().len()),
                 );
             }
             self.push_activity(ActivityKind::Model, FeedbackSeverity::Ok, "model ok");
-            if !self.session.queue.is_empty() {
+            if !self.session.queue().is_empty() {
                 self.dequeue_and_send_next().await;
             }
         }

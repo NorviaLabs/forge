@@ -248,10 +248,14 @@ async fn enter_while_busy_enqueues_user_message() {
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.session.queue.len(), 1);
+    assert_eq!(app.session.queue().len(), 1);
     assert!(app.pending_prompt.is_none());
     assert_eq!(
-        app.session.queue.visible().next().map(|q| q.text.as_str()),
+        app.session
+            .queue()
+            .visible()
+            .next()
+            .map(|q| q.text.as_str()),
         Some("queued later")
     );
 }
@@ -281,7 +285,7 @@ async fn typing_while_busy_updates_input_buffer() {
             .unwrap();
     }
     assert_eq!(app.input.text, "next");
-    assert_eq!(app.session.queue.len(), 0);
+    assert_eq!(app.session.queue().len(), 0);
 }
 
 #[tokio::test]
@@ -458,7 +462,7 @@ async fn empty_enter_when_idle_dequeues_and_sends() {
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert!(app.session.queue.is_empty());
+    assert!(app.session.queue().is_empty());
     // Promotion already appended the message and started the task; the
     // turn continues via `pending_turn_continue`, not a re-appended
     // `pending_prompt` (that would double-append).
@@ -496,9 +500,13 @@ async fn ctrl_backspace_cancels_selected_queue_message() {
     app.handle_key(press(KeyCode::Backspace, KeyModifiers::CONTROL))
         .await
         .unwrap();
-    assert_eq!(app.session.queue.len(), 1);
+    assert_eq!(app.session.queue().len(), 1);
     assert_eq!(
-        app.session.queue.visible().next().map(|q| q.text.as_str()),
+        app.session
+            .queue()
+            .visible()
+            .next()
+            .map(|q| q.text.as_str()),
         Some("a")
     );
 }
