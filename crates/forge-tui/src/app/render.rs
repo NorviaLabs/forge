@@ -135,7 +135,7 @@ impl TuiApp {
                 .map_or(0, String::len),
             events: visible_events.len(),
             last_event_detail: visible_events.last().map_or(0, |event| event.detail.len()),
-            banners: self.ui_banners.len(),
+            banners: self.banner_state.items.len(),
             queue: self.session.queue().len(),
             queue_selected: self.task_selection.queue,
             chat_message_start: self.conversation_view.message_start,
@@ -167,7 +167,7 @@ impl TuiApp {
                     ..opts.clone()
                 },
             )
-            .with_extra_banners(self.ui_banners.iter().cloned());
+            .with_extra_banners(self.banner_state.items.iter().cloned());
             if !self.conversation_view.splash_dismissed {
                 conv = conv.with_brand(self.runtime.version.clone());
             }

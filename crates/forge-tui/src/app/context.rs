@@ -48,7 +48,7 @@ impl TuiApp {
             .ok()
             .and_then(|text| serde_json::from_str::<ProgressDocument>(&text).ok());
         if let Some(progress) = progress {
-            self.ui_banners.push(ChatItem::ContextHandoff {
+            self.banner_state.items.push(ChatItem::ContextHandoff {
                 before_pct: self.conversation_view.context_reset_snapshot.unwrap().0,
                 after_pct: self.conversation_view.context_reset_snapshot.unwrap().1,
                 goal: progress.goal,

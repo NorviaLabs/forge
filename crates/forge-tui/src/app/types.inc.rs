@@ -621,6 +621,10 @@ pub(crate) struct NoticeState {
     until: Option<Instant>,
 }
 
+struct BannerState {
+    items: Vec<ChatItem>,
+}
+
 struct RenderCacheState {
     conversation: Option<ConversationRenderCache>,
     composer_layout: ComposerLayoutCache,
@@ -642,8 +646,7 @@ pub struct TuiApp {
     pub(crate) notice_state: NoticeState,
     /// Phase 10 / TUI-08 — always-visible feedback strip model.
     feedback: FeedbackModel,
-    /// Phase 10 / TUI-08 — durable UI error/info banners in chat.
-    ui_banners: Vec<ChatItem>,
+    banner_state: BannerState,
     /// Phase 10 / TUI-10 — progressive busy phase for chrome.
     busy_phase: BusyPhase,
     pending_turn: PendingTurnState,

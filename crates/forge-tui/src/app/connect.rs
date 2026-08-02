@@ -116,7 +116,7 @@ impl TuiApp {
                 self.input.hint = String::new();
             }
             // Drop the sticky not-connected banner once signed in.
-            self.ui_banners.retain(|b| {
+            self.banner_state.items.retain(|b| {
                 !matches!(
                     b,
                     ChatItem::Banner {
@@ -190,7 +190,7 @@ impl TuiApp {
         self.feedback = FeedbackModel::default();
         self.status_message = "disconnected".into();
         self.notice_state.items.clear();
-        self.ui_banners.retain(|b| {
+        self.banner_state.items.retain(|b| {
             !matches!(
                 b,
                 ChatItem::Banner {
