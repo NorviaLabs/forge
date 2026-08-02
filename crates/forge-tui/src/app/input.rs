@@ -185,7 +185,7 @@ impl TuiApp {
             && !suggestions.is_empty()
             && !self.input.text.contains(' ')
         {
-            let idx = self.slash_suggest_idx.min(suggestions.len() - 1);
+            let idx = self.slash_suggestions.selected.min(suggestions.len() - 1);
             let cmd = suggestions[idx].cmd.clone();
             let cur = self.input.text.trim();
             let line = if cur == cmd.as_str() || cur.starts_with(&(cmd.clone() + " ")) {
@@ -196,7 +196,7 @@ impl TuiApp {
             };
             if !line.is_empty() {
                 self.history.push(&line);
-                self.slash_suggest_idx = 0;
+                self.slash_suggestions.selected = 0;
                 self.notices.clear();
                 self.input.history_browse = false;
                 self.dispatch_line(&line).await?;
@@ -213,7 +213,7 @@ impl TuiApp {
         }
 
         self.history.push(&line);
-        self.slash_suggest_idx = 0;
+        self.slash_suggestions.selected = 0;
         self.notices.clear();
         self.input.history_browse = false;
 
@@ -514,8 +514,9 @@ impl TuiApp {
                     && !suggestions.is_empty()
                     && !self.history.browsing()
                 {
-                    self.slash_suggest_idx =
-                        (self.slash_suggest_idx + suggestions.len() - 1) % suggestions.len();
+                    self.slash_suggestions.selected =
+                        (self.slash_suggestions.selected + suggestions.len() - 1)
+                            % suggestions.len();
                 } else if let Some(text) = self.history.up(&self.input.text) {
                     self.apply_history_text(text);
                 }
@@ -527,7 +528,8 @@ impl TuiApp {
                     && !suggestions.is_empty()
                     && !self.history.browsing()
                 {
-                    self.slash_suggest_idx = (self.slash_suggest_idx + 1) % suggestions.len();
+                    self.slash_suggestions.selected =
+                        (self.slash_suggestions.selected + 1) % suggestions.len();
                 } else if let Some(text) = self.history.down() {
                     self.apply_history_text(text);
                 }
@@ -549,7 +551,7 @@ impl TuiApp {
             // Backspace.
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.input.clear();
-                self.slash_suggest_idx = 0;
+                self.slash_suggestions.selected = 0;
                 true
             }
             KeyCode::Left if key.modifiers.is_empty() => {

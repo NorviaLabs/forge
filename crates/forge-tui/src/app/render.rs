@@ -392,7 +392,7 @@ impl TuiApp {
             if !suggestions.is_empty() && self.input.text.starts_with('/') {
                 let input = regions.input;
                 let n = suggestions.len();
-                let idx = self.slash_suggest_idx.min(n.saturating_sub(1));
+                let idx = self.slash_suggestions.selected.min(n.saturating_sub(1));
                 // Use as much space above the input as possible (cap for readability).
                 let max_list = input.y.saturating_sub(2).clamp(1, 16) as usize;
                 let visible = n.min(max_list);
