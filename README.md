@@ -1,260 +1,250 @@
 # Forge
 
-**Let the agent work hard — without wrecking your branch.**
+Forge is an open-source AI coding agent for your terminal. It runs a
+full-screen TUI in the repository you are working on, helps inspect and change
+files, runs commands with your approval, and keeps a durable session journal so
+you can continue work after an interruption.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.97.1%2B-orange.svg)](https://www.rust-lang.org/)
-[![CI](https://github.com/NorviaLabs/forge/actions/workflows/ci.yml/badge.svg)](https://github.com/NorviaLabs/forge/actions/workflows/ci.yml)
+Forge is alpha software. Review every approval prompt and use it first in a
+disposable or backed-up repository.
 
-> **Alpha:** Expect bugs and breaking changes. Test in a disposable repository with committed or backed-up work.
+## What Forge does
 
----
+- Chats with a configured model while staying inside your terminal.
+- Reads and edits workspace files, applies focused patches, searches code, and
+  works with Git.
+- Runs shell commands only through an approval-aware tool flow.
+- Preserves session history and unfinished work in a local SQLite journal.
+- Supports provider sign-in and model selection from the TUI.
+- Connects configured MCP servers and exposes their tools to the agent.
+- Shows files, diffs, command output, activity, diagnostics, and task state in
+  one keyboard-driven workspace.
 
-## What is Forge
+## Install
 
-Forge is an open-source **AI coding-agent harness** written in Rust. It runs in your terminal and handles the agent loop, tools, durable session state, and full-screen UI. Forge connects directly to OpenAI, Anthropic, xAI Grok, OpenCode (Go + Zen), OpenAI Codex, and local Ollama through Rust HTTP/SSE transports.
+### Build from source
 
-```
-forge
-```
+You need Git and Rust 1.97.1 or newer.
 
-`forge` launches the full-screen TUI. There are no subcommands; use `--help` or `--version` for CLI information.
-
-**Why Forge**
-
-| Problem | What Forge does |
-|---------|-----------------|
-| Process dies mid-task | **Event journal** records every model/tool step *before* side effects; `/resume` picks up where you left off |
-| Bad tool args hit disk/shell | **Schema validation first**; invalid calls never execute |
-| Broad rewrites obscure small edits | **`apply_patch`** validates the full patch, confines paths to the workspace, and applies targeted add/update/delete operations |
-| Vendor lock-in | Open **MIT** harness; provider/model selection via env, `forge.toml`, or `/connect` in the TUI |
-
----
-
-## Quick start
-
-### 1. Install
-
-Download the archive for your platform from [GitHub Releases](https://github.com/NorviaLabs/forge/releases).
-
-| Platform | Architecture | Artifact target |
-|----------|--------------|-----------------|
-| macOS | Apple Silicon | `aarch64-apple-darwin` |
-| macOS | Intel | `x86_64-apple-darwin` |
-| Linux | x86_64 (glibc) | `x86_64-unknown-linux-gnu` |
-
-```bash
-tar -xzf forge-v0.1.0-alpha.10-<target>.tar.gz
-mkdir -p ~/.local/bin
-install -m 755 forge-v0.1.0-alpha.10-<target>/forge ~/.local/bin/forge
-forge --version
-```
-
-Replace the example version and `<target>` with the downloaded release. Ensure `~/.local/bin` is on `PATH`. Each release includes `SHA256SUMS` for archive verification.
-
-Alpha binaries are not yet code-signed or notarized. macOS may require you to approve Forge in **System Settings → Privacy & Security** after the first launch. Windows and Linux architectures other than x86_64 are not yet included.
-
-To build from source, install Rust 1.97.1 or newer and Git:
-
-```bash
+```sh
 git clone https://github.com/NorviaLabs/forge.git
 cd forge
 cargo build --release --locked --package forge-cli
-export PATH="$PWD/target/release:$PATH"
+./target/release/forge --version
 ```
 
-### 2. Connect a provider
+To run the development build:
 
-Forge connects to live models through its native Rust client. No proxy server is required.
+```sh
+cargo run --locked --package forge-cli
+```
 
-**Option A: API key + model env (fastest)**
+## Start Forge
 
-```bash
-export OPENAI_API_KEY=…
-export FORGE_MODEL_ID=openai/gpt-4.1-mini
+Run Forge from the repository you want the agent to work in:
+
+```sh
 forge
 ```
 
-**Option B: `/connect` inside the TUI**
+The default workspace is the current directory. Forge also respects the
+`FORGE_WORKSPACE` environment variable.
 
-```bash
-forge
-# then type a slash command:
-#   /connect              → picker of all profiles
-#   /connect openai       → paste API key
-#   /connect anthropic    → paste API key
-#   /connect opencode_go  → paste API key
-#   /connect ollama       → local (no key; requires `ollama serve`)
-#   /connect xai          → OAuth flow for xAI Grok
-```
+On first launch, connect a provider with `/connect`, choose a model, and start
+typing a task. You can also configure a model before launching Forge with
+environment variables or `forge.toml`.
 
-| Profile | Auth | Notes |
-|---------|------|-------|
-| `openai` | API key | `openai/…` models |
-| `openai_codex` | OAuth | OpenAI Codex subscriptions |
-| `anthropic` | API key | `anthropic/…` models |
-| `xai` | OAuth (TUI) | xAI Grok; API-key paste is not the Grok path |
-| `opencode_go` | API key | OpenCode Go |
-| `opencode_zen` | API key | OpenCode Zen (pay-per-use catalog) |
-| `ollama` | Local (no key) | Requires `ollama serve` |
+## Providers and models
 
-Credentials are stored in `forge/credentials.toml` under your OS user config directory (e.g. `~/.config/forge/credentials.toml` on Linux, `~/Library/Application Support/forge/credentials.toml` on macOS) with mode `0600` on Unix. Never commit them.
+Forge includes native routes for:
 
-Optional project file (not required):
+- OpenAI API (`openai/*`)
+- Anthropic API (`anthropic/*`)
+- xAI Grok through OAuth (`xai/*`)
+- OpenAI Codex subscriptions through device login (`openai-codex/*`)
+- OpenCode Go (`opencode-go/*`)
+- OpenCode Zen (`opencode-zen/*`)
+- Ollama running locally (`ollama/*`)
 
-```toml
-# forge.toml
-[model]
-provider = "native"
-model = "openai/gpt-4.1-mini"
-```
+The simplest setup is to export a provider key and model, then launch Forge:
 
-Legacy provider names (`litellm`, `openai_compatible`, `anthropic`, `xai`, `grok`) are still accepted and migrate to `native`.
-
-### 3. Start coding
-
-```bash
-cd /path/to/your/repo
+```sh
+export OPENAI_API_KEY="..."
+export FORGE_MODEL_ID="openai/gpt-4.1-mini"
 forge
 ```
 
-Type a task and press **Enter**, e.g. `Explain the layout of this crate`.
+Other API-key environment variables include `ANTHROPIC_API_KEY`,
+`OPENCODE_API_KEY`, `OPENCODE_GO_API_KEY`, and `OPENCODE_ZEN_API_KEY`.
 
----
+For OAuth providers, use `/connect` inside Forge. For Ollama, start the local
+Ollama service first, then choose the Ollama route and a locally available
+model.
 
-## TUI slash commands
+Useful in-app commands:
 
-The full-screen TUI has four workspaces: Conversation, File, Review changes, and Run. Three supporting panes (Files, Inspector, Bottom) collapse first on narrow terminals. The status bar at the top always shows your repository, branch, connection, and what the agent is doing right now.
+```text
+/connect       Connect or change a provider
+/model         Browse or change models
+/resume        Browse previous sessions in the current journal
+/clear         Clear the visible transcript
+/compact       Compact the active context
+/disconnect    Remove a saved provider connection
+/refresh       Refresh the file explorer's Git state
+/edit          Open the active file in your editor
+/context-file  Attach the active file to the next message
+/theme         Change the presentation theme
+/help          Open help
+/quit          Exit Forge
+```
 
-Tool calls render as compact cards you can expand for detail. Approvals show up in a modal, not as a command you have to remember. A running agent or a long tool call updates the activity feed in the background, without pulling you out of whatever workspace you're in.
+`/resume <session-id>` resumes a specific session. The command-line form
+`forge --resume <session-id>` does the same; bare `forge --resume` resumes the
+most recently modified session when one exists.
 
-Slash commands are typed directly in the textbox, with inline autocomplete suggestions:
+## Keyboard controls
 
-| Command | Description |
-|---------|-------------|
-| `/help` | Show help and keyboard shortcuts |
-| `/connect` | Open the provider connect picker |
-| `/model` | Switch model for future turns |
-| `/model openai/gpt-4.1-mini` | Switch to a specific model |
-| `/theme` | Switch presentation theme (`dark`, `light`, `system`) |
-| `/compact` | Continue in a fresh context |
-| `/resume` | Pick a previous session to resume |
-| `/resume <uuid>` | Resume a specific session by id |
-| `/clear` | Clear the visible transcript (keeps model context) |
-| `/disconnect` | Disconnect current provider and clear stored credentials |
-| `/quit` | Quit Forge |
-
-**Keybindings**
+Forge displays contextual hints for the current focus. The most useful global
+controls are:
 
 | Key | Action |
-|-----|--------|
-| **Enter** | Send message (or enqueue while agent is busy) |
-| **?** | Open help (when the composer is empty) |
-| **Ctrl+E** | Toggle Files |
-| **Ctrl+B** | Toggle Inspector |
-| **Ctrl+P** | Quick Open (fuzzy file search) |
-| **Ctrl+`** | Toggle Bottom surface |
-| **Alt+M** | Quick-switch model |
-| **Alt+Left** | Back |
-| **Alt+Right** | Review changes |
-| **Alt+1** | Open current Run output |
-| **Alt+2 / Alt+3 / Alt+4** | Open Diagnostics / Terminal / Activity |
-| **/** + **Tab** | Complete slash command suggestions |
-| **↑ / ↓** | Recall prior input lines (when not in the suggest list) |
-| **Ctrl+Up / Ctrl+Down** | Select a queued message |
-| **Ctrl+Backspace** | Cancel the selected queued message |
-| **Page Up / Page Down** | Scroll the conversation |
-| **Ctrl+C** | Interrupt the agent, then quit on a second press |
-| **Ctrl+D** | Quit Forge |
-
-Mouse interactions are enabled by default. To keep terminal-native mouse
-selection instead, set `[tui] mouse_capture = false` in `forge.toml`; all
-workflows remain keyboard-accessible.
-
-Current mouse support is intentionally scoped to click-to-focus, file selection,
-directory chevrons, visible controls, wheel scrolling, and safe double-click
-activation for file/folder rows. Forge does not support drag-and-drop, pane
-resizing, right-click context menus, multi-selection, or in-app text selection.
-
-**Resume after a crash or kill**
-
-Start Forge again and use `/resume`. The event journal replays completed tool work so the agent picks up where it left off, and Forge tells you when replay is done without re-running anything that already happened.
-
----
-
-## Skills
-
-Optional instruction packs the agent loads into its system prompt:
-
-| Location | Scope |
-|----------|-------|
-| `<workspace>/.forge/skills/<name>/SKILL.md` | Project only |
-| `~/.config/forge/skills/<name>/SKILL.md` | Global (all projects) |
-
-Project skills override global skills with the same name. Drop a `SKILL.md` in either path and start a new session. No extra config required.
+| --- | --- |
+| `Tab` / `Shift+Tab` | Move between visible blocks |
+| `Enter` / `i` | Interact with the focused block or control |
+| `Esc` | Leave the current interaction level |
+| `↑` / `↓` | Navigate a local list or input |
+| `Ctrl+B` | Toggle the inspector |
+| `Ctrl+P` | Open Quick Open for files |
+| `Ctrl+Backtick` | Toggle the bottom panel |
+| `Alt+1`–`Alt+4` | Open a bottom-panel tab |
+| `Shift+←` / `Shift+→` | Switch the active block's tab |
+| `?` | Open help |
 
 ## Configuration
 
-Optional: defaults + env are enough. See [Quick start](#quick-start).
+Forge reads defaults, a user configuration file, a `forge.toml` in the
+working directory, and environment variables. Environment variables override
+file configuration.
 
-| Env | |
-|-----|--|
-| `FORGE_MODEL_ID` | Provider/model id, e.g. `openai/gpt-4.1-mini` |
-| `FORGE_MODEL_PROVIDER` | `native` (production) or `mock` (offline CI). Legacy aliases migrate to `native` |
-| `FORGE_WORKSPACE` | Project root (default: cwd) |
-| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `XAI_API_KEY` / … | Provider credentials for native transports |
+A minimal project `forge.toml` can look like this:
 
-`forge.toml` also supports `[[mcp.servers]]` entries for external MCP tool servers, and `[tools]`/`[model]`/`[journal]`/`[tui]` sections.
+```toml
+[model]
+model = "openai/gpt-4.1-mini"
 
-### Trusted vs. project config
+[tui]
+theme = "forge-midnight"
+file_icons = "unicode"
+mouse_capture = true
 
-A `forge.toml` in the repository you cloned is not fully trusted: `[[mcp.servers]]`, `model.base_url`, and `model.api_key` can run code or redirect your credentials, so Forge only honours them from your user config (`~/.config/forge/config.toml`), never from a project file. Everything else in `forge.toml` works as written, including model choice, journal, TUI, and tool settings. If a project file sets a restricted key anyway, Forge ignores it and prints a startup notice naming the key. See [SECURITY.md](./SECURITY.md) for the full threat model.
+[journal]
+path = ".forge/sessions"
+```
 
----
+Common environment variables are:
 
-## How it works
+```text
+FORGE_MODEL_ID
+FORGE_MODEL_PROVIDER
+FORGE_API_KEY
+FORGE_WORKSPACE
+FORGE_JOURNAL_PATH
+FORGE_MODEL_REQUEST_TIMEOUT_SECS
+```
 
-One agent core (`forge-core`) powers the TUI. Sessions append to a **SQLite event journal** so work can resume after a crash or restart. Tools run against your active checkout with schema-validated inputs.
+Forge stores session journals in repository-local runtime storage when
+possible, or in the platform application-data directory outside a Git
+repository. Runtime data is not source code and should not be committed.
 
-| Layer | Role |
-|-------|------|
-| **You** | TUI |
-| **Harness** | Plan–act–observe loop, tool execution, approvals, context management |
-| **Durability** | SQLite event journal, so you resume without redoing completed steps |
-| **Models** | Native Rust provider transports; same tools and journal regardless of vendor |
-| **Workspace** | Your repo, the active checkout |
-| **Tools** | `read_file` · `write_file` · `apply_patch` · `bash` · `fffind` · `ffgrep` · **`git`** (allowlisted subcommands) · `web_search` (optional) · MCP |
+### MCP servers
 
----
+MCP servers can be configured in a trusted user config or an explicitly
+managed configuration:
 
-## Alpha safety and data
+```toml
+[[mcp.servers]]
+id = "my-tools"
+transport = "stdio"
+command = "my-mcp-server"
+args = ["--stdio"]
+```
 
-- Commit or stash existing work and use a disposable repository. Forge edits the active checkout directly.
-- Repository-local sessions, context, and progress are stored under `.forge/`.
-- Prompts and selected repository context are sent to your chosen model provider, whose privacy and retention policies apply.
-- Forge sends no separate product telemetry. Model providers and explicitly configured observability exporters can still receive network requests.
-- To disconnect a provider, use `/disconnect` in the TUI. To fully reset, delete `.forge/` from the repository and remove `~/.config/forge/` (or the equivalent config directory on your OS).
+Project-discovered configuration is intentionally restricted: settings that
+could execute code or redirect credentialed requests are not accepted from an
+untrusted checked-out repository.
 
-Found a bug or have feedback? Open an issue. Report security vulnerabilities privately: see [SECURITY.md](./SECURITY.md).
+## Built-in tools
 
-To contribute, see [CONTRIBUTING.md](./CONTRIBUTING.md) for setup, validation, and pull request guidance.
+Depending on configuration, the agent can use tools for:
 
----
+- reading and writing files;
+- applying validated workspace-confined patches;
+- running approved shell commands;
+- inspecting Git status and diffs;
+- fast file and content search;
+- web search;
+- configured MCP tools.
 
-## Maintainer alpha release
+Tool arguments are validated before execution. Sensitive or consequential
+actions require an approval prompt. Forge does not treat model output as
+trusted input.
 
-GitHub Actions builds alpha binaries for the supported platforms. To publish an alpha:
+## Sessions and resume
 
-1. Ensure CI passes on `main` and update the workspace version if needed.
-2. Create an annotated tag matching `v<version>-alpha.<number>`: `git tag -a v0.1.0-alpha.6 -m "Forge 0.1.0 alpha 6"`.
-3. Push it: `git push origin v0.1.0-alpha.6`.
-4. The [Alpha Release workflow](.github/workflows/release.yml) builds archives, generates `SHA256SUMS`, and publishes a GitHub prerelease with generated notes.
-5. Download one archive, verify its checksum and `forge --version`, then complete a provider connection and small task in a disposable repository.
+Every Forge session has a durable identifier and journal. If a process stops
+unexpectedly, start Forge with:
 
-Only tags matching `v*-alpha.*` trigger this workflow, and releases are always marked as prereleases.
+```sh
+forge --resume
+```
 
----
+or resume a known session directly:
+
+```sh
+forge --resume <session-id>
+```
+
+Inside the TUI, `/resume` lists previous sessions and shows a title hint from
+the first user message when available. Session journals stay separate from
+your source files and should never contain API keys or OAuth tokens.
+
+## Safety
+
+Forge can execute commands and modify files on your machine. Treat it like a
+shell with an AI interface:
+
+1. Run it only in repositories you trust.
+2. Read each approval prompt, including the exact command and consequence.
+3. Keep credentials in your environment or trusted user configuration.
+4. Do not commit `.forge/`, runtime journals, API keys, OAuth tokens, or
+   credential files.
+5. Use a disposable clone when evaluating an unfamiliar repository.
+
+See [SECURITY.md](SECURITY.md) for the threat model and private vulnerability
+reporting process.
+
+## Development
+
+Forge is a Rust workspace. The main crates are:
+
+- `forge-cli` — command-line entry point;
+- `forge-tui` — terminal interface;
+- `forge-core` — agent loop and session lifecycle;
+- `forge-model` — provider transports and message normalization;
+- `forge-connect` — provider profiles, credentials, and model catalog;
+- `forge-tools` — built-in tools and validation;
+- `forge-durable` — SQLite session journals.
+
+Run the standard checks before submitting a change:
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --all-targets --locked
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidance.
 
 ## License
 
-[MIT](./LICENSE) © 2026 NorviaLabs
+Forge is available under the [MIT License](LICENSE).
