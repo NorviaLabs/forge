@@ -23,7 +23,7 @@ async fn typing_reuses_cached_conversation_lines() {
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
-    app.splash_dismissed = true;
+    app.conversation_view.splash_dismissed = true;
     let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
     terminal.draw(|frame| app.draw(frame)).unwrap();
     Arc::get_mut(&mut app.render_cache.conversation.as_mut().unwrap().lines)
@@ -79,7 +79,7 @@ async fn streaming_updates_reuse_cached_transcript_lines() {
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
-    app.splash_dismissed = true;
+    app.conversation_view.splash_dismissed = true;
     app.busy = true;
     app.busy_phase = BusyPhase::Model;
     app.stream_preview = "first chunk".into();
@@ -129,7 +129,7 @@ async fn streaming_updates_reuse_cached_transcript_lines() {
 #[tokio::test]
 async fn cache_hit_shares_transcript_lines_without_copying() {
     let (_dir, mut app) = focus_test_app().await;
-    app.splash_dismissed = true;
+    app.conversation_view.splash_dismissed = true;
     app.session.messages.push(forge_types::Message::new(
         forge_types::MessageRole::Assistant,
         "cached transcript body",

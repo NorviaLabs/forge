@@ -754,14 +754,14 @@ async fn clear_hides_existing_chat_without_deleting_context() {
 
     app.dispatch_line("/clear").await.unwrap();
 
-    assert_eq!(app.chat_message_start, message_count);
-    assert_eq!(app.chat_event_start, event_count);
+    assert_eq!(app.conversation_view.message_start, message_count);
+    assert_eq!(app.conversation_view.event_start, event_count);
     assert_eq!(app.session.messages.len(), message_count);
     assert_eq!(app.session.events.len(), event_count);
     assert!(app.ui_banners.is_empty());
     assert!(app.notices.is_empty());
-    assert_eq!(app.chat_scroll, 0);
-    assert!(app.chat_follow);
+    assert_eq!(app.conversation_view.scroll, 0);
+    assert!(app.conversation_view.follow);
 }
 
 #[tokio::test]
