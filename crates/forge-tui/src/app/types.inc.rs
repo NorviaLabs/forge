@@ -561,6 +561,10 @@ struct TurnTimingState {
     thought_secs: Option<f64>,
 }
 
+struct ExternalEditorState {
+    requested: bool,
+}
+
 struct RenderCacheState {
     conversation: Option<ConversationRenderCache>,
     composer_layout: ComposerLayoutCache,
@@ -599,7 +603,7 @@ pub struct TuiApp {
     /// Context reset queued to run on the event loop.
     pending_context_reset: bool,
     /// External-editor request queued for the event loop (terminal suspend/resume).
-    pending_external_editor: bool,
+    external_editor: ExternalEditorState,
     /// Active-file context attachment for the next user message.
     pending_attachment: Option<crate::file_context::FileAttachment>,
     /// Selected queued row for keyboard cancellation.
