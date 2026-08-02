@@ -540,6 +540,25 @@ pub(crate) fn recent_resume_sessions(
     sessions.truncate(limit);
     Ok(sessions)
 }
+
+/// Build the same compact session rows used by the in-app `/resume` picker.
+pub async fn resume_session_items(
+    dir: &std::path::Path,
+    limit: usize,
+) -> io::Result<Vec<ResumeSessionItem>> {
+    let sessions = recent_resume_sessions(dir, uuid::Uuid::nil(), limit)?;
+    let mut items = Vec::with_capacity(sessions.len());
+    for session in sessions {
+        let timestamp: chrono::DateTime<chrono::Local> = session.modified.into();
+        let title = forge_core::session_title_hint(dir, session.id).await;
+        items.push(ResumeSessionItem {
+            id: session.id.to_string(),
+            modified: timestamp.format("%Y-%m-%d %H:%M").to_string(),
+            title,
+        });
+    }
+    Ok(items)
+}
 pub(crate) fn failure_category_label(category: &str) -> String {
     match category {
         "validation_exhausted" => "Tool retries exhausted".into(),

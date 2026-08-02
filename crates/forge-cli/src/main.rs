@@ -5,12 +5,13 @@ use std::sync::Arc;
 use clap::Parser;
 use forge_config::{Config, ConfigOverrides};
 use forge_core::{AgentSession, LoopConfig};
-use forge_durable::latest_session_id;
 use forge_mcp::{register_static_mcp, McpManager, StaticMcpTool};
 use forge_model::{client_from_config, ModelClient};
 use forge_storage::{LocalRuntimeStorage, RuntimeDataKind, RuntimeStorage};
 use forge_tools::ToolRegistry;
-use forge_tui::{run_tui, ExitCode, TuiRuntimeConfig};
+use forge_tui::{
+    resume_session_items, run_tui, run_tui_with_resume_picker, ExitCode, TuiRuntimeConfig,
+};
 use forge_types::SessionId;
 use serde_json::json;
 use tracing_subscriber::EnvFilter;
@@ -96,7 +97,36 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     };
     let cfg = Config::load(overrides).map_err(|e| anyhow::anyhow!(e))?;
 
-    let (session, startup_notices) = open_session(&cfg, cli.resume).await?;
+    let (startup_resume_items, create_notice) = if cli.resume == Some(None) {
+        let (journal_dir, _) = resolve_journal_dir(&cfg);
+        let items = resume_session_items(&journal_dir, 10)
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?;
+        if items.is_empty() {
+            (
+                None,
+                Some("No previous session found; creating a new session.".to_string()),
+            )
+        } else {
+            (Some(items), None)
+        }
+    } else {
+        (None, None)
+    };
+    let (session, mut startup_notices) = open_session(
+        &cfg,
+        if startup_resume_items.is_some() {
+            None
+        } else if create_notice.is_some() {
+            None
+        } else {
+            cli.resume
+        },
+    )
+    .await?;
+    if let Some(notice) = create_notice {
+        startup_notices.push(notice);
+    }
     let runtime = TuiRuntimeConfig {
         model_label: cfg.model.model.clone(),
         provider: cfg.model.provider.as_str().into(),
@@ -108,9 +138,11 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         mouse_capture: cfg.tui.mouse_capture,
         theme_id: cfg.tui.theme.clone(),
     };
-    let summary = run_tui(session, runtime)
-        .await
-        .map_err(|e| anyhow::anyhow!(e))?;
+    let summary = match startup_resume_items {
+        Some(items) => run_tui_with_resume_picker(session, runtime, items).await,
+        None => run_tui(session, runtime).await,
+    }
+    .map_err(|e| anyhow::anyhow!(e))?;
     if let Some(token_usage) = summary.token_usage {
         println!("{token_usage}");
         println!(
@@ -205,7 +237,7 @@ async fn open_session(
     startup_notices.extend(storage_notices);
     let resume_id = match resume {
         Some(Some(session_id)) => Some(session_id),
-        Some(None) => latest_session_id(&journal_dir).map_err(|e| anyhow::anyhow!(e))?,
+        Some(None) => None,
         None => None,
     };
     let loop_cfg = LoopConfig {
