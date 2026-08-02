@@ -130,10 +130,10 @@ impl TuiApp {
         }
         let total = lines.len().saturating_add(tail_lines.len());
         let max_scroll = total.saturating_sub(area.height as usize);
-        let scroll = if self.chat_follow {
+        let scroll = if self.conversation_view.follow {
             max_scroll
         } else {
-            max_scroll.saturating_sub((self.chat_scroll as usize).min(max_scroll))
+            max_scroll.saturating_sub((self.conversation_view.scroll as usize).min(max_scroll))
         };
         let end = scroll.saturating_add(area.height as usize).min(total);
         for index in scroll..end {
@@ -214,14 +214,14 @@ impl TuiApp {
     }
 
     pub(super) fn scroll_conversation_up(&mut self, amount: u16) {
-        self.chat_follow = false;
-        self.chat_scroll = self.chat_scroll.saturating_add(amount);
+        self.conversation_view.follow = false;
+        self.conversation_view.scroll = self.conversation_view.scroll.saturating_add(amount);
     }
 
     pub(super) fn scroll_conversation_down(&mut self, amount: u16) {
-        self.chat_scroll = self.chat_scroll.saturating_sub(amount);
-        if self.chat_scroll == 0 {
-            self.chat_follow = true;
+        self.conversation_view.scroll = self.conversation_view.scroll.saturating_sub(amount);
+        if self.conversation_view.scroll == 0 {
+            self.conversation_view.follow = true;
         }
     }
 

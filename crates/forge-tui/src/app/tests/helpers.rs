@@ -303,7 +303,7 @@ pub(crate) fn push_code_transcript(app: &mut TuiApp, marker: &str) {
 
 pub(crate) async fn app_with_code(marker: &str) -> (TempDir, TuiApp) {
     let (dir, mut app) = focus_test_app().await;
-    app.splash_dismissed = true;
+    app.conversation_view.splash_dismissed = true;
     push_code_transcript(&mut app, marker);
     (dir, app)
 }
