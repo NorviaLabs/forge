@@ -296,7 +296,7 @@ async fn invalid_api_key_error_stays_inside_key_modal() {
     assert_eq!(key_input, "bad");
     assert!(error.as_deref().is_some_and(|text| text.contains("short")));
     assert!(
-        !app.ui_banners.iter().any(|item| matches!(
+        !app.banner_state.items.iter().any(|item| matches!(
             item,
             ChatItem::Banner {
                 kind: BannerKind::Error,
@@ -441,7 +441,7 @@ async fn blocks_chat_when_not_connected() {
     assert!(!app.busy);
     assert_eq!(app.input.text, "hello world");
     assert!(
-        app.ui_banners.iter().any(|b| matches!(
+        app.banner_state.items.iter().any(|b| matches!(
             b,
             ChatItem::Banner { text, .. } if text.to_ascii_lowercase().contains("not connected")
         )) || app

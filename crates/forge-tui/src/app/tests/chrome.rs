@@ -663,7 +663,7 @@ async fn tui08_report_error_writes_banner_feedback_and_activity() {
     assert!(app.feedback.text.contains("429"));
     assert!(app.status_message.contains("429"));
     assert!(
-        app.ui_banners.iter().any(|b| matches!(
+        app.banner_state.items.iter().any(|b| matches!(
             b,
             ChatItem::Banner {
                 kind: BannerKind::Error,
