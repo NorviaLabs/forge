@@ -592,6 +592,32 @@ pub struct AgentSession {
     journaled_tool_results: HashMap<String, forge_durable::ToolResultPayload>,
 }
 
+/// A short, human-readable hint for a resumable session — its first user
+/// message, truncated — so a `/resume` list can show more than a raw UUID
+/// and timestamp. Cheap: opens and replays only the one session's journal,
+/// independent of any live `AgentSession` (no tools/model/governance
+/// needed). Returns `None` on any read/replay error or an empty journal —
+/// callers should fall back to showing just the id/timestamp in that case,
+/// never fail the whole listing over one unreadable session.
+pub async fn session_title_hint(
+    journal_dir: &Path,
+    session_id: forge_types::SessionId,
+) -> Option<String> {
+    let journal = Journal::open(journal_dir, session_id).await.ok()?;
+    let state = journal.replay(session_id).await.ok()?;
+    let first = state.user_messages.into_iter().next()?;
+    let mut title: String = first.split_whitespace().collect::<Vec<_>>().join(" ");
+    const MAX_LEN: usize = 60;
+    if title.chars().count() > MAX_LEN {
+        title = title.chars().take(MAX_LEN).collect::<String>() + "…";
+    }
+    if title.is_empty() {
+        None
+    } else {
+        Some(title)
+    }
+}
+
 impl AgentSession {
     /// How many HITL denials in a row within one user turn are tolerated
     /// before the turn is stopped outright (see `consecutive_hitl_denials`).

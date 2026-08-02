@@ -736,17 +736,19 @@ impl TuiApp {
                         }
                         Ok(sessions) => {
                             self.status_message = format!("{} resumable sessions", sessions.len());
-                            let items = sessions
-                                .into_iter()
-                                .map(|session| {
-                                    let timestamp: chrono::DateTime<chrono::Local> =
-                                        session.modified.into();
-                                    ResumeSessionItem {
-                                        id: session.id.to_string(),
-                                        modified: timestamp.format("%Y-%m-%d %H:%M").to_string(),
-                                    }
-                                })
-                                .collect();
+                            let journal_dir = self.session.journal_dir().to_path_buf();
+                            let mut items = Vec::with_capacity(sessions.len());
+                            for session in sessions {
+                                let timestamp: chrono::DateTime<chrono::Local> =
+                                    session.modified.into();
+                                let title =
+                                    forge_core::session_title_hint(&journal_dir, session.id).await;
+                                items.push(ResumeSessionItem {
+                                    id: session.id.to_string(),
+                                    modified: timestamp.format("%Y-%m-%d %H:%M").to_string(),
+                                    title,
+                                });
+                            }
                             self.notices.clear();
                             self.overlay = Some(Overlay::resume_picker(items));
                         }
