@@ -116,8 +116,10 @@ impl TuiApp {
             },
             terminal_capture: TerminalCapture::default(),
             pointer: PointerState::default(),
-            workspace_index: None,
-            workspace_index_error: None,
+            workspace_search: WorkspaceSearchState {
+                index: None,
+                error: None,
+            },
             last_editor_height: 24,
         };
         app.init_file_watcher();
