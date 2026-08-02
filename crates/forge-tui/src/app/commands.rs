@@ -537,12 +537,13 @@ impl TuiApp {
             }
             SemanticCommand::RequestDelete => self.open_explorer_delete_dialog(),
             SemanticCommand::SelectPreviousChange => {
-                self.diff_selected = self.diff_selected.saturating_sub(1);
+                self.diff_view.selected = self.diff_view.selected.saturating_sub(1);
             }
             SemanticCommand::SelectNextChange => {
                 let count = self.file_explorer.git_status.changed_files().len();
-                self.diff_selected = self
-                    .diff_selected
+                self.diff_view.selected = self
+                    .diff_view
+                    .selected
                     .saturating_add(1)
                     .min(count.saturating_sub(1));
             }

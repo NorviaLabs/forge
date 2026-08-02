@@ -687,12 +687,12 @@ async fn edge_end_to_end_recovery_flow_mouse_enabled_and_disabled() {
             .send(FileChangeEvent { path: path.clone() })
             .unwrap();
         app.poll_file_changes();
-        assert!(app.diff_snapshot.stale);
+        assert!(app.diff_view.snapshot.stale);
 
         app.execute_semantic_command(SemanticCommand::RefreshDiff)
             .await
             .unwrap();
-        assert!(!app.diff_snapshot.stale);
+        assert!(!app.diff_view.snapshot.stale);
         app.execute_semantic_command(SemanticCommand::GoHome)
             .await
             .unwrap();
