@@ -311,7 +311,11 @@ async fn edge_diff_reconciles_staleness_after_async_poll_resolves() {
 async fn slash_help_opens_the_help_overlay() {
     let (_dir, mut app) = focus_test_app().await;
     app.dispatch_line("/help").await.unwrap();
-    assert!(matches!(app.overlay, Some(Overlay::Help)), "{:?}", app.overlay);
+    assert!(
+        matches!(app.overlay, Some(Overlay::Help)),
+        "{:?}",
+        app.overlay
+    );
 }
 
 /// F-COMPOSER-01: Ctrl+U (standard readline "clear line") had no binding at
