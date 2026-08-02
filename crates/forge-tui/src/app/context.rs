@@ -16,7 +16,7 @@ impl TuiApp {
             return;
         }
         self.pending_interaction.context_reset = true;
-        self.busy_phase = BusyPhase::Other("context reset".into());
+        self.busy_state.phase = BusyPhase::Other("context reset".into());
         self.status_message = "resetting context…".into();
         self.set_feedback(FeedbackSeverity::Info, "resetting context…");
     }
@@ -63,7 +63,7 @@ impl TuiApp {
         );
         self.status_message = "Continuing in a fresh context".into();
         self.notice_state.items.clear();
-        self.busy_phase = BusyPhase::Idle;
+        self.busy_state.phase = BusyPhase::Idle;
         if let Some(term) = terminal {
             let _ = term.draw(|f| self.draw(f));
         }
@@ -101,7 +101,7 @@ impl TuiApp {
         };
 
         // 2. Guard: no unsafe write-active tool.
-        if matches!(self.busy_phase, BusyPhase::Tool { .. }) {
+        if matches!(self.busy_state.phase, BusyPhase::Tool { .. }) {
             self.set_feedback(
                 FeedbackSeverity::Warn,
                 "External editor unavailable while Forge is writing files.\n\n\

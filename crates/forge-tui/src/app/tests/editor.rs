@@ -96,7 +96,7 @@ async fn external_editor_rejects_during_tool_execution() {
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
-    app.busy_phase = BusyPhase::Tool {
+    app.busy_state.phase = BusyPhase::Tool {
         name: "write".into(),
     };
     app.source_viewer.status = crate::source_viewer::ViewerStatus::Ok;

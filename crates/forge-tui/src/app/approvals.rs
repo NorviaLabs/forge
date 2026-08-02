@@ -88,7 +88,7 @@ impl TuiApp {
             _ => "Action denied".into(),
         };
         self.push_notice(vec![self.status_message.clone()]);
-        self.busy_phase = BusyPhase::Idle;
+        self.busy_state.phase = BusyPhase::Idle;
         if let Some(term) = terminal {
             let _ = term.draw(|f| self.draw(f));
         }
@@ -150,7 +150,7 @@ impl TuiApp {
     fn resume_turn_after_hitl(&mut self) {
         self.pending_turn.continue_turn = true;
         self.busy_state.active = true;
-        self.busy_phase = BusyPhase::Model;
+        self.busy_state.phase = BusyPhase::Model;
         self.timing.started = Some(Instant::now());
         self.stream_preview.clear();
         self.stream_thinking.clear();

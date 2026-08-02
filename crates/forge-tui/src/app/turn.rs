@@ -63,7 +63,7 @@ impl TuiApp {
                 self.stream_thinking.push_str(text);
             }
             ModelStreamEvent::ToolCallStart { name, .. } => {
-                self.busy_phase = BusyPhase::Tool { name: name.clone() };
+                self.busy_state.phase = BusyPhase::Tool { name: name.clone() };
             }
             ModelStreamEvent::Error { message } => return Some(message.clone()),
             _ => {}
@@ -191,7 +191,7 @@ impl TuiApp {
                 }
                 self.pending_turn.continue_turn = true;
                 self.busy_state.active = true;
-                self.busy_phase = BusyPhase::Model;
+                self.busy_state.phase = BusyPhase::Model;
                 self.timing.started = Some(Instant::now());
                 self.stream_preview.clear();
                 self.stream_thinking.clear();
@@ -398,7 +398,7 @@ impl TuiApp {
         }
 
         self.busy_state.active = true;
-        self.busy_phase = BusyPhase::Model;
+        self.busy_state.phase = BusyPhase::Model;
         self.stream_preview.clear();
         self.stream_thinking.clear();
         self.timing.started.get_or_insert_with(Instant::now);
@@ -408,7 +408,7 @@ impl TuiApp {
         if let Some(ref line) = line {
             if let Err(e) = self.session.append_user_message(line).await {
                 self.busy_state.active = false;
-                self.busy_phase = BusyPhase::Idle;
+                self.busy_state.phase = BusyPhase::Idle;
                 self.report_error(&e.to_string());
                 self.exit.code = ExitCode::Failed;
                 return Ok(());
@@ -468,7 +468,7 @@ impl TuiApp {
                     if self.exit.requested {
                         handle.abort();
                         self.busy_state.active = false;
-                        self.busy_phase = BusyPhase::Idle;
+                        self.busy_state.phase = BusyPhase::Idle;
                         self.stream_preview.clear();
                         self.stream_thinking.clear();
                         self.timing.started = None;
@@ -544,7 +544,7 @@ impl TuiApp {
             self.stream_thinking.clear();
             // Keep turn_started until full agent turn ends (multi-tool steps).
             if let Some(call) = last.tool_calls.first() {
-                self.busy_phase = BusyPhase::Tool {
+                self.busy_state.phase = BusyPhase::Tool {
                     name: call.name.clone(),
                 };
                 self.push_activity(
@@ -572,7 +572,7 @@ impl TuiApp {
                             break 'turns;
                         }
                         ApplyOutcome::Continue => {
-                            self.busy_phase = BusyPhase::Model;
+                            self.busy_state.phase = BusyPhase::Model;
                             if let Some(term) = terminal.as_deref_mut() {
                                 term.draw(|f| self.draw(f))?;
                             }
@@ -604,7 +604,7 @@ impl TuiApp {
             .cloned();
 
         self.busy_state.active = false;
-        self.busy_phase = BusyPhase::Idle;
+        self.busy_state.phase = BusyPhase::Idle;
 
         if turn_limit_reached {
             self.stream_preview.clear();

@@ -68,7 +68,7 @@ impl TuiApp {
         self.run.current = Some(record);
         self.run.error = None;
         self.run_exec.pending_validation = true;
-        self.busy_phase = BusyPhase::Tool { name: "run".into() };
+        self.busy_state.phase = BusyPhase::Tool { name: "run".into() };
         self.status_message = format!("run: {}", invocation.summary());
         self.push_activity(
             ActivityKind::Run,
@@ -130,7 +130,7 @@ impl TuiApp {
                 });
                 self.run_exec.rx = None;
                 self.run_exec.pending_validation = false;
-                self.busy_phase = BusyPhase::Idle;
+                self.busy_state.phase = BusyPhase::Idle;
                 cancelled = Some(record.clone());
             }
         }
@@ -268,7 +268,7 @@ impl TuiApp {
             Ok(RunEvent::Finished { exit_code, success }) => {
                 self.run_exec.abort = None;
                 self.run_exec.pending_validation = false;
-                self.busy_phase = BusyPhase::Idle;
+                self.busy_state.phase = BusyPhase::Idle;
                 if let Some(mut record) = self.run.current.take() {
                     record.state = if success {
                         RunState::Succeeded
@@ -303,7 +303,7 @@ impl TuiApp {
             Ok(RunEvent::SpawnFailed(error)) => {
                 self.run_exec.abort = None;
                 self.run_exec.pending_validation = false;
-                self.busy_phase = BusyPhase::Idle;
+                self.busy_state.phase = BusyPhase::Idle;
                 if let Some(mut record) = self.run.current.take() {
                     record.state = RunState::StartFailed;
                     record.spawn_error = Some(error.clone());
@@ -328,7 +328,7 @@ impl TuiApp {
             Ok(RunEvent::CaptureFailed(error)) => {
                 self.run_exec.abort = None;
                 self.run_exec.pending_validation = false;
-                self.busy_phase = BusyPhase::Idle;
+                self.busy_state.phase = BusyPhase::Idle;
                 if let Some(mut record) = self.run.current.take() {
                     record.state = RunState::CaptureFailed;
                     record.spawn_error = Some(error.clone());
@@ -356,7 +356,7 @@ impl TuiApp {
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.run_exec.abort = None;
                 self.run_exec.pending_validation = false;
-                self.busy_phase = BusyPhase::Idle;
+                self.busy_state.phase = BusyPhase::Idle;
                 if let Some(record) = self.run.current.as_mut() {
                     record.state = RunState::CaptureFailed;
                     record.finished_at = Some(std::time::SystemTime::now());

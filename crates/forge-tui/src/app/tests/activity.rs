@@ -15,7 +15,7 @@ async fn agent_streaming_while_viewing_file_does_not_navigate() {
     let before = app.workspace_navigation.clone();
 
     app.busy_state.active = true;
-    app.busy_phase = BusyPhase::Model;
+    app.busy_state.phase = BusyPhase::Model;
     app.pending_turn.prompt = None;
     app.stream_preview = "partial answer".into();
     let rendered = render_app_text(&mut app, 100, 30);
@@ -33,7 +33,7 @@ async fn agent_streaming_while_viewing_file_does_not_navigate() {
 async fn agent_thinking_keeps_composer_usable() {
     let (_dir, mut app) = focus_test_app().await;
     app.busy_state.active = true;
-    app.busy_phase = BusyPhase::Model;
+    app.busy_state.phase = BusyPhase::Model;
     app.stream_thinking = "planning".into();
     app.focus_block(FocusBlock::Composer);
 
@@ -58,7 +58,7 @@ async fn activity_summary_priority_renders_one_actionable_row() {
         .status
         .insert(PathBuf::from("changed.rs"), GitStatusKind::Modified);
     app.busy_state.active = true;
-    app.busy_phase = BusyPhase::Model;
+    app.busy_state.phase = BusyPhase::Model;
     app.run.draft.command_input = "cargo test".into();
     app.run_current_draft();
 

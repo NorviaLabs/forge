@@ -81,7 +81,7 @@ impl TuiApp {
         });
         self.activity
             .push(ActivityKind::Error, FeedbackSeverity::Error, msg);
-        self.busy_phase = BusyPhase::Idle;
+        self.busy_state.phase = BusyPhase::Idle;
     }
 
     /// Drop ephemeral error UI (call on new user turn / Esc).
@@ -143,7 +143,7 @@ impl TuiApp {
             effort: self.reasoning_effort.value.to_string(),
             ctx_pct: self.session.context_usage_ratio(),
             busy: self.busy_state.active,
-            busy_phase: self.busy_phase.clone(),
+            busy_phase: self.busy_state.phase.clone(),
             connect_profile: self.connect.profile.clone(),
             provider_connected,
             vendor_label,
@@ -178,7 +178,7 @@ impl TuiApp {
                 }
             }
         }
-        self.busy_phase.progress_description()
+        self.busy_state.phase.progress_description()
     }
 
     fn header_waiting_detail(&self) -> Option<String> {
@@ -187,7 +187,7 @@ impl TuiApp {
         {
             return Some("Approval required".into());
         }
-        if self.busy_state.active && matches!(self.busy_phase, BusyPhase::Connect) {
+        if self.busy_state.active && matches!(self.busy_state.phase, BusyPhase::Connect) {
             return Some("Your input required".into());
         }
         None
@@ -324,7 +324,7 @@ impl TuiApp {
             });
         }
 
-        if self.busy_state.active && matches!(self.busy_phase, BusyPhase::Model) {
+        if self.busy_state.active && matches!(self.busy_state.phase, BusyPhase::Model) {
             return Some(ActivitySummaryModel {
                 label: "Forge is thinking".into(),
                 action_label: None,

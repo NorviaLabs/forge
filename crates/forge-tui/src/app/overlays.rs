@@ -205,14 +205,14 @@ impl TuiApp {
             }
             OverlayAction::ConnectPickProfile { profile_id } => {
                 self.overlay = None;
-                self.busy_phase = BusyPhase::Connect;
+                self.busy_state.phase = BusyPhase::Connect;
                 self.push_activity(
                     ActivityKind::Connect,
                     FeedbackSeverity::Info,
                     format!("connect {profile_id}"),
                 );
                 self.finish_connect(&profile_id, None, false);
-                self.busy_phase = BusyPhase::Idle;
+                self.busy_state.phase = BusyPhase::Idle;
             }
             OverlayAction::FilePick { path, is_dir } => {
                 if is_dir {

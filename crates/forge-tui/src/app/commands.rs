@@ -766,7 +766,7 @@ impl TuiApp {
                             self.overlay = None;
                             self.notice_state.items.clear();
                             self.busy_state.active = false;
-                            self.busy_phase = BusyPhase::Idle;
+                            self.busy_state.phase = BusyPhase::Idle;
                             self.exit.code = match self.session.active_task.lifecycle {
                                 forge_types::TaskLifecycle::Failed => ExitCode::Failed,
                                 forge_types::TaskLifecycle::Waiting => ExitCode::AwaitingHitl,
@@ -935,7 +935,7 @@ impl TuiApp {
 
         self.pending_turn.prompt = Some(final_line);
         self.busy_state.active = true;
-        self.busy_phase = BusyPhase::Model;
+        self.busy_state.phase = BusyPhase::Model;
         self.timing.started = Some(Instant::now());
         // A new user turn should always follow the live conversation tail.
         // This also ensures its thinking block is visible after the user has
