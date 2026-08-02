@@ -165,7 +165,7 @@ impl TuiApp {
         self.session.clear_provider_env();
         self.connect.oauth_pending = None;
         self.connect.oauth_last_poll = None;
-        self.pending_prompt = None;
+        self.pending_turn.prompt = None;
         self.pending_hitl_decision = None;
         self.pending_context_reset = false;
         // The future-task queue is durable session state (owned by

@@ -431,7 +431,10 @@ async fn blocks_chat_when_not_connected() {
         .await
         .unwrap();
 
-    assert!(app.pending_prompt.is_none(), "must not queue a model turn");
+    assert!(
+        app.pending_turn.prompt.is_none(),
+        "must not queue a model turn"
+    );
     assert!(!app.busy);
     assert_eq!(app.input.text, "hello world");
     assert!(
@@ -490,5 +493,5 @@ async fn mock_provider_allows_chat_without_connect() {
     );
     assert!(app.is_provider_connected());
     app.dispatch_line("hi").await.unwrap();
-    assert_eq!(app.pending_prompt.as_deref(), Some("hi"));
+    assert_eq!(app.pending_turn.prompt.as_deref(), Some("hi"));
 }

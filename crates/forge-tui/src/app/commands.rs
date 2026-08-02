@@ -931,7 +931,7 @@ impl TuiApp {
             return Ok(());
         }
 
-        self.pending_prompt = Some(final_line);
+        self.pending_turn.prompt = Some(final_line);
         self.busy = true;
         self.busy_phase = BusyPhase::Model;
         self.timing.started = Some(Instant::now());
@@ -1538,7 +1538,7 @@ mod tests {
             },
         );
 
-        app.pending_prompt = Some("push it".into());
+        app.pending_turn.prompt = Some("push it".into());
         app.drain_pending_prompt(None).await.unwrap();
         assert!(
             !app.busy,
@@ -1550,7 +1550,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            app.busy && app.pending_turn_continue,
+            app.busy && app.pending_turn.continue_turn,
             "approving the tool call must re-arm the turn loop, not leave the session idle \
              while still displaying a busy/Working state"
         );
