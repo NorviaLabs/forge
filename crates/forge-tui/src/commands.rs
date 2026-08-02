@@ -14,6 +14,9 @@ pub enum CommandError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SlashCommand {
+    /// Open the help overlay — the same one the empty composer's `?`
+    /// shortcut opens, just reachable without knowing that shortcut exists.
+    Help,
     ResumeList,
     Resume {
         session_id: Uuid,
@@ -59,6 +62,7 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
     let mut parts = rest.split_whitespace();
     let cmd = parts.next().unwrap_or("").to_ascii_lowercase();
     match cmd.as_str() {
+        "help" | "?" => Ok(SlashCommand::Help),
         "resume" => match parts.next() {
             None => Ok(SlashCommand::ResumeList),
             Some(id) => {
