@@ -205,7 +205,7 @@ async fn compact_reports_context_handoff_in_chat_and_activity() {
     app.dispatch_line("/compact").await.unwrap();
 
     assert!(app.notice_state.items.is_empty());
-    assert!(app.ui_banners.is_empty());
+    assert!(app.banner_state.items.is_empty());
     assert!(app
         .activity
         .all()
@@ -213,7 +213,8 @@ async fn compact_reports_context_handoff_in_chat_and_activity() {
         .any(|item| item.kind == ActivityKind::Context));
     assert_eq!(app.status_message, "Continuing in a fresh context");
     assert!(app
-        .ui_banners
+        .banner_state
+        .items
         .iter()
         .all(|item| !matches!(item, ChatItem::Banner { .. })));
 }
@@ -762,7 +763,7 @@ async fn clear_hides_existing_chat_without_deleting_context() {
     assert_eq!(app.conversation_view.event_start, event_count);
     assert_eq!(app.session.messages.len(), message_count);
     assert_eq!(app.session.events.len(), event_count);
-    assert!(app.ui_banners.is_empty());
+    assert!(app.banner_state.items.is_empty());
     assert!(app.notice_state.items.is_empty());
     assert_eq!(app.conversation_view.scroll, 0);
     assert!(app.conversation_view.follow);

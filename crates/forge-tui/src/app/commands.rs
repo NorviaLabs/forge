@@ -798,7 +798,7 @@ impl TuiApp {
                                 FeedbackSeverity::Ok,
                                 format!("session resumed · {session_id}"),
                             );
-                            self.ui_banners.clear();
+                            self.banner_state.items.clear();
                             // `resume_session` already restored the durable queue for
                             // the target session — do not clear it out from under
                             // that restoration.
@@ -824,7 +824,7 @@ impl TuiApp {
                     // context, so subsequent model turns still see the full conversation.
                     self.conversation_view.message_start = self.session.messages.len();
                     self.conversation_view.event_start = self.session.events.len();
-                    self.ui_banners.clear();
+                    self.banner_state.items.clear();
                     self.notice_state.items.clear();
                     self.clear_error_chrome();
                     self.feedback = FeedbackModel::default();
