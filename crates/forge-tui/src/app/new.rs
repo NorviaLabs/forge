@@ -64,7 +64,7 @@ impl TuiApp {
                 context_reset: false,
             },
             external_editor: ExternalEditorState { requested: false },
-            pending_attachment: None,
+            attachment: AttachmentState { pending: None },
             task_selection: TaskSelectionState {
                 queue: None,
                 tasks: None,
