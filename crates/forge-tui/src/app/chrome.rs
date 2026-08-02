@@ -443,18 +443,18 @@ impl TuiApp {
 
     #[allow(dead_code)]
     fn footer_limits(&mut self, provider: &str) -> FooterLimits {
-        if let Some(rx) = &self.footer_limits_rx {
+        if let Some(rx) = &self.footer_limits.refresh_rx {
             match rx.try_recv() {
                 Ok((provider, limits)) => {
-                    self.footer_limits_cache = Some(FooterLimitsCache {
+                    self.footer_limits.cache = Some(FooterLimitsCache {
                         provider,
                         fetched_at: Instant::now(),
                         limits,
                     });
-                    self.footer_limits_rx = None;
+                    self.footer_limits.refresh_rx = None;
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    self.footer_limits_rx = None;
+                    self.footer_limits.refresh_rx = None;
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
@@ -465,7 +465,8 @@ impl TuiApp {
         }
 
         let (cached_limits, needs_refresh) = match self
-            .footer_limits_cache
+            .footer_limits
+            .cache
             .as_ref()
             .filter(|cache| cache.provider == provider)
         {
@@ -475,7 +476,7 @@ impl TuiApp {
             ),
             None => (None, true),
         };
-        if needs_refresh && self.footer_limits_rx.is_none() {
+        if needs_refresh && self.footer_limits.refresh_rx.is_none() {
             let provider = provider.to_string();
             let request_provider = provider.clone();
             let (tx, rx) = std::sync::mpsc::channel();
@@ -490,7 +491,7 @@ impl TuiApp {
                 .unwrap_or_default();
                 let _ = tx.send((request_provider, footer_limits_from_report(&report)));
             });
-            self.footer_limits_rx = Some(rx);
+            self.footer_limits.refresh_rx = Some(rx);
         }
 
         cached_limits.unwrap_or_default()

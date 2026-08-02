@@ -97,8 +97,10 @@ impl TuiApp {
             conversation_cache: None,
             composer_layout_cache: ComposerLayoutCache::default(),
             model_cost_cache: None,
-            footer_limits_cache: None,
-            footer_limits_rx: None,
+            footer_limits: FooterLimitsState {
+                cache: None,
+                refresh_rx: None,
+            },
             repo_header_state: RepoHeaderState {
                 cache: repo_header,
                 refresh_rx: None,
