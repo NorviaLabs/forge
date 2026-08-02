@@ -1131,7 +1131,7 @@ async fn enter_on_highlighted_suggestion_runs_command() {
             .unwrap();
     }
     assert_eq!(
-        app.slash_suggestions()[app.slash_suggest_idx].cmd,
+        app.slash_suggestions()[app.slash_suggestions.selected].cmd,
         "/connect"
     );
     // One Enter should apply selection AND open the connect picker (not merely complete text)
