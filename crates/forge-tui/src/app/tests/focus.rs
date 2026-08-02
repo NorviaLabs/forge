@@ -15,7 +15,7 @@ async fn focus_starts_on_composer_block() {
 async fn tab_cycles_visible_blocks_and_skips_hidden_ones() {
     let (_dir, mut app) = focus_test_app().await;
     app.focus_block(FocusBlock::Workspace);
-    app.files_visible = true;
+    app.workspace_files.visible = true;
     app.bottom_panel.open = true;
     app.normalize_focus();
 
@@ -141,7 +141,7 @@ async fn esc_from_composer_returns_to_previous_block_and_keeps_draft() {
         FocusBlock::Inspector,
         FocusBlock::BottomPanel,
     ] {
-        app.files_visible = true;
+        app.workspace_files.visible = true;
         app.inspector.visible = true;
         app.bottom_panel.open = true;
         app.focus_block(block);
@@ -193,7 +193,7 @@ async fn semantic_key_paths_emit_existing_commands() {
         Some(SemanticCommand::InsertComposerNewline)
     );
 
-    app.files_visible = true;
+    app.workspace_files.visible = true;
     assert_eq!(
         app.semantic_command_for_file_key(press(KeyCode::Enter, KeyModifiers::NONE)),
         Some(SemanticCommand::OpenSelectedEntry)
@@ -209,7 +209,7 @@ async fn semantic_commands_dispatch_without_rendering_a_frame() {
     app.execute_semantic_command(SemanticCommand::ToggleFiles)
         .await
         .unwrap();
-    assert!(app.files_visible);
+    assert!(app.workspace_files.visible);
     assert_eq!(app.focus.block, FocusBlock::Files);
 
     app.execute_semantic_command(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
@@ -273,7 +273,7 @@ async fn modal_and_transient_precedence_still_wins_over_semantic_bindings() {
     app.handle_key(press(KeyCode::Char('e'), KeyModifiers::CONTROL))
         .await
         .unwrap();
-    assert!(!app.files_visible);
+    assert!(!app.workspace_files.visible);
     assert!(app.overlay.is_some());
 
     app.overlay = None;
@@ -411,7 +411,7 @@ async fn resize_drops_focus_from_a_zero_width_files_block() {
     use ratatui::backend::TestBackend;
 
     let (_dir, mut app) = focus_test_app().await;
-    app.files_visible = true;
+    app.workspace_files.visible = true;
     app.focus_block(FocusBlock::Files);
     let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
     terminal.draw(|frame| app.draw(frame)).unwrap();
@@ -466,7 +466,7 @@ async fn tab_nav_command_recognizes_shifted_plain_arrows_only() {
 #[tokio::test]
 async fn focus_availability_and_restore_skip_hidden_blocks() {
     let (_dir, mut app) = focus_test_app().await;
-    app.files_visible = true;
+    app.workspace_files.visible = true;
     app.inspector.visible = false;
     app.bottom_panel.open = false;
     let availability = app.focus_availability();

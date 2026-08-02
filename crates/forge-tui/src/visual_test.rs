@@ -452,7 +452,7 @@ mod tests {
             Some(workspace.clone()),
             forge_config::FileIconMode::Unicode,
         );
-        app.files_visible = true;
+        app.workspace_files.visible = true;
         app.focus_block(FocusBlock::Files);
         // Select the file and open it.
         app.file_explorer.move_selection(1);
@@ -483,7 +483,7 @@ mod tests {
             Some(workspace.clone()),
             forge_config::FileIconMode::Unicode,
         );
-        app.files_visible = true;
+        app.workspace_files.visible = true;
         app.focus_block(FocusBlock::Files);
         app.file_explorer.move_selection(1);
         app.handle_key(press(KeyCode::Enter)).await.unwrap();
@@ -680,7 +680,7 @@ mod tests {
             Some(workspace.clone()),
             forge_config::FileIconMode::Unicode,
         );
-        app.files_visible = true;
+        app.workspace_files.visible = true;
         app.focus_block(FocusBlock::Files);
 
         // Wait for the background git-status thread.
@@ -742,7 +742,7 @@ mod tests {
             Some(workspace),
             forge_config::FileIconMode::Unicode,
         );
-        app.files_visible = false;
+        app.workspace_files.visible = false;
         app.review_changes_for_test();
 
         let backend = TestBackend::new(120, 40);
@@ -796,7 +796,7 @@ mod tests {
             Some(workspace.clone()),
             forge_config::FileIconMode::Unicode,
         );
-        app.files_visible = true;
+        app.workspace_files.visible = true;
 
         let before = app.file_explorer.visible_nodes().len();
         assert!(before > 1, "explorer should have files before turn");
@@ -900,7 +900,7 @@ mod tests {
             Some(workspace.join("nonexistent")),
             forge_config::FileIconMode::Unicode,
         );
-        app.files_visible = true;
+        app.workspace_files.visible = true;
 
         let backend = TestBackend::new(120, 24);
         let mut term = Terminal::new(backend).unwrap();

@@ -88,7 +88,7 @@ async fn light_theme_resize_keeps_canvas_background() {
 async fn light_theme_representative_layout_snapshot() {
     let (_dir, mut app) = focus_test_app().await;
     app.conversation_view.splash_dismissed = true;
-    app.files_visible = true;
+    app.workspace_files.visible = true;
     app.handle_theme_command(Some("light"));
     app.session.messages.push(Message {
         role: MessageRole::User,
@@ -192,7 +192,7 @@ async fn old_or_malformed_ui_state_migrates_safely_to_default() {
         },
     );
 
-    assert!(!app.files_visible);
+    assert!(!app.workspace_files.visible);
 }
 
 /// A theme switch changes the colours baked into each segment, so it *must*

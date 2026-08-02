@@ -540,6 +540,10 @@ struct WorkspaceSearchState {
     error: Option<String>,
 }
 
+pub(crate) struct WorkspaceFilesState {
+    pub(crate) visible: bool,
+}
+
 struct InspectorState {
     visible: bool,
     view: InspectorView,
@@ -679,7 +683,7 @@ pub struct TuiApp {
     bottom_panel: BottomPanelState,
     run: RunStateModel,
     run_exec: run::RunExecution,
-    pub(crate) files_visible: bool,
+    pub(crate) workspace_files: WorkspaceFilesState,
     pub(crate) file_explorer: FileExplorer,
     explorer_dialog: ExplorerDialogState,
     /// Authoritative keyboard ownership. Legacy component `focused` flags are

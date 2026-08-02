@@ -7,7 +7,7 @@ use super::prelude::*;
 #[tokio::test]
 async fn explorer_new_file_dialog_owns_printable_input_and_selects_created_file() {
     let (dir, mut app) = focus_test_app().await;
-    app.files_visible = true;
+    app.workspace_files.visible = true;
     app.focus_block(FocusBlock::Files);
     app.input.set_text("");
 
@@ -48,7 +48,7 @@ async fn explorer_new_file_dialog_owns_printable_input_and_selects_created_file(
 #[tokio::test]
 async fn explorer_name_escape_cancels_without_focus_change_or_composer_input() {
     let (_dir, mut app) = focus_test_app().await;
-    app.files_visible = true;
+    app.workspace_files.visible = true;
     app.focus_block(FocusBlock::Files);
 
     app.handle_key(press(KeyCode::Char('n'), KeyModifiers::NONE))
@@ -77,7 +77,7 @@ async fn explorer_rename_prepopulates_and_updates_open_child_file() {
     app.file_explorer.refresh_workspace();
     app.file_explorer.selected_path = Some(src.clone());
     app.open_file_in_editor(&child);
-    app.files_visible = true;
+    app.workspace_files.visible = true;
     app.focus_block(FocusBlock::Files);
     app.file_explorer.selected_path = Some(src.clone());
 
@@ -120,7 +120,7 @@ async fn explorer_rename_collision_keeps_name_dialog_with_error() {
     fs::write(&existing, "").unwrap();
     app.file_explorer.refresh_workspace();
     app.file_explorer.selected_path = Some(old.canonicalize().unwrap());
-    app.files_visible = true;
+    app.workspace_files.visible = true;
     app.focus_block(FocusBlock::Files);
 
     app.open_explorer_name_dialog(ExplorerNameAction::Rename);
@@ -152,7 +152,7 @@ async fn explorer_delete_non_empty_folder_requires_stronger_confirmation() {
     let folder = folder.canonicalize().unwrap();
     app.file_explorer.refresh_workspace();
     app.file_explorer.selected_path = Some(folder.clone());
-    app.files_visible = true;
+    app.workspace_files.visible = true;
     app.focus_block(FocusBlock::Files);
 
     app.handle_key(press(KeyCode::Char('d'), KeyModifiers::NONE))

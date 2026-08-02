@@ -127,7 +127,7 @@ impl TuiApp {
         &self,
         key: event::KeyEvent,
     ) -> Option<SemanticCommand> {
-        if !self.files_visible {
+        if !self.workspace_files.visible {
             return None;
         }
         match key.code {
@@ -453,7 +453,7 @@ impl TuiApp {
                     .any(|node| node.path == path)
                 {
                     self.file_explorer.selected_path = Some(path);
-                    if self.files_visible {
+                    if self.workspace_files.visible {
                         self.focus_block(FocusBlock::Files);
                     }
                 }
@@ -1162,7 +1162,7 @@ mod tests {
     #[tokio::test]
     async fn file_pane_bindings_require_a_visible_pane() {
         let (_d, mut app) = app().await;
-        app.files_visible = false;
+        app.workspace_files.visible = false;
         // Every binding is inert while the pane is hidden.
         assert_eq!(
             app.semantic_command_for_file_key(key(KeyCode::Up, NONE)),
@@ -1173,7 +1173,7 @@ mod tests {
             None
         );
 
-        app.files_visible = true;
+        app.workspace_files.visible = true;
         let cases: Vec<(event::KeyEvent, SemanticCommand)> = vec![
             (
                 key(KeyCode::Esc, NONE),
@@ -1224,7 +1224,7 @@ mod tests {
     #[tokio::test]
     async fn shifted_file_bindings_accept_either_modifier_report() {
         let (_d, mut app) = app().await;
-        app.files_visible = true;
+        app.workspace_files.visible = true;
         for modifiers in [NONE, SHIFT] {
             assert_eq!(
                 app.semantic_command_for_file_key(key(KeyCode::Char('N'), modifiers)),

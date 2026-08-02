@@ -35,7 +35,7 @@ async fn file_change_does_not_reload_tree_while_files_sidebar_is_focused() {
     app.file_explorer.selected_path =
         Some(dir.path().join("crates/forge-tui").canonicalize().unwrap());
     app.file_explorer.expand_selected();
-    app.files_visible = true;
+    app.workspace_files.visible = true;
     app.focus_block(FocusBlock::Files);
     app.file_explorer.git_status = crate::git_status::GitStatusCache::new();
 

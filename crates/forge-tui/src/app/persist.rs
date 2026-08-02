@@ -93,7 +93,7 @@ impl TuiApp {
             && state.version <= UI_STATE_VERSION
             && state.repository_or_workspace_id == self.repository_or_workspace_id()
         {
-            self.files_visible = state.files_visibility.is_open();
+            self.workspace_files.visible = state.files_visibility.is_open();
             if let Some(ref name) = state.theme {
                 let theme_id = forge_config::normalize_theme_id(name);
                 if crate::theme::registry().contains(&theme_id) {
@@ -108,7 +108,7 @@ impl TuiApp {
         let state = RepositoryUiState {
             version: UI_STATE_VERSION,
             repository_or_workspace_id: self.repository_or_workspace_id(),
-            files_visibility: FilesVisibility::from_open(self.files_visible),
+            files_visibility: FilesVisibility::from_open(self.workspace_files.visible),
             theme: Some(self.runtime.theme_id.clone()),
         };
         let result = fs::create_dir_all(path.parent().unwrap_or_else(|| Path::new(".")))
@@ -166,14 +166,14 @@ mod tests {
         assert!(path.starts_with(&repo_local_root));
         assert!(path.ends_with(std::path::Path::new("ui-state").join("ui-state.json")));
 
-        app.files_visible = false;
+        app.workspace_files.visible = false;
         app.save_ui_state();
         assert!(path.is_file());
 
         let mut reloaded = test_app(dir.path()).await;
-        reloaded.files_visible = true;
+        reloaded.workspace_files.visible = true;
         reloaded.load_ui_state();
-        assert!(!reloaded.files_visible);
+        assert!(!reloaded.workspace_files.visible);
     }
 
     #[tokio::test]

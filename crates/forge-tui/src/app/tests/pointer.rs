@@ -31,7 +31,7 @@ async fn mouse_click_file_row_selects_and_chevron_toggles() {
     fs::create_dir(dir.path().join("src")).unwrap();
     fs::write(dir.path().join("src/lib.rs"), "pub fn demo() {}\n").unwrap();
     app.file_explorer.refresh_workspace();
-    app.files_visible = true;
+    app.workspace_files.visible = true;
     draw_app(&mut app, 140, 30);
 
     let src = dir.path().join("src").canonicalize().unwrap();
@@ -141,7 +141,7 @@ async fn mouse_stale_regions_are_ignored_after_resize_or_list_mutation() {
     fs::create_dir(dir.path().join("src")).unwrap();
     fs::write(dir.path().join("src/lib.rs"), "pub fn demo() {}\n").unwrap();
     app.file_explorer.refresh_workspace();
-    app.files_visible = true;
+    app.workspace_files.visible = true;
     app.file_explorer.selected_path = Some(dir.path().join("src").canonicalize().unwrap());
     app.file_explorer.expand_selected();
     draw_app(&mut app, 140, 30);
@@ -201,7 +201,7 @@ async fn mouse_double_click_same_file_opens_it_like_enter() {
     let file = dir.path().join("main.rs");
     fs::write(&file, "fn main() {}\n").unwrap();
     app.file_explorer.refresh_workspace();
-    app.files_visible = true;
+    app.workspace_files.visible = true;
     draw_app(&mut app, 140, 30);
 
     let canonical = file.canonicalize().unwrap();
@@ -231,7 +231,7 @@ async fn mouse_double_click_same_file_opens_it_like_enter() {
     let enter_file = enter_dir.path().join("main.rs");
     fs::write(&enter_file, "fn main() {}\n").unwrap();
     enter_app.file_explorer.refresh_workspace();
-    enter_app.files_visible = true;
+    enter_app.workspace_files.visible = true;
     enter_app.file_explorer.selected_path = Some(enter_file.canonicalize().unwrap());
     assert_eq!(
         enter_app.semantic_command_for_file_key(press(KeyCode::Enter, KeyModifiers::NONE)),
@@ -256,7 +256,7 @@ async fn mouse_double_click_slow_or_different_rows_only_selects() {
     fs::write(&first, "fn first() {}\n").unwrap();
     fs::write(&second, "fn second() {}\n").unwrap();
     app.file_explorer.refresh_workspace();
-    app.files_visible = true;
+    app.workspace_files.visible = true;
     draw_app(&mut app, 140, 30);
 
     let first = first.canonicalize().unwrap();
@@ -320,7 +320,7 @@ async fn mouse_double_click_cancels_on_scroll_resize_list_or_modal_change() {
     let file = dir.path().join("main.rs");
     fs::write(&file, "fn main() {}\n").unwrap();
     app.file_explorer.refresh_workspace();
-    app.files_visible = true;
+    app.workspace_files.visible = true;
     draw_app(&mut app, 140, 30);
 
     let file = file.canonicalize().unwrap();
@@ -450,7 +450,7 @@ async fn mouse_double_click_uses_semantic_identity_for_truncated_names() {
     let file = dir.path().join(long_name);
     fs::write(&file, "fn main() {}\n").unwrap();
     app.file_explorer.refresh_workspace();
-    app.files_visible = true;
+    app.workspace_files.visible = true;
     draw_app(&mut app, 120, 30);
 
     let file = file.canonicalize().unwrap();
@@ -475,7 +475,7 @@ async fn mouse_double_click_folder_row_toggles_once() {
     fs::create_dir(dir.path().join("src")).unwrap();
     fs::write(dir.path().join("src/lib.rs"), "pub fn demo() {}\n").unwrap();
     app.file_explorer.refresh_workspace();
-    app.files_visible = true;
+    app.workspace_files.visible = true;
     draw_app(&mut app, 140, 30);
 
     let src = dir.path().join("src").canonicalize().unwrap();
@@ -530,7 +530,7 @@ async fn mouse_double_click_cannot_bypass_delete_confirmation() {
     let file = dir.path().join("delete-me.rs");
     fs::write(&file, "fn main() {}\n").unwrap();
     app.file_explorer.refresh_workspace();
-    app.files_visible = true;
+    app.workspace_files.visible = true;
     app.file_explorer.selected_path = Some(file.canonicalize().unwrap());
     app.open_explorer_delete_dialog();
     draw_app(&mut app, 120, 30);
@@ -555,7 +555,7 @@ async fn edge_mouse_disabled_keeps_keyboard_workflow_and_no_mouse_hint() {
     let path = dir.path().join("main.rs");
     fs::write(&path, "fn main() {}\n").unwrap();
     app.runtime.mouse_capture = false;
-    app.files_visible = true;
+    app.workspace_files.visible = true;
     app.file_explorer.refresh_workspace();
     let canonical = path.canonicalize().unwrap();
     app.file_explorer.selected_path = Some(canonical.clone());
@@ -582,7 +582,7 @@ async fn edge_hit_target_invalidated_cancels_double_click_state() {
     let path = dir.path().join("main.rs");
     fs::write(&path, "fn main() {}\n").unwrap();
     app.file_explorer.refresh_workspace();
-    app.files_visible = true;
+    app.workspace_files.visible = true;
     draw_app(&mut app, 120, 30);
     let canonical = path.canonicalize().unwrap();
     let (x, y) = hit_point_for_path(
