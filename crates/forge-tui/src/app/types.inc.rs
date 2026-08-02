@@ -599,6 +599,10 @@ struct EditorViewportState {
     height: u16,
 }
 
+struct SlashSuggestionState {
+    selected: usize,
+}
+
 struct RenderCacheState {
     conversation: Option<ConversationRenderCache>,
     composer_layout: ComposerLayoutCache,
@@ -617,8 +621,7 @@ pub struct TuiApp {
     connect: connect::ConnectionModel,
     /// Phase 7 — submitted command history (Up/Down when no overlay).
     history: InputHistory,
-    /// Phase 8 autocomplete: selection within filtered `/` suggestions.
-    slash_suggest_idx: usize,
+    slash_suggestions: SlashSuggestionState,
     /// Multi-line notices (e.g. /connect list) shown above the input.
     pub(crate) notices: Vec<String>,
     notices_until: Option<Instant>,
