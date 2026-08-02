@@ -91,7 +91,7 @@ async fn run_tui_inner(
     result.map(|_| {
         let report = app.session.token_usage_report();
         ExitSummary {
-            exit_code: app.last_exit,
+            exit_code: app.exit.code,
             session_id: app.session.session_id.to_string(),
             token_usage: (report.api.total_api_tokens() > 0)
                 .then(|| format_exit_token_usage(&report)),
@@ -103,7 +103,7 @@ async fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut TuiApp,
 ) -> Result<(), TuiError> {
-    while !app.should_quit {
+    while !app.exit.requested {
         app.poll_file_changes();
         app.poll_run();
         app.poll_background_tasks().await?;

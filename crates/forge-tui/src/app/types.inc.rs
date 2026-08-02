@@ -603,6 +603,11 @@ struct SlashSuggestionState {
     selected: usize,
 }
 
+struct ExitState {
+    requested: bool,
+    code: ExitCode,
+}
+
 struct RenderCacheState {
     conversation: Option<ConversationRenderCache>,
     composer_layout: ComposerLayoutCache,
@@ -612,12 +617,11 @@ pub struct TuiApp {
     pub(crate) session: AgentSession,
     input: InputModel,
     pub(crate) overlay: Option<Overlay>,
-    should_quit: bool,
+    exit: ExitState,
     startup_resume: StartupResumeState,
     busy: bool,
     pub(crate) status_message: String,
     pub(crate) runtime: TuiRuntimeConfig,
-    last_exit: ExitCode,
     connect: connect::ConnectionModel,
     /// Phase 7 — submitted command history (Up/Down when no overlay).
     history: InputHistory,
