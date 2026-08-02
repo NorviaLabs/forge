@@ -115,9 +115,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     };
     let (session, mut startup_notices) = open_session(
         &cfg,
-        if startup_resume_items.is_some() {
-            None
-        } else if create_notice.is_some() {
+        if startup_resume_items.is_some() || create_notice.is_some() {
             None
         } else {
             cli.resume
