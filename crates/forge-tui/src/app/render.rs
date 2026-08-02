@@ -79,7 +79,7 @@ impl TuiApp {
         }
 
         let stream_wait = if self.busy_state.active && self.pending_turn.prompt.is_none() {
-            let elapsed = if !self.stream_thinking.is_empty() {
+            let elapsed = if !self.stream.thinking.is_empty() {
                 // Thinking timer runs from first thinking token
                 self.timing
                     .thinking_started
@@ -93,9 +93,9 @@ impl TuiApp {
                     .unwrap_or(0.0)
             };
             // After answer tokens start, drop the wait/think status line.
-            if !self.stream_preview.is_empty() {
+            if !self.stream.preview.is_empty() {
                 None
-            } else if !self.stream_thinking.is_empty() {
+            } else if !self.stream.thinking.is_empty() {
                 Some((StreamWaitPhase::Thinking, elapsed))
             } else {
                 Some((StreamWaitPhase::Waiting, elapsed))
@@ -217,7 +217,7 @@ impl TuiApp {
                 self.session.active_task.lifecycle,
                 ConversationViewOpts { busy: true, ..opts },
             )
-            .with_streaming_preview(self.stream_thinking.clone(), self.stream_preview.clone())
+            .with_streaming_preview(self.stream.thinking.clone(), self.stream.preview.clone())
             .lines_for_width(width)
         } else {
             Vec::new()
