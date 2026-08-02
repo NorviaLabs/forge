@@ -521,6 +521,15 @@ struct ModelCostState {
     cost: Option<forge_connect::CatalogCost>,
 }
 
+struct ConversationViewState {
+    message_start: usize,
+    event_start: usize,
+    scroll: u16,
+    follow: bool,
+    context_reset_snapshot: Option<(f64, f64)>,
+    splash_dismissed: bool,
+}
+
 struct RenderCacheState {
     conversation: Option<ConversationRenderCache>,
     composer_layout: ComposerLayoutCache,
@@ -613,13 +622,7 @@ pub struct TuiApp {
     /// Last measured height of the editor viewport for page scrolling.
     last_editor_height: u16,
     /// Session message/event offsets hidden by the most recent `/clear`.
-    chat_message_start: usize,
-    chat_event_start: usize,
-    /// Conversation scroll offset (when not following).
-    chat_scroll: u16,
-    chat_follow: bool,
-    context_reset_snapshot: Option<(f64, f64)>,
-    splash_dismissed: bool,
+    conversation_view: ConversationViewState,
     render_cache: RenderCacheState,
     model_cost_cache: Option<ModelCostState>,
     footer_limits: FooterLimitsState,

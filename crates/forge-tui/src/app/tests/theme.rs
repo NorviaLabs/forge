@@ -57,7 +57,7 @@ async fn light_theme_paints_root_canvas_on_draw() {
     use ratatui::Terminal;
 
     let (_dir, mut app) = focus_test_app().await;
-    app.splash_dismissed = true;
+    app.conversation_view.splash_dismissed = true;
     app.handle_theme_command(Some("light"));
     let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
     term.draw(|f| app.draw(f)).unwrap();
@@ -75,7 +75,7 @@ async fn light_theme_resize_keeps_canvas_background() {
     use ratatui::Terminal;
 
     let (_dir, mut app) = focus_test_app().await;
-    app.splash_dismissed = true;
+    app.conversation_view.splash_dismissed = true;
     app.handle_theme_command(Some("light"));
     for (w, h) in [(80, 24), (160, 50), (120, 40)] {
         let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
@@ -87,7 +87,7 @@ async fn light_theme_resize_keeps_canvas_background() {
 #[tokio::test]
 async fn light_theme_representative_layout_snapshot() {
     let (_dir, mut app) = focus_test_app().await;
-    app.splash_dismissed = true;
+    app.conversation_view.splash_dismissed = true;
     app.files_visible = true;
     app.handle_theme_command(Some("light"));
     app.session.messages.push(Message {

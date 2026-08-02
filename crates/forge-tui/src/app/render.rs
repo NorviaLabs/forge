@@ -110,10 +110,14 @@ impl TuiApp {
             stream_thought_secs: self.thought_secs,
         };
         // `/clear` only clears the viewport; the full session remains available to the model.
-        let visible_messages =
-            &self.session.messages[self.chat_message_start.min(self.session.messages.len())..];
-        let visible_events =
-            &self.session.events[self.chat_event_start.min(self.session.events.len())..];
+        let visible_messages = &self.session.messages[self
+            .conversation_view
+            .message_start
+            .min(self.session.messages.len())..];
+        let visible_events = &self.session.events[self
+            .conversation_view
+            .event_start
+            .min(self.session.events.len())..];
         let activity_summary = self.activity_summary();
         let activity_summary_key = self.activity_summary_cache_key();
         let key = ConversationRenderKey {
@@ -132,13 +136,13 @@ impl TuiApp {
             banners: self.ui_banners.len(),
             queue: self.session.queue().len(),
             queue_selected: self.queue_selected,
-            chat_message_start: self.chat_message_start,
-            chat_event_start: self.chat_event_start,
+            chat_message_start: self.conversation_view.message_start,
+            chat_event_start: self.conversation_view.event_start,
             busy: self.busy,
             busy_phase: self.busy_phase.label(),
             activity_summary: activity_summary_key,
             tool_expanded: self.tool_expanded,
-            splash_dismissed: self.splash_dismissed,
+            splash_dismissed: self.conversation_view.splash_dismissed,
             slash_mode,
             status: self.session.active_task.lifecycle,
             theme_id: crate::theme::active(),
@@ -162,10 +166,10 @@ impl TuiApp {
                 },
             )
             .with_extra_banners(self.ui_banners.iter().cloned());
-            if !self.splash_dismissed {
+            if !self.conversation_view.splash_dismissed {
                 conv = conv.with_brand(self.runtime.version.clone());
             }
-            if !slash_mode && !self.splash_dismissed {
+            if !slash_mode && !self.conversation_view.splash_dismissed {
                 conv = conv.with_home(
                     self.runtime.cwd.display().to_string(),
                     self.session.loaded_skills_count(),
@@ -240,8 +244,8 @@ impl TuiApp {
                     crate::conversation::ConversationLinesWidget {
                         lines: &cached_lines,
                         tail_lines: &live_lines,
-                        scroll: self.chat_scroll,
-                        follow: self.chat_follow,
+                        scroll: self.conversation_view.scroll,
+                        follow: self.conversation_view.follow,
                     },
                     conversation_area,
                 );
@@ -289,7 +293,7 @@ impl TuiApp {
                 BusyPhase::Idle => "idle",
             }
             .into();
-            sidebar.context_reset = self.context_reset_snapshot;
+            sidebar.context_reset = self.conversation_view.context_reset_snapshot;
             sidebar.session_allows = self
                 .hitl_session_allow
                 .iter()

@@ -37,20 +37,20 @@ impl TuiApp {
         self.session.force_context_reset_async().await?;
         let after_report = self.session.token_usage_report();
         let after = after_report.context_tokens_est;
-        self.context_reset_snapshot = Some((
+        self.conversation_view.context_reset_snapshot = Some((
             before as f64 / before_report.context_capacity.max(1) as f64 * 100.0,
             after as f64 / after_report.context_capacity.max(1) as f64 * 100.0,
         ));
-        self.chat_message_start = self.session.messages.len();
-        self.chat_event_start = self.session.events.len();
+        self.conversation_view.message_start = self.session.messages.len();
+        self.conversation_view.event_start = self.session.events.len();
         self.push_toast("Continuing in a fresh context");
         let progress = fs::read_to_string(self.runtime.cwd.join(".forge/progress.json"))
             .ok()
             .and_then(|text| serde_json::from_str::<ProgressDocument>(&text).ok());
         if let Some(progress) = progress {
             self.ui_banners.push(ChatItem::ContextHandoff {
-                before_pct: self.context_reset_snapshot.unwrap().0,
-                after_pct: self.context_reset_snapshot.unwrap().1,
+                before_pct: self.conversation_view.context_reset_snapshot.unwrap().0,
+                after_pct: self.conversation_view.context_reset_snapshot.unwrap().1,
                 goal: progress.goal,
                 completed: progress.completed,
                 next_actions: progress.next_actions,

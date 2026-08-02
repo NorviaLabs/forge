@@ -94,7 +94,7 @@ async fn mouse_wheel_scrolls_hovered_pane_without_focus_change() {
         .await
         .unwrap();
     assert_eq!(app.focus.block, FocusBlock::Composer);
-    assert_eq!(app.chat_scroll, 3);
+    assert_eq!(app.conversation_view.scroll, 3);
 }
 
 #[tokio::test]
