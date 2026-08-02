@@ -890,13 +890,16 @@ impl TuiApp {
 
     #[allow(dead_code)]
     fn active_model_cost(&mut self) -> Option<forge_connect::CatalogCost> {
-        if let Some((model, cost)) = &self.model_cost_cache {
-            if model == &self.runtime.model_label {
-                return *cost;
+        if let Some(cache) = &self.model_cost_cache {
+            if cache.model == self.runtime.model_label {
+                return cache.cost;
             }
         }
         let cost = ModelCatalogCache::user_default().get_registry_cost(&self.runtime.model_label);
-        self.model_cost_cache = Some((self.runtime.model_label.clone(), cost));
+        self.model_cost_cache = Some(ModelCostState {
+            model: self.runtime.model_label.clone(),
+            cost,
+        });
         cost
     }
 }
