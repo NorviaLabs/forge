@@ -135,7 +135,7 @@ impl TuiApp {
             last_event_detail: visible_events.last().map_or(0, |event| event.detail.len()),
             banners: self.ui_banners.len(),
             queue: self.session.queue().len(),
-            queue_selected: self.queue_selected,
+            queue_selected: self.task_selection.queue,
             chat_message_start: self.conversation_view.message_start,
             chat_event_start: self.conversation_view.event_start,
             busy: self.busy,
@@ -185,7 +185,7 @@ impl TuiApp {
                     .visible()
                     .map(|item| item.text.clone())
                     .collect::<Vec<_>>(),
-                self.queue_selected,
+                self.task_selection.queue,
             );
             if let BusyPhase::Tool { name } = &self.busy_phase {
                 if name != "run" {
@@ -342,7 +342,7 @@ impl TuiApp {
                     activity: &self.activity,
                     run: &self.run,
                     background: self.session.background(),
-                    tasks_selected: self.tasks_selected,
+                    tasks_selected: self.task_selection.tasks,
                     terminal_title: self.terminal_capture.title.as_deref(),
                     terminal_content: &self.terminal_capture.content,
                     terminal_truncated: self.terminal_capture.truncated,

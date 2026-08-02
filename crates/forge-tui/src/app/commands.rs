@@ -800,7 +800,7 @@ impl TuiApp {
                             // `resume_session` already restored the durable queue for
                             // the target session — do not clear it out from under
                             // that restoration.
-                            self.queue_selected = None;
+                            self.task_selection.queue = None;
                             self.stream_preview.clear();
                             self.stream_thinking.clear();
                             self.conversation_view.message_start = 0;

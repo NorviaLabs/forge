@@ -59,8 +59,10 @@ impl TuiApp {
             pending_context_reset: false,
             pending_external_editor: false,
             pending_attachment: None,
-            queue_selected: None,
-            tasks_selected: None,
+            task_selection: TaskSelectionState {
+                queue: None,
+                tasks: None,
+            },
             stream_preview: String::new(),
             stream_thinking: String::new(),
             turn_started: None,
