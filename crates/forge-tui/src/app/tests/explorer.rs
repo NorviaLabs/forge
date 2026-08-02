@@ -39,7 +39,7 @@ async fn explorer_new_file_dialog_owns_printable_input_and_selects_created_file(
     let created = dir.path().join("new.rs").canonicalize().unwrap();
     assert!(created.is_file());
     assert_eq!(
-        app.file_explorer.selected_path.as_deref(),
+        app.workspace_files.explorer.selected_path.as_deref(),
         Some(created.as_path())
     );
     assert_eq!(app.focus.block, FocusBlock::Files);
@@ -74,12 +74,12 @@ async fn explorer_rename_prepopulates_and_updates_open_child_file() {
     let src = src.canonicalize().unwrap();
     let child = src.join("lib.rs");
     fs::write(&child, "pub fn old() {}\n").unwrap();
-    app.file_explorer.refresh_workspace();
-    app.file_explorer.selected_path = Some(src.clone());
+    app.workspace_files.explorer.refresh_workspace();
+    app.workspace_files.explorer.selected_path = Some(src.clone());
     app.open_file_in_editor(&child);
     app.workspace_files.visible = true;
     app.focus_block(FocusBlock::Files);
-    app.file_explorer.selected_path = Some(src.clone());
+    app.workspace_files.explorer.selected_path = Some(src.clone());
 
     app.handle_key(press(KeyCode::Char('R'), KeyModifiers::SHIFT))
         .await
@@ -106,7 +106,7 @@ async fn explorer_rename_prepopulates_and_updates_open_child_file() {
     );
     let renamed_dir = dir.path().join("Source").canonicalize().unwrap();
     assert_eq!(
-        app.file_explorer.selected_path.as_deref(),
+        app.workspace_files.explorer.selected_path.as_deref(),
         Some(renamed_dir.as_path())
     );
 }
@@ -118,8 +118,8 @@ async fn explorer_rename_collision_keeps_name_dialog_with_error() {
     let existing = dir.path().join("existing.rs");
     fs::write(&old, "").unwrap();
     fs::write(&existing, "").unwrap();
-    app.file_explorer.refresh_workspace();
-    app.file_explorer.selected_path = Some(old.canonicalize().unwrap());
+    app.workspace_files.explorer.refresh_workspace();
+    app.workspace_files.explorer.selected_path = Some(old.canonicalize().unwrap());
     app.workspace_files.visible = true;
     app.focus_block(FocusBlock::Files);
 
@@ -150,8 +150,8 @@ async fn explorer_delete_non_empty_folder_requires_stronger_confirmation() {
     fs::create_dir(&folder).unwrap();
     fs::write(folder.join("out.txt"), "").unwrap();
     let folder = folder.canonicalize().unwrap();
-    app.file_explorer.refresh_workspace();
-    app.file_explorer.selected_path = Some(folder.clone());
+    app.workspace_files.explorer.refresh_workspace();
+    app.workspace_files.explorer.selected_path = Some(folder.clone());
     app.workspace_files.visible = true;
     app.focus_block(FocusBlock::Files);
 

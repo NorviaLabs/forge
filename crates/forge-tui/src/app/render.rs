@@ -20,7 +20,7 @@ impl TuiApp {
         if is_too_small(area) {
             self.focus.block = FocusBlock::Workspace;
             self.focus.mode = FocusMode::Navigation;
-            self.file_explorer.focused = false;
+            self.workspace_files.explorer.focused = false;
             self.bottom_panel.focused = false;
             self.source_viewer.focused = false;
             self.invalidate_hit_regions();
@@ -67,14 +67,14 @@ impl TuiApp {
         if let Some(files) = regions.files {
             frame.render_widget(
                 FileExplorerWidget {
-                    explorer: &mut self.file_explorer,
+                    explorer: &mut self.workspace_files.explorer,
                     focused: self.focus.block == FocusBlock::Files,
                 },
                 files,
             );
             self.register_file_hit_regions(files);
         }
-        if self.file_explorer.git_status.poll() {
+        if self.workspace_files.explorer.git_status.poll() {
             self.reconcile_diff_staleness();
         }
 
@@ -305,7 +305,7 @@ impl TuiApp {
             let header = self.repo_header();
             sidebar.repo_name = header.repo_name;
             sidebar.branch = header.branch;
-            let gs = &self.file_explorer.git_status;
+            let gs = &self.workspace_files.explorer.git_status;
             sidebar.git_status_loading = gs.loading;
             sidebar.git_status_error = gs.error.is_some();
             sidebar.files_changed = Some(gs.status.len());
@@ -527,7 +527,7 @@ impl TuiApp {
         area: ratatui::layout::Rect,
         buf: &mut ratatui::buffer::Buffer,
     ) {
-        let gs = &self.file_explorer.git_status;
+        let gs = &self.workspace_files.explorer.git_status;
         if gs.loading && gs.status.is_empty() && !self.diff_view.snapshot.stale {
             Paragraph::new("Loading changes…")
                 .style(theme::muted())
