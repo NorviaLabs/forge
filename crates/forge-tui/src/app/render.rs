@@ -141,7 +141,7 @@ impl TuiApp {
             chat_message_start: self.conversation_view.message_start,
             chat_event_start: self.conversation_view.event_start,
             busy: self.busy_state.active,
-            busy_phase: self.busy_phase.label(),
+            busy_phase: self.busy_state.phase.label(),
             activity_summary: activity_summary_key,
             tool_expanded: self.tool_detail.expanded,
             splash_dismissed: self.conversation_view.splash_dismissed,
@@ -189,7 +189,7 @@ impl TuiApp {
                     .collect::<Vec<_>>(),
                 self.task_selection.queue,
             );
-            if let BusyPhase::Tool { name } = &self.busy_phase {
+            if let BusyPhase::Tool { name } = &self.busy_state.phase {
                 if name != "run" {
                     conv = conv.with_running_tool(name.clone());
                 }
@@ -287,7 +287,7 @@ impl TuiApp {
             sidebar.effort = self.reasoning_effort.value.label().to_string();
             sidebar.route = self.connect.profile.clone();
             sidebar.busy = self.busy_state.active;
-            sidebar.step = match &self.busy_phase {
+            sidebar.step = match &self.busy_state.phase {
                 BusyPhase::Model => "model_stream",
                 BusyPhase::Tool { .. } => "tool_execution",
                 BusyPhase::Connect => "connect",
@@ -342,7 +342,7 @@ impl TuiApp {
             BottomPanel {
                 model: BottomPanelModel {
                     state: &self.bottom_panel,
-                    busy_phase: &self.busy_phase,
+                    busy_phase: &self.busy_state.phase,
                     activity: &self.activity,
                     run: &self.run,
                     background: self.session.background(),

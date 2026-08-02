@@ -81,7 +81,7 @@ async fn streaming_updates_reuse_cached_transcript_lines() {
     );
     app.conversation_view.splash_dismissed = true;
     app.busy_state.active = true;
-    app.busy_phase = BusyPhase::Model;
+    app.busy_state.phase = BusyPhase::Model;
     app.stream_preview = "first chunk".into();
     let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
     terminal.draw(|frame| app.draw(frame)).unwrap();
