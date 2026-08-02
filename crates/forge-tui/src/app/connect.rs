@@ -172,8 +172,8 @@ impl TuiApp {
         // `AgentSession`, not the TUI) — a provider disconnect must not
         // silently drop queued instructions.
         self.task_selection.queue = None;
-        self.stream_preview.clear();
-        self.stream_thinking.clear();
+        self.stream.preview.clear();
+        self.stream.thinking.clear();
         self.timing.started = None;
         self.timing.thinking_started = None;
         self.timing.thought_secs = None;

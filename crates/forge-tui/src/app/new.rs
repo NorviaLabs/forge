@@ -79,8 +79,10 @@ impl TuiApp {
                 queue: None,
                 tasks: None,
             },
-            stream_preview: String::new(),
-            stream_thinking: String::new(),
+            stream: StreamState {
+                preview: String::new(),
+                thinking: String::new(),
+            },
             timing: TurnTimingState {
                 started: None,
                 thinking_started: None,
