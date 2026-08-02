@@ -15,18 +15,20 @@ impl TuiApp {
     /// Close the thinking clock. Prefer wall time from first thinking token;
     /// if that is ~0 (same-batch non-stream dump), fall back to full turn elapsed.
     fn close_thinking_timer(&mut self) {
-        if self.thought_secs.is_some() {
+        if self.timing.thought_secs.is_some() {
             return;
         }
         if self.stream_thinking.is_empty() {
             return;
         }
         let from_think = self
+            .timing
             .thinking_started
             .map(|t| t.elapsed().as_secs_f64())
             .unwrap_or(0.0);
         let from_turn = self
-            .turn_started
+            .timing
+            .started
             .map(|t| t.elapsed().as_secs_f64())
             .unwrap_or(0.0);
         // Same-batch dump of all thinking+answer → thinking_started ≈ now; use turn time.
@@ -37,7 +39,7 @@ impl TuiApp {
         } else {
             from_turn
         };
-        self.thought_secs = Some(secs);
+        self.timing.thought_secs = Some(secs);
     }
 
     /// Apply one provider stream event to session state and live preview chrome.
@@ -54,8 +56,9 @@ impl TuiApp {
                 self.stream_preview.push_str(text);
             }
             ModelStreamEvent::ThinkingDelta { text } => {
-                if self.thinking_started.is_none() {
-                    self.thinking_started = self.turn_started.or_else(|| Some(Instant::now()));
+                if self.timing.thinking_started.is_none() {
+                    self.timing.thinking_started =
+                        self.timing.started.or_else(|| Some(Instant::now()));
                 }
                 self.stream_thinking.push_str(text);
             }
@@ -92,7 +95,7 @@ impl TuiApp {
                 name: None,
                 thinking: (!self.stream_thinking.trim().is_empty())
                     .then(|| self.stream_thinking.clone()),
-                thinking_duration_secs: self.thought_secs,
+                thinking_duration_secs: self.timing.thought_secs,
                 tool_calls: Vec::new(),
             });
         }
@@ -189,7 +192,7 @@ impl TuiApp {
                 self.pending_turn_continue = true;
                 self.busy = true;
                 self.busy_phase = BusyPhase::Model;
-                self.turn_started = Some(Instant::now());
+                self.timing.started = Some(Instant::now());
                 self.stream_preview.clear();
                 self.stream_thinking.clear();
                 self.push_activity(
@@ -398,9 +401,9 @@ impl TuiApp {
         self.busy_phase = BusyPhase::Model;
         self.stream_preview.clear();
         self.stream_thinking.clear();
-        self.turn_started.get_or_insert_with(Instant::now);
-        self.thinking_started = None;
-        self.thought_secs = None;
+        self.timing.started.get_or_insert_with(Instant::now);
+        self.timing.thinking_started = None;
+        self.timing.thought_secs = None;
 
         if let Some(ref line) = line {
             if let Err(e) = self.session.append_user_message(line).await {
@@ -442,7 +445,7 @@ impl TuiApp {
                 if self.cancel_requested {
                     handle.abort();
                     self.cancel_requested = false;
-                    self.turn_started = None;
+                    self.timing.started = None;
                     outcome_err = Some("interrupted".into());
                     break 'turns;
                 }
@@ -468,9 +471,9 @@ impl TuiApp {
                         self.busy_phase = BusyPhase::Idle;
                         self.stream_preview.clear();
                         self.stream_thinking.clear();
-                        self.turn_started = None;
-                        self.thinking_started = None;
-                        self.thought_secs = None;
+                        self.timing.started = None;
+                        self.timing.thinking_started = None;
+                        self.timing.thought_secs = None;
                         self.last_exit = ExitCode::Canceled;
                         let _ = self.session.mark_cancelled().await;
                         return Ok(());
@@ -519,8 +522,8 @@ impl TuiApp {
             if self.stream_thinking.is_empty() {
                 if let Some(ref th) = last.thinking {
                     if !th.is_empty() {
-                        if self.thinking_started.is_none() {
-                            self.thinking_started = self.turn_started;
+                        if self.timing.thinking_started.is_none() {
+                            self.timing.thinking_started = self.timing.started;
                         }
                         self.stream_thinking = th.clone();
                         self.close_thinking_timer();
@@ -536,7 +539,7 @@ impl TuiApp {
             }
             self.close_thinking_timer();
 
-            let thought = self.thought_secs.take();
+            let thought = self.timing.thought_secs.take();
             self.stream_preview.clear();
             self.stream_thinking.clear();
             // Keep turn_started until full agent turn ends (multi-tool steps).
@@ -560,8 +563,8 @@ impl TuiApp {
                         turn_thought_secs += secs;
                     }
                     // Reset per-model-step thinking timers for multi-tool loops.
-                    self.thinking_started = None;
-                    self.thought_secs = None;
+                    self.timing.thinking_started = None;
+                    self.timing.thought_secs = None;
                     match out {
                         ApplyOutcome::Done(_) | ApplyOutcome::Hitl(_) => {
                             outcome_err = None;
@@ -606,9 +609,9 @@ impl TuiApp {
         if turn_limit_reached {
             self.stream_preview.clear();
             self.stream_thinking.clear();
-            self.turn_started = None;
-            self.thinking_started = None;
-            self.thought_secs = None;
+            self.timing.started = None;
+            self.timing.thinking_started = None;
+            self.timing.thought_secs = None;
             self.overlay = Some(Overlay::turn_limit(max_turns));
             self.last_exit = ExitCode::Success;
             self.set_feedback(
@@ -636,9 +639,9 @@ impl TuiApp {
             }
             self.stream_preview.clear();
             self.stream_thinking.clear();
-            self.turn_started = None;
-            self.thinking_started = None;
-            self.thought_secs = None;
+            self.timing.started = None;
+            self.timing.thinking_started = None;
+            self.timing.thought_secs = None;
             if was_cancel {
                 self.last_exit = ExitCode::Canceled;
                 if let Err(err) = self.session.mark_cancelled().await {
@@ -663,9 +666,9 @@ impl TuiApp {
         } else if self.session.pending_hitl().is_some() {
             self.stream_preview.clear();
             self.stream_thinking.clear();
-            self.turn_started = None;
-            self.thinking_started = None;
-            self.thought_secs = None;
+            self.timing.started = None;
+            self.timing.thinking_started = None;
+            self.timing.thought_secs = None;
             if let Some(p) = self.session.pending_hitl().cloned() {
                 self.open_hitl_overlay(p);
             }
@@ -676,9 +679,9 @@ impl TuiApp {
         } else {
             self.stream_preview.clear();
             self.stream_thinking.clear();
-            self.turn_started = None;
-            self.thinking_started = None;
-            self.thought_secs = None;
+            self.timing.started = None;
+            self.timing.thinking_started = None;
+            self.timing.thought_secs = None;
             if saw_thinking {
                 self.persist_turn_thinking_duration(turn_thought_secs);
             }

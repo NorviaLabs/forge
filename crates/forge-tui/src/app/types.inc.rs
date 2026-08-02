@@ -555,6 +555,12 @@ struct StartupResumeState {
     session_id: Option<uuid::Uuid>,
 }
 
+struct TurnTimingState {
+    started: Option<Instant>,
+    thinking_started: Option<Instant>,
+    thought_secs: Option<f64>,
+}
+
 struct RenderCacheState {
     conversation: Option<ConversationRenderCache>,
     composer_layout: ComposerLayoutCache,
@@ -602,12 +608,7 @@ pub struct TuiApp {
     stream_preview: String,
     /// Live thinking/reasoning text while tokens stream in.
     stream_thinking: String,
-    /// When the current model turn started (for wait/think elapsed timer).
-    turn_started: Option<Instant>,
-    /// When the first thinking token arrived.
-    thinking_started: Option<Instant>,
-    /// Duration of the thinking phase once it ends (used for persistence/telemetry).
-    thought_secs: Option<f64>,
+    timing: TurnTimingState,
     /// Optional web_search label for chrome (`mock` / `off` / provider id).
     web_search_label: Option<String>,
     /// Phase 10 / TUI-10 — activity ring buffer.
