@@ -125,9 +125,11 @@ impl TuiApp {
         if self.explorer_dialog.current.is_some() {
             return Some("Enter confirm · Esc cancel".into());
         }
+        if self.approval_card.is_some() {
+            return Some("Tab move · Enter allow once · Esc deny".into());
+        }
         if let Some(overlay) = self.overlay.as_ref() {
             return match overlay {
-                Overlay::Hitl { .. } => Some("Tab move · Enter allow once · Esc deny".into()),
                 Overlay::TurnLimit { .. } => Some("Enter confirm · Esc cancel".into()),
                 Overlay::ConnectApiKey { .. } => Some("Enter confirm · Esc cancel".into()),
                 Overlay::ConnectOauth { .. } => Some("Enter continue · Esc cancel".into()),
