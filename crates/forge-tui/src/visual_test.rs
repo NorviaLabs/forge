@@ -594,9 +594,8 @@ mod tests {
             "current line not rendered:\n{text}"
         );
 
-        // The current line's content cells should not have the old bright cyan
-        // selected-row background.
-        let accent = ratatui::style::Color::Rgb(61, 214, 198);
+        // The current line uses the theme's subtle accent background.
+        let accent = crate::theme::accent_soft_bg();
         let line_y = text.lines().position(|l| l.contains("2 │ second")).unwrap();
         let content_start_x = text.lines().nth(line_y).unwrap().find('│').unwrap() + 1;
         let has_bright_bg = (content_start_x..buf.area().width as usize)

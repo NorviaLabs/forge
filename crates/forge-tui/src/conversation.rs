@@ -1996,7 +1996,7 @@ fn render_highlighted_line(segments: &[HighlightSegment]) -> Vec<Span<'static>> 
         .map(|(text, rgb, bold, italic)| {
             let mut style = ratatui::style::Style::default()
                 .fg(ratatui::style::Color::Rgb(rgb.0, rgb.1, rgb.2))
-                .bg(block.bg.unwrap_or_default());
+                .bg(block.bg.unwrap_or(theme::panel_alt_bg()));
             if *bold {
                 style = style.add_modifier(Modifier::BOLD);
             }
