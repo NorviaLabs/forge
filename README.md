@@ -155,7 +155,7 @@ controls are:
 | `Ctrl+Backtick` | Toggle the bottom panel |
 | `Alt+1`–`Alt+4` | Open a bottom-panel tab |
 | `Shift+←` / `Shift+→` | Switch the active block's tab |
-| `Alt+P` | Cycle permission mode (Manual → Accept Edits → Locked) |
+| `Alt+P` | Cycle permission mode (Manual ↔ Accept Edits) |
 | `?` | Open help |
 
 ## Configuration
@@ -252,16 +252,17 @@ Every approval card offers a spectrum of decisions, not just yes/no:
 `Alt+P` cycles the session's oversight level, shown in the sidebar under
 Mode:
 
-- **Manual** — file writes ask for approval, same as shell commands.
-- **Accept Edits** — file writes run free; shell (and anything else gated)
-  still asks.
-- **Locked** — for scripted/non-interactive runs where nothing can answer a
-  prompt: a gated call not covered by an explicit `allow` pattern is denied
-  outright instead of asking.
+- **Manual** — today's default: shell commands ask for approval, file writes
+  don't.
+- **Accept Edits** — currently the same as Manual (Forge doesn't gate any
+  other write-class tool by default); kept as its own mode for forward
+  compatibility with a stricter default.
 
-A mode only pre-seeds which side-effect classes gate and whether an
-unmatched gated call asks or is denied outright — it never overrides an ACL
-deny, and it never touches your loaded `permissions.toml` rules.
+A mode only pre-seeds which side-effect classes gate — it never overrides an
+ACL deny, and it never touches your loaded `permissions.toml` rules. A
+third, stricter `Locked` mode (deny instead of ask, for scripted/CI runs)
+was intentionally left out: Forge has no non-interactive entry point yet for
+"nothing can answer a prompt" to apply to.
 
 ## Built-in tools
 
