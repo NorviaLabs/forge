@@ -61,6 +61,45 @@ async fn edge_network_stream_interruption_preserves_partial_response() {
     );
 }
 
+#[tokio::test]
+async fn failed_turn_does_not_open_a_turn_limit_continuation() {
+    let dir = TempDir::new().unwrap();
+    let session = session_for_workspace_with_model(
+        dir.path(),
+        Arc::new(MockModelClient::stream_error(
+            vec![],
+            "HTTP 500 Internal Server Error",
+        )),
+    )
+    .await;
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "mock".into(),
+            provider: "mock".into(),
+            cwd: dir.path().to_path_buf(),
+            version: "test".into(),
+            startup_notices: Vec::new(),
+            validation_command: None,
+            file_icons: FileIconMode::Unicode,
+            mouse_capture: true,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+
+    app.dispatch_line("fail").await.unwrap();
+    app.drain_pending_prompt(None).await.unwrap();
+
+    assert_eq!(
+        app.session.active_task.lifecycle,
+        forge_types::TaskLifecycle::Failed
+    );
+    assert!(
+        !matches!(app.overlay, Some(Overlay::TurnLimit { .. })),
+        "a failed turn must not be offered another turn-limit batch"
+    );
+}
+
 // Regression test for the "permanently stuck Working" bug found in the
 // 2026-08-01 usability audit: a model/provider request that fails before
 // producing any `ModelResponse` (no partial stream content this time, so the

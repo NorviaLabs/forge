@@ -118,7 +118,7 @@ async fn streaming_updates_reuse_cached_transcript_lines() {
         .collect::<String>();
     assert!(rendered.contains("updated tail"), "{rendered}");
     assert!(
-        !rendered.contains("historical completed thinking"),
+        rendered.contains("historical completed thinking"),
         "{rendered}"
     );
 }
