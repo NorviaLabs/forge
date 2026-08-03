@@ -719,14 +719,27 @@ impl ConversationModel {
                         ActivityOutcome::Warning => (status_glyph(Status::Warning), ""),
                         ActivityOutcome::Neutral => (Span::styled("●", theme::muted()), " "),
                     };
-                    lines.push(Line::from(vec![
+                    let mut spans = vec![
                         prefix,
                         Span::raw(separator),
                         Span::styled(p.label, theme::text().add_modifier(Modifier::BOLD)),
                         Span::styled("  ", theme::metadata_style()),
-                        Span::styled(p.count_label, theme::metadata_style()),
-                        Span::styled(activity_detail_label(p.expanded), theme::metadata_style()),
-                    ]));
+                    ];
+                    match collapsed_command_summary(&p.count_label, &p.items) {
+                        Some((command, output_lines)) => {
+                            spans.push(Span::styled(command, theme::metadata_style()));
+                            spans.push(Span::styled(
+                                format!(" · {output_lines} output lines"),
+                                theme::dim(),
+                            ));
+                        }
+                        None => spans.push(Span::styled(p.count_label, theme::metadata_style())),
+                    }
+                    spans.push(Span::styled(
+                        activity_detail_label(p.expanded),
+                        theme::metadata_style(),
+                    ));
+                    lines.push(Line::from(spans));
                     if p.expanded {
                         for item in p.items {
                             for line in wrap(&item, width.saturating_sub(2)) {
@@ -1220,6 +1233,15 @@ fn activity_entry_from_tool(
         label,
         count_label: if matches!(state, ToolCardState::Running) {
             running_activity_summary(category, name)
+        } else if category == ActivityCategory::Validating {
+            // Command-execution entries: keep the raw "$ command" text (minus
+            // its own trailing "· N output lines", which `summary` from
+            // `classify_tool_content` already carries) as the collapsed
+            // label, so `collapsed_command_summary` can truncate long ones
+            // and append its own count — matches how the pre-grouped
+            // `ChatItem::ActivityGroup` case builds its summary via
+            // `activity_group_summary`.
+            summary.split(" · ").next().unwrap_or(summary).to_string()
         } else {
             result_count_label(1, "item", "items")
         },
@@ -1427,6 +1449,45 @@ fn activity_detail_label(expanded: bool) -> &'static str {
     } else {
         "  · Ctrl+O details"
     }
+}
+
+/// Matches the truncation length already used for long single-line summaries
+/// elsewhere in this file (see the `wrote ·` write/edit summary above).
+const COMMAND_LINE_MAX_CHARS: usize = 80;
+
+/// Collapsed-line rendering for command-execution activity groups (see
+/// [`activity_entry_from_tool`] and the `ChatItem::ActivityGroup` case in
+/// [`semantic_blocks_from_items`], both of which set `count_label` to the
+/// raw `"$ command"` text for validation/command entries).
+///
+/// Returns `Some((truncated_command, output_line_count))` when `count_label`
+/// is a command line that exceeds [`COMMAND_LINE_MAX_CHARS`]; `None` leaves
+/// short commands and non-command summaries (file counts, etc.) untouched so
+/// the caller falls back to rendering `count_label` as-is.
+fn collapsed_command_summary(count_label: &str, items: &[String]) -> Option<(String, usize)> {
+    if count_label.chars().count() <= COMMAND_LINE_MAX_CHARS {
+        return None;
+    }
+    let command = count_label.strip_prefix("$ ")?;
+    let segment = first_command_segment(command);
+    let mut truncated: String = segment.chars().take(COMMAND_LINE_MAX_CHARS).collect();
+    if segment.chars().count() > COMMAND_LINE_MAX_CHARS {
+        truncated.push('…');
+    }
+    let output_lines: usize = items.iter().map(|item| item.lines().count()).sum();
+    Some((format!("$ {truncated}"), output_lines))
+}
+
+/// First command/pipe segment of a (possibly chained) shell command line,
+/// splitting at the earliest `;`, `&&`, or `|`.
+fn first_command_segment(command: &str) -> &str {
+    let mut end = command.len();
+    for sep in [";", "&&", "|"] {
+        if let Some(idx) = command.find(sep) {
+            end = end.min(idx);
+        }
+    }
+    command[..end].trim_end()
 }
 
 fn render_numbered_diff(path: &str, diff: &[String], width: usize) -> Vec<Line<'static>> {
@@ -3086,6 +3147,99 @@ mod tests {
             ConversationBlock::ActivityGroup(group)
                 if group.expanded && group.items.iter().any(|item| item.contains("full file output"))
         )));
+    }
+
+    fn bash_tool_card(command: &str, output_lines: &str, expanded: bool) -> ConversationModel {
+        ConversationModel {
+            items: vec![ChatItem::ToolCard {
+                name: "bash".into(),
+                summary: format!("$ {command} · {} output lines", output_lines),
+                detail: (0..output_lines.parse::<usize>().unwrap_or(0))
+                    .map(|i| format!("line {i}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                state: ToolCardState::Done,
+                duration: None,
+            }],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts {
+                tool_expanded: expanded,
+                ..ConversationViewOpts::default()
+            },
+        }
+    }
+
+    #[test]
+    fn long_command_entry_collapses_with_truncated_line_and_output_count() {
+        let long_command = "cargo test --workspace --all-features -- --test-threads=1 --nocapture; git diff --check; git status --short";
+        let model = bash_tool_card(long_command, "5", false);
+        let text = rendered_text(&model);
+
+        assert!(text.contains("$ cargo test"), "{text}");
+        assert!(text.contains("output lines"), "{text}");
+        assert!(text.contains("Ctrl+O details"), "{text}");
+        assert!(
+            !text.contains("git status --short"),
+            "long command should be truncated to its first segment:\n{text}"
+        );
+    }
+
+    #[test]
+    fn long_command_entry_expands_full_text_via_ctrl_o() {
+        let long_command = "cargo test --workspace --all-features -- --test-threads=1 --nocapture; git diff --check; git status --short";
+        let model = bash_tool_card(long_command, "5", true);
+        let text = rendered_text(&model);
+
+        // Wrapping the expanded detail can reflow incidental whitespace, so
+        // check for the command's distinct pieces rather than byte-exact
+        // equality with the original string.
+        assert!(text.contains("--test-threads=1 --nocapture"), "{text}");
+        assert!(text.contains("git status --short"), "{text}");
+        assert!(text.contains("Ctrl+O collapse"), "{text}");
+    }
+
+    #[test]
+    fn short_command_entries_are_unaffected() {
+        let short_command = "cargo test -p forge-tui";
+        let model = bash_tool_card(short_command, "3", false);
+        let text = rendered_text(&model);
+
+        assert!(text.contains(&format!("$ {short_command}")), "{text}");
+        assert!(!text.contains('…'), "{text}");
+    }
+
+    #[test]
+    fn collapsed_command_summary_splits_at_first_pipe_or_semicolon() {
+        let items = vec!["a\nb\nc".to_string()];
+        let (command, output_lines) = collapsed_command_summary(
+            "$ cargo test --workspace; git diff --check; git status --short --pad-past-eighty-chars-total-length-of-this-line",
+            &items,
+        )
+        .expect("long command should collapse");
+        assert_eq!(command, "$ cargo test --workspace");
+        assert_eq!(output_lines, 3);
+    }
+
+    #[test]
+    fn collapsed_command_summary_ellipsizes_an_overlong_single_segment() {
+        let items: Vec<String> = vec![];
+        let long_single_segment = "cargo test --workspace --all-features --lib --bins --tests --examples --benches --no-fail-fast";
+        let (command, _) =
+            collapsed_command_summary(&format!("$ {long_single_segment}"), &items).expect("long");
+        assert!(command.ends_with('…'), "{command}");
+        assert!(command.chars().count() <= COMMAND_LINE_MAX_CHARS + "$ …".chars().count());
+    }
+
+    #[test]
+    fn collapsed_command_summary_ignores_short_commands() {
+        let items: Vec<String> = vec![];
+        assert_eq!(
+            collapsed_command_summary("$ cargo test -p forge-tui", &items),
+            None
+        );
+        // Non-command summaries (file counts, etc.) are never affected.
+        assert_eq!(collapsed_command_summary("3 files inspected", &items), None);
     }
 
     #[test]
