@@ -39,16 +39,38 @@ fn active_palette() -> Palette {
 
 fn resolved_palette(theme_id: &str) -> ThemePalette {
     if forge_config::is_system_theme(theme_id) {
+        let theme_id = system_theme_id();
         return registry()
-            .get(DEFAULT_THEME_ID)
+            .get(theme_id)
             .map(|theme| theme.palette)
-            .expect("built-in solarized-dark theme");
+            .expect("built-in system theme");
     }
     registry()
         .get(theme_id)
         .map(|theme| theme.palette)
         .or_else(|| registry().get(DEFAULT_THEME_ID).map(|theme| theme.palette))
         .expect("built-in solarized-dark theme")
+}
+
+fn system_theme_id() -> &'static str {
+    std::env::var("COLORFGBG")
+        .ok()
+        .and_then(|value| system_theme_id_from_colorfgbg(&value))
+        .unwrap_or(DEFAULT_THEME_ID)
+}
+
+fn system_theme_id_from_colorfgbg(colorfgbg: &str) -> Option<&'static str> {
+    colorfgbg
+        .rsplit(';')
+        .next()
+        .and_then(|background| background.parse::<u8>().ok())
+        .map(|background| {
+            if background >= 8 {
+                forge_config::THEME_SOLARIZED_LIGHT
+            } else {
+                DEFAULT_THEME_ID
+            }
+        })
 }
 
 fn to_color(rgb: ConfigRgb) -> Color {
@@ -542,6 +564,19 @@ mod tests {
     use super::*;
     use crate::theme_registry::ThemeRegistry;
     use forge_config::{THEME_SOLARIZED_DARK, THEME_SOLARIZED_LIGHT};
+
+    #[test]
+    fn system_theme_uses_terminal_background_hint() {
+        assert_eq!(
+            system_theme_id_from_colorfgbg("15;0"),
+            Some(DEFAULT_THEME_ID)
+        );
+        assert_eq!(
+            system_theme_id_from_colorfgbg("0;15"),
+            Some(THEME_SOLARIZED_LIGHT)
+        );
+        assert_eq!(system_theme_id_from_colorfgbg("invalid"), None);
+    }
 
     fn dark_palette() -> ThemePalette {
         ThemeRegistry::load(None)
