@@ -1,6 +1,9 @@
 //! Discover and load TUI themes from bundled files and optional directories.
 
-use forge_config::{parse_theme_toml, ThemeDefinition, ThemePalette, DEFAULT_THEME_ID};
+use forge_config::{
+    is_system_theme, parse_theme_toml, ThemeDefinition, ThemePalette, DEFAULT_THEME_ID,
+    THEME_SYSTEM,
+};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -91,7 +94,7 @@ impl ThemeRegistry {
 
     pub fn resolve_startup_id(&self, preference: &str) -> String {
         let id = forge_config::normalize_theme_id(preference);
-        if self.contains(&id) {
+        if is_system_theme(&id) || self.contains(&id) {
             id
         } else {
             DEFAULT_THEME_ID.to_string()
@@ -106,7 +109,12 @@ pub fn picker_entries(registry: &ThemeRegistry) -> Vec<(String, String)> {
         .iter()
         .map(|theme| (theme.id.clone(), theme.name.clone()))
         .collect();
-    items.sort_by(|a, b| a.1.cmp(&b.1));
+    items.push((THEME_SYSTEM.to_string(), "System".to_string()));
+    items.sort_by(|a, b| match (a.0 == THEME_SYSTEM, b.0 == THEME_SYSTEM) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.1.cmp(&b.1),
+    });
     items
 }
 
@@ -225,5 +233,14 @@ mod tests {
             registry.resolve_startup_id(THEME_SOLARIZED_LIGHT),
             THEME_SOLARIZED_LIGHT
         );
+    }
+
+    #[test]
+    fn picker_includes_system_and_startup_accepts_it() {
+        let registry = ThemeRegistry::load(None);
+        assert!(picker_entries(&registry)
+            .iter()
+            .any(|(id, name)| id == "system" && name == "System"));
+        assert_eq!(registry.resolve_startup_id("system"), "system");
     }
 }

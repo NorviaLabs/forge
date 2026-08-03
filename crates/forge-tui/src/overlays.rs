@@ -2315,7 +2315,7 @@ impl Widget for OverlayWidget<'_> {
                 let list_items: Vec<ListItem> = items
                     .iter()
                     .enumerate()
-                    .map(|(index, (id, name))| {
+                    .flat_map(|(index, (id, name))| {
                         let marker = if index == *selected { "▶ " } else { "  " };
                         let is_current = id == current;
                         let selected_row = index == *selected;
@@ -2325,13 +2325,24 @@ impl Widget for OverlayWidget<'_> {
                             theme::text()
                         };
                         let base = format!("{marker}{name} ({id})");
-                        if is_current {
+                        let item = if is_current {
                             ListItem::new(Line::from(vec![
                                 Span::styled(base, style),
                                 Span::styled(" · current", theme::tag_style(selected_row)),
                             ]))
                         } else {
                             ListItem::new(Span::styled(base, style))
+                        };
+                        if index == 0 {
+                            vec![
+                                item,
+                                ListItem::new(Span::styled(
+                                    "─".repeat(r.width.saturating_sub(2) as usize),
+                                    theme::border_muted(),
+                                )),
+                            ]
+                        } else {
+                            vec![item]
                         }
                     })
                     .collect();
