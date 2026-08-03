@@ -17,6 +17,7 @@ mod overlays;
 mod run;
 mod sidebar;
 mod source_viewer;
+mod status_glyph;
 mod terminal;
 mod theme;
 mod theme_registry;

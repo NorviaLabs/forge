@@ -4,8 +4,6 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, TryRecvError};
 
-use ratatui::style::Style;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GitStatusKind {
     Modified,
@@ -32,19 +30,6 @@ impl GitStatusKind {
             Self::Untracked => "?",
             Self::Ignored => "!",
             Self::Conflicted => "U",
-        }
-    }
-
-    /// Semantic style for the status marker. The marker character is always
-    /// rendered; colour is a secondary cue.
-    pub fn style(self) -> Style {
-        match self {
-            Self::Modified => crate::theme::info(),
-            Self::Added => crate::theme::ok(),
-            Self::Deleted => crate::theme::danger(),
-            Self::Untracked => crate::theme::muted(),
-            Self::Ignored => crate::theme::dim(),
-            Self::Conflicted => crate::theme::danger(),
         }
     }
 
@@ -474,14 +459,34 @@ mod tests {
     }
 
     #[test]
-    fn style_follows_theme_semantics() {
+    fn status_glyph_follows_theme_semantics() {
+        use ratatui::style::Modifier;
         use GitStatusKind::*;
-        assert_eq!(Modified.style(), crate::theme::info());
-        assert_eq!(Added.style(), crate::theme::ok());
-        assert_eq!(Deleted.style(), crate::theme::danger());
-        assert_eq!(Untracked.style(), crate::theme::muted());
-        assert_eq!(Ignored.style(), crate::theme::dim());
-        assert_eq!(Conflicted.style(), crate::theme::danger());
+
+        assert_eq!(
+            crate::status_glyph::status_glyph(Modified.into()).style,
+            crate::theme::git_modified().add_modifier(Modifier::BOLD)
+        );
+        assert_eq!(
+            crate::status_glyph::status_glyph(Added.into()).style,
+            crate::theme::git_added().add_modifier(Modifier::BOLD)
+        );
+        assert_eq!(
+            crate::status_glyph::status_glyph(Deleted.into()).style,
+            crate::theme::git_deleted().add_modifier(Modifier::BOLD)
+        );
+        assert_eq!(
+            crate::status_glyph::status_glyph(Untracked.into()).style,
+            crate::theme::git_untracked().add_modifier(Modifier::BOLD)
+        );
+        assert_eq!(
+            crate::status_glyph::status_glyph(Ignored.into()).style,
+            crate::theme::git_ignored().add_modifier(Modifier::BOLD)
+        );
+        assert_eq!(
+            crate::status_glyph::status_glyph(Conflicted.into()).style,
+            crate::theme::git_deleted().add_modifier(Modifier::BOLD)
+        );
     }
 
     #[test]
