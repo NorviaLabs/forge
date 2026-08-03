@@ -44,6 +44,10 @@ impl TuiApp {
         )
     }
 
+    pub fn approval_card_dock_height(&self) -> Option<u16> {
+        self.approval_card.as_ref().map(approval_card_dock_height)
+    }
+
     pub(super) fn approval_identity_for_payload(
         &self,
         payload: &HitlPayload,
@@ -62,8 +66,8 @@ impl TuiApp {
         })
     }
 
-    pub(super) fn open_hitl_overlay(&mut self, payload: HitlPayload) {
-        self.overlay = Some(Overlay::hitl_with_working_directory(
+    pub(super) fn open_approval_card(&mut self, payload: HitlPayload) {
+        self.approval_card = Some(ApprovalCardState::for_payload(
             payload,
             self.session.workspace_root().display().to_string(),
         ));
@@ -101,7 +105,7 @@ impl TuiApp {
         remember_exact_direct: bool,
     ) -> Result<(), TuiError> {
         let Some(payload) = self.session.pending_hitl().cloned() else {
-            self.overlay = None;
+            self.approval_card = None;
             return Ok(());
         };
 
@@ -122,7 +126,7 @@ impl TuiApp {
         if let Some(identity) = identity_to_remember {
             self.hitl_session.allowed.insert(identity);
         }
-        self.overlay = None;
+        self.approval_card = None;
         match decision {
             HitlDecision::Approve if remember_exact_direct => {
                 self.push_toast("remembered exact Direct invocation");
@@ -157,7 +161,7 @@ impl TuiApp {
     }
 
     pub fn maybe_open_hitl(&mut self) {
-        if self.overlay.is_none() {
+        if self.approval_card.is_none() {
             if let Some(p) = self.session.pending_hitl() {
                 if self
                     .approval_identity_for_payload(p)
@@ -166,7 +170,7 @@ impl TuiApp {
                     // Will be drained by `drain_auto_hitl` in the event loop.
                     return;
                 }
-                self.open_hitl_overlay(p.clone());
+                self.open_approval_card(p.clone());
             }
         }
     }

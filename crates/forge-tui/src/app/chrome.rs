@@ -285,7 +285,7 @@ impl TuiApp {
     }
 
     pub(super) fn activity_summary(&self) -> Option<ActivitySummaryModel> {
-        // Approval is represented by the blocking overlay, not a background summary.
+        // Approval is represented by the inline approval card, not a background summary.
         if self.overlay.is_some() || self.session.pending_hitl().is_some() {
             return None;
         }

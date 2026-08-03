@@ -231,16 +231,30 @@ impl TuiApp {
         // immutable borrow of `conversation_cache` ends before
         // `register_activity_summary_region` takes `&mut self` below.
         let cached_lines = Arc::clone(&cached.lines);
+        // The approval card, when pending, docks at the bottom of the chat
+        // area rather than centering over it — the transcript above stays
+        // fully visible and scrollable instead of being replaced by a modal.
+        let approval_dock_height = self.approval_card_dock_height().unwrap_or(0);
+        let chat_area = if approval_dock_height > 0 {
+            ratatui::layout::Rect {
+                height: regions.chat.height.saturating_sub(approval_dock_height),
+                ..regions.chat
+            }
+        } else {
+            regions.chat
+        };
+        let approval_area = (approval_dock_height > 0).then(|| ratatui::layout::Rect {
+            y: chat_area.y.saturating_add(chat_area.height),
+            height: regions.chat.height.saturating_sub(chat_area.height),
+            ..regions.chat
+        });
         match self.workspace_navigation.current.clone() {
             WorkspaceView::Conversation => {
                 let conversation_area = ratatui::layout::Rect {
-                    x: regions.chat.x.saturating_add(2.min(regions.chat.width)),
-                    y: regions.chat.y.saturating_add(1.min(regions.chat.height)),
-                    width: regions.chat.width.saturating_sub(2.min(regions.chat.width)),
-                    height: regions
-                        .chat
-                        .height
-                        .saturating_sub(1.min(regions.chat.height)),
+                    x: chat_area.x.saturating_add(2.min(chat_area.width)),
+                    y: chat_area.y.saturating_add(1.min(chat_area.height)),
+                    width: chat_area.width.saturating_sub(2.min(chat_area.width)),
+                    height: chat_area.height.saturating_sub(1.min(chat_area.height)),
                 };
                 frame.render_widget(
                     crate::conversation::ConversationLinesWidget {
@@ -258,21 +272,27 @@ impl TuiApp {
                 );
             }
             WorkspaceView::File(_) => {
-                self.editor_viewport.height = regions.chat.height;
+                self.editor_viewport.height = chat_area.height;
                 frame.render_widget(
                     SourceViewerWidget {
                         viewer: &mut self.source_viewer,
                         focused: self.focus.block == FocusBlock::Workspace,
                     },
-                    regions.chat,
+                    chat_area,
                 );
             }
             WorkspaceView::Diff(DiffCommandContext::Current) => {
-                self.render_diff_workspace(regions.chat, frame.buffer_mut());
+                self.render_diff_workspace(chat_area, frame.buffer_mut());
             }
             WorkspaceView::Run(id) => {
-                self.render_run_workspace(&id, regions.chat, frame.buffer_mut());
+                self.render_run_workspace(&id, chat_area, frame.buffer_mut());
             }
+        }
+        if let Some(area) = approval_area {
+            if let Some(card) = self.approval_card.as_ref() {
+                frame.render_widget(ApprovalCardWidget { card }, area);
+            }
+            self.register_approval_card_hit_regions(area);
         }
         if let Some(sidebar_area) = regions.sidebar {
             let activity = self

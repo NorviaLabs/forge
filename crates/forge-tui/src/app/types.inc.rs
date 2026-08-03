@@ -662,6 +662,10 @@ pub struct TuiApp {
     pub(crate) session: AgentSession,
     input: InputModel,
     pub(crate) overlay: Option<Overlay>,
+    /// Pending HITL decision, rendered as an inline card docked at the
+    /// bottom of the scrollback rather than folded into `overlay` — an
+    /// approval decision is not a distinct application mode.
+    pub(crate) approval_card: Option<ApprovalCardState>,
     exit: ExitState,
     startup_resume: StartupResumeState,
     busy_state: BusyState,

@@ -7,7 +7,7 @@ use super::prelude::*;
 #[tokio::test]
 async fn edge_approval_at_80x24_keeps_required_fields_and_actions() {
     let (_dir, mut app) = focus_test_app().await;
-    app.open_hitl_overlay(direct_hitl_payload("call-1", "src/main.rs"));
+    app.open_approval_card(direct_hitl_payload("call-1", "src/main.rs"));
 
     let rendered = render_app_text(&mut app, 80, 24);
     assert!(rendered.contains("Approval required"), "{rendered}");
@@ -44,7 +44,7 @@ async fn approval_overlay_preserves_underlying_workspace() {
 
     app.maybe_open_hitl();
 
-    assert!(matches!(app.overlay, Some(Overlay::Hitl { .. })));
+    assert!(app.approval_card.is_some());
     assert_eq!(app.workspace_navigation, before);
     assert!(app.activity_summary().is_none());
     assert_eq!(app.workspace_navigation.current, WorkspaceView::File(path));
@@ -163,9 +163,10 @@ async fn approval_shell_mode_cannot_be_remembered() {
     );
     app.maybe_open_hitl();
 
-    let Some(Overlay::Hitl { approval, .. }) = &app.overlay else {
-        panic!("expected approval overlay");
+    let Some(card) = &app.approval_card else {
+        panic!("expected approval card");
     };
+    let approval = &card.approval;
     assert_eq!(approval.mode, ApprovalExecutionMode::Shell);
     assert!(!approval.remember_eligible);
     assert_eq!(

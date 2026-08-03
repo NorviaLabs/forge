@@ -182,7 +182,7 @@ async fn final_shell_rendering_matrix_covers_v31_states_without_obsolete_chrome(
     scenarios.push(("run failed", dir, app, vec!["Failed", "Exit status: 101"]));
 
     let (dir, mut app) = focus_test_app().await;
-    app.open_hitl_overlay(direct_hitl_payload("matrix-approval", "src/main.rs"));
+    app.open_approval_card(direct_hitl_payload("matrix-approval", "src/main.rs"));
     scenarios.push((
         "approval",
         dir,
