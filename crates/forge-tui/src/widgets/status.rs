@@ -1,5 +1,6 @@
 //! Session chrome data for `/status`.
 
+use crate::status_glyph::{status_glyph, Status};
 use crate::theme;
 use forge_types::TaskLifecycle;
 use ratatui::buffer::Buffer;
@@ -434,13 +435,13 @@ impl Widget for StatusBar<'_> {
         // Recompute room after repo.
         if used + life_needed <= width {
             spans.push(Span::raw(separators));
-            spans.push(Span::styled(life_label, life_style));
+            push_lifecycle_label(&mut spans, life, &life_label, life_style);
             used += life_needed;
         } else if life_label.chars().count() <= width {
             // Extremely narrow: prefer state over brand if somehow constrained.
             spans.clear();
             used = life_label.chars().count();
-            spans.push(Span::styled(life_label, life_style));
+            push_lifecycle_label(&mut spans, life, &life_label, life_style);
         } else {
             spans.push(Span::raw(separators));
             spans.push(Span::styled(life.label().to_string(), life_style));
@@ -483,6 +484,31 @@ impl Widget for StatusBar<'_> {
         theme::fill(area, buf, theme::status_bar());
         buf.set_line(area.x, area.y, &Line::from(spans), area.width);
     }
+}
+
+fn push_lifecycle_label(
+    spans: &mut Vec<Span<'static>>,
+    life: TurnLifecycle,
+    label: &str,
+    style: ratatui::style::Style,
+) {
+    let status = match life {
+        TurnLifecycle::Completed => Some(Status::Success),
+        TurnLifecycle::Failed => Some(Status::Error),
+        _ => None,
+    };
+    if let Some(status) = status {
+        if let Some(rest) = label
+            .strip_prefix(life.symbol())
+            .and_then(|text| text.strip_prefix(' '))
+        {
+            spans.push(status_glyph(status));
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(rest.to_string(), style));
+            return;
+        }
+    }
+    spans.push(Span::styled(label.to_string(), style));
 }
 
 /// One formatting rule for the model picker's active selection.
