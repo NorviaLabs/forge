@@ -304,7 +304,7 @@ impl SourceViewer {
                 segments
                     .iter()
                     .map(|(text, (r, g, b), bold, italic)| {
-                        let mut style = Style::default().fg(Color::Rgb(*r, *g, *b));
+                        let mut style = theme::panel().fg(Color::Rgb(*r, *g, *b));
                         if *bold {
                             style = style.add_modifier(Modifier::BOLD);
                         }
@@ -1087,7 +1087,7 @@ impl SourceViewerWidget<'_> {
                     .map(String::as_str)
                     .unwrap_or("");
                 if self.viewer.search.open && !self.viewer.search.matches.is_empty() {
-                    let plain = vec![Span::styled(line.to_string(), theme::text())];
+                    let plain = vec![Span::styled(line.to_string(), theme::code_block())];
                     apply_search_styles(
                         &plain,
                         index,
@@ -1098,7 +1098,7 @@ impl SourceViewerWidget<'_> {
                     )
                 } else {
                     let text = clip_line(line, self.viewer.h_scroll, content_width);
-                    vec![Span::styled(text, theme::text())]
+                    vec![Span::styled(text, theme::code_block())]
                 }
             };
 
