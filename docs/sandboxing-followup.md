@@ -10,9 +10,13 @@ follow-up would need to hook into.
 ## Why this matters now
 
 Phases 1–4 make it easier to loosen how often Forge asks before running a
-command — pattern-based auto-allow, an `Accept Edits` mode, a `Locked` mode
-for CI. None of that changes what a mistake, or an approved-but-malicious
-command, can actually do to the machine. Today the only thing standing
+command — pattern-based auto-allow, named permission modes. (A third,
+stricter `Locked` mode — deny instead of ask, for scripted/CI runs — was
+scoped out of phase 4 itself: Forge has no non-interactive entry point yet
+for "nothing can answer a prompt" to apply to. It'll want the same sandbox
+floor described here once it exists.) None of this changes what a mistake,
+or an approved-but-malicious command, can actually do to the machine. Today
+the only thing standing
 between an approved `bash` call and the rest of your filesystem/network is
 the command itself. Every other harness surveyed in the research doc that
 offers a comparably loose mode (Claude Code's `acceptEdits`/`bypassPermissions`,
@@ -44,10 +48,9 @@ The research doc's core framing (section 3) still applies: **how often
 you're asked** (rule lists, modes — what phases 1–4 built) and **what
 happens if a wrong action slips through** (sandboxing — what's deferred)
 are separate axes. A sandbox doesn't replace `hitl_tools`/pattern rules/
-modes; it caps the blast radius underneath all of them, so that even
-`Locked` mode's deny-outright fallback, or a mistaken `pattern_allow` rule,
-fails safe at the OS level instead of relying entirely on the rule being
-correct.
+modes; it caps the blast radius underneath all of them, so that even a
+mistaken `pattern_allow` rule fails safe at the OS level instead of relying
+entirely on the rule being correct.
 
 ## What a follow-up would need to decide
 
