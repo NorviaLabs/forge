@@ -53,7 +53,7 @@ jsonschema = "0.28"
 crossterm = "0.28"
 ratatui = { version = "=0.30.2", default-features = false, features = ["crossterm", "underline-color"] }
 regex = "1"
-notify = "6"
+notify = "8"
 fff-search = "0.10.1"
 fff-grep = "0.10.1"
 fff-query-parser = "0.10.1"
