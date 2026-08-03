@@ -2073,7 +2073,7 @@ fn render_md_line(line: &str) -> Vec<Span<'static>> {
             if let Some(end) = after.find('`') {
                 spans.push(Span::styled(
                     after[..end].to_string(),
-                    theme::tool().add_modifier(Modifier::BOLD),
+                    theme::text_secondary().add_modifier(Modifier::BOLD),
                 ));
                 rest = &after[end + 1..];
                 continue;
@@ -3147,6 +3147,19 @@ mod tests {
             ConversationBlock::ActivityGroup(group)
                 if group.expanded && group.items.iter().any(|item| item.contains("full file output"))
         )));
+    }
+
+    #[test]
+    fn inline_code_in_body_text_uses_secondary_body_color_not_interactive_accent() {
+        let lines = assistant_lines("plain text with `inline code` in it", 80);
+        let code_span = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .find(|span| span.content.as_ref() == "inline code")
+            .expect("inline code span present");
+        assert_eq!(code_span.style.fg, Some(theme::text_secondary_color()));
+        assert_ne!(code_span.style.fg, Some(theme::accent_color()));
+        assert_ne!(code_span.style.fg, Some(theme::info_color()));
     }
 
     fn bash_tool_card(command: &str, output_lines: &str, expanded: bool) -> ConversationModel {
