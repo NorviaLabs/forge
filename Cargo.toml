@@ -42,7 +42,7 @@ chrono = { version = "0.4", features = ["serde"] }
 toml = "1.1"
 dirs = "6"
 pathdiff = "0.2"
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "chrono"] }
+sqlx = { version = "0.9", features = ["runtime-tokio", "sqlite", "chrono"] }
 tempfile = "3"
 clap = { version = "4", features = ["derive", "env"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
