@@ -5,12 +5,12 @@ use std::fmt;
 
 /// Well-known theme id: terminal ANSI fallback (not a palette file).
 pub const THEME_SYSTEM: &str = "system";
-/// Built-in Forge Midnight theme id.
-pub const THEME_FORGE_MIDNIGHT: &str = "forge-midnight";
-/// Built-in Forge Daylight theme id.
-pub const THEME_FORGE_DAYLIGHT: &str = "forge-daylight";
+/// Built-in Solarized Dark theme id.
+pub const THEME_SOLARIZED_DARK: &str = "solarized-dark";
+/// Built-in Solarized Light theme id.
+pub const THEME_SOLARIZED_LIGHT: &str = "solarized-light";
 /// Default when no preference is stored.
-pub const DEFAULT_THEME_ID: &str = THEME_FORGE_MIDNIGHT;
+pub const DEFAULT_THEME_ID: &str = THEME_SOLARIZED_DARK;
 
 /// RGB triplet used in theme files (no terminal dependency).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,8 +54,8 @@ pub fn parse_hex_color(s: &str) -> Result<Rgb, String> {
 pub fn normalize_theme_id(raw: &str) -> String {
     match raw.trim().to_ascii_lowercase().as_str() {
         "" => DEFAULT_THEME_ID.to_string(),
-        "dark" => THEME_FORGE_MIDNIGHT.to_string(),
-        "light" => THEME_FORGE_DAYLIGHT.to_string(),
+        "dark" => THEME_SOLARIZED_DARK.to_string(),
+        "light" => THEME_SOLARIZED_LIGHT.to_string(),
         "system" => THEME_SYSTEM.to_string(),
         other => other.to_string(),
     }
@@ -71,8 +71,8 @@ pub fn is_system_theme(id: &str) -> bool {
 /// Unknown values are ignored so a typo does not change the default theme.
 pub fn parse_theme_preference(raw: &str) -> Option<String> {
     match raw.trim().to_ascii_lowercase().as_str() {
-        "dark" | "forge-midnight" => Some(THEME_FORGE_MIDNIGHT.to_string()),
-        "light" | "forge-daylight" => Some(THEME_FORGE_DAYLIGHT.to_string()),
+        "dark" | "solarized-dark" => Some(THEME_SOLARIZED_DARK.to_string()),
+        "light" | "solarized-light" => Some(THEME_SOLARIZED_LIGHT.to_string()),
         "system" => Some(THEME_SYSTEM.to_string()),
         _ => None,
     }
@@ -308,8 +308,8 @@ default = "#E6EDF3"
 
     #[test]
     fn normalize_theme_id_maps_legacy_aliases() {
-        assert_eq!(normalize_theme_id("dark"), THEME_FORGE_MIDNIGHT);
-        assert_eq!(normalize_theme_id("light"), THEME_FORGE_DAYLIGHT);
+        assert_eq!(normalize_theme_id("dark"), THEME_SOLARIZED_DARK);
+        assert_eq!(normalize_theme_id("light"), THEME_SOLARIZED_LIGHT);
         assert_eq!(normalize_theme_id("system"), THEME_SYSTEM);
         assert_eq!(normalize_theme_id("custom"), "custom");
     }

@@ -2739,7 +2739,7 @@ mod tests {
             rendered.starts_with(&format!("{glyph} hello world")),
             "{rendered}"
         );
-        let dark = theme::palette(forge_config::THEME_FORGE_MIDNIGHT);
+        let dark = theme::palette(forge_config::THEME_SOLARIZED_DARK);
         let first = m.lines().into_iter().next().expect("operator turn");
         assert_eq!(first.style.bg, Some(dark.user_bg));
         assert_eq!(first.spans[0].style.fg, Some(dark.user_message_gutter));
@@ -3210,7 +3210,7 @@ mod tests {
         let removed = &rendered[1];
         let added = &rendered[2];
 
-        let dark = theme::palette(forge_config::THEME_FORGE_MIDNIGHT);
+        let dark = theme::palette(forge_config::THEME_SOLARIZED_DARK);
         assert!(removed
             .spans
             .iter()

@@ -2291,7 +2291,7 @@ impl Widget for ApprovalCardWidget<'_> {
 mod tests {
     use super::*;
     use crate::commands::{parse_slash, SlashCommand};
-    use forge_config::THEME_FORGE_DAYLIGHT;
+    use forge_config::THEME_SOLARIZED_LIGHT;
     use forge_types::HitlPayload;
     use ratatui::widgets::Widget;
     use serde_json::json;
@@ -3189,22 +3189,22 @@ mod tests {
     fn theme_picker_selects_choice() {
         crate::theme::install(
             crate::theme_registry::ThemeRegistry::load(None),
-            forge_config::THEME_FORGE_MIDNIGHT,
+            forge_config::THEME_SOLARIZED_DARK,
         );
-        let mut overlay = Overlay::theme_open(forge_config::THEME_FORGE_MIDNIGHT);
-        let daylight_index = match &overlay {
+        let mut overlay = Overlay::theme_open(forge_config::THEME_SOLARIZED_DARK);
+        let light_index = match &overlay {
             Overlay::Theme { items, .. } => items
                 .iter()
-                .position(|(id, _)| id == THEME_FORGE_DAYLIGHT)
-                .expect("forge-daylight in picker"),
+                .position(|(id, _)| id == THEME_SOLARIZED_LIGHT)
+                .expect("solarized-light in picker"),
             _ => panic!("expected theme overlay"),
         };
         if let Overlay::Theme { selected, .. } = &mut overlay {
-            *selected = daylight_index;
+            *selected = light_index;
         }
         assert_eq!(
             handle_overlay_key(&mut overlay, Key::Enter),
-            OverlayAction::SelectTheme(THEME_FORGE_DAYLIGHT.to_string())
+            OverlayAction::SelectTheme(THEME_SOLARIZED_LIGHT.to_string())
         );
     }
 
