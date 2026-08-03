@@ -6,8 +6,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust 1.97.1+](https://img.shields.io/badge/rust-1.97.1%2B-orange.svg)](https://www.rust-lang.org/)
 
-Go from idea to verified code without leaving the terminal—Forge unifies an AI
-agent, code editor, and shell in one focused workflow.
+_Go from idea to verified code without leaving the terminal—Forge unifies an AI
+agent, code editor, and shell in one focused workflow._
 
 Forge is an open-source AI coding agent for your terminal. It runs a
 full-screen TUI in the repository you are working on, helps inspect and change
