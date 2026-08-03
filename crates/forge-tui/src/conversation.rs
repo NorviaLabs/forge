@@ -1457,9 +1457,10 @@ fn render_numbered_diff(path: &str, diff: &[String], width: usize) -> Vec<Line<'
 
         if let Some(Some(parts)) = highlighted.as_ref().map(|lines| lines.get(code_index)) {
             for (text, rgb, bold, italic) in parts {
-                let mut style = ratatui::style::Style::default()
-                    .fg(ratatui::style::Color::Rgb(rgb.0, rgb.1, rgb.2))
-                    .bg(line_style.bg.unwrap_or(theme::panel_alt_bg()));
+                let mut style = theme::syntax_segment(
+                    *rgb,
+                    Some(line_style.bg.unwrap_or(theme::panel_alt_bg())),
+                );
                 if *bold {
                     style = style.add_modifier(Modifier::BOLD);
                 }
@@ -2012,9 +2013,8 @@ fn render_highlighted_line(segments: &[HighlightSegment]) -> Vec<Span<'static>> 
     segments
         .iter()
         .map(|(text, rgb, bold, italic)| {
-            let mut style = ratatui::style::Style::default()
-                .fg(ratatui::style::Color::Rgb(rgb.0, rgb.1, rgb.2))
-                .bg(block.bg.unwrap_or(theme::panel_alt_bg()));
+            let mut style =
+                theme::syntax_segment(*rgb, Some(block.bg.unwrap_or(theme::panel_alt_bg())));
             if *bold {
                 style = style.add_modifier(Modifier::BOLD);
             }
