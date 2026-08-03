@@ -31,6 +31,25 @@ disposable or backed-up repository.
 
 ## Install
 
+### Install a prebuilt release
+
+On macOS or Linux:
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://raw.githubusercontent.com/NorviaLabs/forge/main/install/forge-installer.sh | sh
+```
+
+On Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/NorviaLabs/forge/main/install/forge-installer.ps1 | iex
+```
+
+The installers select the current release for your platform and verify its
+SHA-256 checksum before installing. To install a specific release, set
+`FORGE_VERSION`, for example `v0.1.0-alpha.10`.
+
 ### Build from source
 
 You need Git and Rust 1.97.1 or newer.
