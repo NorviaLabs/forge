@@ -335,7 +335,7 @@ pub fn panel_alt() -> Style {
 }
 
 pub fn user_message() -> Style {
-    Style::default().bg(active_palette().panel_alt)
+    Style::default()
 }
 
 pub fn assistant_message() -> Style {
@@ -778,10 +778,10 @@ mod tests {
         let dark = dark_palette();
         let light = light_palette();
         set_active(THEME_SOLARIZED_DARK);
-        assert_eq!(user_message().bg, Some(to_color(dark.background_deep)));
+        assert_eq!(user_message().bg, None);
         assert_eq!(assistant_message().bg, Some(to_color(dark.background)));
         set_active(THEME_SOLARIZED_LIGHT);
-        assert_eq!(user_message().bg, Some(to_color(light.background)));
+        assert_eq!(user_message().bg, None);
         assert_eq!(assistant_message().bg, Some(to_color(light.background)));
         set_active(THEME_SOLARIZED_DARK);
     }

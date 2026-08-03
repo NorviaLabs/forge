@@ -143,7 +143,8 @@ mod tests {
             .lines_for_width(width)
             .into_iter()
             .map(|line| line_plain(&line))
-            .filter(|row| !row.is_empty())
+            .filter(|row| !row.is_empty() && !row.trim_end().ends_with("You ─"))
+            .map(|row| row.strip_suffix(" │").unwrap_or(&row).to_string())
             .collect()
     }
 
@@ -159,7 +160,7 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(gutter_rows(&rows, glyph), 1);
         assert!(rows[0].ends_with("Summarize this codebase"));
-        assert_eq!(Span::raw(rows[0].clone()).width(), 100);
+        assert_eq!(Span::raw(rows[0].clone()).width(), 98);
     }
 
     #[test]
@@ -247,7 +248,7 @@ mod tests {
             assert_eq!(gutter_rows(&rows, glyph), rows.len(), "width {width}");
             assert!(rows
                 .iter()
-                .all(|row| Span::raw(row.clone()).width() >= width));
+                .all(|row| Span::raw(row.clone()).width() >= width.saturating_sub(2)));
         }
         // Extremely narrow widths still render without panicking.
         let rows = rendered_rows("hi", 4);
@@ -349,20 +350,20 @@ mod tests {
             .lines_for_width(80)
             .into_iter()
             .map(|line| line_plain(&line))
-            .filter(|row| !row.is_empty())
+            .filter(|row| !row.is_empty() && !row.trim_end().ends_with("You ─"))
             .collect();
         assert_eq!(rows.len(), 2);
         assert_eq!(gutter_rows(&rows, glyph), 2);
     }
 
     #[test]
-    fn theme_matrix_uses_raised_request_background() {
+    fn theme_matrix_keeps_request_text_unshaded() {
         for theme in [THEME_SOLARIZED_DARK, THEME_SOLARIZED_LIGHT] {
             let lines =
                 render_user_message_lines("hello", 40, theme, false, crate::conversation::wrap);
             assert!(
-                lines[0].spans[0].style.bg.is_some(),
-                "theme {:?} request background is missing",
+                lines[0].spans[0].style.bg.is_none(),
+                "theme {:?} request text should be unshaded",
                 theme,
             );
         }
@@ -511,7 +512,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_dark_theme_gutter_colour() {
+    fn snapshot_request_text_has_no_background() {
         let lines = render_user_message_lines(
             "hello",
             40,
@@ -519,14 +520,11 @@ mod tests {
             false,
             crate::conversation::wrap,
         );
-        assert_eq!(
-            lines[0].spans[0].style.bg,
-            Some(theme::palette(THEME_SOLARIZED_DARK).panel_alt)
-        );
+        assert_eq!(lines[0].spans[0].style.bg, None);
     }
 
     #[test]
-    fn snapshot_default_theme_gutter_colour() {
+    fn snapshot_default_request_text_has_no_background() {
         let lines = render_user_message_lines(
             "hello",
             40,
@@ -534,10 +532,7 @@ mod tests {
             false,
             crate::conversation::wrap,
         );
-        assert_eq!(
-            lines[0].spans[0].style.bg,
-            Some(theme::palette(THEME_SOLARIZED_DARK).panel_alt)
-        );
+        assert_eq!(lines[0].spans[0].style.bg, None);
     }
 
     #[test]
