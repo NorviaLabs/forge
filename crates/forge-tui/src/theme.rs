@@ -6,21 +6,30 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use std::cell::RefCell;
+use std::time::{Duration, Instant};
 
 thread_local! {
     static THEME_REGISTRY: RefCell<ThemeRegistry> = RefCell::new(ThemeRegistry::default());
     static ACTIVE_THEME_ID: RefCell<String> = RefCell::new(DEFAULT_THEME_ID.to_string());
+    static LAST_SYSTEM_THEME: RefCell<Option<(&'static str, Instant)>> = RefCell::new(None);
+    static RESOLVED_SYSTEM_THEME: RefCell<Option<&'static str>> = RefCell::new(None);
 }
 
 /// Install discovered themes and the active theme id (call once at startup).
 pub fn install(registry: ThemeRegistry, theme_id: impl Into<String>) {
     THEME_REGISTRY.with(|registry_slot| *registry_slot.borrow_mut() = registry);
+    RESOLVED_SYSTEM_THEME.with(|resolved| *resolved.borrow_mut() = None);
+    LAST_SYSTEM_THEME.with(|last| *last.borrow_mut() = None);
     set_active(theme_id);
 }
 
 /// Switch the active theme without replacing the registry.
 pub fn set_active(theme_id: impl Into<String>) {
     let id = forge_config::normalize_theme_id(&theme_id.into());
+    if forge_config::is_system_theme(&id) {
+        RESOLVED_SYSTEM_THEME.with(|resolved| *resolved.borrow_mut() = None);
+        LAST_SYSTEM_THEME.with(|last| *last.borrow_mut() = None);
+    }
     ACTIVE_THEME_ID.with(|active| *active.borrow_mut() = id);
 }
 
@@ -53,10 +62,98 @@ fn resolved_palette(theme_id: &str) -> ThemePalette {
 }
 
 fn system_theme_id() -> &'static str {
-    std::env::var("COLORFGBG")
-        .ok()
-        .and_then(|value| system_theme_id_from_colorfgbg(&value))
+    RESOLVED_SYSTEM_THEME.with(|resolved| {
+        if let Some(theme_id) = *resolved.borrow() {
+            return theme_id;
+        }
+        let theme_id = detect_system_theme_id();
+        *resolved.borrow_mut() = Some(theme_id);
+        theme_id
+    })
+}
+
+/// Re-check the OS theme when `system` is active. Returns true when the
+/// resolved palette changed and cached rendering must be rebuilt.
+pub fn refresh_system() -> bool {
+    if !forge_config::is_system_theme(&active()) {
+        return false;
+    }
+    let now = Instant::now();
+    LAST_SYSTEM_THEME.with(|last| {
+        let mut last = last.borrow_mut();
+        if last.is_some_and(|(_, checked)| now.duration_since(checked) < Duration::from_secs(1)) {
+            return false;
+        }
+        let current = detect_system_theme_id();
+        RESOLVED_SYSTEM_THEME.with(|resolved| *resolved.borrow_mut() = Some(current));
+        let changed = last
+            .map(|(previous, _)| previous != current)
+            .unwrap_or(false);
+        *last = Some((current, now));
+        changed
+    })
+}
+
+fn detect_system_theme_id() -> &'static str {
+    system_theme_id_from_os()
+        .or_else(|| {
+            std::env::var("COLORFGBG")
+                .ok()
+                .and_then(|value| system_theme_id_from_colorfgbg(&value))
+        })
         .unwrap_or(DEFAULT_THEME_ID)
+}
+
+fn system_theme_id_from_os() -> Option<&'static str> {
+    #[cfg(target_os = "linux")]
+    {
+        let output = std::process::Command::new("gsettings")
+            .args(["get", "org.gnome.desktop.interface", "color-scheme"])
+            .output()
+            .ok()?;
+        return system_theme_id_from_os_output(&String::from_utf8_lossy(&output.stdout));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let output = std::process::Command::new("defaults")
+            .args(["read", "-g", "AppleInterfaceStyle"])
+            .output()
+            .ok()?;
+        return if output.status.success() {
+            system_theme_id_from_os_output(&String::from_utf8_lossy(&output.stdout))
+        } else {
+            Some(forge_config::THEME_SOLARIZED_LIGHT)
+        };
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let output = std::process::Command::new("reg")
+            .args([
+                "query",
+                "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+                "/v",
+                "AppsUseLightTheme",
+            ])
+            .output()
+            .ok()?;
+        return system_theme_id_from_os_output(&String::from_utf8_lossy(&output.stdout));
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    None
+}
+
+fn system_theme_id_from_os_output(output: &str) -> Option<&'static str> {
+    let output = output.trim().to_ascii_lowercase();
+    if output.contains("prefer-light")
+        || output.contains("appleinterfacestyle") && output.contains("light")
+        || output.ends_with("0x1")
+    {
+        Some(forge_config::THEME_SOLARIZED_LIGHT)
+    } else if output.contains("prefer-dark") || output.contains("dark") || output.ends_with("0x0") {
+        Some(DEFAULT_THEME_ID)
+    } else {
+        None
+    }
 }
 
 fn system_theme_id_from_colorfgbg(colorfgbg: &str) -> Option<&'static str> {
@@ -576,6 +673,23 @@ mod tests {
             Some(THEME_SOLARIZED_LIGHT)
         );
         assert_eq!(system_theme_id_from_colorfgbg("invalid"), None);
+    }
+
+    #[test]
+    fn system_theme_parses_platform_preferences() {
+        assert_eq!(
+            system_theme_id_from_os_output("'prefer-light'"),
+            Some(THEME_SOLARIZED_LIGHT)
+        );
+        assert_eq!(
+            system_theme_id_from_os_output("'prefer-dark'"),
+            Some(THEME_SOLARIZED_DARK)
+        );
+        assert_eq!(
+            system_theme_id_from_os_output("AppsUseLightTheme REG_DWORD 0x1"),
+            Some(THEME_SOLARIZED_LIGHT)
+        );
+        assert_eq!(system_theme_id_from_os_output("unavailable"), None);
     }
 
     fn dark_palette() -> ThemePalette {
