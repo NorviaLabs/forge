@@ -54,6 +54,10 @@ impl TuiApp {
         text.push_str("Global\n");
         text.push_str("• Tab / Shift+Tab  Move between visible blocks\n");
         text.push_str("• Ctrl+E  Toggle Files\n");
+        text.push_str(&format!(
+            "• Alt+P  Cycle permission mode (now: {})\n",
+            self.permission_mode.label()
+        ));
         text.push_str(
             "• Hold Shift (⌥ on iTerm2) while dragging to select/copy in your terminal\n",
         );

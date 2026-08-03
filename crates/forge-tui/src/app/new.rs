@@ -11,10 +11,14 @@ impl TuiApp {
     }
 
     pub fn new_with_startup_resume_picker(
-        session: AgentSession,
+        mut session: AgentSession,
         runtime: TuiRuntimeConfig,
         startup_items: Option<Vec<ResumeSessionItem>>,
     ) -> Self {
+        // Keep the session's actual enforcement in sync with the `Manual`
+        // label the footer shows from the first frame — see
+        // `permission_mode`'s doc comment.
+        session.apply_permission_mode(forge_governance::PermissionMode::Manual);
         let startup_resume_session_id = startup_items.as_ref().map(|_| session.session_id);
         let workspace_root = session.workspace_root().to_path_buf();
         let (registry, theme_notices) =
@@ -92,6 +96,7 @@ impl TuiApp {
             reasoning_effort: ReasoningEffortState {
                 value: ReasoningEffort::Auto,
             },
+            permission_mode: forge_governance::PermissionMode::Manual,
             tool_detail: ToolDetailState { expanded: false },
             workspace_navigation: WorkspaceNavigation::default(),
             source_viewer: SourceViewer::new(),

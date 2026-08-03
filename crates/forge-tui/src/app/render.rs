@@ -305,6 +305,7 @@ impl TuiApp {
             sidebar.provider = self.runtime.provider.clone();
             sidebar.model = self.runtime.model_label.clone();
             sidebar.effort = self.reasoning_effort.value.label().to_string();
+            sidebar.permission_mode = self.permission_mode.label().to_string();
             sidebar.route = self.connect.profile.clone();
             sidebar.busy = self.busy_state.active;
             sidebar.step = match &self.busy_state.phase {

@@ -118,6 +118,9 @@ impl TuiApp {
             KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::ALT) => {
                 Some(SemanticCommand::QuickSwitchModel)
             }
+            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::ALT) => {
+                Some(SemanticCommand::CyclePermissionMode)
+            }
             KeyCode::F(1) if self.overlay.is_none() => Some(SemanticCommand::OpenHelp),
             _ => None,
         }
@@ -578,6 +581,14 @@ impl TuiApp {
             SemanticCommand::ToggleToolDetails => {
                 self.tool_detail.expanded = !self.tool_detail.expanded
             }
+            SemanticCommand::CyclePermissionMode => {
+                self.permission_mode = self.permission_mode.next();
+                self.session.apply_permission_mode(self.permission_mode);
+                self.set_feedback(
+                    FeedbackSeverity::Info,
+                    format!("permission mode: {}", self.permission_mode.label()),
+                );
+            }
             SemanticCommand::MoveQueueSelection(delta) => self.move_queue_selection(delta),
             SemanticCommand::CancelSelectedQueueMessage => self.cancel_selected_queue().await,
             SemanticCommand::MoveTasksSelection(delta) => self.move_tasks_selection(delta),
@@ -980,7 +991,8 @@ mod tests {
     use forge_core::{AgentSession, LoopConfig};
     use forge_model::MockModelClient;
     use forge_tools::ToolRegistry;
-    use forge_types::ModelResponse;
+    use forge_types::{ModelResponse, ToolCall};
+    use serde_json::json;
     use std::path::PathBuf;
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -1141,6 +1153,10 @@ mod tests {
                 key(KeyCode::Char('`'), CTRL),
                 SemanticCommand::ToggleBottomPanel,
             ),
+            (
+                key(KeyCode::Char('p'), ALT),
+                SemanticCommand::CyclePermissionMode,
+            ),
         ];
         for (k, expected) in cases {
             assert_eq!(
@@ -1159,6 +1175,108 @@ mod tests {
             app.semantic_command_for_global_key(key(KeyCode::Char('c'), NONE)),
             None
         );
+    }
+
+    #[tokio::test]
+    async fn cycle_permission_mode_moves_through_manual_accept_edits_locked_and_back() {
+        let (_dir, mut app) = app().await;
+        assert_eq!(
+            app.permission_mode,
+            forge_governance::PermissionMode::Manual
+        );
+
+        app.execute_semantic_command(SemanticCommand::CyclePermissionMode)
+            .await
+            .unwrap();
+        assert_eq!(
+            app.permission_mode,
+            forge_governance::PermissionMode::AcceptEdits
+        );
+
+        app.execute_semantic_command(SemanticCommand::CyclePermissionMode)
+            .await
+            .unwrap();
+        assert_eq!(
+            app.permission_mode,
+            forge_governance::PermissionMode::Locked
+        );
+
+        app.execute_semantic_command(SemanticCommand::CyclePermissionMode)
+            .await
+            .unwrap();
+        assert_eq!(
+            app.permission_mode,
+            forge_governance::PermissionMode::Manual
+        );
+    }
+
+    /// Proves the mode switch actually reaches the session's live
+    /// `Governance`, not just the TUI's own display field: under `Locked`
+    /// with no matching `pattern_allow` rule, a gated call must be denied
+    /// outright instead of pausing for approval — a real, observable
+    /// behavior difference from `Manual`/`AcceptEdits`.
+    #[tokio::test]
+    async fn locked_mode_denies_an_unapproved_bash_call_instead_of_pausing() {
+        let dir = TempDir::new().unwrap();
+        init_repo(dir.path());
+        let model = Arc::new(MockModelClient::script(vec![ModelResponse {
+            text: "".into(),
+            tool_calls: vec![ToolCall {
+                id: "1".into(),
+                name: "bash".into(),
+                arguments: json!({"command": "echo hi"}),
+            }],
+            usage: None,
+            thinking: None,
+        }]));
+        let session = AgentSession::create(
+            LoopConfig {
+                max_turns: 4,
+                workspace: dir.path().to_path_buf(),
+                journal_dir: dir.path().join("j"),
+                enable_context_lifecycle: true,
+                enable_governance: true,
+                ..Default::default()
+            },
+            model,
+            ToolRegistry::new(),
+        )
+        .await
+        .unwrap();
+        let mut app = TuiApp::new(
+            session,
+            TuiRuntimeConfig {
+                model_label: "mock".into(),
+                provider: "mock".into(),
+                cwd: dir.path().to_path_buf(),
+                version: "forge test".into(),
+                startup_notices: Vec::new(),
+                validation_command: None,
+                file_icons: forge_config::FileIconMode::Unicode,
+                mouse_capture: true,
+                theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+            },
+        );
+        // Manual -> AcceptEdits -> Locked.
+        app.execute_semantic_command(SemanticCommand::CyclePermissionMode)
+            .await
+            .unwrap();
+        app.execute_semantic_command(SemanticCommand::CyclePermissionMode)
+            .await
+            .unwrap();
+        assert_eq!(
+            app.permission_mode,
+            forge_governance::PermissionMode::Locked
+        );
+
+        app.pending_turn.prompt = Some("run it".into());
+        app.drain_pending_prompt(None).await.unwrap();
+
+        assert!(
+            app.session.pending_hitl().is_none(),
+            "Locked mode must deny outright rather than open an approval card"
+        );
+        assert!(app.approval_card.is_none());
     }
 
     #[tokio::test]

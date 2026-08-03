@@ -10,6 +10,50 @@ pub use pattern::{parse_pattern_rules, suggest_pattern, PatternRule};
 
 use forge_types::{PolicyDecision, Principal, SideEffectClass, ToolCall, ToolDescriptor};
 
+/// Named oversight levels a session can cycle through, analogous to Claude
+/// Code's `Shift+Tab` mode cycle. Applying a mode ([`Governance::apply_mode`])
+/// only pre-seeds `hitl_classes` and the deny-instead-of-ask fallback — it
+/// never touches `hitl_tools`, `acl`, or any loaded `pattern_allow`/
+/// `pattern_deny` rules, so it's a thin layer over the existing mechanism,
+/// not a new authorization path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionMode {
+    /// Full oversight: file writes ask for approval, same as shell commands.
+    /// Note this is stricter than the bare library default —
+    /// `Governance::default()` leaves `hitl_classes` empty, so writes are
+    /// unguarded for any caller that never touches modes at all. A mode is
+    /// an explicit, opt-in policy a session adopts; `Manual` is the
+    /// most-cautious point on that opt-in spectrum, not a restatement of
+    /// the library default.
+    Manual,
+    /// File-write-class tools run free; shell and everything else still
+    /// gated.
+    AcceptEdits,
+    /// For non-interactive/scripted runs: nothing can answer a prompt, so a
+    /// gated call not covered by an explicit `pattern_allow` rule is denied
+    /// outright instead of asking.
+    Locked,
+}
+
+impl PermissionMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Manual => "Manual",
+            Self::AcceptEdits => "Accept Edits",
+            Self::Locked => "Locked",
+        }
+    }
+
+    /// Cycle order: `Manual` -> `AcceptEdits` -> `Locked` -> `Manual`.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Manual => Self::AcceptEdits,
+            Self::AcceptEdits => Self::Locked,
+            Self::Locked => Self::Manual,
+        }
+    }
+}
+
 /// High-level governance facade for the tool path.
 #[derive(Debug, Clone)]
 pub struct Governance {
@@ -25,6 +69,10 @@ pub struct Governance {
     /// Pattern rules that hold a call at `Hitl` even where `pattern_allow`
     /// would otherwise match — an exception carved out of a broader allow.
     pub pattern_deny: Vec<PatternRule>,
+    /// When true (set by [`PermissionMode::Locked`]), a gated call not
+    /// covered by an explicit `pattern_allow` rule is denied outright
+    /// instead of prompting — for a run where nothing can answer a prompt.
+    pub deny_unapproved: bool,
 }
 
 impl Default for Governance {
@@ -39,6 +87,7 @@ impl Default for Governance {
             audit: AuditLog::default(),
             pattern_allow: vec![],
             pattern_deny: vec![],
+            deny_unapproved: false,
         }
     }
 }
@@ -63,6 +112,25 @@ impl Governance {
         self.pattern_allow = allow;
         self.pattern_deny = deny;
         self
+    }
+
+    /// Apply a named mode in place, preserving `hitl_tools`, `acl`, and any
+    /// loaded pattern rules — only `hitl_classes`/`deny_unapproved` change.
+    pub fn apply_mode(&mut self, mode: PermissionMode) {
+        match mode {
+            PermissionMode::Manual => {
+                self.hitl_classes = vec![SideEffectClass::Write];
+                self.deny_unapproved = false;
+            }
+            PermissionMode::AcceptEdits => {
+                self.hitl_classes = vec![];
+                self.deny_unapproved = false;
+            }
+            PermissionMode::Locked => {
+                self.hitl_classes = vec![SideEffectClass::Write];
+                self.deny_unapproved = true;
+            }
+        }
     }
 
     /// Filter tool list for the model (SEC-02).
@@ -105,12 +173,20 @@ impl Governance {
             return PolicyDecision::Allow;
         }
         if self.pattern_deny.iter().any(|rule| rule.matches(call)) {
-            return PolicyDecision::Hitl;
+            return self.hitl_or_deny_unapproved();
         }
         if self.pattern_allow.iter().any(|rule| rule.matches(call)) {
             return PolicyDecision::Allow;
         }
-        PolicyDecision::Hitl
+        self.hitl_or_deny_unapproved()
+    }
+
+    fn hitl_or_deny_unapproved(&self) -> PolicyDecision {
+        if self.deny_unapproved {
+            PolicyDecision::Deny
+        } else {
+            PolicyDecision::Hitl
+        }
     }
 
     pub fn redact_args(&self, args: &serde_json::Value) -> serde_json::Value {
@@ -537,5 +613,137 @@ mod tests {
             ),
             PolicyDecision::Allow
         );
+    }
+
+    #[test]
+    fn manual_mode_gates_writes_while_accept_edits_frees_them() {
+        let write = call("write_file", json!({"path": "src/lib.rs"}));
+
+        let mut manual = Governance::default();
+        manual.apply_mode(PermissionMode::Manual);
+        assert_eq!(
+            manual.authorize(&write, SideEffectClass::Write),
+            PolicyDecision::Hitl
+        );
+
+        let mut accept_edits = Governance::default();
+        accept_edits.apply_mode(PermissionMode::AcceptEdits);
+        assert_eq!(
+            accept_edits.authorize(&write, SideEffectClass::Write),
+            PolicyDecision::Allow
+        );
+    }
+
+    /// Both modes still gate `bash` — a mode only ever pre-seeds
+    /// `hitl_classes`, it never touches `hitl_tools`.
+    #[test]
+    fn every_mode_leaves_bash_gated() {
+        for mode in [
+            PermissionMode::Manual,
+            PermissionMode::AcceptEdits,
+            PermissionMode::Locked,
+        ] {
+            let mut g = Governance::default();
+            g.apply_mode(mode);
+            assert_eq!(
+                g.authorize(
+                    &call("bash", json!({"command": "ls"})),
+                    SideEffectClass::Exec
+                ),
+                if mode == PermissionMode::Locked {
+                    PolicyDecision::Deny
+                } else {
+                    PolicyDecision::Hitl
+                },
+                "mode {mode:?} should still gate bash"
+            );
+        }
+    }
+
+    #[test]
+    fn locked_mode_denies_instead_of_asking_unless_a_pattern_allows_it() {
+        let mut g = Governance::default()
+            .with_pattern_rules(parse_pattern_rules(&["bash(cargo test *)"]), vec![]);
+        g.apply_mode(PermissionMode::Locked);
+
+        assert_eq!(
+            g.authorize(
+                &call("bash", json!({"command": "cargo test --all"})),
+                SideEffectClass::Exec
+            ),
+            PolicyDecision::Allow,
+            "a pattern rule still auto-allows in Locked mode"
+        );
+        assert_eq!(
+            g.authorize(
+                &call("bash", json!({"command": "rm -rf /"})),
+                SideEffectClass::Exec
+            ),
+            PolicyDecision::Deny,
+            "anything not pre-approved is denied outright, not asked, in Locked mode"
+        );
+    }
+
+    /// A `pattern_deny` exception carved out of a broader allow also denies
+    /// outright (rather than asking) in Locked mode.
+    #[test]
+    fn locked_mode_denies_a_pattern_deny_exception_outright() {
+        let mut g = Governance::default().with_pattern_rules(
+            parse_pattern_rules(&["bash(cargo *)"]),
+            parse_pattern_rules(&["bash(cargo publish*)"]),
+        );
+        g.apply_mode(PermissionMode::Locked);
+
+        assert_eq!(
+            g.authorize(
+                &call("bash", json!({"command": "cargo publish"})),
+                SideEffectClass::Exec
+            ),
+            PolicyDecision::Deny
+        );
+    }
+
+    /// A mode never overrides an ACL deny, and it never touches loaded
+    /// pattern rules or `hitl_tools` — only `hitl_classes`/`deny_unapproved`.
+    #[test]
+    fn apply_mode_preserves_acl_and_pattern_rules() {
+        let mut g = Governance::default()
+            .with_acl({
+                let mut a = AclPolicy::allow_all();
+                a.deny("bash".into());
+                a
+            })
+            .with_pattern_rules(parse_pattern_rules(&["write_file(src/**)"]), vec![])
+            .require_hitl_for_tool("deploy");
+        g.apply_mode(PermissionMode::AcceptEdits);
+
+        assert_eq!(
+            g.authorize(
+                &call("bash", json!({"command": "ls"})),
+                SideEffectClass::Exec
+            ),
+            PolicyDecision::Deny,
+            "ACL deny must survive a mode switch"
+        );
+        assert_eq!(
+            g.authorize(
+                &call("write_file", json!({"path": "src/lib.rs"})),
+                SideEffectClass::Write
+            ),
+            PolicyDecision::Allow,
+            "loaded pattern_allow rules must survive a mode switch"
+        );
+        assert_eq!(
+            g.authorize(&call("deploy", json!({})), SideEffectClass::Write),
+            PolicyDecision::Hitl,
+            "hitl_tools entries must survive a mode switch"
+        );
+    }
+
+    #[test]
+    fn permission_mode_cycles_manual_accept_edits_locked_and_back() {
+        assert_eq!(PermissionMode::Manual.next(), PermissionMode::AcceptEdits);
+        assert_eq!(PermissionMode::AcceptEdits.next(), PermissionMode::Locked);
+        assert_eq!(PermissionMode::Locked.next(), PermissionMode::Manual);
     }
 }

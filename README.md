@@ -155,6 +155,7 @@ controls are:
 | `Ctrl+Backtick` | Toggle the bottom panel |
 | `Alt+1`–`Alt+4` | Open a bottom-panel tab |
 | `Shift+←` / `Shift+→` | Switch the active block's tab |
+| `Alt+P` | Cycle permission mode (Manual → Accept Edits → Locked) |
 | `?` | Open help |
 
 ## Configuration
@@ -245,6 +246,22 @@ Every approval card offers a spectrum of decisions, not just yes/no:
 - **Deny with feedback** (`f`) — same, plus a short note that reaches the
   agent as context for what to do instead, so it doesn't have to be
   re-explained next turn.
+
+### Permission modes
+
+`Alt+P` cycles the session's oversight level, shown in the sidebar under
+Mode:
+
+- **Manual** — file writes ask for approval, same as shell commands.
+- **Accept Edits** — file writes run free; shell (and anything else gated)
+  still asks.
+- **Locked** — for scripted/non-interactive runs where nothing can answer a
+  prompt: a gated call not covered by an explicit `allow` pattern is denied
+  outright instead of asking.
+
+A mode only pre-seeds which side-effect classes gate and whether an
+unmatched gated call asks or is denied outright — it never overrides an ACL
+deny, and it never touches your loaded `permissions.toml` rules.
 
 ## Built-in tools
 

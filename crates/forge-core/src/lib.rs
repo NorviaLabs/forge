@@ -818,6 +818,15 @@ impl AgentSession {
         self.governance = g;
     }
 
+    /// Apply a named permission mode in place — preserves the ACL and any
+    /// loaded pattern rules, only pre-seeding `hitl_classes`/`deny_unapproved`
+    /// (see `Governance::apply_mode`). Unlike `set_governance`, this can't
+    /// accidentally drop rules a `permissions.toml` load already put in
+    /// place.
+    pub fn apply_permission_mode(&mut self, mode: forge_governance::PermissionMode) {
+        self.governance.apply_mode(mode);
+    }
+
     /// Read-only view of queued future-task instructions.
     pub fn queue(&self) -> &TaskQueue {
         &self.tasks.queue

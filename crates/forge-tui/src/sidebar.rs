@@ -18,6 +18,8 @@ pub struct SidebarModel {
     pub provider: String,
     pub model: String,
     pub effort: String,
+    /// Active oversight level (`PermissionMode::label()`), cycled with Alt+P.
+    pub permission_mode: String,
     /// Connect profile (provider route) serving `model`, e.g. `openai`,
     /// `openrouter` — shown only when it disambiguates the active route.
     pub route: Option<String>,
@@ -111,6 +113,7 @@ impl SidebarModel {
             provider: String::new(),
             model: session.active_model.clone(),
             effort: String::new(),
+            permission_mode: String::new(),
             route: None,
             objective,
             repo_name: None,
@@ -251,6 +254,7 @@ impl SidebarWidget<'_> {
         lines.push(kv("Model", present(&self.model.model)));
         lines.push(kv("Provider", present(&self.model.provider)));
         lines.push(kv("Effort", present(&self.model.effort)));
+        lines.push(kv("Mode", present(&self.model.permission_mode)));
         if let Some(route) = self.model.route.as_deref().filter(|r| !r.is_empty()) {
             lines.push(kv("Route", route));
         }
@@ -445,6 +449,7 @@ mod tests {
             provider: String::new(),
             model: String::new(),
             effort: String::new(),
+            permission_mode: String::new(),
             route: None,
             objective: None,
             repo_name: None,

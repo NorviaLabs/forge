@@ -313,6 +313,7 @@ enum SemanticCommand {
     OpenExternalEditor,
     ToggleCurrentFileAttachment,
     ToggleToolDetails,
+    CyclePermissionMode,
     MoveQueueSelection(i32),
     CancelSelectedQueueMessage,
     MoveTasksSelection(i32),
@@ -698,6 +699,11 @@ pub struct TuiApp {
     /// Phase 10 / TUI-10 — activity ring buffer.
     activity: ActivityFeed,
     reasoning_effort: ReasoningEffortState,
+    /// Active oversight level — cycled with Alt+P (`SemanticCommand::CyclePermissionMode`).
+    /// Mirrors what's actually applied to `session`'s `Governance` via
+    /// `apply_permission_mode`; this field exists only because `Governance`
+    /// doesn't remember which named mode produced its current fields.
+    permission_mode: forge_governance::PermissionMode,
     tool_detail: ToolDetailState,
     /// V3.1 contextual workspace navigation.
     workspace_navigation: WorkspaceNavigation,
