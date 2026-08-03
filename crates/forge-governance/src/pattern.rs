@@ -74,6 +74,50 @@ pub fn parse_pattern_rules<S: AsRef<str>>(raw: &[S]) -> Vec<PatternRule> {
         .collect()
 }
 
+/// Suggest a pattern-rule string for "allow this pattern going forward",
+/// generalizing the call's command prefix / path directory / host so the
+/// rule reasonably covers similar future invocations rather than only the
+/// exact one just approved (that narrower case is already covered by
+/// "remember this exact invocation for the session"). Falls back to the
+/// bare tool name when the call carries no subject this module knows how to
+/// generalize — the caller should show this string for confirmation before
+/// persisting it, exactly as returned.
+///
+/// The result always matches `call`: `PatternRule::parse(&suggest_pattern(call))
+/// .unwrap().matches(call)` holds for every call, which is the property a
+/// confirmation UI is implicitly promising ("approving this widens future
+/// calls like this one").
+pub fn suggest_pattern(call: &ToolCall) -> String {
+    let Some(subject) = subject_for(&call.name, &call.arguments) else {
+        return call.name.clone();
+    };
+    if is_shell_tool(&call.name) {
+        let mut words = subject.split_whitespace();
+        let prefix: Vec<&str> = words.by_ref().take(2).collect();
+        if prefix.is_empty() {
+            return format!("{}(*)", call.name);
+        }
+        // Only append a wildcard when there's more command left after the
+        // prefix — otherwise `"ls *"` (with the trailing space baked in)
+        // would never match the literal subject `"ls"` it was suggested for.
+        return if words.next().is_some() {
+            format!("{}({} *)", call.name, prefix.join(" "))
+        } else {
+            format!("{}({})", call.name, prefix.join(" "))
+        };
+    }
+    if is_file_tool(&call.name) {
+        return match subject.rsplit_once('/') {
+            Some((dir, _)) if !dir.is_empty() => format!("{}({dir}/**)", call.name),
+            _ => format!("{}(**)", call.name),
+        };
+    }
+    if is_fetch_tool(&call.name) {
+        return format!("{}({subject})", call.name);
+    }
+    call.name.clone()
+}
+
 fn subject_for(tool: &str, args: &serde_json::Value) -> Option<String> {
     if is_shell_tool(tool) {
         return args
@@ -228,5 +272,55 @@ mod tests {
     #[test]
     fn parse_rejects_unbalanced_parens() {
         assert!(PatternRule::parse("bash(cargo test *").is_none());
+    }
+
+    #[test]
+    fn suggest_pattern_generalizes_shell_command_to_a_two_word_prefix() {
+        let c = call("bash", json!({"command": "cargo test --all --release"}));
+        assert_eq!(suggest_pattern(&c), "bash(cargo test *)");
+    }
+
+    #[test]
+    fn suggest_pattern_generalizes_file_path_to_its_directory() {
+        let c = call("write_file", json!({"path": "src/app/render.rs"}));
+        assert_eq!(suggest_pattern(&c), "write_file(src/app/**)");
+    }
+
+    #[test]
+    fn suggest_pattern_generalizes_fetch_url_to_its_host() {
+        let c = call("fetch", json!({"url": "https://docs.example.com/page?x=1"}));
+        assert_eq!(suggest_pattern(&c), "fetch(docs.example.com)");
+    }
+
+    #[test]
+    fn suggest_pattern_falls_back_to_bare_tool_name_for_unrecognized_shapes() {
+        let c = call("deploy", json!({"target": "prod"}));
+        assert_eq!(suggest_pattern(&c), "deploy");
+    }
+
+    /// The property a confirmation UI relies on: the suggested pattern must
+    /// always match the call it was suggested for, across every subject
+    /// kind (shell, file, fetch, unrecognized) and edge case (empty/missing
+    /// arguments, single-word command, root-level path).
+    #[test]
+    fn suggest_pattern_always_matches_the_originating_call() {
+        let calls = [
+            call("bash", json!({"command": "cargo test --all"})),
+            call("bash", json!({"command": "ls"})),
+            call("bash", json!({})),
+            call("write_file", json!({"path": "src/lib.rs"})),
+            call("write_file", json!({"path": "Cargo.toml"})),
+            call("fetch", json!({"url": "https://example.com"})),
+            call("deploy", json!({"target": "prod"})),
+        ];
+        for c in calls {
+            let suggested = suggest_pattern(&c);
+            let rule = PatternRule::parse(&suggested)
+                .unwrap_or_else(|| panic!("suggested pattern must parse: {suggested}"));
+            assert!(
+                rule.matches(&c),
+                "suggested pattern {suggested:?} must match the call it came from: {c:?}"
+            );
+        }
     }
 }

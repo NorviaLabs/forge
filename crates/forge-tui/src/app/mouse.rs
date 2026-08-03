@@ -170,34 +170,47 @@ impl TuiApp {
     }
 
     /// Register clickable regions for the docked approval card. `card_area`
-    /// is the exact `Rect` the card widget was rendered into this frame, so
-    /// button positions always agree with what's on screen.
+    /// is the exact `Rect` the card widget was rendered into this frame, and
+    /// each button's row is found by searching the same lines that frame
+    /// actually rendered (`approval_card_action_row`), so a layout change
+    /// can never leave a hand-maintained offset out of sync. Buttons are
+    /// only offered in the `Decide` stage — `ConfirmPattern`/`DenyFeedback`
+    /// are keyboard-only.
     pub(super) fn register_approval_card_hit_regions(&mut self, card_area: ratatui::layout::Rect) {
-        let Some(remember_eligible) = self
-            .approval_card
-            .as_ref()
-            .map(|card| card.approval.remember_eligible)
-        else {
+        let Some(card) = self.approval_card.clone() else {
             return;
         };
         let inner = ratatui::widgets::Block::default()
             .borders(ratatui::widgets::Borders::ALL)
             .inner(card_area);
-        let action_y = inner.y.saturating_add(10);
-        self.register_hit_region(
-            ratatui::layout::Rect::new(inner.x, action_y, 12, 1),
-            HitTarget::OverlayAction(OverlayAction::HitlApprove),
-            1000,
-        );
-        self.register_hit_region(
-            ratatui::layout::Rect::new(inner.x.saturating_add(14), action_y, 8, 1),
-            HitTarget::OverlayAction(OverlayAction::HitlDeny),
-            1000,
-        );
-        if remember_eligible {
+        if let Some(row) = approval_card_action_row(&card, ApprovalFocusedAction::AllowOnce) {
+            let y = inner.y.saturating_add(row as u16);
             self.register_hit_region(
-                ratatui::layout::Rect::new(inner.x, inner.y.saturating_add(12), inner.width, 1),
+                ratatui::layout::Rect::new(inner.x, y, 12, 1),
+                HitTarget::OverlayAction(OverlayAction::HitlApprove),
+                1000,
+            );
+            self.register_hit_region(
+                ratatui::layout::Rect::new(inner.x.saturating_add(14), y, 8, 1),
+                HitTarget::OverlayAction(OverlayAction::HitlDeny),
+                1000,
+            );
+        }
+        if let Some(row) = approval_card_action_row(&card, ApprovalFocusedAction::RememberDirect) {
+            let y = inner.y.saturating_add(row as u16);
+            self.register_hit_region(
+                ratatui::layout::Rect::new(inner.x, y, inner.width, 1),
                 HitTarget::OverlayAction(OverlayAction::HitlApproveSession),
+                1000,
+            );
+        }
+        if let Some(row) = approval_card_action_row(&card, ApprovalFocusedAction::AllowPattern) {
+            let y = inner.y.saturating_add(row as u16);
+            self.register_hit_region(
+                ratatui::layout::Rect::new(inner.x, y, inner.width, 1),
+                HitTarget::OverlayAction(OverlayAction::HitlApprovePattern {
+                    pattern: card.approval.suggested_pattern.clone(),
+                }),
                 1000,
             );
         }
