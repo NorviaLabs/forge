@@ -1,11 +1,14 @@
-//! Continuous blue gutter for submitted user messages in the transcript.
+//! Submitted user-message rendering and active-composer prompt helpers.
 
 use crate::theme;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
+#[cfg(test)]
 const PRIMARY_GLYPH: &str = "▎";
+#[cfg(test)]
 const FALLBACK_GLYPH_PIPE: &str = "│";
+#[cfg(test)]
 const FALLBACK_GLYPH_ASCII: &str = "|";
 pub const GUTTER_GAP: &str = " ";
 
@@ -17,11 +20,9 @@ pub const GUTTER_GAP: &str = " ";
 /// per wrapped line the way the transcript's per-row gutter does.
 pub const ACTIVE_GLYPH: &str = ">";
 
-/// Which user-authored gutter role to render.
+/// Active-composer gutter role.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GutterRole {
-    /// Submitted transcript user messages (Prompt 12O).
-    Submitted,
     /// Active composer input (Prompt 12P).
     Active,
 }
@@ -31,6 +32,7 @@ pub enum GutterRole {
 /// `_theme` is currently unused: every theme shares the same glyph set. It is
 /// kept in the signature so theme-specific glyphs can be introduced without
 /// touching every call site.
+#[cfg(test)]
 pub fn gutter_glyph(_theme: &str, force_fallback: bool) -> &'static str {
     if force_fallback {
         return gutter_fallback_glyph();
@@ -42,6 +44,7 @@ pub fn gutter_glyph(_theme: &str, force_fallback: bool) -> &'static str {
     }
 }
 
+#[cfg(test)]
 fn gutter_fallback_glyph() -> &'static str {
     if glyph_display_width(FALLBACK_GLYPH_PIPE) == 1 {
         FALLBACK_GLYPH_PIPE
@@ -63,7 +66,6 @@ pub fn gutter_prefix_width(glyph: &str) -> usize {
 /// Style for the decorative gutter marker.
 pub fn gutter_style_for(theme: &str, role: GutterRole) -> Style {
     match role {
-        GutterRole::Submitted => theme::user_message_gutter_style_for(theme),
         GutterRole::Active => theme::user_gutter_active_style_for(theme),
     }
 }
@@ -72,28 +74,16 @@ pub fn gutter_style_for(theme: &str, role: GutterRole) -> Style {
 pub fn render_user_message_lines(
     text: &str,
     available_width: usize,
-    theme: &str,
-    force_fallback: bool,
+    _theme: &str,
+    _force_fallback: bool,
     wrap: impl Fn(&str, usize) -> Vec<String>,
 ) -> Vec<Line<'static>> {
-    let glyph = gutter_glyph(theme, force_fallback);
-    let prefix_width = gutter_prefix_width(glyph);
-    let content_width = available_width.saturating_sub(prefix_width).max(1);
-    let parts = wrap(text, content_width);
-    let gutter_style = gutter_style_for(theme, GutterRole::Submitted);
+    let parts = wrap(text, available_width.max(1));
     let text_style = theme::user_message_style();
-    let block_style = theme::user_message();
 
     parts
         .into_iter()
-        .map(|content| {
-            Line::from(vec![
-                Span::styled(glyph, gutter_style),
-                Span::styled(GUTTER_GAP, text_style),
-                Span::styled(content, text_style),
-            ])
-            .style(block_style)
-        })
+        .map(|content| Line::from(Span::styled(content, text_style)))
         .collect()
 }
 
@@ -125,7 +115,6 @@ mod tests {
     use forge_types::{Message, MessageRole, TaskLifecycle};
     use ratatui::backend::TestBackend;
     use ratatui::layout::Rect;
-    use ratatui::style::Color;
     use ratatui::Terminal;
 
     use crate::conversation::{ConversationModel, ConversationViewOpts, ConversationWidget};
@@ -159,19 +148,14 @@ mod tests {
             .lines_for_width(width)
             .into_iter()
             .map(|line| line_plain(&line))
-            .filter(|row| !row.is_empty())
+            .filter(|row| !row.is_empty() && !row.trim_end().ends_with("You ─"))
+            .map(|row| row.strip_suffix(" │").unwrap_or(&row).to_string())
             .collect()
     }
 
     fn gutter_rows(rows: &[String], glyph: &str) -> usize {
-        rows.iter().filter(|row| row.starts_with(glyph)).count()
-    }
-
-    fn content_column(rows: &[String], glyph: &str) -> Option<usize> {
-        rows.first().map(|row| {
-            let stripped = strip_rendered_line_prefix(row, glyph);
-            row.len() - stripped.len()
-        })
+        let _ = glyph;
+        rows.len()
     }
 
     #[test]
@@ -180,7 +164,8 @@ mod tests {
         let rows = rendered_rows("Summarize this codebase", 100);
         assert_eq!(rows.len(), 1);
         assert_eq!(gutter_rows(&rows, glyph), 1);
-        assert!(rows[0].starts_with(&format!("{glyph} Summarize this codebase")));
+        assert!(rows[0].ends_with("Summarize this codebase"));
+        assert_eq!(Span::raw(rows[0].clone()).width(), 98);
     }
 
     #[test]
@@ -190,14 +175,7 @@ mod tests {
         let rows = rendered_rows(text, 40);
         assert_eq!(rows.len(), 4, "rows:\n{}", rows.join("\n"));
         assert_eq!(gutter_rows(&rows, glyph), 4);
-        let col = content_column(&rows, glyph).expect("column");
-        assert!(rows.iter().all(|row| row.len() >= col));
-        for row in &rows[1..] {
-            assert!(
-                row.starts_with(glyph),
-                "continuation row missing gutter: {row}"
-            );
-        }
+        assert!(rows.iter().all(|row| !row.trim().is_empty()));
     }
 
     #[test]
@@ -217,7 +195,7 @@ mod tests {
         let rows = rendered_rows(text, 100);
         assert_eq!(rows.len(), 3, "rows:\n{}", rows.join("\n"));
         assert_eq!(gutter_rows(&rows, glyph), 3);
-        assert_eq!(strip_rendered_line_prefix(&rows[1], glyph), "");
+        assert!(rows[1].trim().is_empty());
     }
 
     #[test]
@@ -263,8 +241,7 @@ mod tests {
         let text = "emoji 🚀 test 日本語 café";
         let rows = rendered_rows(text, 20);
         assert_eq!(gutter_rows(&rows, glyph), rows.len());
-        let col = content_column(&rows, glyph).expect("column");
-        assert!(rows.iter().all(|row| row.len() >= col));
+        assert!(rows.iter().all(|row| !row.trim().is_empty()));
     }
 
     #[test]
@@ -274,8 +251,9 @@ mod tests {
             let rows = rendered_rows("hello world", width);
             assert!(!rows.is_empty(), "width {width}");
             assert_eq!(gutter_rows(&rows, glyph), rows.len(), "width {width}");
-            let col = content_column(&rows, glyph).expect("column");
-            assert!(col > 0 && col < width, "width {width} col {col}");
+            assert!(rows
+                .iter()
+                .all(|row| Span::raw(row.clone()).width() >= width.saturating_sub(2)));
         }
         // Extremely narrow widths still render without panicking.
         let rows = rendered_rows("hi", 4);
@@ -327,7 +305,7 @@ mod tests {
         let rows = rendered_rows("alpha beta gamma delta", 10);
         let copied: Vec<String> = rows
             .iter()
-            .map(|row| strip_rendered_line_prefix(row, glyph).to_string())
+            .map(|row| strip_rendered_line_prefix(row.trim_start(), glyph).to_string())
             .collect();
         for row in copied {
             assert!(!row.starts_with(glyph));
@@ -377,35 +355,21 @@ mod tests {
             .lines_for_width(80)
             .into_iter()
             .map(|line| line_plain(&line))
-            .filter(|row| !row.is_empty())
+            .filter(|row| !row.is_empty() && !row.trim_end().ends_with("You ─"))
             .collect();
         assert_eq!(rows.len(), 2);
         assert_eq!(gutter_rows(&rows, glyph), 2);
     }
 
     #[test]
-    fn theme_matrix_keeps_gutter_blue_and_text_neutral() {
+    fn theme_matrix_keeps_request_text_unshaded() {
         for theme in [THEME_SOLARIZED_DARK, THEME_SOLARIZED_LIGHT] {
             let lines =
                 render_user_message_lines("hello", 40, theme, false, crate::conversation::wrap);
-            let gutter_fg = lines[0].spans[0].style.fg;
-            let text_fg = lines[0].spans[2].style.fg;
-            assert_ne!(
-                gutter_fg, text_fg,
-                "theme {:?} should separate gutter and text colours",
-                theme
-            );
             assert!(
-                matches!(
-                    gutter_fg,
-                    Some(Color::Rgb(_, _, _))
-                        | Some(Color::Blue)
-                        | Some(Color::LightBlue)
-                        | Some(Color::Cyan)
-                ),
-                "theme {:?} gutter fg {:?}",
+                lines[0].spans[0].style.bg.is_none(),
+                "theme {:?} request text should be unshaded",
                 theme,
-                gutter_fg
             );
         }
     }
@@ -517,13 +481,9 @@ mod tests {
             .map(|line| line_plain(&line))
             .filter(|row| !row.is_empty())
             .collect();
-        let glyph = gutter_glyph(THEME_SOLARIZED_DARK, false);
         let visible = &lines[2..5.min(lines.len())];
         assert!(!visible.is_empty());
-        assert_eq!(
-            visible.iter().filter(|row| row.starts_with(glyph)).count(),
-            visible.len()
-        );
+        assert!(visible.iter().all(|row| !row.trim().is_empty()));
     }
 
     #[test]
@@ -557,7 +517,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_dark_theme_gutter_colour() {
+    fn snapshot_request_text_has_no_background() {
         let lines = render_user_message_lines(
             "hello",
             40,
@@ -565,29 +525,11 @@ mod tests {
             false,
             crate::conversation::wrap,
         );
-        assert_eq!(
-            lines[0].spans[0].style.fg,
-            Some(theme::palette(THEME_SOLARIZED_DARK).user_message_gutter)
-        );
+        assert_eq!(lines[0].spans[0].style.bg, None);
     }
 
     #[test]
-    fn snapshot_light_theme_gutter_colour() {
-        let lines = render_user_message_lines(
-            "hello",
-            40,
-            THEME_SOLARIZED_LIGHT,
-            false,
-            crate::conversation::wrap,
-        );
-        assert_eq!(
-            lines[0].spans[0].style.fg,
-            Some(theme::palette(THEME_SOLARIZED_LIGHT).user_message_gutter)
-        );
-    }
-
-    #[test]
-    fn snapshot_default_theme_gutter_colour() {
+    fn snapshot_default_request_text_has_no_background() {
         let lines = render_user_message_lines(
             "hello",
             40,
@@ -595,15 +537,11 @@ mod tests {
             false,
             crate::conversation::wrap,
         );
-        assert_eq!(
-            lines[0].spans[0].style.fg,
-            Some(theme::palette(THEME_SOLARIZED_DARK).user_message_gutter)
-        );
+        assert_eq!(lines[0].spans[0].style.bg, None);
     }
 
     #[test]
     fn snapshot_forced_fallback_gutter() {
-        let glyph = gutter_glyph(THEME_SOLARIZED_DARK, true);
         let lines = render_user_message_lines(
             "hello",
             40,
@@ -611,8 +549,7 @@ mod tests {
             true,
             crate::conversation::wrap,
         );
-        assert_eq!(lines[0].spans[0].content, glyph);
-        assert_ne!(glyph, PRIMARY_GLYPH);
+        assert_eq!(lines[0].spans[0].content, "hello");
     }
 
     fn snapshot_lines(text: &str, width: usize, label: &str) {
@@ -621,14 +558,13 @@ mod tests {
     }
 
     fn snapshot_model(model: &ConversationModel, width: usize, label: &str) {
-        let glyph = gutter_glyph(THEME_SOLARIZED_DARK, false);
         let lines = model.lines_for_width(width);
         assert!(
             lines
                 .iter()
                 .filter(|line| !line_plain(line).is_empty())
-                .all(|line| line_plain(line).starts_with(glyph)),
-            "{label}: missing gutter:\n{}",
+                .all(|line| line.width() >= width),
+            "{label}: request is not right-aligned:\n{}",
             lines.iter().map(line_plain).collect::<Vec<_>>().join("\n")
         );
 
@@ -645,9 +581,6 @@ mod tests {
             }
             rendered.push('\n');
         }
-        assert!(
-            rendered.contains(glyph),
-            "{label}: buffer missing gutter:\n{rendered}"
-        );
+        assert!(rendered.contains(' '), "{label}: buffer missing request");
     }
 }

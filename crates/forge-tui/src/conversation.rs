@@ -334,8 +334,12 @@ impl ConversationModel {
                     if let Some(ref th) = m.thinking {
                         if !th.trim().is_empty() {
                             latest_thinking = Some(th.clone());
-                            // Reasoning is kept for diff rationale and model context but is not
-                            // rendered as visible Chat rows by default.
+                            if m.thinking_duration_secs.is_some() {
+                                items.push(ChatItem::Thinking {
+                                    text: th.clone(),
+                                    duration_secs: m.thinking_duration_secs,
+                                });
+                            }
                         }
                     }
                     // Terminal failure summaries are durable assistant messages with a
@@ -349,8 +353,7 @@ impl ConversationModel {
                         }
                         continue;
                     }
-                    // Final answer is durable content only. Thinking/reasoning never
-                    // becomes AssistantAnswer (provenance: primary text channel).
+                    // Final answer is durable primary-channel content.
                     let effective_text = sanitize_final_answer_text(&m.content);
                     if !effective_text.trim().is_empty() {
                         if repair_pending {
@@ -645,28 +648,29 @@ impl ConversationModel {
         for block in self.semantic_blocks() {
             match block {
                 ConversationBlock::UserMessage(p) => {
-                    lines.extend(user_message_gutter::render_user_message_lines(
+                    let mut user_lines = user_message_gutter::render_user_message_lines(
                         &p.text,
-                        width,
+                        width.saturating_sub(2),
                         &crate::theme::active(),
                         false,
                         wrap,
-                    ));
+                    );
+                    for line in &mut user_lines {
+                        let padding = width.saturating_sub(line.width() + 2);
+                        if padding > 0 {
+                            line.spans.insert(0, Span::raw(" ".repeat(padding)));
+                        }
+                        line.spans.push(Span::styled(" │", theme::border_muted()));
+                    }
+                    lines.extend(user_lines);
                     if gap {
                         lines.push(Line::from(""));
                     }
                 }
                 ConversationBlock::AssistantAnswer(p) => {
                     let parts = assistant_lines(&p.text, width);
-                    for (i, line) in parts.into_iter().enumerate() {
-                        if i == 0 {
-                            let styled = line.clone().style(theme::assistant_answer_style());
-                            let mut with_marker = vec![Span::styled("▍ ", theme::agent())];
-                            with_marker.extend(styled.spans);
-                            lines.push(Line::from(with_marker));
-                        } else {
-                            lines.push(line.style(theme::assistant_answer_style()));
-                        }
+                    for line in parts {
+                        lines.push(line.style(theme::assistant_answer_style()));
                     }
                     if gap {
                         lines.push(Line::from(""));
@@ -713,14 +717,7 @@ impl ConversationModel {
                         Span::styled(p.label, theme::text().add_modifier(Modifier::BOLD)),
                         Span::styled("  ", theme::metadata_style()),
                         Span::styled(p.count_label, theme::metadata_style()),
-                        Span::styled(
-                            if p.expanded {
-                                "  · collapse"
-                            } else {
-                                "  · details"
-                            },
-                            theme::metadata_style(),
-                        ),
+                        Span::styled(activity_detail_label(p.expanded), theme::metadata_style()),
                     ]));
                     if p.expanded {
                         for item in p.items {
@@ -810,7 +807,7 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
     let flush_activity = |blocks: &mut Vec<ConversationBlock>,
                           group: &mut Option<ActivityGroupPresentation>| {
         if let Some(mut item) = group.take() {
-            item.expanded = tool_expanded && matches!(item.outcome, ActivityOutcome::Failure);
+            item.expanded = tool_expanded;
             blocks.push(ConversationBlock::ActivityGroup(item));
         }
     };
@@ -827,14 +824,27 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
             ChatItem::Thinking { text, .. } => {
                 flush_progress(&mut blocks, &mut progress);
                 flush_activity(&mut blocks, &mut activity_group);
-                blocks.push(ConversationBlock::ActiveProgress(
-                    ActiveProgressPresentation {
-                        id: "thinking".into(),
-                        label: "Thinking".into(),
-                        summary: text.clone(),
-                        status: ActiveProgressStatus::Updated,
-                    },
-                ));
+                if let ChatItem::Thinking {
+                    duration_secs: Some(duration_secs),
+                    ..
+                } = item
+                {
+                    blocks.push(ConversationBlock::Metadata(MetadataPresentation {
+                        text: format!(
+                            "Thought for {} · {text}",
+                            format_elapsed_tenths(*duration_secs)
+                        ),
+                    }));
+                } else {
+                    blocks.push(ConversationBlock::ActiveProgress(
+                        ActiveProgressPresentation {
+                            id: "thinking".into(),
+                            label: "Thinking".into(),
+                            summary: text.clone(),
+                            status: ActiveProgressStatus::Updated,
+                        },
+                    ));
+                }
             }
             ChatItem::Assistant { text } => {
                 flush_progress(&mut blocks, &mut progress);
@@ -915,7 +925,7 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
                                 ToolCardState::Blocked => ActivityOutcome::Blocked,
                                 ToolCardState::Error => ActivityOutcome::Failure,
                             },
-                            expanded: matches!(state, ToolCardState::Error) && tool_expanded,
+                            expanded: tool_expanded,
                             items: vec![format!("{name}: {summary}\n{detail}")],
                         },
                     ));
@@ -948,7 +958,7 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
                             .to_string(),
                         count_label: summary.clone(),
                         outcome,
-                        expanded: matches!(state, ToolCardState::Error) && tool_expanded,
+                        expanded: tool_expanded,
                         items: vec![detail.clone()],
                     },
                 );
@@ -1385,6 +1395,14 @@ fn number_diff_lines(lines: &[String]) -> Vec<NumberedDiffLine> {
         });
     }
     numbered
+}
+
+fn activity_detail_label(expanded: bool) -> &'static str {
+    if expanded {
+        "  · Ctrl+O collapse"
+    } else {
+        "  · Ctrl+O details"
+    }
 }
 
 fn render_numbered_diff(path: &str, diff: &[String], width: usize) -> Vec<Line<'static>> {
@@ -2162,9 +2180,10 @@ mod tests {
             TaskLifecycle::Working,
             ConversationViewOpts::default(),
         );
-        // System prompts and reasoning stay hidden; tool results become compact cards.
+        // System prompts stay hidden; completed reasoning remains visible before the answer.
         assert!(matches!(m.items[0], ChatItem::User { .. }));
-        assert!(matches!(m.items[1], ChatItem::Assistant { .. }));
+        assert!(matches!(m.items[1], ChatItem::Thinking { .. }));
+        assert!(matches!(m.items[2], ChatItem::Assistant { .. }));
         assert!(m
             .items
             .iter()
@@ -2198,16 +2217,8 @@ mod tests {
             "tool result should classify into semantic activity blocks: {semantic:?}"
         );
         assert!(
-            !rendered.contains("Thought for"),
-            "completed thought summary should be hidden:\n{rendered}"
-        );
-        assert!(
-            !rendered.contains("ponder"),
-            "completed thinking body should be hidden:\n{rendered}"
-        );
-        assert!(
-            !rendered.contains("**"),
-            "Markdown bold delimiters should not leak into thoughts:\n{rendered}"
+            rendered.contains("Thought for 2.4s · **ponder**"),
+            "completed thought should remain visible:\n{rendered}"
         );
     }
 
@@ -2564,7 +2575,7 @@ mod tests {
     }
 
     #[test]
-    fn completed_thinking_is_hidden_in_lines() {
+    fn completed_thinking_remains_visible_in_lines() {
         let msgs = vec![Message {
             role: MessageRole::Assistant,
             content: "ans".into(),
@@ -2595,12 +2606,8 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(
-            !text.contains("Thought for"),
-            "completed thought summary should be hidden, got:\n{text}"
-        );
-        assert!(
-            !text.contains("long thinking"),
-            "completed thinking body should be hidden, got:\n{text}"
+            text.contains("long thinking"),
+            "completed thinking body should remain visible, got:\n{text}"
         );
     }
 
@@ -2707,7 +2714,8 @@ mod tests {
     }
 
     #[test]
-    fn user_messages_render_with_continuous_gutter() {
+    fn user_messages_render_with_right_edge_rule() {
+        const WIDTH: usize = 100;
         let msgs = vec![Message {
             role: MessageRole::User,
             content: "hello world".into(),
@@ -2723,9 +2731,8 @@ mod tests {
             TaskLifecycle::Working,
             ConversationViewOpts::default(),
         );
-        let glyph = crate::user_message_gutter::gutter_glyph(&crate::theme::active(), false);
-        let rendered = m
-            .lines()
+        let lines = m.lines_for_width(WIDTH);
+        let rendered_lines = lines
             .iter()
             .map(|line| {
                 line.spans
@@ -2733,17 +2740,17 @@ mod tests {
                     .map(|s| s.content.as_ref())
                     .collect::<String>()
             })
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(
-            rendered.starts_with(&format!("{glyph} hello world")),
-            "{rendered}"
-        );
+            .collect::<Vec<_>>();
+        let rendered = rendered_lines.join("\n");
+        assert!(rendered_lines[0].ends_with("hello world │"), "{rendered}");
+        assert_eq!(lines[0].width(), WIDTH);
         let dark = theme::palette(forge_config::THEME_SOLARIZED_DARK);
-        let first = m.lines().into_iter().next().expect("operator turn");
-        assert_eq!(first.style.bg, Some(dark.user_bg));
-        assert_eq!(first.spans[0].style.fg, Some(dark.user_message_gutter));
-        assert_eq!(first.spans[2].style.fg, Some(dark.text));
+        let first = &lines[0];
+        assert_eq!(
+            first.spans.last().and_then(|span| span.style.fg),
+            Some(dark.border_muted)
+        );
+        assert_eq!(first.spans[1].style.fg, Some(dark.text));
         assert!(!rendered.contains('›'), "{rendered}");
         assert!(rendered.contains("hello world"), "{rendered}");
     }
@@ -2994,6 +3001,31 @@ mod tests {
     }
 
     #[test]
+    fn tool_expanded_reveals_successful_tool_details() {
+        let model = ConversationModel {
+            items: vec![ChatItem::ToolCard {
+                name: "read_file".into(),
+                summary: "src/lib.rs".into(),
+                detail: "full file output".into(),
+                state: ToolCardState::Done,
+                duration: None,
+            }],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts {
+                tool_expanded: true,
+                ..ConversationViewOpts::default()
+            },
+        };
+
+        assert!(model.semantic_blocks().iter().any(|block| matches!(
+            block,
+            ConversationBlock::ActivityGroup(group)
+                if group.expanded && group.items.iter().any(|item| item.contains("full file output"))
+        )));
+    }
+
+    #[test]
     fn grouped_activity_renders_running_completed_and_details() {
         let running = ConversationModel::from_messages(
             &[],
@@ -3036,6 +3068,8 @@ mod tests {
             ConversationBlock::ActivityGroup(group)
                 if !group.items.is_empty() && group.count_label.contains("2")
         )));
+        assert_eq!(activity_detail_label(true), "  · Ctrl+O collapse");
+        assert_eq!(activity_detail_label(false), "  · Ctrl+O details");
     }
 
     #[test]
