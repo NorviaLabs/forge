@@ -1,5 +1,6 @@
 //! Conversation view model (TUI-02) — polished chat, thinking, tools, diffs.
 
+use crate::status_glyph::{status_glyph, Status};
 use crate::theme;
 use crate::user_message_gutter;
 use forge_core::{AgentSession, TurnEvent, TURN_FAILED_MARKER};
@@ -698,22 +699,16 @@ impl ConversationModel {
                     }
                 }
                 ConversationBlock::ActivityGroup(p) => {
-                    let st = match p.outcome {
-                        ActivityOutcome::Success => theme::ok(),
-                        ActivityOutcome::Neutral => theme::muted(),
-                        ActivityOutcome::Warning => theme::warn(),
-                        ActivityOutcome::Failure => theme::danger(),
-                        ActivityOutcome::Blocked => theme::warn(),
-                    };
-                    let prefix = match p.outcome {
-                        ActivityOutcome::Success => "✓ ",
-                        ActivityOutcome::Failure => "✗ ",
-                        ActivityOutcome::Blocked => "⏸ ",
-                        ActivityOutcome::Warning => "!",
-                        ActivityOutcome::Neutral => "● ",
+                    let (prefix, separator) = match p.outcome {
+                        ActivityOutcome::Success => (status_glyph(Status::Success), " "),
+                        ActivityOutcome::Failure => (status_glyph(Status::Error), " "),
+                        ActivityOutcome::Blocked => (Span::styled("⏸", theme::warn()), " "),
+                        ActivityOutcome::Warning => (status_glyph(Status::Warning), ""),
+                        ActivityOutcome::Neutral => (Span::styled("●", theme::muted()), " "),
                     };
                     lines.push(Line::from(vec![
-                        Span::styled(prefix, st),
+                        prefix,
+                        Span::raw(separator),
                         Span::styled(p.label, theme::text().add_modifier(Modifier::BOLD)),
                         Span::styled("  ", theme::metadata_style()),
                         Span::styled(p.count_label, theme::metadata_style()),
@@ -756,9 +751,9 @@ impl ConversationModel {
                     }
                 }
                 ConversationBlock::DiffBlock(p) => {
-                    let (tag, st) = ("✓", theme::tool_success_style());
                     lines.push(Line::from(vec![
-                        Span::styled(format!("{tag} "), st),
+                        status_glyph(Status::Success),
+                        Span::raw(" "),
                         Span::styled(p.path.clone(), theme::text().add_modifier(Modifier::BOLD)),
                         Span::styled("  diff", theme::dim()),
                     ]));

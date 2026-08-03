@@ -10,6 +10,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 use forge_config::FileIconMode;
 
 use crate::git_status::{GitStatusCache, GitStatusKind};
+use crate::status_glyph::{status_glyph, Status};
 use crate::theme;
 
 const HIDDEN_DIRS: &[&str] = &[".git", "target"];
@@ -764,15 +765,12 @@ fn explorer_row_line(
         selection_style.unwrap_or_default(),
     )];
     if let Some(status) = status {
-        spans.push(Span::styled(
-            format!("{} ", status.marker()),
-            selection_style.unwrap_or_else(|| {
-                appearance
-                    .status_role
-                    .map(SemanticRole::style)
-                    .unwrap_or_else(|| status.style())
-            }),
-        ));
+        let mut glyph = status_glyph(Status::from(status));
+        if let Some(style) = selection_style {
+            glyph.style = style;
+        }
+        spans.push(glyph);
+        spans.push(Span::raw(" "));
     }
     if icon_mode == FileIconMode::Unicode {
         let icon = if kind == FileKind::File {
@@ -1048,7 +1046,8 @@ mod tests {
             .map(|span| span.content.as_ref())
             .collect();
         assert!(text.starts_with("  M 🦀 long_filename.rs"));
-        assert_eq!(with_icon.spans[2].content.as_ref(), "🦀 ");
+        assert_eq!(with_icon.spans[1].content.as_ref(), "M");
+        assert_eq!(with_icon.spans[3].content.as_ref(), "🦀 ");
 
         let without_icon = explorer_row_line(
             "",
