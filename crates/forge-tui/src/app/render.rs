@@ -301,7 +301,10 @@ impl TuiApp {
                 .activity
                 .recent(8)
                 .iter()
-                .map(|item| item.summary.clone())
+                .map(|item| crate::sidebar::SidebarActivityEntry {
+                    summary: item.summary.clone(),
+                    status: crate::status_glyph::Status::from(item.severity),
+                })
                 .collect::<Vec<_>>();
             let mut sidebar = SidebarModel::from_session_with_activity(&self.session, &activity);
             sidebar.provider = self.runtime.provider.clone();
