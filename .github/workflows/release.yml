@@ -1,9 +1,10 @@
-name: Alpha Release
+name: Pre-release
 
 on:
   push:
     tags:
       - "v*-alpha.*"
+      - "v*-beta.*"
 
 permissions:
   contents: read
