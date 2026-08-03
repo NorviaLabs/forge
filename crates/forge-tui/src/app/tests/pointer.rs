@@ -107,14 +107,14 @@ async fn mouse_overlay_blocks_underlying_targets() {
         args_redacted: json!({"path": "src/main.rs"}),
         reason: "Edit requires approval".into(),
     };
-    app.open_hitl_overlay(payload);
+    app.open_approval_card(payload);
     draw_app(&mut app, 120, 30);
     let (x, y) = hit_point(&app, |target| matches!(target, HitTarget::Composer));
     app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), x, y))
         .await
         .unwrap();
     assert_eq!(app.focus.block, FocusBlock::Composer);
-    assert!(matches!(app.overlay, Some(Overlay::Hitl { .. })));
+    assert!(app.approval_card.is_some());
 }
 
 #[tokio::test]

@@ -160,56 +160,46 @@ impl TuiApp {
     }
 
     pub(super) fn register_overlay_hit_regions(&mut self, area: ratatui::layout::Rect) {
-        if self.explorer_dialog.current.is_some() {
+        if self.explorer_dialog.current.is_some() || self.overlay.is_some() {
             self.register_hit_region(
                 area,
                 HitTarget::VisibleControl(SemanticCommand::CloseOverlay),
                 900,
             );
-            return;
         }
-        let hitl = self.overlay.as_ref().and_then(|overlay| {
-            if let Overlay::Hitl {
-                approval, expanded, ..
-            } = overlay
-            {
-                Some((approval.remember_eligible, *expanded))
-            } else {
-                None
-            }
-        });
-        if self.overlay.is_none() {
+    }
+
+    /// Register clickable regions for the docked approval card. `card_area`
+    /// is the exact `Rect` the card widget was rendered into this frame, so
+    /// button positions always agree with what's on screen.
+    pub(super) fn register_approval_card_hit_regions(&mut self, card_area: ratatui::layout::Rect) {
+        let Some(remember_eligible) = self
+            .approval_card
+            .as_ref()
+            .map(|card| card.approval.remember_eligible)
+        else {
             return;
-        }
+        };
+        let inner = ratatui::widgets::Block::default()
+            .borders(ratatui::widgets::Borders::ALL)
+            .inner(card_area);
+        let action_y = inner.y.saturating_add(10);
         self.register_hit_region(
-            area,
-            HitTarget::VisibleControl(SemanticCommand::CloseOverlay),
-            900,
+            ratatui::layout::Rect::new(inner.x, action_y, 12, 1),
+            HitTarget::OverlayAction(OverlayAction::HitlApprove),
+            1000,
         );
-        if let Some((remember_eligible, expanded)) = hitl {
-            let overlay_area =
-                centered_capped_rect_for_mouse(area, 78, if expanded { 30 } else { 22 });
-            let inner = ratatui::widgets::Block::default()
-                .borders(ratatui::widgets::Borders::ALL)
-                .inner(overlay_area);
-            let action_y = inner.y.saturating_add(10);
+        self.register_hit_region(
+            ratatui::layout::Rect::new(inner.x.saturating_add(14), action_y, 8, 1),
+            HitTarget::OverlayAction(OverlayAction::HitlDeny),
+            1000,
+        );
+        if remember_eligible {
             self.register_hit_region(
-                ratatui::layout::Rect::new(inner.x, action_y, 12, 1),
-                HitTarget::OverlayAction(OverlayAction::HitlApprove),
+                ratatui::layout::Rect::new(inner.x, inner.y.saturating_add(12), inner.width, 1),
+                HitTarget::OverlayAction(OverlayAction::HitlApproveSession),
                 1000,
             );
-            self.register_hit_region(
-                ratatui::layout::Rect::new(inner.x.saturating_add(14), action_y, 8, 1),
-                HitTarget::OverlayAction(OverlayAction::HitlDeny),
-                1000,
-            );
-            if remember_eligible {
-                self.register_hit_region(
-                    ratatui::layout::Rect::new(inner.x, inner.y.saturating_add(12), inner.width, 1),
-                    HitTarget::OverlayAction(OverlayAction::HitlApproveSession),
-                    1000,
-                );
-            }
         }
     }
 
@@ -402,7 +392,9 @@ impl TuiApp {
                     self.clear_pending_double_click();
                     return Ok(());
                 };
-                if (self.overlay.is_some() || self.explorer_dialog.current.is_some())
+                if (self.overlay.is_some()
+                    || self.explorer_dialog.current.is_some()
+                    || self.approval_card.is_some())
                     && !matches!(target, HitTarget::OverlayAction(_))
                 {
                     self.clear_pending_double_click();
@@ -453,21 +445,6 @@ impl TuiApp {
             }
         }
         Ok(())
-    }
-}
-
-fn centered_capped_rect_for_mouse(
-    area: ratatui::layout::Rect,
-    max_width: u16,
-    max_height: u16,
-) -> ratatui::layout::Rect {
-    let width = area.width.min(max_width).max(1);
-    let height = area.height.min(max_height).max(1);
-    ratatui::layout::Rect {
-        x: area.x + area.width.saturating_sub(width) / 2,
-        y: area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
     }
 }
 
