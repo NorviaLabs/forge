@@ -1092,7 +1092,7 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "forge-cli"
-version = "0.1.0-alpha.10"
+version = "0.1.0-beta.1"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -1116,7 +1116,7 @@ dependencies = [
 
 [[package]]
 name = "forge-config"
-version = "0.1.0-alpha.10"
+version = "0.1.0-beta.1"
 dependencies = [
  "dirs 6.0.0",
  "forge-types",
@@ -1129,7 +1129,7 @@ dependencies = [
 
 [[package]]
 name = "forge-connect"
-version = "0.1.0-alpha.10"
+version = "0.1.0-beta.1"
 dependencies = [
  "base64 0.23.0",
  "dirs 6.0.0",
@@ -1144,7 +1144,7 @@ dependencies = [
 
 [[package]]
 name = "forge-context"
-version = "0.1.0-alpha.10"
+version = "0.1.0-beta.1"
 dependencies = [
  "chrono",
  "dirs 6.0.0",
@@ -1161,7 +1161,7 @@ dependencies = [
 
 [[package]]
 name = "forge-core"
-version = "0.1.0-alpha.10"
+version = "0.1.0-beta.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1185,7 +1185,7 @@ dependencies = [
 
 [[package]]
 name = "forge-durable"
-version = "0.1.0-alpha.10"
+version = "0.1.0-beta.1"
 dependencies = [
  "chrono",
  "forge-types",
@@ -1201,7 +1201,7 @@ dependencies = [
 
 [[package]]
 name = "forge-governance"
-version = "0.1.0-alpha.10"
+version = "0.1.0-beta.1"
 dependencies = [
  "chrono",
  "forge-types",
@@ -1215,7 +1215,7 @@ dependencies = [
 
 [[package]]
 name = "forge-mcp"
-version = "0.1.0-alpha.10"
+version = "0.1.0-beta.1"
 dependencies = [
  "async-trait",
  "forge-config",
@@ -1232,7 +1232,7 @@ dependencies = [
 
 [[package]]
 name = "forge-model"
-version = "0.1.0-alpha.10"
+version = "0.1.0-beta.1"
 dependencies = [
  "async-trait",
  "forge-config",
@@ -1251,7 +1251,7 @@ dependencies = [
 
 [[package]]
 name = "forge-search"
-version = "0.1.0-alpha.10"
+version = "0.1.0-beta.1"
 dependencies = [
  "fff-query-parser",
  "fff-search",
@@ -1263,7 +1263,7 @@ dependencies = [
 
 [[package]]
 name = "forge-storage"
-version = "0.1.0-alpha.10"
+version = "0.1.0-beta.1"
 dependencies = [
  "dirs 6.0.0",
  "tempfile",
@@ -1272,7 +1272,7 @@ dependencies = [
 
 [[package]]
 name = "forge-syntax"
-version = "0.1.0-alpha.10"
+version = "0.1.0-beta.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -1292,14 +1292,14 @@ dependencies = [
 
 [[package]]
 name = "forge-test-support"
-version = "0.1.0-alpha.10"
+version = "0.1.0-beta.1"
 dependencies = [
  "ureq",
 ]
 
 [[package]]
 name = "forge-tools"
-version = "0.1.0-alpha.10"
+version = "0.1.0-beta.1"
 dependencies = [
  "async-trait",
  "forge-config",
@@ -1319,7 +1319,7 @@ dependencies = [
 
 [[package]]
 name = "forge-tui"
-version = "0.1.0-alpha.10"
+version = "0.1.0-beta.1"
 dependencies = [
  "chrono",
  "crossterm 0.28.1",
@@ -1347,7 +1347,7 @@ dependencies = [
 
 [[package]]
 name = "forge-types"
-version = "0.1.0-alpha.10"
+version = "0.1.0-beta.1"
 dependencies = [
  "chrono",
  "schemars",
