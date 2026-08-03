@@ -111,7 +111,7 @@ fn system_theme_id_from_os() -> Option<&'static str> {
             .args(["get", "org.gnome.desktop.interface", "color-scheme"])
             .output()
             .ok()?;
-        return system_theme_id_from_os_output(&String::from_utf8_lossy(&output.stdout));
+        system_theme_id_from_os_output(&String::from_utf8_lossy(&output.stdout))
     }
     #[cfg(target_os = "macos")]
     {
