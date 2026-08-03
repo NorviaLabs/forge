@@ -335,7 +335,7 @@ pub fn panel_alt() -> Style {
 }
 
 pub fn user_message() -> Style {
-    Style::default().bg(active_palette().user_bg)
+    Style::default().bg(active_palette().panel_alt)
 }
 
 pub fn assistant_message() -> Style {
