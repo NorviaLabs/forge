@@ -3,7 +3,7 @@
 use serde::Deserialize;
 use std::fmt;
 
-/// Well-known theme id: terminal ANSI fallback (not a palette file).
+/// Legacy theme id retained for configuration compatibility.
 pub const THEME_SYSTEM: &str = "system";
 /// Built-in Solarized Dark theme id.
 pub const THEME_SOLARIZED_DARK: &str = "solarized-dark";
