@@ -121,7 +121,7 @@ pub fn content_column_to_display(content_col: usize, glyph: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use forge_config::{THEME_SOLARIZED_DARK, THEME_SOLARIZED_LIGHT, THEME_SYSTEM};
+    use forge_config::{THEME_SOLARIZED_DARK, THEME_SOLARIZED_LIGHT};
     use forge_types::{Message, MessageRole, TaskLifecycle};
     use ratatui::backend::TestBackend;
     use ratatui::layout::Rect;
@@ -385,7 +385,7 @@ mod tests {
 
     #[test]
     fn theme_matrix_keeps_gutter_blue_and_text_neutral() {
-        for theme in [THEME_SOLARIZED_DARK, THEME_SOLARIZED_LIGHT, THEME_SYSTEM] {
+        for theme in [THEME_SOLARIZED_DARK, THEME_SOLARIZED_LIGHT] {
             let lines =
                 render_user_message_lines("hello", 40, theme, false, crate::conversation::wrap);
             let gutter_fg = lines[0].spans[0].style.fg;
@@ -587,10 +587,18 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_system_theme_gutter_colour() {
-        let lines =
-            render_user_message_lines("hello", 40, THEME_SYSTEM, false, crate::conversation::wrap);
-        assert_eq!(lines[0].spans[0].style.fg, Some(Color::Blue));
+    fn snapshot_default_theme_gutter_colour() {
+        let lines = render_user_message_lines(
+            "hello",
+            40,
+            THEME_SOLARIZED_DARK,
+            false,
+            crate::conversation::wrap,
+        );
+        assert_eq!(
+            lines[0].spans[0].style.fg,
+            Some(theme::palette(THEME_SOLARIZED_DARK).user_message_gutter)
+        );
     }
 
     #[test]
