@@ -17,6 +17,15 @@ you can continue work after an interruption.
 Forge is alpha software. Review every approval prompt and use it first in a
 disposable or backed-up repository.
 
+## Why this exists
+
+Claude Code is the incumbent for terminal-first AI coding, but its experience
+is centered on an agent you drive from a prompt and an external editor you use
+alongside it. Forge is for people who want the agent, code editor, file
+explorer, shell, approvals, diffs, and durable sessions in one keyboard-driven
+workspace, so inspecting code, changing it, and verifying the result stay in a
+single focused loop.
+
 ## What Forge does
 
 - Chats with a configured model while staying inside your terminal.
