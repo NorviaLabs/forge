@@ -170,7 +170,7 @@ A minimal project `forge.toml` can look like this:
 model = "openai/gpt-4.1-mini"
 
 [tui]
-theme = "forge-midnight"
+theme = "solarized-dark"
 file_icons = "unicode"
 mouse_capture = true
 

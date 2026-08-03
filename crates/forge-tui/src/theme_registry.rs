@@ -9,12 +9,12 @@ use std::path::{Path, PathBuf};
 
 const BUILTIN_THEMES: &[(&str, &str)] = &[
     (
-        "forge-midnight.toml",
-        include_str!("../themes/forge-midnight.toml"),
+        "solarized-dark.toml",
+        include_str!("../themes/solarized-dark.toml"),
     ),
     (
-        "forge-daylight.toml",
-        include_str!("../themes/forge-daylight.toml"),
+        "solarized-light.toml",
+        include_str!("../themes/solarized-light.toml"),
     ),
 ];
 
@@ -181,16 +181,18 @@ fn merge_directory(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use forge_config::{Rgb, THEME_FORGE_DAYLIGHT, THEME_FORGE_MIDNIGHT};
+    use forge_config::{Rgb, THEME_SOLARIZED_DARK, THEME_SOLARIZED_LIGHT};
 
     #[test]
-    fn builtins_include_forge_midnight_and_daylight() {
+    fn builtins_include_solarized_dark_and_light() {
         let registry = ThemeRegistry::load(None);
-        let midnight = registry.get(THEME_FORGE_MIDNIGHT).expect("forge-midnight");
-        assert_eq!(midnight.name, "Forge Midnight");
-        assert_eq!(midnight.palette.background, Rgb(23, 23, 26));
-        let daylight = registry.get(THEME_FORGE_DAYLIGHT).expect("forge-daylight");
-        assert_eq!(daylight.name, "Forge Daylight");
+        let dark = registry.get(THEME_SOLARIZED_DARK).expect("solarized-dark");
+        assert_eq!(dark.name, "Solarized Dark");
+        assert_eq!(dark.palette.background, Rgb(0, 43, 54));
+        let light = registry
+            .get(THEME_SOLARIZED_LIGHT)
+            .expect("solarized-light");
+        assert_eq!(light.name, "Solarized Light");
     }
 
     #[test]
@@ -199,17 +201,17 @@ mod tests {
         let themes = dir.path().join(".forge").join("themes");
         fs::create_dir_all(&themes).unwrap();
         fs::write(
-            themes.join("forge-midnight.toml"),
-            include_str!("../themes/forge-midnight.toml").replace(
-                "name = \"Forge Midnight\"",
-                "name = \"Forge Midnight (Custom)\"",
+            themes.join("solarized-dark.toml"),
+            include_str!("../themes/solarized-dark.toml").replace(
+                "name = \"Solarized Dark\"",
+                "name = \"Solarized Dark (Custom)\"",
             ),
         )
         .unwrap();
         let registry = ThemeRegistry::load(Some(dir.path()));
         assert_eq!(
-            registry.get(THEME_FORGE_MIDNIGHT).unwrap().name,
-            "Forge Midnight (Custom)"
+            registry.get(THEME_SOLARIZED_DARK).unwrap().name,
+            "Solarized Dark (Custom)"
         );
     }
 
@@ -220,12 +222,12 @@ mod tests {
         fs::create_dir_all(&themes).unwrap();
         fs::write(
             themes.join("broken.toml"),
-            include_str!("../themes/forge-midnight.toml")
-                .replace("id = \"forge-midnight\"", "id = \"broken\"")
+            include_str!("../themes/solarized-dark.toml")
+                .replace("id = \"solarized-dark\"", "id = \"broken\"")
                 // Truncated hex value: 5 digits instead of 6.
                 .replace(
-                    "user_gutter_active = \"#A3C7BC\"",
-                    "user_gutter_active = \"#A3C7B\"",
+                    "user_gutter_active = \"#58A2D3\"",
+                    "user_gutter_active = \"#58A2D\"",
                 ),
         )
         .unwrap();
@@ -243,8 +245,8 @@ mod tests {
             DEFAULT_THEME_ID
         );
         assert_eq!(
-            registry.resolve_startup_id(THEME_FORGE_DAYLIGHT),
-            THEME_FORGE_DAYLIGHT
+            registry.resolve_startup_id(THEME_SOLARIZED_LIGHT),
+            THEME_SOLARIZED_LIGHT
         );
     }
 }
