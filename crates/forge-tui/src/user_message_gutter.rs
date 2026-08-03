@@ -164,11 +164,14 @@ mod tests {
     }
 
     fn gutter_rows(rows: &[String], glyph: &str) -> usize {
-        rows.iter().filter(|row| row.starts_with(glyph)).count()
+        rows.iter()
+            .filter(|row| row.trim_start().starts_with(glyph))
+            .count()
     }
 
     fn content_column(rows: &[String], glyph: &str) -> Option<usize> {
         rows.first().map(|row| {
+            let row = row.trim_start();
             let stripped = strip_rendered_line_prefix(row, glyph);
             row.len() - stripped.len()
         })
@@ -180,7 +183,10 @@ mod tests {
         let rows = rendered_rows("Summarize this codebase", 100);
         assert_eq!(rows.len(), 1);
         assert_eq!(gutter_rows(&rows, glyph), 1);
-        assert!(rows[0].starts_with(&format!("{glyph} Summarize this codebase")));
+        assert!(rows[0]
+            .trim_start()
+            .starts_with(&format!("{glyph} Summarize this codebase")));
+        assert_eq!(Span::raw(rows[0].clone()).width(), 100);
     }
 
     #[test]
@@ -194,7 +200,7 @@ mod tests {
         assert!(rows.iter().all(|row| row.len() >= col));
         for row in &rows[1..] {
             assert!(
-                row.starts_with(glyph),
+                row.trim_start().starts_with(glyph),
                 "continuation row missing gutter: {row}"
             );
         }
@@ -217,7 +223,7 @@ mod tests {
         let rows = rendered_rows(text, 100);
         assert_eq!(rows.len(), 3, "rows:\n{}", rows.join("\n"));
         assert_eq!(gutter_rows(&rows, glyph), 3);
-        assert_eq!(strip_rendered_line_prefix(&rows[1], glyph), "");
+        assert_eq!(strip_rendered_line_prefix(rows[1].trim_start(), glyph), "");
     }
 
     #[test]
@@ -327,7 +333,7 @@ mod tests {
         let rows = rendered_rows("alpha beta gamma delta", 10);
         let copied: Vec<String> = rows
             .iter()
-            .map(|row| strip_rendered_line_prefix(row, glyph).to_string())
+            .map(|row| strip_rendered_line_prefix(row.trim_start(), glyph).to_string())
             .collect();
         for row in copied {
             assert!(!row.starts_with(glyph));
@@ -521,7 +527,10 @@ mod tests {
         let visible = &lines[2..5.min(lines.len())];
         assert!(!visible.is_empty());
         assert_eq!(
-            visible.iter().filter(|row| row.starts_with(glyph)).count(),
+            visible
+                .iter()
+                .filter(|row| row.trim_start().starts_with(glyph))
+                .count(),
             visible.len()
         );
     }
@@ -627,7 +636,7 @@ mod tests {
             lines
                 .iter()
                 .filter(|line| !line_plain(line).is_empty())
-                .all(|line| line_plain(line).starts_with(glyph)),
+                .all(|line| line_plain(line).trim_start().starts_with(glyph)),
             "{label}: missing gutter:\n{}",
             lines.iter().map(line_plain).collect::<Vec<_>>().join("\n")
         );

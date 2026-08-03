@@ -645,13 +645,20 @@ impl ConversationModel {
         for block in self.semantic_blocks() {
             match block {
                 ConversationBlock::UserMessage(p) => {
-                    lines.extend(user_message_gutter::render_user_message_lines(
+                    let mut user_lines = user_message_gutter::render_user_message_lines(
                         &p.text,
                         width,
                         &crate::theme::active(),
                         false,
                         wrap,
-                    ));
+                    );
+                    for line in &mut user_lines {
+                        let padding = width.saturating_sub(line.width());
+                        if padding > 0 {
+                            line.spans.insert(0, Span::raw(" ".repeat(padding)));
+                        }
+                    }
+                    lines.extend(user_lines);
                     if gap {
                         lines.push(Line::from(""));
                     }
@@ -2709,6 +2716,7 @@ mod tests {
 
     #[test]
     fn user_messages_render_with_continuous_gutter() {
+        const WIDTH: usize = 100;
         let msgs = vec![Message {
             role: MessageRole::User,
             content: "hello world".into(),
@@ -2725,8 +2733,8 @@ mod tests {
             ConversationViewOpts::default(),
         );
         let glyph = crate::user_message_gutter::gutter_glyph(&crate::theme::active(), false);
-        let rendered = m
-            .lines()
+        let lines = m.lines_for_width(WIDTH);
+        let rendered_lines = lines
             .iter()
             .map(|line| {
                 line.spans
@@ -2734,17 +2742,18 @@ mod tests {
                     .map(|s| s.content.as_ref())
                     .collect::<String>()
             })
-            .collect::<Vec<_>>()
-            .join("\n");
+            .collect::<Vec<_>>();
+        let rendered = rendered_lines.join("\n");
         assert!(
-            rendered.starts_with(&format!("{glyph} hello world")),
+            rendered_lines[0].ends_with(&format!("{glyph} hello world")),
             "{rendered}"
         );
+        assert_eq!(lines[0].width(), WIDTH);
         let dark = theme::palette(forge_config::THEME_SOLARIZED_DARK);
-        let first = m.lines().into_iter().next().expect("operator turn");
+        let first = lines.into_iter().next().expect("operator turn");
         assert_eq!(first.style.bg, Some(dark.user_bg));
-        assert_eq!(first.spans[0].style.fg, Some(dark.user_message_gutter));
-        assert_eq!(first.spans[2].style.fg, Some(dark.text));
+        assert_eq!(first.spans[1].style.fg, Some(dark.user_message_gutter));
+        assert_eq!(first.spans[3].style.fg, Some(dark.text));
         assert!(!rendered.contains('›'), "{rendered}");
         assert!(rendered.contains("hello world"), "{rendered}");
     }
