@@ -280,6 +280,11 @@ pub fn text() -> Style {
     Style::default().fg(text_primary_color())
 }
 
+/// See [`text_secondary_color`].
+pub fn text_secondary() -> Style {
+    Style::default().fg(text_secondary_color())
+}
+
 pub fn ok() -> Style {
     Style::default().fg(success_color())
 }
@@ -322,6 +327,15 @@ pub fn background_color() -> Color {
 
 pub fn text_primary_color() -> Color {
     active_palette().text
+}
+
+/// Secondary body text — readable but a step down from primary prose (e.g.
+/// inline code in a sentence). Solarized Dark's `tag` token already carries
+/// base1 (#93A1A1), the exact tone Solarized reserves for this role, so this
+/// reuses it rather than adding a new required theme-file field; `dim()`
+/// remains the right choice for fully de-emphasized metadata.
+pub fn text_secondary_color() -> Color {
+    active_palette().tag
 }
 
 pub fn text_dim_color() -> Color {
@@ -789,6 +803,37 @@ mod tests {
         assert_ne!(p.accent, p.ok);
         assert_ne!(p.warn, p.danger);
         assert_ne!(brand().fg, Some(p.muted));
+    }
+
+    #[test]
+    fn text_secondary_is_solarized_base1_and_distinct_from_interactive_colors() {
+        install_defaults();
+        // Exact Solarized Dark base1 tone — the intended higher-contrast
+        // secondary-body-text color, not the interactive accent/info hues.
+        assert_eq!(text_secondary_color(), Color::Rgb(0x93, 0xA1, 0xA1));
+        assert_ne!(text_secondary_color(), accent_color());
+        assert_ne!(text_secondary_color(), info_color());
+        assert_eq!(text_secondary().fg, Some(text_secondary_color()));
+    }
+
+    #[test]
+    fn body_text_colors_meet_wcag_aa_against_the_background() {
+        install_defaults();
+        // WCAG AA for normal text requires >= 4.5:1.
+        assert_contrast(
+            "text_primary (base0)",
+            text_primary_color(),
+            "background (base03)",
+            background_color(),
+            4.5,
+        );
+        assert_contrast(
+            "text_secondary (base1)",
+            text_secondary_color(),
+            "background (base03)",
+            background_color(),
+            4.5,
+        );
     }
 
     #[test]
