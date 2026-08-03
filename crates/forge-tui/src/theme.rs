@@ -264,7 +264,7 @@ pub fn syntax_theme() -> forge_syntax::HighlightTheme {
 
 pub fn brand() -> Style {
     Style::default()
-        .fg(active_palette().accent)
+        .fg(accent_color())
         .add_modifier(Modifier::BOLD)
 }
 
@@ -273,27 +273,65 @@ pub fn muted() -> Style {
 }
 
 pub fn dim() -> Style {
-    Style::default().fg(active_palette().dim)
+    Style::default().fg(text_dim_color())
 }
 
 pub fn text() -> Style {
-    Style::default().fg(active_palette().text)
+    Style::default().fg(text_primary_color())
 }
 
 pub fn ok() -> Style {
-    Style::default().fg(active_palette().ok)
+    Style::default().fg(success_color())
 }
 
 pub fn warn() -> Style {
-    Style::default().fg(active_palette().warn)
+    Style::default().fg(warning_color())
 }
 
 pub fn danger() -> Style {
-    Style::default().fg(active_palette().danger)
+    Style::default().fg(error_color())
 }
 
 pub fn info() -> Style {
-    Style::default().fg(active_palette().info)
+    Style::default().fg(info_color())
+}
+
+pub fn success_color() -> Color {
+    active_palette().ok
+}
+
+pub fn warning_color() -> Color {
+    active_palette().warn
+}
+
+pub fn error_color() -> Color {
+    active_palette().danger
+}
+
+pub fn info_color() -> Color {
+    active_palette().info
+}
+
+pub fn accent_color() -> Color {
+    active_palette().accent
+}
+
+pub fn text_primary_color() -> Color {
+    active_palette().text
+}
+
+pub fn text_dim_color() -> Color {
+    active_palette().dim
+}
+
+pub fn border_color() -> Color {
+    active_palette().border
+}
+
+/// Style a syntax-highlighted segment with its source-provided RGB color.
+pub fn syntax_segment(rgb: (u8, u8, u8), background: Option<Color>) -> Style {
+    let style = Style::default().fg(Color::Rgb(rgb.0, rgb.1, rgb.2));
+    background.map_or(style, |color| style.bg(color))
 }
 
 pub fn agent() -> Style {
@@ -319,7 +357,7 @@ pub fn code_punctuation() -> Style {
 }
 
 pub fn border() -> Style {
-    Style::default().fg(active_palette().border)
+    Style::default().fg(border_color())
 }
 
 pub fn border_muted() -> Style {

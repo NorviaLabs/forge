@@ -6,7 +6,7 @@ use std::time::SystemTime;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
@@ -304,7 +304,7 @@ impl SourceViewer {
                 segments
                     .iter()
                     .map(|(text, (r, g, b), bold, italic)| {
-                        let mut style = theme::panel().fg(Color::Rgb(*r, *g, *b));
+                        let mut style = theme::syntax_segment((*r, *g, *b), theme::panel().bg);
                         if *bold {
                             style = style.add_modifier(Modifier::BOLD);
                         }
