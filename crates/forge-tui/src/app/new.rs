@@ -125,6 +125,7 @@ impl TuiApp {
             cancellation: CancellationState { requested: false },
             hitl_session: HitlSessionState {
                 allowed: HashSet::new(),
+                pattern_allow: Vec::new(),
             },
             toast: ToastState { current: None },
             conversation_view: ConversationViewState {

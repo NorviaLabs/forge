@@ -2044,6 +2044,20 @@ impl AgentSession {
         decision: HitlDecision,
         actor: &str,
     ) -> Result<(), LoopError> {
+        self.resolve_hitl_with_feedback(decision, actor, None).await
+    }
+
+    /// Same as [`Self::resolve_hitl`], but a `Deny` can carry a short
+    /// message that reaches the agent as the tool result content — context
+    /// for what to do differently, folded into this same turn rather than
+    /// a bare denial the operator has to re-explain next turn. Modeled on
+    /// opencode's `CorrectedError`. Ignored for `Approve`.
+    pub async fn resolve_hitl_with_feedback(
+        &mut self,
+        decision: HitlDecision,
+        actor: &str,
+        feedback: Option<&str>,
+    ) -> Result<(), LoopError> {
         let payload = self
             .pending_hitl()
             .cloned()
@@ -2061,8 +2075,12 @@ impl AgentSession {
             .await?;
 
         if !approved {
+            let feedback = feedback.map(str::trim).filter(|f| !f.is_empty());
             let output = ToolOutput {
-                content: format!("HITL denied by {actor}"),
+                content: match feedback {
+                    Some(feedback) => format!("HITL denied by {actor}: {feedback}"),
+                    None => format!("HITL denied by {actor}"),
+                },
                 is_error: true,
                 exit_code: None,
             };
@@ -3060,6 +3078,81 @@ mod tests {
         s.resolve_hitl(HitlDecision::Deny, "test").await.unwrap();
         assert_eq!(s.active_task.lifecycle, TaskLifecycle::Working);
         assert!(s.pending_hitl().is_none());
+    }
+
+    /// A deny with feedback folds the operator's note into the same tool
+    /// result message the agent sees, so it can act on it this turn instead
+    /// of needing to be re-prompted next turn.
+    #[tokio::test]
+    async fn hitl_deny_with_feedback_reaches_the_agent_as_tool_result_content() {
+        let dir = tempdir().unwrap();
+        let model = Arc::new(MockModelClient::script(vec![ModelResponse {
+            text: "".into(),
+            tool_calls: vec![ToolCall {
+                id: "1".into(),
+                name: "bash".into(),
+                arguments: json!({"command": "git push origin main"}),
+            }],
+            usage: None,
+            thinking: None,
+        }]));
+        let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        s.run_user_message("push").await.unwrap();
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Waiting);
+
+        s.resolve_hitl_with_feedback(
+            HitlDecision::Deny,
+            "test",
+            Some("use --force-with-lease instead"),
+        )
+        .await
+        .unwrap();
+
+        let tool_message = s
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == MessageRole::Tool)
+            .expect("a tool result should record the denial");
+        assert!(tool_message.content.contains("HITL denied by test"));
+        assert!(tool_message
+            .content
+            .contains("use --force-with-lease instead"));
+    }
+
+    /// Whitespace-only feedback is treated the same as no feedback — the
+    /// message stays the plain denial rather than trailing an empty colon.
+    #[tokio::test]
+    async fn hitl_deny_with_blank_feedback_omits_it_from_the_message() {
+        let dir = tempdir().unwrap();
+        let model = Arc::new(MockModelClient::script(vec![ModelResponse {
+            text: "".into(),
+            tool_calls: vec![ToolCall {
+                id: "1".into(),
+                name: "bash".into(),
+                arguments: json!({"command": "git push origin main"}),
+            }],
+            usage: None,
+            thinking: None,
+        }]));
+        let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        s.run_user_message("push").await.unwrap();
+
+        s.resolve_hitl_with_feedback(HitlDecision::Deny, "test", Some("   "))
+            .await
+            .unwrap();
+
+        let tool_message = s
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == MessageRole::Tool)
+            .unwrap();
+        assert_eq!(tool_message.content, "HITL denied by test");
     }
 
     /// Before this fix, the `WaitingForUser` evidence pushed at the HITL

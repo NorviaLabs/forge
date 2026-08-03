@@ -6,7 +6,7 @@ mod pattern;
 
 pub use acl::{AclPolicy, AclRule};
 pub use audit::{AuditEvent, AuditLog};
-pub use pattern::{parse_pattern_rules, PatternRule};
+pub use pattern::{parse_pattern_rules, suggest_pattern, PatternRule};
 
 use forge_types::{PolicyDecision, Principal, SideEffectClass, ToolCall, ToolDescriptor};
 

@@ -11,6 +11,7 @@ forge-types = { workspace = true }
 forge-core = { workspace = true }
 forge-tools = { workspace = true }
 forge-config = { workspace = true }
+forge-governance = { workspace = true }
 forge-model = { workspace = true }
 forge-connect = { workspace = true }
 forge-storage = { workspace = true }

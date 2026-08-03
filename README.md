@@ -232,6 +232,20 @@ that's still the ACL's job. Two files are read and merged:
   blast radius than a human approved locally. Its `deny` entries are always
   honored, since narrowing approval further is safe regardless of source.
 
+Every approval card offers a spectrum of decisions, not just yes/no:
+
+- **Allow once** (`a`/Enter) — runs this call, asks again next time.
+- **Remember exact** (`s`) — Direct-mode tools only (file/git-style calls);
+  the identical invocation won't ask again this session.
+- **Allow pattern going forward** (`p`) — shows the literal pattern that
+  would be added (e.g. `bash(cargo test *)`) before committing, then writes
+  it to your personal `permissions.toml` and applies it for the rest of this
+  session immediately, no restart needed.
+- **Deny** (`d`/Esc) — blocks the call.
+- **Deny with feedback** (`f`) — same, plus a short note that reaches the
+  agent as context for what to do instead, so it doesn't have to be
+  re-explained next turn.
+
 ## Built-in tools
 
 Depending on configuration, the agent can use tools for:

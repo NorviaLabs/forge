@@ -1,7 +1,8 @@
 //! Overlays: HITL, slash palette, model picker (TUI-04).
 
 use crate::{effort::ReasoningEffort, theme, theme_registry};
-use forge_types::HitlPayload;
+use forge_governance::suggest_pattern;
+use forge_types::{HitlPayload, ToolCall};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Modifier;
@@ -343,6 +344,7 @@ impl ApprovalExecutionMode {
 pub enum ApprovalFocusedAction {
     AllowOnce,
     RememberDirect,
+    AllowPattern,
     Deny,
 }
 
@@ -356,6 +358,15 @@ pub struct ApprovalOverlayState {
     pub environment_delta: String,
     pub source: String,
     pub remember_eligible: bool,
+    /// Whether "allow this pattern going forward" is offered. Unlike
+    /// `remember_eligible` this isn't Direct-mode-only — a command *prefix*
+    /// pattern is exactly what makes sense for Shell-mode calls, where an
+    /// exact-invocation remember doesn't (every command differs in its
+    /// trailing arguments).
+    pub pattern_allow_eligible: bool,
+    /// The literal pattern `AllowPattern` would add, generalized from this
+    /// call — shown for confirmation before it's persisted.
+    pub suggested_pattern: String,
     pub focused_action: ApprovalFocusedAction,
 }
 
@@ -376,9 +387,15 @@ impl ApprovalOverlayState {
             })
             .filter(|value| !value.is_empty());
         let environment_delta = approval_environment_delta(&payload.args_redacted);
-        let remember_eligible = mode == ApprovalExecutionMode::Direct
-            && !contains_redacted_value(&payload.args_redacted)
-            && environment_delta != "[REDACTED]";
+        let redacted = contains_redacted_value(&payload.args_redacted);
+        let remember_eligible =
+            mode == ApprovalExecutionMode::Direct && !redacted && environment_delta != "[REDACTED]";
+        let pattern_allow_eligible = !redacted && environment_delta != "[REDACTED]";
+        let suggested_pattern = suggest_pattern(&ToolCall {
+            id: payload.call_id.clone(),
+            name: payload.tool.clone(),
+            arguments: payload.args_redacted.clone(),
+        });
 
         Self {
             mode,
@@ -392,6 +409,8 @@ impl ApprovalOverlayState {
             environment_delta,
             source: "Agent suggestion".into(),
             remember_eligible,
+            pattern_allow_eligible,
+            suggested_pattern,
             focused_action: ApprovalFocusedAction::AllowOnce,
         }
     }
@@ -415,11 +434,31 @@ impl ApprovalOverlayState {
             ApprovalFocusedAction::AllowOnce,
             ApprovalFocusedAction::Deny,
         ];
+        if self.pattern_allow_eligible {
+            let deny_pos = actions.len() - 1;
+            actions.insert(deny_pos, ApprovalFocusedAction::AllowPattern);
+        }
         if self.remember_eligible {
             actions.insert(1, ApprovalFocusedAction::RememberDirect);
         }
         actions
     }
+}
+
+/// Sub-stage of the approval card. Most of the time this is `Decide`; the
+/// other two are short-lived confirmation/input steps that stay part of the
+/// same card rather than opening another overlay.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApprovalStage {
+    Decide,
+    /// Showing the literal pattern text for confirmation before it's
+    /// written to the permissions file — see `suggest_pattern`.
+    ConfirmPattern,
+    /// Collecting an optional short note to send back to the agent along
+    /// with the denial.
+    DenyFeedback {
+        input: String,
+    },
 }
 
 /// State for the inline approval card rendered in the conversation panel.
@@ -434,6 +473,7 @@ pub struct ApprovalCardState {
     pub approval: ApprovalOverlayState,
     /// Whether to show the expanded policy-details section.
     pub expanded: bool,
+    pub stage: ApprovalStage,
 }
 
 impl ApprovalCardState {
@@ -443,6 +483,7 @@ impl ApprovalCardState {
             payload,
             approval,
             expanded: false,
+            stage: ApprovalStage::Decide,
         }
     }
 }
@@ -787,7 +828,17 @@ pub enum OverlayAction {
     HitlApprove,
     /// Approve and remember this exact Direct invocation for this session.
     HitlApproveSession,
+    /// Approve, and persist `pattern` as an `allow` rule so future matching
+    /// calls skip approval — this session and in later ones.
+    HitlApprovePattern {
+        pattern: String,
+    },
     HitlDeny,
+    /// Deny, carrying a short note back to the agent as tool-result context
+    /// for what to do instead. Empty `feedback` behaves like `HitlDeny`.
+    HitlDenyWithFeedback {
+        feedback: String,
+    },
     ContinueTurns,
     StopTurns,
     /// Execute slash command string e.g. "/status"
@@ -833,6 +884,14 @@ pub enum OverlayAction {
 /// `handle_overlay_key` because the card is not an `Overlay` variant — it has
 /// its own small keymap rather than sharing the generic overlay dispatch.
 pub fn handle_approval_card_key(card: &mut ApprovalCardState, key: Key) -> OverlayAction {
+    match &card.stage {
+        ApprovalStage::DenyFeedback { .. } => handle_deny_feedback_key(card, key),
+        ApprovalStage::ConfirmPattern => handle_confirm_pattern_key(card, key),
+        ApprovalStage::Decide => handle_decide_key(card, key),
+    }
+}
+
+fn handle_decide_key(card: &mut ApprovalCardState, key: Key) -> OverlayAction {
     match key {
         Key::Esc => OverlayAction::HitlDeny,
         Key::Left | Key::BackTab => {
@@ -849,6 +908,11 @@ pub fn handle_approval_card_key(card: &mut ApprovalCardState, key: Key) -> Overl
                 OverlayAction::HitlApproveSession
             }
             ApprovalFocusedAction::RememberDirect => OverlayAction::None,
+            ApprovalFocusedAction::AllowPattern if card.approval.pattern_allow_eligible => {
+                card.stage = ApprovalStage::ConfirmPattern;
+                OverlayAction::None
+            }
+            ApprovalFocusedAction::AllowPattern => OverlayAction::None,
             ApprovalFocusedAction::Deny => OverlayAction::HitlDeny,
         },
         Key::Char('a') | Key::Char('A') => OverlayAction::HitlApprove,
@@ -859,9 +923,76 @@ pub fn handle_approval_card_key(card: &mut ApprovalCardState, key: Key) -> Overl
                 OverlayAction::None
             }
         }
+        Key::Char('p') | Key::Char('P') => {
+            if card.approval.pattern_allow_eligible {
+                card.stage = ApprovalStage::ConfirmPattern;
+            }
+            OverlayAction::None
+        }
         Key::Char('d') | Key::Char('D') => OverlayAction::HitlDeny,
+        Key::Char('f') | Key::Char('F') => {
+            card.stage = ApprovalStage::DenyFeedback {
+                input: String::new(),
+            };
+            OverlayAction::None
+        }
         Key::Char('v') | Key::Char('V') => {
             card.expanded = !card.expanded;
+            OverlayAction::None
+        }
+        _ => OverlayAction::None,
+    }
+}
+
+/// Confirmation step for `AllowPattern`: shows the literal pattern text
+/// before it's persisted (see `suggest_pattern`), per opencode's "Allow
+/// always" stage listing the exact glob before committing.
+fn handle_confirm_pattern_key(card: &mut ApprovalCardState, key: Key) -> OverlayAction {
+    match key {
+        Key::Enter | Key::Char('y') | Key::Char('Y') => OverlayAction::HitlApprovePattern {
+            pattern: card.approval.suggested_pattern.clone(),
+        },
+        Key::Esc | Key::Char('n') | Key::Char('N') => {
+            card.stage = ApprovalStage::Decide;
+            OverlayAction::None
+        }
+        _ => OverlayAction::None,
+    }
+}
+
+/// Free-text input step for `HitlDenyWithFeedback`. Deliberately narrow
+/// key handling (only edit/submit/cancel) since this is a short one-line
+/// note, not a full composer.
+fn handle_deny_feedback_key(card: &mut ApprovalCardState, key: Key) -> OverlayAction {
+    match key {
+        Key::Esc => {
+            card.stage = ApprovalStage::Decide;
+            OverlayAction::None
+        }
+        Key::Enter => {
+            let ApprovalStage::DenyFeedback { input } = &card.stage else {
+                unreachable!("handle_deny_feedback_key only runs in DenyFeedback stage")
+            };
+            OverlayAction::HitlDenyWithFeedback {
+                feedback: input.clone(),
+            }
+        }
+        Key::Backspace => {
+            if let ApprovalStage::DenyFeedback { input } = &mut card.stage {
+                input.pop();
+            }
+            OverlayAction::None
+        }
+        Key::Char(c) if !c.is_control() => {
+            if let ApprovalStage::DenyFeedback { input } = &mut card.stage {
+                input.push(c);
+            }
+            OverlayAction::None
+        }
+        Key::Paste(data) => {
+            if let ApprovalStage::DenyFeedback { input } = &mut card.stage {
+                input.extend(data.chars().filter(|c| !c.is_control()));
+            }
             OverlayAction::None
         }
         _ => OverlayAction::None,
@@ -1377,6 +1508,7 @@ fn action_label(action: ApprovalFocusedAction) -> &'static str {
     match action {
         ApprovalFocusedAction::AllowOnce => "Allow once",
         ApprovalFocusedAction::RememberDirect => "Remember exact Direct",
+        ApprovalFocusedAction::AllowPattern => "Allow pattern",
         ApprovalFocusedAction::Deny => "Deny",
     }
 }
@@ -1393,7 +1525,27 @@ fn action_span(action: ApprovalFocusedAction, focused: ApprovalFocusedAction) ->
     Span::styled(label, style)
 }
 
-fn approval_lines(payload: &HitlPayload, approval: &ApprovalOverlayState) -> Vec<Line<'static>> {
+/// Row index (0-based, within `approval_lines(card)`) where `action`'s
+/// button renders — `None` if the card isn't in `Decide` stage, or that
+/// action isn't offered for this call. Used for mouse hit-region
+/// registration, computed from the same lines a frame actually renders so
+/// the two can never drift out of sync with a hand-maintained offset.
+pub fn approval_card_action_row(
+    card: &ApprovalCardState,
+    action: ApprovalFocusedAction,
+) -> Option<usize> {
+    if !matches!(card.stage, ApprovalStage::Decide) {
+        return None;
+    }
+    let label = format!("[{}]", action_label(action));
+    approval_lines(card)
+        .iter()
+        .position(|line| line.spans.iter().any(|span| span.content.contains(&label)))
+}
+
+fn approval_lines(card: &ApprovalCardState) -> Vec<Line<'static>> {
+    let payload = &card.payload;
+    let approval = &card.approval;
     let mut lines = vec![
         Line::from(Span::styled("Approval required", theme::warn())),
         Line::from(""),
@@ -1445,32 +1597,83 @@ fn approval_lines(payload: &HitlPayload, approval: &ApprovalOverlayState) -> Vec
             Span::styled(payload.reason.clone(), theme::text()),
         ]),
         Line::from(""),
-        Line::from(vec![
-            action_span(ApprovalFocusedAction::AllowOnce, approval.focused_action),
-            Span::raw("  "),
-            action_span(ApprovalFocusedAction::Deny, approval.focused_action),
-        ]),
     ]);
-    if approval.remember_eligible {
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            action_span(
-                ApprovalFocusedAction::RememberDirect,
-                approval.focused_action,
-            ),
-            Span::raw(" / s"),
-        ]));
-        lines.push(Line::from(
-            "Remember this exact Direct invocation in this workspace",
-        ));
-        lines.push(Line::from("for the remainder of this Forge session."));
-    } else if approval.mode == ApprovalExecutionMode::Shell {
-        lines.push(Line::from(""));
-        lines.push(Line::from("Shell-mode approvals are one-time only."));
+
+    match &card.stage {
+        ApprovalStage::Decide => {
+            lines.push(Line::from(vec![
+                action_span(ApprovalFocusedAction::AllowOnce, approval.focused_action),
+                Span::raw("  "),
+                action_span(ApprovalFocusedAction::Deny, approval.focused_action),
+            ]));
+            if approval.remember_eligible {
+                lines.push(Line::from(""));
+                lines.push(Line::from(vec![
+                    action_span(
+                        ApprovalFocusedAction::RememberDirect,
+                        approval.focused_action,
+                    ),
+                    Span::raw(" / s"),
+                ]));
+                lines.push(Line::from(
+                    "Remember this exact Direct invocation in this workspace",
+                ));
+                lines.push(Line::from("for the remainder of this Forge session."));
+            } else if approval.mode == ApprovalExecutionMode::Shell {
+                lines.push(Line::from(""));
+                lines.push(Line::from("Shell-mode approvals are one-time only."));
+            }
+            if approval.pattern_allow_eligible {
+                lines.push(Line::from(""));
+                lines.push(Line::from(vec![
+                    action_span(ApprovalFocusedAction::AllowPattern, approval.focused_action),
+                    Span::raw(" / p"),
+                ]));
+                lines.push(Line::from(format!(
+                    "Allow {} going forward, in this and later sessions.",
+                    approval.suggested_pattern
+                )));
+            }
+            lines.push(Line::from(""));
+            lines.push(Line::from(
+                "Enter/a allow once · d/Esc deny · f deny w/ feedback · Tab move",
+            ));
+            lines.push(Line::from("v view details"));
+        }
+        ApprovalStage::ConfirmPattern => {
+            lines.push(Line::from(Span::styled(
+                "Add this rule?",
+                theme::warn().add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(vec![
+                Span::styled("Pattern: ", theme::muted()),
+                Span::styled(approval.suggested_pattern.clone(), theme::text()),
+            ]));
+            lines.push(Line::from(
+                "Future calls matching this pattern will be allowed without",
+            ));
+            lines.push(Line::from(
+                "asking, for the rest of this session and in later ones.",
+            ));
+            lines.push(Line::from(""));
+            lines.push(Line::from("Enter/y confirm · Esc/n cancel"));
+        }
+        ApprovalStage::DenyFeedback { input } => {
+            lines.push(Line::from(Span::styled(
+                "Deny with feedback (optional)",
+                theme::warn().add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(vec![
+                Span::styled("> ", theme::muted()),
+                Span::styled(input.clone(), theme::text()),
+            ]));
+            lines.push(Line::from(
+                "Sent to the agent as context for what to do instead.",
+            ));
+            lines.push(Line::from(""));
+            lines.push(Line::from("Enter deny · Esc cancel"));
+        }
     }
-    lines.push(Line::from(""));
-    lines.push(Line::from("Enter/a allow once · d/Esc deny · Tab move"));
-    lines.push(Line::from("v view details"));
     lines
 }
 
@@ -2247,7 +2450,7 @@ impl Widget for OverlayWidget<'_> {
 /// bottom of the scrollback, so the caller can carve out exactly that much
 /// space above it rather than overlapping the transcript.
 pub fn approval_card_dock_height(card: &ApprovalCardState) -> u16 {
-    let mut lines = approval_lines(&card.payload, &card.approval).len();
+    let mut lines = approval_lines(card).len();
     if card.expanded {
         lines += approval_detail_lines(&card.payload, &card.approval).len();
     }
@@ -2264,7 +2467,7 @@ pub struct ApprovalCardWidget<'a> {
 
 impl Widget for ApprovalCardWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let mut lines = approval_lines(&self.card.payload, &self.card.approval);
+        let mut lines = approval_lines(self.card);
         if self.card.expanded {
             lines.extend(approval_detail_lines(
                 &self.card.payload,
