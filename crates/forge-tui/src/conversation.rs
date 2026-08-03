@@ -665,15 +665,8 @@ impl ConversationModel {
                 }
                 ConversationBlock::AssistantAnswer(p) => {
                     let parts = assistant_lines(&p.text, width);
-                    for (i, line) in parts.into_iter().enumerate() {
-                        if i == 0 {
-                            let styled = line.clone().style(theme::assistant_answer_style());
-                            let mut with_marker = vec![Span::styled("▍ ", theme::agent())];
-                            with_marker.extend(styled.spans);
-                            lines.push(Line::from(with_marker));
-                        } else {
-                            lines.push(line.style(theme::assistant_answer_style()));
-                        }
+                    for line in parts {
+                        lines.push(line.style(theme::assistant_answer_style()));
                     }
                     if gap {
                         lines.push(Line::from(""));
