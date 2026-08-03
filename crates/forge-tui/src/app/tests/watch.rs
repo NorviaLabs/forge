@@ -4,7 +4,7 @@
 
 use super::prelude::*;
 
-use super::super::watch::path_is_under_dot_forge;
+use super::super::watch::path_is_ignored_by_file_watcher;
 
 #[tokio::test]
 async fn file_change_event_refreshes_git_status() {
@@ -135,10 +135,18 @@ async fn file_change_does_not_reload_tree_while_files_sidebar_is_focused() {
 
 #[test]
 fn forge_runtime_paths_are_ignored_by_file_watcher_filter() {
-    assert!(path_is_under_dot_forge(Path::new(".forge/progress.json")));
-    assert!(path_is_under_dot_forge(Path::new(
+    assert!(path_is_ignored_by_file_watcher(Path::new(
+        ".forge/progress.json"
+    )));
+    assert!(path_is_ignored_by_file_watcher(Path::new(
         "/tmp/repo/.forge/sessions/x.db"
     )));
-    assert!(!path_is_under_dot_forge(Path::new("src/app.rs")));
-    assert!(!path_is_under_dot_forge(Path::new("/tmp/repo/src/lib.rs")));
+    assert!(path_is_ignored_by_file_watcher(Path::new(".git/index")));
+    assert!(path_is_ignored_by_file_watcher(Path::new(
+        "/tmp/repo/.git/HEAD"
+    )));
+    assert!(!path_is_ignored_by_file_watcher(Path::new("src/app.rs")));
+    assert!(!path_is_ignored_by_file_watcher(Path::new(
+        "/tmp/repo/src/lib.rs"
+    )));
 }
