@@ -121,6 +121,7 @@ async fn mouse_overlay_blocks_underlying_targets() {
 async fn mouse_disabled_ignores_pointer_but_keeps_keyboard() {
     let (_dir, mut app) = focus_test_app().await;
     app.runtime.mouse_capture = false;
+    app.workspace_files.visible = false;
     draw_app(&mut app, 120, 30);
     let (x, y) = hit_point(&app, |target| {
         matches!(target, HitTarget::Pane(FocusBlock::Workspace))
