@@ -182,6 +182,14 @@ async fn files_visibility_is_independent_of_workspace_navigation() {
 }
 
 #[tokio::test]
+async fn files_panel_is_open_by_default() {
+    let (_dir, app) = focus_test_app().await;
+
+    assert!(app.workspace_files.visible);
+    assert_eq!(app.focus.block, FocusBlock::Composer);
+}
+
+#[tokio::test]
 async fn files_visibility_renders_independently_in_each_workspace_view() {
     let (dir, mut app) = focus_test_app().await;
     let path = dir.path().join("main.rs");
@@ -249,7 +257,7 @@ async fn files_visibility_persists_per_repository() {
     app.execute_semantic_command(SemanticCommand::ToggleFiles)
         .await
         .unwrap();
-    assert!(app.workspace_files.visible);
+    assert!(!app.workspace_files.visible);
 
     let session = session_for_workspace(dir.path()).await;
     let restored = TuiApp::new(
@@ -266,11 +274,11 @@ async fn files_visibility_persists_per_repository() {
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
-    assert!(restored.workspace_files.visible);
+    assert!(!restored.workspace_files.visible);
 
     let (_other_dir, other) = focus_test_app().await;
     assert!(
-        !other.workspace_files.visible,
+        other.workspace_files.visible,
         "Files preference must not leak across repositories"
     );
 }
