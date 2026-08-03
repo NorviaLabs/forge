@@ -620,6 +620,10 @@ struct ExitState {
 
 struct HitlSessionState {
     allowed: HashSet<ApprovalIdentity>,
+    /// Pattern rules added via "allow this pattern going forward" this
+    /// session — takes effect immediately, independent of whether the
+    /// write to the persisted permissions file succeeded.
+    pattern_allow: Vec<forge_governance::PatternRule>,
 }
 
 struct ToastState {
