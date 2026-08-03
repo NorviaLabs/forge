@@ -2,9 +2,11 @@
 
 mod acl;
 mod audit;
+mod pattern;
 
 pub use acl::{AclPolicy, AclRule};
 pub use audit::{AuditEvent, AuditLog};
+pub use pattern::{parse_pattern_rules, PatternRule};
 
 use forge_types::{PolicyDecision, Principal, SideEffectClass, ToolCall, ToolDescriptor};
 
@@ -16,6 +18,13 @@ pub struct Governance {
     pub hitl_tools: Vec<String>,
     pub hitl_classes: Vec<SideEffectClass>,
     pub audit: AuditLog,
+    /// Pattern rules that narrow an already-gated call to `Allow`. Empty by
+    /// default: nothing is auto-allowed until a user opts a pattern in,
+    /// typically via a persisted `permissions.toml` (see `forge_config`).
+    pub pattern_allow: Vec<PatternRule>,
+    /// Pattern rules that hold a call at `Hitl` even where `pattern_allow`
+    /// would otherwise match — an exception carved out of a broader allow.
+    pub pattern_deny: Vec<PatternRule>,
 }
 
 impl Default for Governance {
@@ -28,6 +37,8 @@ impl Default for Governance {
             hitl_tools: vec!["bash".into()],
             hitl_classes: vec![],
             audit: AuditLog::default(),
+            pattern_allow: vec![],
+            pattern_deny: vec![],
         }
     }
 }
@@ -48,6 +59,12 @@ impl Governance {
         self
     }
 
+    pub fn with_pattern_rules(mut self, allow: Vec<PatternRule>, deny: Vec<PatternRule>) -> Self {
+        self.pattern_allow = allow;
+        self.pattern_deny = deny;
+        self
+    }
+
     /// Filter tool list for the model (SEC-02).
     pub fn filter_tools(&self, tools: Vec<ToolDescriptor>) -> Vec<ToolDescriptor> {
         tools
@@ -62,24 +79,38 @@ impl Governance {
     /// Authorize a tool call: allow / deny / hitl.
     ///
     /// Membership in `hitl_tools` or `hitl_classes` requires approval, with no
-    /// per-tool exemption. An earlier version exempted the shell tool unless its
-    /// command matched one of two literal substrings, which is not a sound basis
-    /// for the decision — textually different spellings of the same command are
-    /// not recognised. Risk heuristics belong in how a prompt is *presented*,
-    /// never in whether one is shown.
+    /// per-tool exemption baked into this decision. An earlier version exempted
+    /// the shell tool unless its command matched one of two literal substrings,
+    /// which is not a sound basis for the decision — textually different
+    /// spellings of the same command are not recognised. Risk heuristics belong
+    /// in how a prompt is *presented*, never in whether one is shown by default.
+    ///
+    /// `pattern_allow`/`pattern_deny` are a different thing from that rejected
+    /// heuristic: they never change what's gated *by default* for anyone — both
+    /// are empty until a user explicitly opts a pattern in (typically via a
+    /// persisted `permissions.toml`), and even then a pattern rule can only
+    /// narrow an already-gated call between `Hitl` and `Allow`. It can never
+    /// turn a call into `Deny`, and `AclPolicy` is still checked first,
+    /// unconditionally — same as today.
     pub fn authorize(&self, call: &ToolCall, class: SideEffectClass) -> PolicyDecision {
         if !self.acl.is_allowed(&self.principal, &call.name, class) {
             return PolicyDecision::Deny;
         }
-        if self
+        let hitl_gated = self
             .hitl_tools
             .iter()
             .any(|t| t == &call.name || glob_match(t, &call.name))
-            || self.hitl_classes.contains(&class)
-        {
+            || self.hitl_classes.contains(&class);
+        if !hitl_gated {
+            return PolicyDecision::Allow;
+        }
+        if self.pattern_deny.iter().any(|rule| rule.matches(call)) {
             return PolicyDecision::Hitl;
         }
-        PolicyDecision::Allow
+        if self.pattern_allow.iter().any(|rule| rule.matches(call)) {
+            return PolicyDecision::Allow;
+        }
+        PolicyDecision::Hitl
     }
 
     pub fn redact_args(&self, args: &serde_json::Value) -> serde_json::Value {
@@ -406,6 +437,105 @@ mod tests {
             g.authorize(&call("exact_toolkit", json!({})), SideEffectClass::Write),
             PolicyDecision::Allow,
             "a longer name sharing the prefix must not match an exact pattern"
+        );
+    }
+
+    /// Empty `pattern_allow`/`pattern_deny` (the default) must not change
+    /// today's behavior: `bash` still requires approval for everything,
+    /// matching `bash_always_requires_approval_regardless_of_command` above.
+    #[test]
+    fn no_pattern_rules_leaves_default_hitl_behavior_unchanged() {
+        let g = Governance::default();
+        assert_eq!(
+            g.authorize(
+                &call("bash", json!({"command": "cargo test --all"})),
+                SideEffectClass::Exec
+            ),
+            PolicyDecision::Hitl
+        );
+    }
+
+    /// A matching `pattern_allow` rule narrows an otherwise-gated call to
+    /// `Allow`, but only for calls that match the pattern — everything else
+    /// on that tool still requires approval.
+    #[test]
+    fn pattern_allow_narrows_a_gated_tool_to_allow_for_matching_calls() {
+        let g = Governance::default()
+            .with_pattern_rules(parse_pattern_rules(&["bash(cargo test *)"]), vec![]);
+        assert_eq!(
+            g.authorize(
+                &call("bash", json!({"command": "cargo test --all"})),
+                SideEffectClass::Exec
+            ),
+            PolicyDecision::Allow
+        );
+        assert_eq!(
+            g.authorize(
+                &call("bash", json!({"command": "rm -rf /"})),
+                SideEffectClass::Exec
+            ),
+            PolicyDecision::Hitl,
+            "a pattern rule must not widen approval for calls it doesn't match"
+        );
+    }
+
+    /// A `pattern_deny` rule carves an exception out of a broader
+    /// `pattern_allow` rule, keeping the narrower call gated.
+    #[test]
+    fn pattern_deny_holds_at_hitl_even_when_a_broader_allow_rule_matches() {
+        let g = Governance::default().with_pattern_rules(
+            parse_pattern_rules(&["bash(cargo *)"]),
+            parse_pattern_rules(&["bash(cargo publish*)"]),
+        );
+        assert_eq!(
+            g.authorize(
+                &call("bash", json!({"command": "cargo build"})),
+                SideEffectClass::Exec
+            ),
+            PolicyDecision::Allow
+        );
+        assert_eq!(
+            g.authorize(
+                &call("bash", json!({"command": "cargo publish --dry-run"})),
+                SideEffectClass::Exec
+            ),
+            PolicyDecision::Hitl
+        );
+    }
+
+    /// A pattern rule can never override an ACL deny — `Deny` still wins
+    /// first, unconditionally, same as before this change.
+    #[test]
+    fn pattern_allow_cannot_override_an_acl_deny() {
+        let g = Governance::default()
+            .with_acl({
+                let mut a = AclPolicy::allow_all();
+                a.deny("bash".into());
+                a
+            })
+            .with_pattern_rules(parse_pattern_rules(&["bash(cargo test *)"]), vec![]);
+        assert_eq!(
+            g.authorize(
+                &call("bash", json!({"command": "cargo test --all"})),
+                SideEffectClass::Exec
+            ),
+            PolicyDecision::Deny
+        );
+    }
+
+    /// A pattern rule for a tool that isn't gated in the first place has no
+    /// effect — `read_file` is already `Allow` by default, so there's
+    /// nothing for the rule to narrow.
+    #[test]
+    fn pattern_allow_is_a_no_op_for_a_tool_that_was_never_gated() {
+        let g = Governance::default()
+            .with_pattern_rules(parse_pattern_rules(&["read_file(src/**)"]), vec![]);
+        assert_eq!(
+            g.authorize(
+                &call("read_file", json!({"path": "src/lib.rs"})),
+                SideEffectClass::Read
+            ),
+            PolicyDecision::Allow
         );
     }
 }

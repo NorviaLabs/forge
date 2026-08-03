@@ -1,5 +1,6 @@
 //! Configuration: TOML + env overrides.
 
+mod permissions;
 mod theme;
 
 use std::env;
@@ -9,6 +10,10 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub use permissions::{
+    append_user_allow_rule, load_permissions, parse_permissions_toml, user_permissions_path,
+    workspace_permissions_path, PermissionsFile,
+};
 pub use theme::{
     is_system_theme, normalize_theme_id, parse_hex_color, parse_theme_preference, parse_theme_toml,
     Rgb, SyntaxPalette, ThemeDefinition, ThemePalette, DEFAULT_THEME_ID, THEME_FORGE_DAYLIGHT,

@@ -210,6 +210,28 @@ Project-discovered configuration is intentionally restricted: settings that
 could execute code or redirect credentialed requests are not accepted from an
 untrusted checked-out repository.
 
+### Permission rules
+
+By default every shell command asks for approval. `permissions.toml` narrows
+that with pattern rules matched against the actual call — a command prefix
+for shell tools, a path glob for file tools, a host for fetch-style tools:
+
+```toml
+allow = ["bash(cargo test *)", "bash(cargo build*)"]
+deny = ["bash(cargo publish*)"]
+```
+
+A `deny` entry carves an exception out of a broader `allow` entry (`cargo *`
+allowed, but `cargo publish` still asks); it never blocks a call outright —
+that's still the ACL's job. Two files are read and merged:
+
+- `<user config dir>/forge/permissions.toml` — personal, trusted.
+- `.forge/permissions.toml` in the workspace — repo-committed, and for the
+  same reason project-discovered MCP config is restricted above, its `allow`
+  entries are ignored. A checked-out repository cannot grant itself a wider
+  blast radius than a human approved locally. Its `deny` entries are always
+  honored, since narrowing approval further is safe regardless of source.
+
 ## Built-in tools
 
 Depending on configuration, the agent can use tools for:

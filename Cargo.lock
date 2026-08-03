@@ -1101,6 +1101,7 @@ dependencies = [
  "forge-connect",
  "forge-core",
  "forge-durable",
+ "forge-governance",
  "forge-mcp",
  "forge-model",
  "forge-storage",

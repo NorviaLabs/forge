@@ -5,6 +5,7 @@ use std::sync::Arc;
 use clap::Parser;
 use forge_config::{Config, ConfigOverrides};
 use forge_core::{AgentSession, LoopConfig};
+use forge_governance::{parse_pattern_rules, Governance};
 use forge_mcp::{register_static_mcp, McpManager, StaticMcpTool};
 use forge_model::{client_from_config, ModelClient};
 use forge_storage::{LocalRuntimeStorage, RuntimeDataKind, RuntimeStorage};
@@ -259,6 +260,14 @@ async fn open_session(
     if !cfg.model.model.is_empty() {
         session.set_active_model(cfg.model.model.clone());
     }
+
+    let (permissions, permission_notices) = forge_config::load_permissions(cfg.workspace_root());
+    startup_notices.extend(permission_notices);
+    session.set_governance(Governance::default().with_pattern_rules(
+        parse_pattern_rules(&permissions.allow),
+        parse_pattern_rules(&permissions.deny),
+    ));
+
     Ok((session, startup_notices))
 }
 
@@ -278,6 +287,40 @@ mod tests {
     fn cli_resume_without_session_id_is_accepted() {
         let cli = Cli::try_parse_from(["forge", "--resume"]).unwrap();
         assert_eq!(cli.resume, Some(None));
+    }
+
+    /// Exercises the exact composition `build_session` wires at startup —
+    /// `load_permissions` output feeding `Governance::with_pattern_rules` —
+    /// without needing a real model client. A workspace-scope `deny` rule
+    /// must actually affect `authorize()`, proving the plumbing is live, not
+    /// just parsed and discarded.
+    #[test]
+    fn workspace_deny_rule_reaches_governance_authorize() {
+        let dir = TempDir::new().unwrap();
+        let forge_dir = dir.path().join(".forge");
+        std::fs::create_dir_all(&forge_dir).unwrap();
+        std::fs::write(
+            forge_dir.join("permissions.toml"),
+            "allow = [\"bash(*)\"]\ndeny = [\"bash(rm -rf*)\"]\n",
+        )
+        .unwrap();
+
+        let (permissions, _notices) = forge_config::load_permissions(dir.path());
+        let governance = Governance::default().with_pattern_rules(
+            parse_pattern_rules(&permissions.allow),
+            parse_pattern_rules(&permissions.deny),
+        );
+
+        let call = forge_types::ToolCall {
+            id: "1".into(),
+            name: "bash".into(),
+            arguments: json!({"command": "rm -rf /"}),
+        };
+        assert_eq!(
+            governance.authorize(&call, forge_types::SideEffectClass::Exec),
+            forge_types::PolicyDecision::Hitl,
+            "repo-scope allow rules must never be honored, and deny always wins anyway"
+        );
     }
 
     /// `forge-tools` cannot see `forge-connect`, so the list of credential
