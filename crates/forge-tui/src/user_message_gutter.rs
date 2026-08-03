@@ -75,11 +75,10 @@ pub fn render_user_message_lines(
 ) -> Vec<Line<'static>> {
     let parts = wrap(text, available_width.max(1));
     let text_style = theme::user_message_style();
-    let block_style = theme::user_message();
 
     parts
         .into_iter()
-        .map(|content| Line::from(Span::styled(content, text_style)).style(block_style))
+        .map(|content| Line::from(Span::styled(content, text_style)))
         .collect()
 }
 
@@ -362,7 +361,7 @@ mod tests {
             let lines =
                 render_user_message_lines("hello", 40, theme, false, crate::conversation::wrap);
             assert!(
-                lines[0].style.bg.is_some(),
+                lines[0].spans[0].style.bg.is_some(),
                 "theme {:?} request background is missing",
                 theme,
             );
@@ -521,7 +520,7 @@ mod tests {
             crate::conversation::wrap,
         );
         assert_eq!(
-            lines[0].style.bg,
+            lines[0].spans[0].style.bg,
             Some(theme::palette(THEME_SOLARIZED_DARK).panel_alt)
         );
     }
@@ -536,7 +535,7 @@ mod tests {
             crate::conversation::wrap,
         );
         assert_eq!(
-            lines[0].style.bg,
+            lines[0].spans[0].style.bg,
             Some(theme::palette(THEME_SOLARIZED_DARK).panel_alt)
         );
     }
