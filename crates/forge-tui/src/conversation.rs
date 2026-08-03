@@ -649,7 +649,17 @@ impl ConversationModel {
         let width = available_width.max(4);
         let mut lines = Vec::new();
         let gap = !self.opts.compact;
-        for block in self.semantic_blocks() {
+        let blocks = self.semantic_blocks();
+        for (index, block) in blocks.into_iter().enumerate() {
+            if index > 0 {
+                // The previous entry already appended a trailing blank line
+                // (when `gap`), so that alone serves as padding above the
+                // rule — only the padding below needs adding here.
+                lines.push(Line::from(Span::styled("─".repeat(width), theme::border())));
+                if gap {
+                    lines.push(Line::from(""));
+                }
+            }
             match block {
                 ConversationBlock::UserMessage(p) => {
                     let mut user_lines = user_message_gutter::render_user_message_lines(
@@ -3682,6 +3692,91 @@ mod tests {
         m.scroll = 0;
         m.scroll_down(1);
         assert!(m.follow);
+    }
+
+    fn three_block_model() -> ConversationModel {
+        let msgs = vec![
+            Message {
+                role: MessageRole::User,
+                content: "first".into(),
+                tool_call_id: None,
+                name: None,
+                thinking: None,
+                thinking_duration_secs: None,
+                tool_calls: vec![],
+            },
+            Message {
+                role: MessageRole::Assistant,
+                content: "second".into(),
+                tool_call_id: None,
+                name: None,
+                thinking: None,
+                thinking_duration_secs: None,
+                tool_calls: vec![],
+            },
+            Message {
+                role: MessageRole::User,
+                content: "third".into(),
+                tool_call_id: None,
+                name: None,
+                thinking: None,
+                thinking_duration_secs: None,
+                tool_calls: vec![],
+            },
+        ];
+        ConversationModel::from_messages(
+            &msgs,
+            &[],
+            TaskLifecycle::Working,
+            ConversationViewOpts::default(),
+        )
+    }
+
+    fn rule_lines<'a>(lines: &'a [Line<'static>]) -> Vec<&'a Line<'static>> {
+        lines
+            .iter()
+            .filter(|line| {
+                let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+                !text.is_empty() && text.chars().all(|c| c == '─')
+            })
+            .collect()
+    }
+
+    #[test]
+    fn hairline_separators_sit_between_entries_only() {
+        let model = three_block_model();
+        assert_eq!(model.semantic_blocks().len(), 3);
+
+        let lines = model.lines_for_width(60);
+        let rules = rule_lines(&lines);
+        assert_eq!(
+            rules.len(),
+            2,
+            "expected one separator between each pair of the 3 entries"
+        );
+
+        let first = lines.first().expect("non-empty transcript");
+        let last = lines.last().expect("non-empty transcript");
+        let is_rule = |line: &Line<'static>| {
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            !text.is_empty() && text.chars().all(|c| c == '─')
+        };
+        assert!(!is_rule(first), "no separator before the first entry");
+        assert!(!is_rule(last), "no separator after the last entry");
+    }
+
+    #[test]
+    fn hairline_separator_width_tracks_pane_width() {
+        let model = three_block_model();
+        for width in [40usize, 90usize] {
+            let lines = model.lines_for_width(width);
+            let rules = rule_lines(&lines);
+            assert!(!rules.is_empty());
+            for rule in rules {
+                let text: String = rule.spans.iter().map(|s| s.content.as_ref()).collect();
+                assert_eq!(text.chars().count(), width.max(4));
+            }
+        }
     }
 
     fn rendered_text(model: &ConversationModel) -> String {
