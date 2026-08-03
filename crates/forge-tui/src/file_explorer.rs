@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
@@ -73,45 +73,21 @@ impl SemanticRole {
     }
 }
 
-fn language_icon_for_name(name: &str) -> Option<&'static str> {
-    let lower = name.to_ascii_lowercase();
-    if matches!(lower.as_str(), "cargo.toml" | "cargo.lock") {
-        return Some("🦀");
+fn icon_for_path(path: &Path) -> (char, Color) {
+    if path.is_dir() {
+        return ('■', theme::info_color());
     }
-    if matches!(lower.as_str(), "package.json" | "package-lock.json") {
-        return Some("");
-    }
-    if matches!(
-        lower.as_str(),
-        "go.mod" | "go.sum" | "go.work" | "go.work.sum"
-    ) {
-        return Some("");
-    }
-    if matches!(lower.as_str(), "dockerfile") || lower.starts_with("dockerfile.") {
-        return Some("");
-    }
-    let ext = Path::new(name)
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| ext.to_ascii_lowercase())?;
-    match ext.as_str() {
-        "rs" => Some("🦀"),
-        "js" | "jsx" | "mjs" | "cjs" => Some(""),
-        "ts" | "tsx" | "mts" | "cts" => Some(""),
-        "py" | "pyi" => Some(""),
-        "go" => Some(""),
-        "java" => Some(""),
-        "c" | "h" => Some(""),
-        "cc" | "cpp" | "cxx" | "hh" | "hpp" | "hxx" => Some(""),
-        "sh" | "bash" | "zsh" | "fish" => Some(""),
-        _ => None,
+
+    match path.extension().and_then(|extension| extension.to_str()) {
+        Some("md") => ('¶', theme::info_color()),
+        Some("toml") => ('◇', theme::accent_color()),
+        Some("lock") => ('◆', theme::warning_color()),
+        _ => ('\0', theme::text_primary_color()),
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FileAppearance {
-    pub icon: &'static str,
-    pub icon_role: SemanticRole,
     pub text_role: SemanticRole,
     pub status_role: Option<SemanticRole>,
     pub category: FileCategory,
@@ -131,14 +107,7 @@ impl FileAppearanceResolver {
             FileKind::Unknown => (FileCategory::Default, SemanticRole::FileDefault),
             FileKind::File => category_for_name(name),
         };
-        let icon_role = match kind {
-            FileKind::Directory => SemanticRole::Directory,
-            FileKind::Symlink => SemanticRole::Symlink,
-            _ => text_role,
-        };
         FileAppearance {
-            icon: icon_for(kind, category),
-            icon_role,
             text_role,
             status_role: git_status.map(git_role),
             category,
@@ -154,23 +123,6 @@ fn git_role(status: GitStatusKind) -> SemanticRole {
         GitStatusKind::Untracked => SemanticRole::GitUntracked,
         GitStatusKind::Ignored => SemanticRole::GitIgnored,
         GitStatusKind::Conflicted => SemanticRole::GitDeleted,
-    }
-}
-
-fn icon_for(kind: FileKind, category: FileCategory) -> &'static str {
-    match kind {
-        FileKind::Directory => "▣",
-        FileKind::Symlink => "~",
-        FileKind::Unknown => "·",
-        FileKind::File => match category {
-            FileCategory::Source => "λ",
-            FileCategory::Config => "◇",
-            FileCategory::Document => "¶",
-            FileCategory::Data => "□",
-            FileCategory::Image => "◆",
-            FileCategory::Binary => "■",
-            FileCategory::Default => "·",
-        },
     }
 }
 
@@ -744,6 +696,7 @@ fn sort_nodes(nodes: &mut [FileNode]) {
 fn explorer_row_line(
     prefix: &str,
     marker: &str,
+    path: &Path,
     name: &str,
     kind: FileKind,
     selected: bool,
@@ -764,24 +717,14 @@ fn explorer_row_line(
         format!("{prefix}{marker} "),
         selection_style.unwrap_or_default(),
     )];
-    if let Some(status) = status {
-        let mut glyph = status_glyph(Status::from(status));
-        if let Some(style) = selection_style {
-            glyph.style = style;
-        }
-        spans.push(glyph);
-        spans.push(Span::raw(" "));
-    }
     if icon_mode == FileIconMode::Unicode {
-        let icon = if kind == FileKind::File {
-            language_icon_for_name(name).unwrap_or(appearance.icon)
-        } else {
-            appearance.icon
-        };
-        spans.push(Span::styled(
-            format!("{} ", icon),
-            style_for(appearance.icon_role),
-        ));
+        let (icon, color) = icon_for_path(path);
+        if icon != '\0' {
+            spans.push(Span::styled(
+                format!("{} ", icon),
+                selection_style.unwrap_or_else(|| Style::default().fg(color)),
+            ));
+        }
     }
     let display_name = if selected {
         format!("› {name}")
@@ -789,6 +732,14 @@ fn explorer_row_line(
         name.to_string()
     };
     spans.push(Span::styled(display_name, style_for(appearance.text_role)));
+    if let Some(status) = status {
+        let mut glyph = status_glyph(Status::from(status));
+        if let Some(style) = selection_style {
+            glyph.style = style;
+        }
+        spans.push(Span::raw(" "));
+        spans.push(glyph);
+    }
     let mut line = Line::from(spans);
     if let Some(style) = selection_style {
         line.style = style;
@@ -868,6 +819,7 @@ impl Widget for FileExplorerWidget<'_> {
                     lines.push(explorer_row_line(
                         &prefix,
                         marker,
+                        &node.path,
                         &node.display_name,
                         node.kind,
                         selected,
@@ -940,8 +892,8 @@ mod tests {
             SemanticRole::Symlink
         );
         assert_eq!(
-            FileAppearanceResolver::resolve("fifo", FileKind::Unknown, None).icon,
-            "·"
+            FileAppearanceResolver::resolve("fifo", FileKind::Unknown, None).category,
+            FileCategory::Default
         );
         assert_eq!(appearance("雪.rs").text_role, SemanticRole::FileSource);
     }
@@ -992,6 +944,7 @@ mod tests {
         let selected = explorer_row_line(
             "",
             " ",
+            Path::new("lib.rs"),
             "lib.rs",
             FileKind::File,
             true,
@@ -1003,6 +956,7 @@ mod tests {
         let inactive = explorer_row_line(
             "",
             " ",
+            Path::new("x"),
             "x",
             FileKind::Unknown,
             true,
@@ -1014,6 +968,7 @@ mod tests {
         let unselected = explorer_row_line(
             "",
             " ",
+            Path::new("new.rs"),
             "new.rs",
             FileKind::File,
             false,
@@ -1033,6 +988,7 @@ mod tests {
         let with_icon = explorer_row_line(
             "",
             " ",
+            Path::new("long_filename.rs"),
             "long_filename.rs",
             FileKind::File,
             false,
@@ -1045,13 +1001,13 @@ mod tests {
             .iter()
             .map(|span| span.content.as_ref())
             .collect();
-        assert!(text.starts_with("  M 🦀 long_filename.rs"));
-        assert_eq!(with_icon.spans[1].content.as_ref(), "M");
-        assert_eq!(with_icon.spans[3].content.as_ref(), "🦀 ");
+        assert_eq!(text, "  long_filename.rs M");
+        assert_eq!(with_icon.spans.last().unwrap().content.as_ref(), "M");
 
         let without_icon = explorer_row_line(
             "",
             " ",
+            Path::new("long_filename.rs"),
             "long_filename.rs",
             FileKind::File,
             false,
@@ -1064,29 +1020,29 @@ mod tests {
             .iter()
             .map(|span| span.content.as_ref())
             .collect();
-        assert_eq!(text, "  M long_filename.rs");
+        assert_eq!(text, "  long_filename.rs M");
     }
 
     #[test]
-    fn row_rendering_uses_language_icons_for_supported_files() {
-        for (name, icon) in [
-            ("main.py", ""),
-            ("app.tsx", ""),
-            ("go.mod", ""),
-            ("Dockerfile", ""),
-        ] {
-            let line = explorer_row_line(
-                "",
-                " ",
-                name,
-                FileKind::File,
-                false,
-                false,
-                None,
-                FileIconMode::Unicode,
-            );
-            assert_eq!(line.spans[1].content.as_ref(), format!("{icon} "));
-        }
+    fn icon_for_path_covers_file_types() {
+        let directory = tempfile::tempdir().unwrap();
+        assert_eq!(icon_for_path(directory.path()), ('■', theme::info_color()));
+        assert_eq!(
+            icon_for_path(Path::new("README.md")),
+            ('¶', theme::info_color())
+        );
+        assert_eq!(
+            icon_for_path(Path::new("Cargo.toml")),
+            ('◇', theme::accent_color())
+        );
+        assert_eq!(
+            icon_for_path(Path::new("Cargo.lock")),
+            ('◆', theme::warning_color())
+        );
+        assert_eq!(
+            icon_for_path(Path::new("main.rs")),
+            ('\0', theme::text_primary_color())
+        );
     }
 
     #[test]
@@ -1094,6 +1050,7 @@ mod tests {
         let line = explorer_row_line(
             "",
             " ",
+            Path::new("雪.py"),
             "雪.py",
             FileKind::Symlink,
             false,
@@ -1106,12 +1063,13 @@ mod tests {
             .iter()
             .map(|span| span.content.as_ref())
             .collect();
-        assert_eq!(text, "  ~ 雪.py");
+        assert_eq!(text, "  雪.py");
         assert!(line.width() > 4);
 
         let hidden = explorer_row_line(
             "",
             " ",
+            Path::new(".env"),
             ".env",
             FileKind::File,
             false,
@@ -1124,7 +1082,7 @@ mod tests {
             .iter()
             .map(|span| span.content.as_ref())
             .collect();
-        assert!(text.contains("◇ .env"));
+        assert_eq!(text, "  .env");
     }
 
     #[test]
