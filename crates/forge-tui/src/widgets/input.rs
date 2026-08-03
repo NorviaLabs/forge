@@ -461,7 +461,7 @@ mod tests {
     };
     use crate::theme;
     use crate::user_message_gutter::{gutter_prefix_width, gutter_style_for, GutterRole};
-    use forge_config::THEME_FORGE_MIDNIGHT;
+    use forge_config::THEME_SOLARIZED_DARK;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
@@ -703,7 +703,7 @@ mod tests {
         let border = &buf[(0, 0)];
         assert_eq!(
             border.style().fg,
-            Some(theme::palette(THEME_FORGE_MIDNIGHT).warn)
+            Some(theme::palette(THEME_SOLARIZED_DARK).warn)
         );
         let rendered: String = (0..buf.area().height)
             .map(|y| {
@@ -827,7 +827,7 @@ mod tests {
             8,
             true,
             theme::text(),
-            gutter_style_for(THEME_FORGE_MIDNIGHT, GutterRole::Active),
+            gutter_style_for(THEME_SOLARIZED_DARK, GutterRole::Active),
         );
         assert_eq!(lines.len(), 3);
         let blank_prefix = " ".repeat(gutter_prefix_width(glyph()));
@@ -838,8 +838,8 @@ mod tests {
 
     #[test]
     fn active_gutter_uses_distinct_theme_from_submitted() {
-        let style = gutter_style_for(THEME_FORGE_MIDNIGHT, GutterRole::Active);
-        let dark = theme::palette(THEME_FORGE_MIDNIGHT);
+        let style = gutter_style_for(THEME_SOLARIZED_DARK, GutterRole::Active);
+        let dark = theme::palette(THEME_SOLARIZED_DARK);
         assert_eq!(style.fg, Some(dark.user_gutter_active));
         assert_ne!(style.fg, Some(dark.user_message_gutter));
     }

@@ -121,7 +121,7 @@ pub fn content_column_to_display(content_col: usize, glyph: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use forge_config::{THEME_FORGE_DAYLIGHT, THEME_FORGE_MIDNIGHT, THEME_SYSTEM};
+    use forge_config::{THEME_SOLARIZED_DARK, THEME_SOLARIZED_LIGHT, THEME_SYSTEM};
     use forge_types::{Message, MessageRole, TaskLifecycle};
     use ratatui::backend::TestBackend;
     use ratatui::layout::Rect;
@@ -176,7 +176,7 @@ mod tests {
 
     #[test]
     fn single_line_message_has_one_gutter() {
-        let glyph = gutter_glyph(THEME_FORGE_MIDNIGHT, false);
+        let glyph = gutter_glyph(THEME_SOLARIZED_DARK, false);
         let rows = rendered_rows("Summarize this codebase", 100);
         assert_eq!(rows.len(), 1);
         assert_eq!(gutter_rows(&rows, glyph), 1);
@@ -185,7 +185,7 @@ mod tests {
 
     #[test]
     fn wrapped_message_has_gutter_on_every_row() {
-        let glyph = gutter_glyph(THEME_FORGE_MIDNIGHT, false);
+        let glyph = gutter_glyph(THEME_SOLARIZED_DARK, false);
         let text = "Explain how session recovery works and identify any conditions where a persisted turn could remain stuck after the original process exits.";
         let rows = rendered_rows(text, 40);
         assert_eq!(rows.len(), 4, "rows:\n{}", rows.join("\n"));
@@ -202,7 +202,7 @@ mod tests {
 
     #[test]
     fn explicit_newlines_receive_gutters() {
-        let glyph = gutter_glyph(THEME_FORGE_MIDNIGHT, false);
+        let glyph = gutter_glyph(THEME_SOLARIZED_DARK, false);
         let text =
             "Summarize the codebase.\nFocus on:\n- providers\n- session persistence\n- tool safety";
         let rows = rendered_rows(text, 100);
@@ -212,7 +212,7 @@ mod tests {
 
     #[test]
     fn blank_line_retains_gutter() {
-        let glyph = gutter_glyph(THEME_FORGE_MIDNIGHT, false);
+        let glyph = gutter_glyph(THEME_SOLARIZED_DARK, false);
         let text = "First paragraph.\n\nSecond paragraph.";
         let rows = rendered_rows(text, 100);
         assert_eq!(rows.len(), 3, "rows:\n{}", rows.join("\n"));
@@ -222,7 +222,7 @@ mod tests {
 
     #[test]
     fn source_newline_plus_wrapping_counts_all_rows() {
-        let glyph = gutter_glyph(THEME_FORGE_MIDNIGHT, false);
+        let glyph = gutter_glyph(THEME_SOLARIZED_DARK, false);
         let text = "First paragraph with enough words to wrap across multiple visual rows.\n\nSecond paragraph that also wraps when the terminal is narrow.";
         let rows = rendered_rows(text, 30);
         assert_eq!(gutter_rows(&rows, glyph), rows.len());
@@ -231,7 +231,7 @@ mod tests {
 
     #[test]
     fn bullet_list_rows_keep_list_markers() {
-        let glyph = gutter_glyph(THEME_FORGE_MIDNIGHT, false);
+        let glyph = gutter_glyph(THEME_SOLARIZED_DARK, false);
         let text = "- providers\n- session persistence\n- tool safety";
         let rows = rendered_rows(text, 100);
         assert_eq!(gutter_rows(&rows, glyph), 3);
@@ -240,7 +240,7 @@ mod tests {
 
     #[test]
     fn pasted_code_preserves_indentation() {
-        let glyph = gutter_glyph(THEME_FORGE_MIDNIGHT, false);
+        let glyph = gutter_glyph(THEME_SOLARIZED_DARK, false);
         let text = "Please review:\n\nfn main() {\n    println!(\"hello\");\n}";
         let rows = rendered_rows(text, 100);
         assert_eq!(gutter_rows(&rows, glyph), rows.len());
@@ -250,7 +250,7 @@ mod tests {
 
     #[test]
     fn long_unbroken_token_keeps_policy_and_gutters() {
-        let glyph = gutter_glyph(THEME_FORGE_MIDNIGHT, false);
+        let glyph = gutter_glyph(THEME_SOLARIZED_DARK, false);
         let token = "a".repeat(120);
         let rows = rendered_rows(&token, 40);
         assert_eq!(gutter_rows(&rows, glyph), rows.len());
@@ -259,7 +259,7 @@ mod tests {
 
     #[test]
     fn unicode_and_wide_characters_align() {
-        let glyph = gutter_glyph(THEME_FORGE_MIDNIGHT, false);
+        let glyph = gutter_glyph(THEME_SOLARIZED_DARK, false);
         let text = "emoji 🚀 test 日本語 café";
         let rows = rendered_rows(text, 20);
         assert_eq!(gutter_rows(&rows, glyph), rows.len());
@@ -269,7 +269,7 @@ mod tests {
 
     #[test]
     fn narrow_terminal_stays_positive_and_aligned() {
-        let glyph = gutter_glyph(THEME_FORGE_MIDNIGHT, false);
+        let glyph = gutter_glyph(THEME_SOLARIZED_DARK, false);
         for width in [80, 40, 20, 8] {
             let rows = rendered_rows("hello world", width);
             assert!(!rows.is_empty(), "width {width}");
@@ -284,7 +284,7 @@ mod tests {
 
     #[test]
     fn resize_reflow_regenerates_gutters() {
-        let glyph = gutter_glyph(THEME_FORGE_MIDNIGHT, false);
+        let glyph = gutter_glyph(THEME_SOLARIZED_DARK, false);
         let text = "word ".repeat(30);
         let wide = rendered_rows(&text, 120);
         let narrow = rendered_rows(&text, 30);
@@ -297,7 +297,7 @@ mod tests {
 
     #[test]
     fn continuation_rows_keep_gutter_when_first_row_is_absent() {
-        let glyph = gutter_glyph(THEME_FORGE_MIDNIGHT, false);
+        let glyph = gutter_glyph(THEME_SOLARIZED_DARK, false);
         let text = "word ".repeat(30);
         let rows = rendered_rows(&text, 30);
         assert!(rows.len() > 2);
@@ -318,12 +318,12 @@ mod tests {
             })
             .expect("user block");
         assert_eq!(block, text);
-        assert!(!block.contains(gutter_glyph(THEME_FORGE_MIDNIGHT, false)));
+        assert!(!block.contains(gutter_glyph(THEME_SOLARIZED_DARK, false)));
     }
 
     #[test]
     fn partial_copy_strips_gutter_prefix() {
-        let glyph = gutter_glyph(THEME_FORGE_MIDNIGHT, false);
+        let glyph = gutter_glyph(THEME_SOLARIZED_DARK, false);
         let rows = rendered_rows("alpha beta gamma delta", 10);
         let copied: Vec<String> = rows
             .iter()
@@ -337,7 +337,7 @@ mod tests {
 
     #[test]
     fn mouse_selection_translates_past_gutter() {
-        let glyph = gutter_glyph(THEME_FORGE_MIDNIGHT, false);
+        let glyph = gutter_glyph(THEME_SOLARIZED_DARK, false);
         assert_eq!(display_column_to_content(0, glyph), 0);
         let prefix = gutter_prefix_width(glyph);
         assert_eq!(display_column_to_content(prefix, glyph), 0);
@@ -347,7 +347,7 @@ mod tests {
 
     #[test]
     fn consecutive_user_messages_each_have_gutters() {
-        let glyph = gutter_glyph(THEME_FORGE_MIDNIGHT, false);
+        let glyph = gutter_glyph(THEME_SOLARIZED_DARK, false);
         let model = ConversationModel::from_messages(
             &[
                 Message {
@@ -385,7 +385,7 @@ mod tests {
 
     #[test]
     fn theme_matrix_keeps_gutter_blue_and_text_neutral() {
-        for theme in [THEME_FORGE_MIDNIGHT, THEME_FORGE_DAYLIGHT, THEME_SYSTEM] {
+        for theme in [THEME_SOLARIZED_DARK, THEME_SOLARIZED_LIGHT, THEME_SYSTEM] {
             let lines =
                 render_user_message_lines("hello", 40, theme, false, crate::conversation::wrap);
             let gutter_fg = lines[0].spans[0].style.fg;
@@ -412,12 +412,12 @@ mod tests {
 
     #[test]
     fn forced_fallback_renders_on_all_rows() {
-        let glyph = gutter_glyph(THEME_FORGE_MIDNIGHT, true);
+        let glyph = gutter_glyph(THEME_SOLARIZED_DARK, true);
         assert_ne!(glyph, PRIMARY_GLYPH);
         let rows: Vec<String> = render_user_message_lines(
             "one two three four five six seven",
             12,
-            THEME_FORGE_MIDNIGHT,
+            THEME_SOLARIZED_DARK,
             true,
             crate::conversation::wrap,
         )
@@ -435,7 +435,7 @@ mod tests {
         let model = user_model(text);
         let rows = rendered_rows(text, 80);
         assert_eq!(
-            gutter_rows(&rows, gutter_glyph(THEME_FORGE_MIDNIGHT, false)),
+            gutter_rows(&rows, gutter_glyph(THEME_SOLARIZED_DARK, false)),
             3
         );
         let block = model
@@ -517,7 +517,7 @@ mod tests {
             .map(|line| line_plain(&line))
             .filter(|row| !row.is_empty())
             .collect();
-        let glyph = gutter_glyph(THEME_FORGE_MIDNIGHT, false);
+        let glyph = gutter_glyph(THEME_SOLARIZED_DARK, false);
         let visible = &lines[2..5.min(lines.len())];
         assert!(!visible.is_empty());
         assert_eq!(
@@ -561,13 +561,13 @@ mod tests {
         let lines = render_user_message_lines(
             "hello",
             40,
-            THEME_FORGE_MIDNIGHT,
+            THEME_SOLARIZED_DARK,
             false,
             crate::conversation::wrap,
         );
         assert_eq!(
             lines[0].spans[0].style.fg,
-            Some(theme::palette(THEME_FORGE_MIDNIGHT).user_message_gutter)
+            Some(theme::palette(THEME_SOLARIZED_DARK).user_message_gutter)
         );
     }
 
@@ -576,13 +576,13 @@ mod tests {
         let lines = render_user_message_lines(
             "hello",
             40,
-            THEME_FORGE_DAYLIGHT,
+            THEME_SOLARIZED_LIGHT,
             false,
             crate::conversation::wrap,
         );
         assert_eq!(
             lines[0].spans[0].style.fg,
-            Some(theme::palette(THEME_FORGE_DAYLIGHT).user_message_gutter)
+            Some(theme::palette(THEME_SOLARIZED_LIGHT).user_message_gutter)
         );
     }
 
@@ -595,11 +595,11 @@ mod tests {
 
     #[test]
     fn snapshot_forced_fallback_gutter() {
-        let glyph = gutter_glyph(THEME_FORGE_MIDNIGHT, true);
+        let glyph = gutter_glyph(THEME_SOLARIZED_DARK, true);
         let lines = render_user_message_lines(
             "hello",
             40,
-            THEME_FORGE_MIDNIGHT,
+            THEME_SOLARIZED_DARK,
             true,
             crate::conversation::wrap,
         );
@@ -613,7 +613,7 @@ mod tests {
     }
 
     fn snapshot_model(model: &ConversationModel, width: usize, label: &str) {
-        let glyph = gutter_glyph(THEME_FORGE_MIDNIGHT, false);
+        let glyph = gutter_glyph(THEME_SOLARIZED_DARK, false);
         let lines = model.lines_for_width(width);
         assert!(
             lines

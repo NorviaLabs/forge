@@ -1,0 +1,49 @@
+# Solarized Light — Ethan Schoonover's canonical Solarized palette
+# (https://ethanschoonover.com/solarized/) mapped onto the Forge TUI's
+# semantic theme schema. The eight base tones (base03..base3) and eight
+# accent hues (yellow/orange/red/magenta/violet/blue/cyan/green) are the
+# exact published values. UI chrome shades that Solarized itself doesn't
+# define (surface elevation steps, soft/tinted backgrounds) are blended
+# from those same base tones and accents to stay in-palette.
+id = "solarized-light"
+name = "Solarized Light"
+
+background = "#FDF6E3"
+background_deep = "#FDF6E3"
+surface = "#EEE8D5"
+surface_raised = "#E3DFCF"
+surface_hover = "#DAD8CA"
+border = "#93A1A1"
+border_muted = "#CACCC0"
+text_primary = "#657B83"
+text_secondary = "#93A1A1"
+text_muted = "#BDC3BB"
+accent = "#268BD2"
+accent_soft = "#DDE6E0"
+agent = "#6C71C4"
+success = "#859900"
+warning = "#B58900"
+error = "#DC322F"
+info = "#2AA198"
+diff_add = "#ECE9C3"
+diff_remove = "#F8DBCA"
+selection = "#F0F0E2"
+cursor = "#586E75"
+user_gutter_active = "#3384BB"
+tag = "#93A1A1"
+search_match = "#EFE0B6"
+
+[syntax]
+comment = "#93A1A1"
+keyword = "#859900"
+string = "#2AA198"
+number = "#2AA198"
+function = "#268BD2"
+type = "#B58900"
+variable = "#268BD2"
+operator = "#859900"
+punctuation = "#93A1A1"
+property = "#268BD2"
+tag = "#DC322F"
+attribute = "#CB4B16"
+default = "#657B83"
