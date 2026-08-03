@@ -650,8 +650,23 @@ impl ConversationModel {
         let mut lines = Vec::new();
         let gap = !self.opts.compact;
         let blocks = self.semantic_blocks();
+        // A question is paired with the answer that immediately follows it —
+        // together they read as one entry, so neither the hairline rule nor
+        // the entry gap belongs between them. The rule still separates this
+        // pair from whatever comes next.
+        let paired_with_answer: Vec<bool> = blocks
+            .iter()
+            .enumerate()
+            .map(|(i, block)| {
+                matches!(block, ConversationBlock::UserMessage(_))
+                    && matches!(
+                        blocks.get(i + 1),
+                        Some(ConversationBlock::AssistantAnswer(_))
+                    )
+            })
+            .collect();
         for (index, block) in blocks.into_iter().enumerate() {
-            if index > 0 {
+            if index > 0 && !paired_with_answer[index - 1] {
                 // The previous entry already appended a trailing blank line
                 // (when `gap`), so that alone serves as padding above the
                 // rule — only the padding below needs adding here.
@@ -662,22 +677,31 @@ impl ConversationModel {
             }
             match block {
                 ConversationBlock::UserMessage(p) => {
-                    let mut user_lines = user_message_gutter::render_user_message_lines(
+                    let theme_id = crate::theme::active();
+                    let glyph = user_message_gutter::ACTIVE_GLYPH;
+                    let gutter_style = theme::user_gutter_active_style_for(&theme_id);
+                    let prefix_width = user_message_gutter::gutter_prefix_width(glyph);
+                    let blank_prefix = " ".repeat(prefix_width);
+                    let user_lines = user_message_gutter::render_user_message_lines(
                         &p.text,
-                        width.saturating_sub(2),
-                        &crate::theme::active(),
+                        width.saturating_sub(prefix_width),
+                        &theme_id,
                         false,
                         wrap,
                     );
-                    for line in &mut user_lines {
-                        let padding = width.saturating_sub(line.width() + 2);
-                        if padding > 0 {
-                            line.spans.insert(0, Span::raw(" ".repeat(padding)));
-                        }
-                        line.spans.push(Span::styled(" │", theme::border_muted()));
+                    for (row_idx, line) in user_lines.into_iter().enumerate() {
+                        let mut spans = if row_idx == 0 {
+                            vec![
+                                Span::styled(glyph, gutter_style),
+                                Span::styled(user_message_gutter::GUTTER_GAP, theme::text()),
+                            ]
+                        } else {
+                            vec![Span::raw(blank_prefix.clone())]
+                        };
+                        spans.extend(line.spans);
+                        lines.push(Line::from(spans));
                     }
-                    lines.extend(user_lines);
-                    if gap {
+                    if gap && !paired_with_answer[index] {
                         lines.push(Line::from(""));
                     }
                 }
@@ -2838,7 +2862,7 @@ mod tests {
     }
 
     #[test]
-    fn user_messages_render_with_right_edge_rule() {
+    fn user_messages_render_left_aligned_with_prompt_glyph() {
         const WIDTH: usize = 100;
         let msgs = vec![Message {
             role: MessageRole::User,
@@ -2866,16 +2890,15 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let rendered = rendered_lines.join("\n");
-        assert!(rendered_lines[0].ends_with("hello world │"), "{rendered}");
-        assert_eq!(lines[0].width(), WIDTH);
+        assert_eq!(rendered_lines[0], "> hello world", "{rendered}");
         let dark = theme::palette(forge_config::THEME_SOLARIZED_DARK);
         let first = &lines[0];
-        assert_eq!(
-            first.spans.last().and_then(|span| span.style.fg),
-            Some(dark.border_muted)
-        );
-        assert_eq!(first.spans[1].style.fg, Some(dark.text));
+        assert_eq!(first.spans[0].content.as_ref(), ">");
+        assert_eq!(first.spans[0].style.fg, Some(dark.user_gutter_active));
+        assert_eq!(first.spans[2].content.as_ref(), "hello world");
+        assert_eq!(first.spans[2].style.fg, Some(dark.text));
         assert!(!rendered.contains('›'), "{rendered}");
+        assert!(!rendered.contains(" │"), "{rendered}");
         assert!(rendered.contains("hello world"), "{rendered}");
     }
 
@@ -3916,10 +3939,13 @@ mod tests {
 
         let lines = model.lines_for_width(60);
         let rules = rule_lines(&lines);
+        // The model is [question, answer, question]. The first question is
+        // paired with its answer (one entry, no rule between them), so the
+        // only rule is between that pair and the trailing question.
         assert_eq!(
             rules.len(),
-            2,
-            "expected one separator between each pair of the 3 entries"
+            1,
+            "expected one separator between the Q/A pair and the next entry"
         );
 
         let first = lines.first().expect("non-empty transcript");
