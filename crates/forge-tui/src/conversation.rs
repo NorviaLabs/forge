@@ -713,14 +713,7 @@ impl ConversationModel {
                         Span::styled(p.label, theme::text().add_modifier(Modifier::BOLD)),
                         Span::styled("  ", theme::metadata_style()),
                         Span::styled(p.count_label, theme::metadata_style()),
-                        Span::styled(
-                            if p.expanded {
-                                "  · collapse"
-                            } else {
-                                "  · details"
-                            },
-                            theme::metadata_style(),
-                        ),
+                        Span::styled(activity_detail_label(p.expanded), theme::metadata_style()),
                     ]));
                     if p.expanded {
                         for item in p.items {
@@ -1385,6 +1378,14 @@ fn number_diff_lines(lines: &[String]) -> Vec<NumberedDiffLine> {
         });
     }
     numbered
+}
+
+fn activity_detail_label(expanded: bool) -> &'static str {
+    if expanded {
+        "  · Ctrl+O collapse"
+    } else {
+        "  · Ctrl+O details"
+    }
 }
 
 fn render_numbered_diff(path: &str, diff: &[String], width: usize) -> Vec<Line<'static>> {
@@ -3036,6 +3037,8 @@ mod tests {
             ConversationBlock::ActivityGroup(group)
                 if !group.items.is_empty() && group.count_label.contains("2")
         )));
+        assert_eq!(activity_detail_label(true), "  · Ctrl+O collapse");
+        assert_eq!(activity_detail_label(false), "  · Ctrl+O details");
     }
 
     #[test]
