@@ -206,6 +206,7 @@ async fn semantic_commands_dispatch_without_rendering_a_frame() {
     let path = dir.path().join("main.rs");
     fs::write(&path, "fn main() {}\n").unwrap();
 
+    app.workspace_files.visible = false;
     app.execute_semantic_command(SemanticCommand::ToggleFiles)
         .await
         .unwrap();
@@ -273,7 +274,7 @@ async fn modal_and_transient_precedence_still_wins_over_semantic_bindings() {
     app.handle_key(press(KeyCode::Char('e'), KeyModifiers::CONTROL))
         .await
         .unwrap();
-    assert!(!app.workspace_files.visible);
+    assert!(app.workspace_files.visible);
     assert!(app.overlay.is_some());
 
     app.overlay = None;

@@ -105,7 +105,10 @@ impl TuiApp {
                 execution: run::RunExecution::default(),
             },
             workspace_files: WorkspaceFilesState {
-                visible: false,
+                // Make Forge's editor/file-browser surface discoverable on a
+                // first launch. A saved per-repository preference is applied
+                // immediately below by `load_ui_state`.
+                visible: true,
                 explorer: FileExplorer::new(Some(workspace_root), file_icons),
             },
             explorer_dialog: ExplorerDialogState::default(),

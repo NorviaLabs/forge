@@ -192,7 +192,7 @@ async fn old_or_malformed_ui_state_migrates_safely_to_default() {
         },
     );
 
-    assert!(!app.workspace_files.visible);
+    assert!(app.workspace_files.visible);
 }
 
 /// A theme switch changes the colours baked into each segment, so it *must*
