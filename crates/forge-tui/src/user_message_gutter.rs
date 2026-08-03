@@ -4,8 +4,11 @@ use crate::theme;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
+#[cfg(test)]
 const PRIMARY_GLYPH: &str = "▎";
+#[cfg(test)]
 const FALLBACK_GLYPH_PIPE: &str = "│";
+#[cfg(test)]
 const FALLBACK_GLYPH_ASCII: &str = "|";
 pub const GUTTER_GAP: &str = " ";
 
@@ -29,6 +32,7 @@ pub enum GutterRole {
 /// `_theme` is currently unused: every theme shares the same glyph set. It is
 /// kept in the signature so theme-specific glyphs can be introduced without
 /// touching every call site.
+#[cfg(test)]
 pub fn gutter_glyph(_theme: &str, force_fallback: bool) -> &'static str {
     if force_fallback {
         return gutter_fallback_glyph();
@@ -40,6 +44,7 @@ pub fn gutter_glyph(_theme: &str, force_fallback: bool) -> &'static str {
     }
 }
 
+#[cfg(test)]
 fn gutter_fallback_glyph() -> &'static str {
     if glyph_display_width(FALLBACK_GLYPH_PIPE) == 1 {
         FALLBACK_GLYPH_PIPE

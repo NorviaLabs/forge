@@ -136,20 +136,23 @@ async fn light_theme_representative_layout_snapshot() {
     term.draw(|f| app.draw(f)).unwrap();
     assert_buffer_fully_themed(term.backend().buffer());
     let buf = term.backend().buffer();
-    let mut saw_gutter = false;
+    let mut saw_active_gutter = false;
     let mut saw_selection = false;
     let light = crate::theme::palette(forge_config::THEME_SOLARIZED_LIGHT);
     for y in 0..buf.area().height {
         for x in 0..buf.area().width {
-            if buf[(x, y)].style().fg == Some(light.user_message_gutter) {
-                saw_gutter = true;
+            if buf[(x, y)].style().fg == Some(light.user_gutter_active) {
+                saw_active_gutter = true;
             }
             if buf[(x, y)].style().bg == Some(light.selection) {
                 saw_selection = true;
             }
         }
     }
-    assert!(saw_gutter, "expected light-theme user gutter colour");
+    assert!(
+        saw_active_gutter,
+        "expected light-theme active gutter colour"
+    );
     assert!(
         saw_selection || text.contains("draft reply"),
         "expected composer selection or typed text"

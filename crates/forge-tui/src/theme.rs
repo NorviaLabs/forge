@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 thread_local! {
     static THEME_REGISTRY: RefCell<ThemeRegistry> = RefCell::new(ThemeRegistry::default());
     static ACTIVE_THEME_ID: RefCell<String> = RefCell::new(DEFAULT_THEME_ID.to_string());
-    static LAST_SYSTEM_THEME: RefCell<Option<(&'static str, Instant)>> = RefCell::new(None);
-    static RESOLVED_SYSTEM_THEME: RefCell<Option<&'static str>> = RefCell::new(None);
+    static LAST_SYSTEM_THEME: RefCell<Option<(&'static str, Instant)>> = const { RefCell::new(None) };
+    static RESOLVED_SYSTEM_THEME: RefCell<Option<&'static str>> = const { RefCell::new(None) };
 }
 
 /// Install discovered themes and the active theme id (call once at startup).
@@ -119,11 +119,11 @@ fn system_theme_id_from_os() -> Option<&'static str> {
             .args(["read", "-g", "AppleInterfaceStyle"])
             .output()
             .ok()?;
-        return if output.status.success() {
+        if output.status.success() {
             system_theme_id_from_os_output(&String::from_utf8_lossy(&output.stdout))
         } else {
             Some(forge_config::THEME_SOLARIZED_LIGHT)
-        };
+        }
     }
     #[cfg(target_os = "windows")]
     {
@@ -373,15 +373,6 @@ pub fn user_message_style() -> Style {
     user_message().fg(active_palette().text)
 }
 
-#[cfg(test)]
-pub fn user_message_gutter_style() -> Style {
-    user_message_gutter_style_for(&active())
-}
-
-pub fn user_message_gutter_style_for(theme_id: &str) -> Style {
-    user_message().fg(palette(theme_id).user_message_gutter)
-}
-
 pub fn user_gutter_active_style_for(theme_id: &str) -> Style {
     user_message().fg(palette(theme_id).user_gutter_active)
 }
@@ -605,7 +596,6 @@ pub struct Palette {
     pub surface_hover: Color,
     pub user_bg: Color,
     pub response_bg: Color,
-    pub user_message_gutter: Color,
     pub user_gutter_active: Color,
     pub border: Color,
     pub border_muted: Color,
@@ -645,7 +635,6 @@ fn palette_from_source(src: &ThemePalette) -> Palette {
         surface_hover: to_color(src.surface_hover),
         user_bg: to_color(src.background_deep),
         response_bg: to_color(src.background),
-        user_message_gutter: to_color(src.accent),
         user_gutter_active: to_color(src.user_gutter_active),
         border: to_color(src.border),
         border_muted: to_color(src.border_muted),
@@ -826,31 +815,6 @@ mod tests {
     fn diff_styles_use_background() {
         assert!(diff_add().bg.is_some());
         assert!(diff_remove().bg.is_some());
-    }
-
-    #[test]
-    fn user_message_gutter_style_uses_semantic_token() {
-        install_defaults();
-        assert_eq!(
-            user_message_gutter_style().fg,
-            Some(to_color(dark_palette().accent))
-        );
-    }
-
-    #[test]
-    fn user_message_gutter_uses_accent() {
-        let dark = palette(THEME_SOLARIZED_DARK);
-        assert_eq!(
-            dark.user_message_gutter, dark.accent,
-            "user gutter marker uses accent"
-        );
-        assert_ne!(dark.user_message_gutter, dark.info);
-    }
-
-    #[test]
-    fn user_gutter_active_is_distinct_from_submitted() {
-        let dark = palette(THEME_SOLARIZED_DARK);
-        assert_ne!(dark.user_gutter_active, dark.user_message_gutter);
     }
 
     #[test]
