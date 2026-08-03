@@ -134,6 +134,12 @@ impl TuiApp {
             OverlayAction::HitlDeny => {
                 self.resolve_hitl_overlay(HitlDecision::Deny, false).await?;
             }
+            OverlayAction::HitlApprovePattern { pattern } => {
+                self.resolve_hitl_overlay_with_pattern(pattern).await?;
+            }
+            OverlayAction::HitlDenyWithFeedback { feedback } => {
+                self.resolve_hitl_overlay_with_feedback(feedback).await?;
+            }
             OverlayAction::ContinueTurns => {
                 self.overlay = None;
                 self.pending_turn.continue_turn = true;

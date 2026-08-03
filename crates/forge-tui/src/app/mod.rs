@@ -57,11 +57,11 @@ use crate::layout::is_too_small;
 use crate::layout::split_areas_full;
 use crate::layout::split_areas_with_chrome;
 use crate::overlays::{
-    approval_card_dock_height, build_provider_rows, centered_rect, filter_palette,
-    handle_approval_card_key, handle_overlay_key, models_from_catalog, ApprovalCardState,
-    ApprovalCardWidget, ApprovalExecutionMode, ApprovalOverlayState, ConnectModelColumn,
-    FileExplorerItem, Key, Key as OverlayKey, Overlay, OverlayAction, OverlayWidget, PaletteItem,
-    ResumeSessionItem,
+    approval_card_action_row, approval_card_dock_height, build_provider_rows, centered_rect,
+    filter_palette, handle_approval_card_key, handle_overlay_key, models_from_catalog,
+    ApprovalCardState, ApprovalCardWidget, ApprovalExecutionMode, ApprovalFocusedAction,
+    ApprovalOverlayState, ConnectModelColumn, FileExplorerItem, Key, Key as OverlayKey, Overlay,
+    OverlayAction, OverlayWidget, PaletteItem, ResumeSessionItem,
 };
 use crate::run::{RunExecutionMode, RunHistoryFile, RunState, RunStateModel};
 use crate::sidebar::{InspectorView, SidebarModel, SidebarWidget};
