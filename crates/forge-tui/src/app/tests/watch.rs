@@ -24,6 +24,82 @@ async fn file_change_event_refreshes_git_status() {
 }
 
 #[tokio::test]
+async fn inspector_renders_settled_change_count_without_files_pane() {
+    let (dir, mut app) = focus_test_app().await;
+    init_repo(dir.path());
+    let status = std::process::Command::new("git")
+        .args(["-C", dir.path().to_str().unwrap(), "add", "-A"])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let status = std::process::Command::new("git")
+        .args([
+            "-C",
+            dir.path().to_str().unwrap(),
+            "commit",
+            "-qm",
+            "initial",
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    fs::write(dir.path().join("changed.txt"), "changed\n").unwrap();
+    app.workspace_files.visible = false;
+    app.workspace_files.explorer.git_status = crate::git_status::GitStatusCache::new();
+    app.workspace_files.explorer.refresh_git_status();
+
+    for _ in 0..20 {
+        render_app_text(&mut app, 120, 40);
+        if app.workspace_files.explorer.git_status.status.len() == 1 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    assert_eq!(app.workspace_files.explorer.git_status.status.len(), 1);
+}
+
+#[tokio::test]
+async fn inspector_change_count_stays_stable_across_draws() {
+    let (dir, mut app) = focus_test_app().await;
+    init_repo(dir.path());
+    let status = std::process::Command::new("git")
+        .args(["-C", dir.path().to_str().unwrap(), "add", "-A"])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let status = std::process::Command::new("git")
+        .args([
+            "-C",
+            dir.path().to_str().unwrap(),
+            "commit",
+            "-qm",
+            "initial",
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    fs::write(dir.path().join("changed.txt"), "changed\n").unwrap();
+    app.workspace_files.visible = false;
+    app.workspace_files.explorer.git_status = crate::git_status::GitStatusCache::new();
+    app.workspace_files.explorer.refresh_git_status();
+
+    for _ in 0..20 {
+        render_app_text(&mut app, 120, 40);
+        if app.workspace_files.explorer.git_status.status.len() == 1 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(app.workspace_files.explorer.git_status.status.len(), 1);
+
+    for _ in 0..5 {
+        render_app_text(&mut app, 120, 40);
+        assert_eq!(app.workspace_files.explorer.git_status.status.len(), 1);
+    }
+}
+
+#[tokio::test]
 async fn file_change_does_not_reload_tree_while_files_sidebar_is_focused() {
     let (dir, mut app) = focus_test_app().await;
     fs::create_dir(dir.path().join("crates")).unwrap();
