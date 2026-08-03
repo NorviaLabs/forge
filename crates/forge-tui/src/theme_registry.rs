@@ -1,8 +1,6 @@
 //! Discover and load TUI themes from bundled files and optional directories.
 
-use forge_config::{
-    parse_theme_toml, ThemeDefinition, ThemePalette, DEFAULT_THEME_ID, THEME_SYSTEM,
-};
+use forge_config::{parse_theme_toml, ThemeDefinition, ThemePalette, DEFAULT_THEME_ID};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -17,20 +15,6 @@ const BUILTIN_THEMES: &[(&str, &str)] = &[
         include_str!("../themes/solarized-light.toml"),
     ),
 ];
-
-/// Virtual entry shown in the theme picker for ANSI terminal colours.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SystemThemeEntry {
-    pub id: &'static str,
-    pub name: &'static str,
-}
-
-impl SystemThemeEntry {
-    pub const SYSTEM: Self = Self {
-        id: THEME_SYSTEM,
-        name: "System (ANSI)",
-    };
-}
 
 /// All themes available to the TUI (built-ins, user, and workspace drops).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -87,7 +71,7 @@ impl ThemeRegistry {
     }
 
     pub fn contains(&self, id: &str) -> bool {
-        forge_config::is_system_theme(id) || self.themes.iter().any(|t| t.id == id)
+        self.themes.iter().any(|t| t.id == id)
     }
 
     pub fn get(&self, id: &str) -> Option<&ThemeDefinition> {
@@ -100,9 +84,6 @@ impl ThemeRegistry {
     }
 
     pub fn display_name(&self, id: &str) -> String {
-        if forge_config::is_system_theme(id) {
-            return SystemThemeEntry::SYSTEM.name.to_string();
-        }
         self.get(id)
             .map(|theme| theme.name.clone())
             .unwrap_or_else(|| id.to_string())
@@ -118,17 +99,13 @@ impl ThemeRegistry {
     }
 }
 
-/// Picker list: installed themes plus the virtual system entry.
+/// Picker list of installed themes.
 pub fn picker_entries(registry: &ThemeRegistry) -> Vec<(String, String)> {
     let mut items: Vec<(String, String)> = registry
         .themes
         .iter()
         .map(|theme| (theme.id.clone(), theme.name.clone()))
         .collect();
-    items.push((
-        SystemThemeEntry::SYSTEM.id.to_string(),
-        SystemThemeEntry::SYSTEM.name.to_string(),
-    ));
     items.sort_by(|a, b| a.1.cmp(&b.1));
     items
 }
