@@ -1,5 +1,6 @@
 //! Sidebar panels (TUI-03 / tui-sidebar.md).
 
+use crate::status_glyph::{status_dot, Status};
 use crate::theme;
 use forge_core::AgentSession;
 use forge_types::{MessageRole, TaskLifecycle};
@@ -7,6 +8,15 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
+
+/// One entry in the Task tab's "Recent Activity" list — the same feed the
+/// bottom panel's Activity tab and the Runtime tab's "Recent" list read
+/// from, just filtered to the newest few and colored by outcome.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SidebarActivityEntry {
+    pub summary: String,
+    pub status: Status,
+}
 
 #[derive(Debug, Clone)]
 pub struct SidebarModel {
@@ -42,7 +52,7 @@ pub struct SidebarModel {
     pub context_reset: Option<(f64, f64)>,
     pub skills: Vec<String>,
     pub tools: Vec<String>,
-    pub activity: Vec<String>,
+    pub activity: Vec<SidebarActivityEntry>,
     pub session_allows: Vec<String>,
     pub pending_approval: bool,
 }
@@ -78,7 +88,10 @@ impl SidebarModel {
         Self::from_session_with_activity(session, &[])
     }
 
-    pub fn from_session_with_activity(session: &AgentSession, activity_lines: &[String]) -> Self {
+    pub fn from_session_with_activity(
+        session: &AgentSession,
+        activity: &[SidebarActivityEntry],
+    ) -> Self {
         let id = session.session_id.to_string();
         let short = if id.len() > 8 { &id[..8] } else { &id };
         // Turn lifecycle only — not tool/activity phase names.
@@ -134,7 +147,7 @@ impl SidebarModel {
             context_reset: None,
             skills: session.loaded_skill_names(),
             tools,
-            activity: activity_lines.to_vec(),
+            activity: activity.to_vec(),
             session_allows: Vec::new(),
             pending_approval: session.pending_hitl().is_some(),
         }
@@ -174,15 +187,15 @@ impl Widget for SidebarWidget<'_> {
         let inner = block.inner(area);
         block.render(area, buf);
 
-        Paragraph::new(self.lines(inner.height)).render(inner, buf);
+        Paragraph::new(self.lines(inner.width, inner.height)).render(inner, buf);
     }
 }
 
 impl SidebarWidget<'_> {
-    fn lines(&self, height: u16) -> Vec<Line<'static>> {
+    fn lines(&self, width: u16, height: u16) -> Vec<Line<'static>> {
         let mut lines = vec![self.tabs(), Line::from("")];
         match self.view {
-            InspectorView::Task => self.task_lines(&mut lines),
+            InspectorView::Task => self.task_lines(&mut lines, width),
             InspectorView::Context => self.context_lines(&mut lines),
             InspectorView::Runtime => self.runtime_lines(&mut lines),
         }
@@ -208,32 +221,62 @@ impl SidebarWidget<'_> {
         ])
     }
 
-    fn task_lines(&self, lines: &mut Vec<Line<'static>>) {
+    fn task_lines(&self, lines: &mut Vec<Line<'static>>, width: u16) {
         lines.push(Line::from(Span::styled(
             "CURRENT TASK",
             theme::metadata_style(),
         )));
         if self.model.busy || self.model.objective.is_some() {
             if let Some(obj) = self.model.objective.as_deref() {
-                lines.push(kv("Objective", truncate(obj, 60)));
+                lines.push(kv_aligned("Objective", truncate(obj, 60), TASK_KEY_WIDTH));
             }
-            lines.push(kv("Stage", self.stage()));
-            lines.push(kv("Changes", self.changes_label()));
+            lines.push(kv_aligned("Stage", self.stage(), TASK_KEY_WIDTH));
+            lines.push(kv_aligned("Changes", self.changes_label(), TASK_KEY_WIDTH));
             if self.model.validation.is_some() {
-                lines.push(kv(
+                lines.push(kv_aligned(
                     "Validation",
                     self.model.validation.as_deref().unwrap_or("Not run"),
+                    TASK_KEY_WIDTH,
                 ));
             } else {
-                lines.push(kv("Validation", "Not run"));
+                lines.push(kv_aligned("Validation", "Not run", TASK_KEY_WIDTH));
             }
             if let Some(elapsed) = self.model.elapsed.as_deref() {
-                lines.push(kv("Elapsed", elapsed));
+                lines.push(kv_aligned("Elapsed", elapsed, TASK_KEY_WIDTH));
             }
         } else {
             lines.push(Line::from(Span::styled("No active task", theme::muted())));
-            lines.push(kv("Repository", self.repository_label()));
-            lines.push(kv("Changes", self.changes_label()));
+            lines.push(kv_aligned(
+                "Repository",
+                self.repository_label(),
+                TASK_KEY_WIDTH,
+            ));
+            lines.push(kv_aligned("Changes", self.changes_label(), TASK_KEY_WIDTH));
+        }
+        self.recent_activity_lines(lines, width);
+    }
+
+    /// "Recent Activity" — the newest few entries from the same
+    /// [`ActivityFeed`](crate::activity::ActivityFeed) the bottom panel's
+    /// Activity tab renders, so the inspector stays useful without a second
+    /// event-tracking mechanism.
+    fn recent_activity_lines(&self, lines: &mut Vec<Line<'static>>, width: u16) {
+        if self.model.activity.is_empty() {
+            return;
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "RECENT ACTIVITY",
+            theme::metadata_style(),
+        )));
+        // Dot + gap take 2 columns; leave the rest for the summary text.
+        let max_chars = width.saturating_sub(2) as usize;
+        for entry in self.model.activity.iter().rev().take(8) {
+            lines.push(Line::from(vec![
+                status_dot(entry.status),
+                Span::raw(" "),
+                Span::styled(truncate(&entry.summary, max_chars), theme::text()),
+            ]));
         }
     }
 
@@ -314,8 +357,8 @@ impl SidebarWidget<'_> {
         if !self.model.activity.is_empty() {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled("Recent", theme::metadata_style())));
-            for summary in self.model.activity.iter().rev() {
-                let text: String = summary.chars().take(34).collect();
+            for entry in self.model.activity.iter().rev() {
+                let text: String = entry.summary.chars().take(34).collect();
                 lines.push(Line::from(Span::styled(
                     format!("· {text}"),
                     theme::muted(),
@@ -379,6 +422,18 @@ fn kv(label: &'static str, value: impl AsRef<str>) -> Line<'static> {
     ])
 }
 
+/// Widest label in the Task tab's key/value block ("Validation", "Repository").
+const TASK_KEY_WIDTH: usize = 10;
+
+/// Like [`kv`], but pads the label to a fixed column width so values line up
+/// vertically regardless of label length.
+fn kv_aligned(label: &'static str, value: impl AsRef<str>, width: usize) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{label:<width$} "), theme::dim()),
+        Span::styled(value.as_ref().to_string(), theme::text()),
+    ])
+}
+
 #[allow(dead_code)]
 fn status_style(s: &str) -> ratatui::style::Style {
     match s {
@@ -435,8 +490,20 @@ mod tests {
         assert!(m.ctx_pct >= 0.0);
         assert!(m.skills.iter().any(|s| s == "inspect"));
 
-        let m = SidebarModel::from_session_with_activity(&s, &["model started".into()]);
-        assert_eq!(m.activity, vec!["model started"]);
+        let m = SidebarModel::from_session_with_activity(
+            &s,
+            &[SidebarActivityEntry {
+                summary: "model started".into(),
+                status: Status::Info,
+            }],
+        );
+        assert_eq!(
+            m.activity,
+            vec![SidebarActivityEntry {
+                summary: "model started".into(),
+                status: Status::Info,
+            }]
+        );
     }
 
     fn model() -> SidebarModel {
@@ -637,8 +704,14 @@ mod tests {
         m.tool_message_count = 3;
         m.tools = vec!["git".into(), "read_file".into()];
         m.activity = vec![
-            "first activity line that is intentionally long".into(),
-            "latest activity".into(),
+            SidebarActivityEntry {
+                summary: "first activity line that is intentionally long".into(),
+                status: Status::Info,
+            },
+            SidebarActivityEntry {
+                summary: "latest activity".into(),
+                status: Status::Success,
+            },
         ];
 
         let widget = SidebarWidget {
@@ -659,6 +732,165 @@ mod tests {
         assert!(text.contains("· git"), "{text}");
         assert!(text.contains("Recent"), "{text}");
         assert!(text.contains("latest activity"), "{text}");
+    }
+
+    fn line_plain(line: &Line<'static>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn task_lines_show_recent_activity_most_recent_first_with_dots_and_ellipsis() {
+        let mut m = model();
+        m.busy = true;
+        m.objective = Some("ship the sidebar activity feed".into());
+        m.activity = vec![
+            SidebarActivityEntry {
+                summary: "oldest entry".into(),
+                status: Status::Info,
+            },
+            SidebarActivityEntry {
+                summary: "a very long activity summary that should not fit and needs truncation"
+                    .into(),
+                status: Status::Error,
+            },
+            SidebarActivityEntry {
+                summary: "newest entry".into(),
+                status: Status::Success,
+            },
+        ];
+
+        let widget = SidebarWidget {
+            model: &m,
+            view: InspectorView::Task,
+            focused: false,
+        };
+        let lines = widget.lines(30, 40);
+        let header_idx = lines
+            .iter()
+            .position(|l| line_plain(l) == "RECENT ACTIVITY")
+            .expect("RECENT ACTIVITY header present");
+        let first_entry = line_plain(&lines[header_idx + 1]);
+        assert!(
+            first_entry.contains("newest entry"),
+            "most recent entry should render first: {first_entry}"
+        );
+
+        let joined = lines.iter().map(line_plain).collect::<Vec<_>>().join("\n");
+        assert!(
+            joined.contains('…'),
+            "long entry should be truncated with an ellipsis:\n{joined}"
+        );
+        assert!(
+            !joined
+                .contains("a very long activity summary that should not fit and needs truncation"),
+            "long entry should not overflow the panel width untruncated:\n{joined}"
+        );
+        assert!(
+            joined.contains('●'),
+            "entries should be prefixed with a status dot:\n{joined}"
+        );
+    }
+
+    #[test]
+    fn task_lines_cap_recent_activity_at_eight_entries() {
+        let mut m = model();
+        m.busy = true;
+        m.activity = (0..12)
+            .map(|i| SidebarActivityEntry {
+                summary: format!("entry {i}"),
+                status: Status::Info,
+            })
+            .collect();
+
+        let widget = SidebarWidget {
+            model: &m,
+            view: InspectorView::Task,
+            focused: false,
+        };
+        let lines = widget.lines(30, 100);
+        let dot_lines = lines
+            .iter()
+            .filter(|l| line_plain(l).starts_with('●'))
+            .count();
+        assert_eq!(dot_lines, 8);
+    }
+
+    #[test]
+    fn task_key_value_rows_align_values_in_a_fixed_column() {
+        let mut m = model();
+        m.busy = true;
+        m.objective = Some("short".into());
+        m.elapsed = Some("1.2s".into());
+
+        let widget = SidebarWidget {
+            model: &m,
+            view: InspectorView::Task,
+            focused: false,
+        };
+        let lines = widget.lines(60, 40);
+        let label_widths: Vec<usize> = lines
+            .iter()
+            .filter_map(|l| {
+                let first = l.spans.first()?;
+                (l.spans.len() == 2 && first.style == theme::dim())
+                    .then(|| first.content.chars().count())
+            })
+            .collect();
+        assert!(
+            label_widths.len() >= 3,
+            "expected multiple key/value rows: {label_widths:?}"
+        );
+        assert!(
+            label_widths.iter().all(|w| *w == label_widths[0]),
+            "key column widths should all match: {label_widths:?}"
+        );
+    }
+
+    #[test]
+    fn task_view_truncates_gracefully_at_minimum_supported_height() {
+        let mut m = model();
+        m.busy = true;
+        m.objective = Some("ship the sidebar activity feed".into());
+        m.activity = (0..8)
+            .map(|i| SidebarActivityEntry {
+                summary: format!("activity {i}"),
+                status: Status::Info,
+            })
+            .collect();
+
+        let widget = SidebarWidget {
+            model: &m,
+            view: InspectorView::Task,
+            focused: false,
+        };
+        let text = render_lines_sized(&widget, 30, 10);
+        assert!(text.contains("CURRENT TASK"), "{text}");
+        assert!(text.contains("Objective"), "{text}");
+    }
+
+    fn render_lines_sized(widget: &SidebarWidget<'_>, width: u16, height: u16) -> String {
+        let backend = ratatui::backend::TestBackend::new(width, height);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                f.render_widget(
+                    SidebarWidget {
+                        model: widget.model,
+                        view: widget.view,
+                        focused: widget.focused,
+                    },
+                    f.area(),
+                );
+            })
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<Vec<_>>()
+            .join("")
     }
 
     #[test]
