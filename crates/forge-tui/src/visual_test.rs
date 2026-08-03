@@ -598,11 +598,11 @@ mod tests {
         let accent = crate::theme::accent_soft_bg();
         let line_y = text.lines().position(|l| l.contains("2 │ second")).unwrap();
         let content_start_x = text.lines().nth(line_y).unwrap().find('│').unwrap() + 1;
-        let has_bright_bg = (content_start_x..buf.area().width as usize)
+        let has_themed_bg = (content_start_x..buf.area().width as usize)
             .any(|x| buf[(x as u16, line_y as u16)].style().bg == Some(accent));
         assert!(
-            !has_bright_bg,
-            "current line content still has bright cyan background:\n{text}"
+            has_themed_bg,
+            "current line content is missing the themed background:\n{text}"
         );
     }
 
