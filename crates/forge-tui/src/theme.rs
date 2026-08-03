@@ -94,23 +94,21 @@ pub fn canvas() -> Style {
     Style::default().bg(active_palette().canvas)
 }
 
-/// Blend a color toward a translucent dark overlay tone, approximating a
+/// Blend a color toward a translucent overlay tone, approximating a
 /// ~62%-opacity dark panel sitting on top of it. Ratatui cells have no alpha
-/// channel, so this is a one-shot blend rather than true compositing;
-/// non-`Rgb` colors (e.g. `Reset`) pass through unchanged.
-fn dim_toward_overlay(color: Color) -> Color {
+/// channel, so this is a one-shot blend rather than true compositing.
+fn dim_toward_overlay(color: Color, overlay: Color) -> Color {
     const ALPHA: f32 = 0.62;
-    const OVERLAY: (f32, f32, f32) = (9.0, 12.0, 17.0);
-    match color {
-        Color::Rgb(r, g, b) => {
+    match (color, overlay) {
+        (Color::Rgb(r, g, b), Color::Rgb(overlay_r, overlay_g, overlay_b)) => {
             let blend = |c: u8, d: f32| ((c as f32) * (1.0 - ALPHA) + d * ALPHA).round() as u8;
             Color::Rgb(
-                blend(r, OVERLAY.0),
-                blend(g, OVERLAY.1),
-                blend(b, OVERLAY.2),
+                blend(r, overlay_r as f32),
+                blend(g, overlay_g as f32),
+                blend(b, overlay_b as f32),
             )
         }
-        other => other,
+        (color, _) => color,
     }
 }
 
@@ -122,11 +120,12 @@ pub fn dim_region(area: Rect, buf: &mut Buffer) {
     if area.width == 0 || area.height == 0 {
         return;
     }
+    let overlay = active_palette().user_bg;
     for y in area.y..area.y.saturating_add(area.height) {
         for x in area.x..area.x.saturating_add(area.width) {
             if let Some(cell) = buf.cell_mut((x, y)) {
-                cell.fg = dim_toward_overlay(cell.fg);
-                cell.bg = dim_toward_overlay(cell.bg);
+                cell.fg = dim_toward_overlay(cell.fg, overlay);
+                cell.bg = dim_toward_overlay(cell.bg, overlay);
             }
         }
     }
@@ -141,11 +140,7 @@ pub fn accent_soft_bg() -> Color {
 }
 
 pub fn syntax_theme() -> forge_syntax::HighlightTheme {
-    if forge_config::is_system_theme(&active()) {
-        forge_syntax::HighlightTheme::default()
-    } else {
-        syntax_from_palette(&resolved_palette(&active()))
-    }
+    syntax_from_palette(&resolved_palette(&active()))
 }
 
 pub fn brand() -> Style {
@@ -505,11 +500,7 @@ pub struct Palette {
 }
 
 pub fn palette(theme_id: &str) -> Palette {
-    if forge_config::is_system_theme(theme_id) {
-        system_palette()
-    } else {
-        palette_from_source(&resolved_palette(theme_id))
-    }
+    palette_from_source(&resolved_palette(theme_id))
 }
 
 fn palette_from_source(src: &ThemePalette) -> Palette {
@@ -543,40 +534,6 @@ fn palette_from_source(src: &ThemePalette) -> Palette {
         selection_fg: to_color(src.text_primary),
         tag: to_color(src.tag),
         cursor: to_color(src.cursor),
-    }
-}
-
-fn system_palette() -> Palette {
-    Palette {
-        canvas: Color::Reset,
-        text: Color::Reset,
-        muted: Color::Reset,
-        dim: Color::Reset,
-        accent: Color::Cyan,
-        accent_soft: Color::Reset,
-        agent: Color::Magenta,
-        ok: Color::Green,
-        warn: Color::Yellow,
-        danger: Color::Red,
-        info: Color::Blue,
-        tool: Color::Cyan,
-        selection: Color::Reset,
-        diff_add: Color::Green,
-        diff_remove: Color::Red,
-        diff_hunk: Color::Blue,
-        panel: Color::Reset,
-        panel_alt: Color::Reset,
-        surface_hover: Color::Reset,
-        user_bg: Color::Reset,
-        response_bg: Color::Reset,
-        user_message_gutter: Color::Blue,
-        user_gutter_active: Color::LightBlue,
-        border: Color::Reset,
-        border_muted: Color::Reset,
-        search_match: Color::Reset,
-        selection_fg: Color::White,
-        tag: Color::Gray,
-        cursor: Color::White,
     }
 }
 
