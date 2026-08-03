@@ -4,7 +4,7 @@
 
 use super::prelude::*;
 
-use super::super::watch::path_is_under_dot_forge;
+use super::super::watch::path_is_ignored_by_file_watcher;
 
 #[tokio::test]
 async fn file_change_event_refreshes_git_status() {
@@ -21,6 +21,82 @@ async fn file_change_event_refreshes_git_status() {
     app.poll_file_changes();
 
     assert!(app.workspace_files.explorer.git_status.loading);
+}
+
+#[tokio::test]
+async fn inspector_renders_settled_change_count_without_files_pane() {
+    let (dir, mut app) = focus_test_app().await;
+    init_repo(dir.path());
+    let status = std::process::Command::new("git")
+        .args(["-C", dir.path().to_str().unwrap(), "add", "-A"])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let status = std::process::Command::new("git")
+        .args([
+            "-C",
+            dir.path().to_str().unwrap(),
+            "commit",
+            "-qm",
+            "initial",
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    fs::write(dir.path().join("changed.txt"), "changed\n").unwrap();
+    app.workspace_files.visible = false;
+    app.workspace_files.explorer.git_status = crate::git_status::GitStatusCache::new();
+    app.workspace_files.explorer.refresh_git_status();
+
+    for _ in 0..20 {
+        render_app_text(&mut app, 120, 40);
+        if app.workspace_files.explorer.git_status.status.len() == 1 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    assert_eq!(app.workspace_files.explorer.git_status.status.len(), 1);
+}
+
+#[tokio::test]
+async fn inspector_change_count_stays_stable_across_draws() {
+    let (dir, mut app) = focus_test_app().await;
+    init_repo(dir.path());
+    let status = std::process::Command::new("git")
+        .args(["-C", dir.path().to_str().unwrap(), "add", "-A"])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let status = std::process::Command::new("git")
+        .args([
+            "-C",
+            dir.path().to_str().unwrap(),
+            "commit",
+            "-qm",
+            "initial",
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    fs::write(dir.path().join("changed.txt"), "changed\n").unwrap();
+    app.workspace_files.visible = false;
+    app.workspace_files.explorer.git_status = crate::git_status::GitStatusCache::new();
+    app.workspace_files.explorer.refresh_git_status();
+
+    for _ in 0..20 {
+        render_app_text(&mut app, 120, 40);
+        if app.workspace_files.explorer.git_status.status.len() == 1 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(app.workspace_files.explorer.git_status.status.len(), 1);
+
+    for _ in 0..5 {
+        render_app_text(&mut app, 120, 40);
+        assert_eq!(app.workspace_files.explorer.git_status.status.len(), 1);
+    }
 }
 
 #[tokio::test]
@@ -59,10 +135,18 @@ async fn file_change_does_not_reload_tree_while_files_sidebar_is_focused() {
 
 #[test]
 fn forge_runtime_paths_are_ignored_by_file_watcher_filter() {
-    assert!(path_is_under_dot_forge(Path::new(".forge/progress.json")));
-    assert!(path_is_under_dot_forge(Path::new(
+    assert!(path_is_ignored_by_file_watcher(Path::new(
+        ".forge/progress.json"
+    )));
+    assert!(path_is_ignored_by_file_watcher(Path::new(
         "/tmp/repo/.forge/sessions/x.db"
     )));
-    assert!(!path_is_under_dot_forge(Path::new("src/app.rs")));
-    assert!(!path_is_under_dot_forge(Path::new("/tmp/repo/src/lib.rs")));
+    assert!(path_is_ignored_by_file_watcher(Path::new(".git/index")));
+    assert!(path_is_ignored_by_file_watcher(Path::new(
+        "/tmp/repo/.git/HEAD"
+    )));
+    assert!(!path_is_ignored_by_file_watcher(Path::new("src/app.rs")));
+    assert!(!path_is_ignored_by_file_watcher(Path::new(
+        "/tmp/repo/src/lib.rs"
+    )));
 }

@@ -596,8 +596,7 @@ impl TuiApp {
         }
 
         let turn_limit_reached = outcome_err.is_none()
-            && self.session.active_task.lifecycle != forge_types::TaskLifecycle::Completed
-            && self.session.active_task.lifecycle != forge_types::TaskLifecycle::Waiting;
+            && self.session.active_task.lifecycle == forge_types::TaskLifecycle::Working;
         let interrupted_partial = outcome_err
             .as_ref()
             .filter(|_| !self.stream.preview.trim().is_empty())

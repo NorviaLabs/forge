@@ -438,6 +438,33 @@ async fn question_mark_opens_help_overlay() {
 }
 
 #[tokio::test]
+async fn slash_command_info_feedback_expires() {
+    let (_dir, session) = test_session().await;
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "mock".into(),
+            provider: "mock".into(),
+            cwd: PathBuf::from("."),
+            version: "0.12.0".into(),
+            startup_notices: Vec::new(),
+            validation_command: None,
+            file_icons: FileIconMode::Unicode,
+            mouse_capture: true,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+
+    app.dispatch_line("/help").await.unwrap();
+    assert!(app.feedback.text.contains("Help"));
+    app.feedback_until = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+    app.tick_feedback();
+
+    assert!(app.feedback.is_empty());
+    assert!(app.status_state.message.is_empty());
+}
+
+#[tokio::test]
 async fn empty_enter_when_idle_dequeues_and_sends() {
     use crossterm::event::{KeyCode, KeyModifiers};
     let (_dir, session) = test_session().await;

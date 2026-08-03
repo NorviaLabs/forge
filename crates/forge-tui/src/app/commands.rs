@@ -896,6 +896,7 @@ impl TuiApp {
                     self.push_toast(msg);
                 }
             }
+            self.expire_info_feedback();
             return Ok(());
         }
 

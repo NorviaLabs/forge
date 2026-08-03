@@ -8,9 +8,9 @@ use std::path::Path;
 
 use super::*;
 
-pub(super) fn path_is_under_dot_forge(path: &Path) -> bool {
+pub(super) fn path_is_ignored_by_file_watcher(path: &Path) -> bool {
     path.components()
-        .any(|component| component.as_os_str() == ".forge")
+        .any(|component| matches!(component.as_os_str().to_str(), Some(".forge" | ".git")))
 }
 
 impl TuiApp {
@@ -24,9 +24,9 @@ impl TuiApp {
                         EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)
                     ) {
                         for path in event.paths {
-                            // Journal/progress/ui-state under .forge churn constantly
-                            // during exploration and must not thrash the Files tree.
-                            if path_is_under_dot_forge(&path) {
+                            // Runtime state and Git internals churn during refreshes
+                            // and must not retrigger the Files tree refresh.
+                            if path_is_ignored_by_file_watcher(&path) {
                                 continue;
                             }
                             let _ = tx.send(FileChangeEvent { path });

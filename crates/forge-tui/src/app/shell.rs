@@ -108,6 +108,7 @@ async fn run_loop(
         app.poll_run();
         app.poll_background_tasks().await?;
         app.tick_toast();
+        app.tick_feedback();
         app.tick_notices();
         app.drain_auto_hitl().await?;
         app.maybe_open_hitl();

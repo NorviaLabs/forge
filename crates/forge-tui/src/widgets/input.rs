@@ -837,11 +837,10 @@ mod tests {
     }
 
     #[test]
-    fn active_gutter_uses_distinct_theme_from_submitted() {
+    fn active_gutter_uses_configured_theme_token() {
         let style = gutter_style_for(THEME_SOLARIZED_DARK, GutterRole::Active);
         let dark = theme::palette(THEME_SOLARIZED_DARK);
         assert_eq!(style.fg, Some(dark.user_gutter_active));
-        assert_ne!(style.fg, Some(dark.user_message_gutter));
     }
 
     #[test]

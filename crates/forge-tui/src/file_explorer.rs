@@ -805,7 +805,6 @@ pub struct FileExplorerWidget<'a> {
 
 impl Widget for FileExplorerWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        self.explorer.git_status.poll();
         let title = if self.focused {
             " FILES · NAV "
         } else {

@@ -12,6 +12,12 @@ use super::*;
 
 impl TuiApp {
     pub fn draw(&mut self, frame: &mut ratatui::Frame) {
+        if crate::theme::refresh_system() {
+            self.render_cache.conversation = None;
+        }
+        if self.workspace_files.explorer.git_status.poll() {
+            self.reconcile_diff_staleness();
+        }
         // Advance the off-thread repo-header refresh. Cheap (a `try_recv` plus an
         // elapsed check); every draw path funnels through here, including the
         // streaming and `drain_pending_*` loops that bypass `run_loop`'s polls.
@@ -74,10 +80,6 @@ impl TuiApp {
             );
             self.register_file_hit_regions(files);
         }
-        if self.workspace_files.explorer.git_status.poll() {
-            self.reconcile_diff_staleness();
-        }
-
         let stream_wait = if self.busy_state.active && self.pending_turn.prompt.is_none() {
             let elapsed = if !self.stream.thinking.is_empty() {
                 // Thinking timer runs from first thinking token

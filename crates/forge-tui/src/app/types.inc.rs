@@ -683,6 +683,7 @@ pub struct TuiApp {
     pub(crate) notice_state: NoticeState,
     /// Phase 10 / TUI-08 — always-visible feedback strip model.
     feedback: FeedbackModel,
+    feedback_until: Option<Instant>,
     banner_state: BannerState,
     /// Phase 10 / TUI-10 — progressive busy phase for chrome.
     pending_turn: PendingTurnState,

@@ -59,6 +59,24 @@ impl TuiApp {
         let text = text.into();
         self.status_state.message = text.clone();
         self.feedback = FeedbackModel { text, severity };
+        self.feedback_until = None;
+    }
+
+    pub(super) fn expire_info_feedback(&mut self) {
+        if self.feedback.severity == FeedbackSeverity::Info && !self.feedback.is_empty() {
+            self.feedback_until = Some(Instant::now() + Duration::from_secs(3));
+        }
+    }
+
+    pub(super) fn tick_feedback(&mut self) {
+        if self
+            .feedback_until
+            .is_some_and(|until| Instant::now() >= until)
+        {
+            self.feedback = FeedbackModel::default();
+            self.status_state.message.clear();
+            self.feedback_until = None;
+        }
     }
 
     /// Operator errors remain visible in chat, feedback, and activity.
