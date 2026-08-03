@@ -114,13 +114,14 @@ impl Widget for BottomPanel<'_> {
                 .enumerate()
                 .flat_map(|(idx, tab)| {
                     let tab_style = if tab == self.model.state.active {
-                        theme::active_tab(self.focused)
+                        theme::active_tab_reverse()
                     } else {
                         theme::inactive_tab()
                     };
                     [
-                        Span::styled(format!(" {} {} ", idx + 1, tab.label()), tab_style),
-                        Span::styled(" ", theme::muted()),
+                        Span::raw(" "),
+                        Span::styled(format!("{} {}", idx + 1, tab.label()), tab_style),
+                        Span::raw("  "),
                     ]
                 })
                 .collect::<Vec<_>>(),
@@ -472,6 +473,17 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    fn rendered_buffer(model: BottomPanelModel<'_>, focused: bool) -> ratatui::buffer::Buffer {
+        let area = Rect::new(0, 0, 80, 12);
+        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(BottomPanel { model, focused }, area);
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
     }
 
     fn run_model() -> RunStateModel {
@@ -868,5 +880,41 @@ mod tests {
         };
         let rendered = rendered_text(model, false);
         assert!(rendered.contains("Direct mode does not evaluate shell syntax"));
+    }
+
+    #[test]
+    fn active_tab_uses_reverse_video_block_matching_label_width() {
+        let activity = ActivityFeed::default();
+        let active_style = theme::active_tab_reverse();
+        for (idx, active) in BottomPanelTab::ALL.into_iter().enumerate() {
+            let state = BottomPanelState {
+                open: true,
+                focused: true,
+                active,
+            };
+            let model = BottomPanelModel {
+                state: &state,
+                busy_phase: &BusyPhase::Idle,
+                activity: &activity,
+                run: &run_model(),
+                background: &BackgroundTaskRegistry::default(),
+                tasks_selected: None,
+                terminal_title: None,
+                terminal_content: "",
+                terminal_truncated: false,
+            };
+            let buf = rendered_buffer(model, true);
+
+            // Only cells belonging to the active tab's own "N Label" text
+            // carry the reverse-video background — a solid rectangle with no
+            // bleed into the surrounding tab-bar whitespace.
+            let highlighted: String = (0..buf.area.width)
+                .map(|x| buf[(x, 0)].clone())
+                .filter(|cell| cell.style().bg == active_style.bg)
+                .map(|cell| cell.symbol().to_string())
+                .collect();
+            let expected = format!("{} {}", idx + 1, active.label());
+            assert_eq!(highlighted, expected, "active={active:?}");
+        }
     }
 }

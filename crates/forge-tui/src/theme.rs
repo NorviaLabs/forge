@@ -316,6 +316,10 @@ pub fn accent_color() -> Color {
     active_palette().accent
 }
 
+pub fn background_color() -> Color {
+    active_palette().canvas
+}
+
 pub fn text_primary_color() -> Color {
     active_palette().text
 }
@@ -587,6 +591,13 @@ pub fn active_tab(focused: bool) -> Style {
 /// Inactive tab: secondary text on transparent background.
 pub fn inactive_tab() -> Style {
     muted()
+}
+
+/// Active tab in the bottom panel bar: solid accent block with inverted
+/// text — the tmux/htop reverse-video convention, more visible at a glance
+/// than an underline.
+pub fn active_tab_reverse() -> Style {
+    Style::default().bg(accent_color()).fg(background_color())
 }
 
 /// Status bar surface.
