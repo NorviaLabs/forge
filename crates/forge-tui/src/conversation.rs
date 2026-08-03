@@ -10,7 +10,10 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Widget};
+use ratatui::widgets::{Block, Borders, Paragraph, Widget};
+
+const DIFF_BLOCK_MARKER: &str = "\u{200b}";
+const DIFF_BLOCK_END_MARKER: &str = "\u{200c}";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolCardState {
@@ -751,14 +754,9 @@ impl ConversationModel {
                     }
                 }
                 ConversationBlock::DiffBlock(p) => {
-                    lines.push(Line::from(vec![
-                        status_glyph(Status::Success),
-                        Span::raw(" "),
-                        Span::styled(p.path.clone(), theme::text().add_modifier(Modifier::BOLD)),
-                        Span::styled("  diff", theme::dim()),
-                    ]));
+                    lines.push(diff_title_line(&p.path, &p.lines));
                     if !p.rationale.is_empty() {
-                        for l in wrap(&p.rationale, width.saturating_sub(4))
+                        for l in wrap(&p.rationale, width.saturating_sub(6))
                             .into_iter()
                             .take(2)
                         {
@@ -768,7 +766,12 @@ impl ConversationModel {
                             ]));
                         }
                     }
-                    lines.extend(render_numbered_diff(&p.path, &p.lines, width));
+                    lines.extend(render_numbered_diff(
+                        &p.path,
+                        &p.lines,
+                        width.saturating_sub(2),
+                    ));
+                    lines.push(Line::from(DIFF_BLOCK_END_MARKER));
                     if gap {
                         lines.push(Line::from(""));
                     }
@@ -785,6 +788,22 @@ impl ConversationModel {
         }
         lines
     }
+}
+
+fn diff_title_line(path: &str, diff: &[String]) -> Line<'static> {
+    let numbered = number_diff_lines(diff);
+    let additions = numbered.iter().filter(|line| line.marker == '+').count();
+    let removals = numbered.iter().filter(|line| line.marker == '-').count();
+    Line::from(vec![
+        Span::raw(DIFF_BLOCK_MARKER),
+        Span::raw(" "),
+        Span::styled(path.to_string(), theme::text().add_modifier(Modifier::BOLD)),
+        Span::raw("  "),
+        Span::styled(format!("+{additions}"), theme::ok()),
+        Span::raw(" "),
+        Span::styled(format!("-{removals}"), theme::danger()),
+        Span::raw(" "),
+    ])
 }
 
 fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<ConversationBlock> {
@@ -2059,7 +2078,46 @@ fn render_conversation_lines(
             }
         })
         .collect::<Vec<_>>();
-    Paragraph::new(visible).render(area, buf);
+    render_visible_conversation_lines(&visible, area, buf);
+}
+
+fn render_visible_conversation_lines(lines: &[Line<'static>], area: Rect, buf: &mut Buffer) {
+    let mut index = 0;
+    let mut y = area.y;
+    while index < lines.len() && y < area.bottom() {
+        if lines[index]
+            .spans
+            .first()
+            .is_some_and(|span| span.content == DIFF_BLOCK_MARKER)
+        {
+            let end = lines[index + 1..]
+                .iter()
+                .position(|line| {
+                    line.spans
+                        .first()
+                        .is_some_and(|span| span.content == DIFF_BLOCK_END_MARKER)
+                })
+                .map_or(lines.len(), |offset| index + 1 + offset);
+            let block_height =
+                (end - index + 2).min(area.bottom().saturating_sub(y) as usize) as u16;
+            let block_area = Rect::new(area.x, y, area.width, block_height);
+            let title = Line::from(lines[index].spans[1..].to_vec());
+            let block = Block::default()
+                .title(title)
+                .borders(Borders::ALL)
+                .border_style(theme::inactive_panel_border())
+                .style(theme::panel());
+            let inner = block.inner(block_area);
+            block.render(block_area, buf);
+            Paragraph::new(lines[index + 1..end].to_vec()).render(inner, buf);
+            y = y.saturating_add(block_height);
+            index = end.saturating_add(1);
+        } else {
+            Paragraph::new(lines[index].clone()).render(Rect::new(area.x, y, area.width, 1), buf);
+            y = y.saturating_add(1);
+            index += 1;
+        }
+    }
 }
 
 impl Widget for ConversationLinesWidget<'_> {
@@ -3256,6 +3314,36 @@ mod tests {
             added.spans.iter().map(|span| span.width()).sum::<usize>(),
             40
         );
+    }
+
+    #[test]
+    fn diff_pane_borders_multi_hunk_content_without_overflowing() {
+        let diff = [
+            "@@ -1 +1 @@",
+            "-old",
+            "+new",
+            "@@ -10 +10 @@",
+            "-before",
+            "+after",
+            "@@ -20 +20 @@",
+            "+this line is deliberately longer than one hundred characters so a narrow diff pane clips it instead of breaking its layout",
+        ]
+        .map(str::to_string);
+        let lines = vec![diff_title_line("src/lib.rs", &diff)]
+            .into_iter()
+            .chain(render_numbered_diff("src/lib.rs", &diff, 38))
+            .chain(std::iter::once(Line::from(DIFF_BLOCK_END_MARKER)))
+            .collect::<Vec<_>>();
+        let area = Rect::new(0, 0, 40, 12);
+        let mut buf = Buffer::empty(area);
+
+        render_visible_conversation_lines(&lines, area, &mut buf);
+
+        assert_eq!(buf[(0, 0)].symbol(), "┌");
+        assert_eq!(buf[(39, 0)].symbol(), "┐");
+        assert!(buf[(2, 0)].symbol().contains("s"));
+        assert_eq!(buf[(0, 10)].symbol(), "└");
+        assert_eq!(buf[(39, 10)].symbol(), "┘");
     }
 
     /// Text of every rendered line, for asserting on content rather than styling.
