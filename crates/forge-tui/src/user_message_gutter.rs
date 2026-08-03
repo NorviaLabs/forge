@@ -148,8 +148,13 @@ mod tests {
             .lines_for_width(width)
             .into_iter()
             .map(|line| line_plain(&line))
-            .filter(|row| !row.is_empty() && !row.trim_end().ends_with("You ─"))
-            .map(|row| row.strip_suffix(" │").unwrap_or(&row).to_string())
+            .filter(|row| !row.is_empty() && !row.chars().all(|c| c == '─'))
+            .map(|row| {
+                row.strip_prefix("> ")
+                    .or_else(|| row.strip_prefix("  "))
+                    .unwrap_or(&row)
+                    .to_string()
+            })
             .collect()
     }
 
@@ -164,8 +169,7 @@ mod tests {
         let rows = rendered_rows("Summarize this codebase", 100);
         assert_eq!(rows.len(), 1);
         assert_eq!(gutter_rows(&rows, glyph), 1);
-        assert!(rows[0].ends_with("Summarize this codebase"));
-        assert_eq!(Span::raw(rows[0].clone()).width(), 98);
+        assert_eq!(rows[0], "Summarize this codebase");
     }
 
     #[test]
@@ -253,7 +257,7 @@ mod tests {
             assert_eq!(gutter_rows(&rows, glyph), rows.len(), "width {width}");
             assert!(rows
                 .iter()
-                .all(|row| Span::raw(row.clone()).width() >= width.saturating_sub(2)));
+                .all(|row| Span::raw(row.clone()).width() <= width.saturating_sub(2)));
         }
         // Extremely narrow widths still render without panicking.
         let rows = rendered_rows("hi", 4);
@@ -566,9 +570,10 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .filter(|line| !line_plain(line).is_empty())
-                .all(|line| line.width() >= width),
-            "{label}: request is not right-aligned:\n{}",
+                .map(line_plain)
+                .filter(|text| !text.is_empty() && !text.chars().all(|c| c == '─'))
+                .all(|text| text.starts_with("> ") || text.starts_with("  ")),
+            "{label}: request is not left-aligned with the prompt gutter:\n{}",
             lines.iter().map(line_plain).collect::<Vec<_>>().join("\n")
         );
 
