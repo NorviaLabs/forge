@@ -810,7 +810,7 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
     let flush_activity = |blocks: &mut Vec<ConversationBlock>,
                           group: &mut Option<ActivityGroupPresentation>| {
         if let Some(mut item) = group.take() {
-            item.expanded = tool_expanded && matches!(item.outcome, ActivityOutcome::Failure);
+            item.expanded = tool_expanded;
             blocks.push(ConversationBlock::ActivityGroup(item));
         }
     };
@@ -915,7 +915,7 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
                                 ToolCardState::Blocked => ActivityOutcome::Blocked,
                                 ToolCardState::Error => ActivityOutcome::Failure,
                             },
-                            expanded: matches!(state, ToolCardState::Error) && tool_expanded,
+                            expanded: tool_expanded,
                             items: vec![format!("{name}: {summary}\n{detail}")],
                         },
                     ));
@@ -948,7 +948,7 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
                             .to_string(),
                         count_label: summary.clone(),
                         outcome,
-                        expanded: matches!(state, ToolCardState::Error) && tool_expanded,
+                        expanded: tool_expanded,
                         items: vec![detail.clone()],
                     },
                 );
@@ -3001,6 +3001,31 @@ mod tests {
             block,
             ConversationBlock::ActivityGroup(group)
                 if group.label == "bash" || group.label == "Validation completed"
+        )));
+    }
+
+    #[test]
+    fn tool_expanded_reveals_successful_tool_details() {
+        let model = ConversationModel {
+            items: vec![ChatItem::ToolCard {
+                name: "read_file".into(),
+                summary: "src/lib.rs".into(),
+                detail: "full file output".into(),
+                state: ToolCardState::Done,
+                duration: None,
+            }],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts {
+                tool_expanded: true,
+                ..ConversationViewOpts::default()
+            },
+        };
+
+        assert!(model.semantic_blocks().iter().any(|block| matches!(
+            block,
+            ConversationBlock::ActivityGroup(group)
+                if group.expanded && group.items.iter().any(|item| item.contains("full file output"))
         )));
     }
 
