@@ -355,7 +355,11 @@ mod tests {
             .lines_for_width(80)
             .into_iter()
             .map(|line| line_plain(&line))
-            .filter(|row| !row.is_empty() && !row.trim_end().ends_with("You ─"))
+            .filter(|row| {
+                !row.is_empty()
+                    && !row.trim_end().ends_with("You ─")
+                    && !row.trim().chars().all(|c| c == '─')
+            })
             .collect();
         assert_eq!(rows.len(), 2);
         assert_eq!(gutter_rows(&rows, glyph), 2);
