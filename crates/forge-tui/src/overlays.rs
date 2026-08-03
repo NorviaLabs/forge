@@ -16,12 +16,6 @@ pub enum Overlay {
         title: String,
         lines: Vec<String>,
     },
-    Hitl {
-        payload: HitlPayload,
-        approval: ApprovalOverlayState,
-        /// Whether to show the expanded policy-details section.
-        expanded: bool,
-    },
     TurnLimit {
         turns: u32,
     },
@@ -428,6 +422,31 @@ impl ApprovalOverlayState {
     }
 }
 
+/// State for the inline approval card rendered in the conversation panel.
+///
+/// Deliberately not an `Overlay` variant: an approval decision is not a
+/// distinct application mode. It lives alongside `TuiApp.overlay` (which may
+/// still be `None` or hold an unrelated picker) and is rendered docked at the
+/// bottom of the scrollback rather than as a centered, mode-swapping popup.
+#[derive(Debug, Clone)]
+pub struct ApprovalCardState {
+    pub payload: HitlPayload,
+    pub approval: ApprovalOverlayState,
+    /// Whether to show the expanded policy-details section.
+    pub expanded: bool,
+}
+
+impl ApprovalCardState {
+    pub fn for_payload(payload: HitlPayload, working_directory: impl Into<String>) -> Self {
+        let approval = ApprovalOverlayState::for_payload(&payload, working_directory);
+        Self {
+            payload,
+            approval,
+            expanded: false,
+        }
+    }
+}
+
 pub fn default_palette_items() -> Vec<PaletteItem> {
     // Keep in sync with `commands::parse_slash`.
     vec![
@@ -561,22 +580,6 @@ impl Overlay {
             active_model: current_model.to_string(),
             active_effort: current_effort,
             focus,
-        }
-    }
-
-    pub fn hitl(payload: HitlPayload) -> Self {
-        Self::hitl_with_working_directory(payload, "workspace")
-    }
-
-    pub fn hitl_with_working_directory(
-        payload: HitlPayload,
-        working_directory: impl Into<String>,
-    ) -> Self {
-        let approval = ApprovalOverlayState::for_payload(&payload, working_directory);
-        Self::Hitl {
-            payload,
-            approval,
-            expanded: false,
         }
     }
 
@@ -826,10 +829,48 @@ pub enum OverlayAction {
     },
 }
 
+/// Key handling for the inline approval card. Separate from
+/// `handle_overlay_key` because the card is not an `Overlay` variant — it has
+/// its own small keymap rather than sharing the generic overlay dispatch.
+pub fn handle_approval_card_key(card: &mut ApprovalCardState, key: Key) -> OverlayAction {
+    match key {
+        Key::Esc => OverlayAction::HitlDeny,
+        Key::Left | Key::BackTab => {
+            card.approval.focus_next(-1);
+            OverlayAction::None
+        }
+        Key::Right | Key::Tab => {
+            card.approval.focus_next(1);
+            OverlayAction::None
+        }
+        Key::Enter => match card.approval.focused_action {
+            ApprovalFocusedAction::AllowOnce => OverlayAction::HitlApprove,
+            ApprovalFocusedAction::RememberDirect if card.approval.remember_eligible => {
+                OverlayAction::HitlApproveSession
+            }
+            ApprovalFocusedAction::RememberDirect => OverlayAction::None,
+            ApprovalFocusedAction::Deny => OverlayAction::HitlDeny,
+        },
+        Key::Char('a') | Key::Char('A') => OverlayAction::HitlApprove,
+        Key::Char('s') | Key::Char('S') => {
+            if card.approval.remember_eligible {
+                OverlayAction::HitlApproveSession
+            } else {
+                OverlayAction::None
+            }
+        }
+        Key::Char('d') | Key::Char('D') => OverlayAction::HitlDeny,
+        Key::Char('v') | Key::Char('V') => {
+            card.expanded = !card.expanded;
+            OverlayAction::None
+        }
+        _ => OverlayAction::None,
+    }
+}
+
 pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
     match key {
         Key::Esc if matches!(overlay, Overlay::TurnLimit { .. }) => OverlayAction::StopTurns,
-        Key::Esc if matches!(overlay, Overlay::Hitl { .. }) => OverlayAction::HitlDeny,
         Key::Esc => OverlayAction::Close,
         Key::Up => {
             overlay.move_sel(-1);
@@ -840,10 +881,6 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             OverlayAction::None
         }
         Key::Left => {
-            if let Overlay::Hitl { approval, .. } = overlay {
-                approval.focus_next(-1);
-                return OverlayAction::None;
-            }
             if let Some(path) = match overlay {
                 Overlay::FileExplorer { cwd, .. } => parent_dir(cwd),
                 Overlay::FileViewer { path, .. } => parent_dir(path),
@@ -853,13 +890,7 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             }
             OverlayAction::None
         }
-        Key::Right => {
-            if let Overlay::Hitl { approval, .. } = overlay {
-                approval.focus_next(1);
-                return OverlayAction::None;
-            }
-            OverlayAction::None
-        }
+        Key::Right => OverlayAction::None,
         Key::Enter => match overlay {
             Overlay::Help => OverlayAction::BeginOnboarding,
             Overlay::StatusReport { .. } => OverlayAction::Close,
@@ -1017,14 +1048,6 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                 }
             }
             Overlay::FileViewer { .. } => OverlayAction::None,
-            Overlay::Hitl { approval, .. } => match approval.focused_action {
-                ApprovalFocusedAction::AllowOnce => OverlayAction::HitlApprove,
-                ApprovalFocusedAction::RememberDirect if approval.remember_eligible => {
-                    OverlayAction::HitlApproveSession
-                }
-                ApprovalFocusedAction::RememberDirect => OverlayAction::None,
-                ApprovalFocusedAction::Deny => OverlayAction::HitlDeny,
-            },
         },
         // Use-env must NOT steal literal e/E from pasted API keys (keys almost always
         // contain those letters). Only when the field is still empty + env is available.
@@ -1196,44 +1219,6 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
         Key::BackTab if matches!(overlay, Overlay::ConnectModel { .. }) => {
             if let Overlay::ConnectModel { focus, .. } = overlay {
                 *focus = focus.prev();
-            }
-            OverlayAction::None
-        }
-        Key::Tab if matches!(overlay, Overlay::Hitl { .. }) => {
-            if let Overlay::Hitl { approval, .. } = overlay {
-                approval.focus_next(1);
-            }
-            OverlayAction::None
-        }
-        Key::BackTab if matches!(overlay, Overlay::Hitl { .. }) => {
-            if let Overlay::Hitl { approval, .. } = overlay {
-                approval.focus_next(-1);
-            }
-            OverlayAction::None
-        }
-        Key::Char('a') | Key::Char('A') if matches!(overlay, Overlay::Hitl { .. }) => {
-            OverlayAction::HitlApprove
-        }
-        Key::Char('s') | Key::Char('S') if matches!(overlay, Overlay::Hitl { .. }) => {
-            if let Overlay::Hitl { approval, .. } = overlay {
-                if approval.remember_eligible {
-                    OverlayAction::HitlApproveSession
-                } else {
-                    OverlayAction::None
-                }
-            } else {
-                OverlayAction::None
-            }
-        }
-        Key::Char('d') | Key::Char('D') if matches!(overlay, Overlay::Hitl { .. }) => {
-            OverlayAction::HitlDeny
-        }
-        Key::Char('v') | Key::Char('V') if matches!(overlay, Overlay::Hitl { .. }) => {
-            if let Overlay::Hitl {
-                ref mut expanded, ..
-            } = overlay
-            {
-                *expanded = !*expanded;
             }
             OverlayAction::None
         }
@@ -1640,7 +1625,6 @@ pub struct OverlayWidget<'a> {
 impl Widget for OverlayWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         match self.overlay {
-            Overlay::Hitl { .. } => {}
             // Dim the transcript in place instead of blanking it, so it stays
             // legible-but-muted behind the picker rather than disappearing.
             Overlay::ConnectModel { .. } => theme::dim_region(area, buf),
@@ -1687,31 +1671,6 @@ impl Widget for OverlayWidget<'_> {
                             .border_style(theme::warn())
                             .title(Span::styled(
                                 " Turn limit reached ",
-                                theme::warn().add_modifier(Modifier::BOLD),
-                            )),
-                    )
-                    .render(r, buf);
-            }
-            Overlay::Hitl {
-                payload,
-                approval,
-                expanded,
-            } => {
-                let r = centered_capped_rect(area, 78, if *expanded { 30 } else { 22 });
-                let mut lines = approval_lines(payload, approval);
-                if *expanded {
-                    lines.extend(approval_detail_lines(payload, approval));
-                }
-
-                Paragraph::new(lines)
-                    .wrap(ratatui::widgets::Wrap { trim: true })
-                    .block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .border_style(theme::warn())
-                            .style(theme::panel())
-                            .title(Span::styled(
-                                " Approval required ",
                                 theme::warn().add_modifier(Modifier::BOLD),
                             )),
                     )
@@ -2284,6 +2243,50 @@ impl Widget for OverlayWidget<'_> {
     }
 }
 
+/// Height (including borders) the approval card needs when docked at the
+/// bottom of the scrollback, so the caller can carve out exactly that much
+/// space above it rather than overlapping the transcript.
+pub fn approval_card_dock_height(card: &ApprovalCardState) -> u16 {
+    let mut lines = approval_lines(&card.payload, &card.approval).len();
+    if card.expanded {
+        lines += approval_detail_lines(&card.payload, &card.approval).len();
+    }
+    // +2 for the block borders.
+    lines as u16 + 2
+}
+
+/// Inline approval card, docked at the bottom of the scrollback instead of
+/// centered over the transcript — the transcript above stays visible and
+/// scrollable while a decision is pending.
+pub struct ApprovalCardWidget<'a> {
+    pub card: &'a ApprovalCardState,
+}
+
+impl Widget for ApprovalCardWidget<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let mut lines = approval_lines(&self.card.payload, &self.card.approval);
+        if self.card.expanded {
+            lines.extend(approval_detail_lines(
+                &self.card.payload,
+                &self.card.approval,
+            ));
+        }
+        Paragraph::new(lines)
+            .wrap(ratatui::widgets::Wrap { trim: true })
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(theme::warn())
+                    .style(theme::panel())
+                    .title(Span::styled(
+                        " Approval required ",
+                        theme::warn().add_modifier(Modifier::BOLD),
+                    )),
+            )
+            .render(area, buf);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2381,72 +2384,75 @@ mod tests {
 
     #[test]
     fn hitl_keys() {
-        let mut o = Overlay::hitl(HitlPayload {
-            call_id: "1".into(),
-            tool: "bash".into(),
-            args_redacted: json!({"command": "git push"}),
-            reason: "policy".into(),
-        });
+        let mut card = ApprovalCardState::for_payload(
+            HitlPayload {
+                call_id: "1".into(),
+                tool: "bash".into(),
+                args_redacted: json!({"command": "git push"}),
+                reason: "policy".into(),
+            },
+            "workspace",
+        );
         assert_eq!(
-            handle_overlay_key(&mut o, Key::Char('a')),
+            handle_approval_card_key(&mut card, Key::Char('a')),
             OverlayAction::HitlApprove
         );
         assert_eq!(
-            handle_overlay_key(&mut o, Key::Char('s')),
+            handle_approval_card_key(&mut card, Key::Char('s')),
             OverlayAction::None
         );
         assert_eq!(
-            handle_overlay_key(&mut o, Key::Char('d')),
+            handle_approval_card_key(&mut card, Key::Char('d')),
             OverlayAction::HitlDeny
         );
         assert_eq!(
-            handle_overlay_key(&mut o, Key::Esc),
+            handle_approval_card_key(&mut card, Key::Esc),
             OverlayAction::HitlDeny
         );
     }
 
     #[test]
     fn hitl_direct_remember_is_eligible_and_default_focus_allows_once() {
-        let mut o = Overlay::hitl(HitlPayload {
-            call_id: "1".into(),
-            tool: "git".into(),
-            args_redacted: json!({"subcommand": "push", "args": ["origin", "main"]}),
-            reason: "policy".into(),
-        });
+        let mut card = ApprovalCardState::for_payload(
+            HitlPayload {
+                call_id: "1".into(),
+                tool: "git".into(),
+                args_redacted: json!({"subcommand": "push", "args": ["origin", "main"]}),
+                reason: "policy".into(),
+            },
+            "workspace",
+        );
         assert_eq!(
-            handle_overlay_key(&mut o, Key::Enter),
+            handle_approval_card_key(&mut card, Key::Enter),
             OverlayAction::HitlApprove
         );
         assert_eq!(
-            handle_overlay_key(&mut o, Key::Char('s')),
+            handle_approval_card_key(&mut card, Key::Char('s')),
             OverlayAction::HitlApproveSession
         );
-        handle_overlay_key(&mut o, Key::Tab);
+        handle_approval_card_key(&mut card, Key::Tab);
         assert_eq!(
-            handle_overlay_key(&mut o, Key::Enter),
+            handle_approval_card_key(&mut card, Key::Enter),
             OverlayAction::HitlApproveSession
         );
     }
 
     #[test]
     fn hitl_toggle_expanded() {
-        let mut o = Overlay::hitl(HitlPayload {
-            call_id: "1".into(),
-            tool: "write".into(),
-            args_redacted: json!({"path": "src/main.rs"}),
-            reason: "Edit tool requires approval".into(),
-        });
-        assert!(!matches!(o, Overlay::Hitl { expanded: true, .. }));
-        handle_overlay_key(&mut o, Key::Char('v'));
-        assert!(matches!(o, Overlay::Hitl { expanded: true, .. }));
-        handle_overlay_key(&mut o, Key::Char('v'));
-        assert!(matches!(
-            o,
-            Overlay::Hitl {
-                expanded: false,
-                ..
-            }
-        ));
+        let mut card = ApprovalCardState::for_payload(
+            HitlPayload {
+                call_id: "1".into(),
+                tool: "write".into(),
+                args_redacted: json!({"path": "src/main.rs"}),
+                reason: "Edit tool requires approval".into(),
+            },
+            "workspace",
+        );
+        assert!(!card.expanded);
+        handle_approval_card_key(&mut card, Key::Char('v'));
+        assert!(card.expanded);
+        handle_approval_card_key(&mut card, Key::Char('v'));
+        assert!(!card.expanded);
     }
 
     #[test]
@@ -3256,14 +3262,29 @@ mod tests {
     }
 
     #[test]
-    fn overlay_widget_renders_hitl_collapsed_and_expanded() {
+    fn approval_card_renders_collapsed_and_expanded() {
         let payload = HitlPayload {
             call_id: "call-1".into(),
             tool: "write".into(),
             args_redacted: json!({"path": "src/main.rs"}),
             reason: "Edit requires approval".into(),
         };
-        let collapsed = render_text(&Overlay::hitl(payload.clone()));
+        let render = |card: &ApprovalCardState| {
+            let area = Rect::new(0, 0, 100, 48);
+            let mut buf = Buffer::empty(area);
+            ApprovalCardWidget { card }.render(area, &mut buf);
+            let mut text = String::new();
+            for y in 0..area.height {
+                for x in 0..area.width {
+                    text.push_str(buf[(x, y)].symbol());
+                }
+                text.push('\n');
+            }
+            text
+        };
+
+        let card = ApprovalCardState::for_payload(payload.clone(), "workspace");
+        let collapsed = render(&card);
         assert!(collapsed.contains("Approval required"));
         assert!(collapsed.contains("Mode: Direct"));
         assert!(collapsed.contains("Executable: write"));
@@ -3273,11 +3294,9 @@ mod tests {
         assert!(collapsed.contains("Remember this exact Direct invocation in this workspace"));
         assert!(collapsed.contains("v view details"));
 
-        let mut expanded_overlay = Overlay::hitl(payload);
-        if let Overlay::Hitl { expanded, .. } = &mut expanded_overlay {
-            *expanded = true;
-        }
-        let expanded = render_text(&expanded_overlay);
+        let mut expanded_card = ApprovalCardState::for_payload(payload, "workspace");
+        expanded_card.expanded = true;
+        let expanded = render(&expanded_card);
         assert!(expanded.contains("details"));
         assert!(expanded.contains("Tool: write"));
         assert!(expanded.contains("Secrets are not shown"));

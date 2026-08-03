@@ -156,6 +156,9 @@ impl TuiApp {
             *error = None;
             return;
         }
+        if self.approval_card.is_some() {
+            return;
+        }
         if let Some(ref mut ov) = self.overlay {
             let _ = handle_overlay_key(ov, OverlayKey::Paste(data.to_string()));
             return;
@@ -225,8 +228,11 @@ impl TuiApp {
             return Ok(());
         }
 
-        match input_route::classify_input(&self.session.active_task, self.overlay.is_some(), &line)
-        {
+        match input_route::classify_input(
+            &self.session.active_task,
+            self.overlay.is_some() || self.approval_card.is_some(),
+            &line,
+        ) {
             input_route::InputRoute::StartNewTask => {
                 self.dispatch_line(&line).await?;
             }
@@ -600,6 +606,13 @@ impl TuiApp {
 
         if self.explorer_dialog.current.is_some() {
             self.handle_explorer_dialog_key(key);
+            return Ok(());
+        }
+
+        if let Some(ref mut card) = self.approval_card {
+            let ok = map_key(key);
+            let action = handle_approval_card_key(card, ok);
+            self.apply_overlay_action(action).await?;
             return Ok(());
         }
 

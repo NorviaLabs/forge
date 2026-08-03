@@ -36,6 +36,7 @@ impl TuiApp {
             session,
             input,
             overlay: startup_items.clone().map(Overlay::resume_picker),
+            approval_card: None,
             exit: ExitState {
                 requested: false,
                 code: ExitCode::Success,
