@@ -65,6 +65,7 @@ impl TuiApp {
                 until: None,
             },
             feedback: FeedbackModel::default(),
+            feedback_until: None,
             banner_state: BannerState { items: Vec::new() },
             search_status: SearchStatusState {
                 label: Some("mock".into()),
