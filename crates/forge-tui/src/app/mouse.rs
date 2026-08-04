@@ -95,6 +95,41 @@ impl TuiApp {
         }
     }
 
+    /// Register the persistent footer control's `[vendor/route] [model]
+    /// [effort]` segments as click targets, one `ConnectModelColumn` per
+    /// segment in the same order `footer_control_segments` lays them out —
+    /// the same layout logic used to paint the row, so hit regions can never
+    /// drift from what's actually on screen.
+    pub(super) fn register_footer_control_hit_regions(
+        &mut self,
+        model: &crate::widgets::FooterModel,
+        area: ratatui::layout::Rect,
+    ) {
+        if area.height == 0 || area.width == 0 || !model.hints.is_empty() {
+            return;
+        }
+        let columns = [
+            ConnectModelColumn::Providers,
+            ConnectModelColumn::Models,
+            ConnectModelColumn::Effort,
+        ];
+        for (segment, column) in crate::widgets::footer_control_segments(model, area.width)
+            .into_iter()
+            .zip(columns)
+        {
+            self.register_hit_region(
+                ratatui::layout::Rect::new(
+                    area.x + segment.start,
+                    area.y,
+                    segment.end - segment.start,
+                    1,
+                ),
+                HitTarget::VisibleControl(SemanticCommand::OpenModelControl(column)),
+                25,
+            );
+        }
+    }
+
     fn register_bottom_panel_tab_regions(&mut self, area: ratatui::layout::Rect) {
         if area.height == 0 || area.width == 0 {
             return;

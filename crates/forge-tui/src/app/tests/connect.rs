@@ -478,6 +478,276 @@ async fn bare_model_command_opens_on_models_column() {
 }
 
 #[tokio::test]
+async fn open_connect_picker_opens_immediately_and_starts_background_refresh() {
+    let _home_guard = isolated_home_guard();
+    let (_dir, session) = test_session().await;
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "mock".into(),
+            provider: "mock".into(),
+            cwd: PathBuf::from("."),
+            version: "0.12.0".into(),
+            startup_notices: Vec::new(),
+            validation_command: None,
+            file_icons: FileIconMode::Unicode,
+            mouse_capture: true,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+    let store_dir = tempfile::TempDir::new().unwrap();
+    app.connect.store = CredentialStore::new(store_dir.path().join("empty-creds.toml"));
+
+    // Opening must not block on network I/O: the overlay is populated
+    // synchronously from cache, and a refresh is kicked off in the
+    // background rather than run inline.
+    app.open_connect_picker();
+
+    assert!(
+        matches!(app.overlay, Some(Overlay::ConnectModel { .. })),
+        "expected ConnectModel overlay, got {:?}",
+        app.overlay
+    );
+    assert!(
+        app.catalog_fetch.refresh_rx.is_some(),
+        "expected a background catalog refresh to be in flight"
+    );
+}
+
+#[tokio::test]
+async fn poll_catalog_refresh_is_a_noop_when_nothing_in_flight() {
+    let _home_guard = isolated_home_guard();
+    let (_dir, session) = test_session().await;
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "mock".into(),
+            provider: "mock".into(),
+            cwd: PathBuf::from("."),
+            version: "0.12.0".into(),
+            startup_notices: Vec::new(),
+            validation_command: None,
+            file_icons: FileIconMode::Unicode,
+            mouse_capture: true,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+    assert!(app.catalog_fetch.refresh_rx.is_none());
+    app.poll_catalog_refresh();
+    assert!(app.overlay.is_none());
+    assert!(app.catalog_fetch.refresh_rx.is_none());
+}
+
+#[tokio::test]
+async fn warm_catalog_once_connected_is_a_noop_for_the_mock_provider() {
+    let _home_guard = isolated_home_guard();
+    let (_dir, session) = test_session().await;
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "mock".into(),
+            provider: "mock".into(),
+            cwd: PathBuf::from("."),
+            version: "0.12.0".into(),
+            startup_notices: Vec::new(),
+            validation_command: None,
+            file_icons: FileIconMode::Unicode,
+            mouse_capture: true,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+
+    app.warm_catalog_once_connected();
+
+    assert!(app.catalog_fetch.refresh_rx.is_none());
+    assert!(!app.catalog_fetch.warmed);
+}
+
+#[tokio::test]
+async fn warm_catalog_once_connected_starts_exactly_one_background_refresh() {
+    let _home_guard = isolated_home_guard();
+    let (_dir, session) = test_session().await;
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "anthropic/claude-sonnet-4-6".into(),
+            provider: "anthropic".into(),
+            cwd: PathBuf::from("."),
+            version: "0.12.0".into(),
+            startup_notices: Vec::new(),
+            validation_command: None,
+            file_icons: FileIconMode::Unicode,
+            mouse_capture: true,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+    let store_dir = tempfile::TempDir::new().unwrap();
+    app.connect.store = CredentialStore::new(store_dir.path().join("empty-creds.toml"));
+    app.connect
+        .store
+        .set_api_key("anthropic", "sk-test-anthropic-credential")
+        .unwrap();
+    app.connect.profile = Some("anthropic".into());
+
+    app.warm_catalog_once_connected();
+    assert!(app.catalog_fetch.warmed);
+    assert!(
+        app.catalog_fetch.refresh_rx.is_some(),
+        "expected the first connected tick to start a background refresh"
+    );
+
+    // Simulate the refresh completing, then tick again — a second connected
+    // tick must not start another one.
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.catalog_fetch.refresh_rx = Some(rx);
+    tx.send(Ok(())).unwrap();
+    app.poll_catalog_refresh();
+    assert!(app.catalog_fetch.refresh_rx.is_none());
+
+    app.warm_catalog_once_connected();
+    assert!(
+        app.catalog_fetch.refresh_rx.is_none(),
+        "warm-once must not fire a second background refresh after the first completes"
+    );
+}
+
+#[tokio::test]
+async fn background_catalog_refresh_updates_open_picker_rows_once_complete() {
+    let _home_guard = isolated_home_guard();
+    let (_dir, session) = test_session().await;
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "mock".into(),
+            provider: "mock".into(),
+            cwd: PathBuf::from("."),
+            version: "0.12.0".into(),
+            startup_notices: Vec::new(),
+            validation_command: None,
+            file_icons: FileIconMode::Unicode,
+            mouse_capture: true,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+    let store_dir = tempfile::TempDir::new().unwrap();
+    app.connect.store = CredentialStore::new(store_dir.path().join("empty-creds.toml"));
+
+    app.open_connect_picker();
+    assert!(app.catalog_fetch.refresh_rx.is_some());
+
+    // The real worker thread does credential-less (and, in a sandboxed test
+    // environment, possibly unreachable) network I/O, so its completion time
+    // is not something a test should race against. Swap in a synthetic
+    // channel we control to exercise the completion/refresh-in-place
+    // transition deterministically, matching how `poll_catalog_refresh`
+    // reacts to any completed worker regardless of what it fetched.
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.catalog_fetch.refresh_rx = Some(rx);
+    tx.send(Ok(())).unwrap();
+
+    app.poll_catalog_refresh();
+
+    assert!(app.catalog_fetch.refresh_rx.is_none());
+    assert!(matches!(app.overlay, Some(Overlay::ConnectModel { .. })));
+}
+
+#[tokio::test]
+async fn alt_c_opens_compact_model_control() {
+    let _home_guard = isolated_home_guard();
+    let (_dir, session) = test_session().await;
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "anthropic/claude-sonnet-4-6".into(),
+            provider: "anthropic".into(),
+            cwd: PathBuf::from("."),
+            version: "0.12.0".into(),
+            startup_notices: Vec::new(),
+            validation_command: None,
+            file_icons: FileIconMode::Unicode,
+            mouse_capture: true,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+    let store_dir = tempfile::TempDir::new().unwrap();
+    app.connect.store = CredentialStore::new(store_dir.path().join("empty-creds.toml"));
+    app.connect
+        .store
+        .set_api_key("anthropic", "sk-test-anthropic-credential")
+        .unwrap();
+    app.connect.profile = Some("anthropic".into());
+
+    app.handle_key(press(KeyCode::Char('c'), KeyModifiers::ALT))
+        .await
+        .unwrap();
+
+    match &app.overlay {
+        Some(Overlay::ConnectModel { compact, focus, .. }) => {
+            assert!(*compact);
+            assert_eq!(*focus, ConnectModelColumn::Models);
+        }
+        other => panic!("expected compact ConnectModel overlay, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn compact_control_tab_cycles_segments_and_escape_cancels_without_state_change() {
+    let _home_guard = isolated_home_guard();
+    let (_dir, session) = test_session().await;
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "anthropic/claude-sonnet-4-6".into(),
+            provider: "anthropic".into(),
+            cwd: PathBuf::from("."),
+            version: "0.12.0".into(),
+            startup_notices: Vec::new(),
+            validation_command: None,
+            file_icons: FileIconMode::Unicode,
+            mouse_capture: true,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+    let store_dir = tempfile::TempDir::new().unwrap();
+    app.connect.store = CredentialStore::new(store_dir.path().join("empty-creds.toml"));
+    app.connect
+        .store
+        .set_api_key("anthropic", "sk-test-anthropic-credential")
+        .unwrap();
+    app.connect.profile = Some("anthropic".into());
+    app.reasoning_effort.value = ReasoningEffort::Low;
+    let model_before = app.runtime.model_label.clone();
+    let effort_before = app.reasoning_effort.value;
+
+    app.open_connect_picker_compact(ConnectModelColumn::Models);
+    let focus_at = |app: &TuiApp| match &app.overlay {
+        Some(Overlay::ConnectModel { focus, .. }) => *focus,
+        other => panic!("expected ConnectModel overlay, got {other:?}"),
+    };
+    assert_eq!(focus_at(&app), ConnectModelColumn::Models);
+
+    app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(focus_at(&app), ConnectModelColumn::Effort);
+    app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(focus_at(&app), ConnectModelColumn::Providers);
+    app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(focus_at(&app), ConnectModelColumn::Models);
+
+    app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(app.overlay.is_none());
+    assert_eq!(app.runtime.model_label, model_before);
+    assert_eq!(app.reasoning_effort.value, effort_before);
+}
+
+#[tokio::test]
 async fn mock_provider_allows_chat_without_connect() {
     let (_dir, session) = test_session().await;
     let mut app = TuiApp::new(
