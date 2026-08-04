@@ -105,30 +105,15 @@ pub struct FileExplorerItem {
     pub is_dir: bool,
 }
 
-/// Which column of the unified Connect + Model picker has focus.
+/// Which single view of the unified Connect + Model picker is showing.
+/// Each entry point (a footer segment, `/connect`, `/model`, …) opens the
+/// picker locked to exactly one of these — there is no cycling between them
+/// within one open picker (see `docs/provider-model-effort-modal-restructure.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectModelColumn {
     Providers,
     Models,
     Effort,
-}
-
-impl ConnectModelColumn {
-    fn next(self) -> Self {
-        match self {
-            Self::Providers => Self::Models,
-            Self::Models => Self::Effort,
-            Self::Effort => Self::Providers,
-        }
-    }
-
-    fn prev(self) -> Self {
-        match self {
-            Self::Providers => Self::Effort,
-            Self::Models => Self::Providers,
-            Self::Effort => Self::Models,
-        }
-    }
 }
 
 /// One offering nested under a vendor row, e.g. "API key" / "ChatGPT sign-in".
@@ -1028,6 +1013,12 @@ pub enum OverlayAction {
     ConnectPickProfile {
         profile_id: String,
     },
+    /// Providers view: picked a route that's already connected but isn't
+    /// the currently active one — switch to it and land in usable steady
+    /// state (default model + safe effort), without a forced next step.
+    SwitchToRoute {
+        profile_id: String,
+    },
     FilePick {
         path: String,
         is_dir: bool,
@@ -1186,16 +1177,16 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             Overlay::ConnectModel {
                 providers,
                 provider_cursor,
-                selected_route,
-                all_items,
+                selected_route: _,
+                all_items: _,
                 groups,
                 model_input,
                 model_selected,
                 effort_items,
                 effort_selected,
-                active_profile_id,
+                active_profile_id: _,
                 active_model,
-                active_effort,
+                active_effort: _,
                 focus,
                 compact: _,
                 catalog_loading: _,
@@ -1220,15 +1211,17 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                             profile_id: route.profile_id.clone(),
                         };
                     }
-                    // Already connected: scope the Models column to this route
-                    // in place, no app-level action needed.
-                    let profile_id = route.profile_id.clone();
-                    *selected_route = Some(profile_id.clone());
-                    *groups = Overlay::scoped_groups(all_items, Some(profile_id.as_str()));
-                    model_input.clear();
-                    *model_selected = Overlay::index_of_model(groups, active_model);
-                    *focus = ConnectModelColumn::Models;
-                    OverlayAction::None
+                    if route.is_current {
+                        // Already the active route — nothing to do.
+                        return OverlayAction::Close;
+                    }
+                    // Providers is a standalone view now (no chained Models
+                    // step) — picking a different connected route must fully
+                    // resolve the session on its own: switch routes and land
+                    // on a valid default model + effort, handled by the app.
+                    OverlayAction::SwitchToRoute {
+                        profile_id: route.profile_id.clone(),
+                    }
                 }
                 ConnectModelColumn::Models => {
                     let filtered: Vec<&ModelGroup> = groups
@@ -1255,21 +1248,9 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                     let Some(route) = chosen_route else {
                         return OverlayAction::None;
                     };
-                    *active_model = route.model.clone();
-                    if let Some(pid) = route.profile_id.clone().or_else(|| selected_route.clone()) {
-                        *active_profile_id = Some(pid);
-                    }
-                    let opts = effort_options(&route.model);
-                    let default_effort = ReasoningEffort::default_for_model(&route.model);
-                    let use_effort = if opts.contains(active_effort) {
-                        *active_effort
-                    } else {
-                        default_effort
-                    };
-                    *effort_selected = opts.iter().position(|e| *e == use_effort).unwrap_or(0);
-                    *active_effort = use_effort;
-                    *effort_items = opts;
-                    *focus = ConnectModelColumn::Effort;
+                    // Models is a standalone view now — the app applies the
+                    // model, resolves a safe effort default for it, and
+                    // closes the overlay. No in-place Effort hand-off.
                     OverlayAction::SelectModel {
                         provider: route.provider.clone(),
                         model: route.model.clone(),
@@ -1501,18 +1482,6 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             }
             .map(|path| OverlayAction::FilePick { path, is_dir: true })
             .unwrap_or(OverlayAction::None)
-        }
-        Key::Tab if matches!(overlay, Overlay::ConnectModel { .. }) => {
-            if let Overlay::ConnectModel { focus, .. } = overlay {
-                *focus = focus.next();
-            }
-            OverlayAction::None
-        }
-        Key::BackTab if matches!(overlay, Overlay::ConnectModel { .. }) => {
-            if let Overlay::ConnectModel { focus, .. } = overlay {
-                *focus = focus.prev();
-            }
-            OverlayAction::None
         }
         Key::Char('y') | Key::Char('Y') if matches!(overlay, Overlay::TurnLimit { .. }) => {
             OverlayAction::ContinueTurns
@@ -2086,9 +2055,9 @@ impl Widget for OverlayWidget<'_> {
                 ..
             } => {
                 let r = if *compact {
-                    anchored_above_footer_rect(area, 72, 14)
+                    anchored_above_footer_rect(area, 44, 12)
                 } else {
-                    centered_capped_rect(area, 100, 22)
+                    centered_capped_rect(area, 56, 18)
                 };
                 let active = active_vendor_route_labels(providers, active_profile_id.as_deref());
                 let label_suffix = match active {
@@ -2096,12 +2065,17 @@ impl Widget for OverlayWidget<'_> {
                     Some((vendor, None)) => format!(" · {vendor}"),
                     None => String::new(),
                 };
+                let title_text = match focus {
+                    ConnectModelColumn::Providers => "Choose a provider",
+                    ConnectModelColumn::Models => "Choose a model",
+                    ConnectModelColumn::Effort => "Choose reasoning effort",
+                };
                 let block = Block::default()
                     .borders(Borders::ALL)
                     .border_style(theme::border())
                     .style(theme::panel())
                     .title(Span::styled(
-                        format!(" Connect & Model{label_suffix} "),
+                        format!(" {title_text}{label_suffix} "),
                         theme::brand(),
                     ));
                 let inner = block.inner(r);
@@ -2115,225 +2089,197 @@ impl Widget for OverlayWidget<'_> {
                         Constraint::Length(1),
                     ])
                     .split(inner);
-                let col_constraints = [
-                    Constraint::Percentage(30),
-                    Constraint::Length(2),
-                    Constraint::Percentage(38),
-                    Constraint::Length(2),
-                    Constraint::Percentage(30),
-                ];
-                let header_cols = Layout::default()
-                    .direction(Direction::Horizontal)
-                    .constraints(col_constraints)
-                    .split(regions[0]);
-                let body_cols = Layout::default()
-                    .direction(Direction::Horizontal)
-                    .constraints(col_constraints)
-                    .split(regions[1]);
-                let (providers_header, models_header, effort_header) =
-                    (header_cols[0], header_cols[2], header_cols[4]);
-                let (providers_area, models_area, effort_area) =
-                    (body_cols[0], body_cols[2], body_cols[4]);
+                let info_area = regions[0];
+                let list_area = regions[1];
 
-                let head_style = |col: ConnectModelColumn| {
-                    if *focus == col {
-                        theme::brand()
-                    } else {
-                        theme::muted()
-                    }
-                };
-                Paragraph::new("PROVIDERS")
-                    .style(head_style(ConnectModelColumn::Providers))
-                    .render(providers_header, buf);
-                Paragraph::new("MODELS")
-                    .style(head_style(ConnectModelColumn::Models))
-                    .render(models_header, buf);
-                Paragraph::new("EFFORT")
-                    .style(head_style(ConnectModelColumn::Effort))
-                    .render(effort_header, buf);
-
-                // Providers column.
-                let flat = flatten_provider_rows(providers);
-                let visible = providers_area.height.max(1) as usize;
-                let start = window_start(*provider_cursor, flat.len(), visible);
-                let end = (start + visible).min(flat.len());
-                let provider_items: Vec<ListItem> = flat[start..end]
-                    .iter()
-                    .enumerate()
-                    .map(|(i, row)| {
-                        let idx = start + i;
-                        let vendor = &providers[row.vendor_idx];
-                        let selected = idx == *provider_cursor;
-                        let highlighted = selected && *focus == ConnectModelColumn::Providers;
-                        let style = if highlighted {
-                            theme::focused_selection_style()
-                        } else {
-                            theme::text()
-                        };
-                        let indent = if row.route_idx.is_some() { "  " } else { "" };
-                        let glyph = match row.route_idx {
-                            None if vendor.routes.len() > 1 => {
-                                if vendor.expanded {
-                                    "▾"
-                                } else {
-                                    "▸"
-                                }
-                            }
-                            _ => " ",
-                        };
-                        let label = match row.route_idx {
-                            Some(i) => vendor.routes[i].label.as_str(),
-                            None => vendor.label.as_str(),
-                        };
-                        let tag = match flat_row_profile(providers, row) {
-                            Some(route) if route.is_current => "current",
-                            Some(route) if route.connected => "connected",
-                            _ => "",
-                        };
-                        let marker = if selected { "▶ " } else { "  " };
-                        let mut text = format!("{marker}{indent}{glyph} {label}");
-                        if tag.is_empty() {
-                            ListItem::new(Span::styled(text, style))
-                        } else {
-                            let target = (providers_area.width as usize)
-                                .saturating_sub(tag.chars().count() + 1);
-                            while text.chars().count() < target {
-                                text.push(' ');
-                            }
-                            ListItem::new(Line::from(vec![
-                                Span::styled(text, style),
-                                Span::styled(tag, theme::tag_style(highlighted)),
-                            ]))
-                        }
-                    })
-                    .collect();
-                List::new(provider_items).render(providers_area, buf);
-
-                // Models column: a type-ahead filter line, then the scoped catalog.
-                let models_regions = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([Constraint::Length(1), Constraint::Min(1)])
-                    .split(models_area);
-                let filter_text = if model_input.is_empty() {
-                    "type to filter…".to_string()
-                } else {
-                    model_input.clone()
-                };
-                Paragraph::new(filter_text)
-                    .style(if model_input.is_empty() {
-                        theme::dim()
-                    } else {
-                        theme::text()
-                    })
-                    .render(models_regions[0], buf);
-                let models_list_area = models_regions[1];
-                let filtered: Vec<&ModelGroup> = groups
-                    .iter()
-                    .filter(|g| group_matches_input(model_input, g))
-                    .collect();
-                let rows = flatten_model_rows(&filtered);
-                let visible = models_list_area.height.max(1) as usize;
-                let start = window_start(*model_selected, rows.len(), visible);
-                let end = (start + visible).min(rows.len());
-                let model_items: Vec<ListItem> = if rows.is_empty() {
-                    let msg = if active_profile_id.is_none() {
-                        "Connect a provider first."
-                    } else if *catalog_loading {
-                        "Loading models…"
-                    } else if model_input.trim().is_empty() {
-                        "No models available yet."
-                    } else {
-                        "No models match this filter."
-                    };
-                    vec![ListItem::new(Span::styled(msg, theme::muted()))]
-                } else {
-                    rows[start..end]
-                        .iter()
-                        .enumerate()
-                        .map(|(i, row)| {
-                            let idx = start + i;
-                            let selected = idx == *model_selected;
-                            let highlighted = selected && *focus == ConnectModelColumn::Models;
-                            let style = if highlighted {
-                                theme::focused_selection_style()
-                            } else {
-                                theme::text()
-                            };
-                            let g = filtered[row.group_idx];
-                            let item = flat_row_item(&filtered, row)
-                                .expect("flatten_model_rows only emits valid indices");
-                            let is_current = item.model == *active_model;
-                            let tag = if is_current {
-                                "current"
-                            } else {
-                                match item.source {
-                                    forge_connect::CatalogSource::Registry => "known",
-                                    _ => "cloud",
-                                }
-                            };
-                            let marker = if selected { "▶ " } else { "  " };
-                            let mut text = if row.route_idx.is_some() {
-                                format!("{marker}{} · {}", g.model_id, item.route_label)
-                            } else {
-                                format!("{marker}{}", g.model_id)
-                            };
-                            let target = (models_list_area.width as usize)
-                                .saturating_sub(tag.chars().count() + 1);
-                            while text.chars().count() < target {
-                                text.push(' ');
-                            }
-                            ListItem::new(Line::from(vec![
-                                Span::styled(text, style),
-                                Span::styled(tag, theme::tag_style(highlighted)),
-                            ]))
-                        })
-                        .collect()
-                };
-                List::new(model_items).render(models_list_area, buf);
-
-                // Effort column. A model with no adjustable effort at all
-                // renders as an explicit, non-selectable explanation instead
-                // of a real one-item list — the control must not look
-                // actionable when there is nothing to choose.
-                let effort_list_items: Vec<ListItem> =
-                    if !ReasoningEffort::model_supports_effort(active_model) {
-                        vec![ListItem::new(Span::styled(
-                            "Effort is not configurable for this model.",
-                            theme::muted(),
-                        ))]
-                    } else {
-                        let default_effort = ReasoningEffort::default_for_model(active_model);
-                        effort_items
+                match focus {
+                    ConnectModelColumn::Providers => {
+                        // No filter/info line for this view — the whole body is the list.
+                        let flat = flatten_provider_rows(providers);
+                        let visible = list_area.height.max(1) as usize;
+                        let start = window_start(*provider_cursor, flat.len(), visible);
+                        let end = (start + visible).min(flat.len());
+                        let provider_items: Vec<ListItem> = flat[start..end]
                             .iter()
                             .enumerate()
-                            .map(|(idx, effort)| {
-                                let selected = idx == *effort_selected;
-                                let highlighted = selected && *focus == ConnectModelColumn::Effort;
-                                let style = if highlighted {
+                            .map(|(i, row)| {
+                                let idx = start + i;
+                                let vendor = &providers[row.vendor_idx];
+                                let selected = idx == *provider_cursor;
+                                let style = if selected {
                                     theme::focused_selection_style()
                                 } else {
                                     theme::text()
                                 };
-                                let marker = if selected { "▶ " } else { "  " };
-                                let is_current = *effort == *active_effort;
-                                let default_label = if *effort == default_effort {
-                                    " (default)"
-                                } else {
-                                    ""
+                                let indent = if row.route_idx.is_some() { "  " } else { "" };
+                                let glyph = match row.route_idx {
+                                    None if vendor.routes.len() > 1 => {
+                                        if vendor.expanded {
+                                            "▾"
+                                        } else {
+                                            "▸"
+                                        }
+                                    }
+                                    _ => " ",
                                 };
-                                let base = format!("{marker}{}{default_label}", effort.label());
-                                if is_current {
-                                    ListItem::new(Line::from(vec![
-                                        Span::styled(base, style),
-                                        Span::styled(" current", theme::tag_style(highlighted)),
-                                    ]))
+                                let label = match row.route_idx {
+                                    Some(i) => vendor.routes[i].label.as_str(),
+                                    None => vendor.label.as_str(),
+                                };
+                                let tag = match flat_row_profile(providers, row) {
+                                    Some(route) if route.is_current => "current",
+                                    Some(route) if route.connected => "connected",
+                                    _ => "",
+                                };
+                                let marker = if selected { "▶ " } else { "  " };
+                                let mut text = format!("{marker}{indent}{glyph} {label}");
+                                if tag.is_empty() {
+                                    ListItem::new(Span::styled(text, style))
                                 } else {
-                                    ListItem::new(Span::styled(base, style))
+                                    let target = (list_area.width as usize)
+                                        .saturating_sub(tag.chars().count() + 1);
+                                    while text.chars().count() < target {
+                                        text.push(' ');
+                                    }
+                                    ListItem::new(Line::from(vec![
+                                        Span::styled(text, style),
+                                        Span::styled(tag, theme::tag_style(selected)),
+                                    ]))
                                 }
                             })
-                            .collect()
-                    };
-                List::new(effort_list_items).render(effort_area, buf);
+                            .collect();
+                        List::new(provider_items).render(list_area, buf);
+                    }
+                    ConnectModelColumn::Models => {
+                        // Type-ahead filter line, then the (cross-route or
+                        // scoped, per how this instance was opened) catalog.
+                        let filter_text = if model_input.is_empty() {
+                            "type to filter…".to_string()
+                        } else {
+                            model_input.clone()
+                        };
+                        Paragraph::new(filter_text)
+                            .style(if model_input.is_empty() {
+                                theme::dim()
+                            } else {
+                                theme::text()
+                            })
+                            .render(info_area, buf);
+                        let filtered: Vec<&ModelGroup> = groups
+                            .iter()
+                            .filter(|g| group_matches_input(model_input, g))
+                            .collect();
+                        let rows = flatten_model_rows(&filtered);
+                        let visible = list_area.height.max(1) as usize;
+                        let start = window_start(*model_selected, rows.len(), visible);
+                        let end = (start + visible).min(rows.len());
+                        let model_items: Vec<ListItem> = if rows.is_empty() {
+                            let msg = if active_profile_id.is_none() {
+                                "Connect a provider first."
+                            } else if *catalog_loading {
+                                "Loading models…"
+                            } else if model_input.trim().is_empty() {
+                                "No models available yet."
+                            } else {
+                                "No models match this filter."
+                            };
+                            vec![ListItem::new(Span::styled(msg, theme::muted()))]
+                        } else {
+                            rows[start..end]
+                                .iter()
+                                .enumerate()
+                                .map(|(i, row)| {
+                                    let idx = start + i;
+                                    let selected = idx == *model_selected;
+                                    let style = if selected {
+                                        theme::focused_selection_style()
+                                    } else {
+                                        theme::text()
+                                    };
+                                    let g = filtered[row.group_idx];
+                                    let item = flat_row_item(&filtered, row)
+                                        .expect("flatten_model_rows only emits valid indices");
+                                    let is_current = item.model == *active_model;
+                                    let tag = if is_current {
+                                        "current"
+                                    } else {
+                                        match item.source {
+                                            forge_connect::CatalogSource::Registry => "known",
+                                            _ => "cloud",
+                                        }
+                                    };
+                                    let marker = if selected { "▶ " } else { "  " };
+                                    let mut text = if row.route_idx.is_some() {
+                                        format!("{marker}{} · {}", g.model_id, item.route_label)
+                                    } else {
+                                        format!("{marker}{}", g.model_id)
+                                    };
+                                    let target = (list_area.width as usize)
+                                        .saturating_sub(tag.chars().count() + 1);
+                                    while text.chars().count() < target {
+                                        text.push(' ');
+                                    }
+                                    ListItem::new(Line::from(vec![
+                                        Span::styled(text, style),
+                                        Span::styled(tag, theme::tag_style(selected)),
+                                    ]))
+                                })
+                                .collect()
+                        };
+                        List::new(model_items).render(list_area, buf);
+                    }
+                    ConnectModelColumn::Effort => {
+                        // No filter/info line for this view — the whole body
+                        // is the list (or the non-configurable explanation).
+                        // A model with no adjustable effort at all renders as
+                        // an explicit, non-selectable explanation instead of
+                        // a real one-item list — the control must not look
+                        // actionable when there is nothing to choose.
+                        let effort_list_items: Vec<ListItem> =
+                            if !ReasoningEffort::model_supports_effort(active_model) {
+                                vec![ListItem::new(Span::styled(
+                                    "Effort is not configurable for this model.",
+                                    theme::muted(),
+                                ))]
+                            } else {
+                                let default_effort =
+                                    ReasoningEffort::default_for_model(active_model);
+                                effort_items
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(idx, effort)| {
+                                        let selected = idx == *effort_selected;
+                                        let style = if selected {
+                                            theme::focused_selection_style()
+                                        } else {
+                                            theme::text()
+                                        };
+                                        let marker = if selected { "▶ " } else { "  " };
+                                        let is_current = *effort == *active_effort;
+                                        let default_label = if *effort == default_effort {
+                                            " (default)"
+                                        } else {
+                                            ""
+                                        };
+                                        let base =
+                                            format!("{marker}{}{default_label}", effort.label());
+                                        if is_current {
+                                            ListItem::new(Line::from(vec![
+                                                Span::styled(base, style),
+                                                Span::styled(
+                                                    " current",
+                                                    theme::tag_style(selected),
+                                                ),
+                                            ]))
+                                        } else {
+                                            ListItem::new(Span::styled(base, style))
+                                        }
+                                    })
+                                    .collect()
+                            };
+                        List::new(effort_list_items).render(list_area, buf);
+                    }
+                }
 
                 let active_line = match active {
                     Some((vendor, route)) => format!(
@@ -2350,7 +2296,7 @@ impl Widget for OverlayWidget<'_> {
                 Paragraph::new(active_line)
                     .style(theme::text())
                     .render(regions[2], buf);
-                Paragraph::new("↑↓ navigate · Tab switch pane · Enter select · Esc close")
+                Paragraph::new("↑↓ navigate · Enter select · Esc close")
                     .style(theme::dim())
                     .render(regions[3], buf);
             }
@@ -3110,7 +3056,7 @@ mod tests {
                 for x in 0..area.width {
                     line.push_str(buf[(x, y)].symbol());
                 }
-                if line.contains("Connect & Model") {
+                if line.contains("Choose a model") {
                     return y;
                 }
             }
@@ -3147,122 +3093,13 @@ mod tests {
         items
     }
 
-    #[test]
-    fn tab_cycles_connect_model_focus_forward_and_back_tab_cycles_backward() {
-        let mut o = model_overlay(sample_default_models(), ConnectModelColumn::Providers);
-        let focus_of = |o: &Overlay| {
-            let Overlay::ConnectModel { focus, .. } = o else {
-                panic!("expected connect model overlay");
-            };
-            *focus
-        };
-        handle_overlay_key(&mut o, Key::Tab);
-        assert_eq!(focus_of(&o), ConnectModelColumn::Models);
-        handle_overlay_key(&mut o, Key::Tab);
-        assert_eq!(focus_of(&o), ConnectModelColumn::Effort);
-        handle_overlay_key(&mut o, Key::Tab);
-        assert_eq!(focus_of(&o), ConnectModelColumn::Providers);
-        handle_overlay_key(&mut o, Key::BackTab);
-        assert_eq!(focus_of(&o), ConnectModelColumn::Effort);
-    }
-
-    /// F-MODEL-01: only the column that actually has keyboard focus should
-    /// render its cursor row with the bold selection-highlight background —
-    /// all three previously highlighted their cursor row unconditionally,
-    /// making it impossible to tell which column Tab/arrows/typing would
-    /// affect (Tab itself worked correctly the whole time).
-    #[test]
-    fn only_the_focused_column_renders_a_highlighted_cursor_row() {
-        fn render(overlay: &Overlay) -> Buffer {
-            let area = Rect::new(0, 0, 100, 48);
-            let mut buf = Buffer::empty(area);
-            OverlayWidget { overlay }.render(area, &mut buf);
-            buf
-        }
-        // Restrict the search to the MODELS column's horizontal slice (see
-        // `col_constraints`: Providers 30% | gap | Models 38% | gap | Effort
-        // 30%), so this can't accidentally match another column's own
-        // "▶ " marker on the same text row.
-        fn find_in_models_column(buf: &Buffer, needle: &str) -> (u16, u16) {
-            let x0 = 32u16;
-            let x1 = 70.min(buf.area.width);
-            for y in 0..buf.area.height {
-                let mut row = String::new();
-                for x in x0..x1 {
-                    row.push_str(buf[(x, y)].symbol());
-                }
-                if let Some(rel_x) = row.find(needle) {
-                    return (x0 + rel_x as u16, y);
-                }
-            }
-            panic!("{needle:?} not found in the MODELS column");
-        }
-
-        // `model_overlay` passes an empty provider list, so start focus on
-        // MODELS (which does have rows from `sample_default_models()`).
-        let mut o = model_overlay(sample_default_models(), ConnectModelColumn::Models);
-        let buf = render(&o);
-        let (hx, hy) = find_in_models_column(&buf, "MODELS");
-        assert_eq!(buf[(hx, hy)].style().fg, theme::brand().fg);
-        let (cx, cy) = find_in_models_column(&buf, "▶ ");
-        assert_eq!(
-            buf[(cx, cy)].style().bg,
-            theme::focused_selection_style().bg,
-            "MODELS cursor row must be highlighted while it has focus"
-        );
-
-        if let Overlay::ConnectModel { focus, .. } = &mut o {
-            *focus = ConnectModelColumn::Effort;
-        }
-        let buf = render(&o);
-        assert_eq!(
-            buf[(hx, hy)].style().fg,
-            theme::muted().fg,
-            "MODELS header must not read as focused once focus moves to EFFORT"
-        );
-        // The models column no longer has focus, so its cursor row must no
-        // longer carry the bold selection-highlight background, even though
-        // the "▶ " marker (position memory) can still be present.
-        assert_ne!(
-            buf[(cx, cy)].style().bg,
-            theme::focused_selection_style().bg,
-            "unfocused MODELS column must not show the focused-selection highlight"
-        );
-    }
-
-    /// F-VIS-01: only the column that has real keyboard focus may show the
-    /// selection-highlight background — this covers both a row's own style
-    /// and its "current" tag span, which used an unconditional selection
-    /// check (`idx == cursor`) independent of `focus` and so could paint a
-    /// highlighted "current" badge in an unfocused column purely because
-    /// that column's cursor happened to already sit on its current value
-    /// (a very common starting state).
-    #[test]
-    fn unfocused_columns_never_paint_the_selection_highlight() {
-        let o = model_overlay(sample_default_models(), ConnectModelColumn::Models);
-        let area = Rect::new(0, 0, 160, 45);
-        let mut buf = Buffer::empty(area);
-        OverlayWidget { overlay: &o }.render(area, &mut buf);
-        let panel_bg = theme::panel().bg;
-        let highlight_bg = theme::focused_selection_style().bg;
-
-        // The picker body sits at inner x in [31, 129); MODELS owns roughly
-        // [62, 99) per `col_constraints`, so PROVIDERS/EFFORT are anything
-        // else inside the dialog. With focus on MODELS, no cell outside its
-        // column may carry the highlight background.
-        for y in 0..area.height {
-            for x in 0..area.width {
-                let bg = buf[(x, y)].style().bg;
-                if bg == highlight_bg && bg != panel_bg {
-                    assert!(
-                        (62..99).contains(&x),
-                        "unexpected selection highlight at x={x} y={y}, outside the focused MODELS column"
-                    );
-                }
-            }
-        }
-    }
-
+    /// The picker now shows exactly one view per instance (see
+    /// `docs/provider-model-effort-modal-restructure.md`) — there is no
+    /// longer a "focused vs unfocused column" distinction to test, since
+    /// only one column is ever rendered at all. Its single visible list's
+    /// cursor row always carries the selection highlight; covered by
+    /// `model_select`/`single_route_model_still_selects_immediately_on_enter`
+    /// and the render assertions in `overlay_widget_renders_model_empty_states`.
     #[test]
     fn model_select() {
         let mut o = model_overlay(sample_default_models(), ConnectModelColumn::Models);
@@ -3554,7 +3391,11 @@ mod tests {
     }
 
     #[test]
-    fn providers_column_enter_on_connected_route_scopes_models_and_focuses_models() {
+    fn providers_column_enter_on_a_different_connected_route_switches_to_it() {
+        // Providers is a standalone view now — picking a different,
+        // already-connected route can't chain into Models in place (there's
+        // no Models view open); it must hand off a complete, self-sufficient
+        // action for the app layer to resolve a default model + effort for.
         let mut registry = forge_connect::ConnectRegistry::new();
         registry.register(forge_connect::anthropic_profile());
         registry.register(forge_connect::ollama_profile());
@@ -3563,25 +3404,9 @@ mod tests {
                 .into_iter()
                 .collect();
         let providers = build_provider_rows(&registry, &connected, Some("ollama"));
-        let items = vec![
-            ModelItem {
-                provider: "native".into(),
-                model: "anthropic/claude-sonnet".into(),
-                profile_id: Some("anthropic".into()),
-                source: forge_connect::CatalogSource::Registry,
-                route_label: "Anthropic".into(),
-            },
-            ModelItem {
-                provider: "native".into(),
-                model: "ollama/llama3".into(),
-                profile_id: Some("ollama".into()),
-                source: forge_connect::CatalogSource::Default,
-                route_label: "Ollama".into(),
-            },
-        ];
         let mut overlay = Overlay::connect_model_open(
             providers,
-            items,
+            vec![],
             Some("ollama"),
             "ollama/llama3",
             ReasoningEffort::default(),
@@ -3594,39 +3419,39 @@ mod tests {
         );
         assert_eq!(
             handle_overlay_key(&mut overlay, Key::Enter),
-            OverlayAction::None,
-            "picking an already-connected route mutates the overlay in place"
-        );
-        let Overlay::ConnectModel {
-            selected_route,
-            groups,
-            focus,
-            ..
-        } = &overlay
-        else {
-            panic!("expected connect model overlay");
-        };
-        assert_eq!(selected_route.as_deref(), Some("anthropic"));
-        assert_eq!(*focus, ConnectModelColumn::Models);
-        assert!(groups.iter().all(|g| g
-            .routes
-            .iter()
-            .all(|m| m.profile_id.as_deref() == Some("anthropic"))));
-
-        // Typed text that matches nothing in the scoped catalog still falls
-        // back to a free-text `/model <arg>` re-dispatch.
-        assert_eq!(
-            handle_overlay_key(&mut overlay, Key::Char('g')),
-            OverlayAction::None
-        );
-        assert_eq!(
-            handle_overlay_key(&mut overlay, Key::Enter),
-            OverlayAction::RunCommand("/model g".into())
+            OverlayAction::SwitchToRoute {
+                profile_id: "anthropic".into()
+            }
         );
     }
 
     #[test]
-    fn tab_and_backtab_cycle_column_focus() {
+    fn providers_column_enter_on_the_already_active_route_just_closes() {
+        let mut registry = forge_connect::ConnectRegistry::new();
+        registry.register(forge_connect::ollama_profile());
+        let connected: std::collections::HashSet<String> =
+            ["ollama".to_string()].into_iter().collect();
+        let providers = build_provider_rows(&registry, &connected, Some("ollama"));
+        let mut overlay = Overlay::connect_model_open(
+            providers,
+            vec![],
+            Some("ollama"),
+            "ollama/llama3",
+            ReasoningEffort::default(),
+            ConnectModelColumn::Providers,
+        );
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::Close,
+            "re-picking the already-active route is a no-op close, not a route switch"
+        );
+    }
+
+    #[test]
+    fn tab_and_backtab_do_nothing_since_each_view_is_standalone() {
+        // Each picker instance shows exactly one view for its whole
+        // lifetime — there is nothing left for Tab/Shift-Tab to cycle
+        // between (see `docs/provider-model-effort-modal-restructure.md`).
         let mut overlay = Overlay::connect_model_open(
             vec![],
             vec![],
@@ -3635,27 +3460,25 @@ mod tests {
             ReasoningEffort::default(),
             ConnectModelColumn::Providers,
         );
-        handle_overlay_key(&mut overlay, Key::Tab);
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Tab),
+            OverlayAction::None
+        );
         assert!(matches!(
             &overlay,
             Overlay::ConnectModel {
-                focus: ConnectModelColumn::Models,
+                focus: ConnectModelColumn::Providers,
                 ..
             }
         ));
-        handle_overlay_key(&mut overlay, Key::Tab);
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::BackTab),
+            OverlayAction::None
+        );
         assert!(matches!(
             &overlay,
             Overlay::ConnectModel {
-                focus: ConnectModelColumn::Effort,
-                ..
-            }
-        ));
-        handle_overlay_key(&mut overlay, Key::BackTab);
-        assert!(matches!(
-            &overlay,
-            Overlay::ConnectModel {
-                focus: ConnectModelColumn::Models,
+                focus: ConnectModelColumn::Providers,
                 ..
             }
         ));
@@ -4057,7 +3880,7 @@ mod tests {
             ReasoningEffort::default(),
             ConnectModelColumn::Providers,
         ));
-        assert!(picker.contains("Connect & Model"));
+        assert!(picker.contains("Choose a provider"));
         assert!(picker.contains("Ollama"));
         assert!(picker.contains("current"));
         assert!(picker.contains("xAI Grok"));
