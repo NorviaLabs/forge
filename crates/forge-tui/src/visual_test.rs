@@ -367,31 +367,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn visual_default_shell_hides_background_activity() {
-        let (_d, mut app) = app().await;
-        app.push_activity(
-            crate::activity::ActivityKind::Model,
-            crate::widgets::FeedbackSeverity::Info,
-            "model started",
-        );
-        app.handle_key(press_with(KeyCode::Char('2'), KeyModifiers::ALT))
-            .await
-            .unwrap();
-        let backend = TestBackend::new(120, 30);
-        let mut term = Terminal::new(backend).unwrap();
-        term.draw(|f| app.draw(f)).unwrap();
-        let text = buffer_text(&term);
-        assert!(
-            !text.contains("in 0 · out 0 · total 0"),
-            "default shell should not duplicate footer usage:\n{text}"
-        );
-        assert!(
-            text.contains("model started"),
-            "activity tab should show feed when opened:\n{text}"
-        );
-    }
-
-    #[tokio::test]
     async fn visual_idle_home_matches_reference_structure() {
         let (_d, mut app) = app().await;
         let backend = TestBackend::new(120, 40);

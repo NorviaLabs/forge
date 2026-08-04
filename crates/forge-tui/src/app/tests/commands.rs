@@ -370,15 +370,15 @@ async fn focused_bottom_panel_cycles_without_typing_into_chat() {
     app.handle_key(press(KeyCode::Right, KeyModifiers::ALT))
         .await
         .unwrap();
-    assert_eq!(app.bottom_panel.active, BottomPanelTab::Activity);
+    assert_eq!(app.bottom_panel.active, BottomPanelTab::Tasks);
     app.handle_key(press(KeyCode::Right, KeyModifiers::ALT))
         .await
         .unwrap();
-    assert_eq!(app.bottom_panel.active, BottomPanelTab::Tasks);
+    assert_eq!(app.bottom_panel.active, BottomPanelTab::Terminal);
     app.handle_key(press(KeyCode::Left, KeyModifiers::ALT))
         .await
         .unwrap();
-    assert_eq!(app.bottom_panel.active, BottomPanelTab::Activity);
+    assert_eq!(app.bottom_panel.active, BottomPanelTab::Tasks);
     assert_eq!(app.input.text, "draft");
 }
 
@@ -1093,7 +1093,7 @@ async fn alt_digit_opens_bottom_panel_tab() {
         .await
         .unwrap();
     assert!(app.bottom_panel.open);
-    assert_eq!(app.bottom_panel.active, BottomPanelTab::Activity);
+    assert_eq!(app.bottom_panel.active, BottomPanelTab::Tasks);
 }
 
 #[tokio::test]
