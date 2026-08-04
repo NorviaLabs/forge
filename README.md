@@ -150,10 +150,9 @@ controls are:
 | `Enter` / `i` | Interact with the focused block or control |
 | `Esc` | Leave the current interaction level |
 | `↑` / `↓` | Navigate a local list or input |
-| `Ctrl+B` | Toggle the inspector |
 | `Ctrl+P` | Open Quick Open for files |
 | `Ctrl+Backtick` | Toggle the bottom panel |
-| `Alt+1`–`Alt+4` | Open a bottom-panel tab |
+| `Alt+1`–`Alt+3` | Open a bottom-panel tab |
 | `Shift+←` / `Shift+→` | Switch the active block's tab |
 | `Alt+P` | Cycle permission mode (Manual ↔ Accept Edits) |
 | `?` | Open help |
@@ -249,8 +248,8 @@ Every approval card offers a spectrum of decisions, not just yes/no:
 
 ### Permission modes
 
-`Alt+P` cycles the session's oversight level, shown in the sidebar under
-Mode:
+`Alt+P` cycles the session's oversight level, shown in help (`?`) when you
+cycle modes:
 
 - **Manual** — today's default: shell commands ask for approval, file writes
   don't.

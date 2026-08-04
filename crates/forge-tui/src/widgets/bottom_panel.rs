@@ -1,4 +1,5 @@
 use crate::activity::ActivityFeed;
+use crate::status_glyph::{status_dot, Status};
 use crate::theme;
 use crate::widgets::BusyPhase;
 use crate::RunStateModel;
@@ -11,15 +12,17 @@ use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BottomPanelTab {
     Terminal,
+    Activity,
     Tasks,
 }
 
 impl BottomPanelTab {
-    pub const ALL: [Self; 2] = [Self::Terminal, Self::Tasks];
+    pub const ALL: [Self; 3] = [Self::Terminal, Self::Activity, Self::Tasks];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Terminal => "Terminal",
+            Self::Activity => "Activity",
             Self::Tasks => "Tasks",
         }
     }
@@ -134,6 +137,7 @@ impl Widget for BottomPanel<'_> {
                 self.model.terminal_content,
                 self.model.terminal_truncated,
             ),
+            BottomPanelTab::Activity => activity_lines(self.model.activity, inner.width),
             BottomPanelTab::Tasks => tasks_lines(self.model.background, self.model.tasks_selected),
         };
         Paragraph::new(lines).render(inner, buf);
@@ -225,6 +229,33 @@ fn truncate_line(s: &str) -> String {
         format!("{}…", first_line.chars().take(60).collect::<String>())
     } else {
         first_line.to_string()
+    }
+}
+
+fn activity_lines(activity: &ActivityFeed, width: u16) -> Vec<Line<'static>> {
+    let max_chars = width.saturating_sub(2) as usize;
+    let recent = activity.recent(20);
+    if recent.is_empty() {
+        return vec![Line::styled("No recent activity", theme::muted())];
+    }
+    recent
+        .iter()
+        .rev()
+        .map(|item| {
+            Line::from(vec![
+                status_dot(Status::from(item.severity)),
+                Span::raw(" "),
+                Span::styled(truncate_at(&item.summary, max_chars), theme::text()),
+            ])
+        })
+        .collect()
+}
+
+fn truncate_at(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        value.to_string()
+    } else {
+        value.chars().take(max_chars).collect::<String>() + "…"
     }
 }
 
@@ -349,6 +380,8 @@ mod tests {
         assert_eq!(state.active, BottomPanelTab::Tasks);
         state.next_tab();
         assert_eq!(state.active, BottomPanelTab::Terminal);
+        state.next_tab();
+        assert_eq!(state.active, BottomPanelTab::Activity);
     }
 
     #[test]
@@ -385,6 +418,7 @@ mod tests {
 
         let rendered = rendered_text(model, true);
         assert!(rendered.contains("Terminal"));
+        assert!(rendered.contains("Activity"));
         assert!(rendered.contains("Tasks"));
         assert!(!rendered.contains("BOTTOM"));
         assert!(!rendered.contains("Ctrl+P close"));
@@ -665,5 +699,48 @@ mod tests {
             let expected = format!("{} {}", idx + 1, active.label());
             assert_eq!(highlighted, expected, "active={active:?}");
         }
+    }
+
+    #[test]
+    fn activity_tab_shows_recent_feed_newest_first() {
+        let mut activity = ActivityFeed::default();
+        activity.push(
+            crate::activity::ActivityKind::Run,
+            crate::widgets::FeedbackSeverity::Info,
+            "run started: true",
+        );
+        activity.push(
+            crate::activity::ActivityKind::Model,
+            crate::widgets::FeedbackSeverity::Info,
+            "model started",
+        );
+        let state = BottomPanelState {
+            open: true,
+            focused: true,
+            active: BottomPanelTab::Activity,
+        };
+        let model = BottomPanelModel {
+            state: &state,
+            busy_phase: &BusyPhase::Idle,
+            activity: &activity,
+            run: &run_model(),
+            background: &BackgroundTaskRegistry::default(),
+            tasks_selected: None,
+            terminal_title: None,
+            terminal_content: "",
+            terminal_truncated: false,
+        };
+        let rendered = rendered_text(model, true);
+        assert!(
+            rendered.contains("model started"),
+            "activity tab should show feed: {rendered}"
+        );
+        assert!(
+            rendered.contains("run started: true"),
+            "activity tab should show feed: {rendered}"
+        );
+        let model_pos = rendered.find("model started").expect("model entry");
+        let run_pos = rendered.find("run started: true").expect("run entry");
+        assert!(model_pos < run_pos, "newest entry should appear first");
     }
 }

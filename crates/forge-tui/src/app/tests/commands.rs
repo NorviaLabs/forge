@@ -370,11 +370,15 @@ async fn focused_bottom_panel_cycles_without_typing_into_chat() {
     app.handle_key(press(KeyCode::Right, KeyModifiers::ALT))
         .await
         .unwrap();
+    assert_eq!(app.bottom_panel.active, BottomPanelTab::Activity);
+    app.handle_key(press(KeyCode::Right, KeyModifiers::ALT))
+        .await
+        .unwrap();
     assert_eq!(app.bottom_panel.active, BottomPanelTab::Tasks);
     app.handle_key(press(KeyCode::Left, KeyModifiers::ALT))
         .await
         .unwrap();
-    assert_eq!(app.bottom_panel.active, BottomPanelTab::Terminal);
+    assert_eq!(app.bottom_panel.active, BottomPanelTab::Activity);
     assert_eq!(app.input.text, "draft");
 }
 
@@ -837,7 +841,7 @@ async fn app_status_command() {
         },
     );
     app.dispatch_line("/status").await.unwrap();
-    assert!(app.overlay.is_none());
+    assert!(matches!(app.overlay, Some(Overlay::StatusReport { .. })));
     assert!(app.notice_state.items.is_empty());
 }
 
@@ -1039,12 +1043,13 @@ async fn enter_runs_slash_from_main_textbox() {
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
+    assert!(matches!(app.overlay, Some(Overlay::StatusReport { .. })));
     assert!(app.notice_state.items.is_empty());
     assert!(app.history.entries().iter().any(|e| e == "/status"));
 }
 
 #[tokio::test]
-async fn inspector_is_closed_by_default_and_opens_on_demand() {
+async fn status_slash_command_opens_overlay_on_enter() {
     let (_dir, session) = test_session().await;
     let mut app = TuiApp::new(
         session,
@@ -1052,7 +1057,7 @@ async fn inspector_is_closed_by_default_and_opens_on_demand() {
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
-            version: "test".into(),
+            version: "0.4.0".into(),
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
@@ -1060,33 +1065,15 @@ async fn inspector_is_closed_by_default_and_opens_on_demand() {
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
-    assert!(!app.inspector.visible);
-    app.handle_key(press(KeyCode::Char('b'), KeyModifiers::CONTROL))
+    app.input.set_text("/status");
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert!(app.inspector.visible);
-    assert!(split_areas_full(
-        ratatui::layout::Rect::new(0, 0, 120, 30),
-        0,
-        3,
-        app.inspector.visible,
-        0
-    )
-    .sidebar
-    .is_some());
-    app.handle_key(press(KeyCode::Char('b'), KeyModifiers::CONTROL))
-        .await
-        .unwrap();
-    assert!(!app.inspector.visible);
-    assert!(
-        split_areas_full(ratatui::layout::Rect::new(0, 0, 80, 24), 0, 3, true, 0)
-            .sidebar
-            .is_none()
-    );
+    assert!(matches!(app.overlay, Some(Overlay::StatusReport { .. })));
 }
 
 #[tokio::test]
-async fn inspector_view_shortcuts_cycle_without_opening_sidebar() {
+async fn alt_digit_opens_bottom_panel_tab() {
     let (_dir, session) = test_session().await;
     let mut app = TuiApp::new(
         session,
@@ -1102,16 +1089,11 @@ async fn inspector_view_shortcuts_cycle_without_opening_sidebar() {
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
-    assert_eq!(app.inspector.view, InspectorView::Task);
-    app.handle_key(press(KeyCode::Char(']'), KeyModifiers::ALT))
+    app.handle_key(press(KeyCode::Char('2'), KeyModifiers::ALT))
         .await
         .unwrap();
-    assert_eq!(app.inspector.view, InspectorView::Context);
-    app.handle_key(press(KeyCode::Char('['), KeyModifiers::ALT))
-        .await
-        .unwrap();
-    assert_eq!(app.inspector.view, InspectorView::Task);
-    assert!(!app.inspector.visible);
+    assert!(app.bottom_panel.open);
+    assert_eq!(app.bottom_panel.active, BottomPanelTab::Activity);
 }
 
 #[tokio::test]

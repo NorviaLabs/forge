@@ -120,10 +120,6 @@ impl TuiApp {
             },
             explorer_dialog: ExplorerDialogState::default(),
             focus: FocusState::default(),
-            inspector: InspectorState {
-                visible: false,
-                view: InspectorView::default(),
-            },
             diff_view: DiffViewState {
                 selected: 0,
                 snapshot: DiffSnapshot::default(),
