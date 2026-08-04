@@ -92,7 +92,7 @@ impl TuiApp {
         }
     }
 
-    /// Register the persistent footer control's `[vendor/route] [model]
+    /// Register the persistent footer control's `[vendor] [model]
     /// [effort]` segments as click targets, one `ConnectModelColumn` per
     /// segment in the same order `footer_control_segments` lays them out —
     /// the same layout logic used to paint the row, so hit regions can never
