@@ -157,6 +157,11 @@ pub enum ChatItem {
         /// Brief operator-facing explanation for the change.
         rationale: String,
     },
+    /// Structured TODO checklist from the `update_plan` tool.
+    PlanChecklist {
+        explanation: Option<String>,
+        steps: Vec<forge_types::PlanItem>,
+    },
     Banner {
         text: String,
         kind: BannerKind,
@@ -180,6 +185,7 @@ pub enum ConversationBlock {
     Callout(CalloutPresentation),
     CodeBlock(CodeBlockPresentation),
     DiffBlock(DiffBlockPresentation),
+    PlanChecklist(PlanChecklistPresentation),
     Metadata(MetadataPresentation),
 }
 
@@ -245,6 +251,12 @@ pub struct DiffBlockPresentation {
     pub path: String,
     pub lines: Vec<String>,
     pub rationale: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlanChecklistPresentation {
+    pub explanation: Option<String>,
+    pub steps: Vec<forge_types::PlanItem>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -380,6 +392,19 @@ impl ConversationModel {
                 // Tool results are not shown as chat messages (keeps the transcript clean).
                 MessageRole::Tool => {
                     let name = m.name.as_deref().unwrap_or("tool");
+                    if name == "update_plan" {
+                        let call = m
+                            .tool_call_id
+                            .as_deref()
+                            .and_then(|id| tool_calls.get(id).copied());
+                        if let Some(args) = call.and_then(parse_update_plan_args) {
+                            items.push(ChatItem::PlanChecklist {
+                                explanation: args.explanation,
+                                steps: args.plan,
+                            });
+                            continue;
+                        }
+                    }
                     if m.content.starts_with("Tool validation error:")
                         || m.content.contains("validation retry budget exceeded")
                     {
@@ -635,6 +660,7 @@ impl ConversationModel {
                 ChatItem::ToolCard { .. }
                     | ChatItem::ActivityGroup { .. }
                     | ChatItem::DiffCard { .. }
+                    | ChatItem::PlanChecklist { .. }
             )
         })
     }
@@ -819,6 +845,12 @@ impl ConversationModel {
                         width.saturating_sub(2),
                     ));
                     lines.push(Line::from(DIFF_BLOCK_END_MARKER));
+                    if gap {
+                        lines.push(Line::from(""));
+                    }
+                }
+                ConversationBlock::PlanChecklist(p) => {
+                    lines.extend(render_plan_checklist(&p, width));
                     if gap {
                         lines.push(Line::from(""));
                     }
@@ -1037,6 +1069,16 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
                     rationale: rationale.clone(),
                 }));
             }
+            ChatItem::PlanChecklist { explanation, steps } => {
+                flush_progress(&mut blocks, &mut progress);
+                flush_activity(&mut blocks, &mut activity_group);
+                blocks.push(ConversationBlock::PlanChecklist(
+                    PlanChecklistPresentation {
+                        explanation: explanation.clone(),
+                        steps: steps.clone(),
+                    },
+                ));
+            }
             ChatItem::System { text } => {
                 flush_progress(&mut blocks, &mut progress);
                 flush_activity(&mut blocks, &mut activity_group);
@@ -1135,9 +1177,9 @@ fn compose_turn_presentation(blocks: Vec<ConversationBlock>) -> Vec<Conversation
                 ConversationBlock::Callout(ref c) if matches!(c.kind, BannerKind::Error) => {
                     failures.push(block)
                 }
-                ConversationBlock::ActivityGroup(_) | ConversationBlock::DiffBlock(_) => {
-                    activity.push(block)
-                }
+                ConversationBlock::ActivityGroup(_)
+                | ConversationBlock::DiffBlock(_)
+                | ConversationBlock::PlanChecklist(_) => activity.push(block),
                 ConversationBlock::ActiveProgress(_) => progress.push(block),
                 other_block => other.push(other_block),
             }
@@ -1827,6 +1869,20 @@ fn activity_group_detail(item: &ChatItem) -> String {
             ..
         } => format!("{name}: {summary}\n{detail}"),
         ChatItem::DiffCard { path, lines, .. } => format!("diff: {path}\n{}", lines.join("\n")),
+        ChatItem::PlanChecklist { explanation, steps } => {
+            let mut out = String::from("plan");
+            if let Some(explanation) = explanation {
+                out.push_str(": ");
+                out.push_str(explanation);
+            }
+            for step in steps {
+                out.push('\n');
+                out.push_str(step.status.as_str());
+                out.push_str(" · ");
+                out.push_str(&step.step);
+            }
+            out
+        }
         ChatItem::SessionRecovery {
             session_id,
             journal_path,
@@ -1838,6 +1894,54 @@ fn activity_group_detail(item: &ChatItem) -> String {
         ChatItem::ContextHandoff { goal, .. } => format!("context handoff: {goal}"),
         _ => String::new(),
     }
+}
+
+fn parse_update_plan_args(call: &ToolCall) -> Option<forge_types::UpdatePlanArgs> {
+    serde_json::from_value(call.arguments.clone()).ok()
+}
+
+fn render_plan_checklist(plan: &PlanChecklistPresentation, width: usize) -> Vec<Line<'static>> {
+    use forge_types::PlanStepStatus;
+    let mut lines = Vec::new();
+    lines.push(Line::from(vec![Span::styled(
+        "Plan",
+        theme::brand().add_modifier(Modifier::BOLD),
+    )]));
+    if let Some(explanation) = plan
+        .explanation
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        for l in wrap(explanation, width.saturating_sub(2)) {
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(l, theme::muted().add_modifier(Modifier::ITALIC)),
+            ]));
+        }
+    }
+    for item in &plan.steps {
+        let (marker, style) = match item.status {
+            PlanStepStatus::Completed => ("✓", theme::ok()),
+            PlanStepStatus::InProgress => ("►", theme::warn()),
+            PlanStepStatus::Pending => ("○", theme::muted()),
+        };
+        let body_width = width.saturating_sub(4).max(8);
+        let mut wrapped = wrap(&item.step, body_width).into_iter();
+        if let Some(first) = wrapped.next() {
+            lines.push(Line::from(vec![
+                Span::styled(format!("{marker} "), style),
+                Span::styled(first, theme::text()),
+            ]));
+        }
+        for cont in wrapped {
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(cont, theme::text()),
+            ]));
+        }
+    }
+    lines
 }
 
 fn classify_tool_content(
@@ -3418,6 +3522,77 @@ mod tests {
         assert!(matches!(
             blocks.as_slice(),
             [ConversationBlock::DiffBlock(_)]
+        ));
+    }
+
+    #[test]
+    fn update_plan_tool_messages_render_as_checklist() {
+        let msgs = vec![
+            Message {
+                role: MessageRole::Assistant,
+                content: String::new(),
+                tool_call_id: None,
+                name: None,
+                thinking: None,
+                thinking_duration_secs: None,
+                tool_calls: vec![ToolCall {
+                    id: "plan-1".into(),
+                    name: "update_plan".into(),
+                    arguments: serde_json::json!({
+                        "explanation": "Next steps",
+                        "plan": [
+                            {"step": "Inspect code", "status": "completed"},
+                            {"step": "Implement tool", "status": "in_progress"},
+                            {"step": "Add tests", "status": "pending"}
+                        ]
+                    }),
+                }],
+            },
+            Message {
+                role: MessageRole::Tool,
+                content: "Plan updated".into(),
+                tool_call_id: Some("plan-1".into()),
+                name: Some("update_plan".into()),
+                thinking: None,
+                thinking_duration_secs: None,
+                tool_calls: vec![],
+            },
+        ];
+        let m = ConversationModel::from_messages(
+            &msgs,
+            &[],
+            TaskLifecycle::Ready,
+            ConversationViewOpts::default(),
+        );
+        assert!(
+            matches!(
+                &m.items[..],
+                [ChatItem::PlanChecklist {
+                    explanation: Some(exp),
+                    steps
+                }] if exp == "Next steps" && steps.len() == 3
+            ),
+            "expected plan checklist item, got {:?}",
+            m.items
+        );
+        let text = m
+            .lines_for_width(80)
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Plan"), "{text}");
+        assert!(text.contains("Inspect code"), "{text}");
+        assert!(text.contains("Implement tool"), "{text}");
+        assert!(text.contains("Add tests"), "{text}");
+        assert!(matches!(
+            m.semantic_blocks().as_slice(),
+            [ConversationBlock::PlanChecklist(_)]
         ));
     }
 
