@@ -338,6 +338,17 @@ impl TuiApp {
                 self.source_viewer.move_to_last_line();
                 true
             }
+            KeyCode::Char('i') if key.modifiers.is_empty() => {
+                self.source_viewer.enter_insert_mode();
+                true
+            }
+            KeyCode::Esc
+                if key.modifiers.is_empty()
+                    && self.source_viewer.mode == crate::source_viewer::ViewerMode::Insert =>
+            {
+                self.source_viewer.enter_normal_mode();
+                true
+            }
             _ => false,
         }
     }

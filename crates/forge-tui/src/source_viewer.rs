@@ -26,6 +26,24 @@ const TAB_WIDTH: usize = 4;
 /// Files larger than this are displayed as plain text without syntax highlighting.
 const HIGHLIGHT_DISABLE_BYTES: u64 = 262_144; // 256 KiB
 
+/// Cosmetic vim-style mode tag shown in the editor header. Doesn't change
+/// how any key behaves — `SourceViewer` stays read-only in both modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ViewerMode {
+    #[default]
+    Normal,
+    Insert,
+}
+
+impl ViewerMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Normal => "NORMAL",
+            Self::Insert => "INSERT",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ViewerStatus {
     Empty,
@@ -112,6 +130,8 @@ pub struct SourceViewer {
     pub h_scroll: usize,
     /// Whether the editor panel currently has focus. Affects current-line emphasis.
     pub focused: bool,
+    /// Cosmetic vim-style mode tag. See [`ViewerMode`].
+    pub mode: ViewerMode,
     pub status: ViewerStatus,
     /// Raw size on disk when the file was loaded.
     pub size_bytes: u64,
@@ -155,6 +175,7 @@ impl Default for SourceViewer {
             current_line: 0,
             h_scroll: 0,
             focused: true,
+            mode: ViewerMode::Normal,
             status: ViewerStatus::Empty,
             size_bytes: 0,
             preview: false,
@@ -185,6 +206,7 @@ impl SourceViewer {
         self.top_line = 0;
         self.current_line = 0;
         self.h_scroll = 0;
+        self.mode = ViewerMode::Normal;
         self.status = ViewerStatus::Loading;
         self.size_bytes = 0;
         self.preview = false;
@@ -441,6 +463,16 @@ impl SourceViewer {
         self.h_scroll = old_h;
         self.notice = Some("File renamed externally".into());
         true
+    }
+
+    /// Switch the cosmetic mode tag to INSERT. Doesn't change key behavior.
+    pub fn enter_insert_mode(&mut self) {
+        self.mode = ViewerMode::Insert;
+    }
+
+    /// Switch the cosmetic mode tag back to NORMAL. Doesn't change key behavior.
+    pub fn enter_normal_mode(&mut self) {
+        self.mode = ViewerMode::Normal;
     }
 
     pub fn move_cursor_vertical(&mut self, delta: isize, page_height: usize) {
@@ -1032,7 +1064,8 @@ impl SourceViewerWidget<'_> {
         let gutter = (number_width + 3) as u16; // number + " │ "
 
         let mut header = format!(
-            "{} · line {} of {}",
+            "{} · {} · line {} of {}",
+            self.viewer.mode.label(),
             self.viewer.rel_path,
             self.viewer.current_line + 1,
             total
@@ -1805,6 +1838,21 @@ mod tests {
         ok.start_jump();
         ok.jump.input = "12".into();
         assert!(render_viewer(&mut ok).contains("Go to line: 12"));
+    }
+
+    #[test]
+    fn header_shows_cosmetic_mode_tag() {
+        let mut viewer = SourceViewer::new();
+        viewer.status = ViewerStatus::Ok;
+        viewer.rel_path = "src/lib.rs".into();
+        viewer.lines = vec!["fn main() {}".into()];
+        assert!(render_viewer(&mut viewer).contains("NORMAL"));
+
+        viewer.enter_insert_mode();
+        assert!(render_viewer(&mut viewer).contains("INSERT"));
+
+        viewer.enter_normal_mode();
+        assert!(render_viewer(&mut viewer).contains("NORMAL"));
     }
 
     #[test]
