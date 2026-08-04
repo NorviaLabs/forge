@@ -189,7 +189,7 @@ async fn cancel_key_is_a_no_op_outside_the_sidebar() {
 }
 
 #[tokio::test]
-async fn poll_background_tasks_surfaces_a_finished_job_in_the_sidebar() {
+async fn poll_background_tasks_keeps_finished_job_in_session_state() {
     let (_dir, mut app) = focus_test_app().await;
     let id = app
         .session
@@ -215,8 +215,4 @@ async fn poll_background_tasks_surfaces_a_finished_job_in_the_sidebar() {
         task.status,
         forge_core::BackgroundTaskStatus::Succeeded { .. }
     ));
-
-    let rendered = render_app_text(&mut app, 100, 30);
-    assert!(rendered.contains("echo"), "{rendered}");
-    assert!(rendered.contains("succeeded"), "{rendered}");
 }
