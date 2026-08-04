@@ -89,15 +89,6 @@ impl TuiApp {
             KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(SemanticCommand::ToggleFiles)
             }
-            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                Some(SemanticCommand::ToggleInspector)
-            }
-            KeyCode::Char('[') if key.modifiers.contains(KeyModifiers::ALT) => {
-                Some(SemanticCommand::CycleInspectorTab { forward: false })
-            }
-            KeyCode::Char(']') if key.modifiers.contains(KeyModifiers::ALT) => {
-                Some(SemanticCommand::CycleInspectorTab { forward: true })
-            }
             KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(SemanticCommand::OpenQuickOpen)
             }
@@ -112,6 +103,13 @@ impl TuiApp {
             ),
             KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::ALT) => {
                 Some(SemanticCommand::CyclePermissionMode)
+            }
+            KeyCode::Char(c @ '1'..='3') if key.modifiers.contains(KeyModifiers::ALT) => {
+                let index = (c as u8 - b'1') as usize;
+                BottomPanelTab::ALL
+                    .get(index)
+                    .copied()
+                    .map(SemanticCommand::OpenBottomPanel)
             }
             KeyCode::F(1) if self.overlay.is_none() => Some(SemanticCommand::OpenHelp),
             _ => None,
@@ -234,26 +232,6 @@ impl TuiApp {
             }
             _ if self.current_workspace_is_file() => self.semantic_command_for_editor_key(key),
             _ => None,
-        }
-    }
-
-    pub(super) fn semantic_command_for_inspector_key(
-        &self,
-        key: event::KeyEvent,
-    ) -> Option<SemanticCommand> {
-        match self.tab_nav_command(key) {
-            Some(TabNavCommand::PreviousTab) => {
-                Some(SemanticCommand::CycleInspectorTab { forward: false })
-            }
-            Some(TabNavCommand::NextTab) => {
-                Some(SemanticCommand::CycleInspectorTab { forward: true })
-            }
-            None => match key.code {
-                KeyCode::Esc if key.modifiers.is_empty() => {
-                    Some(SemanticCommand::CancelCurrentInteraction)
-                }
-                _ => None,
-            },
         }
     }
 
@@ -481,22 +459,6 @@ impl TuiApp {
                 self.dispatch_line(&line).await?;
             }
             SemanticCommand::CycleFocus { forward } => self.cycle_focus_block(forward),
-            SemanticCommand::ToggleInspector => {
-                self.inspector.visible = !self.inspector.visible;
-                if self.inspector.visible {
-                    self.focus_block(FocusBlock::Inspector);
-                } else {
-                    self.restore_focus_after_closing(FocusBlock::Inspector);
-                    self.normalize_focus();
-                }
-            }
-            SemanticCommand::CycleInspectorTab { forward } => {
-                self.inspector.view = if forward {
-                    self.inspector.view.next()
-                } else {
-                    self.inspector.view.previous()
-                };
-            }
             SemanticCommand::ToggleBottomPanel => self.toggle_bottom_panel(),
             SemanticCommand::OpenQuickOpen => self.open_quick_open(),
             SemanticCommand::QuickSwitchModel => self.quick_switch_model(),
@@ -868,6 +830,12 @@ impl TuiApp {
                 Ok(SlashCommand::Theme { name }) => {
                     self.handle_theme_command(name.as_deref());
                 }
+                Ok(SlashCommand::Status) => {
+                    self.overlay = Some(Overlay::StatusReport {
+                        title: "Status".into(),
+                        lines: self.status_report_lines(),
+                    });
+                }
                 Err(e) => {
                     let msg = e.to_string();
                     self.set_feedback(FeedbackSeverity::Warn, msg.clone());
@@ -1096,24 +1064,16 @@ mod tests {
             ),
             (key(KeyCode::Char('e'), CTRL), SemanticCommand::ToggleFiles),
             (
-                key(KeyCode::Char('b'), CTRL),
-                SemanticCommand::ToggleInspector,
-            ),
-            (
-                key(KeyCode::Char('['), ALT),
-                SemanticCommand::CycleInspectorTab { forward: false },
-            ),
-            (
-                key(KeyCode::Char(']'), ALT),
-                SemanticCommand::CycleInspectorTab { forward: true },
-            ),
-            (
                 key(KeyCode::Char('p'), CTRL),
                 SemanticCommand::OpenQuickOpen,
             ),
             (
                 key(KeyCode::Char('`'), CTRL),
                 SemanticCommand::ToggleBottomPanel,
+            ),
+            (
+                key(KeyCode::Char('2'), ALT),
+                SemanticCommand::OpenBottomPanel(BottomPanelTab::Activity),
             ),
             (
                 key(KeyCode::Char('p'), ALT),
@@ -1263,27 +1223,6 @@ mod tests {
         // A chord modifier is a different binding entirely.
         assert_eq!(
             app.semantic_command_for_file_key(key(KeyCode::Char('N'), CTRL)),
-            None
-        );
-    }
-
-    #[tokio::test]
-    async fn inspector_bindings_cycle_tabs_and_cancel() {
-        let (_d, app) = app().await;
-        assert_eq!(
-            app.semantic_command_for_inspector_key(key(KeyCode::Left, SHIFT)),
-            Some(SemanticCommand::CycleInspectorTab { forward: false })
-        );
-        assert_eq!(
-            app.semantic_command_for_inspector_key(key(KeyCode::Right, SHIFT)),
-            Some(SemanticCommand::CycleInspectorTab { forward: true })
-        );
-        assert_eq!(
-            app.semantic_command_for_inspector_key(key(KeyCode::Esc, NONE)),
-            Some(SemanticCommand::CancelCurrentInteraction)
-        );
-        assert_eq!(
-            app.semantic_command_for_inspector_key(key(KeyCode::Char('x'), NONE)),
             None
         );
     }
