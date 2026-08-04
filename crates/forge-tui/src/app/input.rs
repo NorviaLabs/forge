@@ -353,6 +353,14 @@ impl TuiApp {
         }
     }
 
+    async fn handle_sidebar_key(&mut self, key: event::KeyEvent) -> Result<bool, TuiError> {
+        if let Some(command) = self.semantic_command_for_sidebar_key(key) {
+            self.execute_semantic_command(command).await
+        } else {
+            Ok(false)
+        }
+    }
+
     async fn handle_bottom_panel_key(&mut self, key: event::KeyEvent) -> Result<bool, TuiError> {
         if !self.bottom_panel.open {
             return Ok(false);
@@ -440,6 +448,7 @@ impl TuiApp {
         match self.focus.block {
             FocusBlock::Files => self.handle_file_explorer_key(key).await,
             FocusBlock::Workspace => self.handle_workspace_navigation_key(key).await,
+            FocusBlock::Sidebar => self.handle_sidebar_key(key).await,
             FocusBlock::Composer => Ok(false),
             FocusBlock::BottomPanel => self.handle_bottom_panel_key(key).await,
         }

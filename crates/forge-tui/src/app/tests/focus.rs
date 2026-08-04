@@ -22,6 +22,10 @@ async fn tab_cycles_visible_blocks_and_skips_hidden_ones() {
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await
         .unwrap();
+    assert_eq!(app.focus.block, FocusBlock::Sidebar);
+    app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
+        .await
+        .unwrap();
     assert_eq!(app.focus.block, FocusBlock::Composer);
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await
@@ -44,14 +48,26 @@ async fn tab_cycles_visible_blocks_and_skips_hidden_ones() {
 }
 
 #[tokio::test]
-async fn tab_and_shift_tab_reach_composer() {
+async fn tab_and_shift_tab_traverse_sidebar_and_composer() {
     let (_dir, mut app) = focus_test_app().await;
     app.focus_block(FocusBlock::Workspace);
+
+    // Sidebar sits between Workspace and Composer — they're the same
+    // physical column post-sidebar layout (composer docked below it).
+    app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.focus.block, FocusBlock::Sidebar);
 
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await
         .unwrap();
     assert_eq!(app.focus.block, FocusBlock::Composer);
+
+    app.handle_key(press(KeyCode::BackTab, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.focus.block, FocusBlock::Sidebar);
 
     app.handle_key(press(KeyCode::BackTab, KeyModifiers::NONE))
         .await
@@ -87,12 +103,18 @@ async fn shift_arrow_tabs_only_apply_to_the_active_navigation_block() {
         Some(WorkspaceView::Diff(DiffCommandContext::Current))
     );
 
-    app.open_bottom_panel(Some(BottomPanelTab::Terminal));
+    // The bottom panel is Terminal-only now (Tasks moved to the sidebar),
+    // so shift-arrow has nothing to cycle while it's focused — workspace
+    // navigation stays exactly where it was.
+    app.open_bottom_panel();
     app.focus_block(FocusBlock::BottomPanel);
     app.handle_key(press(KeyCode::Right, KeyModifiers::SHIFT))
         .await
         .unwrap();
-    assert_eq!(app.bottom_panel.active, BottomPanelTab::Tasks);
+    assert_eq!(
+        app.workspace_navigation.current,
+        Some(WorkspaceView::Diff(DiffCommandContext::Current))
+    );
 }
 
 #[tokio::test]
@@ -220,11 +242,13 @@ async fn semantic_commands_dispatch_without_rendering_a_frame() {
         Some(path.canonicalize().unwrap().as_path())
     );
 
+    // With no current run, background tasks live in the sidebar now —
+    // OpenRun(Current) focuses it instead of a bottom-panel Tasks tab.
     app.execute_semantic_command(SemanticCommand::OpenRun(RunCommandTarget::Current))
         .await
         .unwrap();
-    assert!(app.bottom_panel.open);
-    assert_eq!(app.bottom_panel.active, BottomPanelTab::Tasks);
+    assert!(!app.bottom_panel.open);
+    assert_eq!(app.focus.block, FocusBlock::Sidebar);
 }
 
 #[tokio::test]
