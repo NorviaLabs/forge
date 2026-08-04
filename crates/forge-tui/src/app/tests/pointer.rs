@@ -68,18 +68,18 @@ async fn mouse_click_file_row_selects_and_chevron_toggles() {
 #[tokio::test]
 async fn mouse_click_bottom_tab_visible_control_emits_once() {
     let (_dir, mut app) = focus_test_app().await;
-    app.open_bottom_panel(Some(BottomPanelTab::Run));
+    app.open_bottom_panel(Some(BottomPanelTab::Terminal));
     draw_app(&mut app, 120, 40);
     let (x, y) = hit_point(&app, |target| {
         matches!(
             target,
-            HitTarget::VisibleControl(SemanticCommand::OpenBottomPanel(BottomPanelTab::Activity))
+            HitTarget::VisibleControl(SemanticCommand::OpenBottomPanel(BottomPanelTab::Tasks))
         )
     });
     app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), x, y))
         .await
         .unwrap();
-    assert_eq!(app.bottom_panel.active, BottomPanelTab::Activity);
+    assert_eq!(app.bottom_panel.active, BottomPanelTab::Tasks);
     assert_eq!(app.focus.block, FocusBlock::BottomPanel);
 }
 
@@ -548,12 +548,12 @@ async fn mouse_double_click_folder_row_toggles_once() {
 #[tokio::test]
 async fn mouse_double_click_controls_do_not_gain_row_activation() {
     let (_dir, mut app) = focus_test_app().await;
-    app.open_bottom_panel(Some(BottomPanelTab::Run));
+    app.open_bottom_panel(Some(BottomPanelTab::Terminal));
     draw_app(&mut app, 120, 40);
     let (x, y) = hit_point(&app, |target| {
         matches!(
             target,
-            HitTarget::VisibleControl(SemanticCommand::OpenBottomPanel(BottomPanelTab::Activity))
+            HitTarget::VisibleControl(SemanticCommand::OpenBottomPanel(BottomPanelTab::Tasks))
         )
     });
     app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), x, y))
@@ -563,7 +563,7 @@ async fn mouse_double_click_controls_do_not_gain_row_activation() {
         .await
         .unwrap();
 
-    assert_eq!(app.bottom_panel.active, BottomPanelTab::Activity);
+    assert_eq!(app.bottom_panel.active, BottomPanelTab::Tasks);
     assert!(app.pointer.pending_double_click.is_none());
 }
 

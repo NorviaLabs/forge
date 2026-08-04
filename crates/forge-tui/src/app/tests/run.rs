@@ -18,7 +18,7 @@ async fn run_only_from_run_panel_focus() {
         .as_ref()
         .is_some_and(|record| record.state == RunState::Running));
 
-    app.bottom_panel.open_tab(BottomPanelTab::Run);
+    app.bottom_panel.open_tab(BottomPanelTab::Terminal);
     app.focus_block(FocusBlock::BottomPanel);
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
@@ -34,7 +34,7 @@ async fn run_only_from_run_panel_focus() {
 async fn run_cancel_from_run_panel() {
     let (_dir, mut app) = focus_test_app().await;
     app.run.draft.command_input = "true".into();
-    app.bottom_panel.open_tab(BottomPanelTab::Run);
+    app.bottom_panel.open_tab(BottomPanelTab::Terminal);
     app.focus_block(FocusBlock::BottomPanel);
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
@@ -84,7 +84,7 @@ async fn restored_running_run_becomes_cancelled() {
 #[tokio::test]
 async fn ui_navigation_does_not_mutate_run_history() {
     let (_dir, mut app) = focus_test_app().await;
-    app.bottom_panel.open_tab(BottomPanelTab::Run);
+    app.bottom_panel.open_tab(BottomPanelTab::Terminal);
     app.focus_block(FocusBlock::BottomPanel);
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await
@@ -284,7 +284,7 @@ async fn run_activity_history_remains_available_in_activity_panel() {
     let (_dir, mut app) = focus_test_app().await;
     app.run.draft.command_input = "true".into();
     app.run_current_draft();
-    app.open_bottom_panel(Some(BottomPanelTab::Activity));
+    app.open_bottom_panel(Some(BottomPanelTab::Terminal));
 
     let rendered = render_app_text(&mut app, 100, 30);
 
