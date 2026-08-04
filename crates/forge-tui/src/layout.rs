@@ -6,6 +6,10 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 pub const MIN_WIDTH: u16 = 80;
 pub const MIN_HEIGHT: u16 = 18;
 const CONTENT_WIDTH_PERCENT: u32 = 95;
+/// Composer input band (visual lines + chrome), capped for normal chat.
+pub const MAX_COMPOSER_INPUT_H: u16 = 8;
+/// Bottom theme picker dock: fits built-in themes without scrolling; scrolls for more.
+pub const THEME_DOCK_H: u16 = 12;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LayoutRegions {
@@ -85,7 +89,7 @@ pub fn split_areas_with_chrome(
         height: area.height,
     };
     let fb = feedback_h.min(2);
-    let input_h = input_h.clamp(3, 8);
+    let input_h = input_h.clamp(3, THEME_DOCK_H);
     let qh = queue_h.min(8);
     let footer_h = footer_h.min(1);
     let fixed_h = 1 + fb + qh + input_h + footer_h;

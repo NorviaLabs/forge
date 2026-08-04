@@ -3,6 +3,7 @@
 //! Split out of `app/tests/mod.rs` per #19. Moved verbatim.
 
 use super::prelude::*;
+use crate::overlays::{handle_overlay_key, Key as OverlayKey, OverlayAction};
 
 #[tokio::test]
 async fn theme_change_updates_active_palette_immediately() {
@@ -20,6 +21,95 @@ async fn theme_change_updates_active_palette_immediately() {
         Some(crate::theme::palette(forge_config::THEME_SOLARIZED_LIGHT).text)
     );
     assert!(app.render_cache.conversation.is_none());
+}
+
+#[tokio::test]
+async fn theme_picker_previews_on_navigate_confirms_on_enter_restores_on_esc() {
+    let (_dir, mut app) = focus_test_app().await;
+    let original = forge_config::THEME_SOLARIZED_DARK.to_string();
+    assert_eq!(crate::theme::active(), original);
+
+    app.handle_theme_command(None);
+    assert!(matches!(app.overlay, Some(Overlay::Theme { .. })));
+
+    let light = forge_config::THEME_SOLARIZED_LIGHT.to_string();
+    app.apply_overlay_action(OverlayAction::PreviewTheme(light.clone()))
+        .await
+        .unwrap();
+    assert_eq!(crate::theme::active(), light);
+    assert_eq!(app.runtime.theme_id, light);
+    assert!(
+        matches!(app.overlay, Some(Overlay::Theme { .. })),
+        "preview must keep the picker open"
+    );
+    assert!(
+        app.feedback.is_empty(),
+        "preview must stay silent (no status/toast)"
+    );
+
+    // Esc restores the theme from open and closes without persisting.
+    app.apply_overlay_action(OverlayAction::Close)
+        .await
+        .unwrap();
+    assert!(app.overlay.is_none());
+    assert_eq!(crate::theme::active(), original);
+    assert_eq!(app.runtime.theme_id, original);
+
+    // Confirm persists and closes.
+    app.handle_theme_command(None);
+    app.apply_overlay_action(OverlayAction::SelectTheme(light.clone()))
+        .await
+        .unwrap();
+    assert!(app.overlay.is_none());
+    assert_eq!(crate::theme::active(), light);
+    assert_eq!(app.runtime.theme_id, light);
+    assert!(
+        !app.feedback.is_empty(),
+        "confirm should acknowledge the theme change"
+    );
+}
+
+#[tokio::test]
+async fn theme_picker_dock_keeps_conversation_visible() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let (_dir, mut app) = focus_test_app().await;
+    app.conversation_view.splash_dismissed = true;
+    app.session
+        .messages
+        .push(Message::new(MessageRole::User, "visible under theme dock"));
+    app.handle_theme_command(None);
+    let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    term.draw(|f| app.draw(f)).unwrap();
+    let buf = term.backend().buffer();
+    let mut text = String::new();
+    for y in 0..buf.area.height {
+        for x in 0..buf.area.width {
+            text.push_str(buf[(x, y)].symbol());
+        }
+        text.push('\n');
+    }
+    assert!(
+        text.contains("Theme · ↑↓ preview"),
+        "expected theme dock:\n{text}"
+    );
+    assert!(
+        text.contains("visible under theme dock"),
+        "conversation must stay visible behind the dock:\n{text}"
+    );
+}
+
+#[tokio::test]
+async fn theme_picker_down_key_emits_preview_action() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.handle_theme_command(None);
+    let overlay = app.overlay.as_mut().expect("theme overlay");
+    let action = handle_overlay_key(overlay, OverlayKey::Down);
+    assert!(
+        matches!(action, OverlayAction::PreviewTheme(_)),
+        "↓ should live-preview, got {action:?}"
+    );
 }
 
 #[tokio::test]

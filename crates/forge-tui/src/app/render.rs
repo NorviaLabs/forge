@@ -40,7 +40,12 @@ impl TuiApp {
         crate::theme::fill(area, frame.buffer_mut(), crate::theme::canvas());
         let fb_h = if self.feedback.is_empty() { 0 } else { 1 };
         let slash_mode = self.overlay.is_none() && self.input.text.starts_with('/');
-        let input_h = (self.input.visual_lines() + 2).clamp(3, 8);
+        let theme_picking = matches!(self.overlay, Some(Overlay::Theme { .. }));
+        let input_h = if theme_picking {
+            crate::layout::THEME_DOCK_H
+        } else {
+            (self.input.visual_lines() + 2).clamp(3, crate::layout::MAX_COMPOSER_INPUT_H)
+        };
         let panel_h = if self.bottom_panel.open { 8 } else { 0 };
         let contextual_hint = self.contextual_hint();
         let connected = self.is_provider_connected();
@@ -456,28 +461,45 @@ impl TuiApp {
 
         let attachment_label = self.attachment.pending.as_ref().map(|a| a.label());
         let glyph = ACTIVE_GLYPH;
-        let composer_content_width = regions
-            .input
-            .width
-            .saturating_sub(gutter_prefix_width(glyph) as u16)
-            .max(1) as usize;
-        let composer_rows = self.render_cache.composer_layout.rows(
-            self.input.layout_revision,
-            &self.input.text,
-            composer_content_width,
-        );
-        frame.render_widget(
-            InputBar {
-                model: &self.input,
-                rows: composer_rows,
-                attachment: attachment_label.as_deref(),
-                dimmed: self.busy_state.active && self.input.text.is_empty(),
-                not_connected: !connected,
-                focused: self.focus.mode == FocusMode::Navigation
-                    && self.focus.block == FocusBlock::Composer,
-            },
-            regions.input,
-        );
+        if theme_picking {
+            if let Some(Overlay::Theme {
+                selected,
+                current,
+                items,
+            }) = self.overlay.as_ref()
+            {
+                crate::overlays::render_theme_dock(
+                    *selected,
+                    current,
+                    items,
+                    regions.input,
+                    frame.buffer_mut(),
+                );
+            }
+        } else {
+            let composer_content_width = regions
+                .input
+                .width
+                .saturating_sub(gutter_prefix_width(glyph) as u16)
+                .max(1) as usize;
+            let composer_rows = self.render_cache.composer_layout.rows(
+                self.input.layout_revision,
+                &self.input.text,
+                composer_content_width,
+            );
+            frame.render_widget(
+                InputBar {
+                    model: &self.input,
+                    rows: composer_rows,
+                    attachment: attachment_label.as_deref(),
+                    dimmed: self.busy_state.active && self.input.text.is_empty(),
+                    not_connected: !connected,
+                    focused: self.focus.mode == FocusMode::Navigation
+                        && self.focus.block == FocusBlock::Composer,
+                },
+                regions.input,
+            );
+        }
 
         let effort_label = self
             .reasoning_effort
@@ -506,6 +528,8 @@ impl TuiApp {
         } else if let Some(ref ov) = self.overlay {
             match ov {
                 Overlay::Help => self.render_help_overlay(area, frame.buffer_mut()),
+                // Theme dock already replaced the composer band above.
+                Overlay::Theme { .. } => {}
                 _ => frame.render_widget(OverlayWidget { overlay: ov }, area),
             }
             self.register_overlay_hit_regions(area);
