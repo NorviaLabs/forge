@@ -1329,6 +1329,7 @@ dependencies = [
  "dirs 6.0.0",
  "forge-config",
  "forge-connect",
+ "forge-context",
  "forge-core",
  "forge-governance",
  "forge-model",

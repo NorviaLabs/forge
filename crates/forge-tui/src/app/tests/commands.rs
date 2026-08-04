@@ -1250,6 +1250,7 @@ async fn enter_on_highlighted_suggestion_runs_command() {
 async fn bare_slash_lists_all_palette_commands() {
     use crossterm::event::{KeyCode, KeyModifiers};
     let (_dir, session) = test_session().await;
+    let workspace_root = session.workspace_root().to_path_buf();
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
@@ -1269,9 +1270,10 @@ async fn bare_slash_lists_all_palette_commands() {
         .unwrap();
     let suggestions = app.slash_suggestions();
     let expected = crate::overlays::default_palette_items();
+    let skill_count = forge_context::discover_skills(&workspace_root).len();
     assert_eq!(
         suggestions.len(),
-        expected.len(),
+        expected.len() + skill_count,
         "bare / should list every palette command; got {:?}",
         suggestions.iter().map(|s| &s.cmd).collect::<Vec<_>>()
     );

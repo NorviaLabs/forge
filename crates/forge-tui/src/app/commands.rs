@@ -16,7 +16,31 @@ impl TuiApp {
         }
         // Filter by text after leading `/`
         let filter = t.trim_start_matches('/');
-        filter_palette(filter)
+        let mut items = filter_palette(filter);
+        items.extend(
+            forge_context::discover_skills(self.session.workspace_root())
+                .into_iter()
+                .map(|skill| PaletteItem {
+                    cmd: format!("/{}", skill.name),
+                    desc: skill.description,
+                })
+                .filter(|item| {
+                    let filter = filter.to_ascii_lowercase();
+                    item.cmd.to_ascii_lowercase().contains(&filter)
+                        || item.desc.to_ascii_lowercase().contains(&filter)
+                }),
+        );
+        items.sort_by_key(|item| {
+            let command = item.cmd.trim_start_matches('/').to_ascii_lowercase();
+            if command.starts_with(&filter.to_ascii_lowercase()) {
+                0
+            } else if command.contains(&filter.to_ascii_lowercase()) {
+                1
+            } else {
+                2
+            }
+        });
+        items
     }
 
     pub(super) fn clamp_slash_suggest(&mut self) {
@@ -670,6 +694,26 @@ impl TuiApp {
     }
 
     pub async fn dispatch_line(&mut self, line: &str) -> Result<(), TuiError> {
+        let skill_line = if let Some(skill_name) = line
+            .split_whitespace()
+            .next()
+            .and_then(|token| token.strip_prefix('/'))
+        {
+            let is_skill = forge_context::discover_skills(self.session.workspace_root())
+                .iter()
+                .any(|skill| skill.name == skill_name);
+            if is_skill {
+                let request = line.strip_prefix('/').unwrap_or(line).trim().to_string();
+                Some(format!(
+                    "Use the `{skill_name}` skill for this task.\n\n{request}"
+                ))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let line = skill_line.as_deref().unwrap_or(line);
         if let Some(cmd_res) = parse_slash(line) {
             let slash_name = line.split_whitespace().next().unwrap_or("/");
             self.push_activity(ActivityKind::Slash, FeedbackSeverity::Info, slash_name);

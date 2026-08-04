@@ -56,6 +56,7 @@ pub fn parse_slash(line: &str) -> Option<Result<SlashCommand, CommandError>> {
     if !line.starts_with('/') {
         return None;
     }
+
     Some(parse_slash_inner(line))
 }
 
