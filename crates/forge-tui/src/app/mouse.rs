@@ -48,9 +48,6 @@ impl TuiApp {
             self.register_hit_region(area, HitTarget::Pane(FocusBlock::Files), 1);
         }
         self.register_hit_region(regions.chat, HitTarget::Pane(FocusBlock::Workspace), 1);
-        if let Some(area) = regions.sidebar {
-            self.register_hit_region(area, HitTarget::Pane(FocusBlock::Inspector), 1);
-        }
         if self.bottom_panel.open && regions.bottom_panel.height > 0 {
             self.register_hit_region(
                 regions.bottom_panel,
@@ -482,10 +479,7 @@ impl TuiApp {
                 match self.pane_target_at(mouse.column, mouse.row) {
                     Some(FocusBlock::Files) => self.scroll_files(up, 3),
                     Some(FocusBlock::Workspace) => self.scroll_workspace_under_pointer(up),
-                    Some(
-                        FocusBlock::Composer | FocusBlock::Inspector | FocusBlock::BottomPanel,
-                    )
-                    | None => {}
+                    Some(FocusBlock::Composer | FocusBlock::BottomPanel) | None => {}
                 }
             }
             _ => {

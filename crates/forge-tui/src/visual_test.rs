@@ -367,14 +367,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn visual_wide_shell_shows_sidebar_activity() {
+    async fn visual_default_shell_hides_background_activity() {
         let (_d, mut app) = app().await;
         app.push_activity(
             crate::activity::ActivityKind::Model,
             crate::widgets::FeedbackSeverity::Info,
             "model started",
         );
-        app.handle_key(press_with(KeyCode::Char('['), KeyModifiers::ALT))
+        app.handle_key(press_with(KeyCode::Char('2'), KeyModifiers::ALT))
             .await
             .unwrap();
         let backend = TestBackend::new(120, 30);
@@ -386,16 +386,8 @@ mod tests {
             "default shell should not duplicate footer usage:\n{text}"
         );
         assert!(
-            !text.contains("Runtime"),
-            "default shell should not show inspector:\n{text}"
-        );
-        assert!(
-            !text.contains("Recent"),
-            "default shell should not show activity panel:\n{text}"
-        );
-        assert!(
-            !text.contains("model started"),
-            "background activity should remain off default chrome:\n{text}"
+            text.contains("model started"),
+            "activity tab should show feed when opened:\n{text}"
         );
     }
 
@@ -411,8 +403,8 @@ mod tests {
             assert!(text.contains(expected), "missing {expected:?}:\n{text}");
         }
         assert!(
-            !text.contains("Context"),
-            "default shell should not show inspector context:\n{text}"
+            !text.contains("INSPECTOR"),
+            "default shell should not show inspector:\n{text}"
         );
         assert!(text.contains("Forge"), "missing branding:\n{text}");
         assert!(

@@ -297,16 +297,16 @@ async fn edge_run_spawn_failure_shows_invocation_without_exit_code() {
 }
 
 #[tokio::test]
-async fn run_activity_history_remains_available_in_inspector_sidebar() {
+async fn run_activity_history_is_available_in_bottom_panel() {
     let (_dir, mut app) = focus_test_app().await;
     app.run.draft.command_input = "true".into();
     app.run_current_draft();
     app.workspace_files.visible = false;
-    app.inspector.visible = true;
+    app.open_bottom_panel(Some(BottomPanelTab::Activity));
 
     let rendered = render_app_text(&mut app, 120, 40);
 
-    assert!(rendered.contains("RECENT ACTIVITY"), "{rendered}");
+    assert!(rendered.contains("Activity"), "{rendered}");
     assert!(rendered.contains("run started: true"), "{rendered}");
     assert_eq!(
         app.workspace_navigation.current,

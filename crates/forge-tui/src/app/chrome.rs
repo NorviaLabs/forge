@@ -13,9 +13,10 @@
 //! Methods and chrome-related free functions are moved verbatim. Types such as
 //! `FooterLimits` and `ActivitySummaryModel` live in `types.inc.rs`.
 
-use super::*;
+use crate::widgets::session_chrome_lines;
 
 use super::util::relative_display;
+use super::*;
 
 impl TuiApp {
     pub(super) fn push_notice(&mut self, lines: Vec<String>) {
@@ -457,7 +458,10 @@ impl TuiApp {
                 .started
                 .map(|started| started.elapsed().as_secs_f64())
                 .unwrap_or(0.0);
-            format!("{label} {}", format_elapsed_tenths(elapsed))
+            format!(
+                "{label} {}",
+                crate::conversation::format_elapsed_tenths(elapsed)
+            )
         })
     }
 
@@ -515,6 +519,44 @@ impl TuiApp {
         }
 
         cached_limits.unwrap_or_default()
+    }
+
+    pub(super) fn status_report_lines(&self) -> Vec<String> {
+        let m = self.refresh_status_model();
+        let mut lines = session_chrome_lines(&m);
+        let id = self.session.session_id.to_string();
+        let short = if id.len() > 8 { &id[..8] } else { &id };
+        lines.push(format!("session_id={short}"));
+        lines.push(format!("journal={}", self.session.journal_dir().display()));
+        lines.push(format!("permission_mode={}", self.permission_mode.label()));
+        let usage = self.session.token_usage_report();
+        lines.push(format!(
+            "context_tokens={} / {}",
+            usage.context_tokens_est, usage.context_capacity
+        ));
+        lines.push(format!("messages={}", usage.message_count));
+        lines.push(format!("tool_results={}", usage.tool_message_count));
+        if let Some((before, after)) = self.conversation_view.context_reset_snapshot {
+            lines.push(format!("fresh_context={before:.0}% → {after:.0}%"));
+        }
+        let skills = self.session.loaded_skill_names();
+        if skills.is_empty() {
+            lines.push("skills=none".into());
+        } else {
+            lines.push(format!("skills={}", skills.join(", ")));
+        }
+        let mut tools = self.session.list_tools();
+        tools.sort();
+        if tools.is_empty() {
+            lines.push("tools=none".into());
+        } else {
+            lines.push(format!("tools={}", tools.join(", ")));
+        }
+        lines.push(format!(
+            "session_allows={}",
+            self.hitl_session.allowed.len()
+        ));
+        lines
     }
 }
 

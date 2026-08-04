@@ -68,7 +68,6 @@ impl TuiApp {
             fb_h,
             input_h,
             !slash_mode && self.workspace_files.visible,
-            !slash_mode && self.inspector.visible,
             0,
             panel_h,
             hint_h,
@@ -77,7 +76,6 @@ impl TuiApp {
         // rendered geometry rather than leaving an invisible key owner behind.
         let available = FocusAvailability {
             files: regions.files.is_some(),
-            inspector: regions.sidebar.is_some(),
             bottom_panel: self.bottom_panel.open && regions.bottom_panel.height > 0,
         };
         if !available.contains(self.focus.block) {
@@ -314,73 +312,6 @@ impl TuiApp {
             }
             self.register_approval_card_hit_regions(area);
         }
-        if let Some(sidebar_area) = regions.sidebar {
-            let activity = self
-                .activity
-                .recent(8)
-                .iter()
-                .map(|item| crate::sidebar::SidebarActivityEntry {
-                    summary: item.summary.clone(),
-                    status: crate::status_glyph::Status::from(item.severity),
-                })
-                .collect::<Vec<_>>();
-            let mut sidebar = SidebarModel::from_session_with_activity(&self.session, &activity);
-            sidebar.provider = self.runtime.provider.clone();
-            sidebar.model = self.runtime.model_label.clone();
-            sidebar.effort = self.reasoning_effort.value.label().to_string();
-            sidebar.permission_mode = self.permission_mode.label().to_string();
-            sidebar.route = self.connect.profile.clone();
-            sidebar.busy = self.busy_state.active;
-            sidebar.step = match &self.busy_state.phase {
-                BusyPhase::Model => "model_stream",
-                BusyPhase::Tool { .. } => "tool_execution",
-                BusyPhase::Connect => "connect",
-                BusyPhase::Other(step) => step,
-                BusyPhase::Idle => "idle",
-            }
-            .into();
-            sidebar.context_reset = self.conversation_view.context_reset_snapshot;
-            sidebar.session_allows = self
-                .hitl_session
-                .allowed
-                .iter()
-                .map(ApprovalIdentity::label)
-                .collect();
-            let header = self.repo_header();
-            sidebar.repo_name = header.repo_name;
-            sidebar.branch = header.branch;
-            let gs = &self.workspace_files.explorer.git_status;
-            sidebar.git_status_loading = gs.loading;
-            sidebar.git_status_error = gs.error.is_some();
-            sidebar.files_changed = Some(gs.status.len());
-            sidebar.validation = self.run.current.as_ref().map(|record| {
-                format!(
-                    "Run {}",
-                    match record.state {
-                        RunState::Queued => "queued",
-                        RunState::Running => "running",
-                        RunState::Succeeded => "succeeded",
-                        RunState::Failed => "failed",
-                        RunState::Cancelled => "cancelled",
-                        RunState::StartFailed => "start failed",
-                        RunState::CaptureFailed => "capture failed",
-                    }
-                )
-            });
-            sidebar.elapsed = self
-                .timing
-                .started
-                .or(self.timing.thinking_started)
-                .map(|started| format_elapsed_tenths(started.elapsed().as_secs_f64()));
-            frame.render_widget(
-                SidebarWidget {
-                    model: &sidebar,
-                    view: self.inspector.view,
-                    focused: self.focus.block == FocusBlock::Inspector,
-                },
-                sidebar_area,
-            );
-        }
 
         frame.render_widget(
             BottomPanel {
@@ -553,6 +484,7 @@ impl TuiApp {
             .value
             .display_label(&self.runtime.model_label)
             .to_string();
+        let token_report = self.session.token_usage_report();
         let footer = FooterModel {
             hints: contextual_hint.unwrap_or_default(),
             connected,
@@ -560,6 +492,9 @@ impl TuiApp {
             route_label,
             model: self.runtime.model_label.clone(),
             effort: effort_label,
+            ctx_used: token_report.context_tokens_est,
+            ctx_total: token_report.context_capacity,
+            ctx_pct: self.session.context_usage_ratio(),
             ..FooterModel::default()
         };
         frame.render_widget(FooterBar { model: &footer }, regions.footer);

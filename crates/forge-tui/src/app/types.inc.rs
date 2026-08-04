@@ -145,7 +145,6 @@ pub(crate) enum FocusBlock {
     Files,
     Workspace,
     Composer,
-    Inspector,
     BottomPanel,
 }
 
@@ -155,18 +154,16 @@ impl FocusBlock {
             Self::Files => "FILES",
             Self::Workspace => "CHAT",
             Self::Composer => "COMPOSER",
-            Self::Inspector => "INSPECTOR",
             Self::BottomPanel => "PANEL",
         }
     }
 }
 
 impl FocusBlock {
-    const ORDER: [Self; 5] = [
+    const ORDER: [Self; 4] = [
         Self::Files,
         Self::Workspace,
         Self::Composer,
-        Self::Inspector,
         Self::BottomPanel,
     ];
 }
@@ -288,10 +285,6 @@ enum SemanticCommand {
     CycleFocus {
         forward: bool,
     },
-    ToggleInspector,
-    CycleInspectorTab {
-        forward: bool,
-    },
     ToggleBottomPanel,
     OpenQuickOpen,
     QuickSwitchModel,
@@ -408,7 +401,6 @@ impl Default for FocusState {
 #[derive(Debug, Clone, Copy)]
 struct FocusAvailability {
     files: bool,
-    inspector: bool,
     bottom_panel: bool,
 }
 
@@ -418,7 +410,6 @@ impl FocusAvailability {
             FocusBlock::Files => self.files,
             FocusBlock::Workspace => true,
             FocusBlock::Composer => true,
-            FocusBlock::Inspector => self.inspector,
             FocusBlock::BottomPanel => self.bottom_panel,
         }
     }
@@ -547,11 +538,6 @@ struct WorkspaceSearchState {
 pub(crate) struct WorkspaceFilesState {
     pub(crate) visible: bool,
     pub(crate) explorer: FileExplorer,
-}
-
-struct InspectorState {
-    visible: bool,
-    view: InspectorView,
 }
 
 struct TaskSelectionState {
@@ -722,8 +708,6 @@ pub struct TuiApp {
     /// Authoritative keyboard ownership. Legacy component `focused` flags are
     /// synchronised from this state for rendering only.
     focus: FocusState,
-    /// User preference; narrow terminals still hide the sidebar responsively.
-    inspector: InspectorState,
     /// Selected index in the changed-files inventory for Diff workspace.
     diff_view: DiffViewState,
     cancellation: CancellationState,

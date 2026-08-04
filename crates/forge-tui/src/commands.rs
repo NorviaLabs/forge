@@ -47,6 +47,8 @@ pub enum SlashCommand {
     Theme {
         name: Option<String>,
     },
+    /// Show session status overlay.
+    Status,
 }
 
 pub fn parse_slash(line: &str) -> Option<Result<SlashCommand, CommandError>> {
@@ -98,6 +100,7 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
         "theme" => Ok(SlashCommand::Theme {
             name: parts.next().map(|s| s.to_string()),
         }),
+        "status" => Ok(SlashCommand::Status),
         other => Err(CommandError::Unknown(other.to_string())),
     }
 }
@@ -201,6 +204,14 @@ mod tests {
     #[test]
     fn non_slash_is_none() {
         assert!(parse_slash("hello").is_none());
+    }
+
+    #[test]
+    fn parses_status() {
+        assert_eq!(
+            parse_slash("/status").unwrap().unwrap(),
+            SlashCommand::Status
+        );
     }
 
     #[test]

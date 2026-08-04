@@ -41,8 +41,7 @@ use crate::activity::{ActivityFeed, ActivityKind};
 use crate::commands::{parse_slash, SlashCommand};
 use crate::composer_layout::ComposerLayoutCache;
 use crate::conversation::{
-    format_elapsed_tenths, BannerKind, ChatItem, ConversationModel, ConversationViewOpts,
-    StreamWaitPhase,
+    BannerKind, ChatItem, ConversationModel, ConversationViewOpts, StreamWaitPhase,
 };
 use crate::editor::EditorError;
 use crate::effort::ReasoningEffort;
@@ -53,8 +52,6 @@ use crate::file_ops::{
 use crate::git_status::GitStatusKind;
 use crate::history::InputHistory;
 use crate::layout::is_too_small;
-#[cfg(test)]
-use crate::layout::split_areas_full;
 use crate::layout::split_areas_with_chrome;
 use crate::overlays::{
     approval_card_action_row, approval_card_dock_height, build_provider_rows, centered_rect,
@@ -64,7 +61,6 @@ use crate::overlays::{
     OverlayAction, OverlayWidget, PaletteItem, ResumeSessionItem,
 };
 use crate::run::{RunExecutionMode, RunHistoryFile, RunState, RunStateModel};
-use crate::sidebar::{InspectorView, SidebarModel, SidebarWidget};
 use crate::source_viewer::{SourceViewer, SourceViewerWidget};
 use crate::terminal::TerminalGuard;
 use crate::theme;

@@ -91,8 +91,12 @@ pub fn footer_control_segments(model: &FooterModel, width: u16) -> Vec<FooterCon
     if !model.effort.is_empty() {
         candidates.push(format!("[{}]", model.effort));
     }
+    if model.ctx_total > 0 {
+        let pct = (model.ctx_pct * 100.0).clamp(0.0, 100.0);
+        candidates.push(format!("[{pct:.0}%]"));
+    }
 
-    // Drop trailing segments (effort, then model) until what's left fits.
+    // Drop trailing segments (context, effort, then model) until what's left fits.
     while candidates.len() > 1 {
         let joined_width: usize = candidates.iter().map(|s| s.chars().count() + 1).sum();
         if joined_width.saturating_sub(1) <= width as usize {
@@ -276,6 +280,18 @@ mod tests {
         );
         assert!(narrow.iter().any(|s| s.text.contains("claude-sonnet-4-6")));
         assert!(!narrow.iter().any(|s| s.text.contains("Low")));
+
+        let with_context = FooterModel {
+            ctx_total: 8192,
+            ctx_pct: 0.42,
+            ..connected_model()
+        };
+        let segments = footer_control_segments(&with_context, 80);
+        assert!(
+            segments.iter().any(|s| s.text.contains("42%")),
+            "expected context chip: {:?}",
+            segments.iter().map(|s| &s.text).collect::<Vec<_>>()
+        );
 
         let narrower = footer_control_segments(&model, 15);
         assert_eq!(

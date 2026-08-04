@@ -590,18 +590,6 @@ pub fn inactive_panel_title() -> Style {
     muted()
 }
 
-/// Active tab: raised surface; accent underline when the block has focus.
-pub fn active_tab(focused: bool) -> Style {
-    let p = active_palette();
-    let mut style = Style::default().bg(p.panel_alt);
-    if focused {
-        style = style.fg(p.accent).add_modifier(Modifier::UNDERLINED);
-    } else {
-        style = style.fg(p.text).add_modifier(Modifier::BOLD);
-    }
-    style
-}
-
 /// Inactive tab: secondary text on transparent background.
 pub fn inactive_tab() -> Style {
     muted()

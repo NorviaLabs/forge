@@ -77,10 +77,6 @@ impl TuiApp {
                 text.push_str("• ⇧Enter  Newline\n");
                 text.push_str("• Esc  Return to previous block\n");
             }
-            FocusBlock::Inspector => {
-                text.push_str("• ⇧← / ⇧→  Switch inspector tab\n");
-                text.push_str("• Esc  Return to previous block\n");
-            }
             FocusBlock::BottomPanel => {
                 text.push_str("• ⇧← / ⇧→  Switch bottom-panel tab\n");
                 text.push_str("• Esc  Return to previous block\n");
