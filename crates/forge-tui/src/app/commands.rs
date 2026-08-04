@@ -241,6 +241,16 @@ impl TuiApp {
             {
                 Some(SemanticCommand::RefreshDiff)
             }
+            KeyCode::Esc
+                if key.modifiers.is_empty()
+                    && self.current_workspace_is_file()
+                    && self.source_viewer.mode == crate::source_viewer::ViewerMode::Insert =>
+            {
+                // Let `handle_editor_key` consume this Esc to drop back to
+                // NORMAL mode instead of navigating away; a second Esc (now
+                // in NORMAL) falls through to the GoBack arm below.
+                None
+            }
             KeyCode::Esc if key.modifiers.is_empty() => {
                 if self.current_workspace_is_conversation() {
                     Some(SemanticCommand::CancelCurrentInteraction)
