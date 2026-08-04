@@ -271,6 +271,42 @@ impl ProgressDocument {
     }
 }
 
+/// Status of one step in an `update_plan` checklist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanStepStatus {
+    Pending,
+    InProgress,
+    Completed,
+}
+
+impl PlanStepStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::InProgress => "in_progress",
+            Self::Completed => "completed",
+        }
+    }
+}
+
+/// One checklist row for the `update_plan` tool.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PlanItem {
+    pub step: String,
+    pub status: PlanStepStatus,
+}
+
+/// Arguments for the model-callable `update_plan` TODO/checklist tool.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UpdatePlanArgs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explanation: Option<String>,
+    pub plan: Vec<PlanItem>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -527,5 +563,22 @@ mod tests {
         assert!(doc.workspace_ref.is_empty());
         assert_eq!(doc.session_id, session_id.to_string());
         assert!(!doc.updated_at.is_empty());
+    }
+
+    #[test]
+    fn update_plan_args_round_trip_snake_case_status() {
+        let raw = serde_json::json!({
+            "explanation": "starting",
+            "plan": [
+                {"step": "one", "status": "completed"},
+                {"step": "two", "status": "in_progress"},
+                {"step": "three", "status": "pending"}
+            ]
+        });
+        let args: UpdatePlanArgs = serde_json::from_value(raw).unwrap();
+        assert_eq!(args.explanation.as_deref(), Some("starting"));
+        assert_eq!(args.plan.len(), 3);
+        assert_eq!(args.plan[1].status, PlanStepStatus::InProgress);
+        assert_eq!(args.plan[1].status.as_str(), "in_progress");
     }
 }
