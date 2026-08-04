@@ -394,17 +394,16 @@ fn read_skills_dir(dir: Option<PathBuf>) -> Vec<SkillManifest> {
         .collect()
 }
 
-fn global_skills_dir() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("forge").join("skills"))
+fn global_agents_skills_dir() -> Option<PathBuf> {
+    dirs::home_dir().map(|d| d.join(".agents").join("skills"))
 }
 
-/// Discovers project (`.forge/skills/`) and global (`~/.config/forge/skills/`)
-/// skills, project taking precedence on a name collision. Free function (no
-/// `ContextEngine`/session needed) so tools — e.g. `load_skill` — can reuse it
-/// without carrying a whole engine around.
+/// Discovers standard project (`.agents/skills/`) and global
+/// (`~/.agents/skills/`) skills, with project skills taking precedence on a
+/// name collision.
 pub fn discover_skills(workspace: &std::path::Path) -> Vec<SkillManifest> {
-    let mut skills = read_skills_dir(Some(workspace.join(".forge").join("skills")));
-    skills.extend(read_skills_dir(global_skills_dir()));
+    let mut skills = read_skills_dir(Some(workspace.join(".agents").join("skills")));
+    skills.extend(read_skills_dir(global_agents_skills_dir()));
     skills.sort_by(|a, b| a.name.cmp(&b.name));
     skills.dedup_by(|a, b| a.name == b.name);
     skills
@@ -535,11 +534,11 @@ mod tests {
     }
 
     #[test]
-    fn load_skills_reads_forge_skills() {
+    fn load_skills_reads_project_agents_skills() {
         let dir = tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join(".forge/skills/ponytail")).unwrap();
+        std::fs::create_dir_all(dir.path().join(".agents/skills/ponytail")).unwrap();
         std::fs::write(
-            dir.path().join(".forge/skills/ponytail/SKILL.md"),
+            dir.path().join(".agents/skills/ponytail/SKILL.md"),
             "forge skill",
         )
         .unwrap();
@@ -547,18 +546,20 @@ mod tests {
         let eng = ContextEngine::new(dir.path().to_path_buf(), Uuid::new_v4());
         let skills = eng.load_skills();
 
-        assert_eq!(skills.len(), 1);
-        assert_eq!(skills[0].name, "ponytail");
-        assert_eq!(skills[0].body, "forge skill");
-        assert!(!skills[0].has_frontmatter);
+        let skill = skills
+            .iter()
+            .find(|skill| skill.name == "ponytail")
+            .unwrap();
+        assert_eq!(skill.body, "forge skill");
+        assert!(!skill.has_frontmatter);
     }
 
     #[test]
     fn load_skills_parses_frontmatter_for_progressive_disclosure() {
         let dir = tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join(".forge/skills/reviewer")).unwrap();
+        std::fs::create_dir_all(dir.path().join(".agents/skills/reviewer")).unwrap();
         std::fs::write(
-            dir.path().join(".forge/skills/reviewer/SKILL.md"),
+            dir.path().join(".agents/skills/reviewer/SKILL.md"),
             "---\nname: reviewer\ndescription: Reviews pull requests for style issues.\nlicense: MIT\n---\n\n# Reviewer\n\nFull instructions here.\n",
         )
         .unwrap();
@@ -566,14 +567,16 @@ mod tests {
         let eng = ContextEngine::new(dir.path().to_path_buf(), Uuid::new_v4());
         let skills = eng.load_skills();
 
-        assert_eq!(skills.len(), 1);
-        let skill = &skills[0];
+        let skill = skills
+            .iter()
+            .find(|skill| skill.name == "reviewer")
+            .unwrap();
         assert_eq!(skill.name, "reviewer");
         assert_eq!(skill.description, "Reviews pull requests for style issues.");
         assert_eq!(skill.license.as_deref(), Some("MIT"));
         assert!(skill.has_frontmatter);
         assert_eq!(skill.body, "# Reviewer\n\nFull instructions here.");
-        assert_eq!(skill.dir, dir.path().join(".forge/skills/reviewer"));
+        assert_eq!(skill.dir, dir.path().join(".agents/skills/reviewer"));
     }
 
     #[test]
@@ -597,15 +600,26 @@ mod tests {
     fn load_skills_project_overrides_global() {
         let dir = tempdir().unwrap();
         // project skill
-        std::fs::create_dir_all(dir.path().join(".forge/skills/mine")).unwrap();
-        std::fs::write(dir.path().join(".forge/skills/mine/SKILL.md"), "project").unwrap();
+        std::fs::create_dir_all(dir.path().join(".agents/skills/mine")).unwrap();
+        std::fs::write(dir.path().join(".agents/skills/mine/SKILL.md"), "project").unwrap();
 
         let eng = ContextEngine::new(dir.path().to_path_buf(), Uuid::new_v4());
         // global dir doesn't exist; only project skill is loaded
         let skills = eng.load_skills();
-        assert_eq!(skills.len(), 1);
-        assert_eq!(skills[0].name, "mine");
-        assert_eq!(skills[0].body, "project");
+        let skill = skills.iter().find(|skill| skill.name == "mine").unwrap();
+        assert_eq!(skill.body, "project");
+    }
+
+    #[test]
+    fn load_skills_reads_agents_skills() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".agents/skills/mine")).unwrap();
+        std::fs::write(dir.path().join(".agents/skills/mine/SKILL.md"), "standard").unwrap();
+
+        let skills = ContextEngine::new(dir.path().to_path_buf(), Uuid::new_v4()).load_skills();
+
+        let skill = skills.iter().find(|skill| skill.name == "mine").unwrap();
+        assert_eq!(skill.body, "standard");
     }
 
     #[test]
