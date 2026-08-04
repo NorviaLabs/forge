@@ -57,7 +57,10 @@ async fn approval_overlay_preserves_underlying_workspace() {
     assert!(app.approval_card.is_some());
     assert_eq!(app.workspace_navigation, before);
     assert!(app.activity_summary().is_none());
-    assert_eq!(app.workspace_navigation.current, WorkspaceView::File(path));
+    assert_eq!(
+        app.workspace_navigation.current,
+        Some(WorkspaceView::File(path))
+    );
 }
 
 #[tokio::test]

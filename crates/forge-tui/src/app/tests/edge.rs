@@ -179,7 +179,10 @@ async fn edge_open_file_external_rename_updates_path_when_identity_matches() {
 
     let new = new.canonicalize().unwrap();
     assert_eq!(app.source_viewer.path.as_deref(), Some(new.as_path()));
-    assert_eq!(app.workspace_navigation.current, WorkspaceView::File(new));
+    assert_eq!(
+        app.workspace_navigation.current,
+        Some(WorkspaceView::File(new))
+    );
     assert_eq!(app.source_viewer.current_line, 2);
     assert_eq!(app.source_viewer.top_line, 1);
     assert_eq!(
@@ -208,7 +211,10 @@ async fn edge_open_file_external_delete_keeps_file_view_and_buffer() {
         .unwrap();
     app.poll_file_changes();
 
-    assert_eq!(app.workspace_navigation.current, WorkspaceView::File(path));
+    assert_eq!(
+        app.workspace_navigation.current,
+        Some(WorkspaceView::File(path))
+    );
     assert_eq!(app.source_viewer.path.as_deref(), Some(opened.as_path()));
     assert_eq!(
         app.source_viewer.status,
@@ -317,10 +323,7 @@ async fn edge_diff_stale_marking_waits_for_confirmed_status_change() {
     app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(
-        app.workspace_navigation.current,
-        WorkspaceView::Conversation
-    );
+    assert_eq!(app.workspace_navigation.current, None);
 }
 
 /// A git-status refresh resolving asynchronously (via `poll()`) after the

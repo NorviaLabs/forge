@@ -10,32 +10,29 @@ async fn characterization_contextual_views_are_reachable_with_current_controls()
     let path = dir.path().join("source.rs");
     fs::write(&path, "fn main() {}\n").unwrap();
     app.focus_block(FocusBlock::Workspace);
-    assert_eq!(
-        app.workspace_navigation.current,
-        WorkspaceView::Conversation
-    );
+    assert_eq!(app.workspace_navigation.current, None);
 
     app.handle_key(press(KeyCode::Right, KeyModifiers::SHIFT))
         .await
         .unwrap();
     assert_eq!(
         app.workspace_navigation.current,
-        WorkspaceView::Diff(DiffCommandContext::Current)
+        Some(WorkspaceView::Diff(DiffCommandContext::Current))
     );
     assert_eq!(app.focus.block, FocusBlock::Workspace);
 
     app.handle_key(press(KeyCode::Left, KeyModifiers::SHIFT))
         .await
         .unwrap();
-    assert_eq!(
-        app.workspace_navigation.current,
-        WorkspaceView::Conversation
-    );
+    assert_eq!(app.workspace_navigation.current, None);
 
     app.execute_semantic_command(SemanticCommand::OpenFile(path.clone()))
         .await
         .unwrap();
-    assert_eq!(app.workspace_navigation.current, WorkspaceView::File(path));
+    assert_eq!(
+        app.workspace_navigation.current,
+        Some(WorkspaceView::File(path))
+    );
 }
 
 #[tokio::test]
