@@ -548,11 +548,11 @@ impl TuiApp {
             regions.input,
         );
 
-        let effort_label = if ReasoningEffort::model_supports_effort(&self.runtime.model_label) {
-            self.reasoning_effort.value.label().to_string()
-        } else {
-            String::new()
-        };
+        let effort_label = self
+            .reasoning_effort
+            .value
+            .display_label(&self.runtime.model_label)
+            .to_string();
         let footer = FooterModel {
             hints: contextual_hint.unwrap_or_default(),
             connected,
