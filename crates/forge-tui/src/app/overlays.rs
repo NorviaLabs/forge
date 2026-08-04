@@ -83,7 +83,9 @@ impl TuiApp {
                 text.push_str("• Esc  Return to previous block\n");
             }
             FocusBlock::BottomPanel => {
-                text.push_str("• Esc  Return to previous block\n");
+                text.push_str("• Type / paste  Send input to the shell\n");
+                text.push_str("• Ctrl+C / arrows / Tab  Shell controls\n");
+                text.push_str("• Ctrl+`  Close the terminal panel\n");
             }
             FocusBlock::Files => {
                 text.push_str("• Enter  Open or expand\n");

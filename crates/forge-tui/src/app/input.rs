@@ -159,6 +159,17 @@ impl TuiApp {
         if self.approval_card.is_some() {
             return;
         }
+        if self.focus.block == FocusBlock::BottomPanel {
+            if let Some(terminal) = self.interactive_terminal.as_mut() {
+                if let Err(error) = terminal.write(data.as_bytes()) {
+                    self.set_feedback(
+                        FeedbackSeverity::Error,
+                        format!("terminal paste failed: {error}"),
+                    );
+                }
+                return;
+            }
+        }
         if let Some(ref mut ov) = self.overlay {
             let _ = handle_overlay_key(ov, OverlayKey::Paste(data.to_string()));
             return;
@@ -364,6 +375,17 @@ impl TuiApp {
     async fn handle_bottom_panel_key(&mut self, key: event::KeyEvent) -> Result<bool, TuiError> {
         if !self.bottom_panel.open {
             return Ok(false);
+        }
+        if let Some(bytes) = terminal_key_bytes(key) {
+            if let Some(terminal) = self.interactive_terminal.as_mut() {
+                if let Err(error) = terminal.write(&bytes) {
+                    self.set_feedback(
+                        FeedbackSeverity::Error,
+                        format!("terminal input failed: {error}"),
+                    );
+                }
+                return Ok(true);
+            }
         }
         if let Some(command) = self.semantic_command_for_bottom_panel_key(key) {
             self.execute_semantic_command(command).await
@@ -682,6 +704,41 @@ impl TuiApp {
     }
 }
 
+fn terminal_key_bytes(key: event::KeyEvent) -> Option<Vec<u8>> {
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        if let KeyCode::Char(c) = key.code {
+            let c = c.to_ascii_lowercase();
+            if c.is_ascii_lowercase() {
+                return Some(vec![c as u8 - b'a' + 1]);
+            }
+        }
+    }
+    if key.modifiers.contains(KeyModifiers::ALT) {
+        if let KeyCode::Char(c) = key.code {
+            return Some(vec![0x1b, c as u8]);
+        }
+    }
+    match key.code {
+        KeyCode::Char(c) if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT => {
+            Some(c.to_string().into_bytes())
+        }
+        KeyCode::Enter => Some(vec![b'\r']),
+        KeyCode::Backspace => Some(vec![0x7f]),
+        KeyCode::Tab => Some(vec![b'\t']),
+        KeyCode::Up => Some(b"\x1b[A".to_vec()),
+        KeyCode::Down => Some(b"\x1b[B".to_vec()),
+        KeyCode::Right => Some(b"\x1b[C".to_vec()),
+        KeyCode::Left => Some(b"\x1b[D".to_vec()),
+        KeyCode::Home => Some(b"\x1b[H".to_vec()),
+        KeyCode::End => Some(b"\x1b[F".to_vec()),
+        KeyCode::Delete => Some(b"\x1b[3~".to_vec()),
+        KeyCode::PageUp => Some(b"\x1b[5~".to_vec()),
+        KeyCode::PageDown => Some(b"\x1b[6~".to_vec()),
+        KeyCode::Esc => None,
+        _ => None,
+    }
+}
+
 fn map_key(key: event::KeyEvent) -> OverlayKey {
     match key.code {
         KeyCode::Esc => OverlayKey::Esc,
@@ -827,6 +884,27 @@ mod tests {
         );
         assert_eq!(TuiApp::printable_chat_char(press(KeyCode::Enter)), None);
         assert_eq!(TuiApp::printable_chat_char(press(KeyCode::Up)), None);
+    }
+
+    #[test]
+    fn terminal_key_bytes_preserve_shell_editing_controls() {
+        assert_eq!(
+            terminal_key_bytes(press(KeyCode::Char('x'))),
+            Some(b"x".to_vec())
+        );
+        assert_eq!(
+            terminal_key_bytes(press_with(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            Some(vec![3])
+        );
+        assert_eq!(terminal_key_bytes(press(KeyCode::Enter)), Some(vec![b'\r']));
+        assert_eq!(
+            terminal_key_bytes(press(KeyCode::Up)),
+            Some(b"\x1b[A".to_vec())
+        );
+        assert_eq!(
+            terminal_key_bytes(press(KeyCode::Backspace)),
+            Some(vec![0x7f])
+        );
     }
 
     #[tokio::test]

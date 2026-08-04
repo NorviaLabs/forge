@@ -28,6 +28,7 @@ chrono = { workspace = true }
 dirs = { workspace = true }
 pathdiff = { workspace = true }
 notify = { workspace = true }
+portable-pty = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -157,6 +157,10 @@ controls are:
 | `Alt+P` | Cycle permission mode (Manual ↔ Accept Edits) |
 | `?` | Open help |
 
+When the bottom panel is focused, it is an interactive login shell. Type or
+paste commands directly into it; standard control keys, arrows, Tab, and
+terminal resize are forwarded to the shell. `Ctrl+Backtick` closes the panel.
+
 ## Configuration
 
 Forge reads defaults, a user configuration file, a `forge.toml` in the
