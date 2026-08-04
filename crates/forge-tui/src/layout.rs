@@ -294,7 +294,7 @@ mod tests {
         let area = Rect::new(0, 0, 80, MIN_HEIGHT);
         let r = split_areas_with_bottom_panel(area, 0, 3, 0, 6);
         assert_eq!(r.bottom_panel.height, 0);
-        assert_eq!(r.input.height, 0);
+        assert_eq!(r.input.height, 3);
     }
 
     #[test]
