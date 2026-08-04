@@ -473,34 +473,6 @@ pub fn directory() -> Style {
     brand()
 }
 
-pub fn file_default() -> Style {
-    text()
-}
-
-pub fn file_source() -> Style {
-    info()
-}
-
-pub fn file_config() -> Style {
-    warn()
-}
-
-pub fn file_document() -> Style {
-    text()
-}
-
-pub fn file_data() -> Style {
-    tool()
-}
-
-pub fn file_image() -> Style {
-    ok()
-}
-
-pub fn file_binary() -> Style {
-    dim()
-}
-
 pub fn symlink() -> Style {
     Style::default()
         .fg(active_palette().accent)
