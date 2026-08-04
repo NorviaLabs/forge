@@ -164,6 +164,10 @@ impl TuiApp {
                 error: None,
             },
             editor_viewport: EditorViewportState { height: 24 },
+            catalog_fetch: CatalogFetchState {
+                refresh_rx: None,
+                warmed: false,
+            },
         };
         app.init_file_watcher();
         app.load_run_history();
