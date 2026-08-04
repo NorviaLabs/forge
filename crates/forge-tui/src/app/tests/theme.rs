@@ -48,7 +48,9 @@ async fn theme_picker_previews_on_navigate_confirms_on_enter_restores_on_esc() {
     );
 
     // Esc restores the theme from open and closes without persisting.
-    app.apply_overlay_action(OverlayAction::Close).await.unwrap();
+    app.apply_overlay_action(OverlayAction::Close)
+        .await
+        .unwrap();
     assert!(app.overlay.is_none());
     assert_eq!(crate::theme::active(), original);
     assert_eq!(app.runtime.theme_id, original);

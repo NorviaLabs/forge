@@ -3805,10 +3805,7 @@ mod tests {
         // Dock sits in the bottom band — title should appear in the lower half.
         let area = Rect::new(0, 0, 100, 48);
         let mut buf = Buffer::empty(area);
-        OverlayWidget {
-            overlay: &overlay,
-        }
-        .render(area, &mut buf);
+        OverlayWidget { overlay: &overlay }.render(area, &mut buf);
         let mut title_row = None;
         for y in 0..area.height {
             let mut row = String::new();
