@@ -7,6 +7,16 @@
 
 use super::*;
 
+const MAX_SKILL_DESC_CHARS: usize = 100;
+
+fn truncate_skill_description(desc: &str) -> String {
+    if desc.chars().count() <= MAX_SKILL_DESC_CHARS {
+        desc.to_string()
+    } else {
+        desc.chars().take(MAX_SKILL_DESC_CHARS).collect::<String>() + "…"
+    }
+}
+
 impl TuiApp {
     /// Filtered slash suggestions for the current textbox (empty if not in slash mode).
     pub fn slash_suggestions(&self) -> Vec<PaletteItem> {
@@ -22,7 +32,7 @@ impl TuiApp {
                 .into_iter()
                 .map(|skill| PaletteItem {
                     cmd: format!("/{}", skill.name),
-                    desc: skill.description,
+                    desc: truncate_skill_description(&skill.description),
                 })
                 .filter(|item| {
                     let filter = filter.to_ascii_lowercase();
