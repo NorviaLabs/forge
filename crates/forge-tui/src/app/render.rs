@@ -378,7 +378,7 @@ impl TuiApp {
                 let n = suggestions.len();
                 let idx = self.slash_suggestions.selected.min(n.saturating_sub(1));
                 // Use as much space above the input as possible (cap for readability).
-                let max_list = input.y.saturating_sub(2).clamp(1, 16) as usize;
+                let max_list = input.y.saturating_sub(2).clamp(1, 8) as usize;
                 let visible = n.min(max_list);
                 // Scroll so the highlighted row stays on screen.
                 let start = if n <= visible || idx < visible / 2 {
