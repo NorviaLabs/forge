@@ -327,6 +327,7 @@ mod tests {
             model: "mock".into(),
             profile_id: Some("mock".into()),
             source: forge_connect::CatalogSource::Default,
+            route_label: "Mock".into(),
         }];
         app.overlay = Some(Overlay::connect_model_open(
             vec![],
