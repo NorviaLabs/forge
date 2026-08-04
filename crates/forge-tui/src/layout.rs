@@ -138,13 +138,12 @@ pub fn split_areas_with_chrome(
     let show_sidebar =
         show_sidebar && content_area.width >= sidebar_width + SIDEBAR_MIN_CONTENT_WIDTH;
     let fixed_h = 1 + footer_h;
-    let sidebar_fixed_h = fb + qh + bg_h + input_h;
-    let requested_panel_h = bottom_panel_h.min(16);
-    let panel_h = if content_area.height >= fixed_h + sidebar_fixed_h + requested_panel_h + 10 {
-        requested_panel_h
-    } else {
-        0
-    };
+    let requested_panel_h = bottom_panel_h.min(32);
+    let available_panel_h = content_area
+        .height
+        .saturating_sub(fixed_h)
+        .saturating_sub(3);
+    let panel_h = requested_panel_h.min(available_panel_h);
 
     // Top-level vertical stack: status / main / footer. `feedback`, `queue`
     // and `input` no longer live here — they're scoped to the sidebar's own
@@ -284,16 +283,24 @@ mod tests {
     fn bottom_panel_reserves_bounded_space() {
         let area = Rect::new(0, 0, 120, 40);
         let r = split_areas_with_bottom_panel(area, 0, 3, 0, 20);
-        assert_eq!(r.bottom_panel.height, 16);
+        assert_eq!(r.bottom_panel.height, 20);
         assert_eq!(r.input.height, 3);
         assert_eq!(r.footer.height, 0);
     }
 
     #[test]
+    fn bottom_panel_caps_at_32_rows() {
+        let area = Rect::new(0, 0, 120, 50);
+        let r = split_areas_with_bottom_panel(area, 0, 3, 0, 40);
+        assert_eq!(r.bottom_panel.height, 32);
+        assert_eq!(r.chat.height, 17);
+    }
+
+    #[test]
     fn bottom_panel_hides_when_height_is_tight() {
         let area = Rect::new(0, 0, 80, MIN_HEIGHT);
-        let r = split_areas_with_bottom_panel(area, 0, 3, 0, 6);
-        assert_eq!(r.bottom_panel.height, 0);
+        let r = split_areas_with_bottom_panel(area, 0, 3, 0, 32);
+        assert_eq!(r.bottom_panel.height, 14);
         assert_eq!(r.input.height, 3);
     }
 
