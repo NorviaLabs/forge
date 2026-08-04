@@ -6,6 +6,7 @@ mod builtins;
 mod fast_file_tools;
 mod registry;
 mod skills;
+mod unified_exec;
 mod validation;
 pub mod web_search;
 
@@ -16,6 +17,7 @@ pub use builtins::{
 };
 pub use registry::{ToolContext, ToolRegistry};
 pub use skills::{LoadSkillArgs, LoadSkillTool};
+pub use unified_exec::{ExecCommandTool, WriteStdinTool};
 pub use validation::{validate_args, validation_error_signature, ValidationBudget};
 pub use web_search::{should_register_web_search, web_search_tool, WebSearchArgs, WebSearchTool};
 
