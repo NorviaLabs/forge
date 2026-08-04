@@ -729,10 +729,10 @@ impl TuiApp {
             return;
         }
         self.apply_model_selection("native", &model_id, None);
-        if self.resolve_effort_for_model(&model_id) {
-            self.overlay =
-                Some(self.build_connect_model_overlay(ConnectModelColumn::Effort, false));
-        }
+        // Fall back to a safe effort default for the new model if the
+        // previous one doesn't fit — no forced Effort picker; the user can
+        // open the effort view separately if they want to change it.
+        self.resolve_effort_for_model(&model_id);
     }
 
     pub async fn dispatch_line(&mut self, line: &str) -> Result<(), TuiError> {
