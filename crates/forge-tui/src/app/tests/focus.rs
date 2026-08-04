@@ -92,7 +92,7 @@ async fn shift_arrow_tabs_only_apply_to_the_active_navigation_block() {
     app.handle_key(press(KeyCode::Right, KeyModifiers::SHIFT))
         .await
         .unwrap();
-    assert_eq!(app.bottom_panel.active, BottomPanelTab::Activity);
+    assert_eq!(app.bottom_panel.active, BottomPanelTab::Tasks);
 }
 
 #[tokio::test]
