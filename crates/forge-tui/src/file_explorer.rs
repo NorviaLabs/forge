@@ -3,7 +3,6 @@ use std::path::{Path, PathBuf};
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
@@ -21,211 +20,6 @@ pub enum FileKind {
     File,
     Symlink,
     Unknown,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FileCategory {
-    Default,
-    Source,
-    Config,
-    Document,
-    Data,
-    Image,
-    Binary,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SemanticRole {
-    Directory,
-    FileDefault,
-    FileSource,
-    FileConfig,
-    FileDocument,
-    FileData,
-    FileImage,
-    FileBinary,
-    Symlink,
-    GitAdded,
-    GitModified,
-    GitDeleted,
-    GitUntracked,
-    GitIgnored,
-}
-
-impl SemanticRole {
-    fn style(self) -> Style {
-        match self {
-            Self::Directory => theme::directory(),
-            Self::FileDefault => theme::file_default(),
-            Self::FileSource => theme::file_source(),
-            Self::FileConfig => theme::file_config(),
-            Self::FileDocument => theme::file_document(),
-            Self::FileData => theme::file_data(),
-            Self::FileImage => theme::file_image(),
-            Self::FileBinary => theme::file_binary(),
-            Self::Symlink => theme::symlink(),
-            Self::GitAdded => theme::git_added(),
-            Self::GitModified => theme::git_modified(),
-            Self::GitDeleted => theme::git_deleted(),
-            Self::GitUntracked => theme::git_untracked(),
-            Self::GitIgnored => theme::git_ignored(),
-        }
-    }
-}
-
-fn icon_for_path(path: &Path) -> (char, Color) {
-    if path.is_dir() {
-        return ('■', theme::info_color());
-    }
-
-    match path.extension().and_then(|extension| extension.to_str()) {
-        Some("md") => ('¶', theme::info_color()),
-        Some("toml") => ('◇', theme::accent_color()),
-        Some("lock") => ('◆', theme::warning_color()),
-        _ => ('\0', theme::text_primary_color()),
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FileAppearance {
-    pub text_role: SemanticRole,
-    pub status_role: Option<SemanticRole>,
-    pub category: FileCategory,
-}
-
-pub struct FileAppearanceResolver;
-
-impl FileAppearanceResolver {
-    pub fn resolve(
-        name: &str,
-        kind: FileKind,
-        git_status: Option<GitStatusKind>,
-    ) -> FileAppearance {
-        let (category, text_role) = match kind {
-            FileKind::Directory => (FileCategory::Default, SemanticRole::Directory),
-            FileKind::Symlink => (FileCategory::Default, SemanticRole::Symlink),
-            FileKind::Unknown => (FileCategory::Default, SemanticRole::FileDefault),
-            FileKind::File => category_for_name(name),
-        };
-        FileAppearance {
-            text_role,
-            status_role: git_status.map(git_role),
-            category,
-        }
-    }
-}
-
-fn git_role(status: GitStatusKind) -> SemanticRole {
-    match status {
-        GitStatusKind::Modified => SemanticRole::GitModified,
-        GitStatusKind::Added => SemanticRole::GitAdded,
-        GitStatusKind::Deleted => SemanticRole::GitDeleted,
-        GitStatusKind::Untracked => SemanticRole::GitUntracked,
-        GitStatusKind::Ignored => SemanticRole::GitIgnored,
-        GitStatusKind::Conflicted => SemanticRole::GitDeleted,
-    }
-}
-
-fn category_for_name(name: &str) -> (FileCategory, SemanticRole) {
-    let lower = name.to_ascii_lowercase();
-    if is_source_special(&lower) {
-        return (FileCategory::Source, SemanticRole::FileSource);
-    }
-    if is_config_special(&lower) {
-        return (FileCategory::Config, SemanticRole::FileConfig);
-    }
-    if is_document_special(&lower) {
-        return (FileCategory::Document, SemanticRole::FileDocument);
-    }
-    if is_git_special(&lower) {
-        return (FileCategory::Config, SemanticRole::GitIgnored);
-    }
-    let ext = Path::new(name)
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| ext.to_ascii_lowercase())
-        .unwrap_or_default();
-    match ext.as_str() {
-        "rs" | "js" | "jsx" | "mjs" | "cjs" | "ts" | "tsx" | "mts" | "cts" | "py" | "pyi"
-        | "go" | "java" | "c" | "cc" | "cpp" | "cxx" | "hh" | "hpp" | "hxx" | "h" | "sh"
-        | "bash" | "zsh" | "fish" => (FileCategory::Source, SemanticRole::FileSource),
-        "json" | "jsonc" | "yaml" | "yml" | "toml" | "ini" | "cfg" | "conf" | "env" => {
-            (FileCategory::Config, SemanticRole::FileConfig)
-        }
-        "md" | "markdown" | "rst" | "txt" => (FileCategory::Document, SemanticRole::FileDocument),
-        "csv" | "tsv" | "xml" | "sql" | "parquet" => (FileCategory::Data, SemanticRole::FileData),
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "ico" => {
-            (FileCategory::Image, SemanticRole::FileImage)
-        }
-        "jar" => (FileCategory::Binary, SemanticRole::FileBinary),
-        _ => (FileCategory::Default, SemanticRole::FileDefault),
-    }
-}
-
-fn is_source_special(lower: &str) -> bool {
-    matches!(
-        lower,
-        "cargo.toml"
-            | "cargo.lock"
-            | "rust-toolchain"
-            | "rust-toolchain.toml"
-            | "package.json"
-            | "package-lock.json"
-            | "pnpm-lock.yaml"
-            | "yarn.lock"
-            | "tsconfig.json"
-            | "pyproject.toml"
-            | "requirements.txt"
-            | "pipfile"
-            | "pipfile.lock"
-            | "poetry.lock"
-            | "uv.lock"
-            | "go.mod"
-            | "go.sum"
-            | "go.work"
-            | "go.work.sum"
-            | "pom.xml"
-            | "build.gradle"
-            | "build.gradle.kts"
-            | "settings.gradle"
-            | "settings.gradle.kts"
-            | "gradle.properties"
-            | "dockerfile"
-            | "cmakelists.txt"
-            | "meson.build"
-            | "makefile"
-            | "justfile"
-    ) || lower.starts_with("dockerfile.")
-}
-
-fn is_config_special(lower: &str) -> bool {
-    lower == ".editorconfig"
-        || lower == ".env"
-        || lower.starts_with(".env.")
-        || matches!(
-            lower,
-            "docker-compose.yml"
-                | "docker-compose.yaml"
-                | "compose.yml"
-                | "compose.yaml"
-                | "taskfile.yml"
-                | "taskfile.yaml"
-        )
-}
-
-fn is_document_special(lower: &str) -> bool {
-    matches!(lower, "readme" | "changelog" | "contributing" | "license")
-        || lower.starts_with("readme.")
-        || lower.starts_with("changelog.")
-        || lower.starts_with("contributing.")
-        || lower.starts_with("license.")
-}
-
-fn is_git_special(lower: &str) -> bool {
-    matches!(
-        lower,
-        ".gitignore" | ".gitattributes" | ".gitmodules" | ".gitkeep"
-    )
 }
 
 #[derive(Debug, Clone)]
@@ -696,15 +490,14 @@ fn sort_nodes(nodes: &mut [FileNode]) {
 fn explorer_row_line(
     prefix: &str,
     marker: &str,
-    path: &Path,
+    _path: &Path,
     name: &str,
     kind: FileKind,
     selected: bool,
     panel_focused: bool,
     status: Option<GitStatusKind>,
-    icon_mode: FileIconMode,
+    _icon_mode: FileIconMode,
 ) -> Line<'static> {
-    let appearance = FileAppearanceResolver::resolve(name, kind, status);
     let selection_style = selected.then(|| {
         if panel_focused {
             theme::selection_active()
@@ -712,26 +505,16 @@ fn explorer_row_line(
             theme::selection_inactive()
         }
     });
-    let style_for = |role: SemanticRole| selection_style.unwrap_or_else(|| role.style());
-    let mut spans = vec![Span::styled(
-        format!("{prefix}{marker} "),
-        selection_style.unwrap_or_default(),
-    )];
-    if icon_mode == FileIconMode::Unicode {
-        let (icon, color) = icon_for_path(path);
-        if icon != '\0' {
-            spans.push(Span::styled(
-                format!("{} ", icon),
-                selection_style.unwrap_or_else(|| Style::default().fg(color)),
-            ));
-        }
-    }
-    let display_name = if selected {
-        format!("› {name}")
-    } else {
-        name.to_string()
-    };
-    spans.push(Span::styled(display_name, style_for(appearance.text_role)));
+    let chrome_style = selection_style.unwrap_or_else(theme::muted);
+    let name_style = selection_style.unwrap_or_else(|| match kind {
+        FileKind::Directory => theme::directory(),
+        FileKind::Symlink => theme::symlink(),
+        FileKind::File | FileKind::Unknown => theme::text(),
+    });
+    let mut spans = vec![
+        Span::styled(format!("{prefix}{marker} "), chrome_style),
+        Span::styled(name.to_string(), name_style),
+    ];
     if let Some(status) = status {
         let mut glyph = status_glyph(Status::from(status));
         if let Some(style) = selection_style {
@@ -740,11 +523,7 @@ fn explorer_row_line(
         spans.push(Span::raw(" "));
         spans.push(glyph);
     }
-    let mut line = Line::from(spans);
-    if let Some(style) = selection_style {
-        line.style = style;
-    }
-    line
+    Line::from(spans)
 }
 
 pub struct FileExplorerWidget<'a> {
@@ -754,11 +533,7 @@ pub struct FileExplorerWidget<'a> {
 
 impl Widget for FileExplorerWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let title = if self.focused {
-            " FILES · NAV "
-        } else {
-            " FILES "
-        };
+        let title = " FILES ";
         let block = Block::default()
             .title(Span::styled(
                 title,
@@ -810,7 +585,7 @@ impl Widget for FileExplorerWidget<'_> {
                         FileKind::Directory => "▸",
                         FileKind::File | FileKind::Symlink | FileKind::Unknown => " ",
                     };
-                    let prefix = "  ".repeat(node.depth);
+                    let prefix = " ".repeat(node.depth);
                     let status = if matches!(node.kind, FileKind::File | FileKind::Symlink) {
                         self.explorer.git_status_for(&node.path)
                     } else {
@@ -872,73 +647,6 @@ impl Widget for FileExplorerWidget<'_> {
 mod tests {
     use super::*;
 
-    fn appearance(name: &str) -> FileAppearance {
-        FileAppearanceResolver::resolve(name, FileKind::File, None)
-    }
-
-    #[test]
-    fn resolver_covers_entry_kinds_and_unicode_names() {
-        assert_eq!(
-            FileAppearanceResolver::resolve("src", FileKind::Directory, None).text_role,
-            SemanticRole::Directory
-        );
-        assert_eq!(
-            appearance("file.unknown").text_role,
-            SemanticRole::FileDefault
-        );
-        assert_eq!(appearance(".env").text_role, SemanticRole::FileConfig);
-        assert_eq!(
-            FileAppearanceResolver::resolve("link", FileKind::Symlink, None).text_role,
-            SemanticRole::Symlink
-        );
-        assert_eq!(
-            FileAppearanceResolver::resolve("fifo", FileKind::Unknown, None).category,
-            FileCategory::Default
-        );
-        assert_eq!(appearance("雪.rs").text_role, SemanticRole::FileSource);
-    }
-
-    #[test]
-    fn resolver_covers_language_and_special_mappings() {
-        for name in [
-            "lib.rs",
-            "Cargo.toml",
-            "app.js",
-            "view.tsx",
-            "main.py",
-            "go.mod",
-            "Main.java",
-            "main.c",
-            "thing.CPP",
-            "header.h",
-            "script.sh",
-            "package.json",
-            "pom.xml",
-            "build.gradle.kts",
-        ] {
-            assert_eq!(appearance(name).category, FileCategory::Source, "{name}");
-        }
-        assert_eq!(appearance("header.h").text_role, SemanticRole::FileSource);
-    }
-
-    #[test]
-    fn resolver_covers_file_categories() {
-        for name in ["CMakeLists.txt", "Dockerfile", "Makefile"] {
-            assert_eq!(appearance(name).category, FileCategory::Source, "{name}");
-        }
-        assert_eq!(appearance("README.md").category, FileCategory::Document);
-        assert_eq!(appearance(".gitignore").text_role, SemanticRole::GitIgnored);
-        assert_eq!(appearance(".env").category, FileCategory::Config);
-        assert_eq!(appearance("data.csv").category, FileCategory::Data);
-        assert_eq!(appearance("image.PNG").category, FileCategory::Image);
-    }
-
-    #[test]
-    fn special_filenames_precede_extensions() {
-        assert_eq!(appearance("Cargo.toml").category, FileCategory::Source);
-        assert_eq!(appearance("plain.toml").category, FileCategory::Config);
-    }
-
     #[test]
     fn row_style_precedence_keeps_selection_strongest() {
         let selected = explorer_row_line(
@@ -952,7 +660,8 @@ mod tests {
             Some(GitStatusKind::Modified),
             FileIconMode::Unicode,
         );
-        assert_eq!(selected.style, theme::selection_active());
+        assert_eq!(selected.spans[0].style, theme::selection_active());
+        assert_eq!(selected.spans[1].style, theme::selection_active());
         let inactive = explorer_row_line(
             "",
             " ",
@@ -964,7 +673,8 @@ mod tests {
             None,
             FileIconMode::Unicode,
         );
-        assert_eq!(inactive.style, theme::selection_inactive());
+        assert_eq!(inactive.spans[0].style, theme::selection_inactive());
+        assert_eq!(inactive.spans[1].style, theme::selection_inactive());
         let unselected = explorer_row_line(
             "",
             " ",
@@ -976,16 +686,13 @@ mod tests {
             Some(GitStatusKind::Added),
             FileIconMode::Unicode,
         );
-        assert_eq!(unselected.style, Style::default());
-        assert_eq!(
-            selected.spans.last().unwrap().style,
-            theme::selection_active()
-        );
+        assert_eq!(unselected.spans[1].style, theme::text());
+        assert_eq!(unselected.spans.last().unwrap().content.as_ref(), "A");
     }
 
     #[test]
-    fn row_rendering_supports_icons_off_and_markers() {
-        let with_icon = explorer_row_line(
+    fn row_rendering_uses_git_status_letters() {
+        let line = explorer_row_line(
             "",
             " ",
             Path::new("long_filename.rs"),
@@ -996,53 +703,13 @@ mod tests {
             Some(GitStatusKind::Modified),
             FileIconMode::Unicode,
         );
-        let text: String = with_icon
+        let text: String = line
             .spans
             .iter()
             .map(|span| span.content.as_ref())
             .collect();
         assert_eq!(text, "  long_filename.rs M");
-        assert_eq!(with_icon.spans.last().unwrap().content.as_ref(), "M");
-
-        let without_icon = explorer_row_line(
-            "",
-            " ",
-            Path::new("long_filename.rs"),
-            "long_filename.rs",
-            FileKind::File,
-            false,
-            false,
-            Some(GitStatusKind::Modified),
-            FileIconMode::Off,
-        );
-        let text: String = without_icon
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
-        assert_eq!(text, "  long_filename.rs M");
-    }
-
-    #[test]
-    fn icon_for_path_covers_file_types() {
-        let directory = tempfile::tempdir().unwrap();
-        assert_eq!(icon_for_path(directory.path()), ('■', theme::info_color()));
-        assert_eq!(
-            icon_for_path(Path::new("README.md")),
-            ('¶', theme::info_color())
-        );
-        assert_eq!(
-            icon_for_path(Path::new("Cargo.toml")),
-            ('◇', theme::accent_color())
-        );
-        assert_eq!(
-            icon_for_path(Path::new("Cargo.lock")),
-            ('◆', theme::warning_color())
-        );
-        assert_eq!(
-            icon_for_path(Path::new("main.rs")),
-            ('\0', theme::text_primary_color())
-        );
+        assert_eq!(line.spans.last().unwrap().content.as_ref(), "M");
     }
 
     #[test]
