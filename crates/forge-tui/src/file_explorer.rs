@@ -789,8 +789,8 @@ mod tests {
         fs::write(root.path().join(".forge/local/sessions/x.db"), "").unwrap();
         fs::create_dir_all(root.path().join(".forge/rules")).unwrap();
         fs::write(root.path().join(".forge/rules/style.md"), "").unwrap();
-        fs::create_dir_all(root.path().join(".forge/skills/ponytail")).unwrap();
-        fs::write(root.path().join(".forge/skills/ponytail/SKILL.md"), "").unwrap();
+        fs::create_dir_all(root.path().join(".agents/skills/ponytail")).unwrap();
+        fs::write(root.path().join(".agents/skills/ponytail/SKILL.md"), "").unwrap();
 
         let children = read_children(Some(root.path()), root.path()).unwrap();
         let names: Vec<&str> = children
@@ -798,6 +798,7 @@ mod tests {
             .filter_map(|n| n.path.file_name().and_then(|s| s.to_str()))
             .collect();
         assert!(names.contains(&".forge"), "{names:?}");
+        assert!(names.contains(&".agents"), "{names:?}");
 
         let forge_children = read_children(Some(root.path()), &root.path().join(".forge")).unwrap();
         let forge_names: Vec<&str> = forge_children
@@ -805,11 +806,18 @@ mod tests {
             .filter_map(|n| n.path.file_name().and_then(|s| s.to_str()))
             .collect();
         assert!(forge_names.contains(&"rules"), "{forge_names:?}");
-        assert!(forge_names.contains(&"skills"), "{forge_names:?}");
         assert!(
             !forge_names.contains(&"local"),
             "`.forge/local` must stay hidden: {forge_names:?}"
         );
+
+        let agents_children =
+            read_children(Some(root.path()), &root.path().join(".agents")).unwrap();
+        let agents_names: Vec<&str> = agents_children
+            .iter()
+            .filter_map(|n| n.path.file_name().and_then(|s| s.to_str()))
+            .collect();
+        assert!(agents_names.contains(&"skills"), "{agents_names:?}");
     }
 
     #[test]
