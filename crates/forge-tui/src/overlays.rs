@@ -162,6 +162,7 @@ fn flatten_provider_rows(providers: &[ProviderVendorRow]) -> Vec<ProviderFlatRow
             }
         }
     }
+
     out
 }
 
