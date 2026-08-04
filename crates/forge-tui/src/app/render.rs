@@ -47,7 +47,6 @@ impl TuiApp {
             (self.input.visual_lines() + 2).clamp(3, crate::layout::MAX_COMPOSER_INPUT_H)
         };
         let panel_h = if self.bottom_panel.open { 8 } else { 0 };
-        let background_h = crate::widgets::background_strip_height(self.session.background());
         let contextual_hint = self.contextual_hint();
         let connected = self.is_provider_connected();
         let (vendor_label, _route_label) = self
@@ -78,7 +77,7 @@ impl TuiApp {
             panel_h,
             hint_h,
             true,
-            background_h,
+            0,
         );
         // Layout can hide a requested side/bottom panel. Focus must follow the
         // rendered geometry rather than leaving an invisible key owner behind.
@@ -280,16 +279,6 @@ impl TuiApp {
             );
             self.register_activity_summary_region(conversation_area, &cached_lines, &live_lines);
         }
-        if regions.background.height > 0 {
-            frame.render_widget(
-                crate::widgets::BackgroundStripWidget {
-                    background: self.session.background(),
-                    selected: self.task_selection.tasks,
-                },
-                regions.background,
-            );
-        }
-
         // The approval card is safety-critical (command args, redacted
         // secrets, remember-invocation controls) and needs real width to
         // stay legible, so it docks at the bottom of the wider center pane
