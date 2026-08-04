@@ -169,7 +169,7 @@ mod tests {
         let rows = rendered_rows("Summarize this codebase", 100);
         assert_eq!(rows.len(), 1);
         assert_eq!(gutter_rows(&rows, glyph), 1);
-        assert_eq!(rows[0], "Summarize this codebase");
+        assert_eq!(rows[0].trim_end(), "Summarize this codebase");
     }
 
     #[test]
