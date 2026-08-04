@@ -1276,11 +1276,18 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                         profile_id: route.profile_id.clone(),
                     }
                 }
-                ConnectModelColumn::Effort => effort_items
-                    .get(*effort_selected)
-                    .copied()
-                    .map(OverlayAction::SelectEffort)
-                    .unwrap_or(OverlayAction::None),
+                ConnectModelColumn::Effort => {
+                    if !ReasoningEffort::model_supports_effort(active_model) {
+                        // Nothing to select — the column is explanatory only.
+                        OverlayAction::None
+                    } else {
+                        effort_items
+                            .get(*effort_selected)
+                            .copied()
+                            .map(OverlayAction::SelectEffort)
+                            .unwrap_or(OverlayAction::None)
+                    }
+                }
             },
             Overlay::ConnectApiKey {
                 profile_id,
@@ -2284,37 +2291,48 @@ impl Widget for OverlayWidget<'_> {
                 };
                 List::new(model_items).render(models_list_area, buf);
 
-                // Effort column.
-                let default_effort = ReasoningEffort::default_for_model(active_model);
-                let effort_list_items: Vec<ListItem> = effort_items
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, effort)| {
-                        let selected = idx == *effort_selected;
-                        let highlighted = selected && *focus == ConnectModelColumn::Effort;
-                        let style = if highlighted {
-                            theme::focused_selection_style()
-                        } else {
-                            theme::text()
-                        };
-                        let marker = if selected { "▶ " } else { "  " };
-                        let is_current = *effort == *active_effort;
-                        let default_label = if *effort == default_effort {
-                            " (default)"
-                        } else {
-                            ""
-                        };
-                        let base = format!("{marker}{}{default_label}", effort.label());
-                        if is_current {
-                            ListItem::new(Line::from(vec![
-                                Span::styled(base, style),
-                                Span::styled(" current", theme::tag_style(highlighted)),
-                            ]))
-                        } else {
-                            ListItem::new(Span::styled(base, style))
-                        }
-                    })
-                    .collect();
+                // Effort column. A model with no adjustable effort at all
+                // renders as an explicit, non-selectable explanation instead
+                // of a real one-item list — the control must not look
+                // actionable when there is nothing to choose.
+                let effort_list_items: Vec<ListItem> =
+                    if !ReasoningEffort::model_supports_effort(active_model) {
+                        vec![ListItem::new(Span::styled(
+                            "Effort is not configurable for this model.",
+                            theme::muted(),
+                        ))]
+                    } else {
+                        let default_effort = ReasoningEffort::default_for_model(active_model);
+                        effort_items
+                            .iter()
+                            .enumerate()
+                            .map(|(idx, effort)| {
+                                let selected = idx == *effort_selected;
+                                let highlighted = selected && *focus == ConnectModelColumn::Effort;
+                                let style = if highlighted {
+                                    theme::focused_selection_style()
+                                } else {
+                                    theme::text()
+                                };
+                                let marker = if selected { "▶ " } else { "  " };
+                                let is_current = *effort == *active_effort;
+                                let default_label = if *effort == default_effort {
+                                    " (default)"
+                                } else {
+                                    ""
+                                };
+                                let base = format!("{marker}{}{default_label}", effort.label());
+                                if is_current {
+                                    ListItem::new(Line::from(vec![
+                                        Span::styled(base, style),
+                                        Span::styled(" current", theme::tag_style(highlighted)),
+                                    ]))
+                                } else {
+                                    ListItem::new(Span::styled(base, style))
+                                }
+                            })
+                            .collect()
+                    };
                 List::new(effort_list_items).render(effort_area, buf);
 
                 let active_line = match active {
@@ -3736,6 +3754,35 @@ mod tests {
         let text = render_text(&overlay);
         assert!(text.contains("Extra High"));
         assert!(text.contains("current"));
+    }
+
+    #[test]
+    fn effort_column_is_explanatory_and_non_actionable_for_an_unsupported_model() {
+        let mut overlay = Overlay::connect_model_open(
+            vec![],
+            vec![],
+            None,
+            "openai/gpt-4.1-mini",
+            ReasoningEffort::default(),
+            ConnectModelColumn::Effort,
+        );
+        assert!(!ReasoningEffort::model_supports_effort(
+            "openai/gpt-4.1-mini"
+        ));
+
+        let text = render_text(&overlay);
+        assert!(
+            text.contains("not configurable"),
+            "expected an explanatory message:\n{text}"
+        );
+        assert!(!text.contains("(default)"));
+        assert!(!text.contains("current"));
+
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::None,
+            "Enter must not dispatch a selection when there is nothing to choose"
+        );
     }
 
     #[test]

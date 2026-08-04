@@ -890,6 +890,47 @@ async fn alt_c_opens_compact_model_control() {
 }
 
 #[tokio::test]
+async fn footer_shows_na_effort_for_a_model_that_does_not_support_it() {
+    let _home_guard = isolated_home_guard();
+    let (_dir, session) = test_session().await;
+    // gpt-4.1-mini isn't in ReasoningEffort::model_supports_effort's
+    // openai allow-list (only gpt-5/o1/o3/o4 prefixes are) — a real,
+    // connected model with no adjustable effort.
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "openai/gpt-4.1-mini".into(),
+            provider: "native".into(),
+            cwd: PathBuf::from("."),
+            version: "0.12.0".into(),
+            startup_notices: Vec::new(),
+            validation_command: None,
+            file_icons: FileIconMode::Unicode,
+            mouse_capture: true,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+    let store_dir = tempfile::TempDir::new().unwrap();
+    app.connect.store = CredentialStore::new(store_dir.path().join("empty-creds.toml"));
+    app.connect
+        .store
+        .set_api_key("openai", "sk-test-openai-credential")
+        .unwrap();
+    app.connect.profile = Some("openai".into());
+
+    let text = render_app_text(&mut app, 120, 40);
+
+    assert!(
+        text.contains("N/A"),
+        "expected the footer to show an explicit N/A effort segment:\n{text}"
+    );
+    assert!(
+        !text.contains("[Auto]") && !text.contains("[Low]"),
+        "must not display a level word for a model with no adjustable effort:\n{text}"
+    );
+}
+
+#[tokio::test]
 async fn compact_control_tab_cycles_segments_and_escape_cancels_without_state_change() {
     let _home_guard = isolated_home_guard();
     let (_dir, session) = test_session().await;
