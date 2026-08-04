@@ -1950,6 +1950,27 @@ fn classify_tool_content(
     call: Option<&ToolCall>,
 ) -> (ToolCardState, String, String) {
     let detail = redact_tool_output(content);
+    if matches!(name, "exec_command" | "write_stdin") {
+        if let Ok(payload) = serde_json::from_str::<serde_json::Value>(&detail) {
+            let output = payload["output"].as_str().unwrap_or_default();
+            let command = payload["command"].as_str();
+            let session_id = payload["session_id"].as_u64();
+            let running = payload["running"].as_bool().unwrap_or(false);
+            let state = if running {
+                ToolCardState::Running
+            } else {
+                ToolCardState::Done
+            };
+            let label = if running { "running" } else { "exited" };
+            let summary = match (command, session_id) {
+                (Some(command), Some(id)) => format!("$ {command} · session #{id} · {label}"),
+                (Some(command), None) => format!("$ {command} · {label}"),
+                (None, Some(id)) => format!("session #{id} · {label}"),
+                (None, None) => label.into(),
+            };
+            return (state, summary, output.into());
+        }
+    }
     let lower = detail.to_ascii_lowercase();
     let state = if lower.contains("validation") || lower.contains("denied by acl") {
         ToolCardState::Error
