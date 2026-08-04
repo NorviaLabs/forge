@@ -5,6 +5,7 @@ mod apply_patch;
 mod builtins;
 mod fast_file_tools;
 mod registry;
+mod skills;
 mod validation;
 pub mod web_search;
 
@@ -14,6 +15,7 @@ pub use builtins::{
     ReadFileTool, UpdatePlanTool, WriteFileTool, PROVIDER_CREDENTIAL_ENV,
 };
 pub use registry::{ToolContext, ToolRegistry};
+pub use skills::{LoadSkillArgs, LoadSkillTool};
 pub use validation::{validate_args, validation_error_signature, ValidationBudget};
 pub use web_search::{should_register_web_search, web_search_tool, WebSearchArgs, WebSearchTool};
 
