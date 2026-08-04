@@ -14,6 +14,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
 const DIFF_BLOCK_MARKER: &str = "\u{200b}";
 const DIFF_BLOCK_END_MARKER: &str = "\u{200c}";
+const INDENT_UNIT: &str = "  ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolCardState {
@@ -794,7 +795,7 @@ impl ConversationModel {
                         for item in p.items {
                             for line in wrap(&item, width.saturating_sub(2)) {
                                 lines.push(Line::from(Span::styled(
-                                    format!("  {line}"),
+                                    format!("{INDENT_UNIT}{line}"),
                                     theme::muted(),
                                 )));
                             }
@@ -834,7 +835,7 @@ impl ConversationModel {
                             .take(2)
                         {
                             lines.push(Line::from(vec![
-                                Span::styled("  ", theme::info()),
+                                Span::styled(INDENT_UNIT, theme::info()),
                                 Span::styled(l, theme::muted().add_modifier(Modifier::ITALIC)),
                             ]));
                         }
@@ -1578,12 +1579,7 @@ fn render_numbered_diff(path: &str, diff: &[String], width: usize) -> Vec<Line<'
 
     for line in numbered {
         if line.header {
-            let gutter_width = number_width * 2 + 7;
-            let text = format!(
-                "{}{content}",
-                " ".repeat(gutter_width),
-                content = line.content
-            );
+            let text = line.content;
             let padding = " ".repeat(width.saturating_sub(text.chars().count()));
             rendered.push(Line::from(Span::styled(
                 format!("{text}{padding}"),
@@ -1915,7 +1911,7 @@ fn render_plan_checklist(plan: &PlanChecklistPresentation, width: usize) -> Vec<
     {
         for l in wrap(explanation, width.saturating_sub(2)) {
             lines.push(Line::from(vec![
-                Span::raw("  "),
+                Span::raw(INDENT_UNIT),
                 Span::styled(l, theme::muted().add_modifier(Modifier::ITALIC)),
             ]));
         }
@@ -1936,7 +1932,7 @@ fn render_plan_checklist(plan: &PlanChecklistPresentation, width: usize) -> Vec<
         }
         for cont in wrapped {
             lines.push(Line::from(vec![
-                Span::raw("  "),
+                Span::raw(INDENT_UNIT),
                 Span::styled(cont, theme::text()),
             ]));
         }
@@ -3740,6 +3736,16 @@ mod tests {
         assert!(buf[(2, 0)].symbol().contains("s"));
         assert_eq!(buf[(0, 10)].symbol(), "└");
         assert_eq!(buf[(39, 10)].symbol(), "┘");
+    }
+
+    #[test]
+    fn diff_hunk_headers_align_with_file_header() {
+        let diff = ["@@ -1 +1 @@", "-old", "+new"].map(str::to_string);
+        let title = lines_text(&[diff_title_line("src/lib.rs", &diff)]);
+        let hunk = lines_text(&render_numbered_diff("src/lib.rs", &diff, 40));
+
+        assert!(title.starts_with("\u{200b} src/lib.rs"));
+        assert!(hunk.starts_with("@@ -1 +1 @@"));
     }
 
     /// Text of every rendered line, for asserting on content rather than styling.
