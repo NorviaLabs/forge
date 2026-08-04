@@ -1227,6 +1227,8 @@ pub fn default_builtins() -> Vec<std::sync::Arc<dyn Tool>> {
         std::sync::Arc::new(BashTool),
         std::sync::Arc::new(GitTool),
         std::sync::Arc::new(BackgroundRunTool),
+        std::sync::Arc::new(crate::ExecCommandTool),
+        std::sync::Arc::new(crate::WriteStdinTool),
         std::sync::Arc::new(UpdatePlanTool),
         std::sync::Arc::new(crate::skills::LoadSkillTool),
     ];
