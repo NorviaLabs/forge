@@ -1923,7 +1923,11 @@ impl Widget for OverlayWidget<'_> {
         match self.overlay {
             // Dim the transcript in place instead of blanking it, so it stays
             // legible-but-muted behind the picker rather than disappearing.
-            Overlay::ConnectModel { .. } => theme::dim_region(area, buf),
+            // `Help` (aka `welcome()`) doubles as the zero-state onboarding
+            // overlay auto-opened on a disconnected launch, which must keep
+            // the conversation visible per the onboarding requirement — and
+            // dimming is a strict improvement for the plain `/help` case too.
+            Overlay::ConnectModel { .. } | Overlay::Help => theme::dim_region(area, buf),
             _ => theme::fill(area, buf, theme::canvas()),
         }
         match self.overlay {

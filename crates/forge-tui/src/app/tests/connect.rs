@@ -308,6 +308,106 @@ async fn invalid_api_key_error_stays_inside_key_modal() {
 }
 
 #[tokio::test]
+async fn first_connection_auto_selects_a_default_model_and_lands_in_steady_state() {
+    let _home_guard = isolated_home_guard();
+    let (_dir, session) = test_session().await;
+    let cred_dir = tempfile::tempdir().unwrap();
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "".into(),
+            provider: "native".into(),
+            cwd: PathBuf::from("."),
+            version: "0.6.1".into(),
+            startup_notices: Vec::new(),
+            validation_command: None,
+            file_icons: FileIconMode::Unicode,
+            mouse_capture: true,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+    app.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
+    assert_eq!(
+        app.connect.profile, None,
+        "must start from a genuinely zero-state, not a leaked real profile"
+    );
+    // Simulate what the real connect flow already guarantees by this point:
+    // the credential is persisted and `connect.profile` points at it.
+    app.connect
+        .store
+        .set_api_key("openai", "sk-test-saved-credential")
+        .unwrap();
+    app.connect.profile = Some("openai".into());
+
+    app.finish_connect_flow("openai");
+
+    assert!(
+        app.overlay.is_none(),
+        "first connection must land in steady state, not force the model picker open"
+    );
+    assert_eq!(app.connect.profile.as_deref(), Some("openai"));
+    assert!(!app.runtime.model_label.is_empty());
+    assert!(app.runtime.model_label.starts_with("openai/"));
+    assert_eq!(
+        app.reasoning_effort.value,
+        ReasoningEffort::default_for_model(&app.runtime.model_label)
+    );
+}
+
+#[tokio::test]
+async fn second_connection_still_opens_the_model_picker() {
+    let _home_guard = isolated_home_guard();
+    let (_dir, session) = test_session().await;
+    let cred_dir = tempfile::tempdir().unwrap();
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "".into(),
+            provider: "native".into(),
+            cwd: PathBuf::from("."),
+            version: "0.6.1".into(),
+            startup_notices: Vec::new(),
+            validation_command: None,
+            file_icons: FileIconMode::Unicode,
+            mouse_capture: true,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+    app.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
+    app.connect
+        .store
+        .set_api_key("openai", "sk-test-saved-credential")
+        .unwrap();
+    app.connect.profile = Some("openai".into());
+    app.finish_connect_flow("openai");
+    assert!(
+        app.overlay.is_none(),
+        "first connection lands in steady state"
+    );
+
+    app.connect
+        .store
+        .set_api_key("anthropic", "sk-test-anthropic-credential")
+        .unwrap();
+    app.connect.profile = Some("anthropic".into());
+    app.finish_connect_flow("anthropic");
+
+    let Some(Overlay::ConnectModel {
+        selected_route,
+        focus,
+        ..
+    }) = &app.overlay
+    else {
+        panic!(
+            "expected the routine second connect to open the model picker, got {:?}",
+            app.overlay
+        );
+    };
+    assert_eq!(selected_route.as_deref(), Some("anthropic"));
+    assert_eq!(*focus, ConnectModelColumn::Models);
+}
+
+#[tokio::test]
 async fn connect_xai_opens_oauth_overlay() {
     let (_dir, session) = test_session().await;
     let cred_dir = tempfile::tempdir().unwrap();
@@ -342,6 +442,56 @@ async fn connect_xai_opens_oauth_overlay() {
         other => panic!("expected ConnectOauth overlay, got {other:?}"),
     }
     assert!(app.connect.oauth_pending.is_some());
+}
+
+#[tokio::test]
+async fn oauth_cancel_via_escape_stops_the_background_poll() {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    let _home_guard = isolated_home_guard();
+    let (_dir, session) = test_session().await;
+    let cred_dir = tempfile::tempdir().unwrap();
+    std::env::set_var("FORGE_CONNECT_OAUTH_STUB", "1");
+    std::env::remove_var("FORGE_CONNECT_OAUTH_FIXTURE");
+    std::env::remove_var("FORGE_XAI_OAUTH_ACCESS_TOKEN");
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "m".into(),
+            provider: "native".into(),
+            cwd: PathBuf::from("."),
+            version: "0.6.1".into(),
+            startup_notices: Vec::new(),
+            validation_command: None,
+            file_icons: FileIconMode::Unicode,
+            mouse_capture: true,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+    app.connect.store = CredentialStore::new(cred_dir.path().join("c.toml"));
+    app.dispatch_line("/connect xai").await.unwrap();
+    std::env::remove_var("FORGE_CONNECT_OAUTH_STUB");
+    assert!(
+        app.connect.oauth_pending.is_some(),
+        "flow must be pending first"
+    );
+
+    app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    assert!(app.overlay.is_none());
+    assert!(
+        app.connect.oauth_pending.is_none(),
+        "cancelling must stop the background poll, not just close the overlay"
+    );
+    assert!(app.connect.oauth_last_poll.is_none());
+
+    // Even if the device code were to complete after this point, there is no
+    // pending flow left to advance — the cancelled attempt can never
+    // silently connect.
+    app.poll_oauth_tick();
+    assert!(app.connect.profile.is_none());
+    assert_eq!(app.runtime.model_label, "m");
 }
 
 #[tokio::test]
