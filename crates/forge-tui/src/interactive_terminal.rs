@@ -156,7 +156,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let mut terminal = InteractiveTerminal::spawn(dir.path(), 80, 8).unwrap();
         terminal
-            .write(b"printf forge-terminal-test; exit\r")
+            .write(b"printf forge-terminal-test; exit\n")
             .unwrap();
         for _ in 0..50 {
             terminal.poll();
