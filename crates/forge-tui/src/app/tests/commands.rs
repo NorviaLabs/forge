@@ -323,8 +323,7 @@ async fn ctrl_p_toggles_bottom_panel_without_touching_input() {
 }
 
 #[tokio::test]
-async fn alt_number_opens_selected_bottom_panel_tab() {
-    use crossterm::event::{KeyCode, KeyModifiers};
+async fn open_bottom_panel_sets_active_tab() {
     let (_dir, session) = test_session().await;
     let mut app = TuiApp::new(
         session,
@@ -341,11 +340,9 @@ async fn alt_number_opens_selected_bottom_panel_tab() {
         },
     );
 
-    app.handle_key(press(KeyCode::Char('4'), KeyModifiers::ALT))
-        .await
-        .unwrap();
+    app.open_bottom_panel(Some(BottomPanelTab::Terminal));
     assert!(app.bottom_panel.open);
-    assert_eq!(app.bottom_panel.active, BottomPanelTab::Activity);
+    assert_eq!(app.bottom_panel.active, BottomPanelTab::Terminal);
 }
 
 #[tokio::test]
@@ -373,7 +370,7 @@ async fn focused_bottom_panel_cycles_without_typing_into_chat() {
     app.handle_key(press(KeyCode::Right, KeyModifiers::ALT))
         .await
         .unwrap();
-    assert_eq!(app.bottom_panel.active, BottomPanelTab::Activity);
+    assert_eq!(app.bottom_panel.active, BottomPanelTab::Tasks);
     app.handle_key(press(KeyCode::Left, KeyModifiers::ALT))
         .await
         .unwrap();

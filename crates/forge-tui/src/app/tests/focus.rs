@@ -100,7 +100,7 @@ async fn shift_arrow_tabs_only_apply_to_the_active_navigation_block() {
     app.handle_key(press(KeyCode::Right, KeyModifiers::SHIFT))
         .await
         .unwrap();
-    assert_eq!(app.bottom_panel.active, BottomPanelTab::Activity);
+    assert_eq!(app.bottom_panel.active, BottomPanelTab::Tasks);
 }
 
 #[tokio::test]
@@ -237,7 +237,7 @@ async fn semantic_commands_dispatch_without_rendering_a_frame() {
         .await
         .unwrap();
     assert!(app.bottom_panel.open);
-    assert_eq!(app.bottom_panel.active, BottomPanelTab::Run);
+    assert_eq!(app.bottom_panel.active, BottomPanelTab::Tasks);
 }
 
 #[tokio::test]

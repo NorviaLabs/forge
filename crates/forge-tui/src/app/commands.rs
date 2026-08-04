@@ -67,18 +67,7 @@ impl TuiApp {
             KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => {
                 Some(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
             }
-            KeyCode::Char('1') if key.modifiers.contains(KeyModifiers::ALT) => {
-                Some(SemanticCommand::OpenRun(RunCommandTarget::Current))
-            }
-            KeyCode::Char('2') if key.modifiers.contains(KeyModifiers::ALT) => Some(
-                SemanticCommand::OpenBottomPanel(BottomPanelTab::Diagnostics),
-            ),
-            KeyCode::Char('3') if key.modifiers.contains(KeyModifiers::ALT) => {
-                Some(SemanticCommand::OpenBottomPanel(BottomPanelTab::Terminal))
-            }
-            KeyCode::Char('4') if key.modifiers.contains(KeyModifiers::ALT) => {
-                Some(SemanticCommand::OpenBottomPanel(BottomPanelTab::Activity))
-            }
+
             KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(SemanticCommand::MoveQueueSelection(-1))
             }
@@ -291,24 +280,7 @@ impl TuiApp {
             KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => {
                 Some(SemanticCommand::CycleBottomPanelTab { forward: true })
             }
-            KeyCode::Enter if self.bottom_panel.active == BottomPanelTab::Run => {
-                Some(SemanticCommand::RunOrCancel)
-            }
-            KeyCode::Char('r') if self.bottom_panel.active == BottomPanelTab::Run => {
-                Some(SemanticCommand::Rerun)
-            }
-            KeyCode::Char('e') if self.bottom_panel.active == BottomPanelTab::Run => {
-                Some(SemanticCommand::EditAndRerun)
-            }
-            KeyCode::Char('m') if self.bottom_panel.active == BottomPanelTab::Run => {
-                Some(SemanticCommand::ToggleRunExecutionMode)
-            }
-            KeyCode::Char('i') if self.bottom_panel.active == BottomPanelTab::Run => {
-                Some(SemanticCommand::EditRunCommand)
-            }
-            KeyCode::Char('d') if self.bottom_panel.active == BottomPanelTab::Run => {
-                Some(SemanticCommand::EditRunDirectory)
-            }
+
             KeyCode::Up if self.bottom_panel.active == BottomPanelTab::Tasks => {
                 Some(SemanticCommand::MoveTasksSelection(-1))
             }
@@ -413,7 +385,7 @@ impl TuiApp {
                     if let Some(id) = self.current_run_id() {
                         self.navigate_to_workspace_view(WorkspaceView::Run(id));
                     } else {
-                        self.open_bottom_panel(Some(BottomPanelTab::Run));
+                        self.open_bottom_panel(Some(BottomPanelTab::Tasks));
                     }
                 }
                 RunCommandTarget::Id(id) => {
@@ -995,7 +967,6 @@ impl TuiApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widgets::bottom_panel::BottomPanelTab;
     use forge_core::{AgentSession, LoopConfig};
     use forge_model::MockModelClient;
     use forge_tools::ToolRegistry;
@@ -1101,22 +1072,6 @@ mod tests {
             (
                 key(KeyCode::Right, ALT),
                 SemanticCommand::ReviewChanges(DiffCommandContext::Current),
-            ),
-            (
-                key(KeyCode::Char('1'), ALT),
-                SemanticCommand::OpenRun(RunCommandTarget::Current),
-            ),
-            (
-                key(KeyCode::Char('2'), ALT),
-                SemanticCommand::OpenBottomPanel(BottomPanelTab::Diagnostics),
-            ),
-            (
-                key(KeyCode::Char('3'), ALT),
-                SemanticCommand::OpenBottomPanel(BottomPanelTab::Terminal),
-            ),
-            (
-                key(KeyCode::Char('4'), ALT),
-                SemanticCommand::OpenBottomPanel(BottomPanelTab::Activity),
             ),
             (
                 key(KeyCode::Up, CTRL),
@@ -1360,54 +1315,6 @@ mod tests {
             app.semantic_command_for_bottom_panel_key(key(KeyCode::Esc, NONE)),
             Some(SemanticCommand::CancelCurrentInteraction)
         );
-    }
-
-    #[tokio::test]
-    async fn run_tab_bindings_are_scoped_to_the_run_tab() {
-        let (_d, mut app) = app().await;
-        app.bottom_panel.open = true;
-        app.bottom_panel.active = BottomPanelTab::Run;
-        let cases: Vec<(event::KeyEvent, SemanticCommand)> = vec![
-            (key(KeyCode::Enter, NONE), SemanticCommand::RunOrCancel),
-            (key(KeyCode::Char('r'), NONE), SemanticCommand::Rerun),
-            (key(KeyCode::Char('e'), NONE), SemanticCommand::EditAndRerun),
-            (
-                key(KeyCode::Char('m'), NONE),
-                SemanticCommand::ToggleRunExecutionMode,
-            ),
-            (
-                key(KeyCode::Char('i'), NONE),
-                SemanticCommand::EditRunCommand,
-            ),
-            (
-                key(KeyCode::Char('d'), NONE),
-                SemanticCommand::EditRunDirectory,
-            ),
-        ];
-        for (k, expected) in &cases {
-            assert_eq!(
-                app.semantic_command_for_bottom_panel_key(*k),
-                Some(expected.clone()),
-                "{k:?} on the Run tab"
-            );
-        }
-
-        // The same keys are inert on the other tabs, so they stay available to
-        // whatever those tabs want them for.
-        for tab in [
-            BottomPanelTab::Diagnostics,
-            BottomPanelTab::Terminal,
-            BottomPanelTab::Activity,
-        ] {
-            app.bottom_panel.active = tab;
-            for (k, _) in &cases {
-                assert_eq!(
-                    app.semantic_command_for_bottom_panel_key(*k),
-                    None,
-                    "{k:?} should be inert on {tab:?}"
-                );
-            }
-        }
     }
 
     #[tokio::test]

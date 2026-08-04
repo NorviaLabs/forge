@@ -178,7 +178,7 @@ async fn cancel_key_is_a_no_op_outside_the_tasks_tab() {
         .await
         .unwrap();
 
-    app.bottom_panel.open_tab(BottomPanelTab::Run);
+    app.bottom_panel.open_tab(BottomPanelTab::Terminal);
     app.focus_block(FocusBlock::BottomPanel);
     app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
         .await

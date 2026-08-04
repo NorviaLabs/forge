@@ -346,40 +346,10 @@ impl TuiApp {
         if !self.bottom_panel.open {
             return Ok(false);
         }
-        match key.code {
-            KeyCode::Char(c)
-                if self.bottom_panel.active == BottomPanelTab::Run
-                    && self.run.editing
-                    && key.modifiers.is_empty() =>
-            {
-                if self.run.editing_directory {
-                    let mut text = self.run.draft.working_directory.display().to_string();
-                    text.push(c);
-                    self.run.draft.working_directory = PathBuf::from(text);
-                } else {
-                    self.run.draft.command_input.push(c);
-                }
-                Ok(true)
-            }
-            KeyCode::Backspace
-                if self.bottom_panel.active == BottomPanelTab::Run && self.run.editing =>
-            {
-                if self.run.editing_directory {
-                    let mut text = self.run.draft.working_directory.display().to_string();
-                    text.pop();
-                    self.run.draft.working_directory = PathBuf::from(text);
-                } else {
-                    self.run.draft.command_input.pop();
-                }
-                Ok(true)
-            }
-            _ => {
-                if let Some(command) = self.semantic_command_for_bottom_panel_key(key) {
-                    self.execute_semantic_command(command).await
-                } else {
-                    Ok(false)
-                }
-            }
+        if let Some(command) = self.semantic_command_for_bottom_panel_key(key) {
+            self.execute_semantic_command(command).await
+        } else {
+            Ok(false)
         }
     }
 
