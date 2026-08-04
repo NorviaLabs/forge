@@ -1127,7 +1127,7 @@ mod tests {
             ),
             (
                 key(KeyCode::Char('2'), ALT),
-                SemanticCommand::OpenBottomPanel(BottomPanelTab::Activity),
+                SemanticCommand::OpenBottomPanel(BottomPanelTab::Tasks),
             ),
             (
                 key(KeyCode::Char('p'), ALT),
