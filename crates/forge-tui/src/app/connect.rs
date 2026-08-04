@@ -525,7 +525,7 @@ impl TuiApp {
     /// of the action).
     pub(super) fn finish_connect_flow(&mut self, profile_id: &str) {
         if self.connected_profile_count() == 1 {
-            self.complete_zero_state_onboarding(profile_id);
+            self.apply_default_model_for_profile(profile_id, "connected");
         } else {
             self.open_model_picker_after_connect(profile_id);
         }
@@ -541,14 +541,22 @@ impl TuiApp {
         svc.connected_profiles().map(|v| v.len()).unwrap_or(0)
     }
 
-    /// Auto-select a model for `profile_id` and land in normal steady state.
+    /// Activate `profile_id` (assumed already connected) as the current
+    /// route and auto-select a model for it, landing in normal steady state
+    /// without a forced next step. Reused by both the post-connect
+    /// completion path (`finish_connect_flow`, `verb: "connected"`) and the
+    /// Providers picker's standalone route-switch action
+    /// (`OverlayAction::SwitchToRoute`, `verb: "active"` — the route was
+    /// already connected in a past session, this is just a switch).
+    ///
     /// Reuses `model_picker_items` — its "Default" catalog tier already
     /// falls back to `profile.default_models` even with an empty cache (see
     /// `models_for_picker` in forge-connect), so this works offline / on a
     /// cold cache. Falls back to the picker (today's behavior) if the
     /// profile somehow has no usable model at all, rather than stranding
     /// the user with an empty `active_model`.
-    fn complete_zero_state_onboarding(&mut self, profile_id: &str) {
+    pub(super) fn apply_default_model_for_profile(&mut self, profile_id: &str, verb: &str) {
+        self.connect.profile = Some(profile_id.to_string());
         let model = self
             .model_picker_items(false)
             .into_iter()
@@ -574,7 +582,7 @@ impl TuiApp {
             .unwrap_or(profile_id);
         self.set_feedback(
             FeedbackSeverity::Ok,
-            format!("{title} connected · {model} ready"),
+            format!("{title} {verb} · {model} ready"),
         );
         self.start_catalog_refresh();
     }

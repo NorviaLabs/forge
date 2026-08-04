@@ -931,7 +931,7 @@ async fn footer_shows_na_effort_for_a_model_that_does_not_support_it() {
 }
 
 #[tokio::test]
-async fn compact_control_tab_cycles_segments_and_escape_cancels_without_state_change() {
+async fn compact_control_escape_cancels_without_state_change() {
     let _home_guard = isolated_home_guard();
     let (_dir, session) = test_session().await;
     let mut app = TuiApp::new(
@@ -966,19 +966,8 @@ async fn compact_control_tab_cycles_segments_and_escape_cancels_without_state_ch
     };
     assert_eq!(focus_at(&app), ConnectModelColumn::Models);
 
-    app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
-        .await
-        .unwrap();
-    assert_eq!(focus_at(&app), ConnectModelColumn::Effort);
-    app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
-        .await
-        .unwrap();
-    assert_eq!(focus_at(&app), ConnectModelColumn::Providers);
-    app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
-        .await
-        .unwrap();
-    assert_eq!(focus_at(&app), ConnectModelColumn::Models);
-
+    // Each view is standalone (no Tab cycling) — Esc closes the picker
+    // from the view it was opened on, with no partial commit.
     app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
         .await
         .unwrap();
