@@ -2684,14 +2684,23 @@ impl Widget for OverlayWidget<'_> {
 
 /// Height (including borders) the approval card needs when docked at the
 /// bottom of the scrollback, so the caller can carve out exactly that much
-/// space above it rather than overlapping the transcript.
-pub fn approval_card_dock_height(card: &ApprovalCardState) -> u16 {
-    let mut lines = approval_lines(card).len();
+/// space above it rather than overlapping the transcript. `width` is the
+/// full area the card will render into (borders included) — needed because
+/// `ApprovalCardWidget` word-wraps its content, so a narrow dock (e.g. the
+/// center pane once a persistent sidebar claims some of its width) can wrap
+/// a single logical line into several visual rows.
+pub fn approval_card_dock_height(card: &ApprovalCardState, width: u16) -> u16 {
+    let mut lines = approval_lines(card);
     if card.expanded {
-        lines += approval_detail_lines(&card.payload, &card.approval).len();
+        lines.extend(approval_detail_lines(&card.payload, &card.approval));
     }
+    let content_width = width.saturating_sub(2).max(1);
+    let wrapped_rows: u32 = lines
+        .iter()
+        .map(|line| (line.width() as u16).div_ceil(content_width).max(1) as u32)
+        .sum();
     // +2 for the block borders.
-    lines as u16 + 2
+    (wrapped_rows as u16).saturating_add(2)
 }
 
 /// Inline approval card, docked at the bottom of the scrollback instead of

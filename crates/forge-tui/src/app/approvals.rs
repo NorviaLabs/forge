@@ -68,8 +68,10 @@ impl TuiApp {
             .any(|rule| rule.matches(&call))
     }
 
-    pub fn approval_card_dock_height(&self) -> Option<u16> {
-        self.approval_card.as_ref().map(approval_card_dock_height)
+    pub fn approval_card_dock_height(&self, width: u16) -> Option<u16> {
+        self.approval_card
+            .as_ref()
+            .map(|card| approval_card_dock_height(card, width))
     }
 
     pub(super) fn approval_identity_for_payload(

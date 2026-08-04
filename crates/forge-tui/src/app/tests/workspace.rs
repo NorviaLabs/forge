@@ -5,13 +5,10 @@
 use super::prelude::*;
 
 #[tokio::test]
-async fn workspace_navigation_starts_at_conversation_home() {
+async fn workspace_navigation_starts_empty_at_home() {
     let (_dir, app) = focus_test_app().await;
 
-    assert_eq!(
-        app.workspace_navigation.current,
-        WorkspaceView::Conversation
-    );
+    assert_eq!(app.workspace_navigation.current, None);
     assert!(app.workspace_navigation.history.is_empty());
 }
 
@@ -29,12 +26,11 @@ async fn workspace_navigation_pushes_file_and_replaces_file_resource() {
 
     assert_eq!(
         app.workspace_navigation.current,
-        WorkspaceView::File(first.clone())
+        Some(WorkspaceView::File(first.clone()))
     );
-    assert_eq!(
-        app.workspace_navigation.history,
-        vec![WorkspaceView::Conversation]
-    );
+    // Nothing to push onto history yet — the home state (`None`) isn't a
+    // concrete view, so opening the first file from home leaves history empty.
+    assert_eq!(app.workspace_navigation.history, Vec::new());
 
     app.execute_semantic_command(SemanticCommand::OpenFile(second.clone()))
         .await
@@ -42,12 +38,9 @@ async fn workspace_navigation_pushes_file_and_replaces_file_resource() {
 
     assert_eq!(
         app.workspace_navigation.current,
-        WorkspaceView::File(second)
+        Some(WorkspaceView::File(second))
     );
-    assert_eq!(
-        app.workspace_navigation.history,
-        vec![WorkspaceView::Conversation]
-    );
+    assert_eq!(app.workspace_navigation.history, Vec::new());
 }
 
 #[tokio::test]
@@ -67,14 +60,11 @@ async fn workspace_navigation_pushes_between_file_diff_and_file() {
 
     assert_eq!(
         app.workspace_navigation.current,
-        WorkspaceView::Diff(DiffCommandContext::Current)
+        Some(WorkspaceView::Diff(DiffCommandContext::Current))
     );
     assert_eq!(
         app.workspace_navigation.history,
-        vec![
-            WorkspaceView::Conversation,
-            WorkspaceView::File(first.clone())
-        ]
+        vec![WorkspaceView::File(first.clone())]
     );
 
     app.execute_semantic_command(SemanticCommand::OpenFile(second.clone()))
@@ -83,12 +73,11 @@ async fn workspace_navigation_pushes_between_file_diff_and_file() {
 
     assert_eq!(
         app.workspace_navigation.current,
-        WorkspaceView::File(second)
+        Some(WorkspaceView::File(second))
     );
     assert_eq!(
         app.workspace_navigation.history,
         vec![
-            WorkspaceView::Conversation,
             WorkspaceView::File(first),
             WorkspaceView::Diff(DiffCommandContext::Current)
         ]
@@ -112,14 +101,13 @@ async fn workspace_back_skips_invalid_file_entries() {
         .await
         .unwrap();
 
-    assert_eq!(
-        app.workspace_navigation.current,
-        WorkspaceView::Conversation
-    );
+    // The only history entry (the now-deleted file) is invalid, and there's
+    // nothing else to fall back to — home is `None`, not a concrete view.
+    assert_eq!(app.workspace_navigation.current, None);
 }
 
 #[tokio::test]
-async fn workspace_home_returns_to_conversation_and_clears_history() {
+async fn workspace_home_returns_to_empty_and_clears_history() {
     let (dir, mut app) = focus_test_app().await;
     let path = dir.path().join("main.rs");
     fs::write(&path, "fn main() {}\n").unwrap();
@@ -131,10 +119,7 @@ async fn workspace_home_returns_to_conversation_and_clears_history() {
         .await
         .unwrap();
 
-    assert_eq!(
-        app.workspace_navigation.current,
-        WorkspaceView::Conversation
-    );
+    assert_eq!(app.workspace_navigation.current, None);
     assert!(app.workspace_navigation.history.is_empty());
 }
 
@@ -175,10 +160,7 @@ async fn files_visibility_is_independent_of_workspace_navigation() {
         .unwrap();
 
     assert!(app.workspace_files.visible);
-    assert_eq!(
-        app.workspace_navigation.current,
-        WorkspaceView::Conversation
-    );
+    assert_eq!(app.workspace_navigation.current, None);
 }
 
 #[tokio::test]
@@ -196,7 +178,6 @@ async fn files_visibility_renders_independently_in_each_workspace_view() {
     fs::write(&path, "fn main() {}\n").unwrap();
 
     for view in [
-        WorkspaceView::Conversation,
         WorkspaceView::File(path.clone()),
         WorkspaceView::Diff(DiffCommandContext::Current),
     ] {
@@ -215,6 +196,22 @@ async fn files_visibility_renders_independently_in_each_workspace_view() {
             "Files should not render for {view:?} when preference is closed:\n{rendered}"
         );
     }
+
+    // The empty/home state (`current == None`) is its own case now —
+    // conversation isn't a navigable `WorkspaceView` to loop over above.
+    app.go_home_workspace();
+    app.workspace_files.visible = true;
+    let rendered = render_app_text(&mut app, 160, 50);
+    assert!(
+        rendered.contains("FILES"),
+        "Files should render at the empty home state when preference is open:\n{rendered}"
+    );
+    app.workspace_files.visible = false;
+    let rendered = render_app_text(&mut app, 160, 50);
+    assert!(
+        !rendered.contains("FILES"),
+        "Files should not render at the empty home state when preference is closed:\n{rendered}"
+    );
 }
 
 #[tokio::test]
@@ -295,7 +292,10 @@ async fn opening_file_does_not_open_closed_files_preference() {
         .unwrap();
 
     assert!(!app.workspace_files.visible);
-    assert_eq!(app.workspace_navigation.current, WorkspaceView::File(path));
+    assert_eq!(
+        app.workspace_navigation.current,
+        Some(WorkspaceView::File(path))
+    );
 }
 
 #[tokio::test]

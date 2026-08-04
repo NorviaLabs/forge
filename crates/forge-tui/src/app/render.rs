@@ -76,6 +76,7 @@ impl TuiApp {
             0,
             panel_h,
             hint_h,
+            true,
         );
         // Layout can hide a requested side/bottom panel. Focus must follow the
         // rendered geometry rather than leaving an invisible key owner behind.
@@ -145,9 +146,10 @@ impl TuiApp {
             .min(self.session.events.len())..];
         let activity_summary = self.activity_summary();
         let activity_summary_key = self.activity_summary_cache_key();
+        let sidebar_width = regions.sidebar.map(|r| r.width).unwrap_or(0);
         let key = ConversationRenderKey {
             session_id: self.session.session_id,
-            width: regions.chat.width,
+            width: sidebar_width,
             messages: visible_messages.len(),
             last_message_content: visible_messages
                 .last()
@@ -226,13 +228,13 @@ impl TuiApp {
                     .unwrap_or_else(|| payload.args_redacted.to_string());
                 conv = conv.with_blocked_tool(payload.tool.clone(), args);
             }
-            let width = regions.chat.width.saturating_sub(2) as usize;
+            let width = sidebar_width.saturating_sub(2) as usize;
             self.render_cache.conversation = Some(ConversationRenderCache {
                 key,
                 lines: Arc::new(conv.lines_for_width(width)),
             });
         }
-        let width = regions.chat.width.saturating_sub(2) as usize;
+        let width = sidebar_width.saturating_sub(2) as usize;
         let live_lines = if self.busy_state.active && self.pending_turn.prompt.is_none() {
             ConversationModel::from_messages(
                 &[],
@@ -254,10 +256,36 @@ impl TuiApp {
         // immutable borrow of `conversation_cache` ends before
         // `register_activity_summary_region` takes `&mut self` below.
         let cached_lines = Arc::clone(&cached.lines);
-        // The approval card, when pending, docks at the bottom of the chat
-        // area rather than centering over it — the transcript above stays
+        // The sidebar always shows the conversation, regardless of what the
+        // center pane shows — it's no longer one of the `WorkspaceView`
+        // options.
+        if let Some(sidebar) = regions.sidebar {
+            let conversation_area = ratatui::layout::Rect {
+                x: sidebar.x.saturating_add(2.min(sidebar.width)),
+                y: sidebar.y.saturating_add(1.min(sidebar.height)),
+                width: sidebar.width.saturating_sub(2.min(sidebar.width)),
+                height: sidebar.height.saturating_sub(1.min(sidebar.height)),
+            };
+            frame.render_widget(
+                crate::conversation::ConversationLinesWidget {
+                    lines: &cached_lines,
+                    tail_lines: &live_lines,
+                    scroll: self.conversation_view.scroll,
+                    follow: self.conversation_view.follow,
+                },
+                conversation_area,
+            );
+            self.register_activity_summary_region(conversation_area, &cached_lines, &live_lines);
+        }
+
+        // The approval card is safety-critical (command args, redacted
+        // secrets, remember-invocation controls) and needs real width to
+        // stay legible, so it docks at the bottom of the wider center pane
+        // rather than the narrower sidebar — the transcript above stays
         // fully visible and scrollable instead of being replaced by a modal.
-        let approval_dock_height = self.approval_card_dock_height().unwrap_or(0);
+        let approval_dock_height = self
+            .approval_card_dock_height(regions.chat.width)
+            .unwrap_or(0);
         let chat_area = if approval_dock_height > 0 {
             ratatui::layout::Rect {
                 height: regions.chat.height.saturating_sub(approval_dock_height),
@@ -272,29 +300,10 @@ impl TuiApp {
             ..regions.chat
         });
         match self.workspace_navigation.current.clone() {
-            WorkspaceView::Conversation => {
-                let conversation_area = ratatui::layout::Rect {
-                    x: chat_area.x.saturating_add(2.min(chat_area.width)),
-                    y: chat_area.y.saturating_add(1.min(chat_area.height)),
-                    width: chat_area.width.saturating_sub(2.min(chat_area.width)),
-                    height: chat_area.height.saturating_sub(1.min(chat_area.height)),
-                };
-                frame.render_widget(
-                    crate::conversation::ConversationLinesWidget {
-                        lines: &cached_lines,
-                        tail_lines: &live_lines,
-                        scroll: self.conversation_view.scroll,
-                        follow: self.conversation_view.follow,
-                    },
-                    conversation_area,
-                );
-                self.register_activity_summary_region(
-                    conversation_area,
-                    &cached_lines,
-                    &live_lines,
-                );
+            None => {
+                self.render_empty_workspace(chat_area, frame.buffer_mut());
             }
-            WorkspaceView::File(_) => {
+            Some(WorkspaceView::File(_)) => {
                 self.editor_viewport.height = chat_area.height;
                 frame.render_widget(
                     SourceViewerWidget {
@@ -304,10 +313,10 @@ impl TuiApp {
                     chat_area,
                 );
             }
-            WorkspaceView::Diff(DiffCommandContext::Current) => {
+            Some(WorkspaceView::Diff(DiffCommandContext::Current)) => {
                 self.render_diff_workspace(chat_area, frame.buffer_mut());
             }
-            WorkspaceView::Run(id) => {
+            Some(WorkspaceView::Run(id)) => {
                 self.render_run_workspace(&id, chat_area, frame.buffer_mut());
             }
         }
@@ -533,6 +542,25 @@ impl TuiApp {
             }
             self.register_overlay_hit_regions(area);
         }
+    }
+
+    /// Center-pane placeholder for when nothing is open — `workspace_navigation.current`
+    /// is `None`, since conversation no longer fills this pane by default.
+    fn render_empty_workspace(
+        &self,
+        area: ratatui::layout::Rect,
+        buf: &mut ratatui::buffer::Buffer,
+    ) {
+        Paragraph::new("No file open\n\nSelect one from the explorer.")
+            .style(theme::muted())
+            .alignment(ratatui::layout::Alignment::Center)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(theme::inactive_panel_border())
+                    .style(theme::panel()),
+            )
+            .render(area, buf);
     }
 
     fn render_diff_workspace(
