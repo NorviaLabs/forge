@@ -58,7 +58,13 @@ use crate::turn_state::TurnState;
 
 const SYSTEM_PROMPT: &str = include_str!("system_prompt.md");
 
-fn assemble_system_prompt(agents_md: &str, skills: &[(String, String)]) -> String {
+/// Discovery stage of progressive disclosure (issue #226): a skill with
+/// frontmatter contributes only its `name` + `description` here — its full
+/// `SKILL.md` body is fetched on demand via the `load_skill` tool once the
+/// model judges the description relevant. A skill without frontmatter has no
+/// `description` to show instead, so its whole body is injected eagerly,
+/// matching pre-#226 behavior.
+fn assemble_system_prompt(agents_md: &str, skills: &[forge_context::SkillManifest]) -> String {
     let mut prompt = SYSTEM_PROMPT.trim_end().to_owned();
 
     if !agents_md.trim().is_empty() {
@@ -67,12 +73,20 @@ fn assemble_system_prompt(agents_md: &str, skills: &[(String, String)]) -> Strin
     }
 
     if !skills.is_empty() {
-        prompt.push_str("\n\n# Skills");
-        for (name, content) in skills {
+        prompt.push_str(
+            "\n\n# Skills\n\nEach skill below is listed by name and description. When a task \
+matches a skill's description, call the `load_skill` tool with that name to load its full \
+instructions before proceeding.",
+        );
+        for skill in skills {
             prompt.push_str("\n\n## ");
-            prompt.push_str(name);
+            prompt.push_str(&skill.name);
             prompt.push_str("\n\n");
-            prompt.push_str(content.trim());
+            if skill.has_frontmatter {
+                prompt.push_str(skill.description.trim());
+            } else {
+                prompt.push_str(skill.body.trim());
+            }
         }
     }
 
@@ -1013,7 +1027,7 @@ impl AgentSession {
         self.context
             .load_skills()
             .into_iter()
-            .map(|(name, _)| name)
+            .map(|skill| skill.name)
             .collect()
     }
 
@@ -2327,15 +2341,60 @@ mod tests {
         assert!(prompt.ends_with("AGENTS.md:\nRun cargo test"));
     }
 
+    fn legacy_skill(name: &str, body: &str) -> forge_context::SkillManifest {
+        forge_context::SkillManifest {
+            name: name.to_string(),
+            description: String::new(),
+            dir: std::path::PathBuf::new(),
+            body: body.to_string(),
+            has_frontmatter: false,
+            metadata: None,
+            compatibility: None,
+            license: None,
+        }
+    }
+
+    fn manifest_skill(name: &str, description: &str, body: &str) -> forge_context::SkillManifest {
+        forge_context::SkillManifest {
+            name: name.to_string(),
+            description: description.to_string(),
+            dir: std::path::PathBuf::new(),
+            body: body.to_string(),
+            has_frontmatter: true,
+            metadata: None,
+            compatibility: None,
+            license: None,
+        }
+    }
+
+    /// A skill with no YAML frontmatter has no `description` to show in
+    /// discovery, so its full body is injected eagerly — the pre-#226
+    /// behavior, preserved for backward compatibility.
     #[test]
-    fn system_prompt_appends_skills() {
-        let skills = vec![(
-            "ponytail".to_string(),
-            "# Ponytail\nUse less code.".to_string(),
+    fn system_prompt_appends_skills_without_frontmatter_eagerly() {
+        let skills = vec![legacy_skill("ponytail", "# Ponytail\nUse less code.")];
+        let prompt = assemble_system_prompt("", &skills);
+        assert!(prompt.contains("# Skills"));
+        assert!(prompt.contains("## ponytail"));
+        assert!(prompt.ends_with("# Ponytail\nUse less code."));
+    }
+
+    /// A skill with frontmatter only surfaces name + description (discovery
+    /// stage) — its full body must NOT appear in the system prompt, since the
+    /// model is expected to fetch it via `load_skill` on demand.
+    #[test]
+    fn system_prompt_shows_only_name_and_description_for_skills_with_frontmatter() {
+        let skills = vec![manifest_skill(
+            "reviewer",
+            "Reviews pull requests for style issues.",
+            "# Reviewer\n\nFull instructions that should stay out of the prompt.",
         )];
         let prompt = assemble_system_prompt("", &skills);
-        assert!(prompt.contains("# Skills\n\n## ponytail"));
-        assert!(prompt.ends_with("# Ponytail\nUse less code."));
+        assert!(prompt.contains("# Skills"));
+        assert!(prompt.contains("## reviewer"));
+        assert!(prompt.contains("Reviews pull requests for style issues."));
+        assert!(!prompt.contains("Full instructions that should stay out of the prompt"));
+        assert!(prompt.contains("load_skill"));
     }
 
     fn base_cfg(dir: &std::path::Path) -> LoopConfig {

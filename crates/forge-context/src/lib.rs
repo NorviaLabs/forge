@@ -222,12 +222,8 @@ impl ContextEngine {
         fs::read_to_string(p).unwrap_or_default()
     }
 
-    pub fn load_skills(&self) -> Vec<(String, String)> {
-        let mut skills = read_skills_dir(Some(self.workspace.join(".forge").join("skills")));
-        skills.extend(read_skills_dir(global_skills_dir()));
-        skills.sort_by(|a, b| a.0.cmp(&b.0));
-        skills.dedup_by(|a, b| a.0 == b.0);
-        skills
+    pub fn load_skills(&self) -> Vec<SkillManifest> {
+        discover_skills(&self.workspace)
     }
 
     /// CTX-02 hard reset: write progress, clear window, rehydrate slim messages.
@@ -292,22 +288,126 @@ pub fn reduction_ratio(original_tokens: usize, in_context_tokens: usize) -> f64 
     1.0 - (in_context_tokens as f64 / original_tokens as f64)
 }
 
-fn read_skills_dir(dir: Option<PathBuf>) -> Vec<(String, String)> {
+/// Structured representation of one `SKILL.md`, per the Agent Skills open
+/// standard (agentskills.io). Progressive disclosure has three stages: a
+/// `name`/`description` pair is cheap enough to keep in every system prompt
+/// (Discovery); `body` — the full instructions — is loaded on demand by the
+/// `load_skill` tool once the model picks a matching skill (Activation);
+/// files under `dir` (`references/`, `scripts/`, `assets/`) are read or run
+/// only if the skill's own instructions send the model to them (Execution).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SkillManifest {
+    /// Lowercase alphanumeric + hyphens, 1-64 chars (spec). Falls back to the
+    /// skill's directory name when `SKILL.md` has no YAML frontmatter.
+    pub name: String,
+    /// Trigger explanation used for intent matching. Empty for legacy skills
+    /// (no frontmatter), whose full text is injected eagerly instead.
+    pub description: String,
+    /// The skill's own directory — base for auxiliary `references/`,
+    /// `scripts/`, `assets/` files. May sit outside the workspace when it
+    /// came from the global skills directory.
+    pub dir: PathBuf,
+    /// `SKILL.md` content with any frontmatter block stripped.
+    pub body: String,
+    /// Whether `SKILL.md` carried a parseable `name`+`description`
+    /// frontmatter block. `false` means `description` is empty and `body`
+    /// is the whole file — the pre-progressive-disclosure behavior.
+    pub has_frontmatter: bool,
+    pub metadata: Option<serde_json::Value>,
+    pub compatibility: Option<serde_json::Value>,
+    pub license: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SkillFrontmatter {
+    name: String,
+    description: String,
+    #[serde(default)]
+    metadata: Option<serde_json::Value>,
+    #[serde(default)]
+    compatibility: Option<serde_json::Value>,
+    #[serde(default)]
+    license: Option<String>,
+}
+
+/// Splits `---\n<yaml>\n---\n<body>` into `(yaml, body)`. Returns `None` when
+/// the content doesn't open with a `---` delimiter line, or the closing
+/// delimiter is missing — either way, the caller falls back to treating the
+/// whole file as the body.
+fn split_frontmatter(content: &str) -> Option<(String, String)> {
+    let mut lines = content.lines();
+    if lines.next()?.trim_end() != "---" {
+        return None;
+    }
+    let rest: Vec<&str> = lines.collect();
+    let end = rest.iter().position(|line| line.trim_end() == "---")?;
+    let frontmatter = rest[..end].join("\n");
+    let body = rest[end + 1..].join("\n");
+    Some((frontmatter, body))
+}
+
+/// Parses one skill directory's `SKILL.md` into a [`SkillManifest`],
+/// falling back to eager inclusion (CTX-05: backward compatibility) when the
+/// frontmatter is absent, malformed, or missing required fields.
+fn parse_skill_manifest(dir_name: &str, dir: PathBuf, content: &str) -> SkillManifest {
+    if let Some((frontmatter, body)) = split_frontmatter(content) {
+        if let Ok(fm) = serde_yaml::from_str::<SkillFrontmatter>(&frontmatter) {
+            if !fm.name.trim().is_empty() && !fm.description.trim().is_empty() {
+                return SkillManifest {
+                    name: fm.name,
+                    description: fm.description,
+                    dir,
+                    body: body.trim().to_string(),
+                    has_frontmatter: true,
+                    metadata: fm.metadata,
+                    compatibility: fm.compatibility,
+                    license: fm.license,
+                };
+            }
+        }
+    }
+    SkillManifest {
+        name: dir_name.to_string(),
+        description: String::new(),
+        dir,
+        body: content.trim().to_string(),
+        has_frontmatter: false,
+        metadata: None,
+        compatibility: None,
+        license: None,
+    }
+}
+
+fn read_skills_dir(dir: Option<PathBuf>) -> Vec<SkillManifest> {
     let Some(dir) = dir else { return vec![] };
     fs::read_dir(dir)
         .ok()
         .into_iter()
         .flat_map(|entries| entries.filter_map(Result::ok))
         .filter_map(|entry| {
-            let path = entry.path().join("SKILL.md");
-            let name = entry.file_name().to_string_lossy().into_owned();
-            fs::read_to_string(path).ok().map(|content| (name, content))
+            let skill_dir = entry.path();
+            let path = skill_dir.join("SKILL.md");
+            let dir_name = entry.file_name().to_string_lossy().into_owned();
+            let content = fs::read_to_string(path).ok()?;
+            Some(parse_skill_manifest(&dir_name, skill_dir, &content))
         })
         .collect()
 }
 
 fn global_skills_dir() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("forge").join("skills"))
+}
+
+/// Discovers project (`.forge/skills/`) and global (`~/.config/forge/skills/`)
+/// skills, project taking precedence on a name collision. Free function (no
+/// `ContextEngine`/session needed) so tools — e.g. `load_skill` — can reuse it
+/// without carrying a whole engine around.
+pub fn discover_skills(workspace: &std::path::Path) -> Vec<SkillManifest> {
+    let mut skills = read_skills_dir(Some(workspace.join(".forge").join("skills")));
+    skills.extend(read_skills_dir(global_skills_dir()));
+    skills.sort_by(|a, b| a.name.cmp(&b.name));
+    skills.dedup_by(|a, b| a.name == b.name);
+    skills
 }
 
 #[cfg(test)]
@@ -445,11 +545,35 @@ mod tests {
         .unwrap();
 
         let eng = ContextEngine::new(dir.path().to_path_buf(), Uuid::new_v4());
+        let skills = eng.load_skills();
 
-        assert_eq!(
-            eng.load_skills(),
-            vec![("ponytail".into(), "forge skill".into())]
-        );
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "ponytail");
+        assert_eq!(skills[0].body, "forge skill");
+        assert!(!skills[0].has_frontmatter);
+    }
+
+    #[test]
+    fn load_skills_parses_frontmatter_for_progressive_disclosure() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".forge/skills/reviewer")).unwrap();
+        std::fs::write(
+            dir.path().join(".forge/skills/reviewer/SKILL.md"),
+            "---\nname: reviewer\ndescription: Reviews pull requests for style issues.\nlicense: MIT\n---\n\n# Reviewer\n\nFull instructions here.\n",
+        )
+        .unwrap();
+
+        let eng = ContextEngine::new(dir.path().to_path_buf(), Uuid::new_v4());
+        let skills = eng.load_skills();
+
+        assert_eq!(skills.len(), 1);
+        let skill = &skills[0];
+        assert_eq!(skill.name, "reviewer");
+        assert_eq!(skill.description, "Reviews pull requests for style issues.");
+        assert_eq!(skill.license.as_deref(), Some("MIT"));
+        assert!(skill.has_frontmatter);
+        assert_eq!(skill.body, "# Reviewer\n\nFull instructions here.");
+        assert_eq!(skill.dir, dir.path().join(".forge/skills/reviewer"));
     }
 
     #[test]
@@ -464,7 +588,9 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("myskill")).unwrap();
         std::fs::write(dir.path().join("myskill/SKILL.md"), "content").unwrap();
         let skills = read_skills_dir(Some(dir.path().to_path_buf()));
-        assert_eq!(skills, vec![("myskill".into(), "content".into())]);
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "myskill");
+        assert_eq!(skills[0].body, "content");
     }
 
     #[test]
@@ -477,7 +603,9 @@ mod tests {
         let eng = ContextEngine::new(dir.path().to_path_buf(), Uuid::new_v4());
         // global dir doesn't exist; only project skill is loaded
         let skills = eng.load_skills();
-        assert_eq!(skills, vec![("mine".into(), "project".into())]);
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "mine");
+        assert_eq!(skills[0].body, "project");
     }
 
     #[test]
