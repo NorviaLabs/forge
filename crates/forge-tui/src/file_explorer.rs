@@ -789,8 +789,8 @@ mod tests {
         fs::write(root.path().join(".forge/local/sessions/x.db"), "").unwrap();
         fs::create_dir_all(root.path().join(".forge/rules")).unwrap();
         fs::write(root.path().join(".forge/rules/style.md"), "").unwrap();
-        fs::create_dir_all(root.path().join(".forge/skills/ponytail")).unwrap();
-        fs::write(root.path().join(".forge/skills/ponytail/SKILL.md"), "").unwrap();
+        fs::create_dir_all(root.path().join(".agents/skills/ponytail")).unwrap();
+        fs::write(root.path().join(".agents/skills/ponytail/SKILL.md"), "").unwrap();
 
         let children = read_children(Some(root.path()), root.path()).unwrap();
         let names: Vec<&str> = children

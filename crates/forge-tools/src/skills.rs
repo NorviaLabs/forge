@@ -92,7 +92,7 @@ skill's description matches the current task, before following its instructions.
 
 /// Confines `rel` to `dir` — the same treatment `ToolContext::resolve_path`
 /// gives workspace paths, but scoped to one skill's own directory rather than
-/// the workspace root, since a global skill (`~/.config/forge/skills/...`)
+/// the workspace root, since a global skill (`~/.agents/skills/...`)
 /// legitimately sits outside the workspace.
 fn resolve_within_dir(dir: &Path, rel: &str) -> Result<PathBuf, ToolError> {
     if rel.trim().is_empty() {
@@ -138,7 +138,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn write_skill(root: &Path, name: &str, frontmatter_body: &str) {
-        let dir = root.join(".forge/skills").join(name);
+        let dir = root.join(".agents/skills").join(name);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("SKILL.md"), frontmatter_body).unwrap();
     }
@@ -179,7 +179,7 @@ mod tests {
             "reviewer",
             "---\nname: reviewer\ndescription: Reviews PRs.\n---\n\nSee references/style.md.",
         );
-        let refs = dir.path().join(".forge/skills/reviewer/references");
+        let refs = dir.path().join(".agents/skills/reviewer/references");
         std::fs::create_dir_all(&refs).unwrap();
         std::fs::write(refs.join("style.md"), "Use two spaces.").unwrap();
 
