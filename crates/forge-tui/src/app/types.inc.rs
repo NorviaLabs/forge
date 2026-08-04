@@ -138,6 +138,7 @@ enum RunEvent {
 pub(crate) enum FocusBlock {
     Files,
     Workspace,
+    Sidebar,
     Composer,
     BottomPanel,
 }
@@ -147,6 +148,7 @@ impl FocusBlock {
         match self {
             Self::Files => "FILES",
             Self::Workspace => "CHAT",
+            Self::Sidebar => "SIDEBAR",
             Self::Composer => "COMPOSER",
             Self::BottomPanel => "PANEL",
         }
@@ -154,9 +156,14 @@ impl FocusBlock {
 }
 
 impl FocusBlock {
-    const ORDER: [Self; 4] = [
+    // Sidebar sits right before Composer since they're the same physical
+    // column post-sidebar layout (background strip above the composer that
+    // lives inside it) — tabbing out of the transcript naturally lands in
+    // its own composer next.
+    const ORDER: [Self; 5] = [
         Self::Files,
         Self::Workspace,
+        Self::Sidebar,
         Self::Composer,
         Self::BottomPanel,
     ];
@@ -285,10 +292,7 @@ enum SemanticCommand {
     /// Open the persistent footer control's compact picker, focused on the
     /// given column (vendor/route, model, or effort).
     OpenModelControl(ConnectModelColumn),
-    CycleBottomPanelTab {
-        forward: bool,
-    },
-    OpenBottomPanel(BottomPanelTab),
+    OpenBottomPanel,
     RefreshFiles,
     RefreshEditor,
     RefreshDiff,
@@ -399,6 +403,7 @@ impl Default for FocusState {
 #[derive(Debug, Clone, Copy)]
 struct FocusAvailability {
     files: bool,
+    sidebar: bool,
     bottom_panel: bool,
 }
 
@@ -407,6 +412,7 @@ impl FocusAvailability {
         match block {
             FocusBlock::Files => self.files,
             FocusBlock::Workspace => true,
+            FocusBlock::Sidebar => self.sidebar,
             FocusBlock::Composer => true,
             FocusBlock::BottomPanel => self.bottom_panel,
         }

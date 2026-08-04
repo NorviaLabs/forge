@@ -66,21 +66,18 @@ async fn mouse_click_file_row_selects_and_chevron_toggles() {
 }
 
 #[tokio::test]
-async fn mouse_click_bottom_tab_visible_control_emits_once() {
+async fn mouse_click_sidebar_focuses_it() {
+    // The bottom panel's tab strip (Terminal/Tasks) is gone — Tasks moved
+    // to the sidebar, so clicking the sidebar is the click-to-focus case
+    // to cover here instead.
     let (_dir, mut app) = focus_test_app().await;
-    app.open_bottom_panel(Some(BottomPanelTab::Terminal));
+    app.focus_block(FocusBlock::Composer);
     draw_app(&mut app, 120, 40);
-    let (x, y) = hit_point(&app, |target| {
-        matches!(
-            target,
-            HitTarget::VisibleControl(SemanticCommand::OpenBottomPanel(BottomPanelTab::Tasks))
-        )
-    });
+    let (x, y) = hit_point(&app, |target| matches!(target, HitTarget::Sidebar));
     app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), x, y))
         .await
         .unwrap();
-    assert_eq!(app.bottom_panel.active, BottomPanelTab::Tasks);
-    assert_eq!(app.focus.block, FocusBlock::BottomPanel);
+    assert_eq!(app.focus.block, FocusBlock::Sidebar);
 }
 
 #[tokio::test]
@@ -528,12 +525,19 @@ async fn mouse_double_click_folder_row_toggles_once() {
 #[tokio::test]
 async fn mouse_double_click_controls_do_not_gain_row_activation() {
     let (_dir, mut app) = focus_test_app().await;
-    app.open_bottom_panel(Some(BottomPanelTab::Terminal));
+    app.connect
+        .store
+        .set_api_key("anthropic", "sk-test-anthropic-credential")
+        .unwrap();
+    app.connect.profile = Some("anthropic".into());
+    app.runtime.model_label = "anthropic/claude-sonnet-4-6".into();
     draw_app(&mut app, 120, 40);
     let (x, y) = hit_point(&app, |target| {
         matches!(
             target,
-            HitTarget::VisibleControl(SemanticCommand::OpenBottomPanel(BottomPanelTab::Tasks))
+            HitTarget::VisibleControl(SemanticCommand::OpenModelControl(
+                ConnectModelColumn::Effort
+            ))
         )
     });
     app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), x, y))
@@ -543,7 +547,10 @@ async fn mouse_double_click_controls_do_not_gain_row_activation() {
         .await
         .unwrap();
 
-    assert_eq!(app.bottom_panel.active, BottomPanelTab::Tasks);
+    match &app.overlay {
+        Some(Overlay::ConnectModel { compact, .. }) => assert!(*compact),
+        other => panic!("expected compact ConnectModel overlay, got {other:?}"),
+    }
     assert!(app.pointer.pending_double_click.is_none());
 }
 

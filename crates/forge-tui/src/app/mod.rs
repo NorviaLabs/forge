@@ -66,9 +66,9 @@ use crate::terminal::TerminalGuard;
 use crate::theme;
 use crate::user_message_gutter::{gutter_prefix_width, ACTIVE_GLYPH};
 use crate::widgets::{
-    classify_operator_error, BottomPanel, BottomPanelModel, BottomPanelState, BottomPanelTab,
-    BusyPhase, FeedbackBar, FeedbackModel, FeedbackSeverity, FooterBar, FooterModel, InputBar,
-    InputModel, StatusBar, StatusModel,
+    classify_operator_error, BottomPanel, BottomPanelModel, BottomPanelState, BusyPhase,
+    FeedbackBar, FeedbackModel, FeedbackSeverity, FooterBar, FooterModel, InputBar, InputModel,
+    StatusBar, StatusModel,
 };
 use forge_config::{CommandConfig, FileIconMode};
 

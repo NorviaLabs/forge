@@ -18,7 +18,7 @@ async fn run_starts_only_from_run_workspace_not_bottom_panel() {
         .as_ref()
         .is_some_and(|record| record.state == RunState::Running));
 
-    app.bottom_panel.open_tab(BottomPanelTab::Terminal);
+    app.open_bottom_panel();
     app.focus_block(FocusBlock::BottomPanel);
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
@@ -101,7 +101,7 @@ async fn restored_running_run_becomes_cancelled() {
 #[tokio::test]
 async fn ui_navigation_does_not_mutate_run_history() {
     let (_dir, mut app) = focus_test_app().await;
-    app.bottom_panel.open_tab(BottomPanelTab::Terminal);
+    app.open_bottom_panel();
     app.focus_block(FocusBlock::BottomPanel);
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await

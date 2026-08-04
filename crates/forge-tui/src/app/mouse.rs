@@ -57,7 +57,6 @@ impl TuiApp {
                 HitTarget::Pane(FocusBlock::BottomPanel),
                 1,
             );
-            self.register_bottom_panel_tab_regions(regions.bottom_panel);
         }
         self.register_hit_region(regions.input, HitTarget::Composer, 5);
     }
@@ -127,27 +126,6 @@ impl TuiApp {
                 HitTarget::VisibleControl(SemanticCommand::OpenModelControl(column)),
                 25,
             );
-        }
-    }
-
-    fn register_bottom_panel_tab_regions(&mut self, area: ratatui::layout::Rect) {
-        if area.height == 0 || area.width == 0 {
-            return;
-        }
-        let mut x = area.x;
-        let y = area.y;
-        for (idx, tab) in BottomPanelTab::ALL.into_iter().enumerate() {
-            let width = format!(" {} {} ", idx + 1, tab.label()).chars().count() as u16;
-            if x >= area.x.saturating_add(area.width) {
-                break;
-            }
-            let clamped_width = width.min(area.x.saturating_add(area.width).saturating_sub(x));
-            self.register_hit_region(
-                ratatui::layout::Rect::new(x, y, clamped_width, 1),
-                HitTarget::VisibleControl(SemanticCommand::OpenBottomPanel(tab)),
-                25,
-            );
-            x = x.saturating_add(width).saturating_add(1);
         }
     }
 
@@ -422,10 +400,10 @@ impl TuiApp {
             HitTarget::OverlayAction(action) => {
                 self.apply_overlay_action(action).await?;
             }
-            // Left-click on the sidebar has no action of its own — scroll
-            // routing (the only sidebar interaction so far) is handled
-            // separately in `handle_mouse`'s ScrollUp/ScrollDown arm.
-            HitTarget::Sidebar => {}
+            HitTarget::Sidebar => {
+                self.execute_semantic_command(SemanticCommand::FocusPane(FocusBlock::Sidebar))
+                    .await?;
+            }
         }
         Ok(())
     }
@@ -492,7 +470,12 @@ impl TuiApp {
                     match self.pane_target_at(mouse.column, mouse.row) {
                         Some(FocusBlock::Files) => self.scroll_files(up, 3),
                         Some(FocusBlock::Workspace) => self.scroll_workspace_under_pointer(up),
-                        Some(FocusBlock::Composer | FocusBlock::BottomPanel) | None => {}
+                        // `pane_target_at` never actually returns Sidebar —
+                        // its scroll is handled by the branch above.
+                        Some(
+                            FocusBlock::Sidebar | FocusBlock::Composer | FocusBlock::BottomPanel,
+                        )
+                        | None => {}
                     }
                 }
             }

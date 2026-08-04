@@ -138,13 +138,6 @@ impl TuiApp {
             KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::ALT) => {
                 Some(SemanticCommand::CyclePermissionMode)
             }
-            KeyCode::Char(c @ '1'..='3') if key.modifiers.contains(KeyModifiers::ALT) => {
-                let index = (c as u8 - b'1') as usize;
-                BottomPanelTab::ALL
-                    .get(index)
-                    .copied()
-                    .map(SemanticCommand::OpenBottomPanel)
-            }
             KeyCode::F(1) if self.overlay.is_none() => Some(SemanticCommand::OpenHelp),
             _ => None,
         }
@@ -273,36 +266,35 @@ impl TuiApp {
         if !self.bottom_panel.open {
             return None;
         }
-        match self.tab_nav_command(key) {
-            Some(TabNavCommand::PreviousTab) => {
-                return Some(SemanticCommand::CycleBottomPanelTab { forward: false });
-            }
-            Some(TabNavCommand::NextTab) => {
-                return Some(SemanticCommand::CycleBottomPanelTab { forward: true });
-            }
-            None => {}
-        }
         match key.code {
-            KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => {
-                Some(SemanticCommand::CycleBottomPanelTab { forward: false })
+            KeyCode::Esc if key.modifiers.is_empty() => {
+                Some(SemanticCommand::CancelCurrentInteraction)
             }
-            KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => {
-                Some(SemanticCommand::CycleBottomPanelTab { forward: true })
-            }
+            _ => None,
+        }
+    }
 
-            KeyCode::Up if self.bottom_panel.active == BottomPanelTab::Tasks => {
+    /// Background-task selection/cancel/approve/deny — moved out of the
+    /// bottom panel's (now-deleted) Tasks tab; gated on the sidebar itself
+    /// having focus, since the task strip lives there now.
+    pub(super) fn semantic_command_for_sidebar_key(
+        &self,
+        key: event::KeyEvent,
+    ) -> Option<SemanticCommand> {
+        match key.code {
+            KeyCode::Up if key.modifiers.is_empty() => {
                 Some(SemanticCommand::MoveTasksSelection(-1))
             }
-            KeyCode::Down if self.bottom_panel.active == BottomPanelTab::Tasks => {
+            KeyCode::Down if key.modifiers.is_empty() => {
                 Some(SemanticCommand::MoveTasksSelection(1))
             }
-            KeyCode::Char('x') if self.bottom_panel.active == BottomPanelTab::Tasks => {
+            KeyCode::Char('x') if key.modifiers.is_empty() => {
                 Some(SemanticCommand::CancelSelectedBackgroundTask)
             }
-            KeyCode::Char('a') if self.bottom_panel.active == BottomPanelTab::Tasks => {
+            KeyCode::Char('a') if key.modifiers.is_empty() => {
                 Some(SemanticCommand::ApproveSelectedBackgroundTask)
             }
-            KeyCode::Char('d') if self.bottom_panel.active == BottomPanelTab::Tasks => {
+            KeyCode::Char('d') if key.modifiers.is_empty() => {
                 Some(SemanticCommand::DenySelectedBackgroundTask)
             }
             KeyCode::Esc if key.modifiers.is_empty() => {
@@ -394,7 +386,9 @@ impl TuiApp {
                     if let Some(id) = self.current_run_id() {
                         self.navigate_to_workspace_view(WorkspaceView::Run(id));
                     } else {
-                        self.open_bottom_panel(Some(BottomPanelTab::Tasks));
+                        // Background tasks live in the sidebar strip now,
+                        // not a bottom-panel tab — focus it instead.
+                        self.focus_block(FocusBlock::Sidebar);
                     }
                 }
                 RunCommandTarget::Id(id) => {
@@ -494,14 +488,7 @@ impl TuiApp {
             SemanticCommand::OpenQuickOpen => self.open_quick_open(),
             SemanticCommand::QuickSwitchModel => self.quick_switch_model(),
             SemanticCommand::OpenModelControl(focus) => self.open_connect_picker_compact(focus),
-            SemanticCommand::CycleBottomPanelTab { forward } => {
-                if forward {
-                    self.bottom_panel.next_tab();
-                } else {
-                    self.bottom_panel.previous_tab();
-                }
-            }
-            SemanticCommand::OpenBottomPanel(tab) => self.open_bottom_panel(Some(tab)),
+            SemanticCommand::OpenBottomPanel => self.open_bottom_panel(),
             SemanticCommand::RefreshFiles => self.workspace_files.explorer.refresh_selected(),
             SemanticCommand::RefreshEditor => {
                 self.source_viewer.refresh(self.session.workspace_root());
@@ -1123,10 +1110,6 @@ mod tests {
                 SemanticCommand::ToggleBottomPanel,
             ),
             (
-                key(KeyCode::Char('2'), ALT),
-                SemanticCommand::OpenBottomPanel(BottomPanelTab::Tasks),
-            ),
-            (
                 key(KeyCode::Char('p'), ALT),
                 SemanticCommand::CyclePermissionMode,
             ),
@@ -1288,21 +1271,45 @@ mod tests {
         );
 
         app.bottom_panel.open = true;
-        // Tab cycling is available on any tab, by shifted arrow or Alt+arrow.
-        for (k, forward) in [
-            (key(KeyCode::Left, SHIFT), false),
-            (key(KeyCode::Right, SHIFT), true),
-            (key(KeyCode::Left, ALT), false),
-            (key(KeyCode::Right, ALT), true),
+        assert_eq!(
+            app.semantic_command_for_bottom_panel_key(key(KeyCode::Esc, NONE)),
+            Some(SemanticCommand::CancelCurrentInteraction)
+        );
+    }
+
+    #[tokio::test]
+    async fn sidebar_key_bindings_drive_background_task_selection() {
+        let (_d, app) = app().await;
+        for (k, expected) in [
+            (
+                key(KeyCode::Up, NONE),
+                SemanticCommand::MoveTasksSelection(-1),
+            ),
+            (
+                key(KeyCode::Down, NONE),
+                SemanticCommand::MoveTasksSelection(1),
+            ),
+            (
+                key(KeyCode::Char('x'), NONE),
+                SemanticCommand::CancelSelectedBackgroundTask,
+            ),
+            (
+                key(KeyCode::Char('a'), NONE),
+                SemanticCommand::ApproveSelectedBackgroundTask,
+            ),
+            (
+                key(KeyCode::Char('d'), NONE),
+                SemanticCommand::DenySelectedBackgroundTask,
+            ),
         ] {
             assert_eq!(
-                app.semantic_command_for_bottom_panel_key(k),
-                Some(SemanticCommand::CycleBottomPanelTab { forward }),
+                app.semantic_command_for_sidebar_key(k),
+                Some(expected.clone()),
                 "{k:?}"
             );
         }
         assert_eq!(
-            app.semantic_command_for_bottom_panel_key(key(KeyCode::Esc, NONE)),
+            app.semantic_command_for_sidebar_key(key(KeyCode::Esc, NONE)),
             Some(SemanticCommand::CancelCurrentInteraction)
         );
     }

@@ -1,4 +1,5 @@
-//! Tasks bottom-panel navigation, cancellation, and poll wiring tests.
+//! Sidebar background-task navigation, cancellation, and poll wiring tests
+//! (relocated from the bottom panel's now-deleted Tasks tab).
 
 use super::prelude::*;
 
@@ -39,7 +40,7 @@ async fn wait_for_task_status(
 }
 
 #[tokio::test]
-async fn approving_the_selected_waiting_task_from_the_tasks_tab_lets_it_finish() {
+async fn approving_the_selected_waiting_task_from_the_sidebar_lets_it_finish() {
     let dir = TempDir::new().unwrap();
     init_repo(dir.path()).await;
     let model = Arc::new(MockModelClient::script(vec![
@@ -94,8 +95,7 @@ async fn approving_the_selected_waiting_task_from_the_tasks_tab_lets_it_finish()
     })
     .await;
 
-    app.bottom_panel.open_tab(BottomPanelTab::Tasks);
-    app.focus_block(FocusBlock::BottomPanel);
+    app.focus_block(FocusBlock::Sidebar);
     app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
         .await
         .unwrap();
@@ -114,7 +114,7 @@ async fn approving_the_selected_waiting_task_from_the_tasks_tab_lets_it_finish()
 }
 
 #[tokio::test]
-async fn tasks_tab_down_then_cancel_targets_the_selected_row() {
+async fn sidebar_down_then_cancel_targets_the_selected_row() {
     let (_dir, mut app) = focus_test_app().await;
     let first = app
         .session
@@ -126,8 +126,7 @@ async fn tasks_tab_down_then_cancel_targets_the_selected_row() {
         .await
         .unwrap();
 
-    app.bottom_panel.open_tab(BottomPanelTab::Tasks);
-    app.focus_block(FocusBlock::BottomPanel);
+    app.focus_block(FocusBlock::Sidebar);
     // Down from no selection lands on row index 1 (the second-spawned task) —
     // `move_tasks_selection`'s wrap starts `cur` at 0, so `+1` selects index 1.
     app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
@@ -170,7 +169,7 @@ async fn tasks_tab_down_then_cancel_targets_the_selected_row() {
 }
 
 #[tokio::test]
-async fn cancel_key_is_a_no_op_outside_the_tasks_tab() {
+async fn cancel_key_is_a_no_op_outside_the_sidebar() {
     let (_dir, mut app) = focus_test_app().await;
     let id = app
         .session
@@ -178,8 +177,7 @@ async fn cancel_key_is_a_no_op_outside_the_tasks_tab() {
         .await
         .unwrap();
 
-    app.bottom_panel.open_tab(BottomPanelTab::Terminal);
-    app.focus_block(FocusBlock::BottomPanel);
+    app.open_bottom_panel();
     app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
         .await
         .unwrap();
@@ -191,7 +189,7 @@ async fn cancel_key_is_a_no_op_outside_the_tasks_tab() {
 }
 
 #[tokio::test]
-async fn poll_background_tasks_surfaces_a_finished_job_in_the_tasks_tab() {
+async fn poll_background_tasks_surfaces_a_finished_job_in_the_sidebar() {
     let (_dir, mut app) = focus_test_app().await;
     let id = app
         .session
@@ -218,7 +216,6 @@ async fn poll_background_tasks_surfaces_a_finished_job_in_the_tasks_tab() {
         forge_core::BackgroundTaskStatus::Succeeded { .. }
     ));
 
-    app.bottom_panel.open_tab(BottomPanelTab::Tasks);
     let rendered = render_app_text(&mut app, 100, 30);
     assert!(rendered.contains("echo"), "{rendered}");
     assert!(rendered.contains("succeeded"), "{rendered}");

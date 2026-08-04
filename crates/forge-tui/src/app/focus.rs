@@ -10,6 +10,11 @@ impl TuiApp {
     pub(super) fn focus_availability(&self) -> FocusAvailability {
         FocusAvailability {
             files: self.workspace_files.visible,
+            // No standalone preference flag — the sidebar only ever hides
+            // via the layout's own narrow-width defensive floor, which this
+            // preference-only check can't see (see render.rs's geometry-based
+            // FocusAvailability for that case).
+            sidebar: true,
             bottom_panel: self.bottom_panel.open,
         }
     }
@@ -112,10 +117,7 @@ impl TuiApp {
         self.normalize_focus();
     }
 
-    pub(super) fn open_bottom_panel(&mut self, tab: Option<BottomPanelTab>) {
-        if let Some(tab) = tab {
-            self.bottom_panel.active = tab;
-        }
+    pub(super) fn open_bottom_panel(&mut self) {
         self.bottom_panel.open = true;
         self.focus_block(FocusBlock::BottomPanel);
     }

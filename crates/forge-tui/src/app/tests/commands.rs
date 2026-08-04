@@ -340,13 +340,12 @@ async fn open_bottom_panel_sets_active_tab() {
         },
     );
 
-    app.open_bottom_panel(Some(BottomPanelTab::Terminal));
+    app.open_bottom_panel();
     assert!(app.bottom_panel.open);
-    assert_eq!(app.bottom_panel.active, BottomPanelTab::Terminal);
 }
 
 #[tokio::test]
-async fn focused_bottom_panel_cycles_without_typing_into_chat() {
+async fn focused_bottom_panel_alt_arrows_do_not_type_into_chat() {
     use crossterm::event::{KeyCode, KeyModifiers};
     let (dir, session) = test_session().await;
     let mut app = TuiApp::new(
@@ -364,21 +363,16 @@ async fn focused_bottom_panel_cycles_without_typing_into_chat() {
         },
     );
     app.input.set_text("draft");
-    app.bottom_panel.open_tab(BottomPanelTab::Terminal);
-    app.focus_block(FocusBlock::BottomPanel);
+    app.open_bottom_panel();
 
+    // The bottom panel is Terminal-only now — Alt+Left/Right has nothing
+    // to cycle, but the key still shouldn't leak into the composer.
     app.handle_key(press(KeyCode::Right, KeyModifiers::ALT))
         .await
         .unwrap();
-    assert_eq!(app.bottom_panel.active, BottomPanelTab::Tasks);
-    app.handle_key(press(KeyCode::Right, KeyModifiers::ALT))
-        .await
-        .unwrap();
-    assert_eq!(app.bottom_panel.active, BottomPanelTab::Terminal);
     app.handle_key(press(KeyCode::Left, KeyModifiers::ALT))
         .await
         .unwrap();
-    assert_eq!(app.bottom_panel.active, BottomPanelTab::Tasks);
     assert_eq!(app.input.text, "draft");
 }
 
@@ -1070,30 +1064,6 @@ async fn status_slash_command_opens_overlay_on_enter() {
         .await
         .unwrap();
     assert!(matches!(app.overlay, Some(Overlay::StatusReport { .. })));
-}
-
-#[tokio::test]
-async fn alt_digit_opens_bottom_panel_tab() {
-    let (_dir, session) = test_session().await;
-    let mut app = TuiApp::new(
-        session,
-        TuiRuntimeConfig {
-            model_label: "mock".into(),
-            provider: "mock".into(),
-            cwd: PathBuf::from("."),
-            version: "test".into(),
-            startup_notices: Vec::new(),
-            validation_command: None,
-            file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
-            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
-        },
-    );
-    app.handle_key(press(KeyCode::Char('2'), KeyModifiers::ALT))
-        .await
-        .unwrap();
-    assert!(app.bottom_panel.open);
-    assert_eq!(app.bottom_panel.active, BottomPanelTab::Tasks);
 }
 
 #[tokio::test]

@@ -194,7 +194,7 @@ async fn final_shell_rendering_matrix_covers_v31_states_without_obsolete_chrome(
     scenarios.push(("default shell", dir, app, vec!["Describe a task"]));
 
     let (dir, mut app) = focus_test_app().await;
-    app.open_bottom_panel(Some(BottomPanelTab::Terminal));
+    app.open_bottom_panel();
     scenarios.push(("bottom open", dir, app, vec!["Terminal", "Describe a task"]));
 
     let (dir, mut app) = focus_test_app().await;
