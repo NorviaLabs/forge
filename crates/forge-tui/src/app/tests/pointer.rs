@@ -119,12 +119,13 @@ async fn footer_control_segments_are_clickable_and_open_compact_picker() {
 
 #[tokio::test]
 async fn mouse_wheel_scrolls_hovered_pane_without_focus_change() {
+    // Conversation lives in the persistent sidebar now, not the center
+    // (Workspace) pane, so scrolling it is routed via the `Sidebar` hit
+    // target rather than `HitTarget::Pane(FocusBlock::Workspace)`.
     let (_dir, mut app) = focus_test_app().await;
     app.focus_block(FocusBlock::Composer);
     draw_app(&mut app, 120, 30);
-    let (x, y) = hit_point(&app, |target| {
-        matches!(target, HitTarget::Pane(FocusBlock::Workspace))
-    });
+    let (x, y) = hit_point(&app, |target| matches!(target, HitTarget::Sidebar));
     app.handle_mouse(mouse(MouseEventKind::ScrollUp, x, y))
         .await
         .unwrap();
@@ -255,17 +256,14 @@ async fn mouse_double_click_same_file_opens_it_like_enter() {
     app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), x, y))
         .await
         .unwrap();
-    assert_eq!(
-        app.workspace_navigation.current,
-        WorkspaceView::Conversation
-    );
+    assert_eq!(app.workspace_navigation.current, None);
     app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), x, y))
         .await
         .unwrap();
 
     assert_eq!(
         app.workspace_navigation.current,
-        WorkspaceView::File(canonical.clone())
+        Some(WorkspaceView::File(canonical.clone()))
     );
     assert_eq!(app.source_viewer.path.as_deref(), Some(canonical.as_path()));
 
@@ -285,7 +283,7 @@ async fn mouse_double_click_same_file_opens_it_like_enter() {
         .unwrap();
     assert!(matches!(
         enter_app.workspace_navigation.current,
-        WorkspaceView::File(_)
+        Some(WorkspaceView::File(_))
     ));
     assert!(enter_app.source_viewer.path.is_some());
 }
@@ -330,10 +328,7 @@ async fn mouse_double_click_slow_or_different_rows_only_selects() {
     ))
     .await
     .unwrap();
-    assert_eq!(
-        app.workspace_navigation.current,
-        WorkspaceView::Conversation
-    );
+    assert_eq!(app.workspace_navigation.current, None);
     assert_eq!(
         app.workspace_files.explorer.selected_path.as_deref(),
         Some(first.as_path())
@@ -346,10 +341,7 @@ async fn mouse_double_click_slow_or_different_rows_only_selects() {
     ))
     .await
     .unwrap();
-    assert_eq!(
-        app.workspace_navigation.current,
-        WorkspaceView::Conversation
-    );
+    assert_eq!(app.workspace_navigation.current, None);
     assert_eq!(
         app.workspace_files.explorer.selected_path.as_deref(),
         Some(second.as_path())
@@ -396,10 +388,7 @@ async fn mouse_double_click_cancels_on_scroll_resize_list_or_modal_change() {
     ))
     .await
     .unwrap();
-    assert_eq!(
-        app.workspace_navigation.current,
-        WorkspaceView::Conversation
-    );
+    assert_eq!(app.workspace_navigation.current, None);
     app.clear_pending_double_click();
 
     app.handle_mouse(mouse(
@@ -423,10 +412,7 @@ async fn mouse_double_click_cancels_on_scroll_resize_list_or_modal_change() {
     ))
     .await
     .unwrap();
-    assert_eq!(
-        app.workspace_navigation.current,
-        WorkspaceView::Conversation
-    );
+    assert_eq!(app.workspace_navigation.current, None);
     app.clear_pending_double_click();
 
     app.handle_mouse(mouse(
@@ -450,10 +436,7 @@ async fn mouse_double_click_cancels_on_scroll_resize_list_or_modal_change() {
     ))
     .await
     .unwrap();
-    assert_eq!(
-        app.workspace_navigation.current,
-        WorkspaceView::Conversation
-    );
+    assert_eq!(app.workspace_navigation.current, None);
     app.clear_pending_double_click();
 
     app.handle_mouse(mouse(
@@ -479,10 +462,7 @@ async fn mouse_double_click_cancels_on_scroll_resize_list_or_modal_change() {
     ))
     .await
     .unwrap();
-    assert_eq!(
-        app.workspace_navigation.current,
-        WorkspaceView::Conversation
-    );
+    assert_eq!(app.workspace_navigation.current, None);
 }
 
 #[tokio::test]
@@ -610,7 +590,7 @@ async fn edge_mouse_disabled_keeps_keyboard_workflow_and_no_mouse_hint() {
 
     assert_eq!(
         app.workspace_navigation.current,
-        WorkspaceView::File(canonical)
+        Some(WorkspaceView::File(canonical))
     );
     let rendered = render_app_text(&mut app, 100, 30);
     assert!(
@@ -650,10 +630,7 @@ async fn edge_hit_target_invalidated_cancels_double_click_state() {
         .await
         .unwrap();
 
-    assert_eq!(
-        app.workspace_navigation.current,
-        WorkspaceView::Conversation
-    );
+    assert_eq!(app.workspace_navigation.current, None);
 }
 
 #[tokio::test]
@@ -669,17 +646,14 @@ async fn edge_end_to_end_recovery_flow_mouse_enabled_and_disabled() {
             .git_status
             .status
             .insert(PathBuf::from("flow.rs"), GitStatusKind::Modified);
-        assert_eq!(
-            app.workspace_navigation.current,
-            WorkspaceView::Conversation
-        );
+        assert_eq!(app.workspace_navigation.current, None);
 
         app.execute_semantic_command(SemanticCommand::OpenFile(path.clone()))
             .await
             .unwrap();
         assert_eq!(
             app.workspace_navigation.current,
-            WorkspaceView::File(path.clone())
+            Some(WorkspaceView::File(path.clone()))
         );
 
         app.execute_semantic_command(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
@@ -687,7 +661,7 @@ async fn edge_end_to_end_recovery_flow_mouse_enabled_and_disabled() {
             .unwrap();
         assert_eq!(
             app.workspace_navigation.current,
-            WorkspaceView::Diff(DiffCommandContext::Current)
+            Some(WorkspaceView::Diff(DiffCommandContext::Current))
         );
 
         app.run.draft.command_input = "cargo test".into();
@@ -703,7 +677,7 @@ async fn edge_end_to_end_recovery_flow_mouse_enabled_and_disabled() {
         app.poll_run();
         assert_eq!(
             app.workspace_navigation.current,
-            WorkspaceView::Diff(DiffCommandContext::Current)
+            Some(WorkspaceView::Diff(DiffCommandContext::Current))
         );
 
         app.execute_semantic_command(SemanticCommand::ActivateActivitySummary)
@@ -711,14 +685,14 @@ async fn edge_end_to_end_recovery_flow_mouse_enabled_and_disabled() {
             .unwrap();
         assert_eq!(
             app.workspace_navigation.current,
-            WorkspaceView::Run(run_id.clone())
+            Some(WorkspaceView::Run(run_id.clone()))
         );
         app.execute_semantic_command(SemanticCommand::GoBack)
             .await
             .unwrap();
         assert_eq!(
             app.workspace_navigation.current,
-            WorkspaceView::Diff(DiffCommandContext::Current)
+            Some(WorkspaceView::Diff(DiffCommandContext::Current))
         );
 
         fs::write(&path, "fn flow() {}\nfn changed() {}\n").unwrap();
@@ -741,9 +715,6 @@ async fn edge_end_to_end_recovery_flow_mouse_enabled_and_disabled() {
         app.execute_semantic_command(SemanticCommand::GoHome)
             .await
             .unwrap();
-        assert_eq!(
-            app.workspace_navigation.current,
-            WorkspaceView::Conversation
-        );
+        assert_eq!(app.workspace_navigation.current, None);
     }
 }

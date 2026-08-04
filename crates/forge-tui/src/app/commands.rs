@@ -251,20 +251,7 @@ impl TuiApp {
                 // in NORMAL) falls through to the GoBack arm below.
                 None
             }
-            KeyCode::Esc if key.modifiers.is_empty() => {
-                if self.current_workspace_is_conversation() {
-                    Some(SemanticCommand::CancelCurrentInteraction)
-                } else {
-                    Some(SemanticCommand::GoBack)
-                }
-            }
-            KeyCode::Enter
-                if key.modifiers.is_empty()
-                    && self.current_workspace_is_conversation()
-                    && self.activity_summary_command().is_some() =>
-            {
-                Some(SemanticCommand::ActivateActivitySummary)
-            }
+            KeyCode::Esc if key.modifiers.is_empty() => Some(SemanticCommand::GoBack),
             KeyCode::Enter if key.modifiers.is_empty() && self.current_workspace_is_run() => {
                 Some(SemanticCommand::RunOrCancel)
             }

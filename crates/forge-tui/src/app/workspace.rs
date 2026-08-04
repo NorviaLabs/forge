@@ -7,23 +7,25 @@
 use super::*;
 
 impl TuiApp {
-    pub(super) fn current_workspace_is_conversation(&self) -> bool {
+    pub(super) fn current_workspace_is_file(&self) -> bool {
         matches!(
             self.workspace_navigation.current,
-            WorkspaceView::Conversation
+            Some(WorkspaceView::File(_))
         )
     }
 
-    pub(super) fn current_workspace_is_file(&self) -> bool {
-        matches!(self.workspace_navigation.current, WorkspaceView::File(_))
-    }
-
     pub(super) fn current_workspace_is_diff(&self) -> bool {
-        matches!(self.workspace_navigation.current, WorkspaceView::Diff(_))
+        matches!(
+            self.workspace_navigation.current,
+            Some(WorkspaceView::Diff(_))
+        )
     }
 
     pub(super) fn current_workspace_is_run(&self) -> bool {
-        matches!(self.workspace_navigation.current, WorkspaceView::Run(_))
+        matches!(
+            self.workspace_navigation.current,
+            Some(WorkspaceView::Run(_))
+        )
     }
     pub(super) fn toggle_files_panel(&mut self) {
         self.workspace_files.visible = !self.workspace_files.visible;
@@ -38,7 +40,6 @@ impl TuiApp {
 
     pub(super) fn workspace_view_is_valid(&self, view: &WorkspaceView) -> bool {
         match view {
-            WorkspaceView::Conversation => true,
             WorkspaceView::File(path) => path.is_file() || path.is_symlink(),
             WorkspaceView::Diff(DiffCommandContext::Current) => true,
             WorkspaceView::Run(id) => self.run_exists(id),
@@ -47,7 +48,6 @@ impl TuiApp {
 
     pub(super) fn apply_workspace_view(&mut self, view: &WorkspaceView) {
         match view {
-            WorkspaceView::Conversation => {}
             WorkspaceView::File(path) => {
                 self.show_file_in_editor(path);
             }
@@ -62,8 +62,7 @@ impl TuiApp {
                         FeedbackSeverity::Warn,
                         format!("Run is no longer available: {id}"),
                     );
-                    self.workspace_navigation
-                        .replace_view(WorkspaceView::Conversation);
+                    self.workspace_navigation.current = None;
                 }
             }
         }
@@ -87,18 +86,21 @@ impl TuiApp {
 
     pub(super) fn go_home_workspace(&mut self) {
         self.workspace_navigation.home();
-        self.apply_workspace_view(&WorkspaceView::Conversation);
+        self.normalize_focus();
     }
 
     pub(super) fn go_back_workspace(&mut self) {
-        let mut next = WorkspaceView::Conversation;
+        let mut next = None;
         while let Some(candidate) = self.workspace_navigation.history.pop() {
             if self.workspace_view_is_valid(&candidate) {
-                next = candidate;
+                next = Some(candidate);
                 break;
             }
         }
-        self.workspace_navigation.replace_view(next.clone());
-        self.apply_workspace_view(&next);
+        self.workspace_navigation.current = next.clone();
+        match &next {
+            Some(view) => self.apply_workspace_view(view),
+            None => self.normalize_focus(),
+        }
     }
 }

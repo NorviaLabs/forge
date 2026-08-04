@@ -14,17 +14,35 @@ pub const THEME_DOCK_H: u16 = 12;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LayoutRegions {
     pub status: Rect,
+    /// Center pane: File/Diff/Run content, or an empty-state placeholder.
     pub chat: Rect,
     pub files: Option<Rect>,
-    /// Contextual bottom panel. 0-height when closed or space is tight.
+    /// Persistent conversation sidebar. Unlike `files`, this doesn't hide at
+    /// narrow widths — the composer lives inside it, so it always gets a
+    /// column (see `SIDEBAR_MIN_CONTENT_WIDTH`).
+    pub sidebar: Option<Rect>,
+    /// Contextual bottom panel, docked under `files`+`chat` only — never
+    /// under `sidebar`. 0-height when closed or space is tight.
     pub bottom_panel: Rect,
-    /// Phase 10 / TUI-08 — 0-height when empty.
+    /// Phase 10 / TUI-08 — 0-height when empty. Scoped to `sidebar`'s width.
     pub feedback: Rect,
     /// Outbound message queue (click a row to cancel). 0-height when empty.
+    /// Scoped to `sidebar`'s width.
     pub queue: Rect,
+    /// Composer. Scoped to `sidebar`'s width, docked at its bottom.
     pub input: Rect,
     pub footer: Rect,
 }
+
+/// Width threshold below which the file explorer hides. Higher than
+/// `SIDEBAR_MIN_CONTENT_WIDTH` so the explorer is the first thing to go as
+/// the terminal narrows.
+const FILES_WIDTH_THRESHOLD: u16 = 110;
+/// Minimum chat/files width the sidebar must leave behind. The sidebar
+/// itself doesn't hide on narrow-width precedence like `files` does — the
+/// composer lives inside it — so this is only a defensive floor against
+/// negative-width arithmetic on pathologically narrow terminals.
+const SIDEBAR_MIN_CONTENT_WIDTH: u16 = 40;
 
 /// Split terminal; `feedback_h` is 0 or 1 (feedback strip).
 pub fn split_areas(area: Rect) -> LayoutRegions {
@@ -48,7 +66,16 @@ pub fn split_areas_with_bottom_panel(
     queue_h: u16,
     bottom_panel_h: u16,
 ) -> LayoutRegions {
-    split_areas_with_chrome(area, feedback_h, input_h, false, queue_h, bottom_panel_h, 0)
+    split_areas_with_chrome(
+        area,
+        feedback_h,
+        input_h,
+        false,
+        queue_h,
+        bottom_panel_h,
+        0,
+        true,
+    )
 }
 
 #[allow(dead_code)]
@@ -59,6 +86,7 @@ pub fn split_areas_with_side_panels(
     show_files: bool,
     queue_h: u16,
     bottom_panel_h: u16,
+    show_sidebar: bool,
 ) -> LayoutRegions {
     split_areas_with_chrome(
         area,
@@ -68,6 +96,7 @@ pub fn split_areas_with_side_panels(
         queue_h,
         bottom_panel_h,
         0,
+        show_sidebar,
     )
 }
 
@@ -80,6 +109,7 @@ pub fn split_areas_with_chrome(
     queue_h: u16,
     bottom_panel_h: u16,
     footer_h: u16,
+    show_sidebar: bool,
 ) -> LayoutRegions {
     let content_width = (u32::from(area.width) * CONTENT_WIDTH_PERCENT / 100) as u16;
     let content_area = Rect {
@@ -92,50 +122,93 @@ pub fn split_areas_with_chrome(
     let input_h = input_h.clamp(3, THEME_DOCK_H);
     let qh = queue_h.min(8);
     let footer_h = footer_h.min(1);
-    let fixed_h = 1 + fb + qh + input_h + footer_h;
+    let sidebar_width = (content_area.width / 4).clamp(32, 44);
+    let show_sidebar =
+        show_sidebar && content_area.width >= sidebar_width + SIDEBAR_MIN_CONTENT_WIDTH;
+    let fixed_h = 1 + footer_h;
+    let sidebar_fixed_h = fb + qh + input_h;
     let requested_panel_h = bottom_panel_h.min(8);
-    let panel_h = if content_area.height >= fixed_h + requested_panel_h + 10 {
+    let panel_h = if content_area.height >= fixed_h + sidebar_fixed_h + requested_panel_h + 10 {
         requested_panel_h
     } else {
         0
     };
+
+    // Top-level vertical stack: status / main / footer. `feedback`, `queue`
+    // and `input` no longer live here — they're scoped to the sidebar's own
+    // width, split out below.
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),        // status
             Constraint::Min(3),           // main
-            Constraint::Length(panel_h),  // bottom panel
-            Constraint::Length(fb),       // feedback
-            Constraint::Length(qh),       // message queue
-            Constraint::Length(input_h),  // input (multi-line)
             Constraint::Length(footer_h), // contextual hint
         ])
         .split(content_area);
-
     let status = rows[0];
     let main = rows[1];
-    let bottom_panel = rows[2];
-    let feedback = rows[3];
-    let queue = rows[4];
-    let input = rows[5];
-    let footer = rows[6];
+    let footer = rows[2];
 
-    let show_files = show_files && content_area.width >= 110;
+    // main row: [left column (files+chat+bottom_panel), sidebar]
+    let (left_area, sidebar) = if show_sidebar {
+        let columns = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(40), Constraint::Length(sidebar_width)])
+            .split(main);
+        (columns[0], Some(columns[1]))
+    } else {
+        (main, None)
+    };
+
+    // left column: [files+chat, bottom_panel] — bottom panel spans this
+    // column's full width, never the sidebar's.
+    let left_rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(3), Constraint::Length(panel_h)])
+        .split(left_area);
+    let top = left_rows[0];
+    let bottom_panel = left_rows[1];
+
+    let show_files = show_files && content_area.width >= FILES_WIDTH_THRESHOLD;
     let file_width = (content_area.width / 5).clamp(24, 32);
     let (files, chat) = if show_files {
         let columns = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Length(file_width), Constraint::Min(40)])
-            .split(main);
+            .split(top);
         (Some(columns[0]), columns[1])
     } else {
-        (None, main)
+        (None, top)
+    };
+
+    // sidebar: [transcript, feedback, queue, input] — always shows a
+    // composer when the sidebar itself is shown.
+    let (sidebar, feedback, queue, input) = if let Some(sb) = sidebar {
+        let sidebar_rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(3),
+                Constraint::Length(fb),
+                Constraint::Length(qh),
+                Constraint::Length(input_h),
+            ])
+            .split(sb);
+        (
+            Some(sidebar_rows[0]),
+            sidebar_rows[1],
+            sidebar_rows[2],
+            sidebar_rows[3],
+        )
+    } else {
+        let zero = Rect::new(main.x, main.y, 0, 0);
+        (None, zero, zero, zero)
     };
 
     LayoutRegions {
         status,
         chat,
         files,
+        sidebar,
         bottom_panel,
         feedback,
         queue,
@@ -179,7 +252,11 @@ mod tests {
         let area = Rect::new(0, 0, 120, 40);
         let r = split_areas(area);
         assert_eq!(r.status, Rect::new(3, 0, 114, 1));
-        assert_eq!(r.chat, Rect::new(3, 1, 114, 36));
+        // Chat gets the width left of the sidebar; taller than before since
+        // the composer no longer eats vertical space from this column — it
+        // lives in the sidebar's own split instead.
+        assert_eq!(r.chat, Rect::new(3, 1, 82, 39));
+        assert_eq!(r.sidebar, Some(Rect::new(85, 1, 32, 36)));
         assert_eq!(r.footer.height, 0);
         assert_eq!(r.input.height, 3);
         assert_eq!(r.bottom_panel.height, 0);
@@ -209,9 +286,11 @@ mod tests {
         let area = Rect::new(0, 0, 200, 40);
         let r = split_areas(area);
         assert_eq!(r.status, Rect::new(5, 0, 190, 1));
-        assert_eq!(r.chat, Rect::new(5, 1, 190, 36));
-        assert_eq!(r.input.x, 5);
-        assert_eq!(r.input.width, 190);
+        assert_eq!(r.chat, Rect::new(5, 1, 146, 39));
+        // The composer is scoped to the sidebar's width now, not the full
+        // content column.
+        assert_eq!(r.input.x, 151);
+        assert_eq!(r.input.width, 44);
         assert_eq!(r.footer.x, 5);
         assert_eq!(r.footer.width, 190);
         assert_eq!(r.footer.height, 0);
@@ -220,7 +299,7 @@ mod tests {
     #[test]
     fn contextual_hint_row_is_explicit() {
         let area = Rect::new(0, 0, 120, 40);
-        let r = split_areas_with_chrome(area, 0, 3, false, 0, 0, 1);
+        let r = split_areas_with_chrome(area, 0, 3, false, 0, 0, 1, true);
         assert_eq!(r.footer.height, 1);
         assert_eq!(r.footer.y + r.footer.height, area.height);
     }
@@ -252,16 +331,30 @@ mod tests {
     #[test]
     fn files_panel_reserves_bounded_left_space() {
         let area = Rect::new(0, 0, 120, 40);
-        let r = split_areas_with_side_panels(area, 0, 3, true, 0, 0);
-        assert_eq!(r.files, Some(Rect::new(3, 1, 24, 36)));
-        assert_eq!(r.chat, Rect::new(27, 1, 90, 36));
+        let r = split_areas_with_side_panels(area, 0, 3, true, 0, 0, true);
+        assert_eq!(r.files, Some(Rect::new(3, 1, 24, 39)));
+        assert_eq!(r.chat, Rect::new(27, 1, 58, 39));
+        assert_eq!(r.sidebar, Some(Rect::new(85, 1, 32, 36)));
     }
 
     #[test]
     fn files_panel_hides_on_narrow_terminals() {
-        let narrow = split_areas_with_side_panels(Rect::new(0, 0, 100, 30), 0, 3, true, 0, 0);
+        let narrow = split_areas_with_side_panels(Rect::new(0, 0, 100, 30), 0, 3, true, 0, 0, true);
         assert!(narrow.files.is_none());
-        assert_eq!(narrow.chat.width, 95);
+        assert_eq!(narrow.chat.width, 63);
+    }
+
+    #[test]
+    fn sidebar_never_hides_due_to_narrow_terminal_precedence_only_a_defensive_floor() {
+        // Below the defensive floor (sidebar_width + SIDEBAR_MIN_CONTENT_WIDTH),
+        // the sidebar collapses to avoid negative-width arithmetic — but this
+        // is a safety guard, not the same auto-hide precedence `files` has.
+        let narrow = split_areas_with_side_panels(Rect::new(0, 0, 60, 24), 0, 3, false, 0, 0, true);
+        assert!(narrow.sidebar.is_none());
+
+        let comfortable =
+            split_areas_with_side_panels(Rect::new(0, 0, 120, 40), 0, 3, false, 0, 0, true);
+        assert!(comfortable.sidebar.is_some());
     }
 
     #[test]

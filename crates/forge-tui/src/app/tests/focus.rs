@@ -84,7 +84,7 @@ async fn shift_arrow_tabs_only_apply_to_the_active_navigation_block() {
         .unwrap();
     assert_eq!(
         app.workspace_navigation.current,
-        WorkspaceView::Diff(DiffCommandContext::Current)
+        Some(WorkspaceView::Diff(DiffCommandContext::Current))
     );
 
     app.open_bottom_panel(Some(BottomPanelTab::Terminal));
@@ -108,10 +108,7 @@ async fn chat_input_keeps_literal_brackets_and_shift_arrows_do_not_switch_tabs()
     app.handle_key(press(KeyCode::Right, KeyModifiers::SHIFT))
         .await
         .unwrap();
-    assert_eq!(
-        app.workspace_navigation.current,
-        WorkspaceView::Conversation
-    );
+    assert_eq!(app.workspace_navigation.current, None);
     app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
         .await
         .unwrap();
@@ -208,7 +205,7 @@ async fn semantic_commands_dispatch_without_rendering_a_frame() {
         .unwrap();
     assert_eq!(
         app.workspace_navigation.current,
-        WorkspaceView::Diff(DiffCommandContext::Current)
+        Some(WorkspaceView::Diff(DiffCommandContext::Current))
     );
 
     app.execute_semantic_command(SemanticCommand::OpenFile(path.clone()))
@@ -216,7 +213,7 @@ async fn semantic_commands_dispatch_without_rendering_a_frame() {
         .unwrap();
     assert_eq!(
         app.workspace_navigation.current,
-        WorkspaceView::File(path.clone())
+        Some(WorkspaceView::File(path.clone()))
     );
     assert_eq!(
         app.source_viewer.path.as_deref(),
@@ -250,10 +247,7 @@ async fn semantic_dispatch_handles_invalid_or_stale_identifiers_without_panic() 
     .await
     .unwrap();
 
-    assert_eq!(
-        app.workspace_navigation.current,
-        WorkspaceView::Conversation
-    );
+    assert_eq!(app.workspace_navigation.current, None);
     assert!(!app.bottom_panel.open);
 }
 
@@ -339,7 +333,7 @@ async fn switching_to_diff_focuses_workspace_for_navigation() {
 
     assert_eq!(
         app.workspace_navigation.current,
-        WorkspaceView::Diff(DiffCommandContext::Current)
+        Some(WorkspaceView::Diff(DiffCommandContext::Current))
     );
     assert_eq!(app.focus.block, FocusBlock::Workspace);
     assert_eq!(app.diff_view.selected, 1);
@@ -392,10 +386,7 @@ async fn overlay_precedes_block_navigation() {
     app.handle_key(press(KeyCode::Char(']'), KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(
-        app.workspace_navigation.current,
-        WorkspaceView::Conversation
-    );
+    assert_eq!(app.workspace_navigation.current, None);
     assert!(app.overlay.is_some());
 }
 
@@ -429,7 +420,7 @@ async fn helper_labels_reflect_focus_mode() {
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
-    assert!(app.help_text().contains("Conversation"));
+    assert!(app.help_text().contains("No file open"));
     app.workspace_navigation
         .replace_view(WorkspaceView::Diff(DiffCommandContext::Current));
     assert!(app.help_text().contains("Review changes"));

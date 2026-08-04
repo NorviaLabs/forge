@@ -161,7 +161,10 @@ async fn source_viewer_esc_exits_insert_before_navigating_back() {
         app.source_viewer.mode,
         crate::source_viewer::ViewerMode::Normal
     );
-    assert_eq!(app.workspace_navigation.current, WorkspaceView::File(path));
+    assert_eq!(
+        app.workspace_navigation.current,
+        Some(WorkspaceView::File(path))
+    );
 
     // Second Esc: now in NORMAL, so it navigates back as before.
     app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
@@ -169,7 +172,9 @@ async fn source_viewer_esc_exits_insert_before_navigating_back() {
         .unwrap();
     assert_ne!(
         app.workspace_navigation.current,
-        WorkspaceView::File(dir.path().join("main.rs").canonicalize().unwrap())
+        Some(WorkspaceView::File(
+            dir.path().join("main.rs").canonicalize().unwrap()
+        ))
     );
 }
 

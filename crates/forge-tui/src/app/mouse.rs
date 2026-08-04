@@ -48,6 +48,9 @@ impl TuiApp {
             self.register_hit_region(area, HitTarget::Pane(FocusBlock::Files), 1);
         }
         self.register_hit_region(regions.chat, HitTarget::Pane(FocusBlock::Workspace), 1);
+        if let Some(sidebar) = regions.sidebar {
+            self.register_hit_region(sidebar, HitTarget::Sidebar, 1);
+        }
         if self.bottom_panel.open && regions.bottom_panel.height > 0 {
             self.register_hit_region(
                 regions.bottom_panel,
@@ -278,7 +281,8 @@ impl TuiApp {
             | HitTarget::ActivitySummary
             | HitTarget::VisibleControl(_)
             | HitTarget::Composer
-            | HitTarget::OverlayAction(_) => None,
+            | HitTarget::OverlayAction(_)
+            | HitTarget::Sidebar => None,
         }
     }
 
@@ -357,7 +361,9 @@ impl TuiApp {
             }
             Some(HitTarget::Composer) => Some(FocusBlock::Composer),
             Some(HitTarget::ActivitySummary) => Some(FocusBlock::Workspace),
-            Some(HitTarget::VisibleControl(_)) | Some(HitTarget::OverlayAction(_)) => None,
+            Some(HitTarget::VisibleControl(_))
+            | Some(HitTarget::OverlayAction(_))
+            | Some(HitTarget::Sidebar) => None,
             None => None,
         }
     }
@@ -378,20 +384,13 @@ impl TuiApp {
     }
 
     fn scroll_workspace_under_pointer(&mut self, up: bool) {
-        match self.workspace_navigation.current {
-            WorkspaceView::Conversation => {
-                if up {
-                    self.scroll_conversation_up(3);
-                } else {
-                    self.scroll_conversation_down(3);
-                }
-            }
-            WorkspaceView::File(_) => {
+        match &self.workspace_navigation.current {
+            Some(WorkspaceView::File(_)) => {
                 let height = self.editor_viewport.height.saturating_sub(2) as usize;
                 let delta = if up { -3 } else { 3 };
                 self.source_viewer.move_cursor_vertical(delta, height);
             }
-            WorkspaceView::Diff(_) | WorkspaceView::Run(_) => {}
+            Some(WorkspaceView::Diff(_)) | Some(WorkspaceView::Run(_)) | None => {}
         }
     }
 
@@ -423,6 +422,10 @@ impl TuiApp {
             HitTarget::OverlayAction(action) => {
                 self.apply_overlay_action(action).await?;
             }
+            // Left-click on the sidebar has no action of its own — scroll
+            // routing (the only sidebar interaction so far) is handled
+            // separately in `handle_mouse`'s ScrollUp/ScrollDown arm.
+            HitTarget::Sidebar => {}
         }
         Ok(())
     }
@@ -476,10 +479,21 @@ impl TuiApp {
                     return Ok(());
                 }
                 let up = matches!(mouse.kind, MouseEventKind::ScrollUp);
-                match self.pane_target_at(mouse.column, mouse.row) {
-                    Some(FocusBlock::Files) => self.scroll_files(up, 3),
-                    Some(FocusBlock::Workspace) => self.scroll_workspace_under_pointer(up),
-                    Some(FocusBlock::Composer | FocusBlock::BottomPanel) | None => {}
+                if matches!(
+                    self.resolve_hit_target(mouse.column, mouse.row),
+                    Some(HitTarget::Sidebar)
+                ) {
+                    if up {
+                        self.scroll_conversation_up(3);
+                    } else {
+                        self.scroll_conversation_down(3);
+                    }
+                } else {
+                    match self.pane_target_at(mouse.column, mouse.row) {
+                        Some(FocusBlock::Files) => self.scroll_files(up, 3),
+                        Some(FocusBlock::Workspace) => self.scroll_workspace_under_pointer(up),
+                        Some(FocusBlock::Composer | FocusBlock::BottomPanel) | None => {}
+                    }
                 }
             }
             _ => {

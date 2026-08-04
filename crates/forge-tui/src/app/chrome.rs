@@ -253,12 +253,12 @@ impl TuiApp {
 
     fn workspace_resource_label(&self) -> Option<String> {
         match &self.workspace_navigation.current {
-            WorkspaceView::Conversation => None,
-            WorkspaceView::File(path) => {
+            None => None,
+            Some(WorkspaceView::File(path)) => {
                 Some(relative_display(self.session.workspace_root(), path))
             }
-            WorkspaceView::Diff(DiffCommandContext::Current) => Some("Review changes".into()),
-            WorkspaceView::Run(id) => self
+            Some(WorkspaceView::Diff(DiffCommandContext::Current)) => Some("Review changes".into()),
+            Some(WorkspaceView::Run(id)) => self
                 .run
                 .current
                 .as_ref()
@@ -270,11 +270,11 @@ impl TuiApp {
 
     fn workspace_activity_label(&self) -> Option<String> {
         match &self.workspace_navigation.current {
-            WorkspaceView::Diff(DiffCommandContext::Current) => {
+            Some(WorkspaceView::Diff(DiffCommandContext::Current)) => {
                 let total = self.workspace_files.explorer.git_status.status.len();
                 (total > 0).then(|| format!("{} of {} changes", self.diff_view.selected + 1, total))
             }
-            WorkspaceView::Run(id) => self
+            Some(WorkspaceView::Run(id)) => self
                 .run
                 .current
                 .as_ref()
@@ -362,6 +362,12 @@ impl TuiApp {
             .map(|summary| (summary.label, summary.action_label, summary.kind))
     }
 
+    /// Only used by tests now — the Enter-key shortcut that used to gate on
+    /// this (via `current_workspace_is_conversation()`) was dropped when
+    /// conversation stopped being a workspace-nav state. Mouse click on the
+    /// summary banner (`mouse.rs`'s `ActivitySummary` hit target) dispatches
+    /// `ActivateActivitySummary` directly without checking this first.
+    #[cfg(test)]
     pub(super) fn activity_summary_command(&self) -> Option<SemanticCommand> {
         match self.activity_summary()?.action? {
             ActivitySummaryAction::OpenRun(id) => {

@@ -121,17 +121,14 @@ async fn leaving_run_view_does_not_cancel_running_run() {
         .unwrap();
     assert_eq!(
         app.workspace_navigation.current,
-        WorkspaceView::Run(id.clone())
+        Some(WorkspaceView::Run(id.clone()))
     );
 
     app.execute_semantic_command(SemanticCommand::GoBack)
         .await
         .unwrap();
 
-    assert_eq!(
-        app.workspace_navigation.current,
-        WorkspaceView::Conversation
-    );
+    assert_eq!(app.workspace_navigation.current, None);
     assert!(app
         .run
         .current
@@ -185,7 +182,10 @@ async fn run_start_while_in_file_does_not_hijack_workspace() {
     app.run_current_draft();
 
     assert_eq!(app.workspace_navigation, before);
-    assert_eq!(app.workspace_navigation.current, WorkspaceView::File(path));
+    assert_eq!(
+        app.workspace_navigation.current,
+        Some(WorkspaceView::File(path))
+    );
     assert!(app
         .activity
         .all()

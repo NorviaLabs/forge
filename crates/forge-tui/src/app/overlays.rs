@@ -29,7 +29,7 @@ impl TuiApp {
     pub(super) fn help_text(&self) -> String {
         let mode = match self.focus.mode {
             FocusMode::Transient(TransientOwner::SourceSearch)
-                if self.current_workspace_is_file() || self.current_workspace_is_conversation() =>
+                if self.current_workspace_is_file() =>
             {
                 "SEARCH"
             }
@@ -38,11 +38,11 @@ impl TuiApp {
             {
                 "JUMP"
             }
-            _ => match self.workspace_navigation.current {
-                WorkspaceView::Conversation => "Conversation",
-                WorkspaceView::File(_) => "File",
-                WorkspaceView::Diff(_) => "Review changes",
-                WorkspaceView::Run(_) => "Run",
+            _ => match &self.workspace_navigation.current {
+                None => "No file open",
+                Some(WorkspaceView::File(_)) => "File",
+                Some(WorkspaceView::Diff(_)) => "Review changes",
+                Some(WorkspaceView::Run(_)) => "Run",
             },
         };
         let mut text = String::from("Forge is an AI coding agent for your terminal.\n\n");

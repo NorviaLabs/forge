@@ -3,9 +3,10 @@
 const WORKSPACE_HISTORY_LIMIT: usize = 32;
 const UI_STATE_VERSION: u32 = 2;
 
+/// Center-pane content. Conversation isn't a variant here — it's always
+/// shown in the persistent sidebar instead (see [[project_ide_layout_design_round2]]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum WorkspaceView {
-    Conversation,
     File(PathBuf),
     Diff(DiffCommandContext),
     Run(String),
@@ -13,7 +14,6 @@ enum WorkspaceView {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WorkspaceViewKind {
-    Conversation,
     File,
     Diff,
     Run,
@@ -22,7 +22,6 @@ enum WorkspaceViewKind {
 impl WorkspaceView {
     fn kind(&self) -> WorkspaceViewKind {
         match self {
-            Self::Conversation => WorkspaceViewKind::Conversation,
             Self::File(_) => WorkspaceViewKind::File,
             Self::Diff(_) => WorkspaceViewKind::Diff,
             Self::Run(_) => WorkspaceViewKind::Run,
@@ -30,40 +29,35 @@ impl WorkspaceView {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// `current == None` means the center pane is empty (nothing open) — the
+/// widget renders a placeholder in that case; see `render.rs`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct WorkspaceNavigation {
-    current: WorkspaceView,
+    current: Option<WorkspaceView>,
     history: Vec<WorkspaceView>,
-}
-
-impl Default for WorkspaceNavigation {
-    fn default() -> Self {
-        Self {
-            current: WorkspaceView::Conversation,
-            history: Vec::new(),
-        }
-    }
 }
 
 impl WorkspaceNavigation {
     fn push_view(&mut self, view: WorkspaceView) {
-        if self.current == view {
+        if self.current.as_ref() == Some(&view) {
             return;
         }
-        self.history.push(self.current.clone());
-        if self.history.len() > WORKSPACE_HISTORY_LIMIT {
-            let overflow = self.history.len() - WORKSPACE_HISTORY_LIMIT;
-            self.history.drain(0..overflow);
+        if let Some(current) = self.current.take() {
+            self.history.push(current);
+            if self.history.len() > WORKSPACE_HISTORY_LIMIT {
+                let overflow = self.history.len() - WORKSPACE_HISTORY_LIMIT;
+                self.history.drain(0..overflow);
+            }
         }
-        self.current = view;
+        self.current = Some(view);
     }
 
     fn replace_view(&mut self, view: WorkspaceView) {
-        self.current = view;
+        self.current = Some(view);
     }
 
     fn navigate_to(&mut self, view: WorkspaceView) {
-        if self.current.kind() == view.kind() {
+        if self.current.as_ref().map(WorkspaceView::kind) == Some(view.kind()) {
             self.replace_view(view);
         } else {
             self.push_view(view);
@@ -72,7 +66,7 @@ impl WorkspaceNavigation {
 
     fn home(&mut self) {
         self.history.clear();
-        self.current = WorkspaceView::Conversation;
+        self.current = None;
     }
 }
 
@@ -335,6 +329,10 @@ enum HitTarget {
     VisibleControl(SemanticCommand),
     Composer,
     OverlayAction(OverlayAction),
+    /// The persistent conversation sidebar. Kept distinct from `Pane` since
+    /// there's no `FocusBlock` for it — used only to route wheel-scroll
+    /// events to the conversation regardless of what the center pane shows.
+    Sidebar,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
