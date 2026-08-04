@@ -154,6 +154,7 @@ impl TuiApp {
                 cwd: repo_header_cwd.clone(),
             },
             terminal_capture: TerminalCapture::default(),
+            interactive_terminal: None,
             pointer: PointerState::default(),
             workspace_search: WorkspaceSearchState {
                 index: None,

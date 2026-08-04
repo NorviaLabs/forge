@@ -6,6 +6,25 @@
 
 use super::*;
 
+impl TuiApp {
+    pub(super) fn poll_interactive_terminal(&mut self) {
+        if let Some(terminal) = self.interactive_terminal.as_mut() {
+            terminal.poll();
+        }
+    }
+
+    pub(super) fn resize_interactive_terminal(&mut self, width: u16, height: u16) {
+        if let Some(terminal) = self.interactive_terminal.as_mut() {
+            if let Err(error) = terminal.resize(width.saturating_sub(2), height.min(32)) {
+                self.set_feedback(
+                    FeedbackSeverity::Error,
+                    format!("terminal resize failed: {error}"),
+                );
+            }
+        }
+    }
+}
+
 /// Drain every pending terminal event (paste floods many keys; do not drop them).
 pub(super) async fn drain_events(app: &mut TuiApp) -> Result<(), TuiError> {
     loop {
@@ -22,7 +41,10 @@ pub(super) async fn drain_events(app: &mut TuiApp) -> Result<(), TuiError> {
                 app.handle_paste(&data);
                 app.invalidate_hit_regions();
             }
-            Event::Resize(_, _) => app.invalidate_hit_regions(),
+            Event::Resize(width, height) => {
+                app.resize_interactive_terminal(width, height);
+                app.invalidate_hit_regions();
+            }
             _ => {}
         }
     }
@@ -105,6 +127,7 @@ async fn run_loop(
 ) -> Result<(), TuiError> {
     while !app.exit.requested {
         app.poll_file_changes();
+        app.poll_interactive_terminal();
         app.poll_run();
         app.warm_catalog_once_connected();
         app.poll_catalog_refresh();
@@ -157,7 +180,10 @@ async fn run_loop(
                     app.handle_paste(&data);
                     app.invalidate_hit_regions();
                 }
-                Event::Resize(_, _) => app.invalidate_hit_regions(),
+                Event::Resize(width, height) => {
+                    app.resize_interactive_terminal(width, height);
+                    app.invalidate_hit_regions();
+                }
                 _ => {}
             }
             drain_events(app).await?;

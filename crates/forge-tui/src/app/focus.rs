@@ -119,6 +119,19 @@ impl TuiApp {
 
     pub(super) fn open_bottom_panel(&mut self) {
         self.bottom_panel.open = true;
+        if self.interactive_terminal.is_none() {
+            match crate::interactive_terminal::InteractiveTerminal::spawn(
+                self.session.workspace_root(),
+                80,
+                8,
+            ) {
+                Ok(terminal) => self.interactive_terminal = Some(terminal),
+                Err(error) => self.set_feedback(
+                    FeedbackSeverity::Error,
+                    format!("could not start terminal: {error}"),
+                ),
+            }
+        }
         self.focus_block(FocusBlock::BottomPanel);
     }
 

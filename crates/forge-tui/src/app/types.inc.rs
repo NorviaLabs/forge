@@ -727,6 +727,7 @@ pub struct TuiApp {
     /// render path only ever reads it, never derives it.
     repo_header_state: RepoHeaderState,
     terminal_capture: TerminalCapture,
+    interactive_terminal: Option<InteractiveTerminal>,
     pointer: PointerState,
     workspace_search: WorkspaceSearchState,
     catalog_fetch: CatalogFetchState,

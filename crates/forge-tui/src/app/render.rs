@@ -339,6 +339,11 @@ impl TuiApp {
             self.register_approval_card_hit_regions(area);
         }
 
+        let interactive_terminal_output = self
+            .interactive_terminal
+            .as_ref()
+            .map(|terminal| terminal.display_output());
+        let interactive_terminal = self.interactive_terminal.as_ref();
         frame.render_widget(
             BottomPanel {
                 model: BottomPanelModel {
@@ -347,8 +352,12 @@ impl TuiApp {
                     activity: &self.activity,
                     run: &self.run,
                     terminal_title: self.terminal_capture.title.as_deref(),
-                    terminal_content: &self.terminal_capture.content,
+                    terminal_content: interactive_terminal_output
+                        .as_deref()
+                        .unwrap_or(&self.terminal_capture.content),
                     terminal_truncated: self.terminal_capture.truncated,
+                    terminal_running: interactive_terminal.is_some_and(|terminal| terminal.running),
+                    terminal_shell: interactive_terminal.map(|terminal| terminal.shell.as_str()),
                 },
                 focused: self.focus.block == FocusBlock::BottomPanel,
             },

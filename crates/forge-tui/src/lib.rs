@@ -12,6 +12,7 @@ mod file_explorer;
 mod file_ops;
 mod git_status;
 mod history;
+mod interactive_terminal;
 mod layout;
 mod overlays;
 mod run;

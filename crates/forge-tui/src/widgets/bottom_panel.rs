@@ -22,6 +22,8 @@ pub struct BottomPanelModel<'a> {
     pub terminal_title: Option<&'a str>,
     pub terminal_content: &'a str,
     pub terminal_truncated: bool,
+    pub terminal_running: bool,
+    pub terminal_shell: Option<&'a str>,
 }
 
 pub struct BottomPanel<'a> {
@@ -51,6 +53,8 @@ impl Widget for BottomPanel<'_> {
             self.model.terminal_title,
             self.model.terminal_content,
             self.model.terminal_truncated,
+            self.model.terminal_running,
+            self.model.terminal_shell,
         );
         Paragraph::new(lines).render(inner, buf);
     }
@@ -62,16 +66,28 @@ fn terminal_lines<'a>(
     terminal_title: Option<&'a str>,
     terminal_content: &'a str,
     terminal_truncated: bool,
+    terminal_running: bool,
+    terminal_shell: Option<&'a str>,
 ) -> Vec<Line<'a>> {
     let mut lines = vec![Line::from(vec![
-        Span::styled("Command output view", theme::text()),
-        Span::styled(" · existing captured output only", theme::muted()),
+        Span::styled("Interactive shell", theme::text()),
+        Span::styled(
+            if terminal_running {
+                " · running"
+            } else {
+                " · exited"
+            },
+            theme::muted(),
+        ),
     ])];
+    if let Some(shell) = terminal_shell {
+        lines.push(Line::styled(format!("$ {shell} -l"), theme::muted()));
+    }
     if let Some(title) = terminal_title {
         lines.push(Line::styled(title.to_string(), theme::text()));
     }
     if !terminal_content.is_empty() {
-        for line in terminal_content.lines().take(3) {
+        for line in terminal_content.lines().take(20) {
             lines.push(Line::styled(line.to_string(), theme::muted()));
         }
         if terminal_truncated {
@@ -160,6 +176,8 @@ mod tests {
             terminal_title: None,
             terminal_content: "",
             terminal_truncated: false,
+            terminal_running: false,
+            terminal_shell: None,
         };
 
         let rendered = rendered_text(model, true);
@@ -183,6 +201,8 @@ mod tests {
             terminal_title: None,
             terminal_content: "",
             terminal_truncated: false,
+            terminal_running: false,
+            terminal_shell: None,
         };
         let rendered = rendered_text(model, false);
         assert!(rendered.contains("Terminal"));
