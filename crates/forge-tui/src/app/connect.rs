@@ -341,6 +341,22 @@ impl TuiApp {
         );
     }
 
+    /// Push the current effort selection into the session as the transport
+    /// value the active model actually supports, or `None` when the model
+    /// doesn't support effort at all (never send a meaningless value).
+    /// Recomputed fresh every turn (see `drain_pending_prompt`) from
+    /// `reasoning_effort.value` + `runtime.model_label`, which persistence,
+    /// restore, quick-switch, and picker-close all keep current — so this
+    /// can't drift out of sync with whichever model is actually active.
+    pub(super) fn sync_effort_to_session(&mut self) {
+        let supports = ReasoningEffort::model_supports_effort(&self.runtime.model_label);
+        let value = supports
+            .then(|| self.reasoning_effort.value.transport_value())
+            .filter(|v| !v.is_empty())
+            .map(str::to_string);
+        self.session.set_reasoning_effort(value);
+    }
+
     pub(super) fn persist_selection(&self) {
         if let Some(profile_id) = self.connect.profile.as_deref() {
             let _ = self
@@ -411,7 +427,13 @@ impl TuiApp {
 
     /// Build the unified Connect + Model + Effort picker: one state source
     /// for both `/connect` and `/model`, differing only in `focus`.
-    pub(super) fn build_connect_model_overlay(&self, focus: ConnectModelColumn) -> Overlay {
+    /// `compact` selects the persistent footer control's small, anchored
+    /// rendering instead of the full-screen browsing experience.
+    pub(super) fn build_connect_model_overlay(
+        &self,
+        focus: ConnectModelColumn,
+        compact: bool,
+    ) -> Overlay {
         let connected: HashSet<String> = {
             let svc = ConnectService {
                 registry: &self.connect.registry,
@@ -430,8 +452,16 @@ impl TuiApp {
             &connected,
             self.connect.profile.as_deref(),
         );
-        let items = self.model_picker_items(true);
-        Overlay::connect_model_open(
+        // Cache-only: instant open, never blocks on network I/O. A
+        // background refresh (`start_catalog_refresh`, triggered by the
+        // caller) updates these rows in place once it lands.
+        let items = self.model_picker_items(false);
+        let open = if compact {
+            Overlay::connect_model_open_compact
+        } else {
+            Overlay::connect_model_open
+        };
+        open(
             providers,
             items,
             self.connect.profile.as_deref(),
@@ -442,9 +472,17 @@ impl TuiApp {
     }
 
     pub(super) fn open_connect_picker(&mut self) {
-        self.overlay = Some(self.build_connect_model_overlay(ConnectModelColumn::Providers));
+        self.overlay = Some(self.build_connect_model_overlay(ConnectModelColumn::Providers, false));
         self.status_state.message = "Choose a provider".into();
         self.notice_state.items.clear();
+        self.start_catalog_refresh();
+    }
+
+    /// Open the persistent footer control's compact picker, focused on
+    /// `focus`, without disturbing the conversation underneath.
+    pub(super) fn open_connect_picker_compact(&mut self, focus: ConnectModelColumn) {
+        self.overlay = Some(self.build_connect_model_overlay(focus, true));
+        self.start_catalog_refresh();
     }
 
     fn open_api_key_prompt(&mut self, profile_id: &str, error: Option<String>) {
@@ -479,7 +517,7 @@ impl TuiApp {
     }
 
     pub(super) fn open_model_picker_after_connect(&mut self, profile_id: &str) {
-        self.overlay = Some(self.build_connect_model_overlay(ConnectModelColumn::Models));
+        self.overlay = Some(self.build_connect_model_overlay(ConnectModelColumn::Models, false));
         let title = self
             .connect
             .registry
@@ -491,6 +529,7 @@ impl TuiApp {
             format!("{title} connected · choose a model"),
         );
         self.notice_state.items.clear();
+        self.start_catalog_refresh();
     }
 
     pub(super) fn handle_connect(&mut self, action: ConnectAction) {
@@ -865,10 +904,12 @@ impl TuiApp {
     }
 
     /// Build `/model` picker rows from connected-profile catalogs (cache + optional refresh).
-    pub(super) fn model_picker_items(
-        &self,
-        refresh_stale: bool,
-    ) -> Vec<crate::overlays::ModelItem> {
+    /// Every profile the picker/catalog worker should consider: connected
+    /// routes, or every built-in default when nothing is connected yet.
+    /// Shared by `model_picker_items` (foreground, cache-only reads) and
+    /// `start_catalog_refresh` (background thread) so the two can never
+    /// disagree about which profiles are in scope.
+    fn picker_profiles(&self) -> Vec<forge_connect::ConnectProfile> {
         let svc = ConnectService {
             registry: &self.connect.registry,
             store: &self.connect.store,
@@ -876,15 +917,96 @@ impl TuiApp {
             active_model: Some(self.runtime.model_label.clone()),
         };
         let connected = svc.connected_profiles().unwrap_or_default();
-        let cache = ModelCatalogCache::user_default();
-        let profiles: Vec<_> = if connected.is_empty() {
-            // Show all built-in defaults when nothing connected
+        if connected.is_empty() {
             self.connect.registry.profiles().to_vec()
         } else {
             connected
-        };
+        }
+    }
+
+    pub(super) fn model_picker_items(
+        &self,
+        refresh_stale: bool,
+    ) -> Vec<crate::overlays::ModelItem> {
+        let profiles = self.picker_profiles();
+        let cache = ModelCatalogCache::user_default();
         let entries = models_for_picker(&profiles, &self.connect.store, &cache, refresh_stale);
         models_from_catalog(&entries)
+    }
+
+    /// Warm the catalog cache once, the first event-loop tick a connected
+    /// profile is active, so the footer control and picker have live data
+    /// without requiring `/connect`/`/model` first. Deliberately an
+    /// event-loop tick, not `draw()` or app construction: `draw()` must stay
+    /// a side-effect-free projection of state, and firing at construction
+    /// time would race a caller's very first frame (a real cost in tests and
+    /// tools that construct a `TuiApp` and render once, since the spawned
+    /// thread's network I/O has no bound on when it finishes relative to
+    /// that first render).
+    pub(super) fn warm_catalog_once_connected(&mut self) {
+        if self.catalog_fetch.warmed {
+            return;
+        }
+        if !self.is_provider_connected() || self.is_mock_provider() {
+            return;
+        }
+        self.catalog_fetch.warmed = true;
+        self.start_catalog_refresh();
+    }
+
+    /// Kick off a background catalog refresh if one isn't already in flight.
+    /// Never blocks: the network I/O runs on a spawned thread (matching
+    /// `poll_repo_header`'s shape) and writes through to the on-disk
+    /// `ModelCatalogCache` as a side effect; `poll_catalog_refresh` (called
+    /// once per event-loop tick, never from `draw()`) picks up completion
+    /// and refreshes any open picker's rows from the now-warm cache.
+    pub(super) fn start_catalog_refresh(&mut self) {
+        if self.catalog_fetch.refresh_rx.is_some() {
+            return;
+        }
+        let profiles = self.picker_profiles();
+        let store_path = self.connect.store.path().to_path_buf();
+        let cache_path = ModelCatalogCache::user_default().path().to_path_buf();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let store = CredentialStore::new(store_path);
+            let cache = ModelCatalogCache::new(cache_path);
+            models_for_picker(&profiles, &store, &cache, true);
+            let _ = tx.send(Ok(()));
+        });
+        self.catalog_fetch.refresh_rx = Some(rx);
+    }
+
+    /// Non-blocking poll for a finished background catalog refresh. Safe to
+    /// call every event-loop tick; no-ops while nothing is in flight.
+    pub(super) fn poll_catalog_refresh(&mut self) {
+        let Some(rx) = self.catalog_fetch.refresh_rx.take() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(_) => {
+                self.refresh_open_picker_items();
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                self.catalog_fetch.refresh_rx = Some(rx);
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                // Worker panicked or dropped without sending — drop the
+                // handle so the next trigger can retry.
+            }
+        }
+    }
+
+    /// Re-read the catalog from the now-warm disk cache and refresh an open
+    /// `ConnectModel` overlay's rows in place, if one is open.
+    fn refresh_open_picker_items(&mut self) {
+        if !matches!(self.overlay, Some(Overlay::ConnectModel { .. })) {
+            return;
+        }
+        let items = self.model_picker_items(false);
+        if let Some(overlay) = &mut self.overlay {
+            overlay.refresh_model_items(items);
+        }
     }
 
     #[allow(dead_code)]

@@ -118,6 +118,9 @@ impl TuiApp {
             KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::ALT) => {
                 Some(SemanticCommand::QuickSwitchModel)
             }
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::ALT) => Some(
+                SemanticCommand::OpenModelControl(ConnectModelColumn::Models),
+            ),
             KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::ALT) => {
                 Some(SemanticCommand::CyclePermissionMode)
             }
@@ -525,6 +528,7 @@ impl TuiApp {
             SemanticCommand::ToggleBottomPanel => self.toggle_bottom_panel(),
             SemanticCommand::OpenQuickOpen => self.open_quick_open(),
             SemanticCommand::QuickSwitchModel => self.quick_switch_model(),
+            SemanticCommand::OpenModelControl(focus) => self.open_connect_picker_compact(focus),
             SemanticCommand::CycleBottomPanelTab { forward } => {
                 if forward {
                     self.bottom_panel.next_tab();
@@ -665,8 +669,10 @@ impl TuiApp {
 
     async fn handle_model_command(&mut self, provider: Option<&str>, model: Option<&str>) {
         if provider.is_none() && model.is_none() {
-            self.overlay = Some(self.build_connect_model_overlay(ConnectModelColumn::Models));
+            self.overlay =
+                Some(self.build_connect_model_overlay(ConnectModelColumn::Models, false));
             self.status_state.message = "pick a model (live catalog when connected)".into();
+            self.start_catalog_refresh();
             return;
         }
 
@@ -724,7 +730,8 @@ impl TuiApp {
         }
         self.apply_model_selection("native", &model_id, None);
         if self.resolve_effort_for_model(&model_id) {
-            self.overlay = Some(self.build_connect_model_overlay(ConnectModelColumn::Effort));
+            self.overlay =
+                Some(self.build_connect_model_overlay(ConnectModelColumn::Effort, false));
         }
     }
 

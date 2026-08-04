@@ -420,6 +420,8 @@ impl TuiApp {
             term.draw(|f| self.draw(f))?;
         }
 
+        self.sync_effort_to_session();
+
         let max_turns = self.session.max_turns();
         let mut outcome_err: Option<String> = None;
         let mut turn_thought_secs = 0.0f64;

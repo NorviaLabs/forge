@@ -621,6 +621,87 @@ async fn switching_to_a_model_that_drops_the_current_effort_notifies_and_falls_b
 }
 
 #[tokio::test]
+async fn drain_pending_prompt_sends_selected_effort_on_outbound_request() {
+    let _home_guard = isolated_home_guard();
+    let dir = TempDir::new().unwrap();
+    let mock = Arc::new(MockModelClient::script(vec![ModelResponse {
+        text: "ok".into(),
+        tool_calls: vec![],
+        usage: None,
+        thinking: None,
+    }]));
+    let session = session_for_workspace_with_model(dir.path(), mock.clone()).await;
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "anthropic/claude-sonnet-4-6".into(),
+            provider: "anthropic".into(),
+            cwd: dir.path().to_path_buf(),
+            version: "0.12.0".into(),
+            startup_notices: Vec::new(),
+            validation_command: None,
+            file_icons: FileIconMode::Unicode,
+            mouse_capture: true,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+    app.connect.store = CredentialStore::new(dir.path().join("credentials.toml"));
+    app.connect
+        .store
+        .set_api_key("anthropic", "sk-test-anthropic-credential")
+        .unwrap();
+    app.connect.profile = Some("anthropic".into());
+    app.reasoning_effort.value = ReasoningEffort::High;
+
+    app.dispatch_line("hi").await.unwrap();
+    app.drain_pending_prompt(None).await.unwrap();
+
+    let sent = mock
+        .last_request()
+        .expect("model client received a request");
+    assert_eq!(sent.reasoning_effort.as_deref(), Some("high"));
+}
+
+#[tokio::test]
+async fn drain_pending_prompt_omits_effort_for_model_that_does_not_support_it() {
+    let _home_guard = isolated_home_guard();
+    let dir = TempDir::new().unwrap();
+    let mock = Arc::new(MockModelClient::script(vec![ModelResponse {
+        text: "ok".into(),
+        tool_calls: vec![],
+        usage: None,
+        thinking: None,
+    }]));
+    let session = session_for_workspace_with_model(dir.path(), mock.clone()).await;
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "mock".into(),
+            provider: "mock".into(),
+            cwd: dir.path().to_path_buf(),
+            version: "0.12.0".into(),
+            startup_notices: Vec::new(),
+            validation_command: None,
+            file_icons: FileIconMode::Unicode,
+            mouse_capture: true,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+    app.connect.store = CredentialStore::new(dir.path().join("credentials.toml"));
+    // Stale effort left over from a previous model — must not leak onto a
+    // model that doesn't support effort at all.
+    app.reasoning_effort.value = ReasoningEffort::High;
+
+    app.dispatch_line("hi").await.unwrap();
+    app.drain_pending_prompt(None).await.unwrap();
+
+    let sent = mock
+        .last_request()
+        .expect("model client received a request");
+    assert_eq!(sent.reasoning_effort, None);
+}
+
+#[tokio::test]
 async fn model_command_applies_provider_id_to_session() {
     let (_dir, session) = test_session().await;
     let cred_dir = tempfile::tempdir().unwrap();

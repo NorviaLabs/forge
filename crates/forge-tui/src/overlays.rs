@@ -42,6 +42,10 @@ pub enum Overlay {
         active_model: String,
         active_effort: ReasoningEffort,
         focus: ConnectModelColumn,
+        /// `true` for the persistent footer control's picker (anchored,
+        /// small, opened for a routine change); `false` for the full-screen
+        /// browsing experience `/connect`/`/model` have always opened.
+        compact: bool,
     },
     /// Phase 6.1 — OpenCode Go (and other ApiKey tui_always_prompt profiles)
     ConnectApiKey {
@@ -552,6 +556,22 @@ impl Overlay {
         Self::Help
     }
 
+    /// Replace a `ConnectModel` overlay's catalog items in place (e.g. once a
+    /// background catalog refresh lands), re-scoping `groups` to whatever
+    /// route was already selected. No-op for any other overlay variant.
+    pub(crate) fn refresh_model_items(&mut self, items: Vec<ModelItem>) {
+        if let Self::ConnectModel {
+            all_items,
+            groups,
+            selected_route,
+            ..
+        } = self
+        {
+            *groups = Self::scoped_groups(&items, selected_route.as_deref());
+            *all_items = items;
+        }
+    }
+
     /// Build items scoped to `route` (or every reachable item when `route`
     /// is `None`, e.g. before any provider has ever been picked).
     fn scoped_groups(items: &[ModelItem], route: Option<&str>) -> Vec<ModelGroup> {
@@ -587,7 +607,9 @@ impl Overlay {
     }
 
     /// Build the unified Connect + Model + Effort picker. `/connect` and
-    /// `/model` both call this, differing only in `focus`.
+    /// `/model` both call this, differing only in `focus`. Renders
+    /// full-screen — see `connect_model_open_compact` for the persistent
+    /// footer control's anchored, small variant of the same picker.
     pub fn connect_model_open(
         providers: Vec<ProviderVendorRow>,
         items: Vec<ModelItem>,
@@ -595,6 +617,50 @@ impl Overlay {
         current_model: &str,
         current_effort: ReasoningEffort,
         focus: ConnectModelColumn,
+    ) -> Self {
+        Self::connect_model_open_impl(
+            providers,
+            items,
+            current_profile_id,
+            current_model,
+            current_effort,
+            focus,
+            false,
+        )
+    }
+
+    /// Same picker as `connect_model_open`, but rendered anchored/small above
+    /// the footer instead of full-screen — used by the persistent
+    /// `[vendor/route] [model] [effort]` control for routine changes that
+    /// shouldn't take over the whole terminal.
+    pub fn connect_model_open_compact(
+        providers: Vec<ProviderVendorRow>,
+        items: Vec<ModelItem>,
+        current_profile_id: Option<&str>,
+        current_model: &str,
+        current_effort: ReasoningEffort,
+        focus: ConnectModelColumn,
+    ) -> Self {
+        Self::connect_model_open_impl(
+            providers,
+            items,
+            current_profile_id,
+            current_model,
+            current_effort,
+            focus,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn connect_model_open_impl(
+        providers: Vec<ProviderVendorRow>,
+        items: Vec<ModelItem>,
+        current_profile_id: Option<&str>,
+        current_model: &str,
+        current_effort: ReasoningEffort,
+        focus: ConnectModelColumn,
+        compact: bool,
     ) -> Self {
         let selected_route = current_profile_id.map(str::to_string);
         let groups = Self::scoped_groups(&items, selected_route.as_deref());
@@ -621,6 +687,7 @@ impl Overlay {
             active_model: current_model.to_string(),
             active_effort: current_effort,
             focus,
+            compact,
         }
     }
 
@@ -1040,6 +1107,7 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                 active_model,
                 active_effort,
                 focus,
+                compact: _,
             } => match focus {
                 ConnectModelColumn::Providers => {
                     let rows = flatten_provider_rows(providers);
@@ -1821,6 +1889,31 @@ fn centered_capped_rect(area: Rect, max_width: u16, max_height: u16) -> Rect {
     )
 }
 
+/// A small rect anchored just above the bottom of `area`, for the compact
+/// footer control's picker. `area` is the full frame passed to
+/// `OverlayWidget`, and the footer is always its last row, so a fixed
+/// bottom-up offset is enough — no coordination with the caller's own layout
+/// regions is needed. Centered horizontally, same shrink-to-fit floor as
+/// `centered_capped_rect`.
+fn anchored_above_footer_rect(area: Rect, max_width: u16, max_height: u16) -> Rect {
+    let width = area.width.saturating_sub(4).min(max_width).max(1);
+    let height = area.height.saturating_sub(4).min(max_height).max(1);
+    // Leave one row clear above the footer/input chrome the control itself
+    // sits in, so the picker doesn't touch the row that opened it.
+    const BOTTOM_MARGIN: u16 = 3;
+    let y = area
+        .y
+        .saturating_add(area.height)
+        .saturating_sub(height + BOTTOM_MARGIN)
+        .max(area.y);
+    Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        y,
+        width,
+        height,
+    )
+}
+
 pub struct OverlayWidget<'a> {
     pub overlay: &'a Overlay,
 }
@@ -1891,9 +1984,14 @@ impl Widget for OverlayWidget<'_> {
                 active_model,
                 active_effort,
                 focus,
+                compact,
                 ..
             } => {
-                let r = centered_capped_rect(area, 100, 22);
+                let r = if *compact {
+                    anchored_above_footer_rect(area, 72, 14)
+                } else {
+                    centered_capped_rect(area, 100, 22)
+                };
                 let active = active_vendor_route_labels(providers, active_profile_id.as_deref());
                 let label_suffix = match active {
                     Some((vendor, Some(route))) => format!(" · {vendor} · {route}"),
@@ -2723,6 +2821,78 @@ mod tests {
     /// care about the Models column.
     fn model_overlay(items: Vec<ModelItem>, focus: ConnectModelColumn) -> Overlay {
         Overlay::connect_model_open(vec![], items, None, "", ReasoningEffort::default(), focus)
+    }
+
+    #[test]
+    fn connect_model_open_compact_sets_compact_flag() {
+        let full = Overlay::connect_model_open(
+            vec![],
+            vec![],
+            None,
+            "",
+            ReasoningEffort::default(),
+            ConnectModelColumn::Models,
+        );
+        let compact = Overlay::connect_model_open_compact(
+            vec![],
+            vec![],
+            None,
+            "",
+            ReasoningEffort::default(),
+            ConnectModelColumn::Models,
+        );
+        assert!(matches!(full, Overlay::ConnectModel { compact: false, .. }));
+        assert!(matches!(
+            compact,
+            Overlay::ConnectModel { compact: true, .. }
+        ));
+    }
+
+    #[test]
+    fn compact_connect_model_overlay_renders_anchored_near_the_bottom() {
+        let area = Rect::new(0, 0, 100, 48);
+
+        let full = Overlay::connect_model_open(
+            vec![],
+            vec![],
+            None,
+            "",
+            ReasoningEffort::default(),
+            ConnectModelColumn::Models,
+        );
+        let compact = Overlay::connect_model_open_compact(
+            vec![],
+            vec![],
+            None,
+            "",
+            ReasoningEffort::default(),
+            ConnectModelColumn::Models,
+        );
+
+        let title_row = |overlay: &Overlay| -> u16 {
+            let mut buf = Buffer::empty(area);
+            OverlayWidget { overlay }.render(area, &mut buf);
+            for y in 0..area.height {
+                let mut line = String::new();
+                for x in 0..area.width {
+                    line.push_str(buf[(x, y)].symbol());
+                }
+                if line.contains("Connect & Model") {
+                    return y;
+                }
+            }
+            panic!("title not found");
+        };
+
+        let full_row = title_row(&full);
+        let compact_row = title_row(&compact);
+        assert!(
+            compact_row > full_row,
+            "compact picker (row {compact_row}) should render lower than the full-screen picker (row {full_row})"
+        );
+        // Anchored above the footer, not touching the very last rows.
+        assert!(compact_row < area.height - 1);
+        assert!(compact_row > area.height / 2);
     }
 
     fn sample_default_models() -> Vec<ModelItem> {
