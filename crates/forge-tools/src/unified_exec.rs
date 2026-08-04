@@ -332,13 +332,23 @@ mod tests {
         let id = serde_json::from_str::<Value>(&first.content).unwrap()["session_id"]
             .as_u64()
             .unwrap();
-        let result = WriteStdinTool
+        let polled = WriteStdinTool
             .call(
                 &ctx,
                 json!({"session_id": id, "chars": "", "yield_time_ms": 20}),
             )
             .await
             .unwrap();
-        assert!(!result.content.contains("got:"));
+        let polled_body: Value = serde_json::from_str(&polled.content).unwrap();
+        assert_eq!(polled_body["running"], true);
+
+        let completed = WriteStdinTool
+            .call(
+                &ctx,
+                json!({"session_id": id, "chars": "input\n", "yield_time_ms": 1000}),
+            )
+            .await
+            .unwrap();
+        assert!(completed.content.contains("got:input"));
     }
 }
