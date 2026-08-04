@@ -106,6 +106,8 @@ async fn run_loop(
     while !app.exit.requested {
         app.poll_file_changes();
         app.poll_run();
+        app.warm_catalog_once_connected();
+        app.poll_catalog_refresh();
         app.poll_background_tasks().await?;
         app.tick_toast();
         app.tick_feedback();

@@ -535,6 +535,10 @@ pub struct AgentSession {
     tasks: TaskRuntime,
     /// Provider/model id for the next completion (empty → client default).
     pub active_model: String,
+    /// Wire-level reasoning-effort value for the next completion, or `None`
+    /// to omit the field entirely (model doesn't support it, or effort is
+    /// Auto). Set via `set_reasoning_effort`, read by `build_model_request`.
+    reasoning_effort: Option<String>,
     journal: SessionPersistence,
     /// Shared across a parent session and every subagent spawned from it —
     /// `register` only ever runs during `create`/`resume` setup, so sharing
@@ -712,6 +716,7 @@ impl AgentSession {
             active_task: ActiveTaskState::new(session_id),
             tasks: TaskRuntime::new(),
             active_model: String::new(),
+            reasoning_effort: None,
             journal: SessionPersistence::new(journal),
             tools: Arc::new(tools),
             model,
@@ -787,6 +792,7 @@ impl AgentSession {
             active_task: ActiveTaskState::from_restored(session_id, state.status, wait_reason),
             tasks: TaskRuntime::with_queue(queue),
             active_model: String::new(),
+            reasoning_effort: None,
             journal: SessionPersistence::new(journal),
             tools: Arc::new(tools),
             model,
@@ -1168,7 +1174,7 @@ impl AgentSession {
             messages: self.messages.clone(),
             tools,
             model: self.active_model.clone(),
-            reasoning_effort: None,
+            reasoning_effort: self.reasoning_effort.clone(),
             prompt_cache: true,
         }
     }
@@ -2250,6 +2256,12 @@ impl AgentSession {
         self.active_model = model.into();
     }
 
+    /// Wire-level reasoning-effort value to send on the next completion, or
+    /// `None` to omit the field (model doesn't support it, or effort is Auto).
+    pub fn set_reasoning_effort(&mut self, effort: Option<String>) {
+        self.reasoning_effort = effort;
+    }
+
     /// Push provider credentials into the model client (OAuth tokens → worker env).
     pub fn apply_provider_env(&self, pairs: &[(String, String)]) {
         self.model.apply_provider_env(pairs);
@@ -2363,6 +2375,40 @@ mod tests {
             .await
             .unwrap();
         assert!(!s.list_tools().iter().any(|n| n == "web_search"));
+    }
+
+    #[tokio::test]
+    async fn build_model_request_carries_reasoning_effort_when_set() {
+        let dir = tempdir().unwrap();
+        let model = Arc::new(MockModelClient::script(vec![ModelResponse {
+            text: "ok".into(),
+            tool_calls: vec![],
+            usage: None,
+            thinking: None,
+        }]));
+        let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        s.set_reasoning_effort(Some("high".into()));
+        assert_eq!(
+            s.build_model_request().reasoning_effort,
+            Some("high".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn build_model_request_omits_reasoning_effort_when_none() {
+        let dir = tempdir().unwrap();
+        let model = Arc::new(MockModelClient::script(vec![ModelResponse {
+            text: "ok".into(),
+            tool_calls: vec![],
+            usage: None,
+            thinking: None,
+        }]));
+        let s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        assert_eq!(s.build_model_request().reasoning_effort, None);
     }
 
     #[tokio::test]

@@ -295,6 +295,9 @@ enum SemanticCommand {
     ToggleBottomPanel,
     OpenQuickOpen,
     QuickSwitchModel,
+    /// Open the persistent footer control's compact picker, focused on the
+    /// given column (vendor/route, model, or effort).
+    OpenModelControl(ConnectModelColumn),
     CycleBottomPanelTab {
         forward: bool,
     },
@@ -738,6 +741,7 @@ pub struct TuiApp {
     terminal_capture: TerminalCapture,
     pointer: PointerState,
     workspace_search: WorkspaceSearchState,
+    catalog_fetch: CatalogFetchState,
 }
 
 #[derive(Debug, Clone)]
@@ -753,4 +757,20 @@ struct RepoHeaderState {
     refreshed_at: Instant,
     /// Directory the cached header describes, so a cwd change invalidates it.
     cwd: PathBuf,
+}
+
+/// Off-thread model-catalog refresh, matching `RepoHeaderState`'s
+/// spawn-a-thread-and-poll shape. The worker thread refreshes
+/// `ModelCatalogCache`'s on-disk file as a side effect and reports back only
+/// success/failure — callers re-read the (now warm) cache via the existing
+/// synchronous `model_picker_items(false)` rather than threading fetched data
+/// through the channel, so there is never a second in-memory catalog that
+/// could drift from the disk cache `models_for_picker` already owns.
+struct CatalogFetchState {
+    refresh_rx: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
+    /// Set once the first background refresh has ever been kicked off this
+    /// session, so the lazy first-render warm-up in `draw()` (see
+    /// `footer_has_compact_control`) fires at most once per app lifetime —
+    /// every later refresh is triggered explicitly by opening a picker.
+    warmed: bool,
 }

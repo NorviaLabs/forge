@@ -84,6 +84,40 @@ async fn mouse_click_bottom_tab_visible_control_emits_once() {
 }
 
 #[tokio::test]
+async fn footer_control_segments_are_clickable_and_open_compact_picker() {
+    let _home_guard = isolated_home_guard();
+    let (_dir, mut app) = focus_test_app().await;
+    app.connect
+        .store
+        .set_api_key("anthropic", "sk-test-anthropic-credential")
+        .unwrap();
+    app.connect.profile = Some("anthropic".into());
+    app.runtime.model_label = "anthropic/claude-sonnet-4-6".into();
+    app.reasoning_effort.value = ReasoningEffort::High;
+    draw_app(&mut app, 120, 40);
+
+    let (x, y) = hit_point(&app, |target| {
+        matches!(
+            target,
+            HitTarget::VisibleControl(SemanticCommand::OpenModelControl(
+                ConnectModelColumn::Effort
+            ))
+        )
+    });
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), x, y))
+        .await
+        .unwrap();
+
+    match &app.overlay {
+        Some(Overlay::ConnectModel { compact, focus, .. }) => {
+            assert!(*compact);
+            assert_eq!(*focus, ConnectModelColumn::Effort);
+        }
+        other => panic!("expected compact ConnectModel overlay, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn mouse_wheel_scrolls_hovered_pane_without_focus_change() {
     let (_dir, mut app) = focus_test_app().await;
     app.focus_block(FocusBlock::Composer);

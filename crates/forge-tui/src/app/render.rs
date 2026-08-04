@@ -43,7 +43,26 @@ impl TuiApp {
         let input_h = (self.input.visual_lines() + 2).clamp(3, 8);
         let panel_h = if self.bottom_panel.open { 8 } else { 0 };
         let contextual_hint = self.contextual_hint();
-        let hint_h = u16::from(contextual_hint.is_some());
+        let connected = self.is_provider_connected();
+        let (vendor_label, route_label) = self
+            .connect
+            .profile
+            .as_deref()
+            .map(|id| self.vendor_route_labels(id))
+            .unwrap_or((None, None));
+        // The footer row is otherwise idle whenever there's no contextual
+        // hint stealing it — that's exactly when the persistent
+        // [vendor/route] [model] [effort] control should occupy it, and only
+        // when there's an actual vendor/model to show (e.g. not for the
+        // mock/offline provider, which has no `connect.profile`). Still
+        // capped at height 1 by `split_areas_with_chrome` below: this never
+        // becomes a second footer row, just a reason to keep the one row
+        // that already exists.
+        let footer_has_compact_control = contextual_hint.is_none()
+            && connected
+            && vendor_label.is_some()
+            && !self.runtime.model_label.is_empty();
+        let hint_h = u16::from(contextual_hint.is_some() || footer_has_compact_control);
         let regions = split_areas_with_chrome(
             area,
             fb_h,
@@ -67,7 +86,6 @@ impl TuiApp {
         }
         self.normalize_focus();
         self.register_pane_hit_regions(&regions);
-        let connected = self.is_provider_connected();
         let status = self.refresh_status_model_with_connected(connected);
         frame.render_widget(StatusBar { model: &status }, regions.status);
         if let Some(files) = regions.files {
@@ -530,11 +548,20 @@ impl TuiApp {
             regions.input,
         );
 
+        let effort_label = ReasoningEffort::model_supports_effort(&self.runtime.model_label)
+            .then(|| self.reasoning_effort.value.label().to_string())
+            .unwrap_or_default();
         let footer = FooterModel {
             hints: contextual_hint.unwrap_or_default(),
+            connected,
+            provider: vendor_label.unwrap_or_default(),
+            route_label,
+            model: self.runtime.model_label.clone(),
+            effort: effort_label,
             ..FooterModel::default()
         };
         frame.render_widget(FooterBar { model: &footer }, regions.footer);
+        self.register_footer_control_hit_regions(&footer, regions.footer);
 
         if let Some(ref dialog) = self.explorer_dialog.current {
             self.render_explorer_dialog(dialog, area, frame.buffer_mut());
