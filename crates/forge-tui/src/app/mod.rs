@@ -51,6 +51,7 @@ use crate::file_ops::{
 };
 use crate::git_status::GitStatusKind;
 use crate::history::InputHistory;
+use crate::interactive_terminal::InteractiveTerminal;
 use crate::layout::is_too_small;
 use crate::layout::split_areas_with_chrome;
 use crate::overlays::{
