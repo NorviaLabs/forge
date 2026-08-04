@@ -36,6 +36,7 @@ Skills are reusable instruction files (SKILL.md) that extend your capabilities. 
 - **Global**: `~/.config/forge/skills/<name>/SKILL.md` — shared across all projects.
 - **Project**: `<workspace>/.forge/skills/<name>/SKILL.md` — scoped to the current repo.
 - Project skills override global skills with the same name.
+- Installed skills are listed below under "# Skills" by name and description only (a `SKILL.md` with YAML frontmatter is not injected in full up front). When a listed skill's description matches the task, call the `load_skill` tool with that skill's name to load its full instructions before proceeding; pass a `path` to read a bundled `references/`, `scripts/`, or `assets/` file the loaded instructions point you to.
 
 When a user asks you to install a skill (from a URL, a file, or text you produce), you **must ask explicitly** whether they want it installed **globally** or **per-project**. Do not assume either location without confirmation. Once they choose, use `write_file` to create the SKILL.md at the appropriate path.
 
