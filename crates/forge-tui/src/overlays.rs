@@ -999,6 +999,9 @@ pub enum OverlayAction {
         profile_id: Option<String>,
     },
     SelectEffort(ReasoningEffort),
+    /// Live-preview a theme while the picker stays open (no persist).
+    PreviewTheme(String),
+    /// Confirm the highlighted theme (persist + close).
     SelectTheme(String),
     /// Submit API key from ConnectApiKey overlay
     ConnectSubmitKey {
@@ -1151,17 +1154,29 @@ fn handle_deny_feedback_key(card: &mut ApprovalCardState, key: Key) -> OverlayAc
     }
 }
 
+fn theme_preview_action(overlay: &Overlay) -> OverlayAction {
+    match overlay {
+        Overlay::Theme {
+            selected, items, ..
+        } => items
+            .get(*selected)
+            .map(|(id, _)| OverlayAction::PreviewTheme(id.clone()))
+            .unwrap_or(OverlayAction::None),
+        _ => OverlayAction::None,
+    }
+}
+
 pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
     match key {
         Key::Esc if matches!(overlay, Overlay::TurnLimit { .. }) => OverlayAction::StopTurns,
         Key::Esc => OverlayAction::Close,
         Key::Up => {
             overlay.move_sel(-1);
-            OverlayAction::None
+            theme_preview_action(overlay)
         }
         Key::Down => {
             overlay.move_sel(1);
-            OverlayAction::None
+            theme_preview_action(overlay)
         }
         Key::Left => {
             if let Some(path) = match overlay {
@@ -1980,6 +1995,92 @@ fn anchored_above_footer_rect(area: Rect, max_width: u16, max_height: u16) -> Re
     )
 }
 
+/// Bottom band used when `OverlayWidget` paints the theme picker into a full
+/// frame (tests / fallback). Prefer the layout `input` region from `draw`.
+fn theme_dock_rect(area: Rect) -> Rect {
+    let height = crate::layout::THEME_DOCK_H
+        .min(area.height.saturating_sub(1))
+        .max(3);
+    Rect::new(
+        area.x,
+        area.y + area.height.saturating_sub(height),
+        area.width,
+        height,
+    )
+}
+
+/// Render the live-preview theme dock into `area` (composer slot or bottom band).
+pub fn render_theme_dock(
+    selected: usize,
+    current: &str,
+    items: &[(String, String)],
+    area: Rect,
+    buf: &mut Buffer,
+) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme::border())
+        .style(theme::panel())
+        .title(Span::styled(
+            " Theme · ↑↓ preview · Enter confirm · Esc cancel ",
+            theme::brand(),
+        ));
+    let inner = block.inner(area);
+    block.render(area, buf);
+
+    // System is always first; keep a separator under it when present.
+    let mut rows: Vec<(usize, ListItem)> = Vec::with_capacity(items.len().saturating_add(1));
+    for (index, (id, name)) in items.iter().enumerate() {
+        let marker = if index == selected { "▶ " } else { "  " };
+        let is_current = id == current;
+        let selected_row = index == selected;
+        let style = if selected_row {
+            theme::focused_selection_style()
+        } else {
+            theme::text()
+        };
+        let base = format!("{marker}{name} ({id})");
+        let item = if is_current {
+            ListItem::new(Line::from(vec![
+                Span::styled(base, style),
+                Span::styled(" · current", theme::tag_style(selected_row)),
+            ]))
+        } else {
+            ListItem::new(Span::styled(base, style))
+        };
+        rows.push((index, item));
+        if index == 0 {
+            rows.push((
+                usize::MAX,
+                ListItem::new(Span::styled(
+                    "─".repeat(inner.width as usize),
+                    theme::border_muted(),
+                )),
+            ));
+        }
+    }
+
+    let visible = inner.height.max(1) as usize;
+    let selected_row_pos = rows
+        .iter()
+        .position(|(index, _)| *index == selected)
+        .unwrap_or(0);
+    let start = selected_row_pos
+        .saturating_add(1)
+        .saturating_sub(visible)
+        .min(rows.len().saturating_sub(visible));
+    let list_items: Vec<ListItem> = rows
+        .into_iter()
+        .skip(start)
+        .take(visible)
+        .map(|(_, item)| item)
+        .collect();
+    List::new(list_items).render(inner, buf);
+}
+
 pub struct OverlayWidget<'a> {
     pub overlay: &'a Overlay,
 }
@@ -1994,6 +2095,8 @@ impl Widget for OverlayWidget<'_> {
             // the conversation visible per the onboarding requirement — and
             // dimming is a strict improvement for the plain `/help` case too.
             Overlay::ConnectModel { .. } | Overlay::Help => theme::dim_region(area, buf),
+            // Theme dock keeps the real UI painted undimmed so live preview is honest.
+            Overlay::Theme { .. } => {}
             _ => theme::fill(area, buf, theme::canvas()),
         }
         match self.overlay {
@@ -2478,53 +2581,7 @@ impl Widget for OverlayWidget<'_> {
                 current,
                 items,
             } => {
-                let r = centered_rect(54, 16, area);
-                let list_items: Vec<ListItem> = items
-                    .iter()
-                    .enumerate()
-                    .flat_map(|(index, (id, name))| {
-                        let marker = if index == *selected { "▶ " } else { "  " };
-                        let is_current = id == current;
-                        let selected_row = index == *selected;
-                        let style = if selected_row {
-                            theme::focused_selection_style()
-                        } else {
-                            theme::text()
-                        };
-                        let base = format!("{marker}{name} ({id})");
-                        let item = if is_current {
-                            ListItem::new(Line::from(vec![
-                                Span::styled(base, style),
-                                Span::styled(" · current", theme::tag_style(selected_row)),
-                            ]))
-                        } else {
-                            ListItem::new(Span::styled(base, style))
-                        };
-                        if index == 0 {
-                            vec![
-                                item,
-                                ListItem::new(Span::styled(
-                                    "─".repeat(r.width.saturating_sub(2) as usize),
-                                    theme::border_muted(),
-                                )),
-                            ]
-                        } else {
-                            vec![item]
-                        }
-                    })
-                    .collect();
-                List::new(list_items)
-                    .block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .border_style(theme::border())
-                            .style(theme::panel())
-                            .title(Span::styled(
-                                " Theme · ↑↓ select · Enter apply ",
-                                theme::brand(),
-                            )),
-                    )
-                    .render(r, buf);
+                render_theme_dock(*selected, current, items, theme_dock_rect(area), buf);
             }
             Overlay::FileExplorer {
                 cwd,
@@ -3703,6 +3760,70 @@ mod tests {
         assert_eq!(
             handle_overlay_key(&mut overlay, Key::Enter),
             OverlayAction::SelectTheme(THEME_SOLARIZED_LIGHT.to_string())
+        );
+    }
+
+    #[test]
+    fn theme_picker_arrow_keys_preview_highlighted_theme() {
+        crate::theme::install(
+            crate::theme_registry::ThemeRegistry::load(None),
+            forge_config::THEME_SOLARIZED_DARK,
+        );
+        let mut overlay = Overlay::theme_open(forge_config::THEME_SOLARIZED_DARK);
+        let Overlay::Theme {
+            selected, items, ..
+        } = &overlay
+        else {
+            panic!("expected theme overlay");
+        };
+        let start = *selected;
+        let next_id = items[(start + 1) % items.len()].0.clone();
+
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Down),
+            OverlayAction::PreviewTheme(next_id)
+        );
+        assert!(matches!(overlay, Overlay::Theme { .. }));
+    }
+
+    #[test]
+    fn theme_dock_renders_at_bottom_without_blanking_title_chrome() {
+        crate::theme::install(
+            crate::theme_registry::ThemeRegistry::load(None),
+            forge_config::THEME_SOLARIZED_DARK,
+        );
+        let overlay = Overlay::theme_open(forge_config::THEME_SOLARIZED_DARK);
+        let text = render_text(&overlay);
+        assert!(
+            text.contains("Theme · ↑↓ preview · Enter confirm · Esc cancel"),
+            "expected live-preview dock chrome:\n{text}"
+        );
+        assert!(
+            text.contains("· current"),
+            "expected current-theme marker:\n{text}"
+        );
+        // Dock sits in the bottom band — title should appear in the lower half.
+        let area = Rect::new(0, 0, 100, 48);
+        let mut buf = Buffer::empty(area);
+        OverlayWidget {
+            overlay: &overlay,
+        }
+        .render(area, &mut buf);
+        let mut title_row = None;
+        for y in 0..area.height {
+            let mut row = String::new();
+            for x in 0..area.width {
+                row.push_str(buf[(x, y)].symbol());
+            }
+            if row.contains("Theme ·") {
+                title_row = Some(y);
+                break;
+            }
+        }
+        let title_row = title_row.expect("theme dock title");
+        assert!(
+            title_row > area.height / 2,
+            "theme dock should sit in the bottom half (row {title_row})"
         );
     }
 
