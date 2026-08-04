@@ -2221,6 +2221,14 @@ impl AgentSession {
                     .append_tool_result(self.session_id, call, &output)
                     .await?;
                 self.remember_tool_result(call, &output);
+                if call.name == "update_plan" && !output.is_error {
+                    // Stateless checklist broadcast — clients replace whatever they
+                    // were showing with this payload. Mirrors codex PlanUpdate.
+                    self.events.push(TurnEvent {
+                        kind: "plan_update".into(),
+                        detail: call.arguments.to_string(),
+                    });
+                }
                 self.messages.push(Message {
                     role: MessageRole::Tool,
                     content: output.content,
@@ -3853,6 +3861,41 @@ mod tests {
 
         assert_eq!(s.messages.len(), before);
         assert!(s.journal_cursor().await.unwrap() > 0);
+    }
+
+    #[tokio::test]
+    async fn update_plan_emits_plan_update_event_and_ack_message() {
+        let dir = tempdir().unwrap();
+        let mut s = idle_session(dir.path()).await;
+        let mut budget = ValidationBudget::default();
+        let call = ToolCall {
+            id: "plan-1".into(),
+            name: "update_plan".into(),
+            arguments: json!({
+                "explanation": "kickoff",
+                "plan": [
+                    {"step": "scout", "status": "in_progress"},
+                    {"step": "ship", "status": "pending"}
+                ]
+            }),
+        };
+        s.run_one_tool_exec_only(&call, &mut budget).await.unwrap();
+
+        assert!(
+            s.events
+                .iter()
+                .any(|e| e.kind == "plan_update" && e.detail.contains("scout")),
+            "expected plan_update event, got {:?}",
+            s.events
+        );
+        let tool_msg = s
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == MessageRole::Tool)
+            .expect("tool message");
+        assert_eq!(tool_msg.content, "Plan updated");
+        assert_eq!(tool_msg.name.as_deref(), Some("update_plan"));
     }
 
     // --- Verified Task Completion: integration tests --------------------
