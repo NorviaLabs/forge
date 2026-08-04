@@ -31,10 +31,10 @@ Use the thinking field for all intermediate reasoning, planning, lifecycle updat
 
 # Skills
 
-Skills are reusable instruction files (SKILL.md) that extend your capabilities. They live in a `skills` subdirectory under a `forge` config directory:
+Skills are reusable instruction files (SKILL.md) that extend your capabilities. They use the Agent Skills standard locations:
 
-- **Global**: `~/.config/forge/skills/<name>/SKILL.md` — shared across all projects.
-- **Project**: `<workspace>/.forge/skills/<name>/SKILL.md` — scoped to the current repo.
+- **Global**: `~/.agents/skills/<name>/SKILL.md` — shared across all projects.
+- **Project**: `<workspace>/.agents/skills/<name>/SKILL.md` — scoped to the current repo.
 - Project skills override global skills with the same name.
 - Installed skills are listed below under "# Skills" by name and description only (a `SKILL.md` with YAML frontmatter is not injected in full up front). When a listed skill's description matches the task, call the `load_skill` tool with that skill's name to load its full instructions before proceeding; pass a `path` to read a bundled `references/`, `scripts/`, or `assets/` file the loaded instructions point you to.
 

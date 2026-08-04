@@ -46,7 +46,7 @@ behaviour:
 | Path | Effect |
 |------|--------|
 | `AGENTS.md` | Loaded into the model's system prompt as project instructions |
-| `.forge/skills/*/SKILL.md` | Loaded into the system prompt as skills |
+| `.agents/skills/*/SKILL.md` | Loaded into the system prompt as skills |
 | `forge.toml` | Project configuration (see the restriction below) |
 
 Keys in a project `forge.toml` that can execute code or redirect a credentialed

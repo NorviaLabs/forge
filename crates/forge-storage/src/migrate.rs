@@ -302,13 +302,16 @@ mod tests {
         init_repo(dir.path());
         fs::create_dir_all(dir.path().join(".forge/rules")).unwrap();
         fs::write(dir.path().join(".forge/rules/style.md"), "rules").unwrap();
-        fs::create_dir_all(dir.path().join(".forge/skills/ponytail")).unwrap();
-        fs::write(dir.path().join(".forge/skills/ponytail/SKILL.md"), "skill").unwrap();
+        fs::create_dir_all(dir.path().join(".agents/skills/ponytail")).unwrap();
+        fs::write(dir.path().join(".agents/skills/ponytail/SKILL.md"), "skill").unwrap();
 
         migrate_legacy_runtime_files(dir.path());
 
         assert!(dir.path().join(".forge/rules/style.md").is_file());
-        assert!(dir.path().join(".forge/skills/ponytail/SKILL.md").is_file());
+        assert!(dir
+            .path()
+            .join(".agents/skills/ponytail/SKILL.md")
+            .is_file());
     }
 
     #[test]
