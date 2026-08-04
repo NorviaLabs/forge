@@ -113,19 +113,7 @@ impl TuiApp {
         match action {
             OverlayAction::None => {}
             OverlayAction::Close => {
-                if self.startup_resume.picker {
-                    self.exit.requested = true;
-                    self.exit.code = ExitCode::Canceled;
-                }
-                // An in-flight device-code OAuth poll must not be able to
-                // complete a connection the user just cancelled — `poll_oauth_tick`
-                // runs unconditionally every event-loop tick regardless of
-                // which overlay (if any) is open.
-                if matches!(self.overlay, Some(Overlay::ConnectOauth { .. })) {
-                    self.connect.oauth_pending = None;
-                    self.connect.oauth_last_poll = None;
-                }
-                self.overlay = None;
+                self.dismiss_overlay();
             }
             OverlayAction::BeginOnboarding => {
                 self.open_connect_picker();
@@ -192,6 +180,9 @@ impl TuiApp {
                     format!("reasoning effort: {}", level.label()),
                 );
             }
+            OverlayAction::PreviewTheme(theme_id) => {
+                self.set_theme_active(&theme_id);
+            }
             OverlayAction::SelectTheme(theme_id) => {
                 self.apply_theme(theme_id, true);
             }
@@ -250,12 +241,40 @@ impl TuiApp {
         Ok(())
     }
 
-    pub(super) fn apply_theme(&mut self, theme_id: String, persist: bool) {
-        crate::theme::set_active(&theme_id);
-        self.runtime.theme_id = theme_id.clone();
-        self.render_cache.conversation = None;
+    /// Dismiss the active overlay. Theme picker restores the theme that was
+    /// active when `/theme` opened (preview is non-persistent until Enter).
+    pub(super) fn dismiss_overlay(&mut self) {
+        if self.startup_resume.picker {
+            self.exit.requested = true;
+            self.exit.code = ExitCode::Canceled;
+        }
+        // An in-flight device-code OAuth poll must not be able to
+        // complete a connection the user just cancelled — `poll_oauth_tick`
+        // runs unconditionally every event-loop tick regardless of
+        // which overlay (if any) is open.
+        if matches!(self.overlay, Some(Overlay::ConnectOauth { .. })) {
+            self.connect.oauth_pending = None;
+            self.connect.oauth_last_poll = None;
+        }
+        if let Some(Overlay::Theme { current, .. }) = &self.overlay {
+            let restore = current.clone();
+            if crate::theme::active() != restore {
+                self.set_theme_active(&restore);
+            }
+        }
         self.overlay = None;
+    }
+
+    pub(super) fn set_theme_active(&mut self, theme_id: &str) {
+        crate::theme::set_active(theme_id);
+        self.runtime.theme_id = theme_id.to_string();
+        self.render_cache.conversation = None;
         self.invalidate_hit_regions();
+    }
+
+    pub(super) fn apply_theme(&mut self, theme_id: String, persist: bool) {
+        self.set_theme_active(&theme_id);
+        self.overlay = None;
         if persist {
             self.save_ui_state();
             let label = crate::theme::registry().display_name(&theme_id);

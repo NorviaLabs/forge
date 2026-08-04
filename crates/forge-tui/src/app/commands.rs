@@ -379,7 +379,7 @@ impl TuiApp {
             },
             SemanticCommand::ToggleFiles => self.toggle_files_panel(),
             SemanticCommand::CloseOverlay => {
-                self.overlay = None;
+                self.dismiss_overlay();
                 self.explorer_dialog.current = None;
             }
             SemanticCommand::FocusComposer => self.enter_chat_composer(),

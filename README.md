@@ -180,7 +180,9 @@ path = ".forge/sessions"
 
 ### Themes
 
-Forge ships built-in themes you can pick with `/theme` or set in `forge.toml`:
+Forge ships built-in themes you can pick with `/theme` or set in `forge.toml`.
+Bare `/theme` opens a bottom dock: ↑↓ live-previews against the real UI, Enter
+confirms, Esc restores the previous theme. `/theme <id>` applies immediately.
 
 | Theme id | Name |
 | --- | --- |
