@@ -994,7 +994,26 @@ impl TuiApp {
         let profiles = self.picker_profiles();
         let cache = ModelCatalogCache::user_default();
         let entries = models_for_picker(&profiles, &self.connect.store, &cache, refresh_stale);
-        models_from_catalog(&entries)
+        let mut items = models_from_catalog(&entries);
+        for item in &mut items {
+            if let Some(profile_id) = item.profile_id.as_deref() {
+                item.route_label = self.format_route_label(profile_id);
+            }
+        }
+        items
+    }
+
+    /// "Vendor" or "Vendor · Route" display string for `profile_id`, matching
+    /// the persistent footer control's formatting convention. Used to
+    /// annotate each `ModelItem` so the model search can match against
+    /// vendor/route text, not just the bare model id.
+    fn format_route_label(&self, profile_id: &str) -> String {
+        let (vendor, route) = self.vendor_route_labels(profile_id);
+        match (vendor, route) {
+            (Some(vendor), Some(route)) => format!("{vendor} · {route}"),
+            (Some(vendor), None) => vendor,
+            _ => String::new(),
+        }
     }
 
     /// Warm the catalog cache once, the first event-loop tick a connected
@@ -1038,6 +1057,9 @@ impl TuiApp {
             let _ = tx.send(Ok(()));
         });
         self.catalog_fetch.refresh_rx = Some(rx);
+        if let Some(overlay) = &mut self.overlay {
+            overlay.set_catalog_loading(true);
+        }
     }
 
     /// Non-blocking poll for a finished background catalog refresh. Safe to
@@ -1055,7 +1077,11 @@ impl TuiApp {
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 // Worker panicked or dropped without sending — drop the
-                // handle so the next trigger can retry.
+                // handle so the next trigger can retry, and stop showing
+                // "Loading models…" for a refresh that's never coming.
+                if let Some(overlay) = &mut self.overlay {
+                    overlay.set_catalog_loading(false);
+                }
             }
         }
     }
@@ -1069,6 +1095,7 @@ impl TuiApp {
         let items = self.model_picker_items(false);
         if let Some(overlay) = &mut self.overlay {
             overlay.refresh_model_items(items);
+            overlay.set_catalog_loading(false);
         }
     }
 

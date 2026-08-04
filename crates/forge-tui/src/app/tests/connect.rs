@@ -214,6 +214,55 @@ async fn model_selection_switches_to_the_matching_connected_provider() {
 }
 
 #[tokio::test]
+async fn model_selection_with_explicit_route_never_crosses_wires_between_openai_and_openai_codex() {
+    // `openai` (generic API key) and `openai_codex` (subscription/OAuth)
+    // share a vendor but are distinct accounts with distinct entitlements —
+    // a picker selection naming one explicitly must never land on the
+    // other, even though both are connected simultaneously.
+    let (_dir, session) = test_session().await;
+    let cred_dir = tempfile::tempdir().unwrap();
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "openai/gpt-4.1-mini".into(),
+            provider: "native".into(),
+            cwd: PathBuf::from("."),
+            version: "0.6.1".into(),
+            startup_notices: Vec::new(),
+            validation_command: None,
+            file_icons: FileIconMode::Unicode,
+            mouse_capture: true,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+    app.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
+    app.connect
+        .store
+        .set_api_key("openai", "sk-test-openai-credential")
+        .unwrap();
+    app.connect
+        .store
+        .set_api_key("openai_codex", "sk-test-openai-codex-credential")
+        .unwrap();
+    app.connect.profile = Some("openai".into());
+
+    // The picker-selection path always supplies an explicit `profile_id`
+    // (the resolved route) — this is what `finish_connect_flow`/the Models
+    // column Enter handler do, never the free-text `/model <arg>` path.
+    app.apply_model_selection("native", "openai-codex/gpt-5.6", Some("openai_codex"));
+
+    assert_eq!(app.connect.profile.as_deref(), Some("openai_codex"));
+    assert_eq!(app.runtime.model_label, "openai-codex/gpt-5.6");
+
+    // And the reverse: switching back to the generic API-key route must not
+    // stick on the subscription route either.
+    app.apply_model_selection("native", "openai/gpt-5.6", Some("openai"));
+
+    assert_eq!(app.connect.profile.as_deref(), Some("openai"));
+    assert_eq!(app.runtime.model_label, "openai/gpt-5.6");
+}
+
+#[tokio::test]
 async fn quick_switch_toggles_between_the_two_most_recent_deliberate_selections() {
     let (_dir, session) = test_session().await;
     let cred_dir = tempfile::tempdir().unwrap();
