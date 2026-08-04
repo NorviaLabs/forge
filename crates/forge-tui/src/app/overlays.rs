@@ -72,13 +72,17 @@ impl TuiApp {
                 text.push_str("• G / r  Editor navigation and refresh\n");
                 text.push_str("• Ctrl+F / Ctrl+G  Search or jump\n");
             }
+            FocusBlock::Sidebar => {
+                text.push_str("• Up/Down  Select a background task\n");
+                text.push_str("• x / a / d  Cancel / approve / deny selected task\n");
+                text.push_str("• Esc  Return to previous block\n");
+            }
             FocusBlock::Composer => {
                 text.push_str("• Enter  Send\n");
                 text.push_str("• ⇧Enter  Newline\n");
                 text.push_str("• Esc  Return to previous block\n");
             }
             FocusBlock::BottomPanel => {
-                text.push_str("• ⇧← / ⇧→  Switch bottom-panel tab\n");
                 text.push_str("• Esc  Return to previous block\n");
             }
             FocusBlock::Files => {
@@ -102,7 +106,7 @@ impl TuiApp {
             self.restore_focus_after_closing(FocusBlock::BottomPanel);
             self.normalize_focus();
         } else {
-            self.open_bottom_panel(None);
+            self.open_bottom_panel();
         }
     }
 
