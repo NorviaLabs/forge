@@ -160,14 +160,14 @@ mod tests {
             .unwrap();
         for _ in 0..50 {
             terminal.poll();
-            if terminal.display_output().contains("forge-terminal-test") {
+            if terminal.output.contains("forge-terminal-test") {
                 return;
             }
             thread::sleep(Duration::from_millis(20));
         }
         panic!(
             "shell did not produce expected output: {:?}",
-            terminal.display_output()
+            terminal.output
         );
     }
 }
