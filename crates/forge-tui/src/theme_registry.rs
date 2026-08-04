@@ -10,12 +10,28 @@ use std::path::{Path, PathBuf};
 
 const BUILTIN_THEMES: &[(&str, &str)] = &[
     (
+        "catppuccin-mocha.toml",
+        include_str!("../themes/catppuccin-mocha.toml"),
+    ),
+    (
+        "gruvbox-dark.toml",
+        include_str!("../themes/gruvbox-dark.toml"),
+    ),
+    (
+        "kanagawa-wave.toml",
+        include_str!("../themes/kanagawa-wave.toml"),
+    ),
+    (
         "solarized-dark.toml",
         include_str!("../themes/solarized-dark.toml"),
     ),
     (
         "solarized-light.toml",
         include_str!("../themes/solarized-light.toml"),
+    ),
+    (
+        "tokyo-night-storm.toml",
+        include_str!("../themes/tokyo-night-storm.toml"),
     ),
 ];
 
@@ -169,15 +185,22 @@ mod tests {
     use forge_config::{Rgb, THEME_SOLARIZED_DARK, THEME_SOLARIZED_LIGHT};
 
     #[test]
-    fn builtins_include_solarized_dark_and_light() {
+    fn builtins_include_all_shipped_themes() {
         let registry = ThemeRegistry::load(None);
-        let dark = registry.get(THEME_SOLARIZED_DARK).expect("solarized-dark");
-        assert_eq!(dark.name, "Solarized Dark");
-        assert_eq!(dark.palette.background, Rgb(0, 43, 54));
-        let light = registry
-            .get(THEME_SOLARIZED_LIGHT)
-            .expect("solarized-light");
-        assert_eq!(light.name, "Solarized Light");
+        let expected = [
+            ("catppuccin-mocha", "Catppuccin Mocha", Rgb(30, 30, 46)),
+            ("gruvbox-dark", "Gruvbox Dark", Rgb(40, 40, 40)),
+            ("kanagawa-wave", "Kanagawa Wave", Rgb(31, 31, 40)),
+            (THEME_SOLARIZED_DARK, "Solarized Dark", Rgb(0, 43, 54)),
+            (THEME_SOLARIZED_LIGHT, "Solarized Light", Rgb(253, 246, 227)),
+            ("tokyo-night-storm", "Tokyo Night Storm", Rgb(36, 40, 59)),
+        ];
+        for (id, name, background) in expected {
+            let theme = registry.get(id).unwrap_or_else(|| panic!("missing {id}"));
+            assert_eq!(theme.name, name);
+            assert_eq!(theme.palette.background, background);
+        }
+        assert_eq!(registry.themes().len(), expected.len());
     }
 
     #[test]

@@ -178,6 +178,24 @@ mouse_capture = true
 path = ".forge/sessions"
 ```
 
+### Themes
+
+Forge ships built-in themes you can pick with `/theme` or set in `forge.toml`:
+
+| Theme id | Name |
+| --- | --- |
+| `solarized-dark` | Solarized Dark (default) |
+| `solarized-light` | Solarized Light |
+| `tokyo-night-storm` | Tokyo Night Storm |
+| `catppuccin-mocha` | Catppuccin Mocha |
+| `gruvbox-dark` | Gruvbox Dark |
+| `kanagawa-wave` | Kanagawa Wave |
+| `system` | Follow terminal light/dark preference |
+
+Drop custom `.toml` theme files into `.forge/themes/` in your workspace or
+`~/.config/forge/themes/` to add or override themes. See
+`crates/forge-tui/themes/` for the schema and examples.
+
 Common environment variables are:
 
 ```text
