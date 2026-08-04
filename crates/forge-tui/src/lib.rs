@@ -15,7 +15,6 @@ mod history;
 mod layout;
 mod overlays;
 mod run;
-mod sidebar;
 mod source_viewer;
 mod status_glyph;
 mod terminal;
@@ -52,7 +51,6 @@ pub use run::{
     RunExecutionMode, RunFreshness, RunHistoryFile, RunInvocation, RunParseError, RunProvenance,
     RunRecord, RunState, RunStateModel, MAX_RECENT_RUNS, RUN_HISTORY_VERSION,
 };
-pub use sidebar::SidebarModel;
 pub use validation::{
     is_cargo_test_command, validation_command_text, CargoTestSummary, ValidationParseState,
     ValidationSnapshot, ValidationStatus, MAX_FAILED_DISPLAY,

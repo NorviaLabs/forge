@@ -430,13 +430,6 @@ impl TuiApp {
             FocusBlock::Files => self.handle_file_explorer_key(key).await,
             FocusBlock::Workspace => self.handle_workspace_navigation_key(key).await,
             FocusBlock::Composer => Ok(false),
-            FocusBlock::Inspector => {
-                if let Some(command) = self.semantic_command_for_inspector_key(key) {
-                    self.execute_semantic_command(command).await
-                } else {
-                    Ok(false)
-                }
-            }
             FocusBlock::BottomPanel => self.handle_bottom_panel_key(key).await,
         }
     }
