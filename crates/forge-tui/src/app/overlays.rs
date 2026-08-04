@@ -177,10 +177,15 @@ impl TuiApp {
                 model,
                 profile_id,
             } => {
-                // The picker already moved its own focus to the Effort column
-                // in place (see `handle_overlay_key`); this only needs to
-                // apply the runtime/session-level effect of the pick.
+                // Models is a standalone view (no chained Effort step) —
+                // apply the pick, fall back to a safe effort default for
+                // the new model if the previous one doesn't fit, and close.
                 self.apply_model_selection(&provider, &model, profile_id.as_deref());
+                self.resolve_effort_for_model(&model);
+                self.overlay = None;
+            }
+            OverlayAction::SwitchToRoute { profile_id } => {
+                self.apply_default_model_for_profile(&profile_id, "active");
             }
             OverlayAction::SelectEffort(level) => {
                 self.overlay = None;

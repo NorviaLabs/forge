@@ -341,7 +341,7 @@ mod tests {
         let mut term = Terminal::new(backend).unwrap();
         term.draw(|f| app.draw(f)).unwrap();
         let text = buffer_text(&term);
-        for expected in ["MODELS", "mock", "current", "Esc close"] {
+        for expected in ["Choose a model", "mock", "current", "Esc close"] {
             assert!(text.contains(expected), "missing {expected:?}:\n{text}");
         }
     }
