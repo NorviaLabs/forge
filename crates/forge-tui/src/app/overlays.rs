@@ -121,6 +121,14 @@ impl TuiApp {
                     self.exit.requested = true;
                     self.exit.code = ExitCode::Canceled;
                 }
+                // An in-flight device-code OAuth poll must not be able to
+                // complete a connection the user just cancelled — `poll_oauth_tick`
+                // runs unconditionally every event-loop tick regardless of
+                // which overlay (if any) is open.
+                if matches!(self.overlay, Some(Overlay::ConnectOauth { .. })) {
+                    self.connect.oauth_pending = None;
+                    self.connect.oauth_last_poll = None;
+                }
                 self.overlay = None;
             }
             OverlayAction::BeginOnboarding => {

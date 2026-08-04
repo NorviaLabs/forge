@@ -516,6 +516,69 @@ impl TuiApp {
         self.notice_state.items.clear();
     }
 
+    /// After a successful connect, either land directly in a usable steady
+    /// state (this was the first-ever connected route: auto-select a
+    /// default model + effort so onboarding doesn't force a manual picker,
+    /// matching "select a valid catalog/default model... then transition to
+    /// the normal state") or open the model picker as today (a routine
+    /// additional/re-connect, where browsing models is the deliberate point
+    /// of the action).
+    pub(super) fn finish_connect_flow(&mut self, profile_id: &str) {
+        if self.connected_profile_count() == 1 {
+            self.complete_zero_state_onboarding(profile_id);
+        } else {
+            self.open_model_picker_after_connect(profile_id);
+        }
+    }
+
+    fn connected_profile_count(&self) -> usize {
+        let svc = ConnectService {
+            registry: &self.connect.registry,
+            store: &self.connect.store,
+            active_profile_id: self.connect.profile.clone(),
+            active_model: Some(self.runtime.model_label.clone()),
+        };
+        svc.connected_profiles().map(|v| v.len()).unwrap_or(0)
+    }
+
+    /// Auto-select a model for `profile_id` and land in normal steady state.
+    /// Reuses `model_picker_items` — its "Default" catalog tier already
+    /// falls back to `profile.default_models` even with an empty cache (see
+    /// `models_for_picker` in forge-connect), so this works offline / on a
+    /// cold cache. Falls back to the picker (today's behavior) if the
+    /// profile somehow has no usable model at all, rather than stranding
+    /// the user with an empty `active_model`.
+    fn complete_zero_state_onboarding(&mut self, profile_id: &str) {
+        let model = self
+            .model_picker_items(false)
+            .into_iter()
+            .find(|item| item.profile_id.as_deref() == Some(profile_id))
+            .map(|item| item.model);
+        let Some(model) = model else {
+            self.open_model_picker_after_connect(profile_id);
+            return;
+        };
+        self.runtime.model_label = model.clone();
+        self.runtime.provider = "native".into();
+        self.session.set_active_model(model.clone());
+        self.reasoning_effort.value = ReasoningEffort::default_for_model(&model);
+        self.persist_selection();
+        self.record_deliberate_selection();
+        self.overlay = None;
+        self.notice_state.items.clear();
+        let title = self
+            .connect
+            .registry
+            .get(profile_id)
+            .map(|p| p.title.as_str())
+            .unwrap_or(profile_id);
+        self.set_feedback(
+            FeedbackSeverity::Ok,
+            format!("{title} connected · {model} ready"),
+        );
+        self.start_catalog_refresh();
+    }
+
     pub(super) fn open_model_picker_after_connect(&mut self, profile_id: &str) {
         self.overlay = Some(self.build_connect_model_overlay(ConnectModelColumn::Models, false));
         let title = self
@@ -611,7 +674,7 @@ impl TuiApp {
                 }
                 self.refresh_connection_ui();
                 if let Some(profile_id) = connect_target {
-                    self.open_model_picker_after_connect(&profile_id);
+                    self.finish_connect_flow(&profile_id);
                 }
             }
             Err(ConnectError::OauthDevicePending(pending)) => {
@@ -663,7 +726,7 @@ impl TuiApp {
         self.connect.oauth_pending = None;
         self.connect.oauth_last_poll = None;
         self.refresh_connection_ui();
-        self.open_model_picker_after_connect(&out.profile_id);
+        self.finish_connect_flow(&out.profile_id);
     }
 
     /// Export stored OAuth / API key material into the native model client.
@@ -789,7 +852,7 @@ impl TuiApp {
                 }
                 self.status_state.message = msg.lines().next().unwrap_or_default().to_string();
                 self.refresh_connection_ui();
-                self.open_model_picker_after_connect(profile_id);
+                self.finish_connect_flow(profile_id);
             }
             Err(e) => {
                 let err = e.to_string();
