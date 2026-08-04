@@ -1,5 +1,5 @@
 //! Contextual hint slot, and — when no hint is active — the persistent
-//! `[vendor/route] [model] [effort]` steady-state control.
+//! `[vendor] [model] [effort]` steady-state control.
 
 use crate::theme;
 use ratatui::buffer::Buffer;
@@ -13,12 +13,9 @@ pub struct FooterModel {
     pub session_short: String,
     pub status: String,
     pub status_busy: bool,
-    /// Active vendor label (e.g. "Anthropic"), or empty when unknown.
+    /// Active vendor label (e.g. "OpenAI"), or empty when unknown.
     pub provider: String,
-    /// Route label when the vendor has more than one offering (e.g. "API
-    /// key" vs "ChatGPT sign-in"). `None` for single-route vendors — the
-    /// vendor label alone disambiguates.
-    pub route_label: Option<String>,
+    /// Wire model id (may be `provider/model`); footer shows the short id.
     pub model: String,
     pub effort: String,
     pub ctx_used: usize,
@@ -42,7 +39,6 @@ impl Default for FooterModel {
             status: String::new(),
             status_busy: false,
             provider: String::new(),
-            route_label: None,
             model: String::new(),
             effort: String::new(),
             ctx_used: 0,
@@ -63,7 +59,7 @@ pub struct FooterBar<'a> {
     pub model: &'a FooterModel,
 }
 
-/// One bracketed `[vendor/route]`/`[model]`/`[effort]` segment of the
+/// One bracketed `[vendor]`/`[model]`/`[effort]` segment of the
 /// persistent control, and the display column range it occupies — the same
 /// rects are used both to paint the segment and to register its mouse hit
 /// region, so the two can never drift apart.
@@ -75,19 +71,25 @@ pub struct FooterControlSegment {
     pub end: u16,
 }
 
-/// Build the `[vendor/route] [model] [effort]` segments that fit in
-/// `width`, dropping trailing segments (effort first, then model, then
-/// vendor/route) when they don't. Pure layout logic shared by the widget's
-/// `render` and the app's mouse-hit-region registration.
+/// Strip a `provider/` prefix from a wire model id for footer display.
+/// `openai-codex/gpt-5.6-luna` → `gpt-5.6-luna`; bare ids pass through.
+pub fn footer_short_model_id(model: &str) -> &str {
+    match model.split_once('/') {
+        Some((_, rest)) if !rest.is_empty() => rest,
+        _ => model,
+    }
+}
+
+/// Build the `[vendor] [model] [effort]` segments that fit in `width`,
+/// dropping trailing segments (effort first, then model, then vendor) when
+/// they don't. Pure layout logic shared by the widget's `render` and the
+/// app's mouse-hit-region registration.
 pub fn footer_control_segments(model: &FooterModel, width: u16) -> Vec<FooterControlSegment> {
     if !model.connected || model.provider.is_empty() || model.model.is_empty() {
         return Vec::new();
     }
-    let vendor_route = match &model.route_label {
-        Some(route) if !route.is_empty() => format!("[{} · {route}]", model.provider),
-        _ => format!("[{}]", model.provider),
-    };
-    let mut candidates = vec![vendor_route, format!("[{}]", model.model)];
+    let model_id = footer_short_model_id(&model.model);
+    let mut candidates = vec![format!("[{}]", model.provider), format!("[{model_id}]")];
     if !model.effort.is_empty() {
         candidates.push(format!("[{}]", model.effort));
     }
@@ -162,7 +164,6 @@ mod tests {
             status: "idle".into(),
             status_busy: false,
             provider: "mock".into(),
-            route_label: None,
             model: "m".into(),
             effort: "auto".into(),
             usage: String::new(),
@@ -205,7 +206,6 @@ mod tests {
         FooterModel {
             connected: true,
             provider: "Anthropic".into(),
-            route_label: None,
             model: "claude-sonnet-4-6".into(),
             effort: "Low".into(),
             ..FooterModel::default()
@@ -304,12 +304,24 @@ mod tests {
     }
 
     #[test]
-    fn vendor_route_segment_includes_route_label_when_present() {
+    fn vendor_segment_omits_route_and_model_drops_provider_prefix() {
         let model = FooterModel {
-            route_label: Some("ChatGPT sign-in".into()),
-            ..connected_model()
+            connected: true,
+            provider: "OpenAI".into(),
+            model: "openai-codex/gpt-5.6-luna".into(),
+            effort: "High".into(),
+            ..FooterModel::default()
         };
         let segments = footer_control_segments(&model, 80);
-        assert!(segments[0].text.contains("Anthropic · ChatGPT sign-in"));
+        assert_eq!(
+            segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>(),
+            vec!["[OpenAI]", "[gpt-5.6-luna]", "[High]"]
+        );
+        assert_eq!(
+            footer_short_model_id("anthropic/claude-sonnet-4-6"),
+            "claude-sonnet-4-6"
+        );
+        assert_eq!(footer_short_model_id("gpt-4.1-mini"), "gpt-4.1-mini");
+        assert_eq!(footer_short_model_id("provider/"), "provider/");
     }
 }
