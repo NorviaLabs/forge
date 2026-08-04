@@ -84,12 +84,9 @@ async fn characterization_80x24_draws_without_panic() {
 #[tokio::test]
 async fn characterization_run_completion_preserves_bottom_panel_focus() {
     let (_dir, mut app) = focus_test_app().await;
-    app.open_bottom_panel(Some(BottomPanelTab::Run));
+    app.open_bottom_panel(Some(BottomPanelTab::Tasks));
     app.run.draft.command_input = "/usr/bin/true".into();
-
-    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
-        .await
-        .unwrap();
+    app.run_current_draft();
     assert_eq!(app.focus.block, FocusBlock::BottomPanel);
     assert!(app.run_execution.execution.pending_validation);
 

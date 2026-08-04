@@ -5,7 +5,7 @@
 use super::prelude::*;
 
 #[tokio::test]
-async fn run_only_from_run_panel_focus() {
+async fn run_starts_only_from_run_workspace_not_bottom_panel() {
     let (_dir, mut app) = focus_test_app().await;
     app.run.draft.command_input = "true".into();
 
@@ -18,8 +18,25 @@ async fn run_only_from_run_panel_focus() {
         .as_ref()
         .is_some_and(|record| record.state == RunState::Running));
 
-    app.bottom_panel.open_tab(BottomPanelTab::Run);
+    app.bottom_panel.open_tab(BottomPanelTab::Terminal);
     app.focus_block(FocusBlock::BottomPanel);
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(!app
+        .run
+        .current
+        .as_ref()
+        .is_some_and(|record| record.state == RunState::Running));
+
+    app.run_current_draft();
+    let id = app.run.current.as_ref().unwrap().id.clone();
+    app.cancel_run();
+    app.run.draft.command_input = "true".into();
+    app.execute_semantic_command(SemanticCommand::OpenRun(RunCommandTarget::Id(id)))
+        .await
+        .unwrap();
+    app.focus_block(FocusBlock::Workspace);
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
@@ -31,14 +48,14 @@ async fn run_only_from_run_panel_focus() {
 }
 
 #[tokio::test]
-async fn run_cancel_from_run_panel() {
+async fn run_cancel_from_run_workspace() {
     let (_dir, mut app) = focus_test_app().await;
     app.run.draft.command_input = "true".into();
-    app.bottom_panel.open_tab(BottomPanelTab::Run);
-    app.focus_block(FocusBlock::BottomPanel);
-    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+    app.run_current_draft();
+    app.execute_semantic_command(SemanticCommand::OpenRun(RunCommandTarget::Current))
         .await
         .unwrap();
+    app.focus_block(FocusBlock::Workspace);
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
@@ -84,7 +101,7 @@ async fn restored_running_run_becomes_cancelled() {
 #[tokio::test]
 async fn ui_navigation_does_not_mutate_run_history() {
     let (_dir, mut app) = focus_test_app().await;
-    app.bottom_panel.open_tab(BottomPanelTab::Run);
+    app.bottom_panel.open_tab(BottomPanelTab::Terminal);
     app.focus_block(FocusBlock::BottomPanel);
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await
@@ -280,15 +297,16 @@ async fn edge_run_spawn_failure_shows_invocation_without_exit_code() {
 }
 
 #[tokio::test]
-async fn run_activity_history_remains_available_in_activity_panel() {
+async fn run_activity_history_remains_available_in_inspector_sidebar() {
     let (_dir, mut app) = focus_test_app().await;
     app.run.draft.command_input = "true".into();
     app.run_current_draft();
-    app.open_bottom_panel(Some(BottomPanelTab::Activity));
+    app.workspace_files.visible = false;
+    app.inspector.visible = true;
 
-    let rendered = render_app_text(&mut app, 100, 30);
+    let rendered = render_app_text(&mut app, 120, 40);
 
-    assert!(rendered.contains("Run"), "{rendered}");
+    assert!(rendered.contains("RECENT ACTIVITY"), "{rendered}");
     assert!(rendered.contains("run started: true"), "{rendered}");
     assert_eq!(
         app.workspace_navigation.current,
