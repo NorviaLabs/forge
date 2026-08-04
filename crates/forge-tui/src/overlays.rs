@@ -46,6 +46,11 @@ pub enum Overlay {
         /// small, opened for a routine change); `false` for the full-screen
         /// browsing experience `/connect`/`/model` have always opened.
         compact: bool,
+        /// A background catalog refresh is in flight for this overlay (see
+        /// `TuiApp::start_catalog_refresh`/`refresh_open_picker_items`).
+        /// Distinguishes "still loading" from "genuinely no matches" in the
+        /// Models column's empty state.
+        catalog_loading: bool,
     },
     /// Phase 6.1 — OpenCode Go (and other ApiKey tui_always_prompt profiles)
     ConnectApiKey {
@@ -189,6 +194,47 @@ fn flat_row_profile<'a>(
     }
 }
 
+/// One selectable row in the Models column: a single-route group's one row,
+/// or one specific route of a multi-route group. Mirrors `ProviderFlatRow`'s
+/// flatten-for-navigation pattern.
+struct ModelFlatRow {
+    group_idx: usize,
+    /// `None` selects the group's only route (single-route groups always
+    /// render as one row); `Some(i)` selects `routes[i]` of a multi-route
+    /// group, each rendered as its own row so the route choice is explicit
+    /// rather than silently auto-picked.
+    route_idx: Option<usize>,
+}
+
+fn flatten_model_rows(groups: &[&ModelGroup]) -> Vec<ModelFlatRow> {
+    let mut out = Vec::new();
+    for (group_idx, g) in groups.iter().enumerate() {
+        if g.routes.len() > 1 {
+            for route_idx in 0..g.routes.len() {
+                out.push(ModelFlatRow {
+                    group_idx,
+                    route_idx: Some(route_idx),
+                });
+            }
+        } else {
+            out.push(ModelFlatRow {
+                group_idx,
+                route_idx: None,
+            });
+        }
+    }
+    out
+}
+
+/// The specific route a flattened Models-column row represents.
+fn flat_row_item<'a>(groups: &[&'a ModelGroup], row: &ModelFlatRow) -> Option<&'a ModelItem> {
+    let g = *groups.get(row.group_idx)?;
+    match row.route_idx {
+        Some(i) => g.routes.get(i),
+        None => g.routes.first(),
+    }
+}
+
 /// Build the Providers column from the registry, grouped by vendor. Only the
 /// vendor owning `current_profile_id` starts expanded — the same "expand the
 /// active path, collapse the rest" rule the file tree already uses.
@@ -297,6 +343,13 @@ pub struct ModelItem {
     pub profile_id: Option<String>,
     /// Whether this is account-verified or public registry metadata.
     pub source: forge_connect::CatalogSource,
+    /// Pre-resolved "Vendor" or "Vendor · Route" display string for
+    /// `profile_id`, e.g. "OpenAI" or "OpenAI · ChatGPT sign-in". Empty when
+    /// unresolvable. Computed once when items are built (see
+    /// `TuiApp::model_picker_items`, which has registry access) rather than
+    /// per keystroke, and matched against by the model search alongside the
+    /// bare model id.
+    pub route_label: String,
 }
 
 /// One user-facing model in the picker, grouped from every [`ModelItem`] route
@@ -543,6 +596,10 @@ pub fn models_from_catalog(entries: &[forge_connect::CatalogEntry]) -> Vec<Model
             model: e.id.clone(),
             profile_id: Some(e.profile_id.clone()),
             source: e.source,
+            // Filled in by `TuiApp::model_picker_items`, the caller with
+            // registry access to resolve `profile_id` into a vendor/route
+            // label — this function stays registry-agnostic.
+            route_label: String::new(),
         })
         .collect()
 }
@@ -569,6 +626,19 @@ impl Overlay {
         {
             *groups = Self::scoped_groups(&items, selected_route.as_deref());
             *all_items = items;
+        }
+    }
+
+    /// Mark whether a background catalog refresh is in flight for this
+    /// overlay, so the Models column can distinguish "still loading" from
+    /// "genuinely no matches" in its empty state. No-op for any other
+    /// overlay variant.
+    pub(crate) fn set_catalog_loading(&mut self, loading: bool) {
+        if let Self::ConnectModel {
+            catalog_loading, ..
+        } = self
+        {
+            *catalog_loading = loading;
         }
     }
 
@@ -609,7 +679,9 @@ impl Overlay {
     /// Build the unified Connect + Model + Effort picker. `/connect` and
     /// `/model` both call this, differing only in `focus`. Renders
     /// full-screen — see `connect_model_open_compact` for the persistent
-    /// footer control's anchored, small variant of the same picker.
+    /// footer control's anchored, small variant of the same picker. Scoped
+    /// to `current_profile_id`'s models by default (a deliberate, guided
+    /// browse), unlike the compact control's cross-route search default.
     pub fn connect_model_open(
         providers: Vec<ProviderVendorRow>,
         items: Vec<ModelItem>,
@@ -622,6 +694,7 @@ impl Overlay {
             providers,
             items,
             current_profile_id,
+            current_profile_id,
             current_model,
             current_effort,
             focus,
@@ -632,7 +705,10 @@ impl Overlay {
     /// Same picker as `connect_model_open`, but rendered anchored/small above
     /// the footer instead of full-screen — used by the persistent
     /// `[vendor/route] [model] [effort]` control for routine changes that
-    /// shouldn't take over the whole terminal.
+    /// shouldn't take over the whole terminal. Starts unscoped (searches
+    /// every connected route's models, not just the active one) — "the model
+    /// control opens a searchable list built from every currently connected
+    /// profile/route, not just the active route."
     pub fn connect_model_open_compact(
         providers: Vec<ProviderVendorRow>,
         items: Vec<ModelItem>,
@@ -645,6 +721,7 @@ impl Overlay {
             providers,
             items,
             current_profile_id,
+            None,
             current_model,
             current_effort,
             focus,
@@ -652,17 +729,27 @@ impl Overlay {
         )
     }
 
+    /// `current_profile_id` marks which row is "current" (`active_profile_id`,
+    /// `provider_cursor`, cursor restoration via `index_of_model`) — always
+    /// the real active profile. `route_scope` seeds `selected_route`/`groups`
+    /// independently: `Some(id)` narrows the initial model list to that one
+    /// route (the full-screen picker's guided-browse default), `None` leaves
+    /// it spanning every connected route (the compact control's search
+    /// default). These used to be the same parameter, which is what made the
+    /// compact control wrongly scope to one route whenever a profile was
+    /// already active.
     #[allow(clippy::too_many_arguments)]
     fn connect_model_open_impl(
         providers: Vec<ProviderVendorRow>,
         items: Vec<ModelItem>,
         current_profile_id: Option<&str>,
+        route_scope: Option<&str>,
         current_model: &str,
         current_effort: ReasoningEffort,
         focus: ConnectModelColumn,
         compact: bool,
     ) -> Self {
-        let selected_route = current_profile_id.map(str::to_string);
+        let selected_route = route_scope.map(str::to_string);
         let groups = Self::scoped_groups(&items, selected_route.as_deref());
         let model_selected = Self::index_of_model(&groups, current_model);
         let effort_items = effort_options(current_model);
@@ -688,6 +775,7 @@ impl Overlay {
             active_effort: current_effort,
             focus,
             compact,
+            catalog_loading: false,
         }
     }
 
@@ -785,11 +873,11 @@ impl Overlay {
                     *provider_cursor = ((*provider_cursor as i32 + delta).rem_euclid(n)) as usize;
                 }
                 ConnectModelColumn::Models => {
-                    let n = groups
+                    let filtered: Vec<&ModelGroup> = groups
                         .iter()
                         .filter(|g| group_matches_input(model_input, g))
-                        .count()
-                        .max(1) as i32;
+                        .collect();
+                    let n = flatten_model_rows(&filtered).len().max(1) as i32;
                     *model_selected = ((*model_selected as i32 + delta).rem_euclid(n)) as usize;
                 }
                 ConnectModelColumn::Effort => {
@@ -848,7 +936,9 @@ impl Overlay {
 
 fn model_matches_input(model_input: &str, item: &ModelItem) -> bool {
     let needle = model_input.trim().to_ascii_lowercase();
-    needle.is_empty() || item.model.to_ascii_lowercase().contains(&needle)
+    needle.is_empty()
+        || item.model.to_ascii_lowercase().contains(&needle)
+        || item.route_label.to_ascii_lowercase().contains(&needle)
 }
 
 fn group_matches_input(model_input: &str, group: &ModelGroup) -> bool {
@@ -1108,6 +1198,7 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                 active_effort,
                 focus,
                 compact: _,
+                catalog_loading: _,
             } => match focus {
                 ConnectModelColumn::Providers => {
                     let rows = flatten_provider_rows(providers);
@@ -1140,33 +1231,28 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                     OverlayAction::None
                 }
                 ConnectModelColumn::Models => {
-                    let chosen = groups
+                    let filtered: Vec<&ModelGroup> = groups
                         .iter()
                         .filter(|g| group_matches_input(model_input, g))
-                        .nth(*model_selected);
+                        .collect();
+                    let rows = flatten_model_rows(&filtered);
+                    // Every row already names one specific route (single-route
+                    // groups render as one row; multi-route groups render one
+                    // row per route) — no auto-pick needed, the selected row
+                    // *is* the explicit route choice.
+                    let chosen_route = rows
+                        .get(*model_selected)
+                        .and_then(|row| flat_row_item(&filtered, row));
                     let typed = model_input.trim();
                     if !typed.is_empty()
-                        && !chosen.is_some_and(|g| {
-                            g.routes.iter().any(|m| m.model.eq_ignore_ascii_case(typed))
-                        })
+                        && !chosen_route.is_some_and(|m| m.model.eq_ignore_ascii_case(typed))
                     {
                         // No catalog match for the typed text — let the caller
                         // re-dispatch it as a free-text `/model <arg>` for
                         // advanced users naming an unlisted model.
                         return OverlayAction::RunCommand(format!("/model {typed}"));
                     }
-                    let Some(g) = chosen else {
-                        return OverlayAction::None;
-                    };
-                    // A route was already resolved via the Providers column, so
-                    // there should be exactly one; if a catalog quirk still
-                    // yields more than one, prefer the account-verified entry.
-                    let Some(route) = g
-                        .routes
-                        .iter()
-                        .find(|r| r.source == forge_connect::CatalogSource::Live)
-                        .or_else(|| g.routes.first())
-                    else {
+                    let Some(route) = chosen_route else {
                         return OverlayAction::None;
                     };
                     *active_model = route.model.clone();
@@ -1989,6 +2075,7 @@ impl Widget for OverlayWidget<'_> {
                 active_effort,
                 focus,
                 compact,
+                catalog_loading,
                 ..
             } => {
                 let r = if *compact {
@@ -2137,23 +2224,26 @@ impl Widget for OverlayWidget<'_> {
                     .iter()
                     .filter(|g| group_matches_input(model_input, g))
                     .collect();
+                let rows = flatten_model_rows(&filtered);
                 let visible = models_list_area.height.max(1) as usize;
-                let start = window_start(*model_selected, filtered.len(), visible);
-                let end = (start + visible).min(filtered.len());
-                let model_items: Vec<ListItem> = if filtered.is_empty() {
-                    vec![ListItem::new(Span::styled(
-                        if active_profile_id.is_none() {
-                            "Pick a provider first."
-                        } else {
-                            "No models match this filter."
-                        },
-                        theme::muted(),
-                    ))]
+                let start = window_start(*model_selected, rows.len(), visible);
+                let end = (start + visible).min(rows.len());
+                let model_items: Vec<ListItem> = if rows.is_empty() {
+                    let msg = if active_profile_id.is_none() {
+                        "Connect a provider first."
+                    } else if *catalog_loading {
+                        "Loading models…"
+                    } else if model_input.trim().is_empty() {
+                        "No models available yet."
+                    } else {
+                        "No models match this filter."
+                    };
+                    vec![ListItem::new(Span::styled(msg, theme::muted()))]
                 } else {
-                    filtered[start..end]
+                    rows[start..end]
                         .iter()
                         .enumerate()
-                        .map(|(i, g)| {
+                        .map(|(i, row)| {
                             let idx = start + i;
                             let selected = idx == *model_selected;
                             let highlighted = selected && *focus == ConnectModelColumn::Models;
@@ -2162,24 +2252,31 @@ impl Widget for OverlayWidget<'_> {
                             } else {
                                 theme::text()
                             };
-                            let is_current = g.routes.iter().any(|m| m.model == *active_model);
+                            let g = filtered[row.group_idx];
+                            let item = flat_row_item(&filtered, row)
+                                .expect("flatten_model_rows only emits valid indices");
+                            let is_current = item.model == *active_model;
                             let tag = if is_current {
                                 "current"
                             } else {
-                                match g.routes.first().map(|m| m.source) {
-                                    Some(forge_connect::CatalogSource::Registry) => "known",
+                                match item.source {
+                                    forge_connect::CatalogSource::Registry => "known",
                                     _ => "cloud",
                                 }
                             };
                             let marker = if selected { "▶ " } else { "  " };
-                            let mut row = format!("{marker}{}", g.model_id);
+                            let mut text = if row.route_idx.is_some() {
+                                format!("{marker}{} · {}", g.model_id, item.route_label)
+                            } else {
+                                format!("{marker}{}", g.model_id)
+                            };
                             let target = (models_list_area.width as usize)
                                 .saturating_sub(tag.chars().count() + 1);
-                            while row.chars().count() < target {
-                                row.push(' ');
+                            while text.chars().count() < target {
+                                text.push(' ');
                             }
                             ListItem::new(Line::from(vec![
-                                Span::styled(row, style),
+                                Span::styled(text, style),
                                 Span::styled(tag, theme::tag_style(highlighted)),
                             ]))
                         })
@@ -2852,6 +2949,120 @@ mod tests {
         ));
     }
 
+    fn two_route_items() -> Vec<ModelItem> {
+        vec![
+            ModelItem {
+                provider: "native".into(),
+                model: "openai/gpt-5.6".into(),
+                profile_id: Some("openai".into()),
+                source: forge_connect::CatalogSource::Live,
+                route_label: "OpenAI".into(),
+            },
+            ModelItem {
+                provider: "native".into(),
+                model: "anthropic/claude-sonnet-4-6".into(),
+                profile_id: Some("anthropic".into()),
+                source: forge_connect::CatalogSource::Live,
+                route_label: "Anthropic".into(),
+            },
+        ]
+    }
+
+    #[test]
+    fn compact_model_control_searches_across_all_connected_routes() {
+        // Active profile is "openai" — the full-screen picker (a deliberate,
+        // guided browse) should still start scoped to it...
+        let full = Overlay::connect_model_open(
+            vec![],
+            two_route_items(),
+            Some("openai"),
+            "openai/gpt-5.6",
+            ReasoningEffort::default(),
+            ConnectModelColumn::Models,
+        );
+        let Overlay::ConnectModel {
+            selected_route,
+            groups,
+            ..
+        } = &full
+        else {
+            panic!("expected ConnectModel overlay");
+        };
+        assert_eq!(selected_route.as_deref(), Some("openai"));
+        assert_eq!(
+            groups.len(),
+            1,
+            "full-screen picker starts scoped to the active route"
+        );
+
+        // ...but the compact "model control" must search every connected
+        // route by default, per "the model control opens a searchable list
+        // built from every currently connected profile/route, not just the
+        // active route."
+        let compact = Overlay::connect_model_open_compact(
+            vec![],
+            two_route_items(),
+            Some("openai"),
+            "openai/gpt-5.6",
+            ReasoningEffort::default(),
+            ConnectModelColumn::Models,
+        );
+        let Overlay::ConnectModel {
+            selected_route,
+            groups,
+            active_profile_id,
+            ..
+        } = &compact
+        else {
+            panic!("expected ConnectModel overlay");
+        };
+        assert_eq!(
+            *selected_route, None,
+            "compact control must not scope to the active route by default"
+        );
+        assert_eq!(
+            groups.len(),
+            2,
+            "expected both connected routes' models to be searchable: {groups:?}"
+        );
+        // "current" tagging still reflects the real active profile even
+        // though search itself is unscoped.
+        assert_eq!(active_profile_id.as_deref(), Some("openai"));
+    }
+
+    #[test]
+    fn model_search_matches_route_label_case_insensitively() {
+        let mut overlay = Overlay::connect_model_open_compact(
+            vec![],
+            two_route_items(),
+            None,
+            "",
+            ReasoningEffort::default(),
+            ConnectModelColumn::Models,
+        );
+        for c in "ANTHRO".chars() {
+            handle_overlay_key(&mut overlay, Key::Char(c));
+        }
+        let Overlay::ConnectModel {
+            groups,
+            model_input,
+            ..
+        } = &overlay
+        else {
+            panic!("expected ConnectModel overlay");
+        };
+        let matching: Vec<&ModelGroup> = groups
+            .iter()
+            .filter(|g| group_matches_input(model_input, g))
+            .collect();
+        assert_eq!(
+            matching.len(),
+            1,
+            "expected only the Anthropic route to match: {matching:?}"
+        );
+        assert_eq!(matching[0].model_id, "claude-sonnet-4-6");
+    }
+
     #[test]
     fn compact_connect_model_overlay_renders_anchored_near_the_bottom() {
         let area = Rect::new(0, 0, 100, 48);
@@ -2910,6 +3121,7 @@ mod tests {
                         model: m.clone(),
                         profile_id: Some(p.id.clone()),
                         source: forge_connect::CatalogSource::Default,
+                        route_label: p.vendor_label.clone(),
                     });
                 }
             }
@@ -3339,12 +3551,14 @@ mod tests {
                 model: "anthropic/claude-sonnet".into(),
                 profile_id: Some("anthropic".into()),
                 source: forge_connect::CatalogSource::Registry,
+                route_label: "Anthropic".into(),
             },
             ModelItem {
                 provider: "native".into(),
                 model: "ollama/llama3".into(),
                 profile_id: Some("ollama".into()),
                 source: forge_connect::CatalogSource::Default,
+                route_label: "Ollama".into(),
             },
         ];
         let mut overlay = Overlay::connect_model_open(
@@ -3436,32 +3650,53 @@ mod tests {
                 model: "openai/gpt-5.6".into(),
                 profile_id: Some("openai".into()),
                 source: forge_connect::CatalogSource::Live,
+                route_label: "OpenAI".into(),
             },
             ModelItem {
                 provider: "native".into(),
                 model: "openai/gpt-5.6".into(),
                 profile_id: Some("openrouter".into()),
                 source: forge_connect::CatalogSource::Live,
+                route_label: "OpenRouter".into(),
             },
         ]
     }
 
     #[test]
-    fn models_column_enter_prefers_live_source_when_a_group_still_has_multiple_routes() {
-        // A route is normally resolved via the Providers column before the
-        // Models column is ever scoped, so a group should have exactly one
-        // route in practice — but if a catalog quirk still yields two (e.g.
-        // the same bare model from two sources), Enter must pick one
-        // deterministically instead of reviving a disambiguation submode.
-        let mut items = shared_route_items();
-        items[1].source = forge_connect::CatalogSource::Cached;
-        let mut overlay = model_overlay(items, ConnectModelColumn::Models);
+    fn multi_route_group_renders_each_route_as_a_separate_selectable_row() {
+        // A model offered by more than one connected route must never be
+        // silently auto-resolved — each route renders as its own row, named
+        // by its route label, so the choice is explicit.
+        let overlay = model_overlay(shared_route_items(), ConnectModelColumn::Models);
+        let text = render_text(&overlay);
+        assert!(
+            text.contains("OpenAI") && text.contains("OpenRouter"),
+            "expected both routes' labels to appear as distinct rows:\n{text}"
+        );
+
+        // Row 0 is the first route (OpenAI); Enter selects it directly, no
+        // auto-pick logic involved.
+        let mut first = model_overlay(shared_route_items(), ConnectModelColumn::Models);
         assert_eq!(
-            handle_overlay_key(&mut overlay, Key::Enter),
+            handle_overlay_key(&mut first, Key::Enter),
             OverlayAction::SelectModel {
                 provider: "native".into(),
                 model: "openai/gpt-5.6".into(),
                 profile_id: Some("openai".into()),
+            }
+        );
+
+        // Row 1 is the second route (OpenRouter); moving down and pressing
+        // Enter selects *that exact route*, proving the choice is explicit
+        // rather than always landing on one preferred source.
+        let mut second = model_overlay(shared_route_items(), ConnectModelColumn::Models);
+        second.move_sel(1);
+        assert_eq!(
+            handle_overlay_key(&mut second, Key::Enter),
+            OverlayAction::SelectModel {
+                provider: "native".into(),
+                model: "openai/gpt-5.6".into(),
+                profile_id: Some("openrouter".into()),
             }
         );
     }
@@ -3474,6 +3709,7 @@ mod tests {
                 model: "openai/gpt-4.1-mini".into(),
                 profile_id: Some("openai".into()),
                 source: forge_connect::CatalogSource::Live,
+                route_label: "OpenAI".into(),
             }],
             ConnectModelColumn::Models,
         );
@@ -3693,7 +3929,7 @@ mod tests {
     #[test]
     fn overlay_widget_renders_model_empty_states() {
         let empty_model = render_text(&model_overlay(vec![], ConnectModelColumn::Models));
-        assert!(empty_model.contains("Pick a provider first."));
+        assert!(empty_model.contains("Connect a provider first."));
 
         let mut filtered_model = Overlay::connect_model_open(
             vec![],
@@ -3702,6 +3938,7 @@ mod tests {
                 model: "openai/gpt-5".into(),
                 profile_id: Some("openai".into()),
                 source: forge_connect::CatalogSource::Registry,
+                route_label: "OpenAI".into(),
             }],
             Some("openai"),
             "",
@@ -3711,6 +3948,27 @@ mod tests {
         handle_overlay_key(&mut filtered_model, Key::Char('z'));
         let text = render_text(&filtered_model);
         assert!(text.contains("No models match this filter."));
+
+        let empty_catalog_model = Overlay::connect_model_open(
+            vec![],
+            vec![],
+            Some("openai"),
+            "",
+            ReasoningEffort::default(),
+            ConnectModelColumn::Models,
+        );
+        let text = render_text(&empty_catalog_model);
+        assert!(text.contains("No models available yet."));
+
+        let mut loading_model = empty_catalog_model;
+        if let Overlay::ConnectModel {
+            catalog_loading, ..
+        } = &mut loading_model
+        {
+            *catalog_loading = true;
+        }
+        let text = render_text(&loading_model);
+        assert!(text.contains("Loading models…"));
     }
 
     #[test]
