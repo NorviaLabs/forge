@@ -693,7 +693,7 @@ impl Overlay {
 
     /// Same picker as `connect_model_open`, but rendered anchored/small above
     /// the footer instead of full-screen — used by the persistent
-    /// `[vendor/route] [model] [effort]` control for routine changes that
+    /// `[vendor] [model] [effort]` control for routine changes that
     /// shouldn't take over the whole terminal. Starts unscoped (searches
     /// every connected route's models, not just the active one) — "the model
     /// control opens a searchable list built from every currently connected

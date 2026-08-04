@@ -49,7 +49,7 @@ impl TuiApp {
         let panel_h = if self.bottom_panel.open { 8 } else { 0 };
         let contextual_hint = self.contextual_hint();
         let connected = self.is_provider_connected();
-        let (vendor_label, route_label) = self
+        let (vendor_label, _route_label) = self
             .connect
             .profile
             .as_deref()
@@ -57,7 +57,7 @@ impl TuiApp {
             .unwrap_or((None, None));
         // The footer row is otherwise idle whenever there's no contextual
         // hint stealing it — that's exactly when the persistent
-        // [vendor/route] [model] [effort] control should occupy it, and only
+        // [vendor] [model] [effort] control should occupy it, and only
         // when there's an actual vendor/model to show (e.g. not for the
         // mock/offline provider, which has no `connect.profile`). Still
         // capped at height 1 by `split_areas_with_chrome` below: this never
@@ -511,7 +511,6 @@ impl TuiApp {
             hints: contextual_hint.unwrap_or_default(),
             connected,
             provider: vendor_label.unwrap_or_default(),
-            route_label,
             model: self.runtime.model_label.clone(),
             effort: effort_label,
             ctx_used: token_report.context_tokens_est,
