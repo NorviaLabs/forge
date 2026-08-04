@@ -725,10 +725,20 @@ impl ConversationModel {
                         } else {
                             vec![Span::raw(blank_prefix.clone())]
                         };
-                        spans.extend(line.spans);
+                        spans.extend(line.spans.into_iter().map(|mut span| {
+                            span.style = span.style.bg(theme::accent_soft_bg());
+                            span
+                        }));
+                        let content_width = spans.iter().map(Span::width).sum::<usize>();
+                        if content_width < width {
+                            spans.push(Span::styled(
+                                " ".repeat(width - content_width),
+                                theme::text().bg(theme::accent_soft_bg()),
+                            ));
+                        }
                         lines.push(Line::from(spans));
                     }
-                    if gap && !paired_with_answer[index] {
+                    if gap {
                         lines.push(Line::from(""));
                     }
                 }
@@ -3011,13 +3021,14 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let rendered = rendered_lines.join("\n");
-        assert_eq!(rendered_lines[0], "> hello world", "{rendered}");
+        assert_eq!(rendered_lines[0].trim_end(), "> hello world", "{rendered}");
         let dark = theme::palette(forge_config::THEME_SOLARIZED_DARK);
         let first = &lines[0];
         assert_eq!(first.spans[0].content.as_ref(), ">");
         assert_eq!(first.spans[0].style.fg, Some(dark.user_gutter_active));
         assert_eq!(first.spans[2].content.as_ref(), "hello world");
         assert_eq!(first.spans[2].style.fg, Some(dark.text));
+        assert_eq!(first.spans[2].style.bg, Some(dark.accent_soft));
         assert!(!rendered.contains('›'), "{rendered}");
         assert!(!rendered.contains(" │"), "{rendered}");
         assert!(rendered.contains("hello world"), "{rendered}");
