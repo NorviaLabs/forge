@@ -1112,7 +1112,6 @@ dependencies = [
  "forge-config",
  "forge-connect",
  "forge-core",
- "forge-durable",
  "forge-governance",
  "forge-mcp",
  "forge-model",
@@ -1132,9 +1131,7 @@ name = "forge-config"
 version = "0.1.0-beta.1"
 dependencies = [
  "dirs 6.0.0",
- "forge-types",
  "serde",
- "serde_json",
  "tempfile",
  "thiserror 2.0.19",
  "toml",
@@ -1209,7 +1206,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.19",
  "tokio",
- "tracing",
  "uuid",
 ]
 
@@ -1217,14 +1213,9 @@ dependencies = [
 name = "forge-governance"
 version = "0.1.0-beta.1"
 dependencies = [
- "chrono",
  "forge-types",
  "serde",
  "serde_json",
- "tempfile",
- "thiserror 2.0.19",
- "tracing",
- "uuid",
 ]
 
 [[package]]
@@ -1233,7 +1224,6 @@ version = "0.1.0-beta.1"
 dependencies = [
  "async-trait",
  "forge-config",
- "forge-test-support",
  "forge-tools",
  "forge-types",
  "serde",
@@ -1254,10 +1244,8 @@ dependencies = [
  "forge-types",
  "futures",
  "reqwest",
- "serde",
  "serde_json",
  "sha2 0.10.9",
- "tempfile",
  "thiserror 2.0.19",
  "tokio",
  "uuid",
@@ -1267,10 +1255,8 @@ dependencies = [
 name = "forge-search"
 version = "0.1.0-beta.1"
 dependencies = [
- "fff-query-parser",
  "fff-search",
  "serde",
- "serde_json",
  "tempfile",
  "thiserror 2.0.19",
 ]
@@ -1288,10 +1274,7 @@ dependencies = [
 name = "forge-syntax"
 version = "0.1.0-beta.1"
 dependencies = [
- "serde",
  "serde_json",
- "streaming-iterator",
- "thiserror 2.0.19",
  "tree-sitter",
  "tree-sitter-bash",
  "tree-sitter-css",
@@ -1319,11 +1302,8 @@ dependencies = [
  "forge-config",
  "forge-context",
  "forge-search",
- "forge-syntax",
  "forge-types",
  "jsonschema",
- "regex",
- "reqwest",
  "schemars",
  "serde",
  "serde_json",
@@ -1359,7 +1339,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.19",
  "tokio",
- "tokio-util",
  "uuid",
 ]
 
@@ -1371,7 +1350,6 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
- "thiserror 2.0.19",
  "uuid",
 ]
 
