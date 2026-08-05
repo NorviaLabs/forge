@@ -295,6 +295,48 @@ async fn menu_enter_on_allow_once_approves() {
         .await
         .unwrap();
     assert!(app.session.pending_hitl().is_none());
+    // Allow once on pattern-eligible shell offers a follow-up pattern nudge.
+    assert!(app.hitl_session.pattern_nudge.is_some());
+}
+
+#[tokio::test]
+async fn pattern_nudge_yes_persists_pattern() {
+    let _env_guard = ScopedEnvGuard::new(&["HOME", "XDG_CONFIG_HOME"]);
+    let home_dir = TempDir::new().unwrap();
+    std::env::set_var("HOME", home_dir.path());
+
+    let (_dir, mut app) = focus_test_app().await;
+    set_pending_hitl(&mut app, bash_hitl_payload("n1", "cargo check --all"));
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    let nudge = app.hitl_session.pattern_nudge.clone().expect("nudge");
+    assert!(nudge.pattern.contains("cargo check"), "{}", nudge.pattern);
+    assert_eq!(nudge.selected, 0); // Yes default
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(app.hitl_session.pattern_nudge.is_none());
+    assert_eq!(app.hitl_session.pattern_allow.len(), 1);
+    let persisted = forge_config::user_permissions_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .expect("persisted");
+    assert!(persisted.contains("bash(cargo check"), "{persisted}");
+}
+
+#[tokio::test]
+async fn pattern_nudge_esc_skips_without_write() {
+    let (_dir, mut app) = focus_test_app().await;
+    set_pending_hitl(&mut app, bash_hitl_payload("n2", "cargo test -p x"));
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(app.hitl_session.pattern_nudge.is_some());
+    app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(app.hitl_session.pattern_nudge.is_none());
+    assert!(app.hitl_session.pattern_allow.is_empty());
 }
 
 #[tokio::test]
