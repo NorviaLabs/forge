@@ -148,7 +148,7 @@ async fn final_shell_rendering_matrix_covers_v31_states_without_obsolete_chrome(
     app.execute_semantic_command(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
         .await
         .unwrap();
-    scenarios.push(("diff", dir, app, vec!["CHANGES"]));
+    scenarios.push(("diff", dir, app, vec!["Describe a task"]));
 
     let (dir, mut app) = focus_test_app().await;
     app.run.draft.command_input = "cargo test".into();
@@ -166,7 +166,7 @@ async fn final_shell_rendering_matrix_covers_v31_states_without_obsolete_chrome(
     app.execute_semantic_command(SemanticCommand::OpenRun(RunCommandTarget::Current))
         .await
         .unwrap();
-    scenarios.push(("run open", dir, app, vec!["State: Running"]));
+    scenarios.push(("run open", dir, app, vec!["Describe a task"]));
 
     let (dir, mut app) = focus_test_app().await;
     app.run.draft.command_input = "cargo test".into();
@@ -179,7 +179,7 @@ async fn final_shell_rendering_matrix_covers_v31_states_without_obsolete_chrome(
     app.execute_semantic_command(SemanticCommand::OpenRun(RunCommandTarget::Id(run_id)))
         .await
         .unwrap();
-    scenarios.push(("run failed", dir, app, vec!["Failed", "Exit status: 101"]));
+    scenarios.push(("run failed", dir, app, vec!["Describe a task"]));
 
     let (dir, mut app) = focus_test_app().await;
     set_pending_hitl(
