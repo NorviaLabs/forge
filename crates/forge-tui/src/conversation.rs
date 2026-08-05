@@ -1269,8 +1269,10 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
 }
 
 /// Completed-turn composition: within each user turn, emit
-/// UserMessage → AssistantAnswer|TurnFailure → ActivityGroup.
-/// ActiveProgress is kept only while no terminal answer/failure exists yet.
+/// UserMessage → ActivityGroup → AssistantAnswer|TurnFailure, so the
+/// transcript reads chronologically (the tool work happened before the
+/// answer). ActiveProgress is kept only while no terminal answer/failure
+/// exists yet.
 fn compose_turn_presentation(blocks: Vec<ConversationBlock>) -> Vec<ConversationBlock> {
     let mut out = Vec::with_capacity(blocks.len());
     let mut segment: Vec<ConversationBlock> = Vec::new();
@@ -1315,10 +1317,10 @@ fn compose_turn_presentation(blocks: Vec<ConversationBlock>) -> Vec<Conversation
             // Still streaming / waiting: progress may remain visible.
             out.extend(progress);
         }
-        // Success: answer before activity. Failure: summary before activity.
+        // Chronological: tool activity ran before the final answer/failure.
+        out.extend(activity);
         out.extend(answers);
         out.extend(failures);
-        out.extend(activity);
         out.extend(other);
     };
 
@@ -2822,16 +2824,16 @@ mod tests {
         let blocks = model.semantic_blocks();
         assert!(matches!(
             blocks.first(),
-            Some(ConversationBlock::AssistantAnswer(_))
+            Some(ConversationBlock::ActivityGroup(_))
         ));
         assert!(matches!(
             blocks.last(),
-            Some(ConversationBlock::ActivityGroup(_))
+            Some(ConversationBlock::AssistantAnswer(_))
         ));
     }
 
     #[test]
-    fn completed_turn_composes_answer_before_activity() {
+    fn completed_turn_composes_activity_before_answer() {
         let model = ConversationModel {
             items: vec![
                 ChatItem::User {
@@ -2869,8 +2871,8 @@ mod tests {
             blocks.as_slice(),
             [
                 ConversationBlock::UserMessage(_),
-                ConversationBlock::AssistantAnswer(a),
                 ConversationBlock::ActivityGroup(_),
+                ConversationBlock::AssistantAnswer(a),
             ] if a.text == "Forge is a Rust workspace."
         ));
     }
@@ -2924,7 +2926,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_turn_renders_failure_before_activity() {
+    fn failed_turn_renders_activity_before_failure() {
         let model = ConversationModel {
             items: vec![
                 ChatItem::User {
@@ -2954,8 +2956,8 @@ mod tests {
             blocks.as_slice(),
             [
                 ConversationBlock::UserMessage(_),
-                ConversationBlock::Callout(c),
                 ConversationBlock::ActivityGroup(_),
+                ConversationBlock::Callout(c),
             ] if matches!(c.kind, BannerKind::Error)
                 && c.text.contains("couldn't complete")
         ));
