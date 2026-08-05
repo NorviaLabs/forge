@@ -60,7 +60,6 @@ impl TuiApp {
     }
 
     pub(super) fn note_workspace_changed(&mut self) {
-        self.clear_pending_double_click();
         self.mark_diff_stale_if_reviewing();
         self.workspace_files.explorer.refresh_workspace();
     }

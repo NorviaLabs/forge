@@ -99,7 +99,11 @@ impl TuiApp {
                 Some(SemanticCommand::GoBack)
             }
             KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => {
-                Some(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
+                if self.activity_summary().and_then(|s| s.action).is_some() {
+                    Some(SemanticCommand::ActivateActivitySummary)
+                } else {
+                    Some(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
+                }
             }
 
             KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -1033,7 +1037,6 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: forge_config::FileIconMode::Unicode,
-                mouse_capture: true,
                 theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
             },
         );
@@ -1506,7 +1509,6 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: forge_config::FileIconMode::Unicode,
-                mouse_capture: true,
                 theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
             },
         );

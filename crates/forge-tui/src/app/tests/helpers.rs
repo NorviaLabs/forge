@@ -103,7 +103,6 @@ pub(crate) async fn focus_test_app() -> (TempDir, TuiApp) {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -143,35 +142,6 @@ pub(crate) fn draw_app(app: &mut TuiApp, width: u16, height: u16) {
 
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     terminal.draw(|frame| app.draw(frame)).unwrap();
-}
-
-pub(crate) fn mouse(kind: MouseEventKind, x: u16, y: u16) -> MouseEvent {
-    MouseEvent {
-        kind,
-        column: x,
-        row: y,
-        modifiers: KeyModifiers::NONE,
-    }
-}
-
-pub(crate) fn hit_point(app: &TuiApp, predicate: impl Fn(&HitTarget) -> bool) -> (u16, u16) {
-    let region = app
-        .pointer
-        .hit_regions
-        .iter()
-        .find(|region| {
-            region.generation == app.pointer.frame_generation && predicate(&region.target)
-        })
-        .expect("expected hit region");
-    (region.area.x, region.area.y)
-}
-
-pub(crate) fn hit_point_for_path(
-    app: &TuiApp,
-    predicate: impl Fn(&HitTarget, &Path) -> bool,
-    path: &Path,
-) -> (u16, u16) {
-    hit_point(app, |target| predicate(target, path))
 }
 
 pub(crate) fn assert_buffer_fully_themed(buf: &ratatui::buffer::Buffer) {

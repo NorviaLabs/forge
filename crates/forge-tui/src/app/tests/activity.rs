@@ -101,17 +101,12 @@ async fn activity_summary_priority_renders_one_actionable_row() {
 
 #[tokio::test]
 async fn summary_action_opens_expected_workspace_view() {
-    // Enter no longer activates the summary banner from the workspace-nav
-    // key handler — conversation isn't a `WorkspaceView` state anymore, so
-    // there's no "you're looking at conversation" focus to gate it on.
-    // Mouse click (mouse.rs's `ActivitySummary` hit target) remains the way
-    // to activate it; this exercises the same command it dispatches to.
     let (_dir, mut app) = focus_test_app().await;
     app.run.draft.command_input = "true".into();
     app.run_current_draft();
     let id = app.run.current.as_ref().unwrap().id.clone();
 
-    app.execute_semantic_command(SemanticCommand::ActivateActivitySummary)
+    app.handle_key(press(KeyCode::Right, KeyModifiers::ALT))
         .await
         .unwrap();
 
@@ -130,10 +125,23 @@ async fn changes_summary_action_uses_review_changes_command() {
         .status
         .insert(PathBuf::from("changed.rs"), GitStatusKind::Modified);
 
-    app.execute_semantic_command(SemanticCommand::ActivateActivitySummary)
+    app.handle_key(press(KeyCode::Right, KeyModifiers::ALT))
         .await
         .unwrap();
 
+    assert_eq!(
+        app.workspace_navigation.current,
+        Some(WorkspaceView::Diff(DiffCommandContext::Current))
+    );
+}
+
+#[tokio::test]
+async fn alt_right_without_summary_still_opens_review_changes() {
+    let (_dir, mut app) = focus_test_app().await;
+    // No git changes, no run — summary has no action.
+    app.handle_key(press(KeyCode::Right, KeyModifiers::ALT))
+        .await
+        .unwrap();
     assert_eq!(
         app.workspace_navigation.current,
         Some(WorkspaceView::Diff(DiffCommandContext::Current))
