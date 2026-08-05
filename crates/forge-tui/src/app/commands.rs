@@ -136,12 +136,11 @@ impl TuiApp {
             KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::ALT) => {
                 Some(SemanticCommand::QuickSwitchModel)
             }
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::ALT) => Some(
-                SemanticCommand::OpenModelControl(ConnectModelColumn::Models),
-            ),
-            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::ALT) => {
-                Some(SemanticCommand::CyclePermissionMode)
-            }
+            KeyCode::F(2) if key.modifiers.is_empty() => Some(SemanticCommand::CyclePermissionMode),
+            KeyCode::F(3) if key.modifiers.is_empty() => Some(SemanticCommand::FocusComposerChips),
+            KeyCode::F(4) if key.modifiers.is_empty() => Some(SemanticCommand::OpenModelControl(
+                ConnectModelColumn::Models,
+            )),
             KeyCode::F(1) if self.overlay.is_none() => Some(SemanticCommand::OpenHelp),
             _ => None,
         }
@@ -560,6 +559,16 @@ impl TuiApp {
                         self.permission_mode.label()
                     ),
                 );
+            }
+            SemanticCommand::FocusComposerChips => {
+                if self.session.pending_hitl().is_none() {
+                    if self.composer_chip_focus.is_some() {
+                        self.composer_chip_focus = None;
+                    } else {
+                        self.enter_chat_composer();
+                        self.composer_chip_focus = Some(0);
+                    }
+                }
             }
             SemanticCommand::MoveQueueSelection(delta) => self.move_queue_selection(delta),
             SemanticCommand::CancelSelectedQueueMessage => self.cancel_selected_queue().await,
@@ -1124,8 +1133,16 @@ mod tests {
                 SemanticCommand::ToggleBottomPanel,
             ),
             (
-                key(KeyCode::Char('p'), ALT),
+                key(KeyCode::F(2), NONE),
                 SemanticCommand::CyclePermissionMode,
+            ),
+            (
+                key(KeyCode::F(3), NONE),
+                SemanticCommand::FocusComposerChips,
+            ),
+            (
+                key(KeyCode::F(4), NONE),
+                SemanticCommand::OpenModelControl(ConnectModelColumn::Models),
             ),
         ];
         for (k, expected) in cases {
@@ -1143,6 +1160,18 @@ mod tests {
         );
         assert_eq!(
             app.semantic_command_for_global_key(key(KeyCode::Char('c'), NONE)),
+            None
+        );
+        assert_eq!(
+            app.semantic_command_for_global_key(key(KeyCode::Char('p'), ALT)),
+            None
+        );
+        assert_eq!(
+            app.semantic_command_for_global_key(key(KeyCode::Char('.'), ALT)),
+            None
+        );
+        assert_eq!(
+            app.semantic_command_for_global_key(key(KeyCode::Char('c'), ALT)),
             None
         );
     }

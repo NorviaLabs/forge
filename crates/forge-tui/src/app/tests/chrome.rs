@@ -521,9 +521,14 @@ async fn tui09_chrome_includes_model_on_frame() {
         }
         text.push('\n');
     }
+    // Model lives on the composer chip row (not the status header).
     assert!(
-        !text.contains("gpt-test") && !text.contains("in 0 · out 0 · total 0"),
-        "default chrome duplicated model or usage:\n{text}"
+        text.contains("gpt-test"),
+        "expected model on composer chips:\n{text}"
+    );
+    assert!(
+        !text.contains("in 0 · out 0 · total 0"),
+        "usage spam must stay off the default chrome:\n{text}"
     );
 }
 
