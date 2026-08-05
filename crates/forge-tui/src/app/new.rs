@@ -15,10 +15,9 @@ impl TuiApp {
         runtime: TuiRuntimeConfig,
         startup_items: Option<Vec<ResumeSessionItem>>,
     ) -> Self {
-        // Keep the session's actual enforcement in sync with the `Manual`
-        // label the footer shows from the first frame — see
-        // `permission_mode`'s doc comment.
-        session.apply_permission_mode(forge_governance::PermissionMode::Manual);
+        // Default Accept Edits (tight dev-loop shell free); load_ui_state may
+        // restore a persisted mode afterward.
+        session.apply_permission_mode(forge_governance::PermissionMode::AcceptEdits);
         let startup_resume_session_id = startup_items.as_ref().map(|_| session.session_id);
         let workspace_root = session.workspace_root().to_path_buf();
         let (registry, theme_notices) =
@@ -96,7 +95,7 @@ impl TuiApp {
             reasoning_effort: ReasoningEffortState {
                 value: ReasoningEffort::Auto,
             },
-            permission_mode: forge_governance::PermissionMode::Manual,
+            permission_mode: forge_governance::PermissionMode::AcceptEdits,
             tool_detail: ToolDetailState { expanded: false },
             workspace_navigation: WorkspaceNavigation::default(),
             source_viewer: SourceViewer::new(),
@@ -127,6 +126,7 @@ impl TuiApp {
             hitl_session: HitlSessionState {
                 allowed: HashSet::new(),
                 pattern_allow: Vec::new(),
+                menu: ApprovalMenuState::default(),
             },
             toast: ToastState { current: None },
             conversation_view: ConversationViewState {

@@ -55,6 +55,153 @@ impl TuiApp {
         )
     }
 
+    /// Reset menu selection when the pending HITL call changes or clears.
+    pub(super) fn sync_approval_menu(&mut self) {
+        match self.session.pending_hitl() {
+            None => {
+                self.hitl_session.menu = ApprovalMenuState::default();
+            }
+            Some(payload) => {
+                if self.hitl_session.menu.call_id.as_deref() != Some(payload.call_id.as_str()) {
+                    self.hitl_session.menu = ApprovalMenuState {
+                        call_id: Some(payload.call_id.clone()),
+                        selected: 0,
+                        phase: ApprovalMenuPhase::Choose,
+                    };
+                }
+                let n = self.approval_menu_kinds().len();
+                if n > 0 {
+                    self.hitl_session.menu.selected = self.hitl_session.menu.selected.min(n - 1);
+                }
+            }
+        }
+    }
+
+    fn approval_menu_kinds(&self) -> Vec<ApprovalMenuKind> {
+        let Some(payload) = self.session.pending_hitl() else {
+            return Vec::new();
+        };
+        let approval = self.approval_state_for_payload(payload);
+        let mut kinds = vec![ApprovalMenuKind::AllowOnce];
+        if approval.pattern_allow_eligible {
+            kinds.push(ApprovalMenuKind::AllowPattern);
+        }
+        if approval.remember_eligible {
+            kinds.push(ApprovalMenuKind::Remember);
+        }
+        kinds.push(ApprovalMenuKind::Deny);
+        kinds.push(ApprovalMenuKind::DenyWithNote);
+        kinds
+    }
+
+    pub(super) fn approval_menu_rows(&self) -> Vec<crate::conversation::ApprovalMenuRow> {
+        let Some(payload) = self.session.pending_hitl() else {
+            return Vec::new();
+        };
+        let approval = self.approval_state_for_payload(payload);
+        self.approval_menu_kinds()
+            .into_iter()
+            .map(|kind| match kind {
+                ApprovalMenuKind::AllowOnce => crate::conversation::ApprovalMenuRow {
+                    label: "Allow once".into(),
+                    detail: None,
+                },
+                ApprovalMenuKind::AllowPattern => crate::conversation::ApprovalMenuRow {
+                    label: "Allow pattern going forward".into(),
+                    detail: Some(approval.suggested_pattern.clone()),
+                },
+                ApprovalMenuKind::Remember => crate::conversation::ApprovalMenuRow {
+                    label: "Remember exact (session)".into(),
+                    detail: None,
+                },
+                ApprovalMenuKind::Deny => crate::conversation::ApprovalMenuRow {
+                    label: "Deny".into(),
+                    detail: None,
+                },
+                ApprovalMenuKind::DenyWithNote => crate::conversation::ApprovalMenuRow {
+                    label: "Deny with note…".into(),
+                    detail: None,
+                },
+            })
+            .collect()
+    }
+
+    /// Handle keys for the inline approval menu. Returns true if consumed.
+    pub(super) async fn handle_approval_menu_key(
+        &mut self,
+        key: event::KeyEvent,
+    ) -> Result<bool, TuiError> {
+        if self.session.pending_hitl().is_none() {
+            return Ok(false);
+        }
+        self.sync_approval_menu();
+        match self.hitl_session.menu.phase {
+            ApprovalMenuPhase::DenyFeedback => match key.code {
+                KeyCode::Esc if key.modifiers.is_empty() => {
+                    self.hitl_session.menu.phase = ApprovalMenuPhase::Choose;
+                    self.input.clear();
+                    Ok(true)
+                }
+                KeyCode::Enter if key.modifiers.is_empty() => {
+                    let note = self.input.take();
+                    self.hitl_session.menu.phase = ApprovalMenuPhase::Choose;
+                    self.resolve_approval_line(input_route::ApprovalAction::DenyWithFeedback(note))
+                        .await?;
+                    Ok(true)
+                }
+                _ => Ok(false), // let composer edit the note
+            },
+            ApprovalMenuPhase::Choose => match key.code {
+                KeyCode::Up if key.modifiers.is_empty() => {
+                    let n = self.approval_menu_kinds().len().max(1);
+                    self.hitl_session.menu.selected = (self.hitl_session.menu.selected + n - 1) % n;
+                    Ok(true)
+                }
+                KeyCode::Down if key.modifiers.is_empty() => {
+                    let n = self.approval_menu_kinds().len().max(1);
+                    self.hitl_session.menu.selected = (self.hitl_session.menu.selected + 1) % n;
+                    Ok(true)
+                }
+                KeyCode::Esc if key.modifiers.is_empty() => {
+                    self.resolve_approval_line(input_route::ApprovalAction::Deny)
+                        .await?;
+                    Ok(true)
+                }
+                KeyCode::Enter if key.modifiers.is_empty() => {
+                    let kinds = self.approval_menu_kinds();
+                    let Some(kind) = kinds.get(self.hitl_session.menu.selected).copied() else {
+                        return Ok(true);
+                    };
+                    match kind {
+                        ApprovalMenuKind::AllowOnce => {
+                            self.resolve_approval_line(input_route::ApprovalAction::Approve)
+                                .await?;
+                        }
+                        ApprovalMenuKind::AllowPattern => {
+                            self.resolve_approval_line(input_route::ApprovalAction::AllowPattern)
+                                .await?;
+                        }
+                        ApprovalMenuKind::Remember => {
+                            self.resolve_approval_line(input_route::ApprovalAction::Remember)
+                                .await?;
+                        }
+                        ApprovalMenuKind::Deny => {
+                            self.resolve_approval_line(input_route::ApprovalAction::Deny)
+                                .await?;
+                        }
+                        ApprovalMenuKind::DenyWithNote => {
+                            self.hitl_session.menu.phase = ApprovalMenuPhase::DenyFeedback;
+                            self.input.clear();
+                            self.enter_chat_composer();
+                        }
+                    }
+                    Ok(true)
+                }
+                _ => Ok(false),
+            },
+        }
+    }
+
     /// Whether a session-scoped pattern rule (added this session via "allow
     /// this pattern going forward") already covers `payload`. Distinct from
     /// `Governance.pattern_allow`, which is fixed for the session from the

@@ -544,9 +544,21 @@ impl TuiApp {
             SemanticCommand::CyclePermissionMode => {
                 self.permission_mode = self.permission_mode.next();
                 self.session.apply_permission_mode(self.permission_mode);
+                self.save_ui_state();
+                let detail = match self.permission_mode {
+                    forge_governance::PermissionMode::AcceptEdits => {
+                        forge_governance::Governance::accept_edits_toast_summary()
+                    }
+                    forge_governance::PermissionMode::Manual => {
+                        "Manual: every shell command asks for approval"
+                    }
+                };
                 self.set_feedback(
                     FeedbackSeverity::Info,
-                    format!("permission mode: {}", self.permission_mode.label()),
+                    format!(
+                        "permission mode: {} — {detail}",
+                        self.permission_mode.label()
+                    ),
                 );
             }
             SemanticCommand::MoveQueueSelection(delta) => self.move_queue_selection(delta),
@@ -1140,14 +1152,6 @@ mod tests {
         let (_dir, mut app) = app().await;
         assert_eq!(
             app.permission_mode,
-            forge_governance::PermissionMode::Manual
-        );
-
-        app.execute_semantic_command(SemanticCommand::CyclePermissionMode)
-            .await
-            .unwrap();
-        assert_eq!(
-            app.permission_mode,
             forge_governance::PermissionMode::AcceptEdits
         );
 
@@ -1157,6 +1161,14 @@ mod tests {
         assert_eq!(
             app.permission_mode,
             forge_governance::PermissionMode::Manual
+        );
+
+        app.execute_semantic_command(SemanticCommand::CyclePermissionMode)
+            .await
+            .unwrap();
+        assert_eq!(
+            app.permission_mode,
+            forge_governance::PermissionMode::AcceptEdits
         );
     }
 

@@ -35,8 +35,14 @@ async fn inline_approval_renders_full_payload_in_sidebar() {
     assert!(rendered.contains("git push -u origin main"), "{rendered}");
     assert!(rendered.contains("cwd:"), "{rendered}");
     assert!(rendered.contains("env: inherited"), "{rendered}");
+    assert!(rendered.contains("› Allow once"), "{rendered}");
     assert!(
-        rendered.contains("yes | no | remember | always | no <note>"),
+        rendered.contains("Allow pattern going forward"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("bash(git push *)"), "{rendered}");
+    assert!(
+        rendered.contains("↑↓ select · Enter confirm · Esc deny") || rendered.contains("↑↓ select"),
         "{rendered}"
     );
 }
@@ -194,9 +200,7 @@ async fn unrecognized_line_preserves_text_and_keeps_pending() {
     assert_eq!(app.input.text, "run the tests instead");
     assert!(app.session.pending_hitl().is_some());
     assert!(
-        app.feedback
-            .text
-            .contains("type yes | no | remember | always"),
+        app.feedback.text.contains("↑↓ select") || app.feedback.text.contains("yes/no"),
         "{}",
         app.feedback.text
     );
@@ -279,6 +283,49 @@ async fn typing_always_persists_pattern_and_auto_allows_matching_calls() {
     // But a non-matching command on the same tool still gates normally.
     set_pending_hitl(&mut app, bash_hitl_payload("call-3", "rm -rf /"));
     assert!(app.session.pending_hitl().is_some());
+}
+
+#[tokio::test]
+async fn menu_enter_on_allow_once_approves() {
+    let (_dir, mut app) = focus_test_app().await;
+    set_pending_hitl(&mut app, bash_hitl_payload("m1", "ls"));
+    app.sync_approval_menu();
+    assert_eq!(app.hitl_session.menu.selected, 0);
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(app.session.pending_hitl().is_none());
+}
+
+#[tokio::test]
+async fn menu_down_to_allow_pattern_and_enter() {
+    let _env_guard = ScopedEnvGuard::new(&["HOME", "XDG_CONFIG_HOME"]);
+    let home_dir = TempDir::new().unwrap();
+    std::env::set_var("HOME", home_dir.path());
+
+    let (_dir, mut app) = focus_test_app().await;
+    set_pending_hitl(&mut app, bash_hitl_payload("m2", "cargo test --all"));
+    app.sync_approval_menu();
+    // Allow once (0) → Allow pattern (1)
+    app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.hitl_session.menu.selected, 1);
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(app.session.pending_hitl().is_none());
+    assert_eq!(app.hitl_session.pattern_allow.len(), 1);
+}
+
+#[tokio::test]
+async fn menu_esc_denies() {
+    let (_dir, mut app) = focus_test_app().await;
+    set_pending_hitl(&mut app, bash_hitl_payload("m3", "rm -rf /"));
+    app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(app.session.pending_hitl().is_none());
 }
 
 #[tokio::test]

@@ -319,14 +319,26 @@ pub struct DiffBlockPresentation {
     pub rationale: String,
 }
 
+/// One selectable row on the inline approval menu.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApprovalMenuRow {
+    pub label: String,
+    pub detail: Option<String>,
+}
+
 /// The redacted command awaiting a human approval decision, with enough
-/// context to tell what would run. Resolves via the composer.
+/// context to tell what would run. Primary path is the selectable menu;
+/// composer text remains an alias path.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ApprovalPendingPresentation {
     pub tool: String,
     pub command: String,
     pub cwd: String,
     pub env_delta: String,
+    pub options: Vec<ApprovalMenuRow>,
+    pub selected: usize,
+    /// When true, composer is capturing deny-with-note text.
+    pub deny_feedback: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -553,8 +565,7 @@ impl ConversationModel {
         items = group_routine_activity(items);
         if status == TaskLifecycle::Waiting {
             items.push(ChatItem::Banner {
-                text: "Awaiting approval · Enter/a allow once · s remember exact when eligible · d/Esc deny"
-                    .into(),
+                text: "Awaiting approval · ↑↓ select · Enter confirm · Esc deny".into(),
                 kind: BannerKind::Warn,
             });
         }
@@ -693,6 +704,9 @@ impl ConversationModel {
         mut self,
         payload: &forge_types::HitlPayload,
         working_directory: impl Into<String>,
+        options: Vec<ApprovalMenuRow>,
+        selected: usize,
+        deny_feedback: bool,
     ) -> Self {
         let approval = ApprovalOverlayState::for_payload(payload, working_directory);
         let command = match approval.mode {
@@ -702,12 +716,20 @@ impl ConversationModel {
                 .collect::<Vec<_>>()
                 .join(" "),
         };
+        let selected = if options.is_empty() {
+            0
+        } else {
+            selected.min(options.len() - 1)
+        };
         self.items
             .push(ChatItem::ApprovalPending(ApprovalPendingPresentation {
                 tool: payload.tool.clone(),
                 command,
                 cwd: approval.working_directory,
                 env_delta: approval.environment_delta,
+                options,
+                selected,
+                deny_feedback,
             }));
         self
     }
@@ -957,14 +979,44 @@ impl ConversationModel {
                             )));
                         }
                     }
-                    for wrapped in wrap(
-                        "type yes | no | remember | always | no <note>",
-                        width.saturating_sub(2),
-                    ) {
-                        lines.push(Line::from(Span::styled(
-                            format!("{INDENT_UNIT}{wrapped}"),
-                            theme::metadata_style(),
-                        )));
+                    if p.deny_feedback {
+                        for wrapped in wrap(
+                            "deny with note — type feedback · Enter submit · Esc back",
+                            width.saturating_sub(2),
+                        ) {
+                            lines.push(Line::from(Span::styled(
+                                format!("{INDENT_UNIT}{wrapped}"),
+                                theme::metadata_style(),
+                            )));
+                        }
+                    } else {
+                        for (idx, opt) in p.options.iter().enumerate() {
+                            let marker = if idx == p.selected { "›" } else { " " };
+                            let style = if idx == p.selected {
+                                theme::text().add_modifier(Modifier::BOLD)
+                            } else {
+                                theme::muted()
+                            };
+                            let row = match &opt.detail {
+                                Some(detail) => format!("{marker} {}  {detail}", opt.label),
+                                None => format!("{marker} {}", opt.label),
+                            };
+                            for wrapped in wrap(&row, width.saturating_sub(2)) {
+                                lines.push(Line::from(Span::styled(
+                                    format!("{INDENT_UNIT}{wrapped}"),
+                                    style,
+                                )));
+                            }
+                        }
+                        for wrapped in wrap(
+                            "↑↓ select · Enter confirm · Esc deny",
+                            width.saturating_sub(2),
+                        ) {
+                            lines.push(Line::from(Span::styled(
+                                format!("{INDENT_UNIT}{wrapped}"),
+                                theme::metadata_style(),
+                            )));
+                        }
                     }
                     if gap {
                         lines.push(Line::from(""));
@@ -4457,6 +4509,22 @@ mod tests {
                 reason: "policy requires human approval".into(),
             },
             "workspace",
+            vec![
+                ApprovalMenuRow {
+                    label: "Allow once".into(),
+                    detail: None,
+                },
+                ApprovalMenuRow {
+                    label: "Allow pattern going forward".into(),
+                    detail: Some("bash(git push *)".into()),
+                },
+                ApprovalMenuRow {
+                    label: "Deny".into(),
+                    detail: None,
+                },
+            ],
+            0,
+            false,
         );
         let text = m
             .lines()
@@ -4468,8 +4536,10 @@ mod tests {
         assert!(text.contains("git push -u origin feature"), "{text}");
         assert!(text.contains("cwd: workspace"), "{text}");
         assert!(text.contains("env: inherited"), "{text}");
+        assert!(text.contains("› Allow once"), "{text}");
+        assert!(text.contains("bash(git push *)"), "{text}");
         assert!(
-            text.contains("yes | no | remember | always | no <note>"),
+            text.contains("↑↓ select · Enter confirm · Esc deny"),
             "{text}"
         );
     }
