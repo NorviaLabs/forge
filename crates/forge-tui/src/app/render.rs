@@ -193,6 +193,11 @@ impl TuiApp {
                 self.hitl_session.menu.phase,
                 ApprovalMenuPhase::DenyFeedback
             ),
+            pattern_nudge: self
+                .hitl_session
+                .pattern_nudge
+                .as_ref()
+                .map(|n| (n.pattern.clone(), n.selected)),
         };
         if self
             .render_cache
@@ -249,6 +254,9 @@ impl TuiApp {
                 );
                 let cwd = self.session.workspace_root().display().to_string();
                 conv = conv.with_pending_approval(&payload, cwd, rows, selected, deny_feedback);
+            }
+            if let Some(nudge) = self.hitl_session.pattern_nudge.as_ref() {
+                conv = conv.with_pattern_nudge(nudge.pattern.clone(), nudge.selected);
             }
             let width = sidebar_width.saturating_sub(2) as usize;
             self.render_cache.conversation = Some(ConversationRenderCache {
