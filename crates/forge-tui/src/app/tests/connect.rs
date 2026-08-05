@@ -1046,7 +1046,7 @@ async fn background_catalog_refresh_updates_open_picker_rows_once_complete() {
 }
 
 #[tokio::test]
-async fn alt_c_opens_compact_model_control() {
+async fn f4_opens_compact_model_control() {
     let _home_guard = isolated_home_guard();
     let (_dir, session) = test_session().await;
     let mut app = TuiApp::new(
@@ -1070,7 +1070,7 @@ async fn alt_c_opens_compact_model_control() {
         .unwrap();
     app.connect.profile = Some("anthropic".into());
 
-    app.handle_key(press(KeyCode::Char('c'), KeyModifiers::ALT))
+    app.handle_key(press(KeyCode::F(4), KeyModifiers::NONE))
         .await
         .unwrap();
 
@@ -1111,11 +1111,12 @@ async fn footer_shows_na_effort_for_a_model_that_does_not_support_it() {
         .unwrap();
     app.connect.profile = Some("openai".into());
 
-    let text = render_app_text(&mut app, 120, 40);
+    // Wide enough that effort chip is not truncated off the composer row.
+    let text = render_app_text(&mut app, 160, 40);
 
     assert!(
         text.contains("N/A"),
-        "expected the footer to show an explicit N/A effort segment:\n{text}"
+        "expected composer chips to show an explicit N/A effort:\n{text}"
     );
     assert!(
         !text.contains("[Auto]") && !text.contains("[Low]"),
