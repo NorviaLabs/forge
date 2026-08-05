@@ -1,5 +1,6 @@
 //! Conversation view model (TUI-02) — polished chat, thinking, tools, diffs.
 
+use crate::markdown::render_markdown;
 use crate::status_glyph::{status_glyph, Status};
 use crate::theme;
 use crate::user_message_gutter;
@@ -811,7 +812,7 @@ impl ConversationModel {
                     }
                 }
                 ConversationBlock::AssistantAnswer(p) => {
-                    let parts = assistant_lines(&p.text, width);
+                    let parts = render_markdown(&p.text, width);
                     for line in parts {
                         lines.push(line.style(theme::assistant_answer_style()));
                     }
@@ -922,7 +923,7 @@ impl ConversationModel {
                     }
                 }
                 ConversationBlock::CodeBlock(p) => {
-                    for line in assistant_lines(&p.text, width) {
+                    for line in render_markdown(&p.text, width) {
                         lines.push(line.style(theme::code_block()));
                     }
                     if gap {
@@ -2339,162 +2340,6 @@ pub(crate) fn wrap(s: &str, width: usize) -> Vec<String> {
     out
 }
 
-/// Render assistant Markdown without pulling a full Markdown parser into the
-/// TUI. Fenced code gets token coloring; inline backtick sections get a code
-/// color while ordinary prose keeps the normal conversation style.
-fn assistant_lines(text: &str, width: usize) -> Vec<Line<'static>> {
-    let width = width.max(1);
-    let mut out = Vec::new();
-    let mut language = String::new();
-    let mut fenced = false;
-    let mut code_block_lines: Vec<String> = Vec::new();
-
-    for raw in text.lines() {
-        let trimmed = raw.trim_start();
-        if let Some(fence) = trimmed.strip_prefix("```") {
-            if fenced {
-                push_code_block(&mut out, &language, &mut code_block_lines);
-                out.push(Line::from(Span::styled(
-                    "  ```".to_string(),
-                    theme::code_punctuation(),
-                )));
-                fenced = false;
-                language.clear();
-            } else {
-                language = fence.trim().to_ascii_lowercase();
-                let label = if language.is_empty() {
-                    "  ```".to_string()
-                } else {
-                    format!("  ```{language}")
-                };
-                out.push(Line::from(Span::styled(label, theme::code_punctuation())));
-                fenced = true;
-            }
-            continue;
-        }
-
-        if fenced {
-            code_block_lines.push(raw.to_string());
-        } else {
-            let mut processed = raw.to_string();
-            if let Some(rest) = processed.strip_prefix("# ") {
-                processed = format!("**{}**", rest);
-            } else if let Some(rest) = processed.strip_prefix("## ") {
-                processed = format!("**{}**", rest);
-            } else if let Some(rest) = processed.strip_prefix("- ") {
-                processed = format!("• {}", rest);
-            } else if let Some(rest) = processed.strip_prefix("* ") {
-                processed = format!("• {}", rest);
-            }
-            let wrapped = wrap(&processed, width);
-            for line in wrapped {
-                out.push(Line::from(render_md_line(&line)));
-            }
-        }
-    }
-
-    // A streaming answer can end mid-block, before its closing fence arrives.
-    // Render what has been received rather than discarding it: the opening fence
-    // is already on screen, so dropping the body renders an empty code block and
-    // the answer looks like the model produced nothing.
-    //
-    // No synthetic closing fence is emitted — the block genuinely is not closed,
-    // and inventing a terminator would misrepresent the message.
-    push_code_block(&mut out, &language, &mut code_block_lines);
-
-    if out.is_empty() {
-        out.push(Line::from(String::new()));
-    }
-    out
-}
-
-/// Render an accumulated fenced code block into `out` and clear the accumulator.
-///
-/// Shared by the closing-fence path and the end-of-text path so a partial block
-/// renders identically to a complete one.
-fn push_code_block(
-    out: &mut Vec<Line<'static>>,
-    language: &str,
-    code_block_lines: &mut Vec<String>,
-) {
-    if code_block_lines.is_empty() {
-        return;
-    }
-    let code = code_block_lines.join("\n");
-    let theme = theme::syntax_theme();
-    // Borrowed, not consumed: the highlight is shared with the cache, and
-    // `render_highlighted_line` only needs a slice.
-    for line_segments in highlight_to_lines(language, &code, &theme).iter() {
-        out.push(Line::from(render_highlighted_line(line_segments)).style(theme::code_block()));
-    }
-    code_block_lines.clear();
-}
-
-fn render_md_line(line: &str) -> Vec<Span<'static>> {
-    let mut spans = Vec::new();
-    let mut rest = line;
-    while !rest.is_empty() {
-        if let Some(start) = rest.find("**") {
-            if start > 0 {
-                spans.push(Span::styled(rest[..start].to_string(), theme::text()));
-            }
-            let after = &rest[start + 2..];
-            if let Some(end) = after.find("**") {
-                spans.push(Span::styled(
-                    after[..end].to_string(),
-                    theme::text().add_modifier(Modifier::BOLD),
-                ));
-                rest = &after[end + 2..];
-                continue;
-            }
-            spans.push(Span::styled("**".to_string() + after, theme::text()));
-            break;
-        } else if let Some(start) = rest.find('`') {
-            if start > 0 {
-                spans.push(Span::styled(rest[..start].to_string(), theme::text()));
-            }
-            let after = &rest[start + 1..];
-            if let Some(end) = after.find('`') {
-                spans.push(Span::styled(
-                    after[..end].to_string(),
-                    theme::text_secondary().add_modifier(Modifier::BOLD),
-                ));
-                rest = &after[end + 1..];
-                continue;
-            }
-            spans.push(Span::styled("`".to_string() + after, theme::text()));
-            break;
-        } else {
-            spans.push(Span::styled(rest.to_string(), theme::text()));
-            break;
-        }
-    }
-    if spans.is_empty() {
-        spans.push(Span::styled(String::new(), theme::text()));
-    }
-    spans
-}
-
-type HighlightSegment = (String, (u8, u8, u8), bool, bool);
-
-fn render_highlighted_line(segments: &[HighlightSegment]) -> Vec<Span<'static>> {
-    let block = theme::code_block();
-    segments
-        .iter()
-        .map(|(text, rgb, bold, italic)| {
-            let mut style =
-                theme::syntax_segment(*rgb, Some(block.bg.unwrap_or(theme::panel_alt_bg())));
-            if *bold {
-                style = style.add_modifier(Modifier::BOLD);
-            }
-            if *italic {
-                style = style.add_modifier(Modifier::ITALIC);
-            }
-            Span::styled(text.clone(), style)
-        })
-        .collect()
-}
-
 #[cfg(test)]
 pub struct ConversationWidget<'a> {
     pub model: &'a ConversationModel,
@@ -3768,12 +3613,12 @@ mod tests {
 
     #[test]
     fn inline_code_in_body_text_uses_secondary_body_color_not_interactive_accent() {
-        let lines = assistant_lines("plain text with `inline code` in it", 80);
+        let lines = render_markdown("plain text with `inline code` in it", 80);
         let code_span = lines
             .iter()
             .flat_map(|line| line.spans.iter())
-            .find(|span| span.content.as_ref() == "inline code")
-            .expect("inline code span present");
+            .find(|span| span.content.as_ref() == "inline")
+            .expect("inline code token present");
         assert_eq!(code_span.style.fg, Some(theme::text_secondary_color()));
         assert_ne!(code_span.style.fg, Some(theme::accent_color()));
         assert_ne!(code_span.style.fg, Some(theme::info_color()));
@@ -4335,7 +4180,7 @@ mod tests {
     fn unterminated_fence_still_renders_its_code() {
         let streaming = "Here is the function:\n\n```rust\npub fn alpha() -> usize { 41 }\npub fn beta() -> usize { 42 }";
 
-        let text = lines_text(&assistant_lines(streaming, 80));
+        let text = lines_text(&render_markdown(streaming, 80));
 
         assert!(
             text.contains("```rust"),
@@ -4359,8 +4204,8 @@ mod tests {
         let open = "```rust\npub fn alpha() -> usize { 41 }";
         let closed = "```rust\npub fn alpha() -> usize { 41 }\n```";
 
-        let open_lines = assistant_lines(open, 80);
-        let closed_lines = assistant_lines(closed, 80);
+        let open_lines = render_markdown(open, 80);
+        let closed_lines = render_markdown(closed, 80);
 
         // Find the code line in each rendering and compare span structure.
         let code_of = |lines: &[Line<'static>]| {
@@ -4389,7 +4234,7 @@ mod tests {
     /// content is an unterminated block must not render as an empty block.
     #[test]
     fn unterminated_fence_is_not_an_empty_block() {
-        let text = lines_text(&assistant_lines("```rust\nlet x = 1;", 80));
+        let text = lines_text(&render_markdown("```rust\nlet x = 1;", 80));
 
         assert!(
             text.contains("let x = 1;"),
