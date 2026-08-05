@@ -105,8 +105,6 @@ impl TuiApp {
         }
         self.normalize_focus();
         self.register_pane_hit_regions(&regions);
-        let status = self.refresh_status_model_with_connected(connected);
-        frame.render_widget(StatusBar { model: &status }, regions.status);
         if let Some(files) = regions.files {
             frame.render_widget(
                 FileExplorerWidget {

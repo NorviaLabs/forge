@@ -13,7 +13,6 @@ pub const THEME_DOCK_H: u16 = 12;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LayoutRegions {
-    pub status: Rect,
     /// Center pane: File/Diff/Run content, or an empty-state placeholder.
     pub chat: Rect,
     pub files: Option<Rect>,
@@ -159,14 +158,12 @@ pub fn split_areas_with_chrome(
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),        // status
             Constraint::Min(3),           // main
             Constraint::Length(footer_h), // contextual hint
         ])
         .split(content_area);
-    let status = rows[0];
-    let main = rows[1];
-    let footer = rows[2];
+    let main = rows[0];
+    let footer = rows[1];
 
     // main row: [left column (files+chat+bottom_panel), sidebar]
     let (left_area, sidebar) = if show_sidebar {
@@ -227,7 +224,6 @@ pub fn split_areas_with_chrome(
     };
 
     LayoutRegions {
-        status,
         chat,
         files,
         sidebar,
@@ -267,11 +263,10 @@ mod tests {
     fn wide_layout_uses_95_percent_width_for_chat() {
         let area = Rect::new(0, 0, 120, 40);
         let r = split_areas(area);
-        assert_eq!(r.status, Rect::new(3, 0, 114, 1));
         // Chat gets the width left of the sidebar; taller than before since
         // the composer no longer eats vertical space from this column — it
         // lives in the sidebar's own split instead.
-        assert_eq!(r.chat, Rect::new(3, 1, 82, 39));
+        assert_eq!(r.chat, Rect::new(3, 0, 82, 40));
         assert_eq!(r.sidebar, Some(Rect::new(85, 1, 32, 36)));
         assert_eq!(r.footer.height, 0);
         assert_eq!(r.input.height, 3);
@@ -294,7 +289,7 @@ mod tests {
         let area = Rect::new(0, 0, 120, 50);
         let r = split_areas_with_bottom_panel(area, 0, 3, 0, 40);
         assert_eq!(r.bottom_panel.height, 32);
-        assert_eq!(r.chat.height, 17);
+        assert_eq!(r.chat.height, 18);
     }
 
     #[test]
@@ -309,8 +304,7 @@ mod tests {
     fn very_wide_layout_centers_the_95_percent_content_column() {
         let area = Rect::new(0, 0, 200, 40);
         let r = split_areas(area);
-        assert_eq!(r.status, Rect::new(5, 0, 190, 1));
-        assert_eq!(r.chat, Rect::new(5, 1, 102, 39));
+        assert_eq!(r.chat, Rect::new(5, 0, 102, 40));
         // The composer is scoped to the sidebar's width now, not the full
         // content column.
         assert_eq!(r.input.x, 107);
@@ -349,15 +343,14 @@ mod tests {
         let area = Rect::new(0, 0, 60, 24);
         let r = split_areas(area);
         assert_eq!(r.chat.width, 57);
-        assert_eq!(r.status.width, 57);
     }
 
     #[test]
     fn files_panel_reserves_bounded_left_space() {
         let area = Rect::new(0, 0, 120, 40);
         let r = split_areas_with_side_panels(area, 0, 3, true, 0, 0, true, 0);
-        assert_eq!(r.files, Some(Rect::new(3, 1, 24, 39)));
-        assert_eq!(r.chat, Rect::new(27, 1, 58, 39));
+        assert_eq!(r.files, Some(Rect::new(3, 0, 24, 40)));
+        assert_eq!(r.chat, Rect::new(27, 0, 58, 40));
         assert_eq!(r.sidebar, Some(Rect::new(85, 1, 32, 36)));
     }
 
