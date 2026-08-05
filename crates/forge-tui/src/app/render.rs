@@ -86,6 +86,12 @@ impl TuiApp {
             sidebar: regions.sidebar.is_some(),
             bottom_panel: self.bottom_panel.open && regions.bottom_panel.height > 0,
         };
+        if self.bottom_panel.open && regions.bottom_panel.height > 1 {
+            self.resize_interactive_terminal(
+                regions.bottom_panel.width,
+                regions.bottom_panel.height.saturating_sub(1),
+            );
+        }
         if !available.contains(self.focus.block) {
             self.focus.block = FocusBlock::Workspace;
             self.focus.mode = FocusMode::Navigation;
