@@ -241,6 +241,7 @@ impl McpStdioClient {
             .map(|c| c.to_string())
             .unwrap_or_else(|| result.to_string());
         Ok(ToolOutput {
+            outcome: Default::default(),
             content,
             is_error,
             exit_code: None,
@@ -404,6 +405,7 @@ done
                     "required": ["text"]
                 }),
                 handler: Box::new(|args| ToolOutput {
+                    outcome: Default::default(),
                     content: args
                         .get("text")
                         .and_then(|t| t.as_str())
@@ -440,6 +442,7 @@ done
                     "required": ["text"]
                 }),
                 handler: Box::new(|_| ToolOutput {
+                    outcome: Default::default(),
                     content: "x".into(),
                     is_error: false,
                     exit_code: None,
@@ -565,6 +568,7 @@ done
             description: "echo back".into(),
             schema: json!({"type": "object"}),
             handler: Box::new(|_| ToolOutput {
+                outcome: Default::default(),
                 content: "ok".into(),
                 is_error: false,
                 exit_code: None,

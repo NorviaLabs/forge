@@ -2,7 +2,7 @@
 
 use forge_durable::ToolResultPayload;
 use forge_tools::{ToolError, ValidationBudget};
-use forge_types::{Message, MessageRole, ToolCall, ToolOutput};
+use forge_types::{ExecutionOutcome, Message, MessageRole, ToolCall, ToolOutput};
 
 use crate::{AgentSession, LoopError, TurnEvent};
 
@@ -52,6 +52,7 @@ impl AgentSession {
         self.turn.record_call(call.clone());
         if !self.has_tool_message(&call.id) {
             self.messages.push(Message {
+                outcome: cached.output.effective_outcome(),
                 role: MessageRole::Tool,
                 content: cached.output.content.clone(),
                 tool_call_id: Some(call.id.clone()),
@@ -95,17 +96,15 @@ impl AgentSession {
     }
 
     async fn fail_interrupted_intent(&mut self, call: &ToolCall) -> Result<(), LoopError> {
-        let output = ToolOutput {
-            content: INTERRUPTED_TOOL_MSG.into(),
-            is_error: true,
-            exit_code: None,
-        };
+        let output =
+            ToolOutput::spawn_failed(INTERRUPTED_TOOL_MSG, "interrupted before result recorded");
         self.journal
             .append_tool_result(self.session_id, call, &output)
             .await?;
         self.remember_tool_result(call, &output);
         if !self.has_tool_message(&call.id) {
             self.messages.push(Message {
+                outcome: output.effective_outcome(),
                 role: MessageRole::Tool,
                 content: output.content.clone(),
                 tool_call_id: Some(call.id.clone()),
@@ -139,6 +138,7 @@ impl AgentSession {
             .await
         {
             Ok(mut output) => {
+                Self::backfill_tool_outcome(&mut output);
                 self.push_success_evidence(call, pre_edit, pre_git, &output)
                     .await;
                 if self.enable_context {
@@ -150,6 +150,7 @@ impl AgentSession {
                 self.remember_tool_result(call, &output);
                 if !self.has_tool_message(&call.id) {
                     self.messages.push(Message {
+                        outcome: output.effective_outcome(),
                         role: MessageRole::Tool,
                         content: output.content.clone(),
                         tool_call_id: Some(call.id.clone()),
@@ -171,6 +172,7 @@ impl AgentSession {
                 let msg = format!("Tool validation error: {ve}");
                 if !self.has_tool_message(&call.id) {
                     self.messages.push(Message {
+                        outcome: ExecutionOutcome::Failed { exit_code: None },
                         role: MessageRole::Tool,
                         content: msg.clone(),
                         tool_call_id: Some(call.id.clone()),
@@ -186,7 +188,9 @@ impl AgentSession {
                 });
             }
             Err(error) => {
+                let outcome = error.as_outcome();
                 let output = ToolOutput {
+                    outcome: Some(outcome),
                     content: error.to_string(),
                     is_error: true,
                     exit_code: None,
@@ -197,6 +201,7 @@ impl AgentSession {
                 self.remember_tool_result(call, &output);
                 if !self.has_tool_message(&call.id) {
                     self.messages.push(Message {
+                        outcome: output.effective_outcome(),
                         role: MessageRole::Tool,
                         content: output.content.clone(),
                         tool_call_id: Some(call.id.clone()),

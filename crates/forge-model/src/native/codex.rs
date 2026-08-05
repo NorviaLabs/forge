@@ -448,6 +448,7 @@ mod tests {
             Message::new(MessageRole::System, "system prompt"),
             Message::new(MessageRole::User, "hello"),
             Message {
+                outcome: Default::default(),
                 role: MessageRole::Assistant,
                 content: "working".into(),
                 tool_call_id: None,
@@ -461,6 +462,7 @@ mod tests {
                 }],
             },
             Message {
+                outcome: Default::default(),
                 role: MessageRole::Tool,
                 content: "contents".into(),
                 tool_call_id: Some("c1".into()),
@@ -503,6 +505,7 @@ mod tests {
             Message::new(MessageRole::System, "system prompt"),
             Message::new(MessageRole::User, "hello"),
             Message {
+                outcome: Default::default(),
                 role: MessageRole::Assistant,
                 content: "working".into(),
                 tool_call_id: None,
@@ -516,6 +519,7 @@ mod tests {
                 }],
             },
             Message {
+                outcome: Default::default(),
                 role: MessageRole::Tool,
                 content: "contents".into(),
                 tool_call_id: Some("c1".into()),
@@ -543,6 +547,7 @@ mod tests {
         request.messages = vec![
             Message::new(MessageRole::User, "hello"),
             Message {
+                outcome: Default::default(),
                 role: MessageRole::Assistant,
                 content: "working".into(),
                 tool_call_id: None,
@@ -556,6 +561,7 @@ mod tests {
                 }],
             },
             Message {
+                outcome: Default::default(),
                 role: MessageRole::Tool,
                 content: "contents".into(),
                 tool_call_id: Some("orphan-output".into()),

@@ -121,6 +121,7 @@ mod tests {
     fn user_model(text: &str) -> ConversationModel {
         ConversationModel::from_messages(
             &[Message {
+                outcome: Default::default(),
                 role: MessageRole::User,
                 content: text.into(),
                 tool_call_id: None,
@@ -332,6 +333,7 @@ mod tests {
         let model = ConversationModel::from_messages(
             &[
                 Message {
+                    outcome: Default::default(),
                     role: MessageRole::User,
                     content: "first".into(),
                     tool_call_id: None,
@@ -341,6 +343,7 @@ mod tests {
                     tool_calls: vec![],
                 },
                 Message {
+                    outcome: Default::default(),
                     role: MessageRole::User,
                     content: "second".into(),
                     tool_call_id: None,
@@ -498,6 +501,7 @@ mod tests {
         let model = ConversationModel::from_messages(
             &[
                 Message {
+                    outcome: Default::default(),
                     role: MessageRole::User,
                     content: "first message".into(),
                     tool_call_id: None,
@@ -507,6 +511,7 @@ mod tests {
                     tool_calls: vec![],
                 },
                 Message {
+                    outcome: Default::default(),
                     role: MessageRole::User,
                     content: "second message".into(),
                     tool_call_id: None,

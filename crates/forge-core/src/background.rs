@@ -494,20 +494,15 @@ impl AgentSession {
                 let id = self
                     .spawn_background_shell(args.command, label.clone())
                     .await?;
-                forge_types::ToolOutput {
-                    content: format!(
-                        "Started background task #{} ('{label}'). You'll see the result once it finishes.",
-                        id.0
-                    ),
-                    is_error: false,
-                    exit_code: None,
-                }
+                forge_types::ToolOutput::success(format!(
+                    "Started background task #{} ('{label}'). You'll see the result once it finishes.",
+                    id.0
+                ))
             }
-            Err(e) => forge_types::ToolOutput {
-                content: format!("invalid background_run arguments: {e}"),
-                is_error: true,
-                exit_code: None,
-            },
+            Err(e) => forge_types::ToolOutput::failed_exit(
+                format!("invalid background_run arguments: {e}"),
+                None,
+            ),
         };
 
         self.journal
@@ -515,6 +510,7 @@ impl AgentSession {
             .await?;
         self.remember_tool_result(call, &output);
         self.messages.push(forge_types::Message {
+            outcome: output.effective_outcome(),
             role: forge_types::MessageRole::Tool,
             content: output.content.clone(),
             tool_call_id: Some(call.id.clone()),
