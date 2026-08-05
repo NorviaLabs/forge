@@ -313,6 +313,7 @@ mod tests {
     #[test]
     fn messages_and_tools_wire() {
         let msgs = forge_messages_to_wire(&[Message {
+            outcome: Default::default(),
             role: MessageRole::User,
             content: "hi".into(),
             tool_call_id: None,
@@ -323,6 +324,7 @@ mod tests {
         }]);
         assert_eq!(msgs[0]["role"], "user");
         let assistant = forge_messages_to_wire(&[Message {
+            outcome: Default::default(),
             role: MessageRole::Assistant,
             content: "".into(),
             tool_call_id: None,
@@ -353,6 +355,7 @@ mod tests {
     #[test]
     fn wire_includes_reasoning_content_for_tool_calls() {
         let with_thinking = forge_messages_to_wire(&[Message {
+            outcome: Default::default(),
             role: MessageRole::Assistant,
             content: "".into(),
             tool_call_id: None,
@@ -369,6 +372,7 @@ mod tests {
         assert_eq!(with_thinking[0]["tool_calls"][0]["id"], "call_0");
 
         let without_thinking = forge_messages_to_wire(&[Message {
+            outcome: Default::default(),
             role: MessageRole::Assistant,
             content: "".into(),
             tool_call_id: None,
@@ -386,6 +390,7 @@ mod tests {
         assert!(without_thinking[0].get("tool_calls").is_some());
 
         let plain = forge_messages_to_wire(&[Message {
+            outcome: Default::default(),
             role: MessageRole::Assistant,
             content: "hi".into(),
             tool_call_id: None,

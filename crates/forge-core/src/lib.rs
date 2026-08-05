@@ -42,9 +42,9 @@ use forge_tools::{
     default_builtins_with_web_search, ToolContext, ToolError, ToolRegistry, ValidationBudget,
 };
 use forge_types::{
-    BackgroundTaskId, HitlDecision, HitlPayload, Message, MessageRole, ModelResponse,
-    PolicyDecision, SessionId, SideEffectClass, TaskId, TaskLifecycle, ToolCall, ToolOutput, Usage,
-    WaitReason,
+    BackgroundTaskId, ExecutionOutcome, HitlDecision, HitlPayload, Message, MessageRole,
+    ModelResponse, PolicyDecision, SessionId, SideEffectClass, TaskId, TaskLifecycle, ToolCall,
+    ToolOutput, Usage, WaitReason,
 };
 use serde_json::json;
 use thiserror::Error;
@@ -639,6 +639,7 @@ impl AgentSession {
         let mut context = ContextEngine::new(self.context.workspace.clone(), session_id);
         context.config = self.context.config.clone();
         let system_message = Message {
+            outcome: Default::default(),
             role: MessageRole::System,
             content: assemble_system_prompt(&context.load_agents_md(), &context.load_skills()),
             tool_call_id: None,
@@ -718,6 +719,7 @@ impl AgentSession {
         Ok(Self {
             session_id,
             messages: vec![Message {
+                outcome: Default::default(),
                 role: MessageRole::System,
                 content: system,
                 tool_call_id: None,
@@ -764,6 +766,7 @@ impl AgentSession {
         let context = ContextEngine::new(loop_cfg.workspace.clone(), session_id);
         let system = assemble_system_prompt(&context.load_agents_md(), &context.load_skills());
         let system_message = Message {
+            outcome: Default::default(),
             role: MessageRole::System,
             content: system,
             tool_call_id: None,
@@ -1153,6 +1156,7 @@ impl AgentSession {
             .append_user_message(self.session_id, text)
             .await?;
         self.messages.push(Message {
+            outcome: Default::default(),
             role: MessageRole::User,
             content: text.into(),
             tool_call_id: None,
@@ -1223,6 +1227,7 @@ impl AgentSession {
         let final_text = strip_protocol_markers(&last.text);
         if !final_text.is_empty() || has_thinking || !last.tool_calls.is_empty() {
             self.messages.push(Message {
+                outcome: Default::default(),
                 role: MessageRole::Assistant,
                 content: final_text.clone(),
                 tool_call_id: None,
@@ -1303,7 +1308,32 @@ impl AgentSession {
             // derived from tool calls actually issued this turn, and the
             // evidence those calls produced.
             let expectation = classify_turn(self.turn.calls());
-            let decision = DefaultCompletionEvaluator.evaluate(&expectation, self.turn.evidence());
+            let mut decision =
+                DefaultCompletionEvaluator.evaluate(&expectation, self.turn.evidence());
+            // `classify_turn` picks exactly one `TaskExpectation` category per
+            // turn (git > file-edit > tool-execution > search > read-only), so
+            // a turn that e.g. both writes a file and runs a failing
+            // validation command evaluates the file-edit evidence only — the
+            // failing bash evidence never gets consulted, and the turn could
+            // read `Completed` despite it. Independent of which category the
+            // evaluator matched, any failed evidence entry anywhere in this
+            // turn must prevent a success framing.
+            if decision.state == TaskLifecycle::Completed {
+                if let Some(bad) = self.turn.evidence().0.iter().find(|e| e.error.is_some()) {
+                    let tool = bad.tool_name.clone().unwrap_or_else(|| "a step".into());
+                    decision = CompletionDecision {
+                        state: TaskLifecycle::Failed,
+                        reason: CompletionReason::PartialFailure,
+                        evidence_summary: EvidenceSummary {
+                            succeeded: decision.evidence_summary.succeeded,
+                            failed: vec![tool.clone()],
+                            detail: format!(
+                                "{tool} did not finish successfully, so this turn is not complete."
+                            ),
+                        },
+                    };
+                }
+            }
             tracing::debug!(
                 expectation = ?expectation,
                 evidence_count = self.turn.evidence().0.len(),
@@ -1407,6 +1437,7 @@ impl AgentSession {
         let summary = summary.trim();
         let content = format!("{TURN_FAILED_MARKER}{summary}");
         self.messages.push(Message {
+            outcome: Default::default(),
             role: MessageRole::Assistant,
             content: content.clone(),
             tool_call_id: None,
@@ -1794,6 +1825,21 @@ impl AgentSession {
         self.turn.push_evidence(entry);
     }
 
+    /// Ensures every `ToolOutput` reaching a `Message` carries a real
+    /// `outcome`, even for `Tool` impls that don't set one explicitly — so
+    /// not every tool in `forge-tools` needs an individual update.
+    fn backfill_tool_outcome(output: &mut ToolOutput) {
+        if output.outcome.is_none() {
+            output.outcome = Some(if output.is_error {
+                ExecutionOutcome::Failed {
+                    exit_code: output.exit_code,
+                }
+            } else {
+                ExecutionOutcome::Success
+            });
+        }
+    }
+
     fn push_bash_evidence(&mut self, call: &ToolCall, output: &ToolOutput) {
         let event = if output.is_error {
             ExecutionEvent::ToolFailed
@@ -1929,11 +1975,7 @@ impl AgentSession {
                 // explicit deny and a decision this build does not recognise are both
                 // refused here, so neither can fall through to the execution below.
                 _ => {
-                    let output = ToolOutput {
-                        content: format!("denied by ACL: {}", call.name),
-                        is_error: true,
-                        exit_code: None,
-                    };
+                    let output = ToolOutput::denied(format!("denied by ACL: {}", call.name));
                     self.push_denied_evidence(call, &output.content);
                     self.journal
                         .append_tool_intent(self.session_id, call)
@@ -1943,6 +1985,7 @@ impl AgentSession {
                         .await?;
                     self.remember_tool_result(call, &output);
                     self.messages.push(Message {
+                        outcome: output.effective_outcome(),
                         role: MessageRole::Tool,
                         content: output.content,
                         tool_call_id: Some(call.id.clone()),
@@ -1975,6 +2018,7 @@ impl AgentSession {
             .await
         {
             Ok(mut output) => {
+                Self::backfill_tool_outcome(&mut output);
                 self.push_success_evidence(call, pre_edit, pre_git, &output)
                     .await;
                 if self.enable_context {
@@ -1985,6 +2029,7 @@ impl AgentSession {
                     .await?;
                 self.remember_tool_result(call, &output);
                 self.messages.push(Message {
+                    outcome: output.effective_outcome(),
                     role: MessageRole::Tool,
                     content: output.content.clone(),
                     tool_call_id: Some(call.id.clone()),
@@ -2009,6 +2054,7 @@ impl AgentSession {
                      (for example offset: 1, limit: 100 as integers)."
                 );
                 self.messages.push(Message {
+                    outcome: ExecutionOutcome::Failed { exit_code: None },
                     role: MessageRole::Tool,
                     content: msg.clone(),
                     tool_call_id: Some(call.id.clone()),
@@ -2025,7 +2071,9 @@ impl AgentSession {
             Err(e) => {
                 let content = e.to_string();
                 let is_budget = content.contains("validation retry budget exceeded");
+                let outcome = e.as_outcome();
                 let output = ToolOutput {
+                    outcome: Some(outcome),
                     content: if is_budget {
                         format!(
                             "{content}. Stop retrying this tool with the same invalid argument shape. \
@@ -2042,6 +2090,7 @@ impl AgentSession {
                     .await?;
                 self.remember_tool_result(call, &output);
                 self.messages.push(Message {
+                    outcome: output.effective_outcome(),
                     role: MessageRole::Tool,
                     content: output.content.clone(),
                     tool_call_id: Some(call.id.clone()),
@@ -2105,14 +2154,10 @@ impl AgentSession {
 
         if !approved {
             let feedback = feedback.map(str::trim).filter(|f| !f.is_empty());
-            let output = ToolOutput {
-                content: match feedback {
-                    Some(feedback) => format!("HITL denied by {actor}: {feedback}"),
-                    None => format!("HITL denied by {actor}"),
-                },
-                is_error: true,
-                exit_code: None,
-            };
+            let output = ToolOutput::denied(match feedback {
+                Some(feedback) => format!("HITL denied by {actor}: {feedback}"),
+                None => format!("HITL denied by {actor}"),
+            });
             let call = ToolCall {
                 id: payload.call_id.clone(),
                 name: payload.tool.clone(),
@@ -2128,6 +2173,7 @@ impl AgentSession {
                 .await?;
             self.remember_tool_result(&call, &output);
             self.messages.push(Message {
+                outcome: output.effective_outcome(),
                 role: MessageRole::Tool,
                 content: output.content,
                 tool_call_id: Some(payload.call_id),
@@ -2228,7 +2274,8 @@ impl AgentSession {
             .call(&self.tool_ctx, &call.name, call.arguments.clone(), budget)
             .await
         {
-            Ok(output) => {
+            Ok(mut output) => {
+                Self::backfill_tool_outcome(&mut output);
                 self.push_success_evidence(call, pre_edit, pre_git, &output)
                     .await;
                 self.journal
@@ -2244,6 +2291,7 @@ impl AgentSession {
                     });
                 }
                 self.messages.push(Message {
+                    outcome: output.effective_outcome(),
                     role: MessageRole::Tool,
                     content: output.content,
                     tool_call_id: Some(call.id.clone()),
@@ -2254,7 +2302,9 @@ impl AgentSession {
                 });
             }
             Err(e) => {
+                let outcome = e.as_outcome();
                 let output = ToolOutput {
+                    outcome: Some(outcome),
                     content: e.to_string(),
                     is_error: true,
                     exit_code: None,
@@ -4088,6 +4138,186 @@ mod tests {
             failure.content.contains("exited with code 7"),
             "{}",
             failure.content
+        );
+        let tool_message = s
+            .messages
+            .iter()
+            .find(|m| m.role == MessageRole::Tool)
+            .expect("the bash tool result should be recorded");
+        assert_eq!(
+            tool_message.outcome,
+            ExecutionOutcome::Failed { exit_code: Some(7) }
+        );
+    }
+
+    #[tokio::test]
+    async fn bash_exit_zero_completes_and_reports_success() {
+        let dir = tempdir().unwrap();
+        let model = script(vec![
+            tool_call_response(vec![ToolCall {
+                id: "1".into(),
+                name: "bash".into(),
+                arguments: json!({"command": "exit 0"}),
+            }]),
+            text_only("Ran the command."),
+        ]);
+        let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        s.run_user_message("run it").await.unwrap();
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Completed);
+        let tool_message = s
+            .messages
+            .iter()
+            .find(|m| m.role == MessageRole::Tool)
+            .expect("the bash tool result should be recorded");
+        assert_eq!(tool_message.outcome, ExecutionOutcome::Success);
+    }
+
+    #[tokio::test]
+    async fn bash_exit_127_reports_spawn_failed_command_not_found() {
+        let dir = tempdir().unwrap();
+        let model = script(vec![
+            tool_call_response(vec![ToolCall {
+                id: "1".into(),
+                name: "bash".into(),
+                arguments: json!({"command": "definitely_not_a_real_command_xyz; exit 127"}),
+            }]),
+            text_only("Ran the command."),
+        ]);
+        let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        s.run_user_message("run it").await.unwrap();
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Failed);
+        let tool_message = s
+            .messages
+            .iter()
+            .find(|m| m.role == MessageRole::Tool)
+            .expect("the bash tool result should be recorded");
+        assert_eq!(
+            tool_message.outcome,
+            ExecutionOutcome::SpawnFailed {
+                reason: "command not found".into()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn hitl_denial_message_carries_denied_outcome() {
+        let dir = tempdir().unwrap();
+        let model = Arc::new(MockModelClient::script(vec![ModelResponse {
+            text: "".into(),
+            tool_calls: vec![ToolCall {
+                id: "1".into(),
+                name: "bash".into(),
+                arguments: json!({"command": "git push origin main"}),
+            }],
+            usage: None,
+            thinking: None,
+        }]));
+        let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        s.run_user_message("push").await.unwrap();
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Waiting);
+
+        s.resolve_hitl_with_feedback(HitlDecision::Deny, "test", None)
+            .await
+            .unwrap();
+
+        let tool_message = s
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == MessageRole::Tool)
+            .expect("a tool result should record the denial");
+        assert!(matches!(
+            tool_message.outcome,
+            ExecutionOutcome::Denied { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn acl_denial_message_carries_denied_outcome() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("secret.txt"), "SENTINEL-CONTENT").unwrap();
+        let model = Arc::new(MockModelClient::script(vec![
+            ModelResponse {
+                text: "".into(),
+                tool_calls: vec![ToolCall {
+                    id: "1".into(),
+                    name: "read_file".into(),
+                    arguments: json!({"path": "secret.txt"}),
+                }],
+                usage: None,
+                thinking: None,
+            },
+            ModelResponse {
+                text: "done".into(),
+                tool_calls: vec![],
+                usage: None,
+                thinking: None,
+            },
+        ]));
+        let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        let mut acl = AclPolicy::allow_all();
+        acl.deny("read_file".into());
+        s.set_governance(Governance::default().with_acl(acl));
+        s.run_user_message("read it").await.unwrap();
+
+        let tool_message = s
+            .messages
+            .iter()
+            .find(|m| m.role == MessageRole::Tool)
+            .expect("a tool result should record the denial");
+        assert!(matches!(
+            tool_message.outcome,
+            ExecutionOutcome::Denied { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn write_then_failing_validation_in_same_turn_never_completes() {
+        // `classify_turn` picks exactly one `TaskExpectation` category per
+        // turn by precedence (git > file-edit > tool-execution > search >
+        // read-only). A turn that both writes a file (succeeds) and runs a
+        // failing validation command classifies as `FileEdit` only, so
+        // without the cross-category evidence gate in `apply_model_response`
+        // the failing bash evidence would never be consulted and this turn
+        // would incorrectly read `Completed`.
+        let dir = tempdir().unwrap();
+        let model = script(vec![
+            tool_call_response(vec![
+                ToolCall {
+                    id: "1".into(),
+                    name: "write_file".into(),
+                    arguments: json!({"path": "ok.txt", "content": "fine\n"}),
+                },
+                ToolCall {
+                    id: "2".into(),
+                    name: "bash".into(),
+                    arguments: json!({"command": "exit 1"}),
+                },
+            ]),
+            text_only("Wrote the file and ran the tests."),
+        ]);
+        let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        s.run_user_message("write and validate").await.unwrap();
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Failed);
+        assert_eq!(
+            s.last_completion.as_ref().unwrap().reason,
+            CompletionReason::PartialFailure
+        );
+        // The write still happened on disk — the gate fails the turn without
+        // pretending the edit didn't occur.
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("ok.txt")).unwrap(),
+            "fine\n"
         );
     }
 

@@ -83,6 +83,7 @@ skill's description matches the current task, before following its instructions.
         };
 
         Ok(ToolOutput {
+            outcome: Default::default(),
             content,
             is_error: false,
             exit_code: None,

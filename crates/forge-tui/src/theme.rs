@@ -452,6 +452,19 @@ pub fn tool_success_style() -> Style {
     ok().add_modifier(Modifier::BOLD)
 }
 
+/// Denied: refused by a decision, not a crash. Amber, not red — gives a
+/// 3-way visual read alongside `tool_success_style`/`danger`: green success,
+/// amber skipped-for-a-reason, red actually-broken.
+pub fn tool_denied_style() -> Style {
+    warn().add_modifier(Modifier::BOLD)
+}
+
+/// Timed out: stub only, no real deadline enforcement exists yet. Amber for
+/// the same reason as `tool_denied_style`.
+pub fn tool_timeout_style() -> Style {
+    warn().add_modifier(Modifier::BOLD)
+}
+
 pub fn metadata_style() -> Style {
     muted()
 }

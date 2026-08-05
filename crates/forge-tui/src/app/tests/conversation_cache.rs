@@ -57,6 +57,7 @@ async fn streaming_updates_reuse_cached_transcript_lines() {
 
     let (dir, mut session) = test_session().await;
     session.messages.push(Message {
+        outcome: Default::default(),
         role: MessageRole::Assistant,
         content: "historical answer".into(),
         tool_call_id: None,

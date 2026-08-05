@@ -181,6 +181,7 @@ async fn light_theme_representative_layout_snapshot() {
     app.workspace_files.visible = true;
     app.handle_theme_command(Some("light"));
     app.session.messages.push(Message {
+        outcome: Default::default(),
         role: MessageRole::User,
         content: "Please review this change.\n\nIt spans multiple lines.".into(),
         tool_call_id: None,
@@ -190,6 +191,7 @@ async fn light_theme_representative_layout_snapshot() {
         tool_calls: vec![],
     });
     app.session.messages.push(Message {
+        outcome: Default::default(),
         role: MessageRole::Assistant,
         content: "Here is a concise review of your change.".into(),
         tool_call_id: None,

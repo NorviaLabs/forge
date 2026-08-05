@@ -181,6 +181,7 @@ mod tests {
         let resp = client
             .complete(ModelRequest {
                 messages: vec![Message {
+                    outcome: Default::default(),
                     role: MessageRole::User,
                     content: "hi".into(),
                     tool_call_id: None,

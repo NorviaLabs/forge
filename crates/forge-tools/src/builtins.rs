@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use forge_types::{SideEffectClass, ToolOutput};
+use forge_types::{ExecutionOutcome, SideEffectClass, ToolOutput};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -56,6 +56,7 @@ impl Tool for ReadFileTool {
         let text = tokio::fs::read_to_string(&path).await?;
         let content = slice_lines(&text, a.offset, a.limit);
         Ok(ToolOutput {
+            outcome: Default::default(),
             content,
             is_error: false,
             exit_code: None,
@@ -172,6 +173,7 @@ impl Tool for WriteFileTool {
             diff
         };
         Ok(ToolOutput {
+            outcome: Default::default(),
             content,
             is_error: false,
             exit_code: None,
@@ -238,10 +240,23 @@ pub async fn run_shell_command(
         content.push_str(&err);
     }
 
+    let is_error = !out.status.success();
+    let exit_code = out.status.code();
+    let outcome = if !is_error {
+        ExecutionOutcome::Success
+    } else if exit_code == Some(127) {
+        ExecutionOutcome::SpawnFailed {
+            reason: "command not found".into(),
+        }
+    } else {
+        ExecutionOutcome::Failed { exit_code }
+    };
+
     Ok(ToolOutput {
+        outcome: Some(outcome),
         content,
-        is_error: !out.status.success(),
-        exit_code: out.status.code(),
+        is_error,
+        exit_code,
     })
 }
 
@@ -344,6 +359,7 @@ Use this as a structured checklist the user can see — not as a substitute for 
             ToolError::Execution(format!("internal deserialize after validation: {e}"))
         })?;
         Ok(ToolOutput {
+            outcome: Default::default(),
             content: "Plan updated".into(),
             is_error: false,
             exit_code: None,
@@ -1210,6 +1226,7 @@ impl Tool for GitTool {
             content = format!("git {sub}: ok");
         }
         Ok(ToolOutput {
+            outcome: Default::default(),
             content,
             is_error: !out.status.success(),
             exit_code: out.status.code(),

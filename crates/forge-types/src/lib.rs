@@ -66,6 +66,12 @@ pub struct Message {
     /// Tool calls emitted by an assistant message, preserved for the next model step.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<ToolCall>,
+    /// Real execution result for `MessageRole::Tool` messages, carried
+    /// end-to-end from `ToolOutput::effective_outcome()` rather than
+    /// re-derived later by pattern-matching rendered text. `Success` for
+    /// every non-tool role (no execution to report).
+    #[serde(default)]
+    pub outcome: ExecutionOutcome,
 }
 
 impl Message {
@@ -78,6 +84,7 @@ impl Message {
             thinking: None,
             thinking_duration_secs: None,
             tool_calls: vec![],
+            outcome: ExecutionOutcome::Success,
         }
     }
 }
@@ -90,6 +97,39 @@ pub struct ToolCall {
     pub arguments: serde_json::Value,
 }
 
+/// The single, structured source of truth for how a tool call or process
+/// finished. Constructed at the point where the fact is known (ACL/HITL
+/// gate, tool dispatch, process exit) — never reconstructed later by
+/// pattern-matching rendered text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ExecutionOutcome {
+    #[default]
+    Success,
+    /// A process started and exited non-zero.
+    Failed { exit_code: Option<i32> },
+    /// The process/tool could not be started at all (e.g. the shell binary
+    /// itself failed to spawn, or a shell-reported "command not found",
+    /// conventionally exit code 127).
+    SpawnFailed { reason: String },
+    /// Terminal and distinct from "blocked/pending": the call never ran
+    /// because governance/HITL refused it. Resolved negatively, not
+    /// awaiting resolution.
+    Denied { reason: String },
+    /// Operator/system cancelled before or during execution.
+    Cancelled,
+    /// Stub only: no real deadline enforcement exists anywhere yet. Exists
+    /// so the type, icon, copy, and tests are in place ahead of enforcement.
+    TimedOut,
+}
+
+impl ExecutionOutcome {
+    pub fn is_success(&self) -> bool {
+        matches!(self, ExecutionOutcome::Success)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolOutput {
     pub content: String,
@@ -99,6 +139,80 @@ pub struct ToolOutput {
     /// tools with no notion of an exit code, or when the process never ran.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
+    /// Structured outcome. `None` only for JSON persisted before this field
+    /// existed; `effective_outcome()` derives a safe fallback from
+    /// `is_error`/`exit_code` for those legacy records (never upgrades a
+    /// legacy failure to `Success`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<ExecutionOutcome>,
+}
+
+impl ToolOutput {
+    pub fn success(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            is_error: false,
+            exit_code: None,
+            outcome: Some(ExecutionOutcome::Success),
+        }
+    }
+
+    pub fn failed_exit(content: impl Into<String>, exit_code: Option<i32>) -> Self {
+        Self {
+            content: content.into(),
+            is_error: true,
+            exit_code,
+            outcome: Some(ExecutionOutcome::Failed { exit_code }),
+        }
+    }
+
+    pub fn spawn_failed(content: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            is_error: true,
+            exit_code: None,
+            outcome: Some(ExecutionOutcome::SpawnFailed {
+                reason: reason.into(),
+            }),
+        }
+    }
+
+    pub fn denied(reason: impl Into<String>) -> Self {
+        let reason = reason.into();
+        Self {
+            content: reason.clone(),
+            is_error: true,
+            exit_code: None,
+            outcome: Some(ExecutionOutcome::Denied { reason }),
+        }
+    }
+
+    pub fn cancelled(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            is_error: true,
+            exit_code: None,
+            outcome: Some(ExecutionOutcome::Cancelled),
+        }
+    }
+
+    /// Never trust a missing `outcome` as success: old journaled records
+    /// (no `outcome` field) fall back to a coarse classification from
+    /// `is_error`/`exit_code` alone — this can't recover Denied/SpawnFailed/
+    /// Cancelled distinctions for pre-existing data, but it can never turn
+    /// a recorded failure into a false Success.
+    pub fn effective_outcome(&self) -> ExecutionOutcome {
+        if let Some(o) = &self.outcome {
+            return o.clone();
+        }
+        if self.is_error {
+            ExecutionOutcome::Failed {
+                exit_code: self.exit_code,
+            }
+        } else {
+            ExecutionOutcome::Success
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -519,6 +633,65 @@ mod tests {
         assert!(message.thinking.is_none());
         assert!(message.thinking_duration_secs.is_none());
         assert!(message.tool_calls.is_empty());
+        assert_eq!(message.outcome, ExecutionOutcome::Success);
+    }
+
+    #[test]
+    fn execution_outcome_roundtrips_through_serde() {
+        let cases = [
+            ExecutionOutcome::Success,
+            ExecutionOutcome::Failed { exit_code: Some(7) },
+            ExecutionOutcome::Failed { exit_code: None },
+            ExecutionOutcome::SpawnFailed {
+                reason: "command not found".into(),
+            },
+            ExecutionOutcome::Denied {
+                reason: "denied by ACL".into(),
+            },
+            ExecutionOutcome::Cancelled,
+            ExecutionOutcome::TimedOut,
+        ];
+        for outcome in cases {
+            let j = serde_json::to_string(&outcome).unwrap();
+            let back: ExecutionOutcome = serde_json::from_str(&j).unwrap();
+            assert_eq!(back, outcome);
+        }
+    }
+
+    #[test]
+    fn tool_output_effective_outcome_falls_back_for_legacy_json() {
+        let legacy = r#"{"content":"boom","is_error":true,"exit_code":2}"#;
+        let output: ToolOutput = serde_json::from_str(legacy).unwrap();
+        assert!(output.outcome.is_none());
+        assert_eq!(
+            output.effective_outcome(),
+            ExecutionOutcome::Failed { exit_code: Some(2) }
+        );
+
+        let legacy_success = r#"{"content":"ok","is_error":false}"#;
+        let output: ToolOutput = serde_json::from_str(legacy_success).unwrap();
+        assert_eq!(output.effective_outcome(), ExecutionOutcome::Success);
+    }
+
+    #[test]
+    fn tool_output_constructors_keep_fields_in_sync() {
+        let denied = ToolOutput::denied("denied by ACL: bash");
+        assert!(denied.is_error);
+        assert_eq!(
+            denied.outcome,
+            Some(ExecutionOutcome::Denied {
+                reason: "denied by ACL: bash".into()
+            })
+        );
+
+        let spawn_failed = ToolOutput::spawn_failed("boom", "command not found");
+        assert!(spawn_failed.is_error);
+        assert_eq!(
+            spawn_failed.outcome,
+            Some(ExecutionOutcome::SpawnFailed {
+                reason: "command not found".into()
+            })
+        );
     }
 
     #[test]

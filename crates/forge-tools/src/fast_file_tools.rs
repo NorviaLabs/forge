@@ -136,6 +136,7 @@ impl Tool for FffFindTool {
             .map_err(search_err)?;
 
         Ok(ToolOutput {
+            outcome: Default::default(),
             content: if response.hits.is_empty() {
                 serde_json::json!({
                     "hits": [],
@@ -201,6 +202,7 @@ impl Tool for FffGrepTool {
             .map_err(search_err)?;
 
         Ok(ToolOutput {
+            outcome: Default::default(),
             content: if response.hits.is_empty() {
                 serde_json::json!({
                     "hits": [],

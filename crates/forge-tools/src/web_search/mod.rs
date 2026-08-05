@@ -107,6 +107,7 @@ impl Tool for WebSearchTool {
         let query = a.query.trim().to_string();
         if query.is_empty() {
             return Ok(ToolOutput {
+                outcome: Default::default(),
                 content: "web_search: query must be non-empty".into(),
                 is_error: true,
                 exit_code: None,
@@ -114,6 +115,7 @@ impl Tool for WebSearchTool {
         }
         if query.chars().count() > self.cfg.max_query_chars as usize {
             return Ok(ToolOutput {
+                outcome: Default::default(),
                 content: format!(
                     "web_search: query exceeds max length ({} chars)",
                     self.cfg.max_query_chars
@@ -126,6 +128,7 @@ impl Tool for WebSearchTool {
         let secrets = SearchSecrets::from_config(&self.cfg);
         if self.cfg.provider.needs_api_key() && secrets.api_key.is_none() {
             return Ok(ToolOutput {
+                outcome: Default::default(),
                 content: "web_search not configured (missing API key)".into(),
                 is_error: true,
                 exit_code: None,
@@ -152,6 +155,7 @@ impl Tool for WebSearchTool {
                 if let Some(ref key) = secrets.api_key {
                     if !key.is_empty() && content.contains(key) {
                         return Ok(ToolOutput {
+                            outcome: Default::default(),
                             content: "web_search: redacted unexpected secret in result".into(),
                             is_error: true,
                             exit_code: None,
@@ -159,12 +163,14 @@ impl Tool for WebSearchTool {
                     }
                 }
                 Ok(ToolOutput {
+                    outcome: Default::default(),
                     content,
                     is_error: false,
                     exit_code: None,
                 })
             }
             Err(e) => Ok(ToolOutput {
+                outcome: Default::default(),
                 content: format!("web_search failed: {e}"),
                 is_error: true,
                 exit_code: None,

@@ -109,6 +109,7 @@ async fn collect(
             session.output.push_str(&String::from_utf8_lossy(&tail));
             let body = output_for(session_id, session, max_tokens);
             return Ok(ToolOutput {
+                outcome: Default::default(),
                 content: body.to_string(),
                 is_error: !status.success(),
                 exit_code: status.code(),
@@ -132,6 +133,7 @@ async fn collect(
     }
     let body = output_for(session_id, session, max_tokens);
     Ok(ToolOutput {
+        outcome: Default::default(),
         content: body.to_string(),
         is_error: false,
         exit_code: None,

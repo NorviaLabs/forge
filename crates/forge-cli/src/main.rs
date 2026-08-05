@@ -203,6 +203,7 @@ async fn open_session(
                 "required": ["text"]
             }),
             handler: Box::new(|args| forge_types::ToolOutput {
+                outcome: Default::default(),
                 content: args
                     .get("text")
                     .and_then(|t| t.as_str())

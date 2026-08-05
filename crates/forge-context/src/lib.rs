@@ -253,6 +253,7 @@ impl ContextEngine {
         self.write_progress(&doc)?;
 
         let mut new_msgs = vec![Message {
+            outcome: Default::default(),
             role: MessageRole::System,
             content: format!(
                 "{system_prompt}\n\n# Context Handoff\n\nContext was reset (CTX-02). Continue from this progress document:\n{}",
@@ -265,6 +266,7 @@ impl ContextEngine {
             tool_calls: vec![],
 }];
         new_msgs.push(Message {
+            outcome: Default::default(),
             role: MessageRole::User,
             content: format!(
                 "Continue the task. Goal: {}. Next: {:?}",
@@ -487,6 +489,7 @@ mod tests {
         eng.goal = "ship feature".into();
         let messages = vec![
             Message {
+                outcome: Default::default(),
                 role: MessageRole::User,
                 content: "do work".into(),
                 tool_call_id: None,
@@ -496,6 +499,7 @@ mod tests {
                 tool_calls: vec![],
             },
             Message {
+                outcome: Default::default(),
                 role: MessageRole::Assistant,
                 content: "x".repeat(1000),
                 tool_call_id: None,
@@ -519,6 +523,7 @@ mod tests {
         assert!(eng.should_reset(
             &std::iter::repeat_n(
                 Message {
+                    outcome: Default::default(),
                     role: MessageRole::Assistant,
                     content: "y".repeat(4000),
                     tool_call_id: None,
@@ -626,6 +631,7 @@ mod tests {
     fn usage_ratio_increases() {
         let eng = ContextEngine::new(std::env::current_dir().unwrap(), Uuid::new_v4());
         let small = vec![Message {
+            outcome: Default::default(),
             role: MessageRole::User,
             content: "hi".into(),
             tool_call_id: None,
@@ -743,6 +749,7 @@ mod tests {
         assert!(eng.goal.is_empty());
         let messages = vec![
             Message {
+                outcome: Default::default(),
                 role: MessageRole::System,
                 content: "system setup, not a user goal".into(),
                 tool_call_id: None,
@@ -752,6 +759,7 @@ mod tests {
                 tool_calls: vec![],
             },
             Message {
+                outcome: Default::default(),
                 role: MessageRole::User,
                 content: "please refactor the parser".into(),
                 tool_call_id: None,
@@ -773,6 +781,7 @@ mod tests {
         init_repo(dir.path());
         let eng = ContextEngine::new(dir.path().to_path_buf(), Uuid::new_v4());
         let messages = vec![Message {
+            outcome: Default::default(),
             role: MessageRole::Assistant,
             content: "no user turn here".into(),
             tool_call_id: None,

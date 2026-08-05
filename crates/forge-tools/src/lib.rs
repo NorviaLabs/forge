@@ -22,7 +22,9 @@ pub use validation::{validate_args, validation_error_signature, ValidationBudget
 pub use web_search::{should_register_web_search, web_search_tool, WebSearchArgs, WebSearchTool};
 
 use async_trait::async_trait;
-use forge_types::{SideEffectClass, ToolDescriptor, ToolOutput, ToolValidationError};
+use forge_types::{
+    ExecutionOutcome, SideEffectClass, ToolDescriptor, ToolOutput, ToolValidationError,
+};
 use serde_json::Value;
 use thiserror::Error;
 
@@ -37,6 +39,23 @@ pub enum ToolError {
     Execution(String),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+}
+
+impl ToolError {
+    /// Maps an error surfacing from `ToolRegistry::call` (i.e. the tool
+    /// never produced a `ToolOutput` at all) to the outcome that should be
+    /// recorded. `Validation` errors are a protocol-shape retry mechanism
+    /// handled separately by callers and are not expected here.
+    pub fn as_outcome(&self) -> ExecutionOutcome {
+        match self {
+            ToolError::Validation(_) => ExecutionOutcome::Failed { exit_code: None },
+            ToolError::Unknown(_) | ToolError::Execution(_) | ToolError::Io(_) => {
+                ExecutionOutcome::SpawnFailed {
+                    reason: self.to_string(),
+                }
+            }
+        }
+    }
 }
 
 #[async_trait]

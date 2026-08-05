@@ -104,6 +104,7 @@ impl Tool for ApplyPatchTool {
         }
 
         Ok(ToolOutput {
+            outcome: Default::default(),
             content: diffs.join("\n"),
             is_error: false,
             exit_code: None,
