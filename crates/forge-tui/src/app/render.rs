@@ -10,6 +10,13 @@
 
 use super::*;
 
+fn composer_input_height(input: &InputModel, area: ratatui::layout::Rect) -> u16 {
+    let content_width = crate::layout::estimate_composer_content_width(area)
+        .saturating_sub(gutter_prefix_width(ACTIVE_GLYPH))
+        .max(1);
+    (input.visual_lines_for_width(content_width) + 2).clamp(3, crate::layout::MAX_COMPOSER_INPUT_H)
+}
+
 impl TuiApp {
     pub fn draw(&mut self, frame: &mut ratatui::Frame) {
         if crate::theme::refresh_system() {
@@ -44,7 +51,7 @@ impl TuiApp {
         let input_h = if theme_picking {
             crate::layout::THEME_DOCK_H
         } else {
-            (self.input.visual_lines() + 2).clamp(3, crate::layout::MAX_COMPOSER_INPUT_H)
+            composer_input_height(&self.input, area)
         };
         let panel_h = if self.bottom_panel.open { 16 } else { 0 };
         let contextual_hint = self.contextual_hint();
@@ -790,5 +797,24 @@ impl TuiApp {
                     .title(Span::styled(" Run ", theme::active_panel_title())),
             )
             .render(area, buf);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::composer_input_height;
+    use crate::widgets::InputModel;
+    use ratatui::layout::Rect;
+
+    #[test]
+    fn wrapped_composer_grows_before_the_second_visual_line_is_clipped() {
+        let mut input = InputModel::default();
+        input.set_text(
+            std::iter::repeat_n("word", 40)
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+
+        assert_eq!(composer_input_height(&input, Rect::new(0, 0, 120, 40)), 8);
     }
 }

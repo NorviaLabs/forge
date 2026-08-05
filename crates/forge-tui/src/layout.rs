@@ -47,6 +47,18 @@ const FILES_WIDTH_THRESHOLD: u16 = 110;
 /// negative-width arithmetic on pathologically narrow terminals.
 const SIDEBAR_MIN_CONTENT_WIDTH: u16 = 40;
 
+fn content_width(area: Rect) -> u16 {
+    (u32::from(area.width) * CONTENT_WIDTH_PERCENT / 100) as u16
+}
+
+fn sidebar_width(content_width: u16) -> u16 {
+    if content_width >= 160 {
+        (content_width / 2).clamp(64, 88)
+    } else {
+        (content_width / 4).clamp(32, 44)
+    }
+}
+
 /// Split terminal; `feedback_h` is 0 or 1 (feedback strip).
 pub fn split_areas(area: Rect) -> LayoutRegions {
     split_areas_ex(area, 0)
@@ -118,7 +130,7 @@ pub fn split_areas_with_chrome(
     show_sidebar: bool,
     background_h: u16,
 ) -> LayoutRegions {
-    let content_width = (u32::from(area.width) * CONTENT_WIDTH_PERCENT / 100) as u16;
+    let content_width = content_width(area);
     let content_area = Rect {
         x: area.x + area.width.saturating_sub(content_width) / 2,
         y: area.y,
@@ -130,11 +142,7 @@ pub fn split_areas_with_chrome(
     let qh = queue_h.min(8);
     let bg_h = background_h.min(8);
     let footer_h = footer_h.min(1);
-    let sidebar_width = if content_area.width >= 160 {
-        (content_area.width / 2).clamp(64, 88)
-    } else {
-        (content_area.width / 4).clamp(32, 44)
-    };
+    let sidebar_width = sidebar_width(content_area.width);
     let show_sidebar =
         show_sidebar && content_area.width >= sidebar_width + SIDEBAR_MIN_CONTENT_WIDTH;
     let fixed_h = 1 + footer_h;
@@ -232,17 +240,9 @@ pub fn split_areas_with_chrome(
     }
 }
 
-/// Estimate composer content width for wrapping before the layout split runs.
-#[cfg(test)]
-pub fn estimate_composer_content_width(area: Rect, show_files: bool) -> usize {
-    let content_width = (u32::from(area.width) * CONTENT_WIDTH_PERCENT / 100) as u16;
-    let show_files = show_files && content_width >= 110;
-    let mut main_width = content_width;
-    if show_files {
-        let file_width = (content_width / 5).clamp(24, 32);
-        main_width = main_width.saturating_sub(file_width);
-    }
-    main_width.saturating_sub(2).max(1) as usize
+/// Estimate the sidebar composer width before the layout split runs.
+pub fn estimate_composer_content_width(area: Rect) -> usize {
+    sidebar_width(content_width(area)).max(1) as usize
 }
 
 pub fn is_too_small(area: Rect) -> bool {
@@ -254,12 +254,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn estimate_composer_content_width_accounts_for_files_pane() {
+    fn estimate_composer_content_width_matches_sidebar_width() {
         let area = Rect::new(0, 0, 140, 40);
-        let wide = estimate_composer_content_width(area, true);
-        let narrow = estimate_composer_content_width(area, false);
-        assert!(wide < narrow);
-        assert!(wide >= 1);
+        assert_eq!(estimate_composer_content_width(area), 33);
+        assert_eq!(
+            estimate_composer_content_width(Rect::new(0, 0, 200, 40)),
+            88
+        );
     }
 
     #[test]
