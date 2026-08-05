@@ -8,28 +8,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const BUILTIN_THEMES: &[(&str, &str)] = &[
-    (
-        "catppuccin-mocha.toml",
-        include_str!("../themes/catppuccin-mocha.toml"),
-    ),
-    (
-        "gruvbox-dark.toml",
-        include_str!("../themes/gruvbox-dark.toml"),
-    ),
-    (
-        "kanagawa-wave.toml",
-        include_str!("../themes/kanagawa-wave.toml"),
-    ),
-    (
-        "solarized-dark.toml",
-        include_str!("../themes/solarized-dark.toml"),
-    ),
-    (
-        "solarized-light.toml",
-        include_str!("../themes/solarized-light.toml"),
-    ),
-];
+include!(concat!(env!("OUT_DIR"), "/builtin_themes.rs"));
 
 /// All themes available to the TUI (built-ins, user, and workspace drops).
 #[derive(Clone, Debug, PartialEq, Eq)]
