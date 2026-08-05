@@ -6,9 +6,42 @@
 
 use super::*;
 
-/// Drain every pending terminal event (paste floods many keys; do not drop them).
-pub(super) async fn drain_events(app: &mut TuiApp) -> Result<(), TuiError> {
-    loop {
+impl TuiApp {
+    pub(super) fn poll_interactive_terminal(&mut self) -> bool {
+        if let Some(terminal) = self.interactive_terminal.as_mut() {
+            terminal.poll()
+        } else {
+            false
+        }
+    }
+
+    pub(super) fn resize_interactive_terminal(&mut self, width: u16, height: u16) {
+        if let Some(terminal) = self.interactive_terminal.as_mut() {
+            if let Err(error) = terminal.resize(width, height) {
+                self.set_feedback(
+                    FeedbackSeverity::Error,
+                    format!("terminal resize failed: {error}"),
+                );
+            }
+        }
+    }
+}
+
+/// Keep a redraw cadence while draining a burst of terminal events.
+///
+/// An unbounded drain lets a continuous stream of ordinary key presses starve
+/// the draw that follows it. That becomes especially visible when the composer
+/// first wraps: the input has changed, but the screen does not update until the
+/// user pauses. Bracketed paste is still delivered as one `Event::Paste`; older
+/// terminals that emit a paste as key events are processed over successive
+/// frames without dropping any input.
+const MAX_EVENTS_PER_FRAME: usize = 8;
+
+pub(super) async fn drain_events(
+    app: &mut TuiApp,
+    mut terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
+) -> Result<(), TuiError> {
+    for _ in 0..MAX_EVENTS_PER_FRAME {
         if !event::poll(Duration::from_millis(0))? {
             break;
         }
@@ -22,11 +55,39 @@ pub(super) async fn drain_events(app: &mut TuiApp) -> Result<(), TuiError> {
                 app.handle_paste(&data);
                 app.invalidate_hit_regions();
             }
-            Event::Resize(_, _) => app.invalidate_hit_regions(),
+            Event::Resize(_, _) => {
+                if let Some(term) = terminal.as_deref_mut() {
+                    term.autoresize()?;
+                }
+                app.invalidate_hit_regions();
+            }
             _ => {}
         }
     }
     Ok(())
+}
+
+/// Wait for user input without making PTY output wait for the full idle tick.
+/// Crossterm only wakes for terminal input, while the interactive shell is
+/// read by a separate thread. Check that channel in short slices and repaint
+/// as soon as the reader has delivered a changed state.
+fn wait_for_input_or_terminal_output(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut TuiApp,
+) -> Result<bool, TuiError> {
+    let deadline = Instant::now() + Duration::from_millis(200);
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(false);
+        }
+        if event::poll(remaining.min(Duration::from_millis(20)))? {
+            return Ok(true);
+        }
+        if app.poll_interactive_terminal() {
+            terminal.draw(|f| app.draw(f))?;
+        }
+    }
 }
 
 /// Run the full-screen TUI until quit.
@@ -105,9 +166,13 @@ async fn run_loop(
 ) -> Result<(), TuiError> {
     while !app.exit.requested {
         app.poll_file_changes();
+        app.poll_interactive_terminal();
         app.poll_run();
+        app.warm_catalog_once_connected();
+        app.poll_catalog_refresh();
         app.poll_background_tasks().await?;
         app.tick_toast();
+        app.tick_feedback();
         app.tick_notices();
         app.drain_auto_hitl().await?;
         app.maybe_open_hitl();
@@ -141,7 +206,12 @@ async fn run_loop(
             continue;
         }
 
-        if event::poll(Duration::from_millis(200))? {
+        let input_ready = if app.interactive_terminal.is_some() {
+            wait_for_input_or_terminal_output(terminal, app)?
+        } else {
+            event::poll(Duration::from_millis(200))?
+        };
+        if input_ready {
             // Read the ready event, then drain the rest of the queue so a paste
             // of a long API key is not truncated to a handful of characters.
             match event::read()? {
@@ -154,10 +224,13 @@ async fn run_loop(
                     app.handle_paste(&data);
                     app.invalidate_hit_regions();
                 }
-                Event::Resize(_, _) => app.invalidate_hit_regions(),
+                Event::Resize(_, _) => {
+                    app.invalidate_hit_regions();
+                }
                 _ => {}
             }
-            drain_events(app).await?;
+            drain_events(app, Some(terminal)).await?;
+            app.poll_interactive_terminal();
             // Repaint immediately after input so theme and other state changes are visible
             // without waiting for the next idle frame.
             terminal.draw(|f| app.draw(f))?;

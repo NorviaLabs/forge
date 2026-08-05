@@ -1,5 +1,6 @@
 //! Conversation view model (TUI-02) — polished chat, thinking, tools, diffs.
 
+use crate::status_glyph::{status_glyph, Status};
 use crate::theme;
 use crate::user_message_gutter;
 use forge_core::{AgentSession, TurnEvent, TURN_FAILED_MARKER};
@@ -9,7 +10,11 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Widget};
+use ratatui::widgets::{Block, Borders, Paragraph, Widget};
+
+const DIFF_BLOCK_MARKER: &str = "\u{200b}";
+const DIFF_BLOCK_END_MARKER: &str = "\u{200c}";
+const INDENT_UNIT: &str = "  ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolCardState {
@@ -153,6 +158,11 @@ pub enum ChatItem {
         /// Brief operator-facing explanation for the change.
         rationale: String,
     },
+    /// Structured TODO checklist from the `update_plan` tool.
+    PlanChecklist {
+        explanation: Option<String>,
+        steps: Vec<forge_types::PlanItem>,
+    },
     Banner {
         text: String,
         kind: BannerKind,
@@ -176,6 +186,7 @@ pub enum ConversationBlock {
     Callout(CalloutPresentation),
     CodeBlock(CodeBlockPresentation),
     DiffBlock(DiffBlockPresentation),
+    PlanChecklist(PlanChecklistPresentation),
     Metadata(MetadataPresentation),
 }
 
@@ -241,6 +252,12 @@ pub struct DiffBlockPresentation {
     pub path: String,
     pub lines: Vec<String>,
     pub rationale: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlanChecklistPresentation {
+    pub explanation: Option<String>,
+    pub steps: Vec<forge_types::PlanItem>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -334,8 +351,12 @@ impl ConversationModel {
                     if let Some(ref th) = m.thinking {
                         if !th.trim().is_empty() {
                             latest_thinking = Some(th.clone());
-                            // Reasoning is kept for diff rationale and model context but is not
-                            // rendered as visible Chat rows by default.
+                            if m.thinking_duration_secs.is_some() {
+                                items.push(ChatItem::Thinking {
+                                    text: th.clone(),
+                                    duration_secs: m.thinking_duration_secs,
+                                });
+                            }
                         }
                     }
                     // Terminal failure summaries are durable assistant messages with a
@@ -349,8 +370,7 @@ impl ConversationModel {
                         }
                         continue;
                     }
-                    // Final answer is durable content only. Thinking/reasoning never
-                    // becomes AssistantAnswer (provenance: primary text channel).
+                    // Final answer is durable primary-channel content.
                     let effective_text = sanitize_final_answer_text(&m.content);
                     if !effective_text.trim().is_empty() {
                         if repair_pending {
@@ -373,6 +393,19 @@ impl ConversationModel {
                 // Tool results are not shown as chat messages (keeps the transcript clean).
                 MessageRole::Tool => {
                     let name = m.name.as_deref().unwrap_or("tool");
+                    if name == "update_plan" {
+                        let call = m
+                            .tool_call_id
+                            .as_deref()
+                            .and_then(|id| tool_calls.get(id).copied());
+                        if let Some(args) = call.and_then(parse_update_plan_args) {
+                            items.push(ChatItem::PlanChecklist {
+                                explanation: args.explanation,
+                                steps: args.plan,
+                            });
+                            continue;
+                        }
+                    }
                     if m.content.starts_with("Tool validation error:")
                         || m.content.contains("validation retry budget exceeded")
                     {
@@ -628,6 +661,7 @@ impl ConversationModel {
                 ChatItem::ToolCard { .. }
                     | ChatItem::ActivityGroup { .. }
                     | ChatItem::DiffCard { .. }
+                    | ChatItem::PlanChecklist { .. }
             )
         })
     }
@@ -642,31 +676,76 @@ impl ConversationModel {
         let width = available_width.max(4);
         let mut lines = Vec::new();
         let gap = !self.opts.compact;
-        for block in self.semantic_blocks() {
+        let blocks = self.semantic_blocks();
+        // A question is paired with the answer that immediately follows it —
+        // together they read as one entry, so neither the hairline rule nor
+        // the entry gap belongs between them. The rule still separates this
+        // pair from whatever comes next.
+        let paired_with_answer: Vec<bool> = blocks
+            .iter()
+            .enumerate()
+            .map(|(i, block)| {
+                matches!(block, ConversationBlock::UserMessage(_))
+                    && matches!(
+                        blocks.get(i + 1),
+                        Some(ConversationBlock::AssistantAnswer(_))
+                    )
+            })
+            .collect();
+        for (index, block) in blocks.into_iter().enumerate() {
+            if index > 0 && !paired_with_answer[index - 1] {
+                // The previous entry already appended a trailing blank line
+                // (when `gap`), so that alone serves as padding above the
+                // rule — only the padding below needs adding here.
+                lines.push(Line::from(Span::styled("─".repeat(width), theme::border())));
+                if gap {
+                    lines.push(Line::from(""));
+                }
+            }
             match block {
                 ConversationBlock::UserMessage(p) => {
-                    lines.extend(user_message_gutter::render_user_message_lines(
+                    let theme_id = crate::theme::active();
+                    let glyph = user_message_gutter::ACTIVE_GLYPH;
+                    let gutter_style = theme::user_gutter_active_style_for(&theme_id);
+                    let prefix_width = user_message_gutter::gutter_prefix_width(glyph);
+                    let blank_prefix = " ".repeat(prefix_width);
+                    let user_lines = user_message_gutter::render_user_message_lines(
                         &p.text,
-                        width,
-                        &crate::theme::active(),
+                        width.saturating_sub(prefix_width),
+                        &theme_id,
                         false,
                         wrap,
-                    ));
+                    );
+                    for (row_idx, line) in user_lines.into_iter().enumerate() {
+                        let mut spans = if row_idx == 0 {
+                            vec![
+                                Span::styled(glyph, gutter_style),
+                                Span::styled(user_message_gutter::GUTTER_GAP, theme::text()),
+                            ]
+                        } else {
+                            vec![Span::raw(blank_prefix.clone())]
+                        };
+                        spans.extend(line.spans.into_iter().map(|mut span| {
+                            span.style = span.style.bg(theme::accent_soft_bg());
+                            span
+                        }));
+                        let content_width = spans.iter().map(Span::width).sum::<usize>();
+                        if content_width < width {
+                            spans.push(Span::styled(
+                                " ".repeat(width - content_width),
+                                theme::text().bg(theme::accent_soft_bg()),
+                            ));
+                        }
+                        lines.push(Line::from(spans));
+                    }
                     if gap {
                         lines.push(Line::from(""));
                     }
                 }
                 ConversationBlock::AssistantAnswer(p) => {
                     let parts = assistant_lines(&p.text, width);
-                    for (i, line) in parts.into_iter().enumerate() {
-                        if i == 0 {
-                            let styled = line.clone().style(theme::assistant_answer_style());
-                            let mut with_marker = vec![Span::styled("▍ ", theme::agent())];
-                            with_marker.extend(styled.spans);
-                            lines.push(Line::from(with_marker));
-                        } else {
-                            lines.push(line.style(theme::assistant_answer_style()));
-                        }
+                    for line in parts {
+                        lines.push(line.style(theme::assistant_answer_style()));
                     }
                     if gap {
                         lines.push(Line::from(""));
@@ -694,39 +773,39 @@ impl ConversationModel {
                     }
                 }
                 ConversationBlock::ActivityGroup(p) => {
-                    let st = match p.outcome {
-                        ActivityOutcome::Success => theme::ok(),
-                        ActivityOutcome::Neutral => theme::muted(),
-                        ActivityOutcome::Warning => theme::warn(),
-                        ActivityOutcome::Failure => theme::danger(),
-                        ActivityOutcome::Blocked => theme::warn(),
+                    let (prefix, separator) = match p.outcome {
+                        ActivityOutcome::Success => (status_glyph(Status::Success), " "),
+                        ActivityOutcome::Failure => (status_glyph(Status::Error), " "),
+                        ActivityOutcome::Blocked => (Span::styled("⏸", theme::warn()), " "),
+                        ActivityOutcome::Warning => (status_glyph(Status::Warning), ""),
+                        ActivityOutcome::Neutral => (Span::styled("●", theme::muted()), " "),
                     };
-                    let prefix = match p.outcome {
-                        ActivityOutcome::Success => "✓ ",
-                        ActivityOutcome::Failure => "✗ ",
-                        ActivityOutcome::Blocked => "⏸ ",
-                        ActivityOutcome::Warning => "!",
-                        ActivityOutcome::Neutral => "● ",
-                    };
-                    lines.push(Line::from(vec![
-                        Span::styled(prefix, st),
+                    let mut spans = vec![
+                        prefix,
+                        Span::raw(separator),
                         Span::styled(p.label, theme::text().add_modifier(Modifier::BOLD)),
                         Span::styled("  ", theme::metadata_style()),
-                        Span::styled(p.count_label, theme::metadata_style()),
-                        Span::styled(
-                            if p.expanded {
-                                "  · collapse"
-                            } else {
-                                "  · details"
-                            },
-                            theme::metadata_style(),
-                        ),
-                    ]));
+                    ];
+                    match collapsed_command_summary(&p.count_label, &p.items) {
+                        Some((command, output_lines)) => {
+                            spans.push(Span::styled(command, theme::metadata_style()));
+                            spans.push(Span::styled(
+                                format!(" · {output_lines} output lines"),
+                                theme::dim(),
+                            ));
+                        }
+                        None => spans.push(Span::styled(p.count_label, theme::metadata_style())),
+                    }
+                    spans.push(Span::styled(
+                        activity_detail_label(p.expanded),
+                        theme::metadata_style(),
+                    ));
+                    lines.push(Line::from(spans));
                     if p.expanded {
                         for item in p.items {
                             for line in wrap(&item, width.saturating_sub(2)) {
                                 lines.push(Line::from(Span::styled(
-                                    format!("  {line}"),
+                                    format!("{INDENT_UNIT}{line}"),
                                     theme::muted(),
                                 )));
                             }
@@ -759,24 +838,30 @@ impl ConversationModel {
                     }
                 }
                 ConversationBlock::DiffBlock(p) => {
-                    let (tag, st) = ("✓", theme::tool_success_style());
-                    lines.push(Line::from(vec![
-                        Span::styled(format!("{tag} "), st),
-                        Span::styled(p.path.clone(), theme::text().add_modifier(Modifier::BOLD)),
-                        Span::styled("  diff", theme::dim()),
-                    ]));
+                    lines.push(diff_title_line(&p.path, &p.lines));
                     if !p.rationale.is_empty() {
-                        for l in wrap(&p.rationale, width.saturating_sub(4))
+                        for l in wrap(&p.rationale, width.saturating_sub(6))
                             .into_iter()
                             .take(2)
                         {
                             lines.push(Line::from(vec![
-                                Span::styled("  ", theme::info()),
+                                Span::styled(INDENT_UNIT, theme::info()),
                                 Span::styled(l, theme::muted().add_modifier(Modifier::ITALIC)),
                             ]));
                         }
                     }
-                    lines.extend(render_numbered_diff(&p.path, &p.lines, width));
+                    lines.extend(render_numbered_diff(
+                        &p.path,
+                        &p.lines,
+                        width.saturating_sub(2),
+                    ));
+                    lines.push(Line::from(DIFF_BLOCK_END_MARKER));
+                    if gap {
+                        lines.push(Line::from(""));
+                    }
+                }
+                ConversationBlock::PlanChecklist(p) => {
+                    lines.extend(render_plan_checklist(&p, width));
                     if gap {
                         lines.push(Line::from(""));
                     }
@@ -795,6 +880,22 @@ impl ConversationModel {
     }
 }
 
+fn diff_title_line(path: &str, diff: &[String]) -> Line<'static> {
+    let numbered = number_diff_lines(diff);
+    let additions = numbered.iter().filter(|line| line.marker == '+').count();
+    let removals = numbered.iter().filter(|line| line.marker == '-').count();
+    Line::from(vec![
+        Span::raw(DIFF_BLOCK_MARKER),
+        Span::raw(" "),
+        Span::styled(path.to_string(), theme::text().add_modifier(Modifier::BOLD)),
+        Span::raw("  "),
+        Span::styled(format!("+{additions}"), theme::ok()),
+        Span::raw(" "),
+        Span::styled(format!("-{removals}"), theme::danger()),
+        Span::raw(" "),
+    ])
+}
+
 fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<ConversationBlock> {
     let mut blocks = Vec::new();
     let mut progress: Option<ActiveProgressPresentation> = None;
@@ -810,7 +911,7 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
     let flush_activity = |blocks: &mut Vec<ConversationBlock>,
                           group: &mut Option<ActivityGroupPresentation>| {
         if let Some(mut item) = group.take() {
-            item.expanded = tool_expanded && matches!(item.outcome, ActivityOutcome::Failure);
+            item.expanded = tool_expanded;
             blocks.push(ConversationBlock::ActivityGroup(item));
         }
     };
@@ -827,14 +928,27 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
             ChatItem::Thinking { text, .. } => {
                 flush_progress(&mut blocks, &mut progress);
                 flush_activity(&mut blocks, &mut activity_group);
-                blocks.push(ConversationBlock::ActiveProgress(
-                    ActiveProgressPresentation {
-                        id: "thinking".into(),
-                        label: "Thinking".into(),
-                        summary: text.clone(),
-                        status: ActiveProgressStatus::Updated,
-                    },
-                ));
+                if let ChatItem::Thinking {
+                    duration_secs: Some(duration_secs),
+                    ..
+                } = item
+                {
+                    blocks.push(ConversationBlock::Metadata(MetadataPresentation {
+                        text: format!(
+                            "Thought for {} · {text}",
+                            format_elapsed_tenths(*duration_secs)
+                        ),
+                    }));
+                } else {
+                    blocks.push(ConversationBlock::ActiveProgress(
+                        ActiveProgressPresentation {
+                            id: "thinking".into(),
+                            label: "Thinking".into(),
+                            summary: text.clone(),
+                            status: ActiveProgressStatus::Updated,
+                        },
+                    ));
+                }
             }
             ChatItem::Assistant { text } => {
                 flush_progress(&mut blocks, &mut progress);
@@ -915,7 +1029,7 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
                                 ToolCardState::Blocked => ActivityOutcome::Blocked,
                                 ToolCardState::Error => ActivityOutcome::Failure,
                             },
-                            expanded: matches!(state, ToolCardState::Error) && tool_expanded,
+                            expanded: tool_expanded,
                             items: vec![format!("{name}: {summary}\n{detail}")],
                         },
                     ));
@@ -948,7 +1062,7 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
                             .to_string(),
                         count_label: summary.clone(),
                         outcome,
-                        expanded: matches!(state, ToolCardState::Error) && tool_expanded,
+                        expanded: tool_expanded,
                         items: vec![detail.clone()],
                     },
                 );
@@ -965,6 +1079,16 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
                     lines: lines.clone(),
                     rationale: rationale.clone(),
                 }));
+            }
+            ChatItem::PlanChecklist { explanation, steps } => {
+                flush_progress(&mut blocks, &mut progress);
+                flush_activity(&mut blocks, &mut activity_group);
+                blocks.push(ConversationBlock::PlanChecklist(
+                    PlanChecklistPresentation {
+                        explanation: explanation.clone(),
+                        steps: steps.clone(),
+                    },
+                ));
             }
             ChatItem::System { text } => {
                 flush_progress(&mut blocks, &mut progress);
@@ -1064,9 +1188,9 @@ fn compose_turn_presentation(blocks: Vec<ConversationBlock>) -> Vec<Conversation
                 ConversationBlock::Callout(ref c) if matches!(c.kind, BannerKind::Error) => {
                     failures.push(block)
                 }
-                ConversationBlock::ActivityGroup(_) | ConversationBlock::DiffBlock(_) => {
-                    activity.push(block)
-                }
+                ConversationBlock::ActivityGroup(_)
+                | ConversationBlock::DiffBlock(_)
+                | ConversationBlock::PlanChecklist(_) => activity.push(block),
                 ConversationBlock::ActiveProgress(_) => progress.push(block),
                 other_block => other.push(other_block),
             }
@@ -1186,6 +1310,15 @@ fn activity_entry_from_tool(
         label,
         count_label: if matches!(state, ToolCardState::Running) {
             running_activity_summary(category, name)
+        } else if category == ActivityCategory::Validating {
+            // Command-execution entries: keep the raw "$ command" text (minus
+            // its own trailing "· N output lines", which `summary` from
+            // `classify_tool_content` already carries) as the collapsed
+            // label, so `collapsed_command_summary` can truncate long ones
+            // and append its own count — matches how the pre-grouped
+            // `ChatItem::ActivityGroup` case builds its summary via
+            // `activity_group_summary`.
+            summary.split(" · ").next().unwrap_or(summary).to_string()
         } else {
             result_count_label(1, "item", "items")
         },
@@ -1387,6 +1520,53 @@ fn number_diff_lines(lines: &[String]) -> Vec<NumberedDiffLine> {
     numbered
 }
 
+fn activity_detail_label(expanded: bool) -> &'static str {
+    if expanded {
+        "  · Ctrl+O collapse"
+    } else {
+        "  · Ctrl+O details"
+    }
+}
+
+/// Matches the truncation length already used for long single-line summaries
+/// elsewhere in this file (see the `wrote ·` write/edit summary above).
+const COMMAND_LINE_MAX_CHARS: usize = 80;
+
+/// Collapsed-line rendering for command-execution activity groups (see
+/// [`activity_entry_from_tool`] and the `ChatItem::ActivityGroup` case in
+/// [`semantic_blocks_from_items`], both of which set `count_label` to the
+/// raw `"$ command"` text for validation/command entries).
+///
+/// Returns `Some((truncated_command, output_line_count))` when `count_label`
+/// is a command line that exceeds [`COMMAND_LINE_MAX_CHARS`]; `None` leaves
+/// short commands and non-command summaries (file counts, etc.) untouched so
+/// the caller falls back to rendering `count_label` as-is.
+fn collapsed_command_summary(count_label: &str, items: &[String]) -> Option<(String, usize)> {
+    if count_label.chars().count() <= COMMAND_LINE_MAX_CHARS {
+        return None;
+    }
+    let command = count_label.strip_prefix("$ ")?;
+    let segment = first_command_segment(command);
+    let mut truncated: String = segment.chars().take(COMMAND_LINE_MAX_CHARS).collect();
+    if segment.chars().count() > COMMAND_LINE_MAX_CHARS {
+        truncated.push('…');
+    }
+    let output_lines: usize = items.iter().map(|item| item.lines().count()).sum();
+    Some((format!("$ {truncated}"), output_lines))
+}
+
+/// First command/pipe segment of a (possibly chained) shell command line,
+/// splitting at the earliest `;`, `&&`, or `|`.
+fn first_command_segment(command: &str) -> &str {
+    let mut end = command.len();
+    for sep in [";", "&&", "|"] {
+        if let Some(idx) = command.find(sep) {
+            end = end.min(idx);
+        }
+    }
+    command[..end].trim_end()
+}
+
 fn render_numbered_diff(path: &str, diff: &[String], width: usize) -> Vec<Line<'static>> {
     let numbered = number_diff_lines(diff);
     let number_width = numbered
@@ -1409,12 +1589,7 @@ fn render_numbered_diff(path: &str, diff: &[String], width: usize) -> Vec<Line<'
 
     for line in numbered {
         if line.header {
-            let gutter_width = number_width * 2 + 7;
-            let text = format!(
-                "{}{content}",
-                " ".repeat(gutter_width),
-                content = line.content
-            );
+            let text = line.content;
             let padding = " ".repeat(width.saturating_sub(text.chars().count()));
             rendered.push(Line::from(Span::styled(
                 format!("{text}{padding}"),
@@ -1439,9 +1614,10 @@ fn render_numbered_diff(path: &str, diff: &[String], width: usize) -> Vec<Line<'
 
         if let Some(Some(parts)) = highlighted.as_ref().map(|lines| lines.get(code_index)) {
             for (text, rgb, bold, italic) in parts {
-                let mut style = ratatui::style::Style::default()
-                    .fg(ratatui::style::Color::Rgb(rgb.0, rgb.1, rgb.2))
-                    .bg(line_style.bg.unwrap_or(theme::panel_alt_bg()));
+                let mut style = theme::syntax_segment(
+                    *rgb,
+                    Some(line_style.bg.unwrap_or(theme::panel_alt_bg())),
+                );
                 if *bold {
                     style = style.add_modifier(Modifier::BOLD);
                 }
@@ -1699,6 +1875,20 @@ fn activity_group_detail(item: &ChatItem) -> String {
             ..
         } => format!("{name}: {summary}\n{detail}"),
         ChatItem::DiffCard { path, lines, .. } => format!("diff: {path}\n{}", lines.join("\n")),
+        ChatItem::PlanChecklist { explanation, steps } => {
+            let mut out = String::from("plan");
+            if let Some(explanation) = explanation {
+                out.push_str(": ");
+                out.push_str(explanation);
+            }
+            for step in steps {
+                out.push('\n');
+                out.push_str(step.status.as_str());
+                out.push_str(" · ");
+                out.push_str(&step.step);
+            }
+            out
+        }
         ChatItem::SessionRecovery {
             session_id,
             journal_path,
@@ -1712,12 +1902,81 @@ fn activity_group_detail(item: &ChatItem) -> String {
     }
 }
 
+fn parse_update_plan_args(call: &ToolCall) -> Option<forge_types::UpdatePlanArgs> {
+    serde_json::from_value(call.arguments.clone()).ok()
+}
+
+fn render_plan_checklist(plan: &PlanChecklistPresentation, width: usize) -> Vec<Line<'static>> {
+    use forge_types::PlanStepStatus;
+    let mut lines = Vec::new();
+    lines.push(Line::from(vec![Span::styled(
+        "Plan",
+        theme::brand().add_modifier(Modifier::BOLD),
+    )]));
+    if let Some(explanation) = plan
+        .explanation
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        for l in wrap(explanation, width.saturating_sub(2)) {
+            lines.push(Line::from(vec![
+                Span::raw(INDENT_UNIT),
+                Span::styled(l, theme::muted().add_modifier(Modifier::ITALIC)),
+            ]));
+        }
+    }
+    for item in &plan.steps {
+        let (marker, style) = match item.status {
+            PlanStepStatus::Completed => ("✓", theme::ok()),
+            PlanStepStatus::InProgress => ("►", theme::warn()),
+            PlanStepStatus::Pending => ("○", theme::muted()),
+        };
+        let body_width = width.saturating_sub(4).max(8);
+        let mut wrapped = wrap(&item.step, body_width).into_iter();
+        if let Some(first) = wrapped.next() {
+            lines.push(Line::from(vec![
+                Span::styled(format!("{marker} "), style),
+                Span::styled(first, theme::text()),
+            ]));
+        }
+        for cont in wrapped {
+            lines.push(Line::from(vec![
+                Span::raw(INDENT_UNIT),
+                Span::styled(cont, theme::text()),
+            ]));
+        }
+    }
+    lines
+}
+
 fn classify_tool_content(
     name: &str,
     content: &str,
     call: Option<&ToolCall>,
 ) -> (ToolCardState, String, String) {
     let detail = redact_tool_output(content);
+    if matches!(name, "exec_command" | "write_stdin") {
+        if let Ok(payload) = serde_json::from_str::<serde_json::Value>(&detail) {
+            let output = payload["output"].as_str().unwrap_or_default();
+            let command = payload["command"].as_str();
+            let session_id = payload["session_id"].as_u64();
+            let running = payload["running"].as_bool().unwrap_or(false);
+            let state = if running {
+                ToolCardState::Running
+            } else {
+                ToolCardState::Done
+            };
+            let label = if running { "running" } else { "exited" };
+            let summary = match (command, session_id) {
+                (Some(command), Some(id)) => format!("$ {command} · session #{id} · {label}"),
+                (Some(command), None) => format!("$ {command} · {label}"),
+                (None, Some(id)) => format!("session #{id} · {label}"),
+                (None, None) => label.into(),
+            };
+            return (state, summary, output.into());
+        }
+    }
     let lower = detail.to_ascii_lowercase();
     let state = if lower.contains("validation") || lower.contains("denied by acl") {
         ToolCardState::Error
@@ -1969,7 +2228,7 @@ fn render_md_line(line: &str) -> Vec<Span<'static>> {
             if let Some(end) = after.find('`') {
                 spans.push(Span::styled(
                     after[..end].to_string(),
-                    theme::tool().add_modifier(Modifier::BOLD),
+                    theme::text_secondary().add_modifier(Modifier::BOLD),
                 ));
                 rest = &after[end + 1..];
                 continue;
@@ -1994,9 +2253,8 @@ fn render_highlighted_line(segments: &[HighlightSegment]) -> Vec<Span<'static>> 
     segments
         .iter()
         .map(|(text, rgb, bold, italic)| {
-            let mut style = ratatui::style::Style::default()
-                .fg(ratatui::style::Color::Rgb(rgb.0, rgb.1, rgb.2))
-                .bg(block.bg.unwrap_or_default());
+            let mut style =
+                theme::syntax_segment(*rgb, Some(block.bg.unwrap_or(theme::panel_alt_bg())));
             if *bold {
                 style = style.add_modifier(Modifier::BOLD);
             }
@@ -2046,7 +2304,46 @@ fn render_conversation_lines(
             }
         })
         .collect::<Vec<_>>();
-    Paragraph::new(visible).render(area, buf);
+    render_visible_conversation_lines(&visible, area, buf);
+}
+
+fn render_visible_conversation_lines(lines: &[Line<'static>], area: Rect, buf: &mut Buffer) {
+    let mut index = 0;
+    let mut y = area.y;
+    while index < lines.len() && y < area.bottom() {
+        if lines[index]
+            .spans
+            .first()
+            .is_some_and(|span| span.content == DIFF_BLOCK_MARKER)
+        {
+            let end = lines[index + 1..]
+                .iter()
+                .position(|line| {
+                    line.spans
+                        .first()
+                        .is_some_and(|span| span.content == DIFF_BLOCK_END_MARKER)
+                })
+                .map_or(lines.len(), |offset| index + 1 + offset);
+            let block_height =
+                (end - index + 2).min(area.bottom().saturating_sub(y) as usize) as u16;
+            let block_area = Rect::new(area.x, y, area.width, block_height);
+            let title = Line::from(lines[index].spans[1..].to_vec());
+            let block = Block::default()
+                .title(title)
+                .borders(Borders::ALL)
+                .border_style(theme::inactive_panel_border())
+                .style(theme::panel());
+            let inner = block.inner(block_area);
+            block.render(block_area, buf);
+            Paragraph::new(lines[index + 1..end].to_vec()).render(inner, buf);
+            y = y.saturating_add(block_height);
+            index = end.saturating_add(1);
+        } else {
+            Paragraph::new(lines[index].clone()).render(Rect::new(area.x, y, area.width, 1), buf);
+            y = y.saturating_add(1);
+            index += 1;
+        }
+    }
 }
 
 impl Widget for ConversationLinesWidget<'_> {
@@ -2162,9 +2459,10 @@ mod tests {
             TaskLifecycle::Working,
             ConversationViewOpts::default(),
         );
-        // System prompts and reasoning stay hidden; tool results become compact cards.
+        // System prompts stay hidden; completed reasoning remains visible before the answer.
         assert!(matches!(m.items[0], ChatItem::User { .. }));
-        assert!(matches!(m.items[1], ChatItem::Assistant { .. }));
+        assert!(matches!(m.items[1], ChatItem::Thinking { .. }));
+        assert!(matches!(m.items[2], ChatItem::Assistant { .. }));
         assert!(m
             .items
             .iter()
@@ -2198,16 +2496,8 @@ mod tests {
             "tool result should classify into semantic activity blocks: {semantic:?}"
         );
         assert!(
-            !rendered.contains("Thought for"),
-            "completed thought summary should be hidden:\n{rendered}"
-        );
-        assert!(
-            !rendered.contains("ponder"),
-            "completed thinking body should be hidden:\n{rendered}"
-        );
-        assert!(
-            !rendered.contains("**"),
-            "Markdown bold delimiters should not leak into thoughts:\n{rendered}"
+            rendered.contains("Thought for 2.4s · **ponder**"),
+            "completed thought should remain visible:\n{rendered}"
         );
     }
 
@@ -2564,7 +2854,7 @@ mod tests {
     }
 
     #[test]
-    fn completed_thinking_is_hidden_in_lines() {
+    fn completed_thinking_remains_visible_in_lines() {
         let msgs = vec![Message {
             role: MessageRole::Assistant,
             content: "ans".into(),
@@ -2595,12 +2885,8 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(
-            !text.contains("Thought for"),
-            "completed thought summary should be hidden, got:\n{text}"
-        );
-        assert!(
-            !text.contains("long thinking"),
-            "completed thinking body should be hidden, got:\n{text}"
+            text.contains("long thinking"),
+            "completed thinking body should remain visible, got:\n{text}"
         );
     }
 
@@ -2707,7 +2993,8 @@ mod tests {
     }
 
     #[test]
-    fn user_messages_render_with_continuous_gutter() {
+    fn user_messages_render_left_aligned_with_prompt_glyph() {
+        const WIDTH: usize = 100;
         let msgs = vec![Message {
             role: MessageRole::User,
             content: "hello world".into(),
@@ -2723,9 +3010,8 @@ mod tests {
             TaskLifecycle::Working,
             ConversationViewOpts::default(),
         );
-        let glyph = crate::user_message_gutter::gutter_glyph(&crate::theme::active(), false);
-        let rendered = m
-            .lines()
+        let lines = m.lines_for_width(WIDTH);
+        let rendered_lines = lines
             .iter()
             .map(|line| {
                 line.spans
@@ -2733,18 +3019,18 @@ mod tests {
                     .map(|s| s.content.as_ref())
                     .collect::<String>()
             })
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(
-            rendered.starts_with(&format!("{glyph} hello world")),
-            "{rendered}"
-        );
-        let dark = theme::palette(forge_config::THEME_FORGE_MIDNIGHT);
-        let first = m.lines().into_iter().next().expect("operator turn");
-        assert_eq!(first.style.bg, Some(dark.user_bg));
-        assert_eq!(first.spans[0].style.fg, Some(dark.user_message_gutter));
+            .collect::<Vec<_>>();
+        let rendered = rendered_lines.join("\n");
+        assert_eq!(rendered_lines[0].trim_end(), "> hello world", "{rendered}");
+        let dark = theme::palette(forge_config::THEME_SOLARIZED_DARK);
+        let first = &lines[0];
+        assert_eq!(first.spans[0].content.as_ref(), ">");
+        assert_eq!(first.spans[0].style.fg, Some(dark.user_gutter_active));
+        assert_eq!(first.spans[2].content.as_ref(), "hello world");
         assert_eq!(first.spans[2].style.fg, Some(dark.text));
+        assert_eq!(first.spans[2].style.bg, Some(dark.accent_soft));
         assert!(!rendered.contains('›'), "{rendered}");
+        assert!(!rendered.contains(" │"), "{rendered}");
         assert!(rendered.contains("hello world"), "{rendered}");
     }
 
@@ -2994,6 +3280,137 @@ mod tests {
     }
 
     #[test]
+    fn tool_expanded_reveals_successful_tool_details() {
+        let model = ConversationModel {
+            items: vec![ChatItem::ToolCard {
+                name: "read_file".into(),
+                summary: "src/lib.rs".into(),
+                detail: "full file output".into(),
+                state: ToolCardState::Done,
+                duration: None,
+            }],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts {
+                tool_expanded: true,
+                ..ConversationViewOpts::default()
+            },
+        };
+
+        assert!(model.semantic_blocks().iter().any(|block| matches!(
+            block,
+            ConversationBlock::ActivityGroup(group)
+                if group.expanded && group.items.iter().any(|item| item.contains("full file output"))
+        )));
+    }
+
+    #[test]
+    fn inline_code_in_body_text_uses_secondary_body_color_not_interactive_accent() {
+        let lines = assistant_lines("plain text with `inline code` in it", 80);
+        let code_span = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .find(|span| span.content.as_ref() == "inline code")
+            .expect("inline code span present");
+        assert_eq!(code_span.style.fg, Some(theme::text_secondary_color()));
+        assert_ne!(code_span.style.fg, Some(theme::accent_color()));
+        assert_ne!(code_span.style.fg, Some(theme::info_color()));
+    }
+
+    fn bash_tool_card(command: &str, output_lines: &str, expanded: bool) -> ConversationModel {
+        ConversationModel {
+            items: vec![ChatItem::ToolCard {
+                name: "bash".into(),
+                summary: format!("$ {command} · {} output lines", output_lines),
+                detail: (0..output_lines.parse::<usize>().unwrap_or(0))
+                    .map(|i| format!("line {i}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                state: ToolCardState::Done,
+                duration: None,
+            }],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts {
+                tool_expanded: expanded,
+                ..ConversationViewOpts::default()
+            },
+        }
+    }
+
+    #[test]
+    fn long_command_entry_collapses_with_truncated_line_and_output_count() {
+        let long_command = "cargo test --workspace --all-features -- --test-threads=1 --nocapture; git diff --check; git status --short";
+        let model = bash_tool_card(long_command, "5", false);
+        let text = rendered_text(&model);
+
+        assert!(text.contains("$ cargo test"), "{text}");
+        assert!(text.contains("output lines"), "{text}");
+        assert!(text.contains("Ctrl+O details"), "{text}");
+        assert!(
+            !text.contains("git status --short"),
+            "long command should be truncated to its first segment:\n{text}"
+        );
+    }
+
+    #[test]
+    fn long_command_entry_expands_full_text_via_ctrl_o() {
+        let long_command = "cargo test --workspace --all-features -- --test-threads=1 --nocapture; git diff --check; git status --short";
+        let model = bash_tool_card(long_command, "5", true);
+        let text = rendered_text(&model);
+
+        // Wrapping the expanded detail can reflow incidental whitespace, so
+        // check for the command's distinct pieces rather than byte-exact
+        // equality with the original string.
+        assert!(text.contains("--test-threads=1 --nocapture"), "{text}");
+        assert!(text.contains("git status --short"), "{text}");
+        assert!(text.contains("Ctrl+O collapse"), "{text}");
+    }
+
+    #[test]
+    fn short_command_entries_are_unaffected() {
+        let short_command = "cargo test -p forge-tui";
+        let model = bash_tool_card(short_command, "3", false);
+        let text = rendered_text(&model);
+
+        assert!(text.contains(&format!("$ {short_command}")), "{text}");
+        assert!(!text.contains('…'), "{text}");
+    }
+
+    #[test]
+    fn collapsed_command_summary_splits_at_first_pipe_or_semicolon() {
+        let items = vec!["a\nb\nc".to_string()];
+        let (command, output_lines) = collapsed_command_summary(
+            "$ cargo test --workspace; git diff --check; git status --short --pad-past-eighty-chars-total-length-of-this-line",
+            &items,
+        )
+        .expect("long command should collapse");
+        assert_eq!(command, "$ cargo test --workspace");
+        assert_eq!(output_lines, 3);
+    }
+
+    #[test]
+    fn collapsed_command_summary_ellipsizes_an_overlong_single_segment() {
+        let items: Vec<String> = vec![];
+        let long_single_segment = "cargo test --workspace --all-features --lib --bins --tests --examples --benches --no-fail-fast";
+        let (command, _) =
+            collapsed_command_summary(&format!("$ {long_single_segment}"), &items).expect("long");
+        assert!(command.ends_with('…'), "{command}");
+        assert!(command.chars().count() <= COMMAND_LINE_MAX_CHARS + "$ …".chars().count());
+    }
+
+    #[test]
+    fn collapsed_command_summary_ignores_short_commands() {
+        let items: Vec<String> = vec![];
+        assert_eq!(
+            collapsed_command_summary("$ cargo test -p forge-tui", &items),
+            None
+        );
+        // Non-command summaries (file counts, etc.) are never affected.
+        assert_eq!(collapsed_command_summary("3 files inspected", &items), None);
+    }
+
+    #[test]
     fn grouped_activity_renders_running_completed_and_details() {
         let running = ConversationModel::from_messages(
             &[],
@@ -3036,6 +3453,8 @@ mod tests {
             ConversationBlock::ActivityGroup(group)
                 if !group.items.is_empty() && group.count_label.contains("2")
         )));
+        assert_eq!(activity_detail_label(true), "  · Ctrl+O collapse");
+        assert_eq!(activity_detail_label(false), "  · Ctrl+O details");
     }
 
     #[test]
@@ -3135,6 +3554,77 @@ mod tests {
     }
 
     #[test]
+    fn update_plan_tool_messages_render_as_checklist() {
+        let msgs = vec![
+            Message {
+                role: MessageRole::Assistant,
+                content: String::new(),
+                tool_call_id: None,
+                name: None,
+                thinking: None,
+                thinking_duration_secs: None,
+                tool_calls: vec![ToolCall {
+                    id: "plan-1".into(),
+                    name: "update_plan".into(),
+                    arguments: serde_json::json!({
+                        "explanation": "Next steps",
+                        "plan": [
+                            {"step": "Inspect code", "status": "completed"},
+                            {"step": "Implement tool", "status": "in_progress"},
+                            {"step": "Add tests", "status": "pending"}
+                        ]
+                    }),
+                }],
+            },
+            Message {
+                role: MessageRole::Tool,
+                content: "Plan updated".into(),
+                tool_call_id: Some("plan-1".into()),
+                name: Some("update_plan".into()),
+                thinking: None,
+                thinking_duration_secs: None,
+                tool_calls: vec![],
+            },
+        ];
+        let m = ConversationModel::from_messages(
+            &msgs,
+            &[],
+            TaskLifecycle::Ready,
+            ConversationViewOpts::default(),
+        );
+        assert!(
+            matches!(
+                &m.items[..],
+                [ChatItem::PlanChecklist {
+                    explanation: Some(exp),
+                    steps
+                }] if exp == "Next steps" && steps.len() == 3
+            ),
+            "expected plan checklist item, got {:?}",
+            m.items
+        );
+        let text = m
+            .lines_for_width(80)
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Plan"), "{text}");
+        assert!(text.contains("Inspect code"), "{text}");
+        assert!(text.contains("Implement tool"), "{text}");
+        assert!(text.contains("Add tests"), "{text}");
+        assert!(matches!(
+            m.semantic_blocks().as_slice(),
+            [ConversationBlock::PlanChecklist(_)]
+        ));
+    }
+
+    #[test]
     fn multi_file_diff_results_become_separate_cards() {
         let msgs = vec![Message {
             role: MessageRole::Tool,
@@ -3210,7 +3700,7 @@ mod tests {
         let removed = &rendered[1];
         let added = &rendered[2];
 
-        let dark = theme::palette(forge_config::THEME_FORGE_MIDNIGHT);
+        let dark = theme::palette(forge_config::THEME_SOLARIZED_DARK);
         assert!(removed
             .spans
             .iter()
@@ -3227,6 +3717,46 @@ mod tests {
             added.spans.iter().map(|span| span.width()).sum::<usize>(),
             40
         );
+    }
+
+    #[test]
+    fn diff_pane_borders_multi_hunk_content_without_overflowing() {
+        let diff = [
+            "@@ -1 +1 @@",
+            "-old",
+            "+new",
+            "@@ -10 +10 @@",
+            "-before",
+            "+after",
+            "@@ -20 +20 @@",
+            "+this line is deliberately longer than one hundred characters so a narrow diff pane clips it instead of breaking its layout",
+        ]
+        .map(str::to_string);
+        let lines = vec![diff_title_line("src/lib.rs", &diff)]
+            .into_iter()
+            .chain(render_numbered_diff("src/lib.rs", &diff, 38))
+            .chain(std::iter::once(Line::from(DIFF_BLOCK_END_MARKER)))
+            .collect::<Vec<_>>();
+        let area = Rect::new(0, 0, 40, 12);
+        let mut buf = Buffer::empty(area);
+
+        render_visible_conversation_lines(&lines, area, &mut buf);
+
+        assert_eq!(buf[(0, 0)].symbol(), "┌");
+        assert_eq!(buf[(39, 0)].symbol(), "┐");
+        assert!(buf[(2, 0)].symbol().contains("s"));
+        assert_eq!(buf[(0, 10)].symbol(), "└");
+        assert_eq!(buf[(39, 10)].symbol(), "┘");
+    }
+
+    #[test]
+    fn diff_hunk_headers_align_with_file_header() {
+        let diff = ["@@ -1 +1 @@", "-old", "+new"].map(str::to_string);
+        let title = lines_text(&[diff_title_line("src/lib.rs", &diff)]);
+        let hunk = lines_text(&render_numbered_diff("src/lib.rs", &diff, 40));
+
+        assert!(title.starts_with("\u{200b} src/lib.rs"));
+        assert!(hunk.starts_with("@@ -1 +1 @@"));
     }
 
     /// Text of every rendered line, for asserting on content rather than styling.
@@ -3565,6 +4095,94 @@ mod tests {
         m.scroll = 0;
         m.scroll_down(1);
         assert!(m.follow);
+    }
+
+    fn three_block_model() -> ConversationModel {
+        let msgs = vec![
+            Message {
+                role: MessageRole::User,
+                content: "first".into(),
+                tool_call_id: None,
+                name: None,
+                thinking: None,
+                thinking_duration_secs: None,
+                tool_calls: vec![],
+            },
+            Message {
+                role: MessageRole::Assistant,
+                content: "second".into(),
+                tool_call_id: None,
+                name: None,
+                thinking: None,
+                thinking_duration_secs: None,
+                tool_calls: vec![],
+            },
+            Message {
+                role: MessageRole::User,
+                content: "third".into(),
+                tool_call_id: None,
+                name: None,
+                thinking: None,
+                thinking_duration_secs: None,
+                tool_calls: vec![],
+            },
+        ];
+        ConversationModel::from_messages(
+            &msgs,
+            &[],
+            TaskLifecycle::Working,
+            ConversationViewOpts::default(),
+        )
+    }
+
+    fn rule_lines<'a>(lines: &'a [Line<'static>]) -> Vec<&'a Line<'static>> {
+        lines
+            .iter()
+            .filter(|line| {
+                let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+                !text.is_empty() && text.chars().all(|c| c == '─')
+            })
+            .collect()
+    }
+
+    #[test]
+    fn hairline_separators_sit_between_entries_only() {
+        let model = three_block_model();
+        assert_eq!(model.semantic_blocks().len(), 3);
+
+        let lines = model.lines_for_width(60);
+        let rules = rule_lines(&lines);
+        // The model is [question, answer, question]. The first question is
+        // paired with its answer (one entry, no rule between them), so the
+        // only rule is between that pair and the trailing question.
+        assert_eq!(
+            rules.len(),
+            1,
+            "expected one separator between the Q/A pair and the next entry"
+        );
+
+        let first = lines.first().expect("non-empty transcript");
+        let last = lines.last().expect("non-empty transcript");
+        let is_rule = |line: &Line<'static>| {
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            !text.is_empty() && text.chars().all(|c| c == '─')
+        };
+        assert!(!is_rule(first), "no separator before the first entry");
+        assert!(!is_rule(last), "no separator after the last entry");
+    }
+
+    #[test]
+    fn hairline_separator_width_tracks_pane_width() {
+        let model = three_block_model();
+        for width in [40usize, 90usize] {
+            let lines = model.lines_for_width(width);
+            let rules = rule_lines(&lines);
+            assert!(!rules.is_empty());
+            for rule in rules {
+                let text: String = rule.spans.iter().map(|s| s.content.as_ref()).collect();
+                assert_eq!(text.chars().count(), width.max(4));
+            }
+        }
     }
 
     fn rendered_text(model: &ConversationModel) -> String {

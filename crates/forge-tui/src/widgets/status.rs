@@ -1,5 +1,6 @@
 //! Session chrome data for `/status`.
 
+use crate::status_glyph::{status_glyph, Status};
 use crate::theme;
 use forge_types::TaskLifecycle;
 use ratatui::buffer::Buffer;
@@ -434,41 +435,17 @@ impl Widget for StatusBar<'_> {
         // Recompute room after repo.
         if used + life_needed <= width {
             spans.push(Span::raw(separators));
-            spans.push(Span::styled(life_label, life_style));
+            push_lifecycle_label(&mut spans, life, &life_label, life_style);
             used += life_needed;
         } else if life_label.chars().count() <= width {
             // Extremely narrow: prefer state over brand if somehow constrained.
             spans.clear();
             used = life_label.chars().count();
-            spans.push(Span::styled(life_label, life_style));
+            push_lifecycle_label(&mut spans, life, &life_label, life_style);
         } else {
             spans.push(Span::raw(separators));
             spans.push(Span::styled(life.label().to_string(), life_style));
             used = width;
-        }
-
-        // At-rest model/provider/effort chip — the same value the unified
-        // Connect & Model picker's Active line and `/status` read, so none of
-        // the three can ever disagree.
-        if self.model.provider_connected && !self.model.model.is_empty() {
-            if let Some(vendor) = self.model.vendor_label.as_deref() {
-                let chip = format_provider_model_effort(
-                    vendor,
-                    self.model.route_label.as_deref(),
-                    &self.model.model,
-                    &self.model.effort,
-                );
-                let available = width.saturating_sub(used + sep_len);
-                if available >= 4 {
-                    let chip = StatusModel::truncate_middle(&chip, available);
-                    let needed = sep_len + chip.chars().count();
-                    if used + needed <= width {
-                        spans.push(Span::raw(separators));
-                        spans.push(Span::styled(chip, theme::metadata_style()));
-                        used += needed;
-                    }
-                }
-            }
         }
 
         // Optional resource (file/run view) only if leftover room remains.
@@ -509,8 +486,32 @@ impl Widget for StatusBar<'_> {
     }
 }
 
-/// One formatting rule for "current selection", shared by the picker's
-/// Active line and the header chip so they can never disagree.
+fn push_lifecycle_label(
+    spans: &mut Vec<Span<'static>>,
+    life: TurnLifecycle,
+    label: &str,
+    style: ratatui::style::Style,
+) {
+    let status = match life {
+        TurnLifecycle::Completed => Some(Status::Success),
+        TurnLifecycle::Failed => Some(Status::Error),
+        _ => None,
+    };
+    if let Some(status) = status {
+        if let Some(rest) = label
+            .strip_prefix(life.symbol())
+            .and_then(|text| text.strip_prefix(' '))
+        {
+            spans.push(status_glyph(status));
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(rest.to_string(), style));
+            return;
+        }
+    }
+    spans.push(Span::styled(label.to_string(), style));
+}
+
+/// One formatting rule for the model picker's active selection.
 pub fn format_provider_model_effort(
     vendor_label: &str,
     route_label: Option<&str>,
@@ -767,16 +768,16 @@ mod tests {
         let m = StatusModel {
             status: TaskLifecycle::Working,
             session_short: "abc".into(),
-            model: "mock".into(),
+            model: "gpt-5.6-terra".into(),
             provider: "mock".into(),
-            effort: "auto".into(),
+            effort: "medium".into(),
             ctx_pct: 0.32,
             busy: false,
             busy_phase: BusyPhase::Idle,
             connect_profile: None,
             provider_connected: true,
-            vendor_label: None,
-            route_label: None,
+            vendor_label: Some("OpenAI".into()),
+            route_label: Some("ChatGPT sign-in".into()),
             web_search_label: None,
             tools_visible: 0,
             prompt_cache_hits: 0,
@@ -799,6 +800,10 @@ mod tests {
         assert!(rendered.contains("src/app.rs"));
         assert!(rendered.contains("2 changes"));
         assert!(!rendered.contains("32% context"));
+        assert!(!rendered.contains("OpenAI"));
+        assert!(!rendered.contains("ChatGPT sign-in"));
+        assert!(!rendered.contains("gpt-5.6-terra"));
+        assert!(!rendered.contains("medium"));
     }
 
     #[test]

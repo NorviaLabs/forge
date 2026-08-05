@@ -5,7 +5,7 @@
 use super::prelude::*;
 
 #[tokio::test]
-async fn run_only_from_run_panel_focus() {
+async fn run_starts_only_from_run_workspace_not_bottom_panel() {
     let (_dir, mut app) = focus_test_app().await;
     app.run.draft.command_input = "true".into();
 
@@ -18,8 +18,25 @@ async fn run_only_from_run_panel_focus() {
         .as_ref()
         .is_some_and(|record| record.state == RunState::Running));
 
-    app.bottom_panel.open_tab(BottomPanelTab::Run);
+    app.open_bottom_panel();
     app.focus_block(FocusBlock::BottomPanel);
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(!app
+        .run
+        .current
+        .as_ref()
+        .is_some_and(|record| record.state == RunState::Running));
+
+    app.run_current_draft();
+    let id = app.run.current.as_ref().unwrap().id.clone();
+    app.cancel_run();
+    app.run.draft.command_input = "true".into();
+    app.execute_semantic_command(SemanticCommand::OpenRun(RunCommandTarget::Id(id)))
+        .await
+        .unwrap();
+    app.focus_block(FocusBlock::Workspace);
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
@@ -31,14 +48,14 @@ async fn run_only_from_run_panel_focus() {
 }
 
 #[tokio::test]
-async fn run_cancel_from_run_panel() {
+async fn run_cancel_from_run_workspace() {
     let (_dir, mut app) = focus_test_app().await;
     app.run.draft.command_input = "true".into();
-    app.bottom_panel.open_tab(BottomPanelTab::Run);
-    app.focus_block(FocusBlock::BottomPanel);
-    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+    app.run_current_draft();
+    app.execute_semantic_command(SemanticCommand::OpenRun(RunCommandTarget::Current))
         .await
         .unwrap();
+    app.focus_block(FocusBlock::Workspace);
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
@@ -84,7 +101,7 @@ async fn restored_running_run_becomes_cancelled() {
 #[tokio::test]
 async fn ui_navigation_does_not_mutate_run_history() {
     let (_dir, mut app) = focus_test_app().await;
-    app.bottom_panel.open_tab(BottomPanelTab::Run);
+    app.open_bottom_panel();
     app.focus_block(FocusBlock::BottomPanel);
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await
@@ -104,17 +121,14 @@ async fn leaving_run_view_does_not_cancel_running_run() {
         .unwrap();
     assert_eq!(
         app.workspace_navigation.current,
-        WorkspaceView::Run(id.clone())
+        Some(WorkspaceView::Run(id.clone()))
     );
 
     app.execute_semantic_command(SemanticCommand::GoBack)
         .await
         .unwrap();
 
-    assert_eq!(
-        app.workspace_navigation.current,
-        WorkspaceView::Conversation
-    );
+    assert_eq!(app.workspace_navigation.current, None);
     assert!(app
         .run
         .current
@@ -168,7 +182,10 @@ async fn run_start_while_in_file_does_not_hijack_workspace() {
     app.run_current_draft();
 
     assert_eq!(app.workspace_navigation, before);
-    assert_eq!(app.workspace_navigation.current, WorkspaceView::File(path));
+    assert_eq!(
+        app.workspace_navigation.current,
+        Some(WorkspaceView::File(path))
+    );
     assert!(app
         .activity
         .all()
@@ -277,21 +294,4 @@ async fn edge_run_spawn_failure_shows_invocation_without_exit_code() {
     );
     assert!(rendered.contains("e edit rerun"), "{rendered}");
     assert!(!rendered.contains("Exit status:"), "{rendered}");
-}
-
-#[tokio::test]
-async fn run_activity_history_remains_available_in_activity_panel() {
-    let (_dir, mut app) = focus_test_app().await;
-    app.run.draft.command_input = "true".into();
-    app.run_current_draft();
-    app.open_bottom_panel(Some(BottomPanelTab::Activity));
-
-    let rendered = render_app_text(&mut app, 100, 30);
-
-    assert!(rendered.contains("Run"), "{rendered}");
-    assert!(rendered.contains("run started: true"), "{rendered}");
-    assert_eq!(
-        app.workspace_navigation.current,
-        WorkspaceView::Conversation
-    );
 }

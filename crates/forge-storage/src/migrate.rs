@@ -108,6 +108,14 @@ fn migrate_one(workspace: &Path, source: PathBuf, destination: PathBuf) -> Migra
         };
     }
 
+    if destination.exists()
+        && source.is_dir()
+        && source.ends_with("sessions")
+        && !is_tracked(workspace, &source)
+    {
+        return merge_session_directory(workspace, source, destination);
+    }
+
     if destination.exists() {
         return MigrationRecord {
             source,
@@ -147,6 +155,50 @@ fn migrate_one(workspace: &Path, source: PathBuf, destination: PathBuf) -> Migra
             outcome: MigrationOutcome::Failed,
             detail: Some(err.to_string()),
         },
+    }
+}
+
+fn merge_session_directory(
+    workspace: &Path,
+    source: PathBuf,
+    destination: PathBuf,
+) -> MigrationRecord {
+    let mut moved = 0;
+    let Ok(entries) = fs::read_dir(&source) else {
+        return MigrationRecord {
+            source,
+            destination,
+            outcome: MigrationOutcome::Failed,
+            detail: Some("could not read legacy sessions directory".into()),
+        };
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() || is_tracked(workspace, &path) {
+            continue;
+        }
+        let target = destination.join(entry.file_name());
+        if target.exists() || fs::rename(&path, target).is_err() {
+            continue;
+        }
+        moved += 1;
+    }
+    let outcome = if fs::read_dir(&source)
+        .map(|mut entries| entries.next().is_none())
+        .unwrap_or(false)
+    {
+        let _ = fs::remove_dir(&source);
+        MigrationOutcome::Migrated
+    } else if moved > 0 {
+        MigrationOutcome::Migrated
+    } else {
+        MigrationOutcome::DestinationCollision
+    };
+    MigrationRecord {
+        source,
+        destination,
+        outcome,
+        detail: None,
     }
 }
 
@@ -220,18 +272,46 @@ mod tests {
     }
 
     #[test]
+    fn merges_legacy_sessions_when_destination_already_exists() {
+        let dir = TempDir::new().unwrap();
+        init_repo(dir.path());
+        fs::create_dir_all(dir.path().join(".forge/sessions")).unwrap();
+        fs::create_dir_all(dir.path().join(".forge/local/sessions")).unwrap();
+        fs::write(dir.path().join(".forge/sessions/previous.db"), "data").unwrap();
+
+        let records = migrate_legacy_runtime_files(dir.path());
+
+        assert_eq!(
+            records
+                .iter()
+                .find(|record| record.source.ends_with("sessions"))
+                .unwrap()
+                .outcome,
+            MigrationOutcome::Migrated
+        );
+        assert!(dir
+            .path()
+            .join(".forge/local/sessions/previous.db")
+            .is_file());
+        assert!(!dir.path().join(".forge/sessions").exists());
+    }
+
+    #[test]
     fn leaves_forge_rules_and_skills_unchanged() {
         let dir = TempDir::new().unwrap();
         init_repo(dir.path());
         fs::create_dir_all(dir.path().join(".forge/rules")).unwrap();
         fs::write(dir.path().join(".forge/rules/style.md"), "rules").unwrap();
-        fs::create_dir_all(dir.path().join(".forge/skills/ponytail")).unwrap();
-        fs::write(dir.path().join(".forge/skills/ponytail/SKILL.md"), "skill").unwrap();
+        fs::create_dir_all(dir.path().join(".agents/skills/ponytail")).unwrap();
+        fs::write(dir.path().join(".agents/skills/ponytail/SKILL.md"), "skill").unwrap();
 
         migrate_legacy_runtime_files(dir.path());
 
         assert!(dir.path().join(".forge/rules/style.md").is_file());
-        assert!(dir.path().join(".forge/skills/ponytail/SKILL.md").is_file());
+        assert!(dir
+            .path()
+            .join(".agents/skills/ponytail/SKILL.md")
+            .is_file());
     }
 
     #[test]

@@ -182,7 +182,7 @@ async fn final_shell_rendering_matrix_covers_v31_states_without_obsolete_chrome(
     scenarios.push(("run failed", dir, app, vec!["Failed", "Exit status: 101"]));
 
     let (dir, mut app) = focus_test_app().await;
-    app.open_hitl_overlay(direct_hitl_payload("matrix-approval", "src/main.rs"));
+    app.open_approval_card(direct_hitl_payload("matrix-approval", "src/main.rs"));
     scenarios.push((
         "approval",
         dir,
@@ -190,26 +190,11 @@ async fn final_shell_rendering_matrix_covers_v31_states_without_obsolete_chrome(
         vec!["Approval required", "Allow once", "Deny"],
     ));
 
-    let (dir, mut app) = focus_test_app().await;
-    app.inspector.visible = false;
-    scenarios.push(("inspector closed", dir, app, vec!["Describe a task"]));
+    let (dir, app) = focus_test_app().await;
+    scenarios.push(("default shell", dir, app, vec!["Describe a task"]));
 
     let (dir, mut app) = focus_test_app().await;
-    app.inspector.visible = true;
-    app.focus_block(FocusBlock::Inspector);
-    scenarios.push((
-        "inspector open",
-        dir,
-        app,
-        vec!["INSPECTOR", "Describe a task"],
-    ));
-
-    let (dir, mut app) = focus_test_app().await;
-    app.bottom_panel.open = false;
-    scenarios.push(("bottom closed", dir, app, vec!["Describe a task"]));
-
-    let (dir, mut app) = focus_test_app().await;
-    app.open_bottom_panel(Some(BottomPanelTab::Terminal));
+    app.open_bottom_panel();
     scenarios.push(("bottom open", dir, app, vec!["Terminal", "Describe a task"]));
 
     let (dir, mut app) = focus_test_app().await;
@@ -621,7 +606,12 @@ async fn tui09_status_renders_structured_session_card() {
         .await
         .unwrap();
     assert!(app.notice_state.items.is_empty());
-    assert!(app.overlay.is_none());
+    let lines = match app.overlay.as_ref() {
+        Some(Overlay::StatusReport { lines, .. }) => lines,
+        other => panic!("expected status overlay, got {other:?}"),
+    };
+    assert!(lines.iter().any(|line| line.contains("provider=")));
+    assert!(lines.iter().any(|line| line.contains("model=")));
 
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
@@ -636,8 +626,12 @@ async fn tui09_status_renders_structured_session_card() {
         .map(|cell| cell.symbol())
         .collect::<String>();
     assert!(
-        text.contains("unknown command `/status`"),
-        "missing status command feedback:\n{text}"
+        text.contains("Status"),
+        "status overlay should render:\n{text}"
+    );
+    assert!(
+        text.contains("provider="),
+        "status overlay should include session fields:\n{text}"
     );
 }
 

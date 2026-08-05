@@ -420,6 +420,8 @@ impl TuiApp {
             term.draw(|f| self.draw(f))?;
         }
 
+        self.sync_effort_to_session();
+
         let max_turns = self.session.max_turns();
         let mut outcome_err: Option<String> = None;
         let mut turn_thought_secs = 0.0f64;
@@ -464,7 +466,8 @@ impl TuiApp {
                 // next iteration, and so was not painted until the iteration after
                 // that -- roughly 200ms plus two draws from keypress to glyph.
                 if terminal.is_some() {
-                    drain_events(self).await?;
+                    drain_events(self, terminal.as_deref_mut()).await?;
+                    self.poll_interactive_terminal();
                     if self.exit.requested {
                         handle.abort();
                         self.busy_state.active = false;
@@ -596,8 +599,7 @@ impl TuiApp {
         }
 
         let turn_limit_reached = outcome_err.is_none()
-            && self.session.active_task.lifecycle != forge_types::TaskLifecycle::Completed
-            && self.session.active_task.lifecycle != forge_types::TaskLifecycle::Waiting;
+            && self.session.active_task.lifecycle == forge_types::TaskLifecycle::Working;
         let interrupted_partial = outcome_err
             .as_ref()
             .filter(|_| !self.stream.preview.trim().is_empty())
@@ -670,7 +672,7 @@ impl TuiApp {
             self.timing.thinking_started = None;
             self.timing.thought_secs = None;
             if let Some(p) = self.session.pending_hitl().cloned() {
-                self.open_hitl_overlay(p);
+                self.open_approval_card(p);
             }
             self.exit.code = ExitCode::AwaitingHitl;
             self.set_feedback(FeedbackSeverity::Warn, "awaiting human approval");

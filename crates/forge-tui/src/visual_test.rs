@@ -327,6 +327,7 @@ mod tests {
             model: "mock".into(),
             profile_id: Some("mock".into()),
             source: forge_connect::CatalogSource::Default,
+            route_label: "Mock".into(),
         }];
         app.overlay = Some(Overlay::connect_model_open(
             vec![],
@@ -340,7 +341,7 @@ mod tests {
         let mut term = Terminal::new(backend).unwrap();
         term.draw(|f| app.draw(f)).unwrap();
         let text = buffer_text(&term);
-        for expected in ["MODELS", "mock", "current", "Esc close"] {
+        for expected in ["Choose a model", "mock", "current", "Esc close"] {
             assert!(text.contains(expected), "missing {expected:?}:\n{text}");
         }
     }
@@ -366,39 +367,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn visual_wide_shell_shows_sidebar_activity() {
-        let (_d, mut app) = app().await;
-        app.push_activity(
-            crate::activity::ActivityKind::Model,
-            crate::widgets::FeedbackSeverity::Info,
-            "model started",
-        );
-        app.handle_key(press_with(KeyCode::Char('['), KeyModifiers::ALT))
-            .await
-            .unwrap();
-        let backend = TestBackend::new(120, 30);
-        let mut term = Terminal::new(backend).unwrap();
-        term.draw(|f| app.draw(f)).unwrap();
-        let text = buffer_text(&term);
-        assert!(
-            !text.contains("in 0 · out 0 · total 0"),
-            "default shell should not duplicate footer usage:\n{text}"
-        );
-        assert!(
-            !text.contains("Runtime"),
-            "default shell should not show inspector:\n{text}"
-        );
-        assert!(
-            !text.contains("Recent"),
-            "default shell should not show activity panel:\n{text}"
-        );
-        assert!(
-            !text.contains("model started"),
-            "background activity should remain off default chrome:\n{text}"
-        );
-    }
-
-    #[tokio::test]
     async fn visual_idle_home_matches_reference_structure() {
         let (_d, mut app) = app().await;
         let backend = TestBackend::new(120, 40);
@@ -410,8 +378,8 @@ mod tests {
             assert!(text.contains(expected), "missing {expected:?}:\n{text}");
         }
         assert!(
-            !text.contains("Context"),
-            "default shell should not show inspector context:\n{text}"
+            !text.contains("INSPECTOR"),
+            "default shell should not show inspector:\n{text}"
         );
         assert!(text.contains("Forge"), "missing branding:\n{text}");
         assert!(
@@ -594,16 +562,15 @@ mod tests {
             "current line not rendered:\n{text}"
         );
 
-        // The current line's content cells should not have the old bright cyan
-        // selected-row background.
-        let accent = ratatui::style::Color::Rgb(61, 214, 198);
+        // The current line uses the theme's subtle accent background.
+        let accent = crate::theme::accent_soft_bg();
         let line_y = text.lines().position(|l| l.contains("2 │ second")).unwrap();
         let content_start_x = text.lines().nth(line_y).unwrap().find('│').unwrap() + 1;
-        let has_bright_bg = (content_start_x..buf.area().width as usize)
+        let has_themed_bg = (content_start_x..buf.area().width as usize)
             .any(|x| buf[(x as u16, line_y as u16)].style().bg == Some(accent));
         assert!(
-            !has_bright_bg,
-            "current line content still has bright cyan background:\n{text}"
+            has_themed_bg,
+            "current line content is missing the themed background:\n{text}"
         );
     }
 
@@ -695,11 +662,11 @@ mod tests {
         term.draw(|f| app.draw(f)).unwrap();
         let text = buffer_text(&term);
         assert!(
-            text.contains("M ¶ tracked.txt"),
+            text.contains("tracked.txt M"),
             "missing modified marker:\n{text}"
         );
         assert!(
-            text.contains("? ¶ untracked.txt"),
+            text.contains("untracked.txt ?"),
             "missing untracked marker:\n{text}"
         );
     }

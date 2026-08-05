@@ -58,7 +58,13 @@ use crate::turn_state::TurnState;
 
 const SYSTEM_PROMPT: &str = include_str!("system_prompt.md");
 
-fn assemble_system_prompt(agents_md: &str, skills: &[(String, String)]) -> String {
+/// Discovery stage of progressive disclosure (issue #226): a skill with
+/// frontmatter contributes only its `name` + `description` here — its full
+/// `SKILL.md` body is fetched on demand via the `load_skill` tool once the
+/// model judges the description relevant. A skill without frontmatter has no
+/// `description` to show instead, so its whole body is injected eagerly,
+/// matching pre-#226 behavior.
+fn assemble_system_prompt(agents_md: &str, skills: &[forge_context::SkillManifest]) -> String {
     let mut prompt = SYSTEM_PROMPT.trim_end().to_owned();
 
     if !agents_md.trim().is_empty() {
@@ -67,12 +73,20 @@ fn assemble_system_prompt(agents_md: &str, skills: &[(String, String)]) -> Strin
     }
 
     if !skills.is_empty() {
-        prompt.push_str("\n\n# Skills");
-        for (name, content) in skills {
+        prompt.push_str(
+            "\n\n# Skills\n\nEach skill below is listed by name and description. When a task \
+matches a skill's description, call the `load_skill` tool with that name to load its full \
+instructions before proceeding.",
+        );
+        for skill in skills {
             prompt.push_str("\n\n## ");
-            prompt.push_str(name);
+            prompt.push_str(&skill.name);
             prompt.push_str("\n\n");
-            prompt.push_str(content.trim());
+            if skill.has_frontmatter {
+                prompt.push_str(skill.description.trim());
+            } else {
+                prompt.push_str(skill.body.trim());
+            }
         }
     }
 
@@ -535,6 +549,10 @@ pub struct AgentSession {
     tasks: TaskRuntime,
     /// Provider/model id for the next completion (empty → client default).
     pub active_model: String,
+    /// Wire-level reasoning-effort value for the next completion, or `None`
+    /// to omit the field entirely (model doesn't support it, or effort is
+    /// Auto). Set via `set_reasoning_effort`, read by `build_model_request`.
+    reasoning_effort: Option<String>,
     journal: SessionPersistence,
     /// Shared across a parent session and every subagent spawned from it —
     /// `register` only ever runs during `create`/`resume` setup, so sharing
@@ -712,6 +730,7 @@ impl AgentSession {
             active_task: ActiveTaskState::new(session_id),
             tasks: TaskRuntime::new(),
             active_model: String::new(),
+            reasoning_effort: None,
             journal: SessionPersistence::new(journal),
             tools: Arc::new(tools),
             model,
@@ -787,6 +806,7 @@ impl AgentSession {
             active_task: ActiveTaskState::from_restored(session_id, state.status, wait_reason),
             tasks: TaskRuntime::with_queue(queue),
             active_model: String::new(),
+            reasoning_effort: None,
             journal: SessionPersistence::new(journal),
             tools: Arc::new(tools),
             model,
@@ -816,6 +836,15 @@ impl AgentSession {
 
     pub fn set_governance(&mut self, g: Governance) {
         self.governance = g;
+    }
+
+    /// Apply a named permission mode in place — preserves the ACL and any
+    /// loaded pattern rules, only pre-seeding `hitl_classes` (see
+    /// `Governance::apply_mode`). Unlike `set_governance`, this can't
+    /// accidentally drop rules a `permissions.toml` load already put in
+    /// place.
+    pub fn apply_permission_mode(&mut self, mode: forge_governance::PermissionMode) {
+        self.governance.apply_mode(mode);
     }
 
     /// Read-only view of queued future-task instructions.
@@ -998,7 +1027,7 @@ impl AgentSession {
         self.context
             .load_skills()
             .into_iter()
-            .map(|(name, _)| name)
+            .map(|skill| skill.name)
             .collect()
     }
 
@@ -1159,7 +1188,7 @@ impl AgentSession {
             messages: self.messages.clone(),
             tools,
             model: self.active_model.clone(),
-            reasoning_effort: None,
+            reasoning_effort: self.reasoning_effort.clone(),
             prompt_cache: true,
         }
     }
@@ -2044,6 +2073,20 @@ impl AgentSession {
         decision: HitlDecision,
         actor: &str,
     ) -> Result<(), LoopError> {
+        self.resolve_hitl_with_feedback(decision, actor, None).await
+    }
+
+    /// Same as [`Self::resolve_hitl`], but a `Deny` can carry a short
+    /// message that reaches the agent as the tool result content — context
+    /// for what to do differently, folded into this same turn rather than
+    /// a bare denial the operator has to re-explain next turn. Modeled on
+    /// opencode's `CorrectedError`. Ignored for `Approve`.
+    pub async fn resolve_hitl_with_feedback(
+        &mut self,
+        decision: HitlDecision,
+        actor: &str,
+        feedback: Option<&str>,
+    ) -> Result<(), LoopError> {
         let payload = self
             .pending_hitl()
             .cloned()
@@ -2061,8 +2104,12 @@ impl AgentSession {
             .await?;
 
         if !approved {
+            let feedback = feedback.map(str::trim).filter(|f| !f.is_empty());
             let output = ToolOutput {
-                content: format!("HITL denied by {actor}"),
+                content: match feedback {
+                    Some(feedback) => format!("HITL denied by {actor}: {feedback}"),
+                    None => format!("HITL denied by {actor}"),
+                },
                 is_error: true,
                 exit_code: None,
             };
@@ -2188,6 +2235,14 @@ impl AgentSession {
                     .append_tool_result(self.session_id, call, &output)
                     .await?;
                 self.remember_tool_result(call, &output);
+                if call.name == "update_plan" && !output.is_error {
+                    // Stateless checklist broadcast — clients replace whatever they
+                    // were showing with this payload. Mirrors codex PlanUpdate.
+                    self.events.push(TurnEvent {
+                        kind: "plan_update".into(),
+                        detail: call.arguments.to_string(),
+                    });
+                }
                 self.messages.push(Message {
                     role: MessageRole::Tool,
                     content: output.content,
@@ -2221,6 +2276,12 @@ impl AgentSession {
     /// Use this provider/model id on subsequent completions (e.g. after `/connect`).
     pub fn set_active_model(&mut self, model: impl Into<String>) {
         self.active_model = model.into();
+    }
+
+    /// Wire-level reasoning-effort value to send on the next completion, or
+    /// `None` to omit the field (model doesn't support it, or effort is Auto).
+    pub fn set_reasoning_effort(&mut self, effort: Option<String>) {
+        self.reasoning_effort = effort;
     }
 
     /// Push provider credentials into the model client (OAuth tokens → worker env).
@@ -2280,15 +2341,60 @@ mod tests {
         assert!(prompt.ends_with("AGENTS.md:\nRun cargo test"));
     }
 
+    fn legacy_skill(name: &str, body: &str) -> forge_context::SkillManifest {
+        forge_context::SkillManifest {
+            name: name.to_string(),
+            description: String::new(),
+            dir: std::path::PathBuf::new(),
+            body: body.to_string(),
+            has_frontmatter: false,
+            metadata: None,
+            compatibility: None,
+            license: None,
+        }
+    }
+
+    fn manifest_skill(name: &str, description: &str, body: &str) -> forge_context::SkillManifest {
+        forge_context::SkillManifest {
+            name: name.to_string(),
+            description: description.to_string(),
+            dir: std::path::PathBuf::new(),
+            body: body.to_string(),
+            has_frontmatter: true,
+            metadata: None,
+            compatibility: None,
+            license: None,
+        }
+    }
+
+    /// A skill with no YAML frontmatter has no `description` to show in
+    /// discovery, so its full body is injected eagerly — the pre-#226
+    /// behavior, preserved for backward compatibility.
     #[test]
-    fn system_prompt_appends_skills() {
-        let skills = vec![(
-            "ponytail".to_string(),
-            "# Ponytail\nUse less code.".to_string(),
+    fn system_prompt_appends_skills_without_frontmatter_eagerly() {
+        let skills = vec![legacy_skill("ponytail", "# Ponytail\nUse less code.")];
+        let prompt = assemble_system_prompt("", &skills);
+        assert!(prompt.contains("# Skills"));
+        assert!(prompt.contains("## ponytail"));
+        assert!(prompt.ends_with("# Ponytail\nUse less code."));
+    }
+
+    /// A skill with frontmatter only surfaces name + description (discovery
+    /// stage) — its full body must NOT appear in the system prompt, since the
+    /// model is expected to fetch it via `load_skill` on demand.
+    #[test]
+    fn system_prompt_shows_only_name_and_description_for_skills_with_frontmatter() {
+        let skills = vec![manifest_skill(
+            "reviewer",
+            "Reviews pull requests for style issues.",
+            "# Reviewer\n\nFull instructions that should stay out of the prompt.",
         )];
         let prompt = assemble_system_prompt("", &skills);
-        assert!(prompt.contains("# Skills\n\n## ponytail"));
-        assert!(prompt.ends_with("# Ponytail\nUse less code."));
+        assert!(prompt.contains("# Skills"));
+        assert!(prompt.contains("## reviewer"));
+        assert!(prompt.contains("Reviews pull requests for style issues."));
+        assert!(!prompt.contains("Full instructions that should stay out of the prompt"));
+        assert!(prompt.contains("load_skill"));
     }
 
     fn base_cfg(dir: &std::path::Path) -> LoopConfig {
@@ -2336,6 +2442,40 @@ mod tests {
             .await
             .unwrap();
         assert!(!s.list_tools().iter().any(|n| n == "web_search"));
+    }
+
+    #[tokio::test]
+    async fn build_model_request_carries_reasoning_effort_when_set() {
+        let dir = tempdir().unwrap();
+        let model = Arc::new(MockModelClient::script(vec![ModelResponse {
+            text: "ok".into(),
+            tool_calls: vec![],
+            usage: None,
+            thinking: None,
+        }]));
+        let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        s.set_reasoning_effort(Some("high".into()));
+        assert_eq!(
+            s.build_model_request().reasoning_effort,
+            Some("high".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn build_model_request_omits_reasoning_effort_when_none() {
+        let dir = tempdir().unwrap();
+        let model = Arc::new(MockModelClient::script(vec![ModelResponse {
+            text: "ok".into(),
+            tool_calls: vec![],
+            usage: None,
+            thinking: None,
+        }]));
+        let s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        assert_eq!(s.build_model_request().reasoning_effort, None);
     }
 
     #[tokio::test]
@@ -3062,6 +3202,81 @@ mod tests {
         assert!(s.pending_hitl().is_none());
     }
 
+    /// A deny with feedback folds the operator's note into the same tool
+    /// result message the agent sees, so it can act on it this turn instead
+    /// of needing to be re-prompted next turn.
+    #[tokio::test]
+    async fn hitl_deny_with_feedback_reaches_the_agent_as_tool_result_content() {
+        let dir = tempdir().unwrap();
+        let model = Arc::new(MockModelClient::script(vec![ModelResponse {
+            text: "".into(),
+            tool_calls: vec![ToolCall {
+                id: "1".into(),
+                name: "bash".into(),
+                arguments: json!({"command": "git push origin main"}),
+            }],
+            usage: None,
+            thinking: None,
+        }]));
+        let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        s.run_user_message("push").await.unwrap();
+        assert_eq!(s.active_task.lifecycle, TaskLifecycle::Waiting);
+
+        s.resolve_hitl_with_feedback(
+            HitlDecision::Deny,
+            "test",
+            Some("use --force-with-lease instead"),
+        )
+        .await
+        .unwrap();
+
+        let tool_message = s
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == MessageRole::Tool)
+            .expect("a tool result should record the denial");
+        assert!(tool_message.content.contains("HITL denied by test"));
+        assert!(tool_message
+            .content
+            .contains("use --force-with-lease instead"));
+    }
+
+    /// Whitespace-only feedback is treated the same as no feedback — the
+    /// message stays the plain denial rather than trailing an empty colon.
+    #[tokio::test]
+    async fn hitl_deny_with_blank_feedback_omits_it_from_the_message() {
+        let dir = tempdir().unwrap();
+        let model = Arc::new(MockModelClient::script(vec![ModelResponse {
+            text: "".into(),
+            tool_calls: vec![ToolCall {
+                id: "1".into(),
+                name: "bash".into(),
+                arguments: json!({"command": "git push origin main"}),
+            }],
+            usage: None,
+            thinking: None,
+        }]));
+        let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        s.run_user_message("push").await.unwrap();
+
+        s.resolve_hitl_with_feedback(HitlDecision::Deny, "test", Some("   "))
+            .await
+            .unwrap();
+
+        let tool_message = s
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == MessageRole::Tool)
+            .unwrap();
+        assert_eq!(tool_message.content, "HITL denied by test");
+    }
+
     /// Before this fix, the `WaitingForUser` evidence pushed at the HITL
     /// pause point lingered in `turn_evidence` for the rest of the turn.
     /// Approving and continuing would then have the completion evaluator see
@@ -3705,6 +3920,41 @@ mod tests {
 
         assert_eq!(s.messages.len(), before);
         assert!(s.journal_cursor().await.unwrap() > 0);
+    }
+
+    #[tokio::test]
+    async fn update_plan_emits_plan_update_event_and_ack_message() {
+        let dir = tempdir().unwrap();
+        let mut s = idle_session(dir.path()).await;
+        let mut budget = ValidationBudget::default();
+        let call = ToolCall {
+            id: "plan-1".into(),
+            name: "update_plan".into(),
+            arguments: json!({
+                "explanation": "kickoff",
+                "plan": [
+                    {"step": "scout", "status": "in_progress"},
+                    {"step": "ship", "status": "pending"}
+                ]
+            }),
+        };
+        s.run_one_tool_exec_only(&call, &mut budget).await.unwrap();
+
+        assert!(
+            s.events
+                .iter()
+                .any(|e| e.kind == "plan_update" && e.detail.contains("scout")),
+            "expected plan_update event, got {:?}",
+            s.events
+        );
+        let tool_msg = s
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == MessageRole::Tool)
+            .expect("tool message");
+        assert_eq!(tool_msg.content, "Plan updated");
+        assert_eq!(tool_msg.name.as_deref(), Some("update_plan"));
     }
 
     // --- Verified Task Completion: integration tests --------------------

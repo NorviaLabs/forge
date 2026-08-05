@@ -5,13 +5,12 @@ use std::sync::Arc;
 use clap::Parser;
 use forge_config::{Config, ConfigOverrides};
 use forge_core::{AgentSession, LoopConfig};
+use forge_governance::{parse_pattern_rules, Governance};
 use forge_mcp::{register_static_mcp, McpManager, StaticMcpTool};
 use forge_model::{client_from_config, ModelClient};
 use forge_storage::{LocalRuntimeStorage, RuntimeDataKind, RuntimeStorage};
 use forge_tools::ToolRegistry;
-use forge_tui::{
-    resume_session_items, run_tui, run_tui_with_resume_picker, ExitCode, TuiRuntimeConfig,
-};
+use forge_tui::{resume_session_items, run_tui, ExitCode, TuiRuntimeConfig};
 use forge_types::SessionId;
 use serde_json::json;
 use tracing_subscriber::EnvFilter;
@@ -97,31 +96,27 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     };
     let cfg = Config::load(overrides).map_err(|e| anyhow::anyhow!(e))?;
 
-    let (startup_resume_items, create_notice) = if cli.resume == Some(None) {
+    let (resume, create_notice) = if cli.resume == Some(None) {
         let (journal_dir, _) = resolve_journal_dir(&cfg);
         let items = resume_session_items(&journal_dir, 10)
             .await
             .map_err(|e| anyhow::anyhow!(e))?;
-        if items.is_empty() {
+        if let Some(item) = items.first() {
+            let session_id = item
+                .id
+                .parse::<SessionId>()
+                .map_err(|e| anyhow::anyhow!(e))?;
+            (Some(Some(session_id)), None)
+        } else {
             (
-                None,
+                Some(None),
                 Some("No previous session found; creating a new session.".to_string()),
             )
-        } else {
-            (Some(items), None)
         }
     } else {
-        (None, None)
+        (cli.resume, None)
     };
-    let (session, mut startup_notices) = open_session(
-        &cfg,
-        if startup_resume_items.is_some() || create_notice.is_some() {
-            None
-        } else {
-            cli.resume
-        },
-    )
-    .await?;
+    let (session, mut startup_notices) = open_session(&cfg, resume).await?;
     if let Some(notice) = create_notice {
         startup_notices.push(notice);
     }
@@ -136,11 +131,9 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         mouse_capture: cfg.tui.mouse_capture,
         theme_id: cfg.tui.theme.clone(),
     };
-    let summary = match startup_resume_items {
-        Some(items) => run_tui_with_resume_picker(session, runtime, items).await,
-        None => run_tui(session, runtime).await,
-    }
-    .map_err(|e| anyhow::anyhow!(e))?;
+    let summary = run_tui(session, runtime)
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
     if let Some(token_usage) = summary.token_usage {
         println!("{token_usage}");
         println!(
@@ -259,6 +252,14 @@ async fn open_session(
     if !cfg.model.model.is_empty() {
         session.set_active_model(cfg.model.model.clone());
     }
+
+    let (permissions, permission_notices) = forge_config::load_permissions(cfg.workspace_root());
+    startup_notices.extend(permission_notices);
+    session.set_governance(Governance::default().with_pattern_rules(
+        parse_pattern_rules(&permissions.allow),
+        parse_pattern_rules(&permissions.deny),
+    ));
+
     Ok((session, startup_notices))
 }
 
@@ -278,6 +279,40 @@ mod tests {
     fn cli_resume_without_session_id_is_accepted() {
         let cli = Cli::try_parse_from(["forge", "--resume"]).unwrap();
         assert_eq!(cli.resume, Some(None));
+    }
+
+    /// Exercises the exact composition `build_session` wires at startup —
+    /// `load_permissions` output feeding `Governance::with_pattern_rules` —
+    /// without needing a real model client. A workspace-scope `deny` rule
+    /// must actually affect `authorize()`, proving the plumbing is live, not
+    /// just parsed and discarded.
+    #[test]
+    fn workspace_deny_rule_reaches_governance_authorize() {
+        let dir = TempDir::new().unwrap();
+        let forge_dir = dir.path().join(".forge");
+        std::fs::create_dir_all(&forge_dir).unwrap();
+        std::fs::write(
+            forge_dir.join("permissions.toml"),
+            "allow = [\"bash(*)\"]\ndeny = [\"bash(rm -rf*)\"]\n",
+        )
+        .unwrap();
+
+        let (permissions, _notices) = forge_config::load_permissions(dir.path());
+        let governance = Governance::default().with_pattern_rules(
+            parse_pattern_rules(&permissions.allow),
+            parse_pattern_rules(&permissions.deny),
+        );
+
+        let call = forge_types::ToolCall {
+            id: "1".into(),
+            name: "bash".into(),
+            arguments: json!({"command": "rm -rf /"}),
+        };
+        assert_eq!(
+            governance.authorize(&call, forge_types::SideEffectClass::Exec),
+            forge_types::PolicyDecision::Hitl,
+            "repo-scope allow rules must never be honored, and deny always wins anyway"
+        );
     }
 
     /// `forge-tools` cannot see `forge-connect`, so the list of credential

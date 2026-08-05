@@ -248,6 +248,31 @@ impl Drop for ScopedEnvGuard {
     }
 }
 
+/// Isolate `HOME`/`XDG_CONFIG_HOME`/provider API-key env vars to an empty temp
+/// dir so `CredentialStore::user_default()` (read automatically by
+/// `TuiApp::new`'s `restore_saved_auth()`, before a test can override
+/// `app.connect.store`) can never discover this dev machine's real
+/// credentials and silently overwrite `TuiRuntimeConfig`'s model/provider.
+pub(crate) fn isolated_home_guard() -> (TempDir, ScopedEnvGuard) {
+    let temp_home = TempDir::new().unwrap();
+    let cred_dir = temp_home.path().join("Library/Application Support/forge");
+    std::fs::create_dir_all(&cred_dir).unwrap_or_default();
+    let _ = std::fs::write(cred_dir.join("credentials.toml"), "");
+    let guard = ScopedEnvGuard::new(&[
+        "HOME",
+        "XDG_CONFIG_HOME",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "OPENCODE_API_KEY",
+        "OPENCODE_GO_API_KEY",
+        "OPENCODE_ZEN_API_KEY",
+        "OLLAMA_API_KEY",
+        "XAI_API_KEY",
+    ]);
+    std::env::set_var("HOME", temp_home.path());
+    (temp_home, guard)
+}
+
 // ---- highlight cache invalidation -------------------------------------
 //
 // The highlight cache is process-global and it is NOT exclusive to these

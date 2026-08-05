@@ -66,31 +66,63 @@ async fn mouse_click_file_row_selects_and_chevron_toggles() {
 }
 
 #[tokio::test]
-async fn mouse_click_bottom_tab_visible_control_emits_once() {
+async fn mouse_click_sidebar_focuses_it() {
+    // The bottom panel's tab strip (Terminal/Tasks) is gone — Tasks moved
+    // to the sidebar, so clicking the sidebar is the click-to-focus case
+    // to cover here instead.
     let (_dir, mut app) = focus_test_app().await;
-    app.open_bottom_panel(Some(BottomPanelTab::Run));
+    app.focus_block(FocusBlock::Composer);
     draw_app(&mut app, 120, 40);
+    let (x, y) = hit_point(&app, |target| matches!(target, HitTarget::Sidebar));
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), x, y))
+        .await
+        .unwrap();
+    assert_eq!(app.focus.block, FocusBlock::Sidebar);
+}
+
+#[tokio::test]
+async fn footer_control_segments_are_clickable_and_open_compact_picker() {
+    let _home_guard = isolated_home_guard();
+    let (_dir, mut app) = focus_test_app().await;
+    app.connect
+        .store
+        .set_api_key("anthropic", "sk-test-anthropic-credential")
+        .unwrap();
+    app.connect.profile = Some("anthropic".into());
+    app.runtime.model_label = "anthropic/claude-sonnet-4-6".into();
+    app.reasoning_effort.value = ReasoningEffort::High;
+    draw_app(&mut app, 120, 40);
+
     let (x, y) = hit_point(&app, |target| {
         matches!(
             target,
-            HitTarget::VisibleControl(SemanticCommand::OpenBottomPanel(BottomPanelTab::Activity))
+            HitTarget::VisibleControl(SemanticCommand::OpenModelControl(
+                ConnectModelColumn::Effort
+            ))
         )
     });
     app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), x, y))
         .await
         .unwrap();
-    assert_eq!(app.bottom_panel.active, BottomPanelTab::Activity);
-    assert_eq!(app.focus.block, FocusBlock::BottomPanel);
+
+    match &app.overlay {
+        Some(Overlay::ConnectModel { compact, focus, .. }) => {
+            assert!(*compact);
+            assert_eq!(*focus, ConnectModelColumn::Effort);
+        }
+        other => panic!("expected compact ConnectModel overlay, got {other:?}"),
+    }
 }
 
 #[tokio::test]
 async fn mouse_wheel_scrolls_hovered_pane_without_focus_change() {
+    // Conversation lives in the persistent sidebar now, not the center
+    // (Workspace) pane, so scrolling it is routed via the `Sidebar` hit
+    // target rather than `HitTarget::Pane(FocusBlock::Workspace)`.
     let (_dir, mut app) = focus_test_app().await;
     app.focus_block(FocusBlock::Composer);
     draw_app(&mut app, 120, 30);
-    let (x, y) = hit_point(&app, |target| {
-        matches!(target, HitTarget::Pane(FocusBlock::Workspace))
-    });
+    let (x, y) = hit_point(&app, |target| matches!(target, HitTarget::Sidebar));
     app.handle_mouse(mouse(MouseEventKind::ScrollUp, x, y))
         .await
         .unwrap();
@@ -107,20 +139,21 @@ async fn mouse_overlay_blocks_underlying_targets() {
         args_redacted: json!({"path": "src/main.rs"}),
         reason: "Edit requires approval".into(),
     };
-    app.open_hitl_overlay(payload);
+    app.open_approval_card(payload);
     draw_app(&mut app, 120, 30);
     let (x, y) = hit_point(&app, |target| matches!(target, HitTarget::Composer));
     app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), x, y))
         .await
         .unwrap();
     assert_eq!(app.focus.block, FocusBlock::Composer);
-    assert!(matches!(app.overlay, Some(Overlay::Hitl { .. })));
+    assert!(app.approval_card.is_some());
 }
 
 #[tokio::test]
 async fn mouse_disabled_ignores_pointer_but_keeps_keyboard() {
     let (_dir, mut app) = focus_test_app().await;
     app.runtime.mouse_capture = false;
+    app.workspace_files.visible = false;
     draw_app(&mut app, 120, 30);
     let (x, y) = hit_point(&app, |target| {
         matches!(target, HitTarget::Pane(FocusBlock::Workspace))
@@ -220,17 +253,14 @@ async fn mouse_double_click_same_file_opens_it_like_enter() {
     app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), x, y))
         .await
         .unwrap();
-    assert_eq!(
-        app.workspace_navigation.current,
-        WorkspaceView::Conversation
-    );
+    assert_eq!(app.workspace_navigation.current, None);
     app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), x, y))
         .await
         .unwrap();
 
     assert_eq!(
         app.workspace_navigation.current,
-        WorkspaceView::File(canonical.clone())
+        Some(WorkspaceView::File(canonical.clone()))
     );
     assert_eq!(app.source_viewer.path.as_deref(), Some(canonical.as_path()));
 
@@ -250,7 +280,7 @@ async fn mouse_double_click_same_file_opens_it_like_enter() {
         .unwrap();
     assert!(matches!(
         enter_app.workspace_navigation.current,
-        WorkspaceView::File(_)
+        Some(WorkspaceView::File(_))
     ));
     assert!(enter_app.source_viewer.path.is_some());
 }
@@ -295,10 +325,7 @@ async fn mouse_double_click_slow_or_different_rows_only_selects() {
     ))
     .await
     .unwrap();
-    assert_eq!(
-        app.workspace_navigation.current,
-        WorkspaceView::Conversation
-    );
+    assert_eq!(app.workspace_navigation.current, None);
     assert_eq!(
         app.workspace_files.explorer.selected_path.as_deref(),
         Some(first.as_path())
@@ -311,10 +338,7 @@ async fn mouse_double_click_slow_or_different_rows_only_selects() {
     ))
     .await
     .unwrap();
-    assert_eq!(
-        app.workspace_navigation.current,
-        WorkspaceView::Conversation
-    );
+    assert_eq!(app.workspace_navigation.current, None);
     assert_eq!(
         app.workspace_files.explorer.selected_path.as_deref(),
         Some(second.as_path())
@@ -361,10 +385,7 @@ async fn mouse_double_click_cancels_on_scroll_resize_list_or_modal_change() {
     ))
     .await
     .unwrap();
-    assert_eq!(
-        app.workspace_navigation.current,
-        WorkspaceView::Conversation
-    );
+    assert_eq!(app.workspace_navigation.current, None);
     app.clear_pending_double_click();
 
     app.handle_mouse(mouse(
@@ -388,10 +409,7 @@ async fn mouse_double_click_cancels_on_scroll_resize_list_or_modal_change() {
     ))
     .await
     .unwrap();
-    assert_eq!(
-        app.workspace_navigation.current,
-        WorkspaceView::Conversation
-    );
+    assert_eq!(app.workspace_navigation.current, None);
     app.clear_pending_double_click();
 
     app.handle_mouse(mouse(
@@ -415,10 +433,7 @@ async fn mouse_double_click_cancels_on_scroll_resize_list_or_modal_change() {
     ))
     .await
     .unwrap();
-    assert_eq!(
-        app.workspace_navigation.current,
-        WorkspaceView::Conversation
-    );
+    assert_eq!(app.workspace_navigation.current, None);
     app.clear_pending_double_click();
 
     app.handle_mouse(mouse(
@@ -444,10 +459,7 @@ async fn mouse_double_click_cancels_on_scroll_resize_list_or_modal_change() {
     ))
     .await
     .unwrap();
-    assert_eq!(
-        app.workspace_navigation.current,
-        WorkspaceView::Conversation
-    );
+    assert_eq!(app.workspace_navigation.current, None);
 }
 
 #[tokio::test]
@@ -513,12 +525,19 @@ async fn mouse_double_click_folder_row_toggles_once() {
 #[tokio::test]
 async fn mouse_double_click_controls_do_not_gain_row_activation() {
     let (_dir, mut app) = focus_test_app().await;
-    app.open_bottom_panel(Some(BottomPanelTab::Run));
+    app.connect
+        .store
+        .set_api_key("anthropic", "sk-test-anthropic-credential")
+        .unwrap();
+    app.connect.profile = Some("anthropic".into());
+    app.runtime.model_label = "anthropic/claude-sonnet-4-6".into();
     draw_app(&mut app, 120, 40);
     let (x, y) = hit_point(&app, |target| {
         matches!(
             target,
-            HitTarget::VisibleControl(SemanticCommand::OpenBottomPanel(BottomPanelTab::Activity))
+            HitTarget::VisibleControl(SemanticCommand::OpenModelControl(
+                ConnectModelColumn::Effort
+            ))
         )
     });
     app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), x, y))
@@ -528,7 +547,10 @@ async fn mouse_double_click_controls_do_not_gain_row_activation() {
         .await
         .unwrap();
 
-    assert_eq!(app.bottom_panel.active, BottomPanelTab::Activity);
+    match &app.overlay {
+        Some(Overlay::ConnectModel { compact, .. }) => assert!(*compact),
+        other => panic!("expected compact ConnectModel overlay, got {other:?}"),
+    }
     assert!(app.pointer.pending_double_click.is_none());
 }
 
@@ -575,7 +597,7 @@ async fn edge_mouse_disabled_keeps_keyboard_workflow_and_no_mouse_hint() {
 
     assert_eq!(
         app.workspace_navigation.current,
-        WorkspaceView::File(canonical)
+        Some(WorkspaceView::File(canonical))
     );
     let rendered = render_app_text(&mut app, 100, 30);
     assert!(
@@ -615,10 +637,7 @@ async fn edge_hit_target_invalidated_cancels_double_click_state() {
         .await
         .unwrap();
 
-    assert_eq!(
-        app.workspace_navigation.current,
-        WorkspaceView::Conversation
-    );
+    assert_eq!(app.workspace_navigation.current, None);
 }
 
 #[tokio::test]
@@ -634,17 +653,14 @@ async fn edge_end_to_end_recovery_flow_mouse_enabled_and_disabled() {
             .git_status
             .status
             .insert(PathBuf::from("flow.rs"), GitStatusKind::Modified);
-        assert_eq!(
-            app.workspace_navigation.current,
-            WorkspaceView::Conversation
-        );
+        assert_eq!(app.workspace_navigation.current, None);
 
         app.execute_semantic_command(SemanticCommand::OpenFile(path.clone()))
             .await
             .unwrap();
         assert_eq!(
             app.workspace_navigation.current,
-            WorkspaceView::File(path.clone())
+            Some(WorkspaceView::File(path.clone()))
         );
 
         app.execute_semantic_command(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
@@ -652,7 +668,7 @@ async fn edge_end_to_end_recovery_flow_mouse_enabled_and_disabled() {
             .unwrap();
         assert_eq!(
             app.workspace_navigation.current,
-            WorkspaceView::Diff(DiffCommandContext::Current)
+            Some(WorkspaceView::Diff(DiffCommandContext::Current))
         );
 
         app.run.draft.command_input = "cargo test".into();
@@ -668,7 +684,7 @@ async fn edge_end_to_end_recovery_flow_mouse_enabled_and_disabled() {
         app.poll_run();
         assert_eq!(
             app.workspace_navigation.current,
-            WorkspaceView::Diff(DiffCommandContext::Current)
+            Some(WorkspaceView::Diff(DiffCommandContext::Current))
         );
 
         app.execute_semantic_command(SemanticCommand::ActivateActivitySummary)
@@ -676,14 +692,14 @@ async fn edge_end_to_end_recovery_flow_mouse_enabled_and_disabled() {
             .unwrap();
         assert_eq!(
             app.workspace_navigation.current,
-            WorkspaceView::Run(run_id.clone())
+            Some(WorkspaceView::Run(run_id.clone()))
         );
         app.execute_semantic_command(SemanticCommand::GoBack)
             .await
             .unwrap();
         assert_eq!(
             app.workspace_navigation.current,
-            WorkspaceView::Diff(DiffCommandContext::Current)
+            Some(WorkspaceView::Diff(DiffCommandContext::Current))
         );
 
         fs::write(&path, "fn flow() {}\nfn changed() {}\n").unwrap();
@@ -706,9 +722,6 @@ async fn edge_end_to_end_recovery_flow_mouse_enabled_and_disabled() {
         app.execute_semantic_command(SemanticCommand::GoHome)
             .await
             .unwrap();
-        assert_eq!(
-            app.workspace_navigation.current,
-            WorkspaceView::Conversation
-        );
+        assert_eq!(app.workspace_navigation.current, None);
     }
 }

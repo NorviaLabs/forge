@@ -1,9 +1,9 @@
 //! Feedback strip (Phase 10 / TUI-08) — always-visible latest status/error.
 
+use crate::status_glyph::{status_glyph, Status};
 use crate::theme;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Widget;
 
@@ -66,14 +66,14 @@ impl Widget for FeedbackBar<'_> {
             return;
         }
         theme::fill(area, buf, theme::canvas());
-        let (prefix, style) = match self.model.severity {
-            FeedbackSeverity::Info => (" ", theme::info()),
-            FeedbackSeverity::Warn => ("! ", theme::warn().add_modifier(Modifier::BOLD)),
-            FeedbackSeverity::Error => ("! ", theme::danger().add_modifier(Modifier::BOLD)),
-            FeedbackSeverity::Ok => ("✓ ", theme::ok()),
+        let (prefix, separator, style) = match self.model.severity {
+            FeedbackSeverity::Info => (Span::raw(" "), "", theme::info()),
+            FeedbackSeverity::Warn => (status_glyph(Status::Warning), " ", theme::warn()),
+            FeedbackSeverity::Error => (status_glyph(Status::Error), " ", theme::danger()),
+            FeedbackSeverity::Ok => (status_glyph(Status::Success), " ", theme::ok()),
         };
         let max = area.width as usize;
-        let raw = format!("{prefix}{}", self.model.text);
+        let raw = format!("{}{separator}{}", prefix.content, self.model.text);
         let mut shown: String = raw.chars().take(max.saturating_sub(1)).collect();
         if raw.chars().count() > max.saturating_sub(1) && max > 2 {
             shown = format!(
@@ -81,10 +81,11 @@ impl Widget for FeedbackBar<'_> {
                 raw.chars().take(max.saturating_sub(2)).collect::<String>()
             );
         }
+        let message = shown.chars().skip(1).collect::<String>();
         buf.set_line(
             area.x,
             area.y,
-            &Line::from(Span::styled(shown, style)),
+            &Line::from(vec![prefix, Span::styled(message, style)]),
             area.width,
         );
     }

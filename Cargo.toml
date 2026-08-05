@@ -20,7 +20,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0-alpha.10"
+version = "0.1.0-beta.1"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/NorviaLabs/forge"
@@ -40,20 +40,23 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 toml = "1.1"
+serde_yaml = "0.9"
 dirs = "6"
 pathdiff = "0.2"
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "chrono"] }
+sqlx = { version = "0.9", features = ["runtime-tokio", "sqlite", "chrono"] }
 tempfile = "3"
 clap = { version = "4", features = ["derive", "env"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 ureq = { version = "2", features = ["json"] }
 futures = "0.3"
 bytes = "1"
-jsonschema = "0.28"
+jsonschema = "0.49"
 crossterm = "0.28"
-ratatui = { version = "=0.30.2", default-features = false, features = ["crossterm", "underline-color"] }
+ratatui = { version = "=0.30.2", default-features = false, features = ["crossterm", "underline-color", "unstable-rendered-line-info"] }
 regex = "1"
-notify = "6"
+notify = "8"
+portable-pty = "0.9"
+vt100 = "0.15"
 fff-search = "0.10.1"
 fff-grep = "0.10.1"
 fff-query-parser = "0.10.1"

@@ -48,8 +48,8 @@ impl TuiApp {
             self.register_hit_region(area, HitTarget::Pane(FocusBlock::Files), 1);
         }
         self.register_hit_region(regions.chat, HitTarget::Pane(FocusBlock::Workspace), 1);
-        if let Some(area) = regions.sidebar {
-            self.register_hit_region(area, HitTarget::Pane(FocusBlock::Inspector), 1);
+        if let Some(sidebar) = regions.sidebar {
+            self.register_hit_region(sidebar, HitTarget::Sidebar, 1);
         }
         if self.bottom_panel.open && regions.bottom_panel.height > 0 {
             self.register_hit_region(
@@ -57,7 +57,6 @@ impl TuiApp {
                 HitTarget::Pane(FocusBlock::BottomPanel),
                 1,
             );
-            self.register_bottom_panel_tab_regions(regions.bottom_panel);
         }
         self.register_hit_region(regions.input, HitTarget::Composer, 5);
     }
@@ -95,24 +94,38 @@ impl TuiApp {
         }
     }
 
-    fn register_bottom_panel_tab_regions(&mut self, area: ratatui::layout::Rect) {
-        if area.height == 0 || area.width == 0 {
+    /// Register the persistent footer control's `[vendor] [model]
+    /// [effort]` segments as click targets, one `ConnectModelColumn` per
+    /// segment in the same order `footer_control_segments` lays them out —
+    /// the same layout logic used to paint the row, so hit regions can never
+    /// drift from what's actually on screen.
+    pub(super) fn register_footer_control_hit_regions(
+        &mut self,
+        model: &crate::widgets::FooterModel,
+        area: ratatui::layout::Rect,
+    ) {
+        if area.height == 0 || area.width == 0 || !model.hints.is_empty() {
             return;
         }
-        let mut x = area.x;
-        let y = area.y;
-        for (idx, tab) in BottomPanelTab::ALL.into_iter().enumerate() {
-            let width = format!(" {} {} ", idx + 1, tab.label()).chars().count() as u16;
-            if x >= area.x.saturating_add(area.width) {
-                break;
-            }
-            let clamped_width = width.min(area.x.saturating_add(area.width).saturating_sub(x));
+        let columns = [
+            ConnectModelColumn::Providers,
+            ConnectModelColumn::Models,
+            ConnectModelColumn::Effort,
+        ];
+        for (segment, column) in crate::widgets::footer_control_segments(model, area.width)
+            .into_iter()
+            .zip(columns)
+        {
             self.register_hit_region(
-                ratatui::layout::Rect::new(x, y, clamped_width, 1),
-                HitTarget::VisibleControl(SemanticCommand::OpenBottomPanel(tab)),
+                ratatui::layout::Rect::new(
+                    area.x + segment.start,
+                    area.y,
+                    segment.end - segment.start,
+                    1,
+                ),
+                HitTarget::VisibleControl(SemanticCommand::OpenModelControl(column)),
                 25,
             );
-            x = x.saturating_add(width).saturating_add(1);
         }
     }
 
@@ -160,56 +173,59 @@ impl TuiApp {
     }
 
     pub(super) fn register_overlay_hit_regions(&mut self, area: ratatui::layout::Rect) {
-        if self.explorer_dialog.current.is_some() {
+        if self.explorer_dialog.current.is_some() || self.overlay.is_some() {
             self.register_hit_region(
                 area,
                 HitTarget::VisibleControl(SemanticCommand::CloseOverlay),
                 900,
             );
-            return;
         }
-        let hitl = self.overlay.as_ref().and_then(|overlay| {
-            if let Overlay::Hitl {
-                approval, expanded, ..
-            } = overlay
-            {
-                Some((approval.remember_eligible, *expanded))
-            } else {
-                None
-            }
-        });
-        if self.overlay.is_none() {
+    }
+
+    /// Register clickable regions for the docked approval card. `card_area`
+    /// is the exact `Rect` the card widget was rendered into this frame, and
+    /// each button's row is found by searching the same lines that frame
+    /// actually rendered (`approval_card_action_row`), so a layout change
+    /// can never leave a hand-maintained offset out of sync. Buttons are
+    /// only offered in the `Decide` stage — `ConfirmPattern`/`DenyFeedback`
+    /// are keyboard-only.
+    pub(super) fn register_approval_card_hit_regions(&mut self, card_area: ratatui::layout::Rect) {
+        let Some(card) = self.approval_card.clone() else {
             return;
-        }
-        self.register_hit_region(
-            area,
-            HitTarget::VisibleControl(SemanticCommand::CloseOverlay),
-            900,
-        );
-        if let Some((remember_eligible, expanded)) = hitl {
-            let overlay_area =
-                centered_capped_rect_for_mouse(area, 78, if expanded { 30 } else { 22 });
-            let inner = ratatui::widgets::Block::default()
-                .borders(ratatui::widgets::Borders::ALL)
-                .inner(overlay_area);
-            let action_y = inner.y.saturating_add(10);
+        };
+        let inner = ratatui::widgets::Block::default()
+            .borders(ratatui::widgets::Borders::ALL)
+            .inner(card_area);
+        if let Some(row) = approval_card_action_row(&card, ApprovalFocusedAction::AllowOnce) {
+            let y = inner.y.saturating_add(row as u16);
             self.register_hit_region(
-                ratatui::layout::Rect::new(inner.x, action_y, 12, 1),
+                ratatui::layout::Rect::new(inner.x, y, 12, 1),
                 HitTarget::OverlayAction(OverlayAction::HitlApprove),
                 1000,
             );
             self.register_hit_region(
-                ratatui::layout::Rect::new(inner.x.saturating_add(14), action_y, 8, 1),
+                ratatui::layout::Rect::new(inner.x.saturating_add(14), y, 8, 1),
                 HitTarget::OverlayAction(OverlayAction::HitlDeny),
                 1000,
             );
-            if remember_eligible {
-                self.register_hit_region(
-                    ratatui::layout::Rect::new(inner.x, inner.y.saturating_add(12), inner.width, 1),
-                    HitTarget::OverlayAction(OverlayAction::HitlApproveSession),
-                    1000,
-                );
-            }
+        }
+        if let Some(row) = approval_card_action_row(&card, ApprovalFocusedAction::RememberDirect) {
+            let y = inner.y.saturating_add(row as u16);
+            self.register_hit_region(
+                ratatui::layout::Rect::new(inner.x, y, inner.width, 1),
+                HitTarget::OverlayAction(OverlayAction::HitlApproveSession),
+                1000,
+            );
+        }
+        if let Some(row) = approval_card_action_row(&card, ApprovalFocusedAction::AllowPattern) {
+            let y = inner.y.saturating_add(row as u16);
+            self.register_hit_region(
+                ratatui::layout::Rect::new(inner.x, y, inner.width, 1),
+                HitTarget::OverlayAction(OverlayAction::HitlApprovePattern {
+                    pattern: card.approval.suggested_pattern.clone(),
+                }),
+                1000,
+            );
         }
     }
 
@@ -243,7 +259,8 @@ impl TuiApp {
             | HitTarget::ActivitySummary
             | HitTarget::VisibleControl(_)
             | HitTarget::Composer
-            | HitTarget::OverlayAction(_) => None,
+            | HitTarget::OverlayAction(_)
+            | HitTarget::Sidebar => None,
         }
     }
 
@@ -322,7 +339,9 @@ impl TuiApp {
             }
             Some(HitTarget::Composer) => Some(FocusBlock::Composer),
             Some(HitTarget::ActivitySummary) => Some(FocusBlock::Workspace),
-            Some(HitTarget::VisibleControl(_)) | Some(HitTarget::OverlayAction(_)) => None,
+            Some(HitTarget::VisibleControl(_))
+            | Some(HitTarget::OverlayAction(_))
+            | Some(HitTarget::Sidebar) => None,
             None => None,
         }
     }
@@ -343,20 +362,13 @@ impl TuiApp {
     }
 
     fn scroll_workspace_under_pointer(&mut self, up: bool) {
-        match self.workspace_navigation.current {
-            WorkspaceView::Conversation => {
-                if up {
-                    self.scroll_conversation_up(3);
-                } else {
-                    self.scroll_conversation_down(3);
-                }
-            }
-            WorkspaceView::File(_) => {
+        match &self.workspace_navigation.current {
+            Some(WorkspaceView::File(_)) => {
                 let height = self.editor_viewport.height.saturating_sub(2) as usize;
                 let delta = if up { -3 } else { 3 };
                 self.source_viewer.move_cursor_vertical(delta, height);
             }
-            WorkspaceView::Diff(_) | WorkspaceView::Run(_) => {}
+            Some(WorkspaceView::Diff(_)) | Some(WorkspaceView::Run(_)) | None => {}
         }
     }
 
@@ -388,6 +400,10 @@ impl TuiApp {
             HitTarget::OverlayAction(action) => {
                 self.apply_overlay_action(action).await?;
             }
+            HitTarget::Sidebar => {
+                self.execute_semantic_command(SemanticCommand::FocusPane(FocusBlock::Sidebar))
+                    .await?;
+            }
         }
         Ok(())
     }
@@ -402,7 +418,9 @@ impl TuiApp {
                     self.clear_pending_double_click();
                     return Ok(());
                 };
-                if (self.overlay.is_some() || self.explorer_dialog.current.is_some())
+                if (self.overlay.is_some()
+                    || self.explorer_dialog.current.is_some()
+                    || self.approval_card.is_some())
                     && !matches!(target, HitTarget::OverlayAction(_))
                 {
                     self.clear_pending_double_click();
@@ -439,13 +457,26 @@ impl TuiApp {
                     return Ok(());
                 }
                 let up = matches!(mouse.kind, MouseEventKind::ScrollUp);
-                match self.pane_target_at(mouse.column, mouse.row) {
-                    Some(FocusBlock::Files) => self.scroll_files(up, 3),
-                    Some(FocusBlock::Workspace) => self.scroll_workspace_under_pointer(up),
-                    Some(
-                        FocusBlock::Composer | FocusBlock::Inspector | FocusBlock::BottomPanel,
-                    )
-                    | None => {}
+                if matches!(
+                    self.resolve_hit_target(mouse.column, mouse.row),
+                    Some(HitTarget::Sidebar)
+                ) {
+                    if up {
+                        self.scroll_conversation_up(3);
+                    } else {
+                        self.scroll_conversation_down(3);
+                    }
+                } else {
+                    match self.pane_target_at(mouse.column, mouse.row) {
+                        Some(FocusBlock::Files) => self.scroll_files(up, 3),
+                        Some(FocusBlock::Workspace) => self.scroll_workspace_under_pointer(up),
+                        // `pane_target_at` never actually returns Sidebar —
+                        // its scroll is handled by the branch above.
+                        Some(
+                            FocusBlock::Sidebar | FocusBlock::Composer | FocusBlock::BottomPanel,
+                        )
+                        | None => {}
+                    }
                 }
             }
             _ => {
@@ -453,21 +484,6 @@ impl TuiApp {
             }
         }
         Ok(())
-    }
-}
-
-fn centered_capped_rect_for_mouse(
-    area: ratatui::layout::Rect,
-    max_width: u16,
-    max_height: u16,
-) -> ratatui::layout::Rect {
-    let width = area.width.min(max_width).max(1);
-    let height = area.height.min(max_height).max(1);
-    ratatui::layout::Rect {
-        x: area.x + area.width.saturating_sub(width) / 2,
-        y: area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
     }
 }
 

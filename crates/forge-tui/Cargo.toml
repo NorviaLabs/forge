@@ -9,8 +9,10 @@ description = "Full-screen Forge TUI (Phase 4) + slash commands"
 forge-syntax = { workspace = true }
 forge-types = { workspace = true }
 forge-core = { workspace = true }
+forge-context = { workspace = true }
 forge-tools = { workspace = true }
 forge-config = { workspace = true }
+forge-governance = { workspace = true }
 forge-model = { workspace = true }
 forge-connect = { workspace = true }
 forge-storage = { workspace = true }
@@ -26,8 +28,9 @@ chrono = { workspace = true }
 dirs = { workspace = true }
 pathdiff = { workspace = true }
 notify = { workspace = true }
+portable-pty = { workspace = true }
+vt100 = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
-tokio-util = { workspace = true }

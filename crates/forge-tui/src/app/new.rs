@@ -11,10 +11,14 @@ impl TuiApp {
     }
 
     pub fn new_with_startup_resume_picker(
-        session: AgentSession,
+        mut session: AgentSession,
         runtime: TuiRuntimeConfig,
         startup_items: Option<Vec<ResumeSessionItem>>,
     ) -> Self {
+        // Keep the session's actual enforcement in sync with the `Manual`
+        // label the footer shows from the first frame — see
+        // `permission_mode`'s doc comment.
+        session.apply_permission_mode(forge_governance::PermissionMode::Manual);
         let startup_resume_session_id = startup_items.as_ref().map(|_| session.session_id);
         let workspace_root = session.workspace_root().to_path_buf();
         let (registry, theme_notices) =
@@ -36,6 +40,7 @@ impl TuiApp {
             session,
             input,
             overlay: startup_items.clone().map(Overlay::resume_picker),
+            approval_card: None,
             exit: ExitState {
                 requested: false,
                 code: ExitCode::Success,
@@ -60,6 +65,7 @@ impl TuiApp {
                 until: None,
             },
             feedback: FeedbackModel::default(),
+            feedback_until: None,
             banner_state: BannerState { items: Vec::new() },
             search_status: SearchStatusState {
                 label: Some("mock".into()),
@@ -91,6 +97,7 @@ impl TuiApp {
             reasoning_effort: ReasoningEffortState {
                 value: ReasoningEffort::Auto,
             },
+            permission_mode: forge_governance::PermissionMode::Manual,
             tool_detail: ToolDetailState { expanded: false },
             workspace_navigation: WorkspaceNavigation::default(),
             source_viewer: SourceViewer::new(),
@@ -105,15 +112,14 @@ impl TuiApp {
                 execution: run::RunExecution::default(),
             },
             workspace_files: WorkspaceFilesState {
-                visible: false,
+                // Make Forge's editor/file-browser surface discoverable on a
+                // first launch. A saved per-repository preference is applied
+                // immediately below by `load_ui_state`.
+                visible: true,
                 explorer: FileExplorer::new(Some(workspace_root), file_icons),
             },
             explorer_dialog: ExplorerDialogState::default(),
             focus: FocusState::default(),
-            inspector: InspectorState {
-                visible: false,
-                view: InspectorView::default(),
-            },
             diff_view: DiffViewState {
                 selected: 0,
                 snapshot: DiffSnapshot::default(),
@@ -121,6 +127,7 @@ impl TuiApp {
             cancellation: CancellationState { requested: false },
             hitl_session: HitlSessionState {
                 allowed: HashSet::new(),
+                pattern_allow: Vec::new(),
             },
             toast: ToastState { current: None },
             conversation_view: ConversationViewState {
@@ -131,10 +138,7 @@ impl TuiApp {
                 context_reset_snapshot: None,
                 splash_dismissed: false,
             },
-            render_cache: RenderCacheState {
-                conversation: None,
-                composer_layout: ComposerLayoutCache::default(),
-            },
+            render_cache: RenderCacheState { conversation: None },
             model_cost_cache: None,
             footer_limits: FooterLimitsState {
                 cache: None,
@@ -147,12 +151,17 @@ impl TuiApp {
                 cwd: repo_header_cwd.clone(),
             },
             terminal_capture: TerminalCapture::default(),
+            interactive_terminal: None,
             pointer: PointerState::default(),
             workspace_search: WorkspaceSearchState {
                 index: None,
                 error: None,
             },
             editor_viewport: EditorViewportState { height: 24 },
+            catalog_fetch: CatalogFetchState {
+                refresh_rx: None,
+                warmed: false,
+            },
         };
         app.init_file_watcher();
         app.load_run_history();
