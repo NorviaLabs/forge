@@ -258,6 +258,119 @@ fn normalize_pasted_text(pasted: &str) -> String {
     normalized
 }
 
+/// Steady-state control chip under the composer text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComposerChipKind {
+    Mode,
+    Connect,
+    Model,
+    Effort,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComposerChip {
+    pub kind: ComposerChipKind,
+    pub label: String,
+}
+
+/// Priority when truncating: keep mode, then model, then connect, then effort.
+const CHIP_DROP_ORDER: [ComposerChipKind; 4] = [
+    ComposerChipKind::Effort,
+    ComposerChipKind::Connect,
+    ComposerChipKind::Model,
+    ComposerChipKind::Mode,
+];
+
+/// Build the full chip set before width fitting.
+pub fn composer_chips(
+    mode_label: &str,
+    connected: bool,
+    vendor: Option<&str>,
+    model: &str,
+    effort: &str,
+) -> Vec<ComposerChip> {
+    let mut chips = vec![ComposerChip {
+        kind: ComposerChipKind::Mode,
+        label: mode_label.to_string(),
+    }];
+    chips.push(ComposerChip {
+        kind: ComposerChipKind::Connect,
+        label: if connected {
+            vendor
+                .filter(|v| !v.is_empty())
+                .unwrap_or("connected")
+                .to_string()
+        } else {
+            "not connected".into()
+        },
+    });
+    let short = crate::widgets::footer::footer_short_model_id(model);
+    if !short.is_empty() {
+        chips.push(ComposerChip {
+            kind: ComposerChipKind::Model,
+            label: short.to_string(),
+        });
+    }
+    if !effort.is_empty() {
+        chips.push(ComposerChip {
+            kind: ComposerChipKind::Effort,
+            label: effort.to_string(),
+        });
+    }
+    chips
+}
+
+/// Drop lowest-priority chips until the row fits `width` (sep = ` · `).
+pub fn fit_composer_chips(mut chips: Vec<ComposerChip>, width: u16) -> Vec<ComposerChip> {
+    let width = width as usize;
+    let row_width = |chips: &[ComposerChip]| {
+        if chips.is_empty() {
+            return 0;
+        }
+        chips.iter().map(|c| c.label.chars().count()).sum::<usize>()
+            + " · ".chars().count() * chips.len().saturating_sub(1)
+    };
+    // Keep explicit N/A effort over vendor when space is tight — it signals
+    // "this model has no effort control".
+    let na_effort = chips
+        .iter()
+        .any(|c| c.kind == ComposerChipKind::Effort && c.label == "N/A");
+    let drop_order: &[ComposerChipKind] = if na_effort {
+        &[
+            ComposerChipKind::Connect,
+            ComposerChipKind::Model,
+            ComposerChipKind::Effort,
+            ComposerChipKind::Mode,
+        ]
+    } else {
+        &CHIP_DROP_ORDER
+    };
+    for drop_kind in drop_order {
+        if row_width(&chips) <= width || chips.len() <= 1 {
+            break;
+        }
+        if let Some(i) = chips.iter().position(|c| c.kind == *drop_kind) {
+            // Never drop Mode if anything else remains.
+            if *drop_kind == ComposerChipKind::Mode && chips.len() > 1 {
+                continue;
+            }
+            chips.remove(i);
+        }
+    }
+    while row_width(&chips) > width && chips.len() > 1 {
+        chips.pop();
+    }
+    let w = row_width(&chips);
+    if w > width && width > 1 {
+        if let Some(last) = chips.last_mut() {
+            let excess = w - width;
+            let keep = last.label.chars().count().saturating_sub(excess + 1).max(1);
+            last.label = last.label.chars().take(keep).collect::<String>() + "…";
+        }
+    }
+    chips
+}
+
 pub struct InputBar<'a> {
     pub model: &'a InputModel,
     /// Optional file-attachment label shown above the prompt line.
@@ -265,6 +378,14 @@ pub struct InputBar<'a> {
     pub dimmed: bool,
     pub not_connected: bool,
     pub focused: bool,
+    /// Control chips under the text (mode / connect / model / effort).
+    pub chips: &'a [ComposerChip],
+    /// When set, that chip index is focused (`F3`).
+    pub chip_focus: Option<usize>,
+    /// HITL pending — dim chips, don't look interactive.
+    pub chips_dimmed: bool,
+    /// Non-interactive send affordance on the first text row.
+    pub show_send_hint: bool,
 }
 
 fn composer_text(model: &InputModel, show_cursor: bool) -> String {
@@ -293,30 +414,43 @@ fn cursor_scroll(model: &InputModel, content_width: u16, visible_rows: u16) -> u
         .saturating_sub(visible_rows as usize) as u16
 }
 
+const SEND_HINT: &str = "⏎";
+
 impl Widget for InputBar<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         if area.width == 0 || area.height == 0 {
             return;
         }
 
-        let lines_area = if self.attachment.is_some() && area.height > 1 {
-            let rows = ratatui::layout::Layout::default()
-                .direction(ratatui::layout::Direction::Vertical)
-                .constraints([
-                    ratatui::layout::Constraint::Length(1),
-                    ratatui::layout::Constraint::Min(0),
-                ])
-                .split(area);
+        let chip_h = u16::from(!self.chips.is_empty() && area.height > 2);
+        let attach_h = u16::from(self.attachment.is_some() && area.height > 1 + chip_h);
+
+        let mut y = area.y;
+        let mut remain = area.height;
+
+        if attach_h > 0 {
             let att_text = self.attachment.unwrap_or("");
             let att_line = Line::from(vec![
                 Span::styled("» ", theme::info()),
                 Span::styled(att_text, theme::info()),
                 Span::styled("  [Ctrl+A or /cf to remove]", theme::dim()),
             ]);
-            Paragraph::new(att_line).render(rows[0], buf);
-            rows[1]
+            Paragraph::new(att_line).render(Rect::new(area.x, y, area.width, 1), buf);
+            y = y.saturating_add(1);
+            remain = remain.saturating_sub(1);
+        }
+
+        let text_h = remain.saturating_sub(chip_h).max(1);
+        let text_block_area = Rect::new(area.x, y, area.width, text_h);
+        let chip_area = if chip_h > 0 {
+            Some(Rect::new(
+                area.x,
+                y.saturating_add(text_h),
+                area.width,
+                chip_h,
+            ))
         } else {
-            area
+            None
         };
 
         let base = if self.dimmed {
@@ -329,7 +463,8 @@ impl Widget for InputBar<'_> {
         let theme = crate::theme::active();
         let gutter_style = crate::user_message_gutter::gutter_style_for(&theme, GutterRole::Active);
 
-        let border = if self.focused {
+        let text_focused = self.focused && self.chip_focus.is_none();
+        let border = if text_focused || self.chip_focus.is_some() {
             theme::active_panel_border()
         } else if self.not_connected {
             theme::warn()
@@ -341,13 +476,13 @@ impl Widget for InputBar<'_> {
             .border_style(border)
             .style(if self.dimmed {
                 theme::surface_hover()
-            } else if self.focused || self.model.history_browse {
+            } else if text_focused || self.model.history_browse || self.chip_focus.is_some() {
                 theme::composer_focused()
             } else {
                 theme::panel()
             });
-        let input_area = block.inner(lines_area);
-        block.render(lines_area, buf);
+        let input_area = block.inner(text_block_area);
+        block.render(text_block_area, buf);
         if input_area.width == 0 || input_area.height == 0 {
             return;
         }
@@ -355,18 +490,26 @@ impl Widget for InputBar<'_> {
         Paragraph::new(Span::styled(ACTIVE_GLYPH, gutter_style))
             .render(Rect::new(input_area.x, input_area.y, 1, 1), buf);
         let prefix_width = gutter_prefix_width(ACTIVE_GLYPH) as u16;
+        let send_w = if self.show_send_hint && input_area.width > prefix_width + 2 {
+            SEND_HINT.chars().count() as u16
+        } else {
+            0
+        };
         let text_area = Rect::new(
             input_area.x.saturating_add(prefix_width),
             input_area.y,
-            input_area.width.saturating_sub(prefix_width),
+            input_area
+                .width
+                .saturating_sub(prefix_width)
+                .saturating_sub(send_w.saturating_add(u16::from(send_w > 0))),
             input_area.height,
         );
-        let scroll = if self.focused {
+        let scroll = if text_focused {
             cursor_scroll(self.model, text_area.width, text_area.height)
         } else {
             0
         };
-        Paragraph::new(composer_text(self.model, self.focused))
+        Paragraph::new(composer_text(self.model, text_focused))
             .style(base.add_modifier(if self.model.dimmed {
                 Modifier::DIM
             } else {
@@ -375,16 +518,75 @@ impl Widget for InputBar<'_> {
             .wrap(Wrap { trim: false })
             .scroll((scroll, 0))
             .render(text_area, buf);
-        if self.focused {
+        if send_w > 0 {
+            let sx = input_area.x + input_area.width.saturating_sub(send_w);
+            buf.set_stringn(sx, input_area.y, SEND_HINT, send_w as usize, theme::dim());
+        }
+        if text_focused {
             for y in text_area.top()..text_area.bottom() {
                 for x in text_area.left()..text_area.right() {
                     if buf[(x, y)].symbol() == CURSOR_GLYPH {
                         buf[(x, y)].set_style(theme::caret());
-                        return;
+                        break;
                     }
                 }
             }
         }
+
+        if let Some(chip_area) = chip_area {
+            render_chip_row(
+                self.chips,
+                self.chip_focus,
+                self.chips_dimmed || self.dimmed,
+                chip_area,
+                buf,
+            );
+        }
+    }
+}
+
+fn render_chip_row(
+    chips: &[ComposerChip],
+    focus: Option<usize>,
+    dimmed: bool,
+    area: Rect,
+    buf: &mut Buffer,
+) {
+    if area.width == 0 || area.height == 0 || chips.is_empty() {
+        return;
+    }
+    theme::fill(area, buf, theme::panel());
+    let mut x = area.x;
+    let sep = " · ";
+    for (i, chip) in chips.iter().enumerate() {
+        if i > 0 {
+            let sep_w = sep.chars().count() as u16;
+            if x + sep_w > area.x + area.width {
+                break;
+            }
+            buf.set_stringn(x, area.y, sep, sep_w as usize, theme::dim());
+            x = x.saturating_add(sep_w);
+        }
+        let label = &chip.label;
+        let w = label.chars().count() as u16;
+        if x >= area.x + area.width {
+            break;
+        }
+        let draw_w = w.min(area.x + area.width - x);
+        let focused = focus == Some(i);
+        let style = if dimmed {
+            theme::dim()
+        } else if focused {
+            theme::focused_selection_style()
+        } else if chip.kind == ComposerChipKind::Connect
+            && label.eq_ignore_ascii_case("not connected")
+        {
+            theme::warn()
+        } else {
+            theme::muted()
+        };
+        buf.set_stringn(x, area.y, label, draw_w as usize, style);
+        x = x.saturating_add(draw_w);
     }
 }
 
@@ -411,6 +613,7 @@ mod tests {
     ) -> ratatui::buffer::Buffer {
         let backend = TestBackend::new(width, height);
         let mut term = Terminal::new(backend).unwrap();
+        let chips: &[ComposerChip] = &[];
         term.draw(|f| {
             f.render_widget(
                 InputBar {
@@ -419,6 +622,10 @@ mod tests {
                     dimmed: model.dimmed,
                     not_connected,
                     focused,
+                    chips,
+                    chip_focus: None,
+                    chips_dimmed: false,
+                    show_send_hint: false,
                 },
                 f.area(),
             );
@@ -648,6 +855,26 @@ mod tests {
         // Non-repeating prompt marker: exactly one `>`, on the true first
         // row, not one per wrapped/continuation line.
         assert_eq!(rendered.matches(glyph()).count(), 1);
+    }
+
+    #[test]
+    fn fit_composer_chips_drops_effort_before_mode() {
+        let chips = composer_chips(
+            "Accept Edits",
+            true,
+            Some("Anthropic"),
+            "anthropic/claude-sonnet-4",
+            "High",
+        );
+        let fitted = fit_composer_chips(chips, 28);
+        assert!(
+            fitted.iter().any(|c| c.kind == ComposerChipKind::Mode),
+            "{fitted:?}"
+        );
+        assert!(
+            !fitted.iter().any(|c| c.kind == ComposerChipKind::Effort),
+            "effort should drop first: {fitted:?}"
+        );
     }
 
     #[test]

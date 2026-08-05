@@ -14,7 +14,8 @@ fn composer_input_height(input: &InputModel, area: ratatui::layout::Rect) -> u16
     let content_width = crate::layout::estimate_composer_content_width(area)
         .saturating_sub(gutter_prefix_width(ACTIVE_GLYPH))
         .max(1);
-    (input.visual_lines_for_width(content_width) + 2).clamp(3, crate::layout::MAX_COMPOSER_INPUT_H)
+    // +2 chrome/gutter band, +1 chip row under the text.
+    (input.visual_lines_for_width(content_width) + 3).clamp(4, crate::layout::MAX_COMPOSER_INPUT_H)
 }
 
 impl TuiApp {
@@ -60,19 +61,9 @@ impl TuiApp {
             .as_deref()
             .map(|id| self.vendor_route_labels(id))
             .unwrap_or((None, None));
-        // The footer row is otherwise idle whenever there's no contextual
-        // hint stealing it — that's exactly when the persistent
-        // [vendor] [model] [effort] control should occupy it, and only
-        // when there's an actual vendor/model to show (e.g. not for the
-        // mock/offline provider, which has no `connect.profile`). Still
-        // capped at height 1 by `split_areas_with_chrome` below: this never
-        // becomes a second footer row, just a reason to keep the one row
-        // that already exists.
-        let footer_has_compact_control = contextual_hint.is_none()
-            && connected
-            && vendor_label.is_some()
-            && !self.runtime.model_label.is_empty();
-        let hint_h = u16::from(contextual_hint.is_some() || footer_has_compact_control);
+        // Model/vendor/effort live on the composer chip row now; footer is
+        // reserved for contextual navigation hints only.
+        let hint_h = u16::from(contextual_hint.is_some());
         let regions = split_areas_with_chrome(
             area,
             fb_h,
@@ -494,6 +485,28 @@ impl TuiApp {
                 );
             }
         } else {
+            let effort_label = self
+                .reasoning_effort
+                .value
+                .display_label(&self.runtime.model_label)
+                .to_string();
+            let raw_chips = composer_chips(
+                self.permission_mode.label(),
+                connected,
+                vendor_label.as_deref(),
+                &self.runtime.model_label,
+                &effort_label,
+            );
+            let chip_width = regions.input.width.saturating_sub(2);
+            let chips = fit_composer_chips(raw_chips, chip_width);
+            let hitl_pending = self.session.pending_hitl().is_some();
+            if let Some(idx) = self.composer_chip_focus {
+                if chips.is_empty() {
+                    self.composer_chip_focus = None;
+                } else {
+                    self.composer_chip_focus = Some(idx.min(chips.len() - 1));
+                }
+            }
             frame.render_widget(
                 InputBar {
                     model: &self.input,
@@ -502,26 +515,17 @@ impl TuiApp {
                     not_connected: !connected,
                     focused: self.focus.mode == FocusMode::Navigation
                         && self.focus.block == FocusBlock::Composer,
+                    chips: &chips,
+                    chip_focus: self.composer_chip_focus,
+                    chips_dimmed: hitl_pending,
+                    show_send_hint: true,
                 },
                 regions.input,
             );
         }
 
-        let effort_label = self
-            .reasoning_effort
-            .value
-            .display_label(&self.runtime.model_label)
-            .to_string();
-        let token_report = self.session.token_usage_report();
         let footer = FooterModel {
             hints: contextual_hint.unwrap_or_default(),
-            connected,
-            provider: vendor_label.unwrap_or_default(),
-            model: self.runtime.model_label.clone(),
-            effort: effort_label,
-            ctx_used: token_report.context_tokens_est,
-            ctx_total: token_report.context_capacity,
-            ctx_pct: self.session.context_usage_ratio(),
             ..FooterModel::default()
         };
         frame.render_widget(FooterBar { model: &footer }, regions.footer);

@@ -96,6 +96,7 @@ impl TuiApp {
                 value: ReasoningEffort::Auto,
             },
             permission_mode: forge_governance::PermissionMode::AcceptEdits,
+            composer_chip_focus: None,
             tool_detail: ToolDetailState { expanded: false },
             workspace_navigation: WorkspaceNavigation::default(),
             source_viewer: SourceViewer::new(),
