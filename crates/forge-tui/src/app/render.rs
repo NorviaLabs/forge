@@ -188,6 +188,11 @@ impl TuiApp {
                 .session
                 .pending_hitl()
                 .map(|payload| payload.call_id.clone()),
+            approval_menu_selected: self.hitl_session.menu.selected,
+            approval_menu_deny_feedback: matches!(
+                self.hitl_session.menu.phase,
+                ApprovalMenuPhase::DenyFeedback
+            ),
         };
         if self
             .render_cache
@@ -234,11 +239,16 @@ impl TuiApp {
                     conv = conv.with_running_tool(name.clone());
                 }
             }
-            if let Some(payload) = self.session.pending_hitl() {
-                conv = conv.with_pending_approval(
-                    payload,
-                    self.session.workspace_root().display().to_string(),
+            self.sync_approval_menu();
+            if let Some(payload) = self.session.pending_hitl().cloned() {
+                let rows = self.approval_menu_rows();
+                let selected = self.hitl_session.menu.selected;
+                let deny_feedback = matches!(
+                    self.hitl_session.menu.phase,
+                    ApprovalMenuPhase::DenyFeedback
                 );
+                let cwd = self.session.workspace_root().display().to_string();
+                conv = conv.with_pending_approval(&payload, cwd, rows, selected, deny_feedback);
             }
             let width = sidebar_width.saturating_sub(2) as usize;
             self.render_cache.conversation = Some(ConversationRenderCache {
