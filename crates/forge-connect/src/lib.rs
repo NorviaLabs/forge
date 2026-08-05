@@ -14,6 +14,7 @@ mod opencode_go;
 mod opencode_zen;
 mod profile;
 mod registry;
+mod selection;
 mod service;
 mod store;
 #[cfg(test)]
@@ -54,6 +55,7 @@ pub use opencode_zen::{
 };
 pub use profile::{ConnectOutcome, ConnectProfile, ConnectStatus, KeySource};
 pub use registry::{builtin_registry, ConnectRegistry};
+pub use selection::ModelSelection;
 pub use service::{
     format_connected, handle_connect_action, needs_tui_api_key_prompt, needs_tui_oauth,
     parse_connect_args, ConnectAction, ConnectError, ConnectService,
