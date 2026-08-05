@@ -586,6 +586,18 @@ impl TuiApp {
         Ok(consumed)
     }
 
+    pub(super) fn scroll_conversation_up(&mut self, amount: u16) {
+        self.conversation_view.follow = false;
+        self.conversation_view.scroll = self.conversation_view.scroll.saturating_add(amount);
+    }
+
+    pub(super) fn scroll_conversation_down(&mut self, amount: u16) {
+        self.conversation_view.scroll = self.conversation_view.scroll.saturating_sub(amount);
+        if self.conversation_view.scroll == 0 {
+            self.conversation_view.follow = true;
+        }
+    }
+
     pub async fn handle_key(&mut self, key: event::KeyEvent) -> Result<(), TuiError> {
         // Allow arrow-key auto-repeat for overlays (and other selection UIs).
         if key.kind != KeyEventKind::Press {
@@ -807,7 +819,6 @@ mod tests {
                 startup_notices: Vec::new(),
                 validation_command: None,
                 file_icons: forge_config::FileIconMode::Unicode,
-                mouse_capture: true,
                 theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
             },
         );

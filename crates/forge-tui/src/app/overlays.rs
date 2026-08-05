@@ -53,24 +53,30 @@ impl TuiApp {
         ));
         text.push_str("Global\n");
         text.push_str("• Tab / Shift+Tab  Move between visible blocks\n");
-        text.push_str("• Ctrl+E  Toggle Files\n");
+        text.push_str("• Ctrl+E  Toggle Files (focuses explorer when opening)\n");
         text.push_str(&format!(
             "• Alt+P  Cycle permission mode (now: {})\n",
             self.permission_mode.label()
         ));
-        text.push_str(
-            "• Hold Shift (⌥ on iTerm2) while dragging to select/copy in your terminal\n",
-        );
+        text.push_str("• Alt+→  Activate activity summary, else review changes\n");
         text.push_str("• ?  Help\n");
         text.push_str("• Esc  Leave one interaction level\n\n");
         text.push_str("Active block\n");
         match self.focus.block {
             FocusBlock::Workspace => {
                 text.push_str("• Alt+←  Back\n");
-                text.push_str("• Alt+→  Review changes\n");
+                text.push_str("• Alt+→  Review changes / activity summary\n");
                 text.push_str("• Type  Start chat in composer\n");
                 text.push_str("• G / r  Editor navigation and refresh\n");
                 text.push_str("• Ctrl+F / Ctrl+G  Search or jump\n");
+            }
+            FocusBlock::Files => {
+                text.push_str("• ↑/↓  Move selection\n");
+                text.push_str("• ←/→  Collapse / expand directory\n");
+                text.push_str("• Enter  Open file or expand directory\n");
+                text.push_str("• n / N  New file / folder\n");
+                text.push_str("• R  Rename · d  Delete · r  Refresh\n");
+                text.push_str("• Esc  Return to previous block\n");
             }
             FocusBlock::Sidebar => {
                 text.push_str("• Up/Down  Select a background task\n");
@@ -86,14 +92,6 @@ impl TuiApp {
                 text.push_str("• Type / paste  Send input to the shell\n");
                 text.push_str("• Ctrl+C / arrows / Tab  Shell controls\n");
                 text.push_str("• Ctrl+`  Close the terminal panel\n");
-            }
-            FocusBlock::Files => {
-                text.push_str("• Enter  Open or expand\n");
-                text.push_str("• n / N  New file / folder\n");
-                text.push_str("• R  Rename selected entry\n");
-                text.push_str("• d  Delete selected entry\n");
-                text.push_str("• r  Refresh selected directory\n");
-                text.push_str("• Esc  Return to previous block\n");
             }
         }
         if matches!(self.focus.mode, FocusMode::Transient(_)) {
@@ -258,7 +256,6 @@ impl TuiApp {
         crate::theme::set_active(theme_id);
         self.runtime.theme_id = theme_id.to_string();
         self.render_cache.conversation = None;
-        self.invalidate_hit_regions();
     }
 
     pub(super) fn apply_theme(&mut self, theme_id: String, persist: bool) {

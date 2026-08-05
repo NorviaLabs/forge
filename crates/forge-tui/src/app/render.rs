@@ -36,14 +36,12 @@ impl TuiApp {
             self.workspace_files.explorer.focused = false;
             self.bottom_panel.focused = false;
             self.source_viewer.focused = false;
-            self.invalidate_hit_regions();
             frame.render_widget(
                 Paragraph::new("Terminal too small — resize to at least 40x18"),
                 area,
             );
             return;
         }
-        self.begin_hit_frame();
         crate::theme::fill(area, frame.buffer_mut(), crate::theme::canvas());
         let fb_h = if self.feedback.is_empty() { 0 } else { 1 };
         let slash_mode = self.overlay.is_none() && self.input.text.starts_with('/');
@@ -104,7 +102,6 @@ impl TuiApp {
             self.focus.mode = FocusMode::Navigation;
         }
         self.normalize_focus();
-        self.register_pane_hit_regions(&regions);
         let status = self.refresh_status_model_with_connected(connected);
         frame.render_widget(StatusBar { model: &status }, regions.status);
         if let Some(files) = regions.files {
@@ -115,7 +112,6 @@ impl TuiApp {
                 },
                 files,
             );
-            self.register_file_hit_regions(files);
         }
         let stream_wait = if self.busy_state.active && self.pending_turn.prompt.is_none() {
             let elapsed = if !self.stream.thinking.is_empty() {
@@ -268,9 +264,6 @@ impl TuiApp {
             .conversation
             .as_ref()
             .expect("conversation cache populated");
-        // Clones the shared handle, not the line data. This exists so the
-        // immutable borrow of `conversation_cache` ends before
-        // `register_activity_summary_region` takes `&mut self` below.
         let cached_lines = Arc::clone(&cached.lines);
         // The sidebar always shows the conversation, regardless of what the
         // center pane shows — it's no longer one of the `WorkspaceView`
@@ -291,7 +284,6 @@ impl TuiApp {
                 },
                 conversation_area,
             );
-            self.register_activity_summary_region(conversation_area, &cached_lines, &live_lines);
         }
         // The approval decision now lives in the conversation itself (inline
         // transcript item) and the composer, so the center pane gets its full
@@ -515,11 +507,9 @@ impl TuiApp {
             ..FooterModel::default()
         };
         frame.render_widget(FooterBar { model: &footer }, regions.footer);
-        self.register_footer_control_hit_regions(&footer, regions.footer);
 
         if let Some(ref dialog) = self.explorer_dialog.current {
             self.render_explorer_dialog(dialog, area, frame.buffer_mut());
-            self.register_overlay_hit_regions(area);
         } else if let Some(ref ov) = self.overlay {
             match ov {
                 Overlay::Help => self.render_help_overlay(area, frame.buffer_mut()),
@@ -527,7 +517,6 @@ impl TuiApp {
                 Overlay::Theme { .. } => {}
                 _ => frame.render_widget(OverlayWidget { overlay: ov }, area),
             }
-            self.register_overlay_hit_regions(area);
         }
     }
 

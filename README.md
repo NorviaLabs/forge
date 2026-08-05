@@ -176,7 +176,6 @@ model = "openai/gpt-4.1-mini"
 [tui]
 theme = "solarized-dark"
 file_icons = "unicode"
-mouse_capture = true
 
 [journal]
 path = ".forge/sessions"

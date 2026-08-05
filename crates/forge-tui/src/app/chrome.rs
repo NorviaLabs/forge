@@ -362,11 +362,8 @@ impl TuiApp {
             .map(|summary| (summary.label, summary.action_label, summary.kind))
     }
 
-    /// Only used by tests now — the Enter-key shortcut that used to gate on
-    /// this (via `current_workspace_is_conversation()`) was dropped when
-    /// conversation stopped being a workspace-nav state. Mouse click on the
-    /// summary banner (`mouse.rs`'s `ActivitySummary` hit target) dispatches
-    /// `ActivateActivitySummary` directly without checking this first.
+    /// Maps the activity-summary banner action to a semantic command.
+    /// Used by tests and by `Alt+→` when a banner action is present.
     #[cfg(test)]
     pub(super) fn activity_summary_command(&self) -> Option<SemanticCommand> {
         match self.activity_summary()?.action? {

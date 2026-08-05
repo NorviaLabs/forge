@@ -324,50 +324,6 @@ enum SemanticCommand {
     EditRunDirectory,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum HitTarget {
-    Pane(FocusBlock),
-    FileEntry(PathBuf),
-    DirectoryChevron(PathBuf),
-    ActivitySummary,
-    VisibleControl(SemanticCommand),
-    Composer,
-    /// The persistent conversation sidebar. Kept distinct from `Pane` since
-    /// there's no `FocusBlock` for it — used only to route wheel-scroll
-    /// events to the conversation regardless of what the center pane shows.
-    Sidebar,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct HitRegion {
-    area: ratatui::layout::Rect,
-    target: HitTarget,
-    generation: u64,
-    z_order: u16,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum DoubleClickTarget {
-    FileEntry(PathBuf),
-}
-
-#[derive(Debug, Clone)]
-struct PendingDoubleClick {
-    target: DoubleClickTarget,
-    button: MouseButton,
-    timestamp: Instant,
-    frame_generation: u64,
-}
-
-const DOUBLE_CLICK_THRESHOLD: Duration = Duration::from_millis(400);
-
-#[derive(Debug, Default)]
-struct PointerState {
-    hit_regions: Vec<HitRegion>,
-    frame_generation: u64,
-    pending_double_click: Option<PendingDoubleClick>,
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct DiffSnapshot {
     paths: Vec<PathBuf>,
@@ -444,7 +400,6 @@ pub struct TuiRuntimeConfig {
     pub startup_notices: Vec<String>,
     pub validation_command: Option<CommandConfig>,
     pub file_icons: FileIconMode,
-    pub mouse_capture: bool,
     pub theme_id: String,
 }
 
@@ -458,7 +413,6 @@ impl Default for TuiRuntimeConfig {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::default(),
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         }
     }
@@ -725,7 +679,6 @@ pub struct TuiApp {
     repo_header_state: RepoHeaderState,
     terminal_capture: TerminalCapture,
     interactive_terminal: Option<InteractiveTerminal>,
-    pointer: PointerState,
     workspace_search: WorkspaceSearchState,
     catalog_fetch: CatalogFetchState,
 }

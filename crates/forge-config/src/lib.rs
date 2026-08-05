@@ -226,8 +226,6 @@ fn default_theme_id() -> String {
 pub struct TuiConfig {
     #[serde(default)]
     pub file_icons: FileIconMode,
-    #[serde(default = "default_mouse_capture")]
-    pub mouse_capture: bool,
     /// Optional `[tui] theme` preference (theme id, e.g. `solarized-dark`).
     #[serde(default = "default_theme_id")]
     pub theme: String,
@@ -237,14 +235,9 @@ impl Default for TuiConfig {
     fn default() -> Self {
         Self {
             file_icons: FileIconMode::Unicode,
-            mouse_capture: default_mouse_capture(),
             theme: default_theme_id(),
         }
     }
-}
-
-fn default_mouse_capture() -> bool {
-    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -257,7 +250,6 @@ pub struct CommandConfig {
 #[derive(Debug, Default, Deserialize)]
 struct TuiConfigFile {
     file_icons: Option<String>,
-    mouse_capture: Option<bool>,
     theme: Option<String>,
 }
 
@@ -685,9 +677,6 @@ impl ConfigFile {
                     cfg.tui.file_icons = mode;
                 }
             }
-            if let Some(mouse_capture) = tui.mouse_capture {
-                cfg.tui.mouse_capture = mouse_capture;
-            }
             if let Some(theme) = tui.theme {
                 if let Some(id) = parse_theme_preference(&theme) {
                     cfg.tui.theme = id;
@@ -980,7 +969,6 @@ id = "demo"
 command = "echo"
 args = ["hi"]
 [tui]
-mouse_capture = false
 theme = "light"
 "#,
             ws = dir.path().display()
@@ -1001,7 +989,6 @@ theme = "light"
         assert_eq!(cfg.mcp.servers.len(), 1);
         assert_eq!(cfg.mcp.servers[0].id, "demo");
         assert_eq!(cfg.resolved_workspace, dir.path());
-        assert!(!cfg.tui.mouse_capture);
         assert_eq!(cfg.tui.theme, THEME_SOLARIZED_LIGHT);
     }
 
@@ -1480,14 +1467,12 @@ max_query_chars = 0
         let file = ConfigFile {
             tui: Some(TuiConfigFile {
                 file_icons: Some("off".into()),
-                mouse_capture: Some(false),
                 theme: Some("system".into()),
             }),
             ..Default::default()
         };
         file.apply(&mut cfg, ConfigScope::Trusted);
         assert_eq!(cfg.tui.file_icons, FileIconMode::Off);
-        assert!(!cfg.tui.mouse_capture);
         assert_eq!(cfg.tui.theme, THEME_SYSTEM);
     }
 
@@ -1499,7 +1484,6 @@ max_query_chars = 0
         let file = ConfigFile {
             tui: Some(TuiConfigFile {
                 file_icons: Some("bogus".into()),
-                mouse_capture: None,
                 theme: Some("bogus".into()),
             }),
             ..Default::default()

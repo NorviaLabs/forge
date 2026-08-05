@@ -9,9 +9,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use crossterm::event::{
-    self, EnableBracketedPaste, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
-    KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind,
-    PushKeyboardEnhancementFlags,
+    self, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers,
+    KeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
@@ -45,7 +44,7 @@ use crate::conversation::{
 };
 use crate::editor::EditorError;
 use crate::effort::ReasoningEffort;
-use crate::file_explorer::{FileExplorer, FileExplorerWidget, FileKind};
+use crate::file_explorer::{FileExplorer, FileExplorerWidget};
 use crate::file_ops::{
     DeleteMode, EntryKind, FileOperationError, FileOperationKind, WorkspaceFileOps,
 };
@@ -85,7 +84,6 @@ mod files;
 mod focus;
 mod input;
 mod input_route;
-mod mouse;
 mod new;
 mod overlays;
 mod persist;

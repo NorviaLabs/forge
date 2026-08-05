@@ -347,7 +347,6 @@ impl TuiApp {
     }
 
     fn reconcile_file_operation(&mut self, result: crate::file_ops::FileOperationResult) {
-        self.clear_pending_double_click();
         let root = self.session.workspace_root().to_path_buf();
         match result.kind {
             FileOperationKind::CreateFile | FileOperationKind::CreateDirectory => {
