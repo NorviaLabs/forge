@@ -7,9 +7,11 @@
 use super::*;
 
 impl TuiApp {
-    pub(super) fn poll_interactive_terminal(&mut self) {
+    pub(super) fn poll_interactive_terminal(&mut self) -> bool {
         if let Some(terminal) = self.interactive_terminal.as_mut() {
-            terminal.poll();
+            terminal.poll()
+        } else {
+            false
         }
     }
 
@@ -54,6 +56,29 @@ pub(super) async fn drain_events(
         }
     }
     Ok(())
+}
+
+/// Wait for user input without making PTY output wait for the full idle tick.
+/// Crossterm only wakes for terminal input, while the interactive shell is
+/// read by a separate thread. Check that channel in short slices and repaint
+/// as soon as the reader has delivered a changed state.
+fn wait_for_input_or_terminal_output(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut TuiApp,
+) -> Result<bool, TuiError> {
+    let deadline = Instant::now() + Duration::from_millis(200);
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(false);
+        }
+        if event::poll(remaining.min(Duration::from_millis(20)))? {
+            return Ok(true);
+        }
+        if app.poll_interactive_terminal() {
+            terminal.draw(|f| app.draw(f))?;
+        }
+    }
 }
 
 /// Run the full-screen TUI until quit.
@@ -172,7 +197,12 @@ async fn run_loop(
             continue;
         }
 
-        if event::poll(Duration::from_millis(200))? {
+        let input_ready = if app.interactive_terminal.is_some() {
+            wait_for_input_or_terminal_output(terminal, app)?
+        } else {
+            event::poll(Duration::from_millis(200))?
+        };
+        if input_ready {
             // Read the ready event, then drain the rest of the queue so a paste
             // of a long API key is not truncated to a handful of characters.
             match event::read()? {

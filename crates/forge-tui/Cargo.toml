@@ -29,6 +29,7 @@ dirs = { workspace = true }
 pathdiff = { workspace = true }
 notify = { workspace = true }
 portable-pty = { workspace = true }
+vt100 = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

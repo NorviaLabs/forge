@@ -4,14 +4,14 @@ use std::path::Path;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 
-const MAX_OUTPUT: usize = 64 * 1024;
+const SCROLLBACK_LINES: usize = 1_024;
 
 pub(crate) struct InteractiveTerminal {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     child: Box<dyn Child + Send + Sync>,
     output_rx: Receiver<Vec<u8>>,
-    pub(crate) output: String,
+    screen: vt100::Parser,
     pub(crate) running: bool,
     pub(crate) shell: String,
 }
@@ -55,25 +55,32 @@ impl InteractiveTerminal {
             writer,
             child,
             output_rx,
-            output: String::new(),
+            screen: vt100::Parser::new(rows.max(2), cols.max(20), SCROLLBACK_LINES),
             running: true,
             shell,
         })
     }
 
-    pub(crate) fn poll(&mut self) {
+    /// Drain output that the reader thread has made available.
+    ///
+    /// Returns whether the rendered terminal state changed. The PTY reader
+    /// cannot wake crossterm's input poll, so the event loop uses this result
+    /// to repaint while it is waiting for keyboard input.
+    pub(crate) fn poll(&mut self) -> bool {
+        let mut changed = false;
         while let Ok(bytes) = self.output_rx.try_recv() {
-            self.output.push_str(&String::from_utf8_lossy(&bytes));
-            if self.output.len() > MAX_OUTPUT {
-                let start = self.output.len() - MAX_OUTPUT;
-                let boundary = self.output.floor_char_boundary(start);
-                self.output.drain(..boundary);
-            }
+            self.screen.process(&bytes);
+            changed = true;
         }
-        match self.child.try_wait() {
-            Ok(Some(_)) | Err(_) => self.running = false,
-            Ok(None) => {}
+        let child_running = match self.child.try_wait() {
+            Ok(Some(_)) | Err(_) => false,
+            Ok(None) => true,
+        };
+        if !child_running && self.running {
+            self.running = false;
+            changed = true;
         }
+        changed
     }
 
     pub(crate) fn write(&mut self, bytes: &[u8]) -> io::Result<()> {
@@ -82,18 +89,22 @@ impl InteractiveTerminal {
     }
 
     pub(crate) fn resize(&mut self, cols: u16, rows: u16) -> io::Result<()> {
+        let rows = rows.max(2);
+        let cols = cols.max(20);
         self.master
             .resize(PtySize {
-                rows: rows.max(2),
-                cols: cols.max(20),
+                rows,
+                cols,
                 pixel_width: 0,
                 pixel_height: 0,
             })
-            .map_err(other)
+            .map_err(other)?;
+        self.screen.set_size(rows, cols);
+        Ok(())
     }
 
     pub(crate) fn display_output(&self) -> String {
-        strip_terminal_controls(&self.output)
+        self.screen.screen().contents()
     }
 }
 
@@ -107,47 +118,27 @@ fn other(error: impl std::fmt::Display) -> io::Error {
     io::Error::other(error.to_string())
 }
 
-fn strip_terminal_controls(input: &str) -> String {
-    let mut output = String::new();
-    let mut chars = input.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch == '\u{1b}' {
-            if chars.peek() == Some(&'[') {
-                chars.next();
-                for next in chars.by_ref() {
-                    if ('@'..='~').contains(&next) {
-                        break;
-                    }
-                }
-            }
-        } else if ch == '\r' {
-            if let Some(start) = output.rfind('\n') {
-                output.truncate(start + 1);
-            } else {
-                output.clear();
-            }
-        } else if ch == '\u{8}' {
-            output.pop();
-        } else if ch == '\t' || ch == '\n' || !ch.is_control() {
-            output.push(ch);
-        }
-    }
-    output
-}
-
 #[cfg(test)]
 mod tests {
-    use super::strip_terminal_controls;
     use super::InteractiveTerminal;
     use std::thread;
     use std::time::Duration;
     use tempfile::tempdir;
 
     #[test]
-    fn strips_common_terminal_sequences_and_repaints() {
+    fn terminal_emulator_preserves_line_endings_and_cursor_repaints() {
+        let mut terminal = vt100::Parser::new(3, 20, 0);
+        terminal.process(b"one\r two\x1b[31m!\x1b[0m\r\nthree\r\n");
+        assert_eq!(terminal.screen().contents(), " two!\nthree");
+    }
+
+    #[test]
+    fn terminal_emulator_preserves_pty_crlf_output_lines() {
+        let mut terminal = vt100::Parser::new(4, 20, 0);
+        terminal.process(b"AGENTS.md\r\nCargo.toml\r\ncrates\r\n");
         assert_eq!(
-            strip_terminal_controls("one\r two\x1b[31m!\x1b[0m\n"),
-            " two!\n"
+            terminal.screen().contents(),
+            "AGENTS.md\nCargo.toml\ncrates"
         );
     }
 
@@ -156,18 +147,19 @@ mod tests {
         let dir = tempdir().unwrap();
         let mut terminal = InteractiveTerminal::spawn(dir.path(), 80, 8).unwrap();
         terminal
-            .write(b"printf forge-terminal-test; exit\n")
+            .write(b"printf 'forge-terminal-first\\nforge-terminal-second\\n'; exit\n")
             .unwrap();
         for _ in 0..50 {
             terminal.poll();
-            if terminal.output.contains("forge-terminal-test") {
+            let rendered = terminal.display_output();
+            if rendered.contains("forge-terminal-first\nforge-terminal-second") {
                 return;
             }
             thread::sleep(Duration::from_millis(20));
         }
         panic!(
-            "shell did not produce expected output: {:?}",
-            terminal.output
+            "shell did not render expected output: {:?}",
+            terminal.display_output()
         );
     }
 }
