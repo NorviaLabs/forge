@@ -586,7 +586,7 @@ impl TuiApp {
         Ok(consumed)
     }
 
-    /// Navigate composer chips when `composer_chip_focus` is set (`Alt+.`).
+    /// Navigate composer chips when `composer_chip_focus` is set (`F3`).
     pub(super) async fn handle_composer_chip_key(
         &mut self,
         key: event::KeyEvent,

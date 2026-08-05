@@ -380,7 +380,7 @@ pub struct InputBar<'a> {
     pub focused: bool,
     /// Control chips under the text (mode / connect / model / effort).
     pub chips: &'a [ComposerChip],
-    /// When set, that chip index is focused (`Alt+.`).
+    /// When set, that chip index is focused (`F3`).
     pub chip_focus: Option<usize>,
     /// HITL pending — dim chips, don't look interactive.
     pub chips_dimmed: bool,
