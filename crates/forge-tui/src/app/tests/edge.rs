@@ -25,7 +25,6 @@ async fn edge_network_stream_interruption_preserves_partial_response() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -82,7 +81,6 @@ async fn failed_turn_does_not_open_a_turn_limit_continuation() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -128,7 +126,6 @@ async fn edge_provider_error_unsticks_session_for_the_next_message() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );

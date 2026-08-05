@@ -200,10 +200,6 @@ async fn final_shell_rendering_matrix_covers_v31_states_without_obsolete_chrome(
     app.open_bottom_panel();
     scenarios.push(("bottom open", dir, app, vec!["Terminal", "Describe a task"]));
 
-    let (dir, mut app) = focus_test_app().await;
-    app.runtime.mouse_capture = false;
-    scenarios.push(("mouse disabled", dir, app, vec!["Describe a task"]));
-
     for (name, _dir, mut app, expected) in scenarios {
         for (width, height) in sizes {
             let text = render_app_text(&mut app, width, height);
@@ -219,12 +215,10 @@ async fn final_shell_rendering_matrix_covers_v31_states_without_obsolete_chrome(
                 !text.contains("Ctrl+P close"),
                 "{name} at {width}x{height} restored shortcut manual:\n{text}"
             );
-            if name == "mouse disabled" {
-                assert!(
-                    !text.to_ascii_lowercase().contains("mouse"),
-                    "mouse-disabled chrome should not spend space on mouse hints:\n{text}"
-                );
-            }
+            assert!(
+                !text.to_ascii_lowercase().contains("mouse"),
+                "{name} at {width}x{height} must not show mouse chrome:\n{text}"
+            );
             let lower_text = text.to_ascii_lowercase();
             assert!(
                 expected
@@ -317,7 +311,6 @@ async fn header_status_follows_session_lifecycle() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -412,7 +405,6 @@ async fn header_status_switches_with_selected_session() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -460,7 +452,6 @@ async fn status_chrome_shows_not_connected_badge() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -504,7 +495,6 @@ async fn tui09_chrome_includes_model_on_frame() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -552,7 +542,6 @@ async fn tui09_narrow_frame_still_shows_model_or_ctx() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -601,7 +590,6 @@ async fn tui09_status_renders_structured_session_card() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -656,7 +644,6 @@ async fn tui08_report_error_writes_banner_feedback_and_activity() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -698,7 +685,6 @@ async fn tui08_feedback_strip_visible_on_frame() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -733,7 +719,6 @@ async fn tui10_activity_feed_records_model_and_error() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -772,7 +757,6 @@ async fn elapsed_status_persists_during_answer_and_tool_processing() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -804,7 +788,6 @@ async fn tui10_busy_phase_model_during_turn_clears_after() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -836,7 +819,6 @@ async fn tui08_context_sets_feedback_strip() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );

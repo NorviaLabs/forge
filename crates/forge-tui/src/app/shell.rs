@@ -48,18 +48,14 @@ pub(super) async fn drain_events(
         match event::read()? {
             Event::Key(key) => {
                 app.handle_key(key).await?;
-                app.invalidate_hit_regions();
             }
-            Event::Mouse(mouse) => app.handle_mouse(mouse).await?,
             Event::Paste(data) => {
                 app.handle_paste(&data);
-                app.invalidate_hit_regions();
             }
             Event::Resize(_, _) => {
                 if let Some(term) = terminal.as_deref_mut() {
                     term.autoresize()?;
                 }
-                app.invalidate_hit_regions();
             }
             _ => {}
         }
@@ -119,9 +115,6 @@ async fn run_tui_inner(
     let _guard = TerminalGuard::install();
     let mut stdout = stdout();
     execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
-    if runtime.mouse_capture {
-        execute!(stdout, EnableMouseCapture)?;
-    }
     execute!(
         stdout,
         PushKeyboardEnhancementFlags(
@@ -216,16 +209,11 @@ async fn run_loop(
             match event::read()? {
                 Event::Key(key) => {
                     app.handle_key(key).await?;
-                    app.invalidate_hit_regions();
                 }
-                Event::Mouse(mouse) => app.handle_mouse(mouse).await?,
                 Event::Paste(data) => {
                     app.handle_paste(&data);
-                    app.invalidate_hit_regions();
                 }
-                Event::Resize(_, _) => {
-                    app.invalidate_hit_regions();
-                }
+                Event::Resize(_, _) => {}
                 _ => {}
             }
             drain_events(app, Some(terminal)).await?;

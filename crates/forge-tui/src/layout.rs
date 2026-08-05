@@ -26,7 +26,7 @@ pub struct LayoutRegions {
     pub bottom_panel: Rect,
     /// Phase 10 / TUI-08 — 0-height when empty. Scoped to `sidebar`'s width.
     pub feedback: Rect,
-    /// Outbound message queue (click a row to cancel). 0-height when empty.
+    /// Outbound message queue. 0-height when empty.
     /// Scoped to `sidebar`'s width.
     pub queue: Rect,
     /// Background-task strip, docked above the composer. Scoped to

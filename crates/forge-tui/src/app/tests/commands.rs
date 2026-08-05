@@ -111,7 +111,6 @@ async fn resume_command_replaces_active_conversation_in_app() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -171,7 +170,6 @@ async fn bare_resume_list_shows_title_hint_from_first_user_message() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -197,7 +195,6 @@ async fn compact_reports_context_handoff_in_chat_and_activity() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -233,7 +230,6 @@ async fn enter_while_busy_enqueues_user_message() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -275,7 +271,6 @@ async fn typing_while_busy_updates_input_buffer() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -303,7 +298,6 @@ async fn ctrl_p_toggles_bottom_panel_without_touching_input() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -335,7 +329,6 @@ async fn open_bottom_panel_sets_active_tab() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -358,7 +351,6 @@ async fn focused_bottom_panel_alt_arrows_do_not_type_into_chat() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -392,7 +384,6 @@ async fn editor_uppercase_g_does_not_reach_chat_input() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -420,7 +411,6 @@ async fn question_mark_opens_help_overlay() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -445,7 +435,6 @@ async fn slash_command_info_feedback_expires() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -473,7 +462,6 @@ async fn empty_enter_when_idle_dequeues_and_sends() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -513,7 +501,6 @@ async fn ctrl_backspace_cancels_selected_queue_message() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -549,7 +536,6 @@ async fn effort_selection_persists_across_tui_instances() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -574,7 +560,6 @@ async fn effort_selection_persists_across_tui_instances() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -598,7 +583,6 @@ async fn switching_to_a_model_that_drops_the_current_effort_notifies_and_falls_b
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -636,7 +620,6 @@ async fn drain_pending_prompt_sends_selected_effort_on_outbound_request() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -678,7 +661,6 @@ async fn drain_pending_prompt_omits_effort_for_model_that_does_not_support_it() 
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -710,7 +692,6 @@ async fn model_command_applies_provider_id_to_session() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -742,7 +723,6 @@ async fn model_command_rejects_cross_provider_selection_without_matching_connect
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -797,7 +777,6 @@ async fn app_dispatch_user_message() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -830,7 +809,6 @@ async fn app_status_command() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -852,7 +830,6 @@ async fn clear_hides_existing_chat_without_deleting_context() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -887,7 +864,6 @@ async fn app_quit_command() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -909,7 +885,6 @@ async fn history_records_submitted_lines_and_up_recalls() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -949,7 +924,6 @@ async fn history_up_via_key_when_no_overlay() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -990,7 +964,6 @@ async fn slash_stays_in_textbox_does_not_open_palette() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -1023,7 +996,6 @@ async fn enter_runs_slash_from_main_textbox() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -1055,7 +1027,6 @@ async fn status_slash_command_opens_overlay_on_enter() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -1080,7 +1051,6 @@ async fn multi_token_slash_connect_list_opens_picker() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -1117,7 +1087,6 @@ async fn slash_tab_autocompletes_command() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -1150,7 +1119,6 @@ async fn startup_notices_seed_notice_panel() {
             startup_notices: vec!["mcp: failed".into()],
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -1172,7 +1140,6 @@ async fn enter_on_highlighted_suggestion_runs_command() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -1231,7 +1198,6 @@ async fn bare_slash_lists_all_palette_commands() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -1277,7 +1243,6 @@ async fn enter_on_status_suggestion_runs_immediately() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
