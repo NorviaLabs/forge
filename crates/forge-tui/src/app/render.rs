@@ -46,7 +46,7 @@ impl TuiApp {
         } else {
             (self.input.visual_lines() + 2).clamp(3, crate::layout::MAX_COMPOSER_INPUT_H)
         };
-        let panel_h = if self.bottom_panel.open { 8 } else { 0 };
+        let panel_h = if self.bottom_panel.open { 16 } else { 0 };
         let contextual_hint = self.contextual_hint();
         let connected = self.is_provider_connected();
         let (vendor_label, _route_label) = self
