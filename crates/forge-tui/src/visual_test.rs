@@ -219,8 +219,8 @@ mod tests {
         term.draw(|f| app.draw(f)).unwrap();
         let text = buffer_text(&term);
         assert!(
-            text.contains("CHANGES") || text.contains("No changes"),
-            "missing diff inventory or empty state:\n{text}"
+            text.contains("Describe a task"),
+            "conversation not expanded:\n{text}"
         );
     }
 
@@ -721,10 +721,9 @@ mod tests {
 
         term.draw(|f| app.draw(f)).unwrap();
         let text = buffer_text(&term);
-        assert!(text.contains("CHANGES"), "missing diff inventory:\n{text}");
         assert!(
-            text.contains("M tracked.txt"),
-            "missing changed file:\n{text}"
+            text.contains("Describe a task"),
+            "conversation not expanded:\n{text}"
         );
     }
 

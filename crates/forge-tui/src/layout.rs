@@ -130,6 +130,59 @@ pub fn split_areas_with_chrome(
     show_sidebar: bool,
     background_h: u16,
 ) -> LayoutRegions {
+    split_areas_with_chrome_mode(
+        area,
+        feedback_h,
+        input_h,
+        show_files,
+        queue_h,
+        bottom_panel_h,
+        footer_h,
+        show_sidebar,
+        background_h,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn split_areas_with_expanded_conversation(
+    area: Rect,
+    feedback_h: u16,
+    input_h: u16,
+    show_files: bool,
+    queue_h: u16,
+    bottom_panel_h: u16,
+    footer_h: u16,
+    show_sidebar: bool,
+    background_h: u16,
+) -> LayoutRegions {
+    split_areas_with_chrome_mode(
+        area,
+        feedback_h,
+        input_h,
+        show_files,
+        queue_h,
+        bottom_panel_h,
+        footer_h,
+        show_sidebar,
+        background_h,
+        true,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn split_areas_with_chrome_mode(
+    area: Rect,
+    feedback_h: u16,
+    input_h: u16,
+    show_files: bool,
+    queue_h: u16,
+    bottom_panel_h: u16,
+    footer_h: u16,
+    show_sidebar: bool,
+    background_h: u16,
+    expand_conversation: bool,
+) -> LayoutRegions {
     let content_width = content_width(area);
     let content_area = Rect {
         x: area.x + area.width.saturating_sub(content_width) / 2,
@@ -169,7 +222,7 @@ pub fn split_areas_with_chrome(
     let footer = rows[2];
 
     // main row: [left column (files+chat+bottom_panel), sidebar]
-    let (left_area, sidebar) = if show_sidebar {
+    let (left_area, sidebar) = if show_sidebar && !expand_conversation {
         let columns = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Min(40), Constraint::Length(sidebar_width)])
@@ -199,6 +252,25 @@ pub fn split_areas_with_chrome(
         (Some(columns[0]), columns[1])
     } else {
         (None, top)
+    };
+
+    let (files, chat, sidebar) = if expand_conversation && show_sidebar {
+        let (files, conversation) = if show_files {
+            let columns = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(file_width), Constraint::Min(40)])
+                .split(top);
+            (Some(columns[0]), columns[1])
+        } else {
+            (None, top)
+        };
+        (
+            files,
+            Rect::new(conversation.x, conversation.y, 0, 0),
+            Some(conversation),
+        )
+    } else {
+        (files, chat, sidebar)
     };
 
     // sidebar: [transcript, feedback, queue, background, input] — always
@@ -367,6 +439,25 @@ mod tests {
             split_areas_with_side_panels(Rect::new(0, 0, 100, 30), 0, 3, true, 0, 0, true, 0);
         assert!(narrow.files.is_none());
         assert_eq!(narrow.chat.width, 63);
+    }
+
+    #[test]
+    fn expanded_conversation_replaces_editor_and_keeps_explorer() {
+        let r = split_areas_with_expanded_conversation(
+            Rect::new(0, 0, 120, 40),
+            0,
+            3,
+            true,
+            0,
+            0,
+            0,
+            true,
+            0,
+        );
+        assert_eq!(r.files, Some(Rect::new(3, 1, 24, 39)));
+        assert_eq!(r.chat.width, 0);
+        assert_eq!(r.sidebar, Some(Rect::new(27, 1, 90, 36)));
+        assert_eq!(r.input.width, 90);
     }
 
     #[test]

@@ -64,17 +64,35 @@ impl TuiApp {
         // Model/vendor/effort live on the composer chip row now; footer is
         // reserved for contextual navigation hints only.
         let hint_h = u16::from(contextual_hint.is_some());
-        let regions = split_areas_with_chrome(
-            area,
-            fb_h,
-            input_h,
-            !slash_mode && self.workspace_files.visible,
-            0,
-            panel_h,
-            hint_h,
-            true,
-            0,
+        let expand_conversation = !matches!(
+            self.workspace_navigation.current,
+            Some(WorkspaceView::File(_))
         );
+        let regions = if expand_conversation {
+            split_areas_with_expanded_conversation(
+                area,
+                fb_h,
+                input_h,
+                self.workspace_files.visible,
+                0,
+                panel_h,
+                hint_h,
+                true,
+                0,
+            )
+        } else {
+            split_areas_with_chrome(
+                area,
+                fb_h,
+                input_h,
+                self.workspace_files.visible,
+                0,
+                panel_h,
+                hint_h,
+                true,
+                0,
+            )
+        };
         // Layout can hide a requested side/bottom panel. Focus must follow the
         // rendered geometry rather than leaving an invisible key owner behind.
         let available = FocusAvailability {
@@ -90,6 +108,10 @@ impl TuiApp {
         }
         if !available.contains(self.focus.block) {
             self.focus.block = FocusBlock::Workspace;
+            self.focus.mode = FocusMode::Navigation;
+        }
+        if expand_conversation && self.focus.block == FocusBlock::Workspace {
+            self.focus.block = FocusBlock::Sidebar;
             self.focus.mode = FocusMode::Navigation;
         }
         self.normalize_focus();
@@ -302,26 +324,28 @@ impl TuiApp {
         // The approval decision now lives in the conversation itself (inline
         // transcript item) and the composer, so the center pane gets its full
         // height — no docked card carving out a strip at its bottom.
-        let chat_area = regions.chat;
-        match self.workspace_navigation.current.clone() {
-            None => {
-                self.render_empty_workspace(chat_area, frame.buffer_mut());
-            }
-            Some(WorkspaceView::File(_)) => {
-                self.editor_viewport.height = chat_area.height;
-                frame.render_widget(
-                    SourceViewerWidget {
-                        viewer: &mut self.source_viewer,
-                        focused: self.focus.block == FocusBlock::Workspace,
-                    },
-                    chat_area,
-                );
-            }
-            Some(WorkspaceView::Diff(DiffCommandContext::Current)) => {
-                self.render_diff_workspace(chat_area, frame.buffer_mut());
-            }
-            Some(WorkspaceView::Run(id)) => {
-                self.render_run_workspace(&id, chat_area, frame.buffer_mut());
+        if !expand_conversation {
+            let chat_area = regions.chat;
+            match self.workspace_navigation.current.clone() {
+                None => {
+                    self.render_empty_workspace(chat_area, frame.buffer_mut());
+                }
+                Some(WorkspaceView::File(_)) => {
+                    self.editor_viewport.height = chat_area.height;
+                    frame.render_widget(
+                        SourceViewerWidget {
+                            viewer: &mut self.source_viewer,
+                            focused: self.focus.block == FocusBlock::Workspace,
+                        },
+                        chat_area,
+                    );
+                }
+                Some(WorkspaceView::Diff(DiffCommandContext::Current)) => {
+                    self.render_diff_workspace(chat_area, frame.buffer_mut());
+                }
+                Some(WorkspaceView::Run(id)) => {
+                    self.render_run_workspace(&id, chat_area, frame.buffer_mut());
+                }
             }
         }
 

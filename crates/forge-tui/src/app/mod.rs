@@ -52,7 +52,7 @@ use crate::git_status::GitStatusKind;
 use crate::history::InputHistory;
 use crate::interactive_terminal::InteractiveTerminal;
 use crate::layout::is_too_small;
-use crate::layout::split_areas_with_chrome;
+use crate::layout::{split_areas_with_chrome, split_areas_with_expanded_conversation};
 use crate::overlays::{
     build_provider_rows, centered_rect, filter_palette, handle_overlay_key, models_from_catalog,
     ApprovalExecutionMode, ApprovalOverlayState, ConnectModelColumn, FileExplorerItem, Key,

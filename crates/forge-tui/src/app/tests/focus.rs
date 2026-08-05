@@ -448,7 +448,7 @@ async fn resize_drops_focus_from_a_zero_width_files_block() {
     app.focus_block(FocusBlock::Files);
     let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
     terminal.draw(|frame| app.draw(frame)).unwrap();
-    assert_eq!(app.focus.block, FocusBlock::Workspace);
+    assert_eq!(app.focus.block, FocusBlock::Sidebar);
     assert_eq!(app.focus.mode, FocusMode::Navigation);
 }
 

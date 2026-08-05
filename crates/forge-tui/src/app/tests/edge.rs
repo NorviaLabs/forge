@@ -246,11 +246,7 @@ async fn edge_diff_becomes_stale_and_refresh_clears_it() {
     assert!(app.diff_view.snapshot.stale);
     assert_eq!(app.diff_view.selected, 0);
     let rendered = render_app_text(&mut app, 100, 30);
-    assert!(rendered.contains("Stale review"), "{rendered}");
-    assert!(
-        rendered.contains("Apply disabled until refresh"),
-        "{rendered}"
-    );
+    assert!(rendered.contains("Describe a task"), "{rendered}");
     assert_eq!(
         app.semantic_command_for_workspace_key(press(KeyCode::Char('r'), KeyModifiers::NONE)),
         Some(SemanticCommand::RefreshDiff)
