@@ -109,10 +109,7 @@ pub fn footer_control_segments(model: &FooterModel, width: u16) -> Vec<FooterCon
         if col + len > width {
             break;
         }
-        segments.push(FooterControlSegment {
-            text,
-            start: col,
-        });
+        segments.push(FooterControlSegment { text, start: col });
         col = col + len + 1; // one-space gap between segments
     }
     segments
