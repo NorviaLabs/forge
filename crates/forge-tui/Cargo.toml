@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 description = "Full-screen Forge TUI (Phase 4) + slash commands"
 
+[build-dependencies]
+
 [dependencies]
 forge-syntax = { workspace = true }
 forge-types = { workspace = true }
