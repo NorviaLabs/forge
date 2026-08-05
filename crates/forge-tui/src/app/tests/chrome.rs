@@ -166,7 +166,7 @@ async fn final_shell_rendering_matrix_covers_v31_states_without_obsolete_chrome(
     app.execute_semantic_command(SemanticCommand::OpenRun(RunCommandTarget::Current))
         .await
         .unwrap();
-    scenarios.push(("run open", dir, app, vec!["Run: cargo test"]));
+    scenarios.push(("run open", dir, app, vec!["State: Running"]));
 
     let (dir, mut app) = focus_test_app().await;
     app.run.draft.command_input = "cargo test".into();
@@ -229,6 +229,11 @@ async fn final_shell_rendering_matrix_covers_v31_states_without_obsolete_chrome(
                     .any(|needle| lower_text.contains(&needle.to_ascii_lowercase())),
                 "{name} at {width}x{height} missing expected state {:?}:\n{text}",
                 expected
+            );
+            // New centered header still contains "Forge" and the lifecycle state
+            assert!(
+                text.contains("Forge"),
+                "top bar should contain Forge brand: {text}"
             );
         }
     }
