@@ -12,10 +12,11 @@ use super::*;
 
 fn composer_input_height(input: &InputModel, area: ratatui::layout::Rect) -> u16 {
     let content_width = crate::layout::estimate_composer_content_width(area)
+        .saturating_sub(2) // side borders
         .saturating_sub(gutter_prefix_width(ACTIVE_GLYPH))
         .max(1);
-    // +2 chrome/gutter band, +1 chip row under the text.
-    (input.visual_lines_for_width(content_width) + 3).clamp(5, crate::layout::MAX_COMPOSER_INPUT_H)
+    // +2 top border & gutter band, +1 chip row, +1 bottom border.
+    (input.visual_lines_for_width(content_width) + 4).clamp(5, crate::layout::MAX_COMPOSER_INPUT_H)
 }
 
 impl TuiApp {
@@ -300,12 +301,25 @@ impl TuiApp {
         // center pane shows — it's no longer one of the `WorkspaceView`
         // options.
         if let Some(sidebar) = regions.sidebar {
-            let conversation_area = ratatui::layout::Rect {
-                x: sidebar.x.saturating_add(2.min(sidebar.width)),
-                y: sidebar.y.saturating_add(1.min(sidebar.height)),
-                width: sidebar.width.saturating_sub(2.min(sidebar.width)),
-                height: sidebar.height.saturating_sub(1.min(sidebar.height)),
-            };
+            let sidebar_focused = self.focus.block == FocusBlock::Sidebar;
+            let sidebar_block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(if sidebar_focused {
+                    theme::active_panel_border()
+                } else {
+                    theme::inactive_panel_border()
+                })
+                .style(theme::panel())
+                .title(Span::styled(
+                    " Chat ",
+                    if sidebar_focused {
+                        theme::active_panel_title()
+                    } else {
+                        theme::inactive_panel_title()
+                    },
+                ));
+            let conversation_area = sidebar_block.inner(sidebar);
+            sidebar_block.render(sidebar, frame.buffer_mut());
             frame.render_widget(
                 crate::conversation::ConversationLinesWidget {
                     lines: &cached_lines,
@@ -314,6 +328,10 @@ impl TuiApp {
                     follow: self.conversation_view.follow,
                     bottom_padding: if self.session.pending_hitl().is_some() {
                         0
+                    } else if theme_picking {
+                        // The dock replaces the composer, so reserving its full
+                        // height would scroll a short transcript out of view.
+                        1
                     } else {
                         input_h.saturating_add(1)
                     },
@@ -588,6 +606,15 @@ impl TuiApp {
         );
     }
 
+    /// Accent border when the center workspace pane is focused, muted otherwise.
+    fn workspace_border(&self) -> ratatui::style::Style {
+        if self.focus.block == FocusBlock::Workspace {
+            theme::active_panel_border()
+        } else {
+            theme::inactive_panel_border()
+        }
+    }
+
     fn render_diff_workspace(
         &self,
         area: ratatui::layout::Rect,
@@ -601,7 +628,7 @@ impl TuiApp {
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .border_style(theme::muted())
+                        .border_style(self.workspace_border())
                         .style(theme::panel()),
                 )
                 .render(area, buf);
@@ -614,7 +641,7 @@ impl TuiApp {
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .border_style(theme::muted())
+                        .border_style(self.workspace_border())
                         .style(theme::panel()),
                 )
                 .render(area, buf);
@@ -626,7 +653,7 @@ impl TuiApp {
                 buf,
                 "No changes\n\nThe working tree is clean.",
                 theme::muted(),
-                theme::muted(),
+                self.workspace_border(),
             );
             return;
         }
@@ -703,7 +730,7 @@ impl TuiApp {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(theme::muted())
+                    .border_style(self.workspace_border())
                     .style(theme::panel()),
             )
             .render(area, buf);
