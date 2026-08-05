@@ -232,7 +232,12 @@ impl MdRenderer {
 
     fn on_end(&mut self, tag: TagEnd) {
         match tag {
-            TagEnd::Paragraph => self.flush_para(),
+            TagEnd::Paragraph => {
+                self.flush_para();
+                if self.list_stack.is_empty() && self.quote_depth == 0 {
+                    self.out.push(Line::from(""));
+                }
+            }
             TagEnd::Heading(_) => {
                 self.pop_style();
                 self.flush_para();
@@ -297,6 +302,9 @@ impl MdRenderer {
         self.flush_para();
         if let Some(code) = self.code.take() {
             self.render_code(code);
+        }
+        while self.out.last().is_some_and(|line| line.width() == 0) {
+            self.out.pop();
         }
         if self.out.is_empty() {
             self.out.push(Line::from(String::new()));
@@ -592,6 +600,13 @@ Some **bold** and *italic* and ~struck~ and `code` text.
             .find(|span| span.content.as_ref() == "inline")
             .expect("inline code token present");
         assert_eq!(code_span.style.fg, Some(theme::text_secondary_color()));
+    }
+
+    #[test]
+    fn separates_top_level_paragraphs() {
+        let rendered = render_markdown("First paragraph.\n\nSecond paragraph.", 80);
+        assert_eq!(rendered.len(), 3);
+        assert!(rendered[1].width() == 0);
     }
 
     #[test]
