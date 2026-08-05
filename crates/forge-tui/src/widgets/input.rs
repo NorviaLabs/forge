@@ -422,37 +422,6 @@ impl Widget for InputBar<'_> {
             return;
         }
 
-        let chip_h = u16::from(!self.chips.is_empty() && area.height > 2);
-        let attach_h = u16::from(self.attachment.is_some() && area.height > 1 + chip_h);
-
-        let mut y = area.y;
-        let mut remain = area.height;
-
-        if attach_h > 0 {
-            let att_text = self.attachment.unwrap_or("");
-            let att_line = Line::from(vec![
-                Span::styled("» ", theme::info()),
-                Span::styled(att_text, theme::info()),
-                Span::styled("  [Ctrl+A or /cf to remove]", theme::dim()),
-            ]);
-            Paragraph::new(att_line).render(Rect::new(area.x, y, area.width, 1), buf);
-            y = y.saturating_add(1);
-            remain = remain.saturating_sub(1);
-        }
-
-        let text_h = remain.saturating_sub(chip_h).max(1);
-        let text_block_area = Rect::new(area.x, y, area.width, text_h);
-        let chip_area = if chip_h > 0 {
-            Some(Rect::new(
-                area.x,
-                y.saturating_add(text_h),
-                area.width,
-                chip_h,
-            ))
-        } else {
-            None
-        };
-
         let base = if self.dimmed {
             theme::dim()
         } else if self.model.history_browse {
@@ -472,7 +441,7 @@ impl Widget for InputBar<'_> {
             theme::inactive_panel_border()
         };
         let block = Block::default()
-            .borders(Borders::TOP)
+            .borders(Borders::ALL)
             .border_style(border)
             .style(if self.dimmed {
                 theme::surface_hover()
@@ -481,11 +450,42 @@ impl Widget for InputBar<'_> {
             } else {
                 theme::panel()
             });
-        let input_area = block.inner(text_block_area);
-        block.render(text_block_area, buf);
-        if input_area.width == 0 || input_area.height == 0 {
+        let inner = block.inner(area);
+        if inner.width == 0 || inner.height == 0 {
             return;
         }
+        block.render(area, buf);
+
+        let chip_h = u16::from(!self.chips.is_empty() && inner.height > 2);
+        let attach_h = u16::from(self.attachment.is_some() && inner.height > 1 + chip_h);
+
+        let mut y = inner.y;
+        let mut remain = inner.height;
+
+        if attach_h > 0 {
+            let att_text = self.attachment.unwrap_or("");
+            let att_line = Line::from(vec![
+                Span::styled("» ", theme::info()),
+                Span::styled(att_text, theme::info()),
+                Span::styled("  [Ctrl+A or /cf to remove]", theme::dim()),
+            ]);
+            Paragraph::new(att_line).render(Rect::new(inner.x, y, inner.width, 1), buf);
+            y = y.saturating_add(1);
+            remain = remain.saturating_sub(1);
+        }
+
+        let text_h = remain.saturating_sub(chip_h).max(1);
+        let input_area = Rect::new(inner.x, y, inner.width, text_h);
+        let chip_area = if chip_h > 0 {
+            Some(Rect::new(
+                inner.x,
+                y.saturating_add(text_h),
+                inner.width,
+                chip_h,
+            ))
+        } else {
+            None
+        };
 
         Paragraph::new(Span::styled(ACTIVE_GLYPH, gutter_style))
             .render(Rect::new(input_area.x, input_area.y, 1, 1), buf);
@@ -636,10 +636,16 @@ mod tests {
 
     fn render_lines(model: &InputModel, width: u16, height: u16, focused: bool) -> Vec<String> {
         let buf = draw_input_bar(model, width, height, focused, model.not_connected, None);
-        (1..buf.area().height)
+        let inner = Rect::new(
+            1,
+            1,
+            buf.area().width.saturating_sub(2),
+            buf.area().height.saturating_sub(2),
+        );
+        (0..inner.height)
             .map(|y| {
-                (0..buf.area().width)
-                    .map(|x| buf[(x, y)].symbol())
+                (0..inner.width)
+                    .map(|x| buf[(inner.x + x, inner.y + y)].symbol())
                     .collect::<String>()
                     .trim_end()
                     .to_string()
@@ -775,7 +781,7 @@ mod tests {
     fn empty_input_starts_with_caret_cell() {
         let m = InputModel::default();
         let buf = draw_input_bar(&m, 40, 5, true, false, None);
-        let cell = &buf[(2, 1)];
+        let cell = &buf[(3, 1)];
         assert_eq!(cell.symbol(), CURSOR_GLYPH);
     }
 
