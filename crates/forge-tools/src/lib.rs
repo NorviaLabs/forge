@@ -4,6 +4,7 @@
 mod apply_patch;
 mod builtins;
 mod fast_file_tools;
+mod invocation;
 mod registry;
 mod skills;
 mod unified_exec;
@@ -15,6 +16,7 @@ pub use builtins::{
     default_builtins, default_builtins_with_web_search, run_shell_command, BashTool, GitTool,
     ReadFileTool, UpdatePlanTool, WriteFileTool, PROVIDER_CREDENTIAL_ENV,
 };
+pub use invocation::tool_invocation;
 pub use registry::{ToolContext, ToolRegistry};
 pub use skills::{LoadSkillArgs, LoadSkillTool};
 pub use unified_exec::{ExecCommandTool, WriteStdinTool};
