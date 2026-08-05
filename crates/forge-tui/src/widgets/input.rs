@@ -375,6 +375,16 @@ impl Widget for InputBar<'_> {
             .wrap(Wrap { trim: false })
             .scroll((scroll, 0))
             .render(text_area, buf);
+        if self.focused {
+            for y in text_area.top()..text_area.bottom() {
+                for x in text_area.left()..text_area.right() {
+                    if buf[(x, y)].symbol() == CURSOR_GLYPH {
+                        buf[(x, y)].set_style(theme::caret());
+                        return;
+                    }
+                }
+            }
+        }
     }
 }
 
