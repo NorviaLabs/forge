@@ -465,7 +465,11 @@ impl ConversationModel {
                         }
                         continue;
                     }
-                    // Final answer is durable primary-channel content.
+                    // Assistant text is durable primary-channel content. A model may
+                    // explain what it is about to do in the same response as a tool
+                    // call; that text was visible while streaming but used to vanish
+                    // as soon as the step settled because tool-call messages were
+                    // filtered out here.
                     let effective_text = sanitize_final_answer_text(&m.content);
                     if !effective_text.trim().is_empty() {
                         if repair_pending {
@@ -478,7 +482,7 @@ impl ConversationModel {
                                 text: effective_text.clone(),
                             });
                             validation_retry_pending = false;
-                        } else if m.tool_calls.is_empty() {
+                        } else {
                             items.push(ChatItem::Assistant {
                                 text: effective_text,
                             });
@@ -1460,10 +1464,9 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
 }
 
 /// Completed-turn composition: within each user turn, emit
-/// UserMessage → ActivityGroup → AssistantAnswer|TurnFailure, so the
-/// transcript reads chronologically (the tool work happened before the
-/// answer). ActiveProgress is kept only while no terminal answer/failure
-/// exists yet.
+/// UserMessage → ActivityGroup → AssistantAnswer(s)|TurnFailure, so the
+/// transcript retains model narration around tool work. ActiveProgress is
+/// kept only while no terminal answer/failure exists yet.
 fn compose_turn_presentation(blocks: Vec<ConversationBlock>) -> Vec<ConversationBlock> {
     let mut out = Vec::with_capacity(blocks.len());
     let mut segment: Vec<ConversationBlock> = Vec::new();
@@ -1492,8 +1495,17 @@ fn compose_turn_presentation(blocks: Vec<ConversationBlock>) -> Vec<Conversation
                 other_block => other.push(other_block),
             }
         }
-        // One durable final answer per turn: last primary answer wins.
-        if answers.len() > 1 {
+        // Consecutive streaming previews are snapshots of one answer, so keep
+        // only the newest preview. Durable assistant messages are separate
+        // model steps and must all remain visible around tool activity.
+        if answers.len() > 1
+            && answers.iter().all(|block| {
+                matches!(
+                    block,
+                    ConversationBlock::AssistantAnswer(answer) if answer.streaming
+                )
+            })
+        {
             let last = answers.pop().into_iter().collect::<Vec<_>>();
             answers = last;
         }
@@ -3058,7 +3070,7 @@ mod tests {
     }
 
     #[test]
-    fn only_last_final_answer_per_turn_is_kept() {
+    fn all_assistant_answers_per_turn_are_kept() {
         let model = ConversationModel {
             items: vec![
                 ChatItem::User { text: "hi".into() },
@@ -3081,7 +3093,50 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(answers, vec!["Forge is a Rust workspace."]);
+        assert_eq!(
+            answers,
+            vec!["I need to summarize...", "Forge is a Rust workspace."]
+        );
+    }
+
+    #[test]
+    fn assistant_narration_with_tool_calls_survives_streaming() {
+        let messages = vec![
+            Message {
+                outcome: Default::default(),
+                role: MessageRole::User,
+                content: "inspect the project".into(),
+                tool_call_id: None,
+                name: None,
+                thinking: None,
+                thinking_duration_secs: None,
+                tool_calls: vec![],
+            },
+            Message {
+                outcome: Default::default(),
+                role: MessageRole::Assistant,
+                content: "I’ll inspect the project first.".into(),
+                tool_call_id: None,
+                name: None,
+                thinking: None,
+                thinking_duration_secs: None,
+                tool_calls: vec![ToolCall {
+                    id: "call-1".into(),
+                    name: "read_file".into(),
+                    arguments: serde_json::json!({"path": "README.md"}),
+                }],
+            },
+        ];
+        let model = ConversationModel::from_messages(
+            &messages,
+            &[],
+            TaskLifecycle::Working,
+            ConversationViewOpts::default(),
+        );
+        assert!(model.items.iter().any(|item| matches!(
+            item,
+            ChatItem::Assistant { text } if text == "I’ll inspect the project first."
+        )));
     }
 
     #[test]
