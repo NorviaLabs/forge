@@ -3,29 +3,22 @@ use std::collections::HashSet;
 use std::time::{Duration, SystemTime};
 
 use forge_config::CommandConfig;
+use forge_types::ExecutionOutcome;
 
 const MAX_PARSE_BYTES: usize = 128_000;
 const MAX_FAILED_TESTS: usize = 64;
 pub const MAX_FAILED_DISPLAY: usize = 5;
 const MAX_TEST_NAME_CHARS: usize = 200;
 
+/// Pre-terminal validation-run states. Once a run finishes, its result lives
+/// in `ValidationSnapshot::outcome: Option<ExecutionOutcome>` instead of a
+/// parallel terminal-state enum, so pass/fail/spawn-failed/denied/cancelled/
+/// timed-out can never collapse into one another again.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValidationStatus {
     NotConfigured,
     NotRun,
     Running,
-    Passed,
-    Failed,
-    Cancelled,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ValidationOutcome {
-    Passed,
-    Failed(i32),
-    Cancelled,
-    SpawnFailed(String),
-    WaitFailed(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,10 +67,12 @@ impl Default for CargoTestSummary {
 pub struct ValidationSnapshot {
     pub command: Option<CommandConfig>,
     pub status: ValidationStatus,
+    /// Terminal result of the most recent run. `None` while `status` is
+    /// pre-terminal (`NotConfigured`/`NotRun`/`Running`).
+    pub outcome: Option<ExecutionOutcome>,
     pub started_at: Option<SystemTime>,
     pub completed_at: Option<SystemTime>,
     pub duration: Option<Duration>,
-    pub exit_code: Option<i32>,
     pub stale: bool,
     pub repo_generation: u64,
     pub output_ref: Option<String>,
@@ -89,10 +84,10 @@ impl Default for ValidationSnapshot {
         Self {
             command: None,
             status: ValidationStatus::NotConfigured,
+            outcome: None,
             started_at: None,
             completed_at: None,
             duration: None,
-            exit_code: None,
             stale: false,
             repo_generation: 0,
             output_ref: None,
@@ -117,36 +112,27 @@ impl ValidationSnapshot {
         started_at: SystemTime,
     ) {
         self.status = ValidationStatus::Running;
+        self.outcome = None;
         self.started_at = Some(started_at);
         self.completed_at = None;
         self.duration = None;
-        self.exit_code = None;
         self.stale = false;
         self.repo_generation = repo_generation;
         self.output_ref = output_ref;
         self.cargo_summary = CargoTestSummary::default();
     }
 
-    pub fn finish(
-        &mut self,
-        status: ValidationStatus,
-        exit_code: Option<i32>,
-        completed_at: SystemTime,
-    ) {
-        self.status = status;
-        self.completed_at = Some(completed_at);
-        self.duration = self
-            .started_at
-            .and_then(|start| completed_at.duration_since(start).ok());
-        self.exit_code = exit_code;
+    /// Exit code of the most recent run, when the outcome carries one.
+    pub fn exit_code(&self) -> Option<i32> {
+        match &self.outcome {
+            Some(ExecutionOutcome::Success) => Some(0),
+            Some(ExecutionOutcome::Failed { exit_code }) => *exit_code,
+            _ => None,
+        }
     }
 
     pub fn mark_stale(&mut self, repo_generation: u64) {
-        if matches!(
-            self.status,
-            ValidationStatus::Passed | ValidationStatus::Failed | ValidationStatus::Cancelled
-        ) && self.repo_generation != repo_generation
-        {
+        if self.outcome.is_some() && self.repo_generation != repo_generation {
             self.stale = true;
         }
     }
@@ -155,21 +141,13 @@ impl ValidationSnapshot {
         self.mark_stale(repo_generation);
     }
 
-    pub fn mark_completed(&mut self, outcome: ValidationOutcome, completed_at: SystemTime) {
-        match outcome {
-            ValidationOutcome::Passed => {
-                self.finish(ValidationStatus::Passed, Some(0), completed_at)
-            }
-            ValidationOutcome::Failed(code) => {
-                self.finish(ValidationStatus::Failed, Some(code), completed_at)
-            }
-            ValidationOutcome::Cancelled => {
-                self.finish(ValidationStatus::Cancelled, None, completed_at)
-            }
-            ValidationOutcome::SpawnFailed(_) | ValidationOutcome::WaitFailed(_) => {
-                self.finish(ValidationStatus::Failed, None, completed_at)
-            }
-        }
+    pub fn mark_completed(&mut self, outcome: ExecutionOutcome, completed_at: SystemTime) {
+        self.status = ValidationStatus::NotRun;
+        self.outcome = Some(outcome);
+        self.completed_at = Some(completed_at);
+        self.duration = self
+            .started_at
+            .and_then(|start| completed_at.duration_since(start).ok());
     }
 
     pub fn display_status(&self) -> &'static str {
@@ -180,12 +158,20 @@ impl ValidationSnapshot {
             return "Stale";
         }
         match self.status {
-            ValidationStatus::NotRun => "Not run",
-            ValidationStatus::Running => "Running",
-            ValidationStatus::Passed => "Passed",
-            ValidationStatus::Failed => "Failed",
-            ValidationStatus::Cancelled => "Cancelled",
             ValidationStatus::NotConfigured => "Not configured",
+            ValidationStatus::NotRun => match &self.outcome {
+                None => "Not run",
+                Some(ExecutionOutcome::Success) => "Passed",
+                Some(ExecutionOutcome::Failed { .. }) => "Failed",
+                Some(ExecutionOutcome::SpawnFailed { .. }) => "Failed to start",
+                Some(ExecutionOutcome::Denied { .. }) => "Skipped",
+                Some(ExecutionOutcome::Cancelled) => "Cancelled",
+                Some(ExecutionOutcome::TimedOut) => "Timed out",
+                // `ExecutionOutcome` is `#[non_exhaustive]`; an outcome this
+                // build doesn't recognise must never read as "Passed".
+                Some(_) => "Failed",
+            },
+            ValidationStatus::Running => "Running",
         }
     }
 
@@ -445,10 +431,76 @@ mod tests {
         let mut snapshot = ValidationSnapshot::configured(cargo_test_command(&["test"]));
         let started = SystemTime::now();
         snapshot.start(1, Some("Terminal".into()), started);
-        snapshot.mark_completed(ValidationOutcome::Passed, started);
+        snapshot.mark_completed(ExecutionOutcome::Success, started);
         assert_eq!(snapshot.display_status(), "Passed");
         snapshot.update_staleness(2);
         assert_eq!(snapshot.display_status(), "Stale");
+    }
+
+    #[test]
+    fn mark_completed_success_yields_passed() {
+        let mut snapshot = ValidationSnapshot::configured(cargo_test_command(&["test"]));
+        snapshot.start(1, None, SystemTime::now());
+        snapshot.mark_completed(ExecutionOutcome::Success, SystemTime::now());
+        assert_eq!(snapshot.display_status(), "Passed");
+        assert_eq!(snapshot.exit_code(), Some(0));
+    }
+
+    #[test]
+    fn mark_completed_failed_exit_code_preserved() {
+        let mut snapshot = ValidationSnapshot::configured(cargo_test_command(&["test"]));
+        snapshot.start(1, None, SystemTime::now());
+        snapshot.mark_completed(
+            ExecutionOutcome::Failed {
+                exit_code: Some(101),
+            },
+            SystemTime::now(),
+        );
+        assert_eq!(snapshot.display_status(), "Failed");
+        assert_eq!(snapshot.exit_code(), Some(101));
+    }
+
+    #[test]
+    fn mark_completed_spawn_failed_is_distinct_from_generic_failed() {
+        let mut snapshot = ValidationSnapshot::configured(cargo_test_command(&["test"]));
+        snapshot.start(1, None, SystemTime::now());
+        snapshot.mark_completed(
+            ExecutionOutcome::SpawnFailed {
+                reason: "command not found".into(),
+            },
+            SystemTime::now(),
+        );
+        assert_eq!(snapshot.display_status(), "Failed to start");
+        assert_ne!(snapshot.display_status(), "Failed");
+    }
+
+    #[test]
+    fn mark_completed_denied_yields_skipped() {
+        let mut snapshot = ValidationSnapshot::configured(cargo_test_command(&["test"]));
+        snapshot.start(1, None, SystemTime::now());
+        snapshot.mark_completed(
+            ExecutionOutcome::Denied {
+                reason: "denied by ACL".into(),
+            },
+            SystemTime::now(),
+        );
+        assert_eq!(snapshot.display_status(), "Skipped");
+    }
+
+    #[test]
+    fn mark_completed_cancelled_yields_cancelled() {
+        let mut snapshot = ValidationSnapshot::configured(cargo_test_command(&["test"]));
+        snapshot.start(1, None, SystemTime::now());
+        snapshot.mark_completed(ExecutionOutcome::Cancelled, SystemTime::now());
+        assert_eq!(snapshot.display_status(), "Cancelled");
+    }
+
+    #[test]
+    fn mark_completed_timed_out_yields_timed_out() {
+        let mut snapshot = ValidationSnapshot::configured(cargo_test_command(&["test"]));
+        snapshot.start(1, None, SystemTime::now());
+        snapshot.mark_completed(ExecutionOutcome::TimedOut, SystemTime::now());
+        assert_eq!(snapshot.display_status(), "Timed out");
     }
 
     #[test]

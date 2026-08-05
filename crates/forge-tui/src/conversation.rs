@@ -5,7 +5,7 @@ use crate::theme;
 use crate::user_message_gutter;
 use forge_core::{AgentSession, TurnEvent, TURN_FAILED_MARKER};
 use forge_syntax::highlight_to_lines;
-use forge_types::{Message, MessageRole, TaskLifecycle, ToolCall};
+use forge_types::{ExecutionOutcome, Message, MessageRole, TaskLifecycle, ToolCall};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
@@ -22,6 +22,27 @@ pub enum ToolCardState {
     Done,
     Blocked,
     Error,
+}
+
+impl From<&ExecutionOutcome> for ToolCardState {
+    /// The coarse Running/Blocked/Done/Error bucket only needs to know
+    /// success vs. not — the precise variant (Denied vs. Cancelled vs.
+    /// TimedOut) lives on `ActivityOutcome`/the rendered copy, not here.
+    /// Denied is deliberately `Error`, not `Blocked`: it's terminal and
+    /// negative, not pending (see `ExecutionOutcome::Denied` docs).
+    fn from(outcome: &ExecutionOutcome) -> Self {
+        match outcome {
+            ExecutionOutcome::Success => ToolCardState::Done,
+            ExecutionOutcome::Failed { .. }
+            | ExecutionOutcome::SpawnFailed { .. }
+            | ExecutionOutcome::Denied { .. }
+            | ExecutionOutcome::Cancelled
+            | ExecutionOutcome::TimedOut => ToolCardState::Error,
+            // `ExecutionOutcome` is `#[non_exhaustive]`; an outcome this
+            // build doesn't recognise must never read as `Done`.
+            _ => ToolCardState::Error,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,7 +63,11 @@ impl ActivityCategory {
             (Self::Implementing, true) => "Implementing changes",
             (Self::Implementing, false) => "Implemented changes",
             (Self::Validating, true) => "Running validation",
-            (Self::Validating, false) => "Validation completed",
+            // Deliberately outcome-neutral: whether this passed or failed is
+            // never asserted here. The concrete pass/fail copy (e.g. "Tests
+            // passed" / "Tests failed · exit code 101") comes from
+            // `activity_group_summary`, which has the real outcome.
+            (Self::Validating, false) => "Validation",
             (Self::Reviewing, true) => "Reviewing workspace",
             (Self::Reviewing, false) => "Reviewed workspace",
             (Self::Recovering, true) => "Recovering session",
@@ -144,12 +169,20 @@ pub enum ChatItem {
         state: ToolCardState,
         /// Optional duration label e.g. "142ms" (when known).
         duration: Option<String>,
+        /// Real execution result. `ExecutionOutcome::Success` for tools with
+        /// no real process/failure concept (e.g. `read_file`, `fffind`).
+        outcome: forge_types::ExecutionOutcome,
     },
     ActivityGroup {
         category: ActivityCategory,
         summary: String,
         detail: String,
         state: ToolCardState,
+        /// Aggregate outcome across the group's members: `Failed` if any
+        /// member failed, else `Success`. Drives icon/color and lets a
+        /// failing validation command stay grouped instead of falling out
+        /// to a standalone card.
+        outcome: forge_types::ExecutionOutcome,
     },
     /// Unified-ish diff snippet for write tools.
     DiffCard {
@@ -234,6 +267,26 @@ pub enum ActivityOutcome {
     Warning,
     Failure,
     Blocked,
+    Denied,
+    Cancelled,
+    TimedOut,
+}
+
+impl From<&ExecutionOutcome> for ActivityOutcome {
+    fn from(outcome: &ExecutionOutcome) -> Self {
+        match outcome {
+            ExecutionOutcome::Success => ActivityOutcome::Success,
+            ExecutionOutcome::Failed { .. } | ExecutionOutcome::SpawnFailed { .. } => {
+                ActivityOutcome::Failure
+            }
+            ExecutionOutcome::Denied { .. } => ActivityOutcome::Denied,
+            ExecutionOutcome::Cancelled => ActivityOutcome::Cancelled,
+            ExecutionOutcome::TimedOut => ActivityOutcome::TimedOut,
+            // `ExecutionOutcome` is `#[non_exhaustive]`; an outcome this
+            // build doesn't recognise must never read as `Success`.
+            _ => ActivityOutcome::Failure,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -423,6 +476,7 @@ impl ConversationModel {
                             detail: error,
                             state: ToolCardState::Error,
                             duration: None,
+                            outcome: forge_types::ExecutionOutcome::Failed { exit_code: None },
                         });
                     } else if looks_like_diff(&m.content)
                         || looks_like_code_change(name, &m.content)
@@ -441,13 +495,14 @@ impl ConversationModel {
                             .as_deref()
                             .and_then(|id| tool_calls.get(id).copied());
                         let (state, summary, detail) =
-                            classify_tool_content(name, &m.content, call);
+                            classify_tool_content(name, &m.content, call, &m.outcome);
                         items.push(ChatItem::ToolCard {
                             name: name.to_string(),
                             summary,
                             detail,
                             state,
                             duration: None,
+                            outcome: m.outcome.clone(),
                         });
                     }
                 }
@@ -591,6 +646,7 @@ impl ConversationModel {
                 summary: running_activity_summary(category, &name),
                 detail: format!("{name}: tool_intent committed · awaiting result"),
                 state: ToolCardState::Running,
+                outcome: ExecutionOutcome::Success,
             });
             return self;
         }
@@ -600,6 +656,7 @@ impl ConversationModel {
             detail: String::new(),
             state: ToolCardState::Running,
             duration: None,
+            outcome: ExecutionOutcome::Success,
         });
         self
     }
@@ -615,6 +672,7 @@ impl ConversationModel {
             detail: String::new(),
             state: ToolCardState::Blocked,
             duration: None,
+            outcome: ExecutionOutcome::Success,
         });
         self
     }
@@ -779,6 +837,13 @@ impl ConversationModel {
                         ActivityOutcome::Blocked => (Span::styled("⏸", theme::warn()), " "),
                         ActivityOutcome::Warning => (status_glyph(Status::Warning), ""),
                         ActivityOutcome::Neutral => (Span::styled("●", theme::muted()), " "),
+                        ActivityOutcome::Denied => {
+                            (Span::styled("⊘", theme::tool_denied_style()), " ")
+                        }
+                        ActivityOutcome::Cancelled => (Span::styled("■", theme::muted()), " "),
+                        ActivityOutcome::TimedOut => {
+                            (Span::styled("⧖", theme::tool_timeout_style()), " ")
+                        }
                     };
                     let mut spans = vec![
                         prefix,
@@ -1011,9 +1076,12 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
                 summary,
                 detail,
                 state,
+                outcome,
                 ..
             } => {
-                if let Some(entry) = activity_entry_from_tool(name, summary, detail, *state) {
+                if let Some(entry) =
+                    activity_entry_from_tool(name, summary, detail, *state, outcome)
+                {
                     append_activity_entry(&mut blocks, &mut activity_group, entry);
                 } else {
                     flush_progress(&mut blocks, &mut progress);
@@ -1027,7 +1095,7 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
                                 ToolCardState::Running => ActivityOutcome::Neutral,
                                 ToolCardState::Done => ActivityOutcome::Success,
                                 ToolCardState::Blocked => ActivityOutcome::Blocked,
-                                ToolCardState::Error => ActivityOutcome::Failure,
+                                ToolCardState::Error => ActivityOutcome::from(outcome),
                             },
                             expanded: tool_expanded,
                             items: vec![format!("{name}: {summary}\n{detail}")],
@@ -1040,9 +1108,10 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
                 summary,
                 detail,
                 state,
+                outcome,
             } => {
                 flush_progress(&mut blocks, &mut progress);
-                let outcome = match state {
+                let activity_outcome = match state {
                     ToolCardState::Running => ActivityOutcome::Neutral,
                     // Routine exploration is evidence, not a green "success" banner.
                     ToolCardState::Done if matches!(category, ActivityCategory::Exploring) => {
@@ -1050,7 +1119,7 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
                     }
                     ToolCardState::Done => ActivityOutcome::Success,
                     ToolCardState::Blocked => ActivityOutcome::Blocked,
-                    ToolCardState::Error => ActivityOutcome::Failure,
+                    ToolCardState::Error => ActivityOutcome::from(outcome),
                 };
                 append_activity_entry(
                     &mut blocks,
@@ -1061,7 +1130,7 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
                             .label(matches!(state, ToolCardState::Running))
                             .to_string(),
                         count_label: summary.clone(),
-                        outcome,
+                        outcome: activity_outcome,
                         expanded: tool_expanded,
                         items: vec![detail.clone()],
                     },
@@ -1287,6 +1356,7 @@ fn activity_entry_from_tool(
     summary: &str,
     detail: &str,
     state: ToolCardState,
+    execution_outcome: &ExecutionOutcome,
 ) -> Option<ActivityGroupPresentation> {
     let category = routine_tool_category(name, summary, None)?;
     let lower = detail.to_ascii_lowercase();
@@ -1299,7 +1369,10 @@ fn activity_entry_from_tool(
         }
         ToolCardState::Done => ActivityOutcome::Success,
         ToolCardState::Blocked => ActivityOutcome::Blocked,
-        ToolCardState::Error => ActivityOutcome::Failure,
+        // Precise variant (Denied/Cancelled/TimedOut/plain failure) rather
+        // than a blanket `Failure`, so a denied/cancelled/timed-out
+        // validation command gets its own amber icon, not red.
+        ToolCardState::Error => ActivityOutcome::from(execution_outcome),
     };
     let label = match state {
         ToolCardState::Running => category.label(true).to_string(),
@@ -1311,14 +1384,14 @@ fn activity_entry_from_tool(
         count_label: if matches!(state, ToolCardState::Running) {
             running_activity_summary(category, name)
         } else if category == ActivityCategory::Validating {
-            // Command-execution entries: keep the raw "$ command" text (minus
-            // its own trailing "· N output lines", which `summary` from
-            // `classify_tool_content` already carries) as the collapsed
-            // label, so `collapsed_command_summary` can truncate long ones
-            // and append its own count — matches how the pre-grouped
-            // `ChatItem::ActivityGroup` case builds its summary via
-            // `activity_group_summary`.
-            summary.split(" · ").next().unwrap_or(summary).to_string()
+            // Keep the command visible (so the operator can see what ran)
+            // but the pass/fail phrase always comes from the real outcome —
+            // never re-derived from rendered text.
+            let command = summary.split(" · ").next().unwrap_or(summary);
+            format!(
+                "{command} · {}",
+                validation_outcome_summary(execution_outcome)
+            )
         } else {
             result_count_label(1, "item", "items")
         },
@@ -1707,6 +1780,23 @@ fn group_routine_activity(items: Vec<ChatItem>) -> Vec<ChatItem> {
     grouped
 }
 
+/// Aggregate outcome across a group's members: the first non-`Success`
+/// outcome found, else `Success`. Drives the group's own state/color so a
+/// failing validation command turns the whole "Validating" group
+/// Failure-colored instead of silently reading as green.
+fn aggregate_outcome(items: &[ChatItem]) -> ExecutionOutcome {
+    items
+        .iter()
+        .filter_map(|item| match item {
+            ChatItem::ToolCard { outcome, .. } | ChatItem::ActivityGroup { outcome, .. } => {
+                Some(outcome.clone())
+            }
+            _ => None,
+        })
+        .find(|o| !o.is_success())
+        .unwrap_or(ExecutionOutcome::Success)
+}
+
 fn flush_activity_group(grouped: &mut Vec<ChatItem>, pending: &mut Vec<ChatItem>) {
     if pending.is_empty() {
         return;
@@ -1725,11 +1815,14 @@ fn flush_activity_group(grouped: &mut Vec<ChatItem>, pending: &mut Vec<ChatItem>
         .map(activity_group_detail)
         .collect::<Vec<_>>()
         .join("\n---\n");
+    let outcome = aggregate_outcome(pending);
+    let state = ToolCardState::from(&outcome);
     grouped.push(ChatItem::ActivityGroup {
         category,
         summary,
         detail,
-        state: ToolCardState::Done,
+        state,
+        outcome,
     });
     pending.clear();
 }
@@ -1742,6 +1835,20 @@ fn item_routine_category(item: &ChatItem) -> Option<ActivityCategory> {
             state: ToolCardState::Done,
             ..
         } => routine_tool_category(name, summary, None),
+        // A failing *validation* command still groups under "Validating"
+        // (the group turns Failure-colored) rather than falling out to a
+        // standalone card — other failed tools stand alone so a failure is
+        // never buried inside what would otherwise read as a routine
+        // "Exploring"/"Implementing" banner.
+        ChatItem::ToolCard {
+            name,
+            summary,
+            state: ToolCardState::Error,
+            ..
+        } => match routine_tool_category(name, summary, None) {
+            Some(ActivityCategory::Validating) => Some(ActivityCategory::Validating),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -1838,15 +1945,20 @@ fn activity_group_summary(category: ActivityCategory, items: &[ChatItem]) -> Str
                 .count();
             result_count_label(changed, "file changed", "files changed")
         }
-        ActivityCategory::Validating => items
-            .iter()
-            .filter_map(|item| match item {
-                ChatItem::ToolCard { summary, .. } => summary.split(" · ").next(),
-                _ => None,
-            })
-            .next()
-            .unwrap_or("validation command")
-            .to_string(),
+        ActivityCategory::Validating => {
+            let command = items
+                .iter()
+                .filter_map(|item| match item {
+                    ChatItem::ToolCard { summary, .. } => summary.split(" · ").next(),
+                    _ => None,
+                })
+                .next();
+            let phrase = validation_outcome_summary(&aggregate_outcome(items));
+            match command {
+                Some(command) => format!("{command} · {phrase}"),
+                None => phrase,
+            }
+        }
         ActivityCategory::Reviewing => result_count_label(items.len(), "review", "reviews"),
         ActivityCategory::Recovering => "Restored previous task state".into(),
         ActivityCategory::Waiting => result_count_label(items.len(), "wait", "waits"),
@@ -1950,10 +2062,54 @@ fn render_plan_checklist(plan: &PlanChecklistPresentation, width: usize) -> Vec<
     lines
 }
 
+/// The per-outcome copy fragment appended to a bash/validation summary,
+/// e.g. `$ cargo test · failed · exit code 101`. Never derived from
+/// substring-matching rendered output — always from the real `outcome`.
+fn outcome_label(outcome: &forge_types::ExecutionOutcome, count: usize) -> String {
+    use forge_types::ExecutionOutcome;
+    match outcome {
+        ExecutionOutcome::Success if count == 0 => "completed".to_string(),
+        ExecutionOutcome::Success => result_count_label(count, "output line", "output lines"),
+        ExecutionOutcome::Failed {
+            exit_code: Some(code),
+        } => format!("failed · exit code {code}"),
+        ExecutionOutcome::Failed { exit_code: None } => "failed".to_string(),
+        ExecutionOutcome::SpawnFailed { .. } => "failed · command not found".to_string(),
+        ExecutionOutcome::Denied { .. } => "skipped · denied".to_string(),
+        ExecutionOutcome::Cancelled => "cancelled".to_string(),
+        ExecutionOutcome::TimedOut => "timed out".to_string(),
+        // `ExecutionOutcome` is `#[non_exhaustive]`; an outcome this build
+        // doesn't recognise must never read as a plain "completed".
+        _ => "failed".to_string(),
+    }
+}
+
+/// The collapsed "Validating" group's pass/fail line, e.g. "Tests passed" /
+/// "Tests failed · exit code 101" / "Validation skipped · denied". Always
+/// derived from the real aggregate `ExecutionOutcome` — never from the
+/// category's own (outcome-neutral) static label.
+fn validation_outcome_summary(outcome: &ExecutionOutcome) -> String {
+    match outcome {
+        ExecutionOutcome::Success => "Tests passed".to_string(),
+        ExecutionOutcome::Failed {
+            exit_code: Some(code),
+        } => format!("Tests failed · exit code {code}"),
+        ExecutionOutcome::Failed { exit_code: None } => "Tests failed".to_string(),
+        ExecutionOutcome::SpawnFailed { .. } => "Tests failed · command not found".to_string(),
+        ExecutionOutcome::Denied { .. } => "Validation skipped · denied".to_string(),
+        ExecutionOutcome::Cancelled => "Validation cancelled".to_string(),
+        ExecutionOutcome::TimedOut => "Validation timed out".to_string(),
+        // `ExecutionOutcome` is `#[non_exhaustive]`; an outcome this build
+        // doesn't recognise must never read as "Tests passed".
+        _ => "Validation failed".to_string(),
+    }
+}
+
 fn classify_tool_content(
     name: &str,
     content: &str,
     call: Option<&ToolCall>,
+    outcome: &forge_types::ExecutionOutcome,
 ) -> (ToolCardState, String, String) {
     let detail = redact_tool_output(content);
     if matches!(name, "exec_command" | "write_stdin") {
@@ -1978,8 +2134,13 @@ fn classify_tool_content(
         }
     }
     let lower = detail.to_ascii_lowercase();
-    let state = if lower.contains("validation") || lower.contains("denied by acl") {
-        ToolCardState::Error
+    // The real `outcome` is authoritative for pass/fail — never re-derived by
+    // pattern-matching rendered text. Only a genuinely pending signal (no
+    // terminal outcome yet, e.g. content narrating an in-flight HITL wait)
+    // falls back to substring detection, since `ExecutionOutcome` has no
+    // "pending" variant of its own.
+    let state = if !outcome.is_success() {
+        ToolCardState::from(outcome)
     } else if lower.contains("hitl") || lower.contains("awaiting") {
         ToolCardState::Blocked
     } else {
@@ -1995,11 +2156,7 @@ fn classify_tool_content(
                 .unwrap_or(label)
         }
         "bash" => {
-            let label = if detail.trim().is_empty() {
-                "completed".to_string()
-            } else {
-                result_count_label(count, "output line", "output lines")
-            };
+            let label = outcome_label(outcome, count);
             tool_argument(call, "command")
                 .map(redact_tool_output)
                 .filter(|command| command != "[redacted tool output]")
@@ -2417,6 +2574,7 @@ mod tests {
     fn roles_map_to_items() {
         let msgs = vec![
             Message {
+                outcome: Default::default(),
                 role: MessageRole::System,
                 content: "You are Forge, a coding agent. Use tools when needed.".into(),
                 tool_call_id: None,
@@ -2426,6 +2584,7 @@ mod tests {
                 tool_calls: vec![],
             },
             Message {
+                outcome: Default::default(),
                 role: MessageRole::User,
                 content: "hi".into(),
                 tool_call_id: None,
@@ -2435,6 +2594,7 @@ mod tests {
                 tool_calls: vec![],
             },
             Message {
+                outcome: Default::default(),
                 role: MessageRole::Assistant,
                 content: "yo".into(),
                 tool_call_id: None,
@@ -2444,6 +2604,7 @@ mod tests {
                 tool_calls: vec![],
             },
             Message {
+                outcome: Default::default(),
                 role: MessageRole::Tool,
                 content: "ok body".into(),
                 tool_call_id: Some("1".into()),
@@ -2511,6 +2672,7 @@ mod tests {
                     detail: "src/lib.rs".into(),
                     state: ToolCardState::Done,
                     duration: None,
+                    outcome: forge_types::ExecutionOutcome::Success,
                 },
                 ChatItem::ToolCard {
                     name: "fffind".into(),
@@ -2518,6 +2680,7 @@ mod tests {
                     detail: "src/main.rs".into(),
                     state: ToolCardState::Done,
                     duration: None,
+                    outcome: forge_types::ExecutionOutcome::Success,
                 },
             ],
             scroll: 0,
@@ -2575,6 +2738,7 @@ mod tests {
                     detail: "src/lib.rs".into(),
                     state: ToolCardState::Done,
                     duration: None,
+                    outcome: forge_types::ExecutionOutcome::Success,
                 },
             ],
             scroll: 0,
@@ -2606,6 +2770,7 @@ mod tests {
                     detail: "README.md".into(),
                     state: ToolCardState::Done,
                     duration: None,
+                    outcome: forge_types::ExecutionOutcome::Success,
                 },
                 ChatItem::ToolCard {
                     name: "fffind".into(),
@@ -2613,6 +2778,7 @@ mod tests {
                     detail: "crates/".into(),
                     state: ToolCardState::Done,
                     duration: None,
+                    outcome: forge_types::ExecutionOutcome::Success,
                 },
                 ChatItem::Assistant {
                     text: "Forge is a Rust workspace.".into(),
@@ -2638,6 +2804,7 @@ mod tests {
     fn thinking_is_never_promoted_to_final_answer() {
         let messages = vec![
             Message {
+                outcome: Default::default(),
                 role: MessageRole::User,
                 content: "Summarize this codebase".into(),
                 tool_call_id: None,
@@ -2647,6 +2814,7 @@ mod tests {
                 tool_calls: vec![],
             },
             Message {
+                outcome: Default::default(),
                 role: MessageRole::Assistant,
                 content: String::new(),
                 tool_call_id: None,
@@ -2693,6 +2861,7 @@ mod tests {
                     detail: "offset type mismatch".into(),
                     state: ToolCardState::Error,
                     duration: None,
+                    outcome: forge_types::ExecutionOutcome::Failed { exit_code: None },
                 },
                 ChatItem::Banner {
                     text: "Forge couldn't complete this turn after repeated invalid tool calls."
@@ -2720,6 +2889,7 @@ mod tests {
     fn turn_failed_marker_is_not_an_assistant_answer() {
         let messages = vec![
             Message {
+                outcome: Default::default(),
                 role: MessageRole::User,
                 content: "Summarize this codebase".into(),
                 tool_call_id: None,
@@ -2729,6 +2899,7 @@ mod tests {
                 tool_calls: vec![],
             },
             Message {
+                outcome: Default::default(),
                 role: MessageRole::Assistant,
                 content: format!("{TURN_FAILED_MARKER}Forge couldn't complete this turn."),
                 tool_call_id: None,
@@ -2790,6 +2961,7 @@ mod tests {
     fn legacy_sessions_render_through_the_adapter_without_migration() {
         let messages = vec![
             Message {
+                outcome: Default::default(),
                 role: MessageRole::User,
                 content: "hello".into(),
                 tool_call_id: None,
@@ -2799,6 +2971,7 @@ mod tests {
                 tool_calls: vec![],
             },
             Message {
+                outcome: Default::default(),
                 role: MessageRole::Assistant,
                 content: "hi".into(),
                 tool_call_id: None,
@@ -2836,6 +3009,7 @@ mod tests {
                 detail: "status 101".into(),
                 state: ToolCardState::Error,
                 duration: None,
+                outcome: forge_types::ExecutionOutcome::Failed { exit_code: None },
             }],
             scroll: 0,
             follow: true,
@@ -2856,6 +3030,7 @@ mod tests {
     #[test]
     fn completed_thinking_remains_visible_in_lines() {
         let msgs = vec![Message {
+            outcome: Default::default(),
             role: MessageRole::Assistant,
             content: "ans".into(),
             tool_call_id: None,
@@ -2896,6 +3071,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join(" ");
         let msgs = vec![Message {
+            outcome: Default::default(),
             role: MessageRole::Assistant,
             content,
             tool_call_id: None,
@@ -2922,6 +3098,7 @@ mod tests {
     #[test]
     fn active_thinking_is_hidden_from_rendered_lines() {
         let msgs = vec![Message {
+            outcome: Default::default(),
             role: MessageRole::Assistant,
             content: String::new(),
             tool_call_id: None,
@@ -2951,6 +3128,7 @@ mod tests {
     #[test]
     fn assistant_output_remains_visible_while_thinking_is_hidden() {
         let msgs = vec![Message {
+            outcome: Default::default(),
             role: MessageRole::Assistant,
             content: "ans".into(),
             tool_call_id: None,
@@ -2996,6 +3174,7 @@ mod tests {
     fn user_messages_render_left_aligned_with_prompt_glyph() {
         const WIDTH: usize = 100;
         let msgs = vec![Message {
+            outcome: Default::default(),
             role: MessageRole::User,
             content: "hello world".into(),
             tool_call_id: None,
@@ -3060,6 +3239,7 @@ mod tests {
     #[test]
     fn long_assistant_responses_use_no_repeated_product_heading() {
         let msgs = vec![Message {
+            outcome: Default::default(),
             role: MessageRole::Assistant,
             content: "line one\nline two\nline three\nline four".into(),
             tool_call_id: None,
@@ -3091,6 +3271,7 @@ mod tests {
     #[test]
     fn tool_messages_render_as_cards() {
         let msgs = vec![Message {
+            outcome: Default::default(),
             role: MessageRole::Tool,
             content: "Tool validation error: bad".into(),
             tool_call_id: Some("1".into()),
@@ -3147,6 +3328,7 @@ mod tests {
             arguments,
         });
         let mut messages = vec![Message {
+            outcome: Default::default(),
             role: MessageRole::Assistant,
             content: String::new(),
             tool_call_id: None,
@@ -3173,6 +3355,7 @@ mod tests {
         ];
         let output_count = outputs.len();
         messages.extend(outputs.map(|(id, name, content)| Message {
+            outcome: Default::default(),
             role: MessageRole::Tool,
             content: content.into(),
             tool_call_id: Some(id.into()),
@@ -3238,6 +3421,7 @@ mod tests {
                     detail: "a".into(),
                     state: ToolCardState::Done,
                     duration: None,
+                    outcome: forge_types::ExecutionOutcome::Success,
                 },
                 ChatItem::ToolCard {
                     name: "ffgrep".into(),
@@ -3245,6 +3429,7 @@ mod tests {
                     detail: "a.rs:1:needle".into(),
                     state: ToolCardState::Done,
                     duration: None,
+                    outcome: forge_types::ExecutionOutcome::Success,
                 },
                 ChatItem::User {
                     text: "stop".into(),
@@ -3255,6 +3440,7 @@ mod tests {
                     detail: "status 101".into(),
                     state: ToolCardState::Error,
                     duration: None,
+                    outcome: forge_types::ExecutionOutcome::Failed { exit_code: None },
                 },
             ]),
             scroll: 0,
@@ -3275,8 +3461,156 @@ mod tests {
         assert!(blocks.iter().any(|block| matches!(
             block,
             ConversationBlock::ActivityGroup(group)
-                if group.label == "bash" || group.label == "Validation completed"
+                if group.count_label.contains("Tests failed")
+                    && matches!(group.outcome, ActivityOutcome::Failure)
         )));
+    }
+
+    #[test]
+    fn failed_validation_command_does_not_render_as_validation_completed() {
+        let model = ConversationModel {
+            items: vec![ChatItem::ToolCard {
+                name: "bash".into(),
+                summary: "$ cargo test · failed · exit code 101".into(),
+                detail: "status 101".into(),
+                state: ToolCardState::Error,
+                duration: None,
+                outcome: ExecutionOutcome::Failed {
+                    exit_code: Some(101),
+                },
+            }],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+        let rendered = rendered_text(&model);
+        assert!(
+            !rendered.contains("Validation completed"),
+            "a failed validation command must never render as completed:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("Tests failed") || rendered.contains("failed"),
+            "the failure must be visible in the rendered transcript:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn classify_tool_content_reads_outcome_not_substring_match() {
+        // Content that happens to contain the word "validation" must not be
+        // classified as an error when the real outcome is Success — the old
+        // bug was exactly this: substring-matching rendered text instead of
+        // the real execution result.
+        let (state, _, _) = classify_tool_content(
+            "bash",
+            "ran the validation suite successfully",
+            None,
+            &ExecutionOutcome::Success,
+        );
+        assert_eq!(state, ToolCardState::Done);
+    }
+
+    #[test]
+    fn classify_tool_content_bash_success_yields_tests_passed_copy() {
+        let (state, summary, _) =
+            classify_tool_content("bash", "", None, &ExecutionOutcome::Success);
+        assert_eq!(state, ToolCardState::Done);
+        assert!(summary.contains("completed"), "{summary}");
+    }
+
+    #[test]
+    fn classify_tool_content_bash_nonzero_yields_exit_code_copy() {
+        let (state, summary, _) = classify_tool_content(
+            "bash",
+            "boom",
+            None,
+            &ExecutionOutcome::Failed {
+                exit_code: Some(101),
+            },
+        );
+        assert_eq!(state, ToolCardState::Error);
+        assert!(summary.contains("failed · exit code 101"), "{summary}");
+    }
+
+    #[test]
+    fn classify_tool_content_bash_spawn_failed_yields_command_not_found_copy() {
+        let (state, summary, _) = classify_tool_content(
+            "bash",
+            "boom",
+            None,
+            &ExecutionOutcome::SpawnFailed {
+                reason: "command not found".into(),
+            },
+        );
+        assert_eq!(state, ToolCardState::Error);
+        assert!(summary.contains("failed · command not found"), "{summary}");
+    }
+
+    #[test]
+    fn classify_tool_content_bash_denied_yields_skipped_denied_copy() {
+        let (state, summary, _) = classify_tool_content(
+            "bash",
+            "denied by ACL: bash",
+            None,
+            &ExecutionOutcome::Denied {
+                reason: "denied by ACL: bash".into(),
+            },
+        );
+        assert_eq!(state, ToolCardState::Error);
+        assert!(summary.contains("skipped · denied"), "{summary}");
+    }
+
+    #[test]
+    fn classify_tool_content_bash_cancelled_yields_cancelled_copy() {
+        let (state, summary, _) =
+            classify_tool_content("bash", "", None, &ExecutionOutcome::Cancelled);
+        assert_eq!(state, ToolCardState::Error);
+        assert!(summary.contains("cancelled"), "{summary}");
+    }
+
+    #[test]
+    fn classify_tool_content_bash_timed_out_yields_timed_out_copy() {
+        let (state, summary, _) =
+            classify_tool_content("bash", "", None, &ExecutionOutcome::TimedOut);
+        assert_eq!(state, ToolCardState::Error);
+        assert!(summary.contains("timed out"), "{summary}");
+    }
+
+    #[test]
+    fn activity_outcome_icon_matrix() {
+        let cases = [
+            (ActivityOutcome::Success, false),
+            (ActivityOutcome::Failure, false),
+            (ActivityOutcome::Blocked, false),
+            (ActivityOutcome::Warning, false),
+            (ActivityOutcome::Neutral, false),
+            (ActivityOutcome::Denied, false),
+            (ActivityOutcome::Cancelled, false),
+            (ActivityOutcome::TimedOut, false),
+        ];
+        for (outcome, _) in cases {
+            let model = ConversationModel {
+                items: vec![ChatItem::ActivityGroup {
+                    category: ActivityCategory::Validating,
+                    summary: "summary".into(),
+                    detail: "detail".into(),
+                    state: ToolCardState::Done,
+                    outcome: match outcome {
+                        ActivityOutcome::Denied => ExecutionOutcome::Denied {
+                            reason: "denied".into(),
+                        },
+                        ActivityOutcome::Cancelled => ExecutionOutcome::Cancelled,
+                        ActivityOutcome::TimedOut => ExecutionOutcome::TimedOut,
+                        ActivityOutcome::Failure => ExecutionOutcome::Failed { exit_code: None },
+                        _ => ExecutionOutcome::Success,
+                    },
+                }],
+                scroll: 0,
+                follow: true,
+                opts: ConversationViewOpts::default(),
+            };
+            // Rendering must not panic for any outcome variant.
+            let _ = rendered_text(&model);
+        }
     }
 
     #[test]
@@ -3288,6 +3622,7 @@ mod tests {
                 detail: "full file output".into(),
                 state: ToolCardState::Done,
                 duration: None,
+                outcome: forge_types::ExecutionOutcome::Success,
             }],
             scroll: 0,
             follow: true,
@@ -3328,6 +3663,7 @@ mod tests {
                     .join("\n"),
                 state: ToolCardState::Done,
                 duration: None,
+                outcome: forge_types::ExecutionOutcome::Success,
             }],
             scroll: 0,
             follow: true,
@@ -3431,6 +3767,7 @@ mod tests {
                     detail: "src/lib.rs".into(),
                     state: ToolCardState::Done,
                     duration: None,
+                    outcome: forge_types::ExecutionOutcome::Success,
                 },
                 ChatItem::ToolCard {
                     name: "apply_patch".into(),
@@ -3438,6 +3775,7 @@ mod tests {
                     detail: "src/app.rs".into(),
                     state: ToolCardState::Done,
                     duration: None,
+                    outcome: forge_types::ExecutionOutcome::Success,
                 },
             ]),
             scroll: 0,
@@ -3462,6 +3800,7 @@ mod tests {
         let error = "Tool validation error: tool `read_file` validation failed at /path: 1 is not of type string. Please correct arguments.";
         let msgs = vec![
             Message {
+                outcome: Default::default(),
                 role: MessageRole::Tool,
                 content: error.into(),
                 tool_call_id: Some("1".into()),
@@ -3471,6 +3810,7 @@ mod tests {
                 tool_calls: vec![],
             },
             Message {
+                outcome: Default::default(),
                 role: MessageRole::Tool,
                 content: error.into(),
                 tool_call_id: Some("2".into()),
@@ -3480,6 +3820,7 @@ mod tests {
                 tool_calls: vec![],
             },
             Message {
+                outcome: Default::default(),
                 role: MessageRole::Assistant,
                 content: "Correcting the tool call.".into(),
                 tool_call_id: None,
@@ -3530,6 +3871,7 @@ mod tests {
     #[test]
     fn diff_like_tool_messages_render_as_diff_cards() {
         let msgs = vec![Message {
+            outcome: Default::default(),
             role: MessageRole::Tool,
             content: "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+new\n"
                 .into(),
@@ -3557,6 +3899,7 @@ mod tests {
     fn update_plan_tool_messages_render_as_checklist() {
         let msgs = vec![
             Message {
+                outcome: Default::default(),
                 role: MessageRole::Assistant,
                 content: String::new(),
                 tool_call_id: None,
@@ -3577,6 +3920,7 @@ mod tests {
                 }],
             },
             Message {
+                outcome: Default::default(),
                 role: MessageRole::Tool,
                 content: "Plan updated".into(),
                 tool_call_id: Some("plan-1".into()),
@@ -3627,6 +3971,7 @@ mod tests {
     #[test]
     fn multi_file_diff_results_become_separate_cards() {
         let msgs = vec![Message {
+            outcome: Default::default(),
             role: MessageRole::Tool,
             content: concat!(
                 "diff --git a/src/a.rs b/src/a.rs\n",
@@ -4044,6 +4389,7 @@ mod tests {
     fn repair_task_renders_evaluator_report_and_generator_response() {
         let messages = vec![
             Message {
+                outcome: Default::default(),
                 role: MessageRole::User,
                 content: "[REPAIR TASK EVAL-01]\nSENSOR · DETERMINISTIC\ncargo test · failed\nEVALUATOR REPORT\nCriteria: public API returns 429\nFinding: layer is registered too late\nRepair: attach layer to public router".into(),
                 tool_call_id: None,
@@ -4053,6 +4399,7 @@ mod tests {
                 tool_calls: vec![],
             },
             Message {
+                outcome: Default::default(),
                 role: MessageRole::Assistant,
                 content: "Moving the layer onto the public router.".into(),
                 tool_call_id: None,
@@ -4100,6 +4447,7 @@ mod tests {
     fn three_block_model() -> ConversationModel {
         let msgs = vec![
             Message {
+                outcome: Default::default(),
                 role: MessageRole::User,
                 content: "first".into(),
                 tool_call_id: None,
@@ -4109,6 +4457,7 @@ mod tests {
                 tool_calls: vec![],
             },
             Message {
+                outcome: Default::default(),
                 role: MessageRole::Assistant,
                 content: "second".into(),
                 tool_call_id: None,
@@ -4118,6 +4467,7 @@ mod tests {
                 tool_calls: vec![],
             },
             Message {
+                outcome: Default::default(),
                 role: MessageRole::User,
                 content: "third".into(),
                 tool_call_id: None,
