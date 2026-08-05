@@ -310,7 +310,7 @@ enum SemanticCommand {
     ToggleCurrentFileAttachment,
     ToggleToolDetails,
     CyclePermissionMode,
-    /// Focus the composer chip bar (`Alt+.`); ←/→ move, Enter activates.
+    /// Focus the composer chip bar (`F3`); ←/→ move, Enter activates.
     FocusComposerChips,
     MoveQueueSelection(i32),
     CancelSelectedQueueMessage,
@@ -685,12 +685,12 @@ pub struct TuiApp {
     /// Phase 10 / TUI-10 — activity ring buffer.
     activity: ActivityFeed,
     reasoning_effort: ReasoningEffortState,
-    /// Active oversight level — cycled with Alt+P (`SemanticCommand::CyclePermissionMode`).
+    /// Active oversight level — cycled with F2 (`SemanticCommand::CyclePermissionMode`).
     /// Mirrors what's actually applied to `session`'s `Governance` via
     /// `apply_permission_mode`; this field exists only because `Governance`
     /// doesn't remember which named mode produced its current fields.
     permission_mode: forge_governance::PermissionMode,
-    /// When `Some`, composer chip bar is focused at this index (`Alt+.`).
+    /// When `Some`, composer chip bar is focused at this index (`F3`).
     composer_chip_focus: Option<usize>,
     tool_detail: ToolDetailState,
     /// V3.1 contextual workspace navigation.

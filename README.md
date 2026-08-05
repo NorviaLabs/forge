@@ -154,13 +154,13 @@ controls are:
 | `Ctrl+Backtick` | Toggle the bottom panel |
 | `Alt+1`–`Alt+3` | Open a bottom-panel tab |
 | `Shift+←` / `Shift+→` | Switch the active block's tab |
-| `Alt+P` | Cycle permission mode (Manual ↔ Accept Edits) |
-| `Alt+.` | Focus composer chips (mode · connect · model · effort) |
-| `Alt+C` | Open model picker |
+| `F2` | Cycle permission mode (Manual ↔ Accept Edits) |
+| `F3` | Focus composer chips (mode · connect · model · effort) |
+| `F4` | Open model picker |
 | `?` | Open help |
 
 The composer shows a chip row under the input: permission mode, connection,
-model, and effort. `Alt+.` then `←`/`→`/`Enter` activates a chip (disconnected
+model, and effort. `F3` then `←`/`→`/`Enter` activates a chip (disconnected
 → connect flow). `Enter` still sends; `⏎` is a hint only.
 
 When the bottom panel is focused, it is an interactive login shell. Type or
@@ -271,7 +271,7 @@ Menu rows (when a prompt appears):
 
 ### Permission modes
 
-`Alt+P` cycles the session's oversight level (persisted per workspace).
+`F2` cycles the session's oversight level (persisted per workspace).
 Default is **Accept Edits**.
 
 - **Accept Edits** (default) — file writes free; a tight shell allow list
