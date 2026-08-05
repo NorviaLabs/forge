@@ -182,53 +182,6 @@ impl TuiApp {
         }
     }
 
-    /// Register clickable regions for the docked approval card. `card_area`
-    /// is the exact `Rect` the card widget was rendered into this frame, and
-    /// each button's row is found by searching the same lines that frame
-    /// actually rendered (`approval_card_action_row`), so a layout change
-    /// can never leave a hand-maintained offset out of sync. Buttons are
-    /// only offered in the `Decide` stage — `ConfirmPattern`/`DenyFeedback`
-    /// are keyboard-only.
-    pub(super) fn register_approval_card_hit_regions(&mut self, card_area: ratatui::layout::Rect) {
-        let Some(card) = self.approval_card.clone() else {
-            return;
-        };
-        let inner = ratatui::widgets::Block::default()
-            .borders(ratatui::widgets::Borders::ALL)
-            .inner(card_area);
-        if let Some(row) = approval_card_action_row(&card, ApprovalFocusedAction::AllowOnce) {
-            let y = inner.y.saturating_add(row as u16);
-            self.register_hit_region(
-                ratatui::layout::Rect::new(inner.x, y, 12, 1),
-                HitTarget::OverlayAction(OverlayAction::HitlApprove),
-                1000,
-            );
-            self.register_hit_region(
-                ratatui::layout::Rect::new(inner.x.saturating_add(14), y, 8, 1),
-                HitTarget::OverlayAction(OverlayAction::HitlDeny),
-                1000,
-            );
-        }
-        if let Some(row) = approval_card_action_row(&card, ApprovalFocusedAction::RememberDirect) {
-            let y = inner.y.saturating_add(row as u16);
-            self.register_hit_region(
-                ratatui::layout::Rect::new(inner.x, y, inner.width, 1),
-                HitTarget::OverlayAction(OverlayAction::HitlApproveSession),
-                1000,
-            );
-        }
-        if let Some(row) = approval_card_action_row(&card, ApprovalFocusedAction::AllowPattern) {
-            let y = inner.y.saturating_add(row as u16);
-            self.register_hit_region(
-                ratatui::layout::Rect::new(inner.x, y, inner.width, 1),
-                HitTarget::OverlayAction(OverlayAction::HitlApprovePattern {
-                    pattern: card.approval.suggested_pattern.clone(),
-                }),
-                1000,
-            );
-        }
-    }
-
     pub(super) fn scroll_conversation_up(&mut self, amount: u16) {
         self.conversation_view.follow = false;
         self.conversation_view.scroll = self.conversation_view.scroll.saturating_add(amount);
@@ -259,7 +212,6 @@ impl TuiApp {
             | HitTarget::ActivitySummary
             | HitTarget::VisibleControl(_)
             | HitTarget::Composer
-            | HitTarget::OverlayAction(_)
             | HitTarget::Sidebar => None,
         }
     }
@@ -339,9 +291,7 @@ impl TuiApp {
             }
             Some(HitTarget::Composer) => Some(FocusBlock::Composer),
             Some(HitTarget::ActivitySummary) => Some(FocusBlock::Workspace),
-            Some(HitTarget::VisibleControl(_))
-            | Some(HitTarget::OverlayAction(_))
-            | Some(HitTarget::Sidebar) => None,
+            Some(HitTarget::VisibleControl(_)) | Some(HitTarget::Sidebar) => None,
             None => None,
         }
     }
@@ -397,9 +347,6 @@ impl TuiApp {
                 self.execute_semantic_command(SemanticCommand::FocusComposer)
                     .await?;
             }
-            HitTarget::OverlayAction(action) => {
-                self.apply_overlay_action(action).await?;
-            }
             HitTarget::Sidebar => {
                 self.execute_semantic_command(SemanticCommand::FocusPane(FocusBlock::Sidebar))
                     .await?;
@@ -418,11 +365,7 @@ impl TuiApp {
                     self.clear_pending_double_click();
                     return Ok(());
                 };
-                if (self.overlay.is_some()
-                    || self.explorer_dialog.current.is_some()
-                    || self.approval_card.is_some())
-                    && !matches!(target, HitTarget::OverlayAction(_))
-                {
+                if self.overlay.is_some() || self.explorer_dialog.current.is_some() {
                     self.clear_pending_double_click();
                     return Ok(());
                 }

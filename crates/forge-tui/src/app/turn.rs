@@ -672,9 +672,6 @@ impl TuiApp {
             self.timing.started = None;
             self.timing.thinking_started = None;
             self.timing.thought_secs = None;
-            if let Some(p) = self.session.pending_hitl().cloned() {
-                self.open_approval_card(p);
-            }
             self.exit.code = ExitCode::AwaitingHitl;
             self.set_feedback(FeedbackSeverity::Warn, "awaiting human approval");
             self.push_activity(ActivityKind::Hitl, FeedbackSeverity::Warn, "hitl waiting");

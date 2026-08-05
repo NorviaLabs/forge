@@ -131,22 +131,16 @@ async fn mouse_wheel_scrolls_hovered_pane_without_focus_change() {
 }
 
 #[tokio::test]
-async fn mouse_overlay_blocks_underlying_targets() {
+async fn overlay_blocks_underlying_mouse_targets() {
     let (_dir, mut app) = focus_test_app().await;
-    let payload = HitlPayload {
-        call_id: "call-1".into(),
-        tool: "write".into(),
-        args_redacted: json!({"path": "src/main.rs"}),
-        reason: "Edit requires approval".into(),
-    };
-    app.open_approval_card(payload);
+    app.overlay = Some(Overlay::welcome());
     draw_app(&mut app, 120, 30);
     let (x, y) = hit_point(&app, |target| matches!(target, HitTarget::Composer));
     app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), x, y))
         .await
         .unwrap();
     assert_eq!(app.focus.block, FocusBlock::Composer);
-    assert!(app.approval_card.is_some());
+    assert!(app.overlay.is_some());
 }
 
 #[tokio::test]

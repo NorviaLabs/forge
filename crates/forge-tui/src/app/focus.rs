@@ -139,8 +139,10 @@ impl TuiApp {
         if self.explorer_dialog.current.is_some() {
             return Some("Enter confirm · Esc cancel".into());
         }
-        if self.approval_card.is_some() {
-            return Some("Tab move · Enter allow once · Esc deny".into());
+        if self.session.pending_hitl().is_some() {
+            // Standing cue while an approval is pending: token hint only —
+            // the payload itself is rendered inline in the transcript.
+            return Some("⏸ approval · yes | no | remember | always | no <note>".into());
         }
         if let Some(overlay) = self.overlay.as_ref() {
             return match overlay {

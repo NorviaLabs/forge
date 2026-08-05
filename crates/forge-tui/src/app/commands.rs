@@ -820,7 +820,6 @@ impl TuiApp {
                             self.conversation_view.follow = true;
                             self.hitl_session.allowed.clear();
                             self.hitl_session.pattern_allow.clear();
-                            self.maybe_open_hitl();
                         }
                         Err(error) => {
                             self.report_error(&format!(

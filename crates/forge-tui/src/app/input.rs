@@ -156,9 +156,6 @@ impl TuiApp {
             *error = None;
             return;
         }
-        if self.approval_card.is_some() {
-            return;
-        }
         if self.focus.block == FocusBlock::BottomPanel {
             if let Some(terminal) = self.interactive_terminal.as_mut() {
                 if let Err(error) = terminal.write(data.as_bytes()) {
@@ -228,41 +225,34 @@ impl TuiApp {
             return Ok(());
         }
 
-        self.history.push(&line);
-        self.slash_suggestions.selected = 0;
-        self.notice_state.items.clear();
-        self.input.history_browse = false;
-
         // Slash commands always dispatch immediately regardless of lifecycle.
         if line.trim_start().starts_with('/') {
+            self.history.push(&line);
+            self.slash_suggestions.selected = 0;
+            self.notice_state.items.clear();
+            self.input.history_browse = false;
             self.dispatch_line(&line).await?;
             return Ok(());
         }
 
-        match input_route::classify_input(
-            &self.session.active_task,
-            self.overlay.is_some() || self.approval_card.is_some(),
-            &line,
-        ) {
+        let route =
+            input_route::classify_input(&self.session.active_task, self.overlay.is_some(), &line);
+        let consumed = !matches!(route, input_route::InputRoute::RejectStaleResponse);
+        if consumed {
+            self.history.push(&line);
+            self.slash_suggestions.selected = 0;
+            self.notice_state.items.clear();
+            self.input.history_browse = false;
+        }
+        match route {
             input_route::InputRoute::StartNewTask => {
                 self.dispatch_line(&line).await?;
             }
             input_route::InputRoute::QueueFutureTask => {
                 self.enqueue_user_message(line).await;
             }
-            input_route::InputRoute::ResolveApproval(decision) => {
-                let label = match decision {
-                    HitlDecision::Approve => "approved via composer",
-                    HitlDecision::Deny => "denied via composer",
-                    _ => "resolved via composer",
-                };
-                match self.session.resolve_hitl(decision, "tui").await {
-                    Ok(()) => {
-                        self.overlay = None;
-                        self.push_toast(label);
-                    }
-                    Err(e) => self.report_error(&e.to_string()),
-                }
+            input_route::InputRoute::ResolveApproval(action) => {
+                self.resolve_approval_line(action).await?;
             }
             input_route::InputRoute::AnswerClarification
             | input_route::InputRoute::ResolveSelection => {
@@ -271,9 +261,12 @@ impl TuiApp {
                 self.set_feedback(FeedbackSeverity::Warn, "nothing pending to answer");
             }
             input_route::InputRoute::RejectStaleResponse => {
+                // Keep the operator's text so they can edit it into a valid
+                // approval answer instead of retyping from scratch.
+                self.input.set_text(line);
                 self.set_feedback(
                     FeedbackSeverity::Warn,
-                    "resolve the pending approval first — type y/n, or use the approval overlay",
+                    "resolve the pending approval first — type yes | no | remember | always | no <note>",
                 );
             }
         }
@@ -611,13 +604,6 @@ impl TuiApp {
 
         if self.explorer_dialog.current.is_some() {
             self.handle_explorer_dialog_key(key);
-            return Ok(());
-        }
-
-        if let Some(ref mut card) = self.approval_card {
-            let ok = map_key(key);
-            let action = handle_approval_card_key(card, ok);
-            self.apply_overlay_action(action).await?;
             return Ok(());
         }
 

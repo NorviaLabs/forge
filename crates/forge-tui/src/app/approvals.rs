@@ -68,12 +68,6 @@ impl TuiApp {
             .any(|rule| rule.matches(&call))
     }
 
-    pub fn approval_card_dock_height(&self, width: u16) -> Option<u16> {
-        self.approval_card
-            .as_ref()
-            .map(|card| approval_card_dock_height(card, width))
-    }
-
     pub(super) fn approval_identity_for_payload(
         &self,
         payload: &HitlPayload,
@@ -92,11 +86,43 @@ impl TuiApp {
         })
     }
 
-    pub(super) fn open_approval_card(&mut self, payload: HitlPayload) {
-        self.approval_card = Some(ApprovalCardState::for_payload(
-            payload,
-            self.session.workspace_root().display().to_string(),
-        ));
+    /// Apply a parsed approval line to the pending HITL request. Eligibility
+    /// for `remember`/`always` is checked here, not in the composer parser,
+    /// so an ineligible verb is warned about without acting.
+    pub(super) async fn resolve_approval_line(
+        &mut self,
+        action: input_route::ApprovalAction,
+    ) -> Result<(), TuiError> {
+        match action {
+            input_route::ApprovalAction::Approve => {
+                self.resolve_hitl_overlay(HitlDecision::Approve, false)
+                    .await
+            }
+            input_route::ApprovalAction::Remember => {
+                self.resolve_hitl_overlay(HitlDecision::Approve, true).await
+            }
+            input_route::ApprovalAction::AllowPattern => {
+                let Some(payload) = self.session.pending_hitl() else {
+                    return Ok(());
+                };
+                let approval = self.approval_state_for_payload(payload);
+                if !approval.pattern_allow_eligible {
+                    self.set_feedback(
+                        FeedbackSeverity::Warn,
+                        "this call has no allow pattern to persist; use yes or no",
+                    );
+                    return Ok(());
+                }
+                self.resolve_hitl_overlay_with_pattern(approval.suggested_pattern)
+                    .await
+            }
+            input_route::ApprovalAction::Deny => {
+                self.resolve_hitl_overlay(HitlDecision::Deny, false).await
+            }
+            input_route::ApprovalAction::DenyWithFeedback(feedback) => {
+                self.resolve_hitl_overlay_with_feedback(feedback).await
+            }
+        }
     }
 
     pub async fn drain_pending_hitl(
@@ -131,7 +157,6 @@ impl TuiApp {
         remember_exact_direct: bool,
     ) -> Result<(), TuiError> {
         let Some(payload) = self.session.pending_hitl().cloned() else {
-            self.approval_card = None;
             return Ok(());
         };
 
@@ -152,7 +177,6 @@ impl TuiApp {
         if let Some(identity) = identity_to_remember {
             self.hitl_session.allowed.insert(identity);
         }
-        self.approval_card = None;
         match decision {
             HitlDecision::Approve if remember_exact_direct => {
                 self.push_toast("remembered exact Direct invocation");
@@ -184,21 +208,6 @@ impl TuiApp {
         self.timing.started = Some(Instant::now());
         self.stream.preview.clear();
         self.stream.thinking.clear();
-    }
-
-    pub fn maybe_open_hitl(&mut self) {
-        if self.approval_card.is_none() {
-            if let Some(p) = self.session.pending_hitl() {
-                let identity_allowed = self
-                    .approval_identity_for_payload(p)
-                    .is_some_and(|identity| self.hitl_session.allowed.contains(&identity));
-                if identity_allowed || self.pattern_allows(p) {
-                    // Will be drained by `drain_auto_hitl` in the event loop.
-                    return;
-                }
-                self.open_approval_card(p.clone());
-            }
-        }
     }
 
     /// Auto-approve HITL for exact Direct invocations remembered this
@@ -237,7 +246,6 @@ impl TuiApp {
         pattern: String,
     ) -> Result<(), TuiError> {
         if self.session.pending_hitl().is_none() {
-            self.approval_card = None;
             return Ok(());
         }
         let Some(rule) = forge_governance::PatternRule::parse(&pattern) else {
@@ -254,7 +262,6 @@ impl TuiApp {
         self.session
             .resolve_hitl(HitlDecision::Approve, "tui")
             .await?;
-        self.approval_card = None;
         self.push_toast(format!("allowed going forward: {pattern}"));
         self.resume_turn_after_hitl();
         Ok(())
@@ -268,7 +275,6 @@ impl TuiApp {
         feedback: String,
     ) -> Result<(), TuiError> {
         if self.session.pending_hitl().is_none() {
-            self.approval_card = None;
             return Ok(());
         }
         let trimmed = feedback.trim();
@@ -276,7 +282,6 @@ impl TuiApp {
         self.session
             .resolve_hitl_with_feedback(HitlDecision::Deny, "tui", feedback_opt)
             .await?;
-        self.approval_card = None;
         self.push_toast(if feedback_opt.is_some() {
             "denied with feedback"
         } else {

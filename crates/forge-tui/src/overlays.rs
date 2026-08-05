@@ -374,23 +374,6 @@ pub enum ApprovalExecutionMode {
     Shell,
 }
 
-impl ApprovalExecutionMode {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Direct => "Direct",
-            Self::Shell => "Shell",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ApprovalFocusedAction {
-    AllowOnce,
-    RememberDirect,
-    AllowPattern,
-    Deny,
-}
-
 #[derive(Debug, Clone)]
 pub struct ApprovalOverlayState {
     pub mode: ApprovalExecutionMode,
@@ -399,7 +382,6 @@ pub struct ApprovalOverlayState {
     pub shell_command: Option<String>,
     pub working_directory: String,
     pub environment_delta: String,
-    pub source: String,
     pub remember_eligible: bool,
     /// Whether "allow this pattern going forward" is offered. Unlike
     /// `remember_eligible` this isn't Direct-mode-only — a command *prefix*
@@ -410,7 +392,6 @@ pub struct ApprovalOverlayState {
     /// The literal pattern `AllowPattern` would add, generalized from this
     /// call — shown for confirmation before it's persisted.
     pub suggested_pattern: String,
-    pub focused_action: ApprovalFocusedAction,
 }
 
 impl ApprovalOverlayState {
@@ -450,83 +431,9 @@ impl ApprovalOverlayState {
                 fallback_working_directory,
             ),
             environment_delta,
-            source: "Agent suggestion".into(),
             remember_eligible,
             pattern_allow_eligible,
             suggested_pattern,
-            focused_action: ApprovalFocusedAction::AllowOnce,
-        }
-    }
-
-    fn focus_next(&mut self, delta: i32) {
-        let actions = self.actions();
-        if actions.is_empty() {
-            self.focused_action = ApprovalFocusedAction::AllowOnce;
-            return;
-        }
-        let current = actions
-            .iter()
-            .position(|action| *action == self.focused_action)
-            .unwrap_or(0);
-        let next = (current as i32 + delta).rem_euclid(actions.len() as i32) as usize;
-        self.focused_action = actions[next];
-    }
-
-    fn actions(&self) -> Vec<ApprovalFocusedAction> {
-        let mut actions = vec![
-            ApprovalFocusedAction::AllowOnce,
-            ApprovalFocusedAction::Deny,
-        ];
-        if self.pattern_allow_eligible {
-            let deny_pos = actions.len() - 1;
-            actions.insert(deny_pos, ApprovalFocusedAction::AllowPattern);
-        }
-        if self.remember_eligible {
-            actions.insert(1, ApprovalFocusedAction::RememberDirect);
-        }
-        actions
-    }
-}
-
-/// Sub-stage of the approval card. Most of the time this is `Decide`; the
-/// other two are short-lived confirmation/input steps that stay part of the
-/// same card rather than opening another overlay.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ApprovalStage {
-    Decide,
-    /// Showing the literal pattern text for confirmation before it's
-    /// written to the permissions file — see `suggest_pattern`.
-    ConfirmPattern,
-    /// Collecting an optional short note to send back to the agent along
-    /// with the denial.
-    DenyFeedback {
-        input: String,
-    },
-}
-
-/// State for the inline approval card rendered in the conversation panel.
-///
-/// Deliberately not an `Overlay` variant: an approval decision is not a
-/// distinct application mode. It lives alongside `TuiApp.overlay` (which may
-/// still be `None` or hold an unrelated picker) and is rendered docked at the
-/// bottom of the scrollback rather than as a centered, mode-swapping popup.
-#[derive(Debug, Clone)]
-pub struct ApprovalCardState {
-    pub payload: HitlPayload,
-    pub approval: ApprovalOverlayState,
-    /// Whether to show the expanded policy-details section.
-    pub expanded: bool,
-    pub stage: ApprovalStage,
-}
-
-impl ApprovalCardState {
-    pub fn for_payload(payload: HitlPayload, working_directory: impl Into<String>) -> Self {
-        let approval = ApprovalOverlayState::for_payload(&payload, working_directory);
-        Self {
-            payload,
-            approval,
-            expanded: false,
-            stage: ApprovalStage::Decide,
         }
     }
 }
@@ -971,21 +878,6 @@ pub enum OverlayAction {
     None,
     Close,
     BeginOnboarding,
-    /// Close HITL and approve/deny
-    HitlApprove,
-    /// Approve and remember this exact Direct invocation for this session.
-    HitlApproveSession,
-    /// Approve, and persist `pattern` as an `allow` rule so future matching
-    /// calls skip approval — this session and in later ones.
-    HitlApprovePattern {
-        pattern: String,
-    },
-    HitlDeny,
-    /// Deny, carrying a short note back to the agent as tool-result context
-    /// for what to do instead. Empty `feedback` behaves like `HitlDeny`.
-    HitlDenyWithFeedback {
-        feedback: String,
-    },
     ContinueTurns,
     StopTurns,
     /// Execute slash command string e.g. "/status"
@@ -1036,125 +928,8 @@ pub enum OverlayAction {
     },
 }
 
-/// Key handling for the inline approval card. Separate from
-/// `handle_overlay_key` because the card is not an `Overlay` variant — it has
-/// its own small keymap rather than sharing the generic overlay dispatch.
-pub fn handle_approval_card_key(card: &mut ApprovalCardState, key: Key) -> OverlayAction {
-    match &card.stage {
-        ApprovalStage::DenyFeedback { .. } => handle_deny_feedback_key(card, key),
-        ApprovalStage::ConfirmPattern => handle_confirm_pattern_key(card, key),
-        ApprovalStage::Decide => handle_decide_key(card, key),
-    }
-}
-
-fn handle_decide_key(card: &mut ApprovalCardState, key: Key) -> OverlayAction {
-    match key {
-        Key::Esc => OverlayAction::HitlDeny,
-        Key::Left | Key::BackTab => {
-            card.approval.focus_next(-1);
-            OverlayAction::None
-        }
-        Key::Right | Key::Tab => {
-            card.approval.focus_next(1);
-            OverlayAction::None
-        }
-        Key::Enter => match card.approval.focused_action {
-            ApprovalFocusedAction::AllowOnce => OverlayAction::HitlApprove,
-            ApprovalFocusedAction::RememberDirect if card.approval.remember_eligible => {
-                OverlayAction::HitlApproveSession
-            }
-            ApprovalFocusedAction::RememberDirect => OverlayAction::None,
-            ApprovalFocusedAction::AllowPattern if card.approval.pattern_allow_eligible => {
-                card.stage = ApprovalStage::ConfirmPattern;
-                OverlayAction::None
-            }
-            ApprovalFocusedAction::AllowPattern => OverlayAction::None,
-            ApprovalFocusedAction::Deny => OverlayAction::HitlDeny,
-        },
-        Key::Char('a') | Key::Char('A') => OverlayAction::HitlApprove,
-        Key::Char('s') | Key::Char('S') => {
-            if card.approval.remember_eligible {
-                OverlayAction::HitlApproveSession
-            } else {
-                OverlayAction::None
-            }
-        }
-        Key::Char('p') | Key::Char('P') => {
-            if card.approval.pattern_allow_eligible {
-                card.stage = ApprovalStage::ConfirmPattern;
-            }
-            OverlayAction::None
-        }
-        Key::Char('d') | Key::Char('D') => OverlayAction::HitlDeny,
-        Key::Char('f') | Key::Char('F') => {
-            card.stage = ApprovalStage::DenyFeedback {
-                input: String::new(),
-            };
-            OverlayAction::None
-        }
-        Key::Char('v') | Key::Char('V') => {
-            card.expanded = !card.expanded;
-            OverlayAction::None
-        }
-        _ => OverlayAction::None,
-    }
-}
-
-/// Confirmation step for `AllowPattern`: shows the literal pattern text
-/// before it's persisted (see `suggest_pattern`), per opencode's "Allow
-/// always" stage listing the exact glob before committing.
-fn handle_confirm_pattern_key(card: &mut ApprovalCardState, key: Key) -> OverlayAction {
-    match key {
-        Key::Enter | Key::Char('y') | Key::Char('Y') => OverlayAction::HitlApprovePattern {
-            pattern: card.approval.suggested_pattern.clone(),
-        },
-        Key::Esc | Key::Char('n') | Key::Char('N') => {
-            card.stage = ApprovalStage::Decide;
-            OverlayAction::None
-        }
-        _ => OverlayAction::None,
-    }
-}
-
-/// Free-text input step for `HitlDenyWithFeedback`. Deliberately narrow
-/// key handling (only edit/submit/cancel) since this is a short one-line
-/// note, not a full composer.
-fn handle_deny_feedback_key(card: &mut ApprovalCardState, key: Key) -> OverlayAction {
-    match key {
-        Key::Esc => {
-            card.stage = ApprovalStage::Decide;
-            OverlayAction::None
-        }
-        Key::Enter => {
-            let ApprovalStage::DenyFeedback { input } = &card.stage else {
-                unreachable!("handle_deny_feedback_key only runs in DenyFeedback stage")
-            };
-            OverlayAction::HitlDenyWithFeedback {
-                feedback: input.clone(),
-            }
-        }
-        Key::Backspace => {
-            if let ApprovalStage::DenyFeedback { input } = &mut card.stage {
-                input.pop();
-            }
-            OverlayAction::None
-        }
-        Key::Char(c) if !c.is_control() => {
-            if let ApprovalStage::DenyFeedback { input } = &mut card.stage {
-                input.push(c);
-            }
-            OverlayAction::None
-        }
-        Key::Paste(data) => {
-            if let ApprovalStage::DenyFeedback { input } = &mut card.stage {
-                input.extend(data.chars().filter(|c| !c.is_control()));
-            }
-            OverlayAction::None
-        }
-        _ => OverlayAction::None,
-    }
-}
-
+/// Key handling for overlays. Each `Overlay` variant dispatches to its own
+/// key handler; the returned `OverlayAction` is applied by the app.
 fn theme_preview_action(overlay: &Overlay) -> OverlayAction {
     match overlay {
         Overlay::Theme {
@@ -1522,6 +1297,7 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
     }
 }
 
+#[cfg(test)]
 fn hitl_args(args: &serde_json::Value) -> String {
     let value = args
         .get("command")
@@ -1661,210 +1437,6 @@ fn contains_redacted_value(value: &serde_json::Value) -> bool {
         serde_json::Value::Object(values) => values.values().any(contains_redacted_value),
         _ => false,
     }
-}
-
-fn action_label(action: ApprovalFocusedAction) -> &'static str {
-    match action {
-        ApprovalFocusedAction::AllowOnce => "Allow once",
-        ApprovalFocusedAction::RememberDirect => "Remember exact Direct",
-        ApprovalFocusedAction::AllowPattern => "Allow pattern",
-        ApprovalFocusedAction::Deny => "Deny",
-    }
-}
-
-fn action_span(action: ApprovalFocusedAction, focused: ApprovalFocusedAction) -> Span<'static> {
-    let label = format!("[{}]", action_label(action));
-    let style = if action == focused {
-        theme::focused_selection_style()
-    } else if action == ApprovalFocusedAction::Deny {
-        theme::danger()
-    } else {
-        theme::text()
-    };
-    Span::styled(label, style)
-}
-
-/// Row index (0-based, within `approval_lines(card)`) where `action`'s
-/// button renders — `None` if the card isn't in `Decide` stage, or that
-/// action isn't offered for this call. Used for mouse hit-region
-/// registration, computed from the same lines a frame actually renders so
-/// the two can never drift out of sync with a hand-maintained offset.
-pub fn approval_card_action_row(
-    card: &ApprovalCardState,
-    action: ApprovalFocusedAction,
-) -> Option<usize> {
-    if !matches!(card.stage, ApprovalStage::Decide) {
-        return None;
-    }
-    let label = format!("[{}]", action_label(action));
-    approval_lines(card)
-        .iter()
-        .position(|line| line.spans.iter().any(|span| span.content.contains(&label)))
-}
-
-fn approval_lines(card: &ApprovalCardState) -> Vec<Line<'static>> {
-    let payload = &card.payload;
-    let approval = &card.approval;
-    let mut lines = vec![
-        Line::from(Span::styled("Approval required", theme::warn())),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("Mode: ", theme::muted()),
-            Span::styled(approval.mode.label().to_owned(), theme::text()),
-        ]),
-    ];
-    match approval.mode {
-        ApprovalExecutionMode::Direct => {
-            lines.push(Line::from(vec![
-                Span::styled("Executable: ", theme::muted()),
-                Span::styled(approval.executable_or_shell.clone(), theme::text()),
-            ]));
-            lines.push(Line::from(vec![
-                Span::styled("Arguments: ", theme::muted()),
-                Span::styled(format!("{:?}", approval.arguments), theme::text()),
-            ]));
-        }
-        ApprovalExecutionMode::Shell => {
-            lines.push(Line::from(vec![
-                Span::styled("Shell: ", theme::muted()),
-                Span::styled(approval.executable_or_shell.clone(), theme::text()),
-            ]));
-            lines.push(Line::from(vec![
-                Span::styled("Command: ", theme::muted()),
-                Span::styled(
-                    approval.shell_command.clone().unwrap_or_default(),
-                    theme::text(),
-                ),
-            ]));
-        }
-    }
-    lines.extend([
-        Line::from(vec![
-            Span::styled("Working directory: ", theme::muted()),
-            Span::styled(approval.working_directory.clone(), theme::text()),
-        ]),
-        Line::from(vec![
-            Span::styled("Environment delta: ", theme::muted()),
-            Span::styled(approval.environment_delta.clone(), theme::text()),
-        ]),
-        Line::from(vec![
-            Span::styled("Source: ", theme::muted()),
-            Span::styled(approval.source.clone(), theme::text()),
-        ]),
-        Line::from(vec![
-            Span::styled("Reason: ", theme::muted()),
-            Span::styled(payload.reason.clone(), theme::text()),
-        ]),
-        Line::from(""),
-    ]);
-
-    match &card.stage {
-        ApprovalStage::Decide => {
-            lines.push(Line::from(vec![
-                action_span(ApprovalFocusedAction::AllowOnce, approval.focused_action),
-                Span::raw("  "),
-                action_span(ApprovalFocusedAction::Deny, approval.focused_action),
-            ]));
-            if approval.remember_eligible {
-                lines.push(Line::from(""));
-                lines.push(Line::from(vec![
-                    action_span(
-                        ApprovalFocusedAction::RememberDirect,
-                        approval.focused_action,
-                    ),
-                    Span::raw(" / s"),
-                ]));
-                lines.push(Line::from(
-                    "Remember this exact Direct invocation in this workspace",
-                ));
-                lines.push(Line::from("for the remainder of this Forge session."));
-            } else if approval.mode == ApprovalExecutionMode::Shell {
-                lines.push(Line::from(""));
-                lines.push(Line::from("Shell-mode approvals are one-time only."));
-            }
-            if approval.pattern_allow_eligible {
-                lines.push(Line::from(""));
-                lines.push(Line::from(vec![
-                    action_span(ApprovalFocusedAction::AllowPattern, approval.focused_action),
-                    Span::raw(" / p"),
-                ]));
-                lines.push(Line::from(format!(
-                    "Allow {} going forward, in this and later sessions.",
-                    approval.suggested_pattern
-                )));
-            }
-            lines.push(Line::from(""));
-            lines.push(Line::from(
-                "Enter/a allow once · d/Esc deny · f deny w/ feedback · Tab move",
-            ));
-            lines.push(Line::from("v view details"));
-        }
-        ApprovalStage::ConfirmPattern => {
-            lines.push(Line::from(Span::styled(
-                "Add this rule?",
-                theme::warn().add_modifier(Modifier::BOLD),
-            )));
-            lines.push(Line::from(vec![
-                Span::styled("Pattern: ", theme::muted()),
-                Span::styled(approval.suggested_pattern.clone(), theme::text()),
-            ]));
-            lines.push(Line::from(
-                "Future calls matching this pattern will be allowed without",
-            ));
-            lines.push(Line::from(
-                "asking, for the rest of this session and in later ones.",
-            ));
-            lines.push(Line::from(""));
-            lines.push(Line::from("Enter/y confirm · Esc/n cancel"));
-        }
-        ApprovalStage::DenyFeedback { input } => {
-            lines.push(Line::from(Span::styled(
-                "Deny with feedback (optional)",
-                theme::warn().add_modifier(Modifier::BOLD),
-            )));
-            lines.push(Line::from(vec![
-                Span::styled("> ", theme::muted()),
-                Span::styled(input.clone(), theme::text()),
-            ]));
-            lines.push(Line::from(
-                "Sent to the agent as context for what to do instead.",
-            ));
-            lines.push(Line::from(""));
-            lines.push(Line::from("Enter deny · Esc cancel"));
-        }
-    }
-    lines
-}
-
-fn approval_detail_lines(
-    payload: &HitlPayload,
-    approval: &ApprovalOverlayState,
-) -> Vec<Line<'static>> {
-    vec![
-        Line::from(""),
-        Line::from(Span::styled("details", theme::warn())),
-        Line::from(vec![
-            Span::styled("Environment delta: ", theme::muted()),
-            Span::styled(approval.environment_delta.clone(), theme::text()),
-        ]),
-        Line::from(vec![
-            Span::styled("Source: ", theme::muted()),
-            Span::styled(approval.source.clone(), theme::text()),
-        ]),
-        Line::from(vec![
-            Span::styled("Tool: ", theme::muted()),
-            Span::styled(payload.tool.clone(), theme::text()),
-        ]),
-        Line::from(vec![
-            Span::styled("Args: ", theme::muted()),
-            Span::styled(hitl_args(&payload.args_redacted), theme::text()),
-        ]),
-        Line::from(vec![
-            Span::styled("Policy: ", theme::muted()),
-            Span::styled(payload.reason.clone(), theme::text()),
-        ]),
-        Line::from("Secrets are not shown."),
-    ]
 }
 
 fn parent_dir(path: &str) -> Option<String> {
@@ -2691,65 +2263,11 @@ impl Widget for OverlayWidget<'_> {
     }
 }
 
-/// Height (including borders) the approval card needs when docked at the
-/// bottom of the scrollback, so the caller can carve out exactly that much
-/// space above it rather than overlapping the transcript. `width` is the
-/// full area the card will render into (borders included) — needed because
-/// `ApprovalCardWidget` word-wraps its content, so a narrow dock (e.g. the
-/// center pane once a persistent sidebar claims some of its width) can wrap
-/// a single logical line into several visual rows.
-pub fn approval_card_dock_height(card: &ApprovalCardState, width: u16) -> u16 {
-    let mut lines = approval_lines(card);
-    if card.expanded {
-        lines.extend(approval_detail_lines(&card.payload, &card.approval));
-    }
-    let content_width = width.saturating_sub(2).max(1);
-    let wrapped_rows: u32 = lines
-        .iter()
-        .map(|line| (line.width() as u16).div_ceil(content_width).max(1) as u32)
-        .sum();
-    // +2 for the block borders.
-    (wrapped_rows as u16).saturating_add(2)
-}
-
-/// Inline approval card, docked at the bottom of the scrollback instead of
-/// centered over the transcript — the transcript above stays visible and
-/// scrollable while a decision is pending.
-pub struct ApprovalCardWidget<'a> {
-    pub card: &'a ApprovalCardState,
-}
-
-impl Widget for ApprovalCardWidget<'_> {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        let mut lines = approval_lines(self.card);
-        if self.card.expanded {
-            lines.extend(approval_detail_lines(
-                &self.card.payload,
-                &self.card.approval,
-            ));
-        }
-        Paragraph::new(lines)
-            .wrap(ratatui::widgets::Wrap { trim: true })
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(theme::warn())
-                    .style(theme::panel())
-                    .title(Span::styled(
-                        " Approval required ",
-                        theme::warn().add_modifier(Modifier::BOLD),
-                    )),
-            )
-            .render(area, buf);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::commands::{parse_slash, SlashCommand};
     use forge_config::THEME_SOLARIZED_LIGHT;
-    use forge_types::HitlPayload;
     use ratatui::widgets::Widget;
     use serde_json::json;
 
@@ -2837,79 +2355,6 @@ mod tests {
             "expected full command list, got {}",
             items.len()
         );
-    }
-
-    #[test]
-    fn hitl_keys() {
-        let mut card = ApprovalCardState::for_payload(
-            HitlPayload {
-                call_id: "1".into(),
-                tool: "bash".into(),
-                args_redacted: json!({"command": "git push"}),
-                reason: "policy".into(),
-            },
-            "workspace",
-        );
-        assert_eq!(
-            handle_approval_card_key(&mut card, Key::Char('a')),
-            OverlayAction::HitlApprove
-        );
-        assert_eq!(
-            handle_approval_card_key(&mut card, Key::Char('s')),
-            OverlayAction::None
-        );
-        assert_eq!(
-            handle_approval_card_key(&mut card, Key::Char('d')),
-            OverlayAction::HitlDeny
-        );
-        assert_eq!(
-            handle_approval_card_key(&mut card, Key::Esc),
-            OverlayAction::HitlDeny
-        );
-    }
-
-    #[test]
-    fn hitl_direct_remember_is_eligible_and_default_focus_allows_once() {
-        let mut card = ApprovalCardState::for_payload(
-            HitlPayload {
-                call_id: "1".into(),
-                tool: "git".into(),
-                args_redacted: json!({"subcommand": "push", "args": ["origin", "main"]}),
-                reason: "policy".into(),
-            },
-            "workspace",
-        );
-        assert_eq!(
-            handle_approval_card_key(&mut card, Key::Enter),
-            OverlayAction::HitlApprove
-        );
-        assert_eq!(
-            handle_approval_card_key(&mut card, Key::Char('s')),
-            OverlayAction::HitlApproveSession
-        );
-        handle_approval_card_key(&mut card, Key::Tab);
-        assert_eq!(
-            handle_approval_card_key(&mut card, Key::Enter),
-            OverlayAction::HitlApproveSession
-        );
-    }
-
-    #[test]
-    fn hitl_toggle_expanded() {
-        let mut card = ApprovalCardState::for_payload(
-            HitlPayload {
-                call_id: "1".into(),
-                tool: "write".into(),
-                args_redacted: json!({"path": "src/main.rs"}),
-                reason: "Edit tool requires approval".into(),
-            },
-            "workspace",
-        );
-        assert!(!card.expanded);
-        handle_approval_card_key(&mut card, Key::Char('v'));
-        assert!(card.expanded);
-        handle_approval_card_key(&mut card, Key::Char('v'));
-        assert!(!card.expanded);
     }
 
     #[test]
@@ -3948,47 +3393,6 @@ mod tests {
         assert!(turn_limit.contains("Turn limit reached"));
         assert!(turn_limit.contains("64 model steps"));
         assert!(turn_limit.contains("[n/Esc] Stop"));
-    }
-
-    #[test]
-    fn approval_card_renders_collapsed_and_expanded() {
-        let payload = HitlPayload {
-            call_id: "call-1".into(),
-            tool: "write".into(),
-            args_redacted: json!({"path": "src/main.rs"}),
-            reason: "Edit requires approval".into(),
-        };
-        let render = |card: &ApprovalCardState| {
-            let area = Rect::new(0, 0, 100, 48);
-            let mut buf = Buffer::empty(area);
-            ApprovalCardWidget { card }.render(area, &mut buf);
-            let mut text = String::new();
-            for y in 0..area.height {
-                for x in 0..area.width {
-                    text.push_str(buf[(x, y)].symbol());
-                }
-                text.push('\n');
-            }
-            text
-        };
-
-        let card = ApprovalCardState::for_payload(payload.clone(), "workspace");
-        let collapsed = render(&card);
-        assert!(collapsed.contains("Approval required"));
-        assert!(collapsed.contains("Mode: Direct"));
-        assert!(collapsed.contains("Executable: write"));
-        assert!(collapsed.contains("Working directory: workspace"));
-        assert!(collapsed.contains("[Allow once]"));
-        assert!(collapsed.contains("[Deny]"));
-        assert!(collapsed.contains("Remember this exact Direct invocation in this workspace"));
-        assert!(collapsed.contains("v view details"));
-
-        let mut expanded_card = ApprovalCardState::for_payload(payload, "workspace");
-        expanded_card.expanded = true;
-        let expanded = render(&expanded_card);
-        assert!(expanded.contains("details"));
-        assert!(expanded.contains("Tool: write"));
-        assert!(expanded.contains("Secrets are not shown"));
     }
 
     #[test]

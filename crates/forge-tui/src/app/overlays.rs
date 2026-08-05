@@ -125,23 +125,6 @@ impl TuiApp {
                 self.open_connect_picker();
                 self.set_feedback(FeedbackSeverity::Info, "Step 1 of 2 · choose a provider");
             }
-            OverlayAction::HitlApprove => {
-                self.resolve_hitl_overlay(HitlDecision::Approve, false)
-                    .await?;
-            }
-            OverlayAction::HitlApproveSession => {
-                self.resolve_hitl_overlay(HitlDecision::Approve, true)
-                    .await?;
-            }
-            OverlayAction::HitlDeny => {
-                self.resolve_hitl_overlay(HitlDecision::Deny, false).await?;
-            }
-            OverlayAction::HitlApprovePattern { pattern } => {
-                self.resolve_hitl_overlay_with_pattern(pattern).await?;
-            }
-            OverlayAction::HitlDenyWithFeedback { feedback } => {
-                self.resolve_hitl_overlay_with_feedback(feedback).await?;
-            }
             OverlayAction::ContinueTurns => {
                 self.overlay = None;
                 self.pending_turn.continue_turn = true;
