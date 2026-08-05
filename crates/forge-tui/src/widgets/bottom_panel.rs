@@ -56,7 +56,8 @@ impl Widget for BottomPanel<'_> {
             self.model.terminal_running,
             self.model.terminal_shell,
         );
-        Paragraph::new(lines).render(inner, buf);
+        let scroll = lines.len().saturating_sub(inner.height as usize) as u16;
+        Paragraph::new(lines).scroll((scroll, 0)).render(inner, buf);
     }
 }
 
@@ -87,8 +88,9 @@ fn terminal_lines<'a>(
         lines.push(Line::styled(title.to_string(), theme::text()));
     }
     if !terminal_content.is_empty() {
-        for line in terminal_content.lines().take(20) {
-            lines.push(Line::styled(line.to_string(), theme::muted()));
+        let content = terminal_content.lines().collect::<Vec<_>>();
+        for line in content.iter().rev().take(20).rev() {
+            lines.push(Line::styled((*line).to_string(), theme::muted()));
         }
         if terminal_truncated {
             lines.push(Line::styled("Output truncated", theme::muted()));
@@ -206,5 +208,33 @@ mod tests {
         };
         let rendered = rendered_text(model, false);
         assert!(rendered.contains("Terminal"));
+    }
+
+    #[test]
+    fn renders_latest_terminal_output_instead_of_oldest_lines() {
+        let activity = ActivityFeed::default();
+        let state = BottomPanelState {
+            open: true,
+            focused: true,
+        };
+        let content = (0..12)
+            .map(|index| format!("output-{index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let model = BottomPanelModel {
+            state: &state,
+            busy_phase: &BusyPhase::Idle,
+            activity: &activity,
+            run: &run_model(),
+            terminal_title: None,
+            terminal_content: &content,
+            terminal_truncated: false,
+            terminal_running: true,
+            terminal_shell: Some("sh"),
+        };
+
+        let rendered = rendered_text(model, true);
+        assert!(rendered.contains("output-11"));
+        assert!(!rendered.contains("output-0"));
     }
 }
