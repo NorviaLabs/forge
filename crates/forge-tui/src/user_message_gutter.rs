@@ -14,10 +14,9 @@ pub const GUTTER_GAP: &str = " ";
 
 /// Prompt marker for the active composer. Plain ASCII, so unlike
 /// [`gutter_glyph`] it needs no encoding fallback. Callers show this on the
-/// composer's first visual row only — continuation/wrapped rows get blank
-/// padding of the same width instead (see `build_input_lines` in
-/// `widgets/input.rs`), so a multi-line draft reads as one prompt, not one
-/// per wrapped line the way the transcript's per-row gutter does.
+/// composer's first visual row only. The input widget reserves matching blank
+/// padding for its wrapped content, so a multi-line draft reads as one prompt,
+/// not one per wrapped line the way the transcript's per-row gutter does.
 pub const ACTIVE_GLYPH: &str = ">";
 
 /// Active-composer gutter role.

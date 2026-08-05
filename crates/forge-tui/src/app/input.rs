@@ -762,6 +762,8 @@ mod tests {
     use forge_model::MockModelClient;
     use forge_tools::ToolRegistry;
     use forge_types::ModelResponse;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
     use std::path::PathBuf;
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -972,6 +974,31 @@ mod tests {
         assert_eq!(app.input.cursor, 1);
         app.handle_key(press(KeyCode::Right)).await.unwrap();
         assert_eq!(app.input.cursor, 2);
+    }
+
+    #[tokio::test]
+    async fn composer_keeps_accepting_text_after_wrapping_to_a_second_row() {
+        let (_dir, mut app) = app().await;
+        focus_composer(&mut app);
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+
+        // The sidebar composer is 30 columns wide at 80 terminal columns.
+        // This phrase wraps before "fifth", then keeps typing through the
+        // second visual row without an explicit newline.
+        for c in "first second third fourth fifth sixth".chars() {
+            app.handle_key(press(KeyCode::Char(c))).await.unwrap();
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+        }
+        for c in " seventh eighth ninth".chars() {
+            app.handle_key(press(KeyCode::Char(c))).await.unwrap();
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+        }
+
+        assert_eq!(
+            app.input.text,
+            "first second third fourth fifth sixth seventh eighth ninth"
+        );
+        assert_eq!(app.focus.block, FocusBlock::Composer);
     }
 
     #[tokio::test]
