@@ -17,7 +17,6 @@ async fn external_editor_keybind_sets_flag() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -44,7 +43,6 @@ async fn external_editor_preconditions_no_file() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -67,7 +65,6 @@ async fn external_editor_preconditions_binary_file() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -92,7 +89,6 @@ async fn external_editor_rejects_during_tool_execution() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );

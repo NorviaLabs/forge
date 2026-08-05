@@ -177,7 +177,6 @@ async fn app_with_turns(turns: usize) -> (TempDir, TuiApp) {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: false,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );

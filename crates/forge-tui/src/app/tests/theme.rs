@@ -130,7 +130,6 @@ async fn theme_persists_per_repository() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
@@ -282,7 +281,6 @@ async fn old_or_malformed_ui_state_migrates_safely_to_default() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );

@@ -210,6 +210,31 @@ async fn semantic_key_paths_emit_existing_commands() {
 }
 
 #[tokio::test]
+async fn ctrl_e_then_enter_opens_file_from_explorer() {
+    let (dir, mut app) = focus_test_app().await;
+    let path = dir.path().join("open_me.rs");
+    fs::write(&path, "fn main() {}\n").unwrap();
+    let path = path.canonicalize().unwrap();
+    app.workspace_files.visible = false;
+    app.workspace_files.explorer.refresh_workspace();
+
+    app.handle_key(press(KeyCode::Char('e'), KeyModifiers::CONTROL))
+        .await
+        .unwrap();
+    assert!(app.workspace_files.visible);
+    assert_eq!(app.focus.block, FocusBlock::Files);
+
+    app.workspace_files.explorer.selected_path = Some(path.clone());
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(
+        app.workspace_navigation.current,
+        Some(WorkspaceView::File(path))
+    );
+}
+
+#[tokio::test]
 async fn semantic_commands_dispatch_without_rendering_a_frame() {
     let (dir, mut app) = focus_test_app().await;
     let path = dir.path().join("main.rs");
@@ -440,7 +465,6 @@ async fn helper_labels_reflect_focus_mode() {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );

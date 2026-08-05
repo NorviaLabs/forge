@@ -60,15 +60,11 @@ pub struct FooterBar<'a> {
 }
 
 /// One bracketed `[vendor]`/`[model]`/`[effort]` segment of the
-/// persistent control, and the display column range it occupies — the same
-/// rects are used both to paint the segment and to register its mouse hit
-/// region, so the two can never drift apart.
+/// persistent control, and the display column range it occupies.
 pub struct FooterControlSegment {
     pub text: String,
-    /// Display-column start/end (end-exclusive), relative to the footer
-    /// row's own area.
+    /// Display-column start, relative to the footer row's own area.
     pub start: u16,
-    pub end: u16,
 }
 
 /// Strip a `provider/` prefix from a wire model id for footer display.
@@ -82,8 +78,7 @@ pub fn footer_short_model_id(model: &str) -> &str {
 
 /// Build the `[vendor] [model] [effort]` segments that fit in `width`,
 /// dropping trailing segments (effort first, then model, then vendor) when
-/// they don't. Pure layout logic shared by the widget's `render` and the
-/// app's mouse-hit-region registration.
+/// they don't.
 pub fn footer_control_segments(model: &FooterModel, width: u16) -> Vec<FooterControlSegment> {
     if !model.connected || model.provider.is_empty() || model.model.is_empty() {
         return Vec::new();
@@ -114,13 +109,8 @@ pub fn footer_control_segments(model: &FooterModel, width: u16) -> Vec<FooterCon
         if col + len > width {
             break;
         }
-        let end = col + len;
-        segments.push(FooterControlSegment {
-            text,
-            start: col,
-            end,
-        });
-        col = end + 1; // one-space gap between segments
+        segments.push(FooterControlSegment { text, start: col });
+        col = col + len + 1; // one-space gap between segments
     }
     segments
 }

@@ -173,7 +173,7 @@ impl TuiApp {
     ) -> Result<(), Box<dyn std::error::Error>> {
         // Best effort: terminal restoration must not fail the UI in test or headless
         // contexts where a real terminal may not be attached.
-        let _ = crate::terminal::reinit_terminal(self.runtime.mouse_capture);
+        let _ = crate::terminal::reinit_terminal();
         let _ = crate::terminal::clear_terminal();
         if let Some(term) = terminal {
             term.autoresize()?;
