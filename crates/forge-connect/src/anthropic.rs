@@ -51,6 +51,7 @@ pub fn verify_api_key(api_key: &str, base_url: &str) -> Result<(), VerifyError> 
             "User-Agent",
             &format!("forge-connect/{}", env!("CARGO_PKG_VERSION")),
         )
+        .timeout(std::time::Duration::from_secs(15))
         .call();
     match resp {
         Ok(r) if (200..300).contains(&r.status()) => Ok(()),
@@ -101,6 +102,7 @@ fn verify_via_messages(key: &str, base: &str) -> Result<(), VerifyError> {
             "User-Agent",
             &format!("forge-connect/{}", env!("CARGO_PKG_VERSION")),
         )
+        .timeout(std::time::Duration::from_secs(15))
         .send_string(body)
     {
         Ok(_) => Ok(()),

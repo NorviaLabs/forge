@@ -172,6 +172,7 @@ fn codex_cost_report(store: &CredentialStore) -> Result<Vec<String>, String> {
             "User-Agent",
             &format!("forge/{}", env!("CARGO_PKG_VERSION")),
         )
+        .timeout(std::time::Duration::from_secs(15))
         .call()
         .map_err(|error| format!("could not fetch Codex limits: {error}"))?;
     let body = response

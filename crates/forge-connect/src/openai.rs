@@ -47,6 +47,7 @@ pub fn verify_api_key(api_key: &str, base_url: &str) -> Result<(), VerifyError> 
             "User-Agent",
             &format!("forge-connect/{}", env!("CARGO_PKG_VERSION")),
         )
+        .timeout(std::time::Duration::from_secs(15))
         .call()
         .map_err(|e| match e {
             ureq::Error::Status(status, _) => VerifyError::Rejected {
