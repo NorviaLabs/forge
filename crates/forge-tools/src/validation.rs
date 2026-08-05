@@ -127,7 +127,7 @@ pub fn validate_args(tool: &str, schema: &Value, args: &Value) -> Result<(), Too
     })?;
 
     if let Err(err) = validator.validate(&args) {
-        let path = err.instance_path.to_string();
+        let path = err.instance_path().to_string();
         let path = if path.is_empty() {
             "$".to_string()
         } else {
