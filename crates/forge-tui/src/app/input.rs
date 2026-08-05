@@ -762,6 +762,8 @@ mod tests {
     use forge_model::MockModelClient;
     use forge_tools::ToolRegistry;
     use forge_types::ModelResponse;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
     use std::path::PathBuf;
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -972,6 +974,29 @@ mod tests {
         assert_eq!(app.input.cursor, 1);
         app.handle_key(press(KeyCode::Right)).await.unwrap();
         assert_eq!(app.input.cursor, 2);
+    }
+
+    #[tokio::test]
+    async fn composer_keeps_accepting_text_after_a_newline_and_reflow() {
+        let (_dir, mut app) = app().await;
+        focus_composer(&mut app);
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+
+        for c in "first line".chars() {
+            app.handle_key(press(KeyCode::Char(c))).await.unwrap();
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+        }
+        app.handle_key(press_with(KeyCode::Enter, KeyModifiers::SHIFT))
+            .await
+            .unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        for c in "three more words still typing".chars() {
+            app.handle_key(press(KeyCode::Char(c))).await.unwrap();
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+        }
+
+        assert_eq!(app.input.text, "first line\nthree more words still typing");
+        assert_eq!(app.focus.block, FocusBlock::Composer);
     }
 
     #[tokio::test]
