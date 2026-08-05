@@ -422,6 +422,9 @@ impl Default for TuiRuntimeConfig {
     }
 }
 
+// ponytail: usage-summary fields are populated by the background refresh but
+// no surface renders them yet; keep for the upcoming usage-summary display.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 struct FooterLimits {
     usage: String,

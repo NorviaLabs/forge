@@ -15,8 +15,8 @@ fn composer_input_height(input: &InputModel, area: ratatui::layout::Rect) -> u16
         .saturating_sub(2) // side borders
         .saturating_sub(gutter_prefix_width(ACTIVE_GLYPH))
         .max(1);
-    // +2 top border & gutter band, +1 chip row, +1 bottom border.
-    (input.visual_lines_for_width(content_width) + 4).clamp(5, crate::layout::MAX_COMPOSER_INPUT_H)
+    // +2 top border & gutter band, +1 bottom border (chips live in the footer).
+    (input.visual_lines_for_width(content_width) + 3).clamp(5, crate::layout::MAX_COMPOSER_INPUT_H)
 }
 
 impl TuiApp {
@@ -62,9 +62,9 @@ impl TuiApp {
             .as_deref()
             .map(|id| self.vendor_route_labels(id))
             .unwrap_or((None, None));
-        // Model/vendor/effort live on the composer chip row now; footer is
-        // reserved for contextual navigation hints only.
-        let hint_h = u16::from(contextual_hint.is_some());
+        // Model/vendor/effort live on the footer chip row; the composer band
+        // is text-only and the footer always reserves one row.
+        let hint_h: u16 = 1;
         let expand_conversation = !matches!(
             self.workspace_navigation.current,
             Some(WorkspaceView::File(_))
@@ -516,6 +516,25 @@ impl TuiApp {
         }
 
         let attachment_label = self.attachment.pending.as_ref().map(|a| a.label());
+        let effort_label = self
+            .reasoning_effort
+            .value
+            .display_label(&self.runtime.model_label)
+            .to_string();
+        let chips = composer_chips(
+            self.permission_mode.label(),
+            connected,
+            vendor_label.as_deref(),
+            &self.runtime.model_label,
+            &effort_label,
+        );
+        if let Some(idx) = self.composer_chip_focus {
+            if chips.is_empty() {
+                self.composer_chip_focus = None;
+            } else {
+                self.composer_chip_focus = Some(idx.min(chips.len() - 1));
+            }
+        }
         if theme_picking {
             if let Some(Overlay::Theme {
                 selected,
@@ -532,28 +551,6 @@ impl TuiApp {
                 );
             }
         } else {
-            let effort_label = self
-                .reasoning_effort
-                .value
-                .display_label(&self.runtime.model_label)
-                .to_string();
-            let raw_chips = composer_chips(
-                self.permission_mode.label(),
-                connected,
-                vendor_label.as_deref(),
-                &self.runtime.model_label,
-                &effort_label,
-            );
-            let chip_width = regions.input.width.saturating_sub(2);
-            let chips = fit_composer_chips(raw_chips, chip_width);
-            let hitl_pending = self.session.pending_hitl().is_some();
-            if let Some(idx) = self.composer_chip_focus {
-                if chips.is_empty() {
-                    self.composer_chip_focus = None;
-                } else {
-                    self.composer_chip_focus = Some(idx.min(chips.len() - 1));
-                }
-            }
             frame.render_widget(
                 InputBar {
                     model: &self.input,
@@ -562,9 +559,6 @@ impl TuiApp {
                     not_connected: !connected,
                     focused: self.focus.mode == FocusMode::Navigation
                         && self.focus.block == FocusBlock::Composer,
-                    chips: &chips,
-                    chip_focus: self.composer_chip_focus,
-                    chips_dimmed: hitl_pending,
                     show_send_hint: true,
                 },
                 regions.input,
@@ -573,7 +567,9 @@ impl TuiApp {
 
         let footer = FooterModel {
             hints: contextual_hint.unwrap_or_default(),
-            ..FooterModel::default()
+            chips,
+            chip_focus: self.composer_chip_focus,
+            chips_dimmed: self.session.pending_hitl().is_some(),
         };
         frame.render_widget(FooterBar { model: &footer }, regions.footer);
 

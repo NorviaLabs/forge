@@ -673,6 +673,9 @@ pub(crate) fn format_with_commas(value: u64) -> String {
     }
     out.chars().rev().collect()
 }
+// ponytail: exercised by tests only for now; no live caller after the footer
+// slim-down, wired back up with the upcoming usage-summary display.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn footer_usage_summary_with_cost(
     report: &forge_core::TokenUsageReport,
     cost: Option<forge_connect::CatalogCost>,
@@ -711,21 +714,6 @@ pub(super) fn footer_limits_from_report(lines: &[String]) -> FooterLimits {
             .find(|line| line.starts_with("Credits:") || line.starts_with("Credit balance:"))
             .cloned()
             .unwrap_or_default(),
-    }
-}
-
-#[allow(dead_code)]
-pub(super) fn footer_usage_summary(
-    report: &forge_core::TokenUsageReport,
-    cost: Option<forge_connect::CatalogCost>,
-    limits: &FooterLimits,
-) -> crate::widgets::FooterModel {
-    crate::widgets::FooterModel {
-        usage: limits.usage.clone(),
-        weekly_limit: limits.weekly_limit.clone(),
-        credits: limits.credits.clone(),
-        usage_summary: footer_usage_summary_with_cost(report, cost),
-        ..Default::default()
     }
 }
 
