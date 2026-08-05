@@ -1,7 +1,8 @@
 //! Discover and load TUI themes from bundled files and optional directories.
 
 use forge_config::{
-    parse_theme_toml, ThemeDefinition, ThemePalette, DEFAULT_THEME_ID, THEME_SYSTEM,
+    is_system_theme, parse_theme_toml, ThemeDefinition, ThemePalette, DEFAULT_THEME_ID,
+    THEME_SYSTEM,
 };
 use std::collections::HashMap;
 use std::fs;
@@ -9,28 +10,30 @@ use std::path::{Path, PathBuf};
 
 const BUILTIN_THEMES: &[(&str, &str)] = &[
     (
-        "forge-midnight.toml",
-        include_str!("../themes/forge-midnight.toml"),
+        "catppuccin-mocha.toml",
+        include_str!("../themes/catppuccin-mocha.toml"),
     ),
     (
-        "forge-daylight.toml",
-        include_str!("../themes/forge-daylight.toml"),
+        "gruvbox-dark.toml",
+        include_str!("../themes/gruvbox-dark.toml"),
+    ),
+    (
+        "kanagawa-wave.toml",
+        include_str!("../themes/kanagawa-wave.toml"),
+    ),
+    (
+        "solarized-dark.toml",
+        include_str!("../themes/solarized-dark.toml"),
+    ),
+    (
+        "solarized-light.toml",
+        include_str!("../themes/solarized-light.toml"),
+    ),
+    (
+        "tokyo-night-storm.toml",
+        include_str!("../themes/tokyo-night-storm.toml"),
     ),
 ];
-
-/// Virtual entry shown in the theme picker for ANSI terminal colours.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SystemThemeEntry {
-    pub id: &'static str,
-    pub name: &'static str,
-}
-
-impl SystemThemeEntry {
-    pub const SYSTEM: Self = Self {
-        id: THEME_SYSTEM,
-        name: "System (ANSI)",
-    };
-}
 
 /// All themes available to the TUI (built-ins, user, and workspace drops).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -87,7 +90,7 @@ impl ThemeRegistry {
     }
 
     pub fn contains(&self, id: &str) -> bool {
-        forge_config::is_system_theme(id) || self.themes.iter().any(|t| t.id == id)
+        self.themes.iter().any(|t| t.id == id)
     }
 
     pub fn get(&self, id: &str) -> Option<&ThemeDefinition> {
@@ -100,9 +103,6 @@ impl ThemeRegistry {
     }
 
     pub fn display_name(&self, id: &str) -> String {
-        if forge_config::is_system_theme(id) {
-            return SystemThemeEntry::SYSTEM.name.to_string();
-        }
         self.get(id)
             .map(|theme| theme.name.clone())
             .unwrap_or_else(|| id.to_string())
@@ -110,7 +110,7 @@ impl ThemeRegistry {
 
     pub fn resolve_startup_id(&self, preference: &str) -> String {
         let id = forge_config::normalize_theme_id(preference);
-        if self.contains(&id) {
+        if is_system_theme(&id) || self.contains(&id) {
             id
         } else {
             DEFAULT_THEME_ID.to_string()
@@ -118,18 +118,19 @@ impl ThemeRegistry {
     }
 }
 
-/// Picker list: installed themes plus the virtual system entry.
+/// Picker list of installed themes.
 pub fn picker_entries(registry: &ThemeRegistry) -> Vec<(String, String)> {
     let mut items: Vec<(String, String)> = registry
         .themes
         .iter()
         .map(|theme| (theme.id.clone(), theme.name.clone()))
         .collect();
-    items.push((
-        SystemThemeEntry::SYSTEM.id.to_string(),
-        SystemThemeEntry::SYSTEM.name.to_string(),
-    ));
-    items.sort_by(|a, b| a.1.cmp(&b.1));
+    items.push((THEME_SYSTEM.to_string(), "System".to_string()));
+    items.sort_by(|a, b| match (a.0 == THEME_SYSTEM, b.0 == THEME_SYSTEM) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.1.cmp(&b.1),
+    });
     items
 }
 
@@ -181,16 +182,25 @@ fn merge_directory(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use forge_config::{Rgb, THEME_FORGE_DAYLIGHT, THEME_FORGE_MIDNIGHT};
+    use forge_config::{Rgb, THEME_SOLARIZED_DARK, THEME_SOLARIZED_LIGHT};
 
     #[test]
-    fn builtins_include_forge_midnight_and_daylight() {
+    fn builtins_include_all_shipped_themes() {
         let registry = ThemeRegistry::load(None);
-        let midnight = registry.get(THEME_FORGE_MIDNIGHT).expect("forge-midnight");
-        assert_eq!(midnight.name, "Forge Midnight");
-        assert_eq!(midnight.palette.background, Rgb(23, 23, 26));
-        let daylight = registry.get(THEME_FORGE_DAYLIGHT).expect("forge-daylight");
-        assert_eq!(daylight.name, "Forge Daylight");
+        let expected = [
+            ("catppuccin-mocha", "Catppuccin Mocha", Rgb(30, 30, 46)),
+            ("gruvbox-dark", "Gruvbox Dark", Rgb(40, 40, 40)),
+            ("kanagawa-wave", "Kanagawa Wave", Rgb(31, 31, 40)),
+            (THEME_SOLARIZED_DARK, "Solarized Dark", Rgb(0, 43, 54)),
+            (THEME_SOLARIZED_LIGHT, "Solarized Light", Rgb(253, 246, 227)),
+            ("tokyo-night-storm", "Tokyo Night Storm", Rgb(36, 40, 59)),
+        ];
+        for (id, name, background) in expected {
+            let theme = registry.get(id).unwrap_or_else(|| panic!("missing {id}"));
+            assert_eq!(theme.name, name);
+            assert_eq!(theme.palette.background, background);
+        }
+        assert_eq!(registry.themes().len(), expected.len());
     }
 
     #[test]
@@ -199,17 +209,17 @@ mod tests {
         let themes = dir.path().join(".forge").join("themes");
         fs::create_dir_all(&themes).unwrap();
         fs::write(
-            themes.join("forge-midnight.toml"),
-            include_str!("../themes/forge-midnight.toml").replace(
-                "name = \"Forge Midnight\"",
-                "name = \"Forge Midnight (Custom)\"",
+            themes.join("solarized-dark.toml"),
+            include_str!("../themes/solarized-dark.toml").replace(
+                "name = \"Solarized Dark\"",
+                "name = \"Solarized Dark (Custom)\"",
             ),
         )
         .unwrap();
         let registry = ThemeRegistry::load(Some(dir.path()));
         assert_eq!(
-            registry.get(THEME_FORGE_MIDNIGHT).unwrap().name,
-            "Forge Midnight (Custom)"
+            registry.get(THEME_SOLARIZED_DARK).unwrap().name,
+            "Solarized Dark (Custom)"
         );
     }
 
@@ -220,12 +230,12 @@ mod tests {
         fs::create_dir_all(&themes).unwrap();
         fs::write(
             themes.join("broken.toml"),
-            include_str!("../themes/forge-midnight.toml")
-                .replace("id = \"forge-midnight\"", "id = \"broken\"")
+            include_str!("../themes/solarized-dark.toml")
+                .replace("id = \"solarized-dark\"", "id = \"broken\"")
                 // Truncated hex value: 5 digits instead of 6.
                 .replace(
-                    "user_gutter_active = \"#A3C7BC\"",
-                    "user_gutter_active = \"#A3C7B\"",
+                    "user_gutter_active = \"#58A2D3\"",
+                    "user_gutter_active = \"#58A2D\"",
                 ),
         )
         .unwrap();
@@ -243,8 +253,17 @@ mod tests {
             DEFAULT_THEME_ID
         );
         assert_eq!(
-            registry.resolve_startup_id(THEME_FORGE_DAYLIGHT),
-            THEME_FORGE_DAYLIGHT
+            registry.resolve_startup_id(THEME_SOLARIZED_LIGHT),
+            THEME_SOLARIZED_LIGHT
         );
+    }
+
+    #[test]
+    fn picker_includes_system_and_startup_accepts_it() {
+        let registry = ThemeRegistry::load(None);
+        assert!(picker_entries(&registry)
+            .iter()
+            .any(|(id, name)| id == "system" && name == "System"));
+        assert_eq!(registry.resolve_startup_id("system"), "system");
     }
 }

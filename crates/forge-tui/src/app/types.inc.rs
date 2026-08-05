@@ -3,9 +3,10 @@
 const WORKSPACE_HISTORY_LIMIT: usize = 32;
 const UI_STATE_VERSION: u32 = 2;
 
+/// Center-pane content. Conversation isn't a variant here — it's always
+/// shown in the persistent sidebar instead (see [[project_ide_layout_design_round2]]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum WorkspaceView {
-    Conversation,
     File(PathBuf),
     Diff(DiffCommandContext),
     Run(String),
@@ -13,7 +14,6 @@ enum WorkspaceView {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WorkspaceViewKind {
-    Conversation,
     File,
     Diff,
     Run,
@@ -22,7 +22,6 @@ enum WorkspaceViewKind {
 impl WorkspaceView {
     fn kind(&self) -> WorkspaceViewKind {
         match self {
-            Self::Conversation => WorkspaceViewKind::Conversation,
             Self::File(_) => WorkspaceViewKind::File,
             Self::Diff(_) => WorkspaceViewKind::Diff,
             Self::Run(_) => WorkspaceViewKind::Run,
@@ -30,40 +29,35 @@ impl WorkspaceView {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// `current == None` means the center pane is empty (nothing open) — the
+/// widget renders a placeholder in that case; see `render.rs`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct WorkspaceNavigation {
-    current: WorkspaceView,
+    current: Option<WorkspaceView>,
     history: Vec<WorkspaceView>,
-}
-
-impl Default for WorkspaceNavigation {
-    fn default() -> Self {
-        Self {
-            current: WorkspaceView::Conversation,
-            history: Vec::new(),
-        }
-    }
 }
 
 impl WorkspaceNavigation {
     fn push_view(&mut self, view: WorkspaceView) {
-        if self.current == view {
+        if self.current.as_ref() == Some(&view) {
             return;
         }
-        self.history.push(self.current.clone());
-        if self.history.len() > WORKSPACE_HISTORY_LIMIT {
-            let overflow = self.history.len() - WORKSPACE_HISTORY_LIMIT;
-            self.history.drain(0..overflow);
+        if let Some(current) = self.current.take() {
+            self.history.push(current);
+            if self.history.len() > WORKSPACE_HISTORY_LIMIT {
+                let overflow = self.history.len() - WORKSPACE_HISTORY_LIMIT;
+                self.history.drain(0..overflow);
+            }
         }
-        self.current = view;
+        self.current = Some(view);
     }
 
     fn replace_view(&mut self, view: WorkspaceView) {
-        self.current = view;
+        self.current = Some(view);
     }
 
     fn navigate_to(&mut self, view: WorkspaceView) {
-        if self.current.kind() == view.kind() {
+        if self.current.as_ref().map(WorkspaceView::kind) == Some(view.kind()) {
             self.replace_view(view);
         } else {
             self.push_view(view);
@@ -72,7 +66,7 @@ impl WorkspaceNavigation {
 
     fn home(&mut self) {
         self.history.clear();
-        self.current = WorkspaceView::Conversation;
+        self.current = None;
     }
 }
 
@@ -144,8 +138,8 @@ enum RunEvent {
 pub(crate) enum FocusBlock {
     Files,
     Workspace,
+    Sidebar,
     Composer,
-    Inspector,
     BottomPanel,
 }
 
@@ -154,19 +148,23 @@ impl FocusBlock {
         match self {
             Self::Files => "FILES",
             Self::Workspace => "CHAT",
+            Self::Sidebar => "SIDEBAR",
             Self::Composer => "COMPOSER",
-            Self::Inspector => "INSPECTOR",
             Self::BottomPanel => "PANEL",
         }
     }
 }
 
 impl FocusBlock {
+    // Sidebar sits right before Composer since they're the same physical
+    // column post-sidebar layout (background strip above the composer that
+    // lives inside it) — tabbing out of the transcript naturally lands in
+    // its own composer next.
     const ORDER: [Self; 5] = [
         Self::Files,
         Self::Workspace,
+        Self::Sidebar,
         Self::Composer,
-        Self::Inspector,
         Self::BottomPanel,
     ];
 }
@@ -288,17 +286,13 @@ enum SemanticCommand {
     CycleFocus {
         forward: bool,
     },
-    ToggleInspector,
-    CycleInspectorTab {
-        forward: bool,
-    },
     ToggleBottomPanel,
     OpenQuickOpen,
     QuickSwitchModel,
-    CycleBottomPanelTab {
-        forward: bool,
-    },
-    OpenBottomPanel(BottomPanelTab),
+    /// Open the persistent footer control's compact picker, focused on the
+    /// given column (vendor/route, model, or effort).
+    OpenModelControl(ConnectModelColumn),
+    OpenBottomPanel,
     RefreshFiles,
     RefreshEditor,
     RefreshDiff,
@@ -313,6 +307,7 @@ enum SemanticCommand {
     OpenExternalEditor,
     ToggleCurrentFileAttachment,
     ToggleToolDetails,
+    CyclePermissionMode,
     MoveQueueSelection(i32),
     CancelSelectedQueueMessage,
     MoveTasksSelection(i32),
@@ -338,6 +333,10 @@ enum HitTarget {
     VisibleControl(SemanticCommand),
     Composer,
     OverlayAction(OverlayAction),
+    /// The persistent conversation sidebar. Kept distinct from `Pane` since
+    /// there's no `FocusBlock` for it — used only to route wheel-scroll
+    /// events to the conversation regardless of what the center pane shows.
+    Sidebar,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -404,7 +403,7 @@ impl Default for FocusState {
 #[derive(Debug, Clone, Copy)]
 struct FocusAvailability {
     files: bool,
-    inspector: bool,
+    sidebar: bool,
     bottom_panel: bool,
 }
 
@@ -413,8 +412,8 @@ impl FocusAvailability {
         match block {
             FocusBlock::Files => self.files,
             FocusBlock::Workspace => true,
+            FocusBlock::Sidebar => self.sidebar,
             FocusBlock::Composer => true,
-            FocusBlock::Inspector => self.inspector,
             FocusBlock::BottomPanel => self.bottom_panel,
         }
     }
@@ -545,11 +544,6 @@ pub(crate) struct WorkspaceFilesState {
     pub(crate) explorer: FileExplorer,
 }
 
-struct InspectorState {
-    visible: bool,
-    view: InspectorView,
-}
-
 struct TaskSelectionState {
     queue: Option<usize>,
     tasks: Option<usize>,
@@ -620,6 +614,10 @@ struct ExitState {
 
 struct HitlSessionState {
     allowed: HashSet<ApprovalIdentity>,
+    /// Pattern rules added via "allow this pattern going forward" this
+    /// session — takes effect immediately, independent of whether the
+    /// write to the persisted permissions file succeeded.
+    pattern_allow: Vec<forge_governance::PatternRule>,
 }
 
 struct ToastState {
@@ -637,7 +635,6 @@ struct BannerState {
 
 struct RenderCacheState {
     conversation: Option<ConversationRenderCache>,
-    composer_layout: ComposerLayoutCache,
 }
 
 struct BusyState {
@@ -662,6 +659,10 @@ pub struct TuiApp {
     pub(crate) session: AgentSession,
     input: InputModel,
     pub(crate) overlay: Option<Overlay>,
+    /// Pending HITL decision, rendered as an inline card docked at the
+    /// bottom of the scrollback rather than folded into `overlay` — an
+    /// approval decision is not a distinct application mode.
+    pub(crate) approval_card: Option<ApprovalCardState>,
     exit: ExitState,
     startup_resume: StartupResumeState,
     busy_state: BusyState,
@@ -674,6 +675,7 @@ pub struct TuiApp {
     pub(crate) notice_state: NoticeState,
     /// Phase 10 / TUI-08 — always-visible feedback strip model.
     feedback: FeedbackModel,
+    feedback_until: Option<Instant>,
     banner_state: BannerState,
     /// Phase 10 / TUI-10 — progressive busy phase for chrome.
     pending_turn: PendingTurnState,
@@ -690,6 +692,11 @@ pub struct TuiApp {
     /// Phase 10 / TUI-10 — activity ring buffer.
     activity: ActivityFeed,
     reasoning_effort: ReasoningEffortState,
+    /// Active oversight level — cycled with Alt+P (`SemanticCommand::CyclePermissionMode`).
+    /// Mirrors what's actually applied to `session`'s `Governance` via
+    /// `apply_permission_mode`; this field exists only because `Governance`
+    /// doesn't remember which named mode produced its current fields.
+    permission_mode: forge_governance::PermissionMode,
     tool_detail: ToolDetailState,
     /// V3.1 contextual workspace navigation.
     workspace_navigation: WorkspaceNavigation,
@@ -704,8 +711,6 @@ pub struct TuiApp {
     /// Authoritative keyboard ownership. Legacy component `focused` flags are
     /// synchronised from this state for rendering only.
     focus: FocusState,
-    /// User preference; narrow terminals still hide the sidebar responsively.
-    inspector: InspectorState,
     /// Selected index in the changed-files inventory for Diff workspace.
     diff_view: DiffViewState,
     cancellation: CancellationState,
@@ -721,8 +726,10 @@ pub struct TuiApp {
     /// render path only ever reads it, never derives it.
     repo_header_state: RepoHeaderState,
     terminal_capture: TerminalCapture,
+    interactive_terminal: Option<InteractiveTerminal>,
     pointer: PointerState,
     workspace_search: WorkspaceSearchState,
+    catalog_fetch: CatalogFetchState,
 }
 
 #[derive(Debug, Clone)]
@@ -738,4 +745,20 @@ struct RepoHeaderState {
     refreshed_at: Instant,
     /// Directory the cached header describes, so a cwd change invalidates it.
     cwd: PathBuf,
+}
+
+/// Off-thread model-catalog refresh, matching `RepoHeaderState`'s
+/// spawn-a-thread-and-poll shape. The worker thread refreshes
+/// `ModelCatalogCache`'s on-disk file as a side effect and reports back only
+/// success/failure — callers re-read the (now warm) cache via the existing
+/// synchronous `model_picker_items(false)` rather than threading fetched data
+/// through the channel, so there is never a second in-memory catalog that
+/// could drift from the disk cache `models_for_picker` already owns.
+struct CatalogFetchState {
+    refresh_rx: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
+    /// Set once the first background refresh has ever been kicked off this
+    /// session, so the lazy first-render warm-up in `draw()` (see
+    /// `footer_has_compact_control`) fires at most once per app lifetime —
+    /// every later refresh is triggered explicitly by opening a picker.
+    warmed: bool,
 }

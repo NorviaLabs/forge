@@ -13,9 +13,10 @@
 //! Methods and chrome-related free functions are moved verbatim. Types such as
 //! `FooterLimits` and `ActivitySummaryModel` live in `types.inc.rs`.
 
-use super::*;
+use crate::widgets::session_chrome_lines;
 
 use super::util::relative_display;
+use super::*;
 
 impl TuiApp {
     pub(super) fn push_notice(&mut self, lines: Vec<String>) {
@@ -59,6 +60,24 @@ impl TuiApp {
         let text = text.into();
         self.status_state.message = text.clone();
         self.feedback = FeedbackModel { text, severity };
+        self.feedback_until = None;
+    }
+
+    pub(super) fn expire_info_feedback(&mut self) {
+        if self.feedback.severity == FeedbackSeverity::Info && !self.feedback.is_empty() {
+            self.feedback_until = Some(Instant::now() + Duration::from_secs(3));
+        }
+    }
+
+    pub(super) fn tick_feedback(&mut self) {
+        if self
+            .feedback_until
+            .is_some_and(|until| Instant::now() >= until)
+        {
+            self.feedback = FeedbackModel::default();
+            self.status_state.message.clear();
+            self.feedback_until = None;
+        }
     }
 
     /// Operator errors remain visible in chat, feedback, and activity.
@@ -234,12 +253,12 @@ impl TuiApp {
 
     fn workspace_resource_label(&self) -> Option<String> {
         match &self.workspace_navigation.current {
-            WorkspaceView::Conversation => None,
-            WorkspaceView::File(path) => {
+            None => None,
+            Some(WorkspaceView::File(path)) => {
                 Some(relative_display(self.session.workspace_root(), path))
             }
-            WorkspaceView::Diff(DiffCommandContext::Current) => Some("Review changes".into()),
-            WorkspaceView::Run(id) => self
+            Some(WorkspaceView::Diff(DiffCommandContext::Current)) => Some("Review changes".into()),
+            Some(WorkspaceView::Run(id)) => self
                 .run
                 .current
                 .as_ref()
@@ -251,11 +270,11 @@ impl TuiApp {
 
     fn workspace_activity_label(&self) -> Option<String> {
         match &self.workspace_navigation.current {
-            WorkspaceView::Diff(DiffCommandContext::Current) => {
+            Some(WorkspaceView::Diff(DiffCommandContext::Current)) => {
                 let total = self.workspace_files.explorer.git_status.status.len();
                 (total > 0).then(|| format!("{} of {} changes", self.diff_view.selected + 1, total))
             }
-            WorkspaceView::Run(id) => self
+            Some(WorkspaceView::Run(id)) => self
                 .run
                 .current
                 .as_ref()
@@ -285,7 +304,7 @@ impl TuiApp {
     }
 
     pub(super) fn activity_summary(&self) -> Option<ActivitySummaryModel> {
-        // Approval is represented by the blocking overlay, not a background summary.
+        // Approval is represented by the inline approval card, not a background summary.
         if self.overlay.is_some() || self.session.pending_hitl().is_some() {
             return None;
         }
@@ -343,6 +362,12 @@ impl TuiApp {
             .map(|summary| (summary.label, summary.action_label, summary.kind))
     }
 
+    /// Only used by tests now — the Enter-key shortcut that used to gate on
+    /// this (via `current_workspace_is_conversation()`) was dropped when
+    /// conversation stopped being a workspace-nav state. Mouse click on the
+    /// summary banner (`mouse.rs`'s `ActivitySummary` hit target) dispatches
+    /// `ActivateActivitySummary` directly without checking this first.
+    #[cfg(test)]
     pub(super) fn activity_summary_command(&self) -> Option<SemanticCommand> {
         match self.activity_summary()?.action? {
             ActivitySummaryAction::OpenRun(id) => {
@@ -439,7 +464,10 @@ impl TuiApp {
                 .started
                 .map(|started| started.elapsed().as_secs_f64())
                 .unwrap_or(0.0);
-            format!("{label} {}", format_elapsed_tenths(elapsed))
+            format!(
+                "{label} {}",
+                crate::conversation::format_elapsed_tenths(elapsed)
+            )
         })
     }
 
@@ -497,6 +525,44 @@ impl TuiApp {
         }
 
         cached_limits.unwrap_or_default()
+    }
+
+    pub(super) fn status_report_lines(&self) -> Vec<String> {
+        let m = self.refresh_status_model();
+        let mut lines = session_chrome_lines(&m);
+        let id = self.session.session_id.to_string();
+        let short = if id.len() > 8 { &id[..8] } else { &id };
+        lines.push(format!("session_id={short}"));
+        lines.push(format!("journal={}", self.session.journal_dir().display()));
+        lines.push(format!("permission_mode={}", self.permission_mode.label()));
+        let usage = self.session.token_usage_report();
+        lines.push(format!(
+            "context_tokens={} / {}",
+            usage.context_tokens_est, usage.context_capacity
+        ));
+        lines.push(format!("messages={}", usage.message_count));
+        lines.push(format!("tool_results={}", usage.tool_message_count));
+        if let Some((before, after)) = self.conversation_view.context_reset_snapshot {
+            lines.push(format!("fresh_context={before:.0}% → {after:.0}%"));
+        }
+        let skills = self.session.loaded_skill_names();
+        if skills.is_empty() {
+            lines.push("skills=none".into());
+        } else {
+            lines.push(format!("skills={}", skills.join(", ")));
+        }
+        let mut tools = self.session.list_tools();
+        tools.sort();
+        if tools.is_empty() {
+            lines.push("tools=none".into());
+        } else {
+            lines.push(format!("tools={}", tools.join(", ")));
+        }
+        lines.push(format!(
+            "session_allows={}",
+            self.hitl_session.allowed.len()
+        ));
+        lines
     }
 }
 

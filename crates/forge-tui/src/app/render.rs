@@ -10,8 +10,21 @@
 
 use super::*;
 
+fn composer_input_height(input: &InputModel, area: ratatui::layout::Rect) -> u16 {
+    let content_width = crate::layout::estimate_composer_content_width(area)
+        .saturating_sub(gutter_prefix_width(ACTIVE_GLYPH))
+        .max(1);
+    (input.visual_lines_for_width(content_width) + 2).clamp(3, crate::layout::MAX_COMPOSER_INPUT_H)
+}
+
 impl TuiApp {
     pub fn draw(&mut self, frame: &mut ratatui::Frame) {
+        if crate::theme::refresh_system() {
+            self.render_cache.conversation = None;
+        }
+        if self.workspace_files.explorer.git_status.poll() {
+            self.reconcile_diff_staleness();
+        }
         // Advance the off-thread repo-header refresh. Cheap (a `try_recv` plus an
         // elapsed check); every draw path funnels through here, including the
         // streaming and `drain_pending_*` loops that bypass `run_loop`'s polls.
@@ -34,34 +47,64 @@ impl TuiApp {
         crate::theme::fill(area, frame.buffer_mut(), crate::theme::canvas());
         let fb_h = if self.feedback.is_empty() { 0 } else { 1 };
         let slash_mode = self.overlay.is_none() && self.input.text.starts_with('/');
-        let input_h = (self.input.visual_lines() + 2).clamp(3, 8);
-        let panel_h = if self.bottom_panel.open { 8 } else { 0 };
+        let theme_picking = matches!(self.overlay, Some(Overlay::Theme { .. }));
+        let input_h = if theme_picking {
+            crate::layout::THEME_DOCK_H
+        } else {
+            composer_input_height(&self.input, area)
+        };
+        let panel_h = if self.bottom_panel.open { 16 } else { 0 };
         let contextual_hint = self.contextual_hint();
-        let hint_h = u16::from(contextual_hint.is_some());
+        let connected = self.is_provider_connected();
+        let (vendor_label, _route_label) = self
+            .connect
+            .profile
+            .as_deref()
+            .map(|id| self.vendor_route_labels(id))
+            .unwrap_or((None, None));
+        // The footer row is otherwise idle whenever there's no contextual
+        // hint stealing it — that's exactly when the persistent
+        // [vendor] [model] [effort] control should occupy it, and only
+        // when there's an actual vendor/model to show (e.g. not for the
+        // mock/offline provider, which has no `connect.profile`). Still
+        // capped at height 1 by `split_areas_with_chrome` below: this never
+        // becomes a second footer row, just a reason to keep the one row
+        // that already exists.
+        let footer_has_compact_control = contextual_hint.is_none()
+            && connected
+            && vendor_label.is_some()
+            && !self.runtime.model_label.is_empty();
+        let hint_h = u16::from(contextual_hint.is_some() || footer_has_compact_control);
         let regions = split_areas_with_chrome(
             area,
             fb_h,
             input_h,
             !slash_mode && self.workspace_files.visible,
-            !slash_mode && self.inspector.visible,
             0,
             panel_h,
             hint_h,
+            true,
+            0,
         );
         // Layout can hide a requested side/bottom panel. Focus must follow the
         // rendered geometry rather than leaving an invisible key owner behind.
         let available = FocusAvailability {
             files: regions.files.is_some(),
-            inspector: regions.sidebar.is_some(),
+            sidebar: regions.sidebar.is_some(),
             bottom_panel: self.bottom_panel.open && regions.bottom_panel.height > 0,
         };
+        if self.bottom_panel.open && regions.bottom_panel.height > 1 {
+            self.resize_interactive_terminal(
+                regions.bottom_panel.width,
+                regions.bottom_panel.height.saturating_sub(1),
+            );
+        }
         if !available.contains(self.focus.block) {
             self.focus.block = FocusBlock::Workspace;
             self.focus.mode = FocusMode::Navigation;
         }
         self.normalize_focus();
         self.register_pane_hit_regions(&regions);
-        let connected = self.is_provider_connected();
         let status = self.refresh_status_model_with_connected(connected);
         frame.render_widget(StatusBar { model: &status }, regions.status);
         if let Some(files) = regions.files {
@@ -74,10 +117,6 @@ impl TuiApp {
             );
             self.register_file_hit_regions(files);
         }
-        if self.workspace_files.explorer.git_status.poll() {
-            self.reconcile_diff_staleness();
-        }
-
         let stream_wait = if self.busy_state.active && self.pending_turn.prompt.is_none() {
             let elapsed = if !self.stream.thinking.is_empty() {
                 // Thinking timer runs from first thinking token
@@ -122,9 +161,10 @@ impl TuiApp {
             .min(self.session.events.len())..];
         let activity_summary = self.activity_summary();
         let activity_summary_key = self.activity_summary_cache_key();
+        let sidebar_width = regions.sidebar.map(|r| r.width).unwrap_or(0);
         let key = ConversationRenderKey {
             session_id: self.session.session_id,
-            width: regions.chat.width,
+            width: sidebar_width,
             messages: visible_messages.len(),
             last_message_content: visible_messages
                 .last()
@@ -203,13 +243,13 @@ impl TuiApp {
                     .unwrap_or_else(|| payload.args_redacted.to_string());
                 conv = conv.with_blocked_tool(payload.tool.clone(), args);
             }
-            let width = regions.chat.width.saturating_sub(2) as usize;
+            let width = sidebar_width.saturating_sub(2) as usize;
             self.render_cache.conversation = Some(ConversationRenderCache {
                 key,
                 lines: Arc::new(conv.lines_for_width(width)),
             });
         }
-        let width = regions.chat.width.saturating_sub(2) as usize;
+        let width = sidebar_width.saturating_sub(2) as usize;
         let live_lines = if self.busy_state.active && self.pending_turn.prompt.is_none() {
             ConversationModel::from_messages(
                 &[],
@@ -231,113 +271,81 @@ impl TuiApp {
         // immutable borrow of `conversation_cache` ends before
         // `register_activity_summary_region` takes `&mut self` below.
         let cached_lines = Arc::clone(&cached.lines);
-        match self.workspace_navigation.current.clone() {
-            WorkspaceView::Conversation => {
-                let conversation_area = ratatui::layout::Rect {
-                    x: regions.chat.x.saturating_add(2.min(regions.chat.width)),
-                    y: regions.chat.y.saturating_add(1.min(regions.chat.height)),
-                    width: regions.chat.width.saturating_sub(2.min(regions.chat.width)),
-                    height: regions
-                        .chat
-                        .height
-                        .saturating_sub(1.min(regions.chat.height)),
-                };
-                frame.render_widget(
-                    crate::conversation::ConversationLinesWidget {
-                        lines: &cached_lines,
-                        tail_lines: &live_lines,
-                        scroll: self.conversation_view.scroll,
-                        follow: self.conversation_view.follow,
-                    },
-                    conversation_area,
-                );
-                self.register_activity_summary_region(
-                    conversation_area,
-                    &cached_lines,
-                    &live_lines,
-                );
+        // The sidebar always shows the conversation, regardless of what the
+        // center pane shows — it's no longer one of the `WorkspaceView`
+        // options.
+        if let Some(sidebar) = regions.sidebar {
+            let conversation_area = ratatui::layout::Rect {
+                x: sidebar.x.saturating_add(2.min(sidebar.width)),
+                y: sidebar.y.saturating_add(1.min(sidebar.height)),
+                width: sidebar.width.saturating_sub(2.min(sidebar.width)),
+                height: sidebar.height.saturating_sub(1.min(sidebar.height)),
+            };
+            frame.render_widget(
+                crate::conversation::ConversationLinesWidget {
+                    lines: &cached_lines,
+                    tail_lines: &live_lines,
+                    scroll: self.conversation_view.scroll,
+                    follow: self.conversation_view.follow,
+                },
+                conversation_area,
+            );
+            self.register_activity_summary_region(conversation_area, &cached_lines, &live_lines);
+        }
+        // The approval card is safety-critical (command args, redacted
+        // secrets, remember-invocation controls) and needs real width to
+        // stay legible, so it docks at the bottom of the wider center pane
+        // rather than the narrower sidebar — the transcript above stays
+        // fully visible and scrollable instead of being replaced by a modal.
+        let approval_dock_height = self
+            .approval_card_dock_height(regions.chat.width)
+            .unwrap_or(0);
+        let chat_area = if approval_dock_height > 0 {
+            ratatui::layout::Rect {
+                height: regions.chat.height.saturating_sub(approval_dock_height),
+                ..regions.chat
             }
-            WorkspaceView::File(_) => {
-                self.editor_viewport.height = regions.chat.height;
+        } else {
+            regions.chat
+        };
+        let approval_area = (approval_dock_height > 0).then(|| ratatui::layout::Rect {
+            y: chat_area.y.saturating_add(chat_area.height),
+            height: regions.chat.height.saturating_sub(chat_area.height),
+            ..regions.chat
+        });
+        match self.workspace_navigation.current.clone() {
+            None => {
+                self.render_empty_workspace(chat_area, frame.buffer_mut());
+            }
+            Some(WorkspaceView::File(_)) => {
+                self.editor_viewport.height = chat_area.height;
                 frame.render_widget(
                     SourceViewerWidget {
                         viewer: &mut self.source_viewer,
                         focused: self.focus.block == FocusBlock::Workspace,
                     },
-                    regions.chat,
+                    chat_area,
                 );
             }
-            WorkspaceView::Diff(DiffCommandContext::Current) => {
-                self.render_diff_workspace(regions.chat, frame.buffer_mut());
+            Some(WorkspaceView::Diff(DiffCommandContext::Current)) => {
+                self.render_diff_workspace(chat_area, frame.buffer_mut());
             }
-            WorkspaceView::Run(id) => {
-                self.render_run_workspace(&id, regions.chat, frame.buffer_mut());
+            Some(WorkspaceView::Run(id)) => {
+                self.render_run_workspace(&id, chat_area, frame.buffer_mut());
             }
         }
-        if let Some(sidebar_area) = regions.sidebar {
-            let activity = self
-                .activity
-                .recent(8)
-                .iter()
-                .map(|item| item.summary.clone())
-                .collect::<Vec<_>>();
-            let mut sidebar = SidebarModel::from_session_with_activity(&self.session, &activity);
-            sidebar.provider = self.runtime.provider.clone();
-            sidebar.model = self.runtime.model_label.clone();
-            sidebar.effort = self.reasoning_effort.value.label().to_string();
-            sidebar.route = self.connect.profile.clone();
-            sidebar.busy = self.busy_state.active;
-            sidebar.step = match &self.busy_state.phase {
-                BusyPhase::Model => "model_stream",
-                BusyPhase::Tool { .. } => "tool_execution",
-                BusyPhase::Connect => "connect",
-                BusyPhase::Other(step) => step,
-                BusyPhase::Idle => "idle",
+        if let Some(area) = approval_area {
+            if let Some(card) = self.approval_card.as_ref() {
+                frame.render_widget(ApprovalCardWidget { card }, area);
             }
-            .into();
-            sidebar.context_reset = self.conversation_view.context_reset_snapshot;
-            sidebar.session_allows = self
-                .hitl_session
-                .allowed
-                .iter()
-                .map(ApprovalIdentity::label)
-                .collect();
-            let header = self.repo_header();
-            sidebar.repo_name = header.repo_name;
-            sidebar.branch = header.branch;
-            let gs = &self.workspace_files.explorer.git_status;
-            sidebar.git_status_loading = gs.loading;
-            sidebar.git_status_error = gs.error.is_some();
-            sidebar.files_changed = Some(gs.status.len());
-            sidebar.validation = self.run.current.as_ref().map(|record| {
-                format!(
-                    "Run {}",
-                    match record.state {
-                        RunState::Queued => "queued",
-                        RunState::Running => "running",
-                        RunState::Succeeded => "succeeded",
-                        RunState::Failed => "failed",
-                        RunState::Cancelled => "cancelled",
-                        RunState::StartFailed => "start failed",
-                        RunState::CaptureFailed => "capture failed",
-                    }
-                )
-            });
-            sidebar.elapsed = self
-                .timing
-                .started
-                .or(self.timing.thinking_started)
-                .map(|started| format_elapsed_tenths(started.elapsed().as_secs_f64()));
-            frame.render_widget(
-                SidebarWidget {
-                    model: &sidebar,
-                    view: self.inspector.view,
-                    focused: self.focus.block == FocusBlock::Inspector,
-                },
-                sidebar_area,
-            );
+            self.register_approval_card_hit_regions(area);
         }
 
+        let interactive_terminal_output = self
+            .interactive_terminal
+            .as_ref()
+            .map(|terminal| terminal.display_output());
+        let interactive_terminal = self.interactive_terminal.as_ref();
         frame.render_widget(
             BottomPanel {
                 model: BottomPanelModel {
@@ -345,11 +353,13 @@ impl TuiApp {
                     busy_phase: &self.busy_state.phase,
                     activity: &self.activity,
                     run: &self.run,
-                    background: self.session.background(),
-                    tasks_selected: self.task_selection.tasks,
                     terminal_title: self.terminal_capture.title.as_deref(),
-                    terminal_content: &self.terminal_capture.content,
+                    terminal_content: interactive_terminal_output
+                        .as_deref()
+                        .unwrap_or(&self.terminal_capture.content),
                     terminal_truncated: self.terminal_capture.truncated,
+                    terminal_running: interactive_terminal.is_some_and(|terminal| terminal.running),
+                    terminal_shell: interactive_terminal.map(|terminal| terminal.shell.as_str()),
                 },
                 focused: self.focus.block == FocusBlock::BottomPanel,
             },
@@ -398,7 +408,7 @@ impl TuiApp {
                 let n = suggestions.len();
                 let idx = self.slash_suggestions.selected.min(n.saturating_sub(1));
                 // Use as much space above the input as possible (cap for readability).
-                let max_list = input.y.saturating_sub(2).clamp(1, 16) as usize;
+                let max_list = input.y.saturating_sub(2).clamp(1, 8) as usize;
                 let visible = n.min(max_list);
                 // Scroll so the highlighted row stays on screen.
                 let start = if n <= visible || idx < visible / 2 {
@@ -480,35 +490,54 @@ impl TuiApp {
         }
 
         let attachment_label = self.attachment.pending.as_ref().map(|a| a.label());
-        let glyph = ACTIVE_GLYPH;
-        let composer_content_width = regions
-            .input
-            .width
-            .saturating_sub(gutter_prefix_width(glyph) as u16)
-            .max(1) as usize;
-        let composer_rows = self.render_cache.composer_layout.rows(
-            self.input.layout_revision,
-            &self.input.text,
-            composer_content_width,
-        );
-        frame.render_widget(
-            InputBar {
-                model: &self.input,
-                rows: composer_rows,
-                attachment: attachment_label.as_deref(),
-                dimmed: self.busy_state.active && self.input.text.is_empty(),
-                not_connected: !connected,
-                focused: self.focus.mode == FocusMode::Navigation
-                    && self.focus.block == FocusBlock::Composer,
-            },
-            regions.input,
-        );
+        if theme_picking {
+            if let Some(Overlay::Theme {
+                selected,
+                current,
+                items,
+            }) = self.overlay.as_ref()
+            {
+                crate::overlays::render_theme_dock(
+                    *selected,
+                    current,
+                    items,
+                    regions.input,
+                    frame.buffer_mut(),
+                );
+            }
+        } else {
+            frame.render_widget(
+                InputBar {
+                    model: &self.input,
+                    attachment: attachment_label.as_deref(),
+                    dimmed: self.busy_state.active && self.input.text.is_empty(),
+                    not_connected: !connected,
+                    focused: self.focus.mode == FocusMode::Navigation
+                        && self.focus.block == FocusBlock::Composer,
+                },
+                regions.input,
+            );
+        }
 
+        let effort_label = self
+            .reasoning_effort
+            .value
+            .display_label(&self.runtime.model_label)
+            .to_string();
+        let token_report = self.session.token_usage_report();
         let footer = FooterModel {
             hints: contextual_hint.unwrap_or_default(),
+            connected,
+            provider: vendor_label.unwrap_or_default(),
+            model: self.runtime.model_label.clone(),
+            effort: effort_label,
+            ctx_used: token_report.context_tokens_est,
+            ctx_total: token_report.context_capacity,
+            ctx_pct: self.session.context_usage_ratio(),
             ..FooterModel::default()
         };
         frame.render_widget(FooterBar { model: &footer }, regions.footer);
+        self.register_footer_control_hit_regions(&footer, regions.footer);
 
         if let Some(ref dialog) = self.explorer_dialog.current {
             self.render_explorer_dialog(dialog, area, frame.buffer_mut());
@@ -516,10 +545,31 @@ impl TuiApp {
         } else if let Some(ref ov) = self.overlay {
             match ov {
                 Overlay::Help => self.render_help_overlay(area, frame.buffer_mut()),
+                // Theme dock already replaced the composer band above.
+                Overlay::Theme { .. } => {}
                 _ => frame.render_widget(OverlayWidget { overlay: ov }, area),
             }
             self.register_overlay_hit_regions(area);
         }
+    }
+
+    /// Center-pane placeholder for when nothing is open — `workspace_navigation.current`
+    /// is `None`, since conversation no longer fills this pane by default.
+    fn render_empty_workspace(
+        &self,
+        area: ratatui::layout::Rect,
+        buf: &mut ratatui::buffer::Buffer,
+    ) {
+        Paragraph::new("No file open\n\nSelect one from the explorer.")
+            .style(theme::muted())
+            .alignment(ratatui::layout::Alignment::Center)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(theme::inactive_panel_border())
+                    .style(theme::panel()),
+            )
+            .render(area, buf);
     }
 
     fn render_diff_workspace(
@@ -735,5 +785,24 @@ impl TuiApp {
                     .title(Span::styled(" Run ", theme::active_panel_title())),
             )
             .render(area, buf);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::composer_input_height;
+    use crate::widgets::InputModel;
+    use ratatui::layout::Rect;
+
+    #[test]
+    fn wrapped_composer_grows_before_the_second_visual_line_is_clipped() {
+        let mut input = InputModel::default();
+        input.set_text(
+            std::iter::repeat_n("word", 40)
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+
+        assert_eq!(composer_input_height(&input, Rect::new(0, 0, 120, 40)), 8);
     }
 }

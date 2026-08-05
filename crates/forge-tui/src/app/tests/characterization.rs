@@ -10,32 +10,29 @@ async fn characterization_contextual_views_are_reachable_with_current_controls()
     let path = dir.path().join("source.rs");
     fs::write(&path, "fn main() {}\n").unwrap();
     app.focus_block(FocusBlock::Workspace);
-    assert_eq!(
-        app.workspace_navigation.current,
-        WorkspaceView::Conversation
-    );
+    assert_eq!(app.workspace_navigation.current, None);
 
     app.handle_key(press(KeyCode::Right, KeyModifiers::SHIFT))
         .await
         .unwrap();
     assert_eq!(
         app.workspace_navigation.current,
-        WorkspaceView::Diff(DiffCommandContext::Current)
+        Some(WorkspaceView::Diff(DiffCommandContext::Current))
     );
     assert_eq!(app.focus.block, FocusBlock::Workspace);
 
     app.handle_key(press(KeyCode::Left, KeyModifiers::SHIFT))
         .await
         .unwrap();
-    assert_eq!(
-        app.workspace_navigation.current,
-        WorkspaceView::Conversation
-    );
+    assert_eq!(app.workspace_navigation.current, None);
 
     app.execute_semantic_command(SemanticCommand::OpenFile(path.clone()))
         .await
         .unwrap();
-    assert_eq!(app.workspace_navigation.current, WorkspaceView::File(path));
+    assert_eq!(
+        app.workspace_navigation.current,
+        Some(WorkspaceView::File(path))
+    );
 }
 
 #[tokio::test]
@@ -84,12 +81,9 @@ async fn characterization_80x24_draws_without_panic() {
 #[tokio::test]
 async fn characterization_run_completion_preserves_bottom_panel_focus() {
     let (_dir, mut app) = focus_test_app().await;
-    app.open_bottom_panel(Some(BottomPanelTab::Run));
+    app.open_bottom_panel();
     app.run.draft.command_input = "/usr/bin/true".into();
-
-    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
-        .await
-        .unwrap();
+    app.run_current_draft();
     assert_eq!(app.focus.block, FocusBlock::BottomPanel);
     assert!(app.run_execution.execution.pending_validation);
 

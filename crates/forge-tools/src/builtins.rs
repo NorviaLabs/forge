@@ -307,6 +307,50 @@ impl Tool for BackgroundRunTool {
     }
 }
 
+/// Model-callable TODO/checklist tool. Parses args and returns a static ack;
+/// the agent loop emits a `plan_update` turn event so the TUI can render it.
+/// There is no server-side plan state — each call fully replaces what clients show.
+pub struct UpdatePlanTool;
+
+#[async_trait]
+impl Tool for UpdatePlanTool {
+    fn name(&self) -> &str {
+        "update_plan"
+    }
+
+    fn description(&self) -> &str {
+        "Updates the task plan. \
+Provide an optional explanation and a list of plan items, each with a step and status \
+(pending, in_progress, or completed). \
+At most one step can be in_progress at a time. \
+Use this as a structured checklist the user can see — not as a substitute for doing the work."
+    }
+
+    fn input_schema(&self) -> Value {
+        schema_for::<forge_types::UpdatePlanArgs>()
+    }
+
+    fn side_effect_class(&self) -> SideEffectClass {
+        SideEffectClass::Meta
+    }
+
+    fn idempotent(&self) -> bool {
+        true
+    }
+
+    async fn call(&self, _ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
+        // Validation already ran against the schema; deserialize is belt-and-suspenders.
+        let _: forge_types::UpdatePlanArgs = serde_json::from_value(args).map_err(|e| {
+            ToolError::Execution(format!("internal deserialize after validation: {e}"))
+        })?;
+        Ok(ToolOutput {
+            content: "Plan updated".into(),
+            is_error: false,
+            exit_code: None,
+        })
+    }
+}
+
 /// Allowlisted git subcommands (not a free-form shell).
 ///
 /// Every name here must have a [`git_policy`] entry; `git_policy_covers_every_subcommand`
@@ -1183,6 +1227,10 @@ pub fn default_builtins() -> Vec<std::sync::Arc<dyn Tool>> {
         std::sync::Arc::new(BashTool),
         std::sync::Arc::new(GitTool),
         std::sync::Arc::new(BackgroundRunTool),
+        std::sync::Arc::new(crate::ExecCommandTool),
+        std::sync::Arc::new(crate::WriteStdinTool),
+        std::sync::Arc::new(UpdatePlanTool),
+        std::sync::Arc::new(crate::skills::LoadSkillTool),
     ];
     tools.extend(crate::fast_file_tools::fff_tools());
     tools
@@ -1477,6 +1525,39 @@ mod tests {
         assert!(tools.iter().any(|t| t.name() == "apply_patch"));
         assert!(tools.iter().any(|t| t.name() == "fffind"));
         assert!(tools.iter().any(|t| t.name() == "ffgrep"));
+        assert!(tools.iter().any(|t| t.name() == "update_plan"));
+    }
+
+    #[tokio::test]
+    async fn update_plan_returns_static_ack() {
+        let dir = tempdir().unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let args = json!({
+            "explanation": "starting",
+            "plan": [
+                {"step": "read code", "status": "completed"},
+                {"step": "implement", "status": "in_progress"},
+                {"step": "test", "status": "pending"}
+            ]
+        });
+        validate_args("update_plan", &UpdatePlanTool.input_schema(), &args).unwrap();
+        let out = UpdatePlanTool.call(&ctx, args).await.unwrap();
+        assert!(!out.is_error);
+        assert_eq!(out.content, "Plan updated");
+        assert_eq!(UpdatePlanTool.side_effect_class(), SideEffectClass::Meta);
+    }
+
+    #[test]
+    fn update_plan_schema_rejects_unknown_status() {
+        let err = validate_args(
+            "update_plan",
+            &UpdatePlanTool.input_schema(),
+            &json!({
+                "plan": [{"step": "x", "status": "blocked"}]
+            }),
+        )
+        .unwrap_err();
+        assert_eq!(err.tool, "update_plan");
     }
 
     #[tokio::test]

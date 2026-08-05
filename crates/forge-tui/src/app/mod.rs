@@ -39,10 +39,8 @@ use thiserror::Error;
 
 use crate::activity::{ActivityFeed, ActivityKind};
 use crate::commands::{parse_slash, SlashCommand};
-use crate::composer_layout::ComposerLayoutCache;
 use crate::conversation::{
-    format_elapsed_tenths, BannerKind, ChatItem, ConversationModel, ConversationViewOpts,
-    StreamWaitPhase,
+    BannerKind, ChatItem, ConversationModel, ConversationViewOpts, StreamWaitPhase,
 };
 use crate::editor::EditorError;
 use crate::effort::ReasoningEffort;
@@ -52,25 +50,25 @@ use crate::file_ops::{
 };
 use crate::git_status::GitStatusKind;
 use crate::history::InputHistory;
+use crate::interactive_terminal::InteractiveTerminal;
 use crate::layout::is_too_small;
-#[cfg(test)]
-use crate::layout::split_areas_full;
 use crate::layout::split_areas_with_chrome;
 use crate::overlays::{
-    build_provider_rows, centered_rect, filter_palette, handle_overlay_key, models_from_catalog,
-    ApprovalExecutionMode, ApprovalOverlayState, ConnectModelColumn, FileExplorerItem, Key,
-    Key as OverlayKey, Overlay, OverlayAction, OverlayWidget, PaletteItem, ResumeSessionItem,
+    approval_card_action_row, approval_card_dock_height, build_provider_rows, centered_rect,
+    filter_palette, handle_approval_card_key, handle_overlay_key, models_from_catalog,
+    ApprovalCardState, ApprovalCardWidget, ApprovalExecutionMode, ApprovalFocusedAction,
+    ApprovalOverlayState, ConnectModelColumn, FileExplorerItem, Key, Key as OverlayKey, Overlay,
+    OverlayAction, OverlayWidget, PaletteItem, ResumeSessionItem,
 };
 use crate::run::{RunExecutionMode, RunHistoryFile, RunState, RunStateModel};
-use crate::sidebar::{InspectorView, SidebarModel, SidebarWidget};
 use crate::source_viewer::{SourceViewer, SourceViewerWidget};
 use crate::terminal::TerminalGuard;
 use crate::theme;
 use crate::user_message_gutter::{gutter_prefix_width, ACTIVE_GLYPH};
 use crate::widgets::{
-    classify_operator_error, BottomPanel, BottomPanelModel, BottomPanelState, BottomPanelTab,
-    BusyPhase, FeedbackBar, FeedbackModel, FeedbackSeverity, FooterBar, FooterModel, InputBar,
-    InputModel, StatusBar, StatusModel,
+    classify_operator_error, BottomPanel, BottomPanelModel, BottomPanelState, BusyPhase,
+    FeedbackBar, FeedbackModel, FeedbackSeverity, FooterBar, FooterModel, InputBar, InputModel,
+    StatusBar, StatusModel,
 };
 use forge_config::{CommandConfig, FileIconMode};
 

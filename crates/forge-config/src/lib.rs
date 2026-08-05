@@ -1,5 +1,6 @@
 //! Configuration: TOML + env overrides.
 
+mod permissions;
 mod theme;
 
 use std::env;
@@ -9,10 +10,14 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub use permissions::{
+    append_user_allow_rule, load_permissions, parse_permissions_toml, user_permissions_path,
+    workspace_permissions_path, PermissionsFile,
+};
 pub use theme::{
     is_system_theme, normalize_theme_id, parse_hex_color, parse_theme_preference, parse_theme_toml,
-    Rgb, SyntaxPalette, ThemeDefinition, ThemePalette, DEFAULT_THEME_ID, THEME_FORGE_DAYLIGHT,
-    THEME_FORGE_MIDNIGHT, THEME_SYSTEM,
+    Rgb, SyntaxPalette, ThemeDefinition, ThemePalette, DEFAULT_THEME_ID, THEME_SOLARIZED_DARK,
+    THEME_SOLARIZED_LIGHT, THEME_SYSTEM,
 };
 
 #[derive(Debug, Error)]
@@ -223,7 +228,7 @@ pub struct TuiConfig {
     pub file_icons: FileIconMode,
     #[serde(default = "default_mouse_capture")]
     pub mouse_capture: bool,
-    /// Optional `[tui] theme` preference (theme id, e.g. `forge-midnight`).
+    /// Optional `[tui] theme` preference (theme id, e.g. `solarized-dark`).
     #[serde(default = "default_theme_id")]
     pub theme: String,
 }
@@ -951,7 +956,7 @@ mod tests {
         assert!(cfg.model.model.is_empty());
         assert_eq!(cfg.model.request_timeout_secs, 300);
         assert_eq!(cfg.journal.backend, "sqlite");
-        assert_eq!(cfg.tui.theme, THEME_FORGE_MIDNIGHT);
+        assert_eq!(cfg.tui.theme, THEME_SOLARIZED_DARK);
     }
 
     #[test]
@@ -997,7 +1002,7 @@ theme = "light"
         assert_eq!(cfg.mcp.servers[0].id, "demo");
         assert_eq!(cfg.resolved_workspace, dir.path());
         assert!(!cfg.tui.mouse_capture);
-        assert_eq!(cfg.tui.theme, THEME_FORGE_DAYLIGHT);
+        assert_eq!(cfg.tui.theme, THEME_SOLARIZED_LIGHT);
     }
 
     /// The hostile-repo payload: a checked-in `forge.toml` that redirects the
@@ -1234,10 +1239,10 @@ model = "from-file"
 
     #[test]
     fn theme_id_normalization_maps_legacy_aliases() {
-        assert_eq!(normalize_theme_id("dark"), THEME_FORGE_MIDNIGHT);
-        assert_eq!(normalize_theme_id("light"), THEME_FORGE_DAYLIGHT);
+        assert_eq!(normalize_theme_id("dark"), THEME_SOLARIZED_DARK);
+        assert_eq!(normalize_theme_id("light"), THEME_SOLARIZED_LIGHT);
         assert_eq!(normalize_theme_id("system"), THEME_SYSTEM);
-        assert_eq!(normalize_theme_id("forge-daylight"), THEME_FORGE_DAYLIGHT);
+        assert_eq!(normalize_theme_id("solarized-light"), THEME_SOLARIZED_LIGHT);
     }
 
     #[test]
@@ -1245,7 +1250,7 @@ model = "from-file"
         assert!(parse_theme_preference("bogus").is_none());
         assert_eq!(
             parse_theme_preference("light").as_deref(),
-            Some(THEME_FORGE_DAYLIGHT)
+            Some(THEME_SOLARIZED_LIGHT)
         );
     }
 
@@ -1466,7 +1471,7 @@ max_query_chars = 0
             ..Default::default()
         })
         .unwrap();
-        assert_eq!(cfg.tui.theme, THEME_FORGE_DAYLIGHT);
+        assert_eq!(cfg.tui.theme, THEME_SOLARIZED_LIGHT);
     }
 
     #[test]
@@ -1501,7 +1506,7 @@ max_query_chars = 0
         };
         file.apply(&mut cfg, ConfigScope::Trusted);
         assert_eq!(cfg.tui.file_icons, FileIconMode::Unicode);
-        assert_eq!(cfg.tui.theme, THEME_FORGE_MIDNIGHT);
+        assert_eq!(cfg.tui.theme, THEME_SOLARIZED_DARK);
     }
 
     /// A `[validation]` section in the file replaces the whole

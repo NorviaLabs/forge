@@ -22,6 +22,10 @@ async fn tab_cycles_visible_blocks_and_skips_hidden_ones() {
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await
         .unwrap();
+    assert_eq!(app.focus.block, FocusBlock::Sidebar);
+    app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
+        .await
+        .unwrap();
     assert_eq!(app.focus.block, FocusBlock::Composer);
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await
@@ -36,7 +40,6 @@ async fn tab_cycles_visible_blocks_and_skips_hidden_ones() {
         .unwrap();
     assert_eq!(app.focus.block, FocusBlock::Workspace);
 
-    app.inspector.visible = false;
     app.normalize_focus();
     app.handle_key(press(KeyCode::BackTab, KeyModifiers::NONE))
         .await
@@ -45,14 +48,26 @@ async fn tab_cycles_visible_blocks_and_skips_hidden_ones() {
 }
 
 #[tokio::test]
-async fn tab_and_shift_tab_reach_composer() {
+async fn tab_and_shift_tab_traverse_sidebar_and_composer() {
     let (_dir, mut app) = focus_test_app().await;
     app.focus_block(FocusBlock::Workspace);
+
+    // Sidebar sits between Workspace and Composer — they're the same
+    // physical column post-sidebar layout (composer docked below it).
+    app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.focus.block, FocusBlock::Sidebar);
 
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await
         .unwrap();
     assert_eq!(app.focus.block, FocusBlock::Composer);
+
+    app.handle_key(press(KeyCode::BackTab, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.focus.block, FocusBlock::Sidebar);
 
     app.handle_key(press(KeyCode::BackTab, KeyModifiers::NONE))
         .await
@@ -85,22 +100,21 @@ async fn shift_arrow_tabs_only_apply_to_the_active_navigation_block() {
         .unwrap();
     assert_eq!(
         app.workspace_navigation.current,
-        WorkspaceView::Diff(DiffCommandContext::Current)
+        Some(WorkspaceView::Diff(DiffCommandContext::Current))
     );
 
-    app.inspector.visible = true;
-    app.focus_block(FocusBlock::Inspector);
-    assert_eq!(app.focus.block, FocusBlock::Inspector);
+    // The bottom panel is Terminal-only now (Tasks moved to the sidebar),
+    // so shift-arrow has nothing to cycle while it's focused — workspace
+    // navigation stays exactly where it was.
+    app.open_bottom_panel();
+    app.focus_block(FocusBlock::BottomPanel);
     app.handle_key(press(KeyCode::Right, KeyModifiers::SHIFT))
         .await
         .unwrap();
-    assert_eq!(app.inspector.view, InspectorView::Context);
-
-    app.open_bottom_panel(None);
-    app.handle_key(press(KeyCode::Right, KeyModifiers::SHIFT))
-        .await
-        .unwrap();
-    assert_eq!(app.bottom_panel.active, BottomPanelTab::Activity);
+    assert_eq!(
+        app.workspace_navigation.current,
+        Some(WorkspaceView::Diff(DiffCommandContext::Current))
+    );
 }
 
 #[tokio::test]
@@ -116,10 +130,7 @@ async fn chat_input_keeps_literal_brackets_and_shift_arrows_do_not_switch_tabs()
     app.handle_key(press(KeyCode::Right, KeyModifiers::SHIFT))
         .await
         .unwrap();
-    assert_eq!(
-        app.workspace_navigation.current,
-        WorkspaceView::Conversation
-    );
+    assert_eq!(app.workspace_navigation.current, None);
     app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
         .await
         .unwrap();
@@ -138,11 +149,9 @@ async fn esc_from_composer_returns_to_previous_block_and_keeps_draft() {
     for block in [
         FocusBlock::Files,
         FocusBlock::Workspace,
-        FocusBlock::Inspector,
         FocusBlock::BottomPanel,
     ] {
         app.workspace_files.visible = true;
-        app.inspector.visible = true;
         app.bottom_panel.open = true;
         app.focus_block(block);
         app.enter_chat_composer();
@@ -206,6 +215,7 @@ async fn semantic_commands_dispatch_without_rendering_a_frame() {
     let path = dir.path().join("main.rs");
     fs::write(&path, "fn main() {}\n").unwrap();
 
+    app.workspace_files.visible = false;
     app.execute_semantic_command(SemanticCommand::ToggleFiles)
         .await
         .unwrap();
@@ -217,7 +227,7 @@ async fn semantic_commands_dispatch_without_rendering_a_frame() {
         .unwrap();
     assert_eq!(
         app.workspace_navigation.current,
-        WorkspaceView::Diff(DiffCommandContext::Current)
+        Some(WorkspaceView::Diff(DiffCommandContext::Current))
     );
 
     app.execute_semantic_command(SemanticCommand::OpenFile(path.clone()))
@@ -225,18 +235,20 @@ async fn semantic_commands_dispatch_without_rendering_a_frame() {
         .unwrap();
     assert_eq!(
         app.workspace_navigation.current,
-        WorkspaceView::File(path.clone())
+        Some(WorkspaceView::File(path.clone()))
     );
     assert_eq!(
         app.source_viewer.path.as_deref(),
         Some(path.canonicalize().unwrap().as_path())
     );
 
+    // With no current run, background tasks live in the sidebar now —
+    // OpenRun(Current) focuses it instead of a bottom-panel Tasks tab.
     app.execute_semantic_command(SemanticCommand::OpenRun(RunCommandTarget::Current))
         .await
         .unwrap();
-    assert!(app.bottom_panel.open);
-    assert_eq!(app.bottom_panel.active, BottomPanelTab::Run);
+    assert!(!app.bottom_panel.open);
+    assert_eq!(app.focus.block, FocusBlock::Sidebar);
 }
 
 #[tokio::test]
@@ -259,10 +271,7 @@ async fn semantic_dispatch_handles_invalid_or_stale_identifiers_without_panic() 
     .await
     .unwrap();
 
-    assert_eq!(
-        app.workspace_navigation.current,
-        WorkspaceView::Conversation
-    );
+    assert_eq!(app.workspace_navigation.current, None);
     assert!(!app.bottom_panel.open);
 }
 
@@ -273,7 +282,7 @@ async fn modal_and_transient_precedence_still_wins_over_semantic_bindings() {
     app.handle_key(press(KeyCode::Char('e'), KeyModifiers::CONTROL))
         .await
         .unwrap();
-    assert!(!app.workspace_files.visible);
+    assert!(app.workspace_files.visible);
     assert!(app.overlay.is_some());
 
     app.overlay = None;
@@ -348,7 +357,7 @@ async fn switching_to_diff_focuses_workspace_for_navigation() {
 
     assert_eq!(
         app.workspace_navigation.current,
-        WorkspaceView::Diff(DiffCommandContext::Current)
+        Some(WorkspaceView::Diff(DiffCommandContext::Current))
     );
     assert_eq!(app.focus.block, FocusBlock::Workspace);
     assert_eq!(app.diff_view.selected, 1);
@@ -401,10 +410,7 @@ async fn overlay_precedes_block_navigation() {
     app.handle_key(press(KeyCode::Char(']'), KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(
-        app.workspace_navigation.current,
-        WorkspaceView::Conversation
-    );
+    assert_eq!(app.workspace_navigation.current, None);
     assert!(app.overlay.is_some());
 }
 
@@ -438,7 +444,7 @@ async fn helper_labels_reflect_focus_mode() {
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
-    assert!(app.help_text().contains("Conversation"));
+    assert!(app.help_text().contains("No file open"));
     app.workspace_navigation
         .replace_view(WorkspaceView::Diff(DiffCommandContext::Current));
     assert!(app.help_text().contains("Review changes"));
@@ -469,14 +475,12 @@ async fn tab_nav_command_recognizes_shifted_plain_arrows_only() {
 async fn focus_availability_and_restore_skip_hidden_blocks() {
     let (_dir, mut app) = focus_test_app().await;
     app.workspace_files.visible = true;
-    app.inspector.visible = false;
     app.bottom_panel.open = false;
     let availability = app.focus_availability();
     assert!(availability.contains(FocusBlock::Files));
-    assert!(!availability.contains(FocusBlock::Inspector));
     assert!(!availability.contains(FocusBlock::BottomPanel));
 
-    app.focus.previous_block = Some(FocusBlock::Inspector);
+    app.focus.previous_block = Some(FocusBlock::BottomPanel);
     app.restore_focus_after_closing(FocusBlock::Files);
     assert_eq!(app.focus.block, FocusBlock::Workspace);
     assert_eq!(app.focus.return_block, Some(FocusBlock::Workspace));

@@ -61,6 +61,45 @@ async fn edge_network_stream_interruption_preserves_partial_response() {
     );
 }
 
+#[tokio::test]
+async fn failed_turn_does_not_open_a_turn_limit_continuation() {
+    let dir = TempDir::new().unwrap();
+    let session = session_for_workspace_with_model(
+        dir.path(),
+        Arc::new(MockModelClient::stream_error(
+            vec![],
+            "HTTP 500 Internal Server Error",
+        )),
+    )
+    .await;
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "mock".into(),
+            provider: "mock".into(),
+            cwd: dir.path().to_path_buf(),
+            version: "test".into(),
+            startup_notices: Vec::new(),
+            validation_command: None,
+            file_icons: FileIconMode::Unicode,
+            mouse_capture: true,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+
+    app.dispatch_line("fail").await.unwrap();
+    app.drain_pending_prompt(None).await.unwrap();
+
+    assert_eq!(
+        app.session.active_task.lifecycle,
+        forge_types::TaskLifecycle::Failed
+    );
+    assert!(
+        !matches!(app.overlay, Some(Overlay::TurnLimit { .. })),
+        "a failed turn must not be offered another turn-limit batch"
+    );
+}
+
 // Regression test for the "permanently stuck Working" bug found in the
 // 2026-08-01 usability audit: a model/provider request that fails before
 // producing any `ModelResponse` (no partial stream content this time, so the
@@ -140,7 +179,10 @@ async fn edge_open_file_external_rename_updates_path_when_identity_matches() {
 
     let new = new.canonicalize().unwrap();
     assert_eq!(app.source_viewer.path.as_deref(), Some(new.as_path()));
-    assert_eq!(app.workspace_navigation.current, WorkspaceView::File(new));
+    assert_eq!(
+        app.workspace_navigation.current,
+        Some(WorkspaceView::File(new))
+    );
     assert_eq!(app.source_viewer.current_line, 2);
     assert_eq!(app.source_viewer.top_line, 1);
     assert_eq!(
@@ -169,7 +211,10 @@ async fn edge_open_file_external_delete_keeps_file_view_and_buffer() {
         .unwrap();
     app.poll_file_changes();
 
-    assert_eq!(app.workspace_navigation.current, WorkspaceView::File(path));
+    assert_eq!(
+        app.workspace_navigation.current,
+        Some(WorkspaceView::File(path))
+    );
     assert_eq!(app.source_viewer.path.as_deref(), Some(opened.as_path()));
     assert_eq!(
         app.source_viewer.status,
@@ -278,10 +323,7 @@ async fn edge_diff_stale_marking_waits_for_confirmed_status_change() {
     app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(
-        app.workspace_navigation.current,
-        WorkspaceView::Conversation
-    );
+    assert_eq!(app.workspace_navigation.current, None);
 }
 
 /// A git-status refresh resolving asynchronously (via `poll()`) after the

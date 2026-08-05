@@ -29,7 +29,7 @@ impl TuiApp {
     pub(super) fn help_text(&self) -> String {
         let mode = match self.focus.mode {
             FocusMode::Transient(TransientOwner::SourceSearch)
-                if self.current_workspace_is_file() || self.current_workspace_is_conversation() =>
+                if self.current_workspace_is_file() =>
             {
                 "SEARCH"
             }
@@ -38,11 +38,11 @@ impl TuiApp {
             {
                 "JUMP"
             }
-            _ => match self.workspace_navigation.current {
-                WorkspaceView::Conversation => "Conversation",
-                WorkspaceView::File(_) => "File",
-                WorkspaceView::Diff(_) => "Review changes",
-                WorkspaceView::Run(_) => "Run",
+            _ => match &self.workspace_navigation.current {
+                None => "No file open",
+                Some(WorkspaceView::File(_)) => "File",
+                Some(WorkspaceView::Diff(_)) => "Review changes",
+                Some(WorkspaceView::Run(_)) => "Run",
             },
         };
         let mut text = String::from("Forge is an AI coding agent for your terminal.\n\n");
@@ -54,6 +54,10 @@ impl TuiApp {
         text.push_str("Global\n");
         text.push_str("• Tab / Shift+Tab  Move between visible blocks\n");
         text.push_str("• Ctrl+E  Toggle Files\n");
+        text.push_str(&format!(
+            "• Alt+P  Cycle permission mode (now: {})\n",
+            self.permission_mode.label()
+        ));
         text.push_str(
             "• Hold Shift (⌥ on iTerm2) while dragging to select/copy in your terminal\n",
         );
@@ -68,18 +72,20 @@ impl TuiApp {
                 text.push_str("• G / r  Editor navigation and refresh\n");
                 text.push_str("• Ctrl+F / Ctrl+G  Search or jump\n");
             }
+            FocusBlock::Sidebar => {
+                text.push_str("• Up/Down  Select a background task\n");
+                text.push_str("• x / a / d  Cancel / approve / deny selected task\n");
+                text.push_str("• Esc  Return to previous block\n");
+            }
             FocusBlock::Composer => {
                 text.push_str("• Enter  Send\n");
                 text.push_str("• ⇧Enter  Newline\n");
                 text.push_str("• Esc  Return to previous block\n");
             }
-            FocusBlock::Inspector => {
-                text.push_str("• ⇧← / ⇧→  Switch inspector tab\n");
-                text.push_str("• Esc  Return to previous block\n");
-            }
             FocusBlock::BottomPanel => {
-                text.push_str("• ⇧← / ⇧→  Switch bottom-panel tab\n");
-                text.push_str("• Esc  Return to previous block\n");
+                text.push_str("• Type / paste  Send input to the shell\n");
+                text.push_str("• Ctrl+C / arrows / Tab  Shell controls\n");
+                text.push_str("• Ctrl+`  Close the terminal panel\n");
             }
             FocusBlock::Files => {
                 text.push_str("• Enter  Open or expand\n");
@@ -102,7 +108,7 @@ impl TuiApp {
             self.restore_focus_after_closing(FocusBlock::BottomPanel);
             self.normalize_focus();
         } else {
-            self.open_bottom_panel(None);
+            self.open_bottom_panel();
         }
     }
 
@@ -113,11 +119,7 @@ impl TuiApp {
         match action {
             OverlayAction::None => {}
             OverlayAction::Close => {
-                if self.startup_resume.picker {
-                    self.exit.requested = true;
-                    self.exit.code = ExitCode::Canceled;
-                }
-                self.overlay = None;
+                self.dismiss_overlay();
             }
             OverlayAction::BeginOnboarding => {
                 self.open_connect_picker();
@@ -133,6 +135,12 @@ impl TuiApp {
             }
             OverlayAction::HitlDeny => {
                 self.resolve_hitl_overlay(HitlDecision::Deny, false).await?;
+            }
+            OverlayAction::HitlApprovePattern { pattern } => {
+                self.resolve_hitl_overlay_with_pattern(pattern).await?;
+            }
+            OverlayAction::HitlDenyWithFeedback { feedback } => {
+                self.resolve_hitl_overlay_with_feedback(feedback).await?;
             }
             OverlayAction::ContinueTurns => {
                 self.overlay = None;
@@ -159,10 +167,15 @@ impl TuiApp {
                 model,
                 profile_id,
             } => {
-                // The picker already moved its own focus to the Effort column
-                // in place (see `handle_overlay_key`); this only needs to
-                // apply the runtime/session-level effect of the pick.
+                // Models is a standalone view (no chained Effort step) —
+                // apply the pick, fall back to a safe effort default for
+                // the new model if the previous one doesn't fit, and close.
                 self.apply_model_selection(&provider, &model, profile_id.as_deref());
+                self.resolve_effort_for_model(&model);
+                self.overlay = None;
+            }
+            OverlayAction::SwitchToRoute { profile_id } => {
+                self.apply_default_model_for_profile(&profile_id, "active");
             }
             OverlayAction::SelectEffort(level) => {
                 self.overlay = None;
@@ -172,6 +185,9 @@ impl TuiApp {
                     FeedbackSeverity::Ok,
                     format!("reasoning effort: {}", level.label()),
                 );
+            }
+            OverlayAction::PreviewTheme(theme_id) => {
+                self.set_theme_active(&theme_id);
             }
             OverlayAction::SelectTheme(theme_id) => {
                 self.apply_theme(theme_id, true);
@@ -231,12 +247,40 @@ impl TuiApp {
         Ok(())
     }
 
-    pub(super) fn apply_theme(&mut self, theme_id: String, persist: bool) {
-        crate::theme::set_active(&theme_id);
-        self.runtime.theme_id = theme_id.clone();
-        self.render_cache.conversation = None;
+    /// Dismiss the active overlay. Theme picker restores the theme that was
+    /// active when `/theme` opened (preview is non-persistent until Enter).
+    pub(super) fn dismiss_overlay(&mut self) {
+        if self.startup_resume.picker {
+            self.exit.requested = true;
+            self.exit.code = ExitCode::Canceled;
+        }
+        // An in-flight device-code OAuth poll must not be able to
+        // complete a connection the user just cancelled — `poll_oauth_tick`
+        // runs unconditionally every event-loop tick regardless of
+        // which overlay (if any) is open.
+        if matches!(self.overlay, Some(Overlay::ConnectOauth { .. })) {
+            self.connect.oauth_pending = None;
+            self.connect.oauth_last_poll = None;
+        }
+        if let Some(Overlay::Theme { current, .. }) = &self.overlay {
+            let restore = current.clone();
+            if crate::theme::active() != restore {
+                self.set_theme_active(&restore);
+            }
+        }
         self.overlay = None;
+    }
+
+    pub(super) fn set_theme_active(&mut self, theme_id: &str) {
+        crate::theme::set_active(theme_id);
+        self.runtime.theme_id = theme_id.to_string();
+        self.render_cache.conversation = None;
         self.invalidate_hit_regions();
+    }
+
+    pub(super) fn apply_theme(&mut self, theme_id: String, persist: bool) {
+        self.set_theme_active(&theme_id);
+        self.overlay = None;
         if persist {
             self.save_ui_state();
             let label = crate::theme::registry().display_name(&theme_id);

@@ -6,6 +6,9 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust 1.97.1+](https://img.shields.io/badge/rust-1.97.1%2B-orange.svg)](https://www.rust-lang.org/)
 
+_Go from idea to verified code without leaving the terminal—Forge unifies an AI
+agent, code editor, and shell in one focused workflow._
+
 Forge is an open-source AI coding agent for your terminal. It runs a
 full-screen TUI in the repository you are working on, helps inspect and change
 files, runs commands with your approval, and keeps a durable session journal so
@@ -13,6 +16,15 @@ you can continue work after an interruption.
 
 Forge is alpha software. Review every approval prompt and use it first in a
 disposable or backed-up repository.
+
+## Why this exists
+
+Claude Code is the incumbent for terminal-first AI coding, but its experience
+is centered on an agent you drive from a prompt and an external editor you use
+alongside it. Forge is for people who want the agent, code editor, file
+explorer, shell, approvals, diffs, and durable sessions in one keyboard-driven
+workspace, so inspecting code, changing it, and verifying the result stay in a
+single focused loop.
 
 ## What Forge does
 
@@ -27,6 +39,25 @@ disposable or backed-up repository.
   one keyboard-driven workspace.
 
 ## Install
+
+### Install a prebuilt release
+
+On macOS or Linux:
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://raw.githubusercontent.com/NorviaLabs/forge/main/install/forge-installer.sh | sh
+```
+
+On Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/NorviaLabs/forge/main/install/forge-installer.ps1 | iex
+```
+
+The installers select the current release for your platform and verify its
+SHA-256 checksum before installing. To install a specific release, set
+`FORGE_VERSION`, for example `v0.1.0-beta.1`.
 
 ### Build from source
 
@@ -119,12 +150,16 @@ controls are:
 | `Enter` / `i` | Interact with the focused block or control |
 | `Esc` | Leave the current interaction level |
 | `↑` / `↓` | Navigate a local list or input |
-| `Ctrl+B` | Toggle the inspector |
 | `Ctrl+P` | Open Quick Open for files |
 | `Ctrl+Backtick` | Toggle the bottom panel |
-| `Alt+1`–`Alt+4` | Open a bottom-panel tab |
+| `Alt+1`–`Alt+3` | Open a bottom-panel tab |
 | `Shift+←` / `Shift+→` | Switch the active block's tab |
+| `Alt+P` | Cycle permission mode (Manual ↔ Accept Edits) |
 | `?` | Open help |
+
+When the bottom panel is focused, it is an interactive login shell. Type or
+paste commands directly into it; standard control keys, arrows, Tab, and
+terminal resize are forwarded to the shell. `Ctrl+Backtick` closes the panel.
 
 ## Configuration
 
@@ -139,13 +174,33 @@ A minimal project `forge.toml` can look like this:
 model = "openai/gpt-4.1-mini"
 
 [tui]
-theme = "forge-midnight"
+theme = "solarized-dark"
 file_icons = "unicode"
 mouse_capture = true
 
 [journal]
 path = ".forge/sessions"
 ```
+
+### Themes
+
+Forge ships built-in themes you can pick with `/theme` or set in `forge.toml`.
+Bare `/theme` opens a bottom dock: ↑↓ live-previews against the real UI, Enter
+confirms, Esc restores the previous theme. `/theme <id>` applies immediately.
+
+| Theme id | Name |
+| --- | --- |
+| `solarized-dark` | Solarized Dark (default) |
+| `solarized-light` | Solarized Light |
+| `tokyo-night-storm` | Tokyo Night Storm |
+| `catppuccin-mocha` | Catppuccin Mocha |
+| `gruvbox-dark` | Gruvbox Dark |
+| `kanagawa-wave` | Kanagawa Wave |
+| `system` | Follow terminal light/dark preference |
+
+Drop custom `.toml` theme files into `.forge/themes/` in your workspace or
+`~/.config/forge/themes/` to add or override themes. See
+`crates/forge-tui/themes/` for the schema and examples.
 
 Common environment variables are:
 
@@ -178,6 +233,59 @@ args = ["--stdio"]
 Project-discovered configuration is intentionally restricted: settings that
 could execute code or redirect credentialed requests are not accepted from an
 untrusted checked-out repository.
+
+### Permission rules
+
+By default every shell command asks for approval. `permissions.toml` narrows
+that with pattern rules matched against the actual call — a command prefix
+for shell tools, a path glob for file tools, a host for fetch-style tools:
+
+```toml
+allow = ["bash(cargo test *)", "bash(cargo build*)"]
+deny = ["bash(cargo publish*)"]
+```
+
+A `deny` entry carves an exception out of a broader `allow` entry (`cargo *`
+allowed, but `cargo publish` still asks); it never blocks a call outright —
+that's still the ACL's job. Two files are read and merged:
+
+- `<user config dir>/forge/permissions.toml` — personal, trusted.
+- `.forge/permissions.toml` in the workspace — repo-committed, and for the
+  same reason project-discovered MCP config is restricted above, its `allow`
+  entries are ignored. A checked-out repository cannot grant itself a wider
+  blast radius than a human approved locally. Its `deny` entries are always
+  honored, since narrowing approval further is safe regardless of source.
+
+Every approval card offers a spectrum of decisions, not just yes/no:
+
+- **Allow once** (`a`/Enter) — runs this call, asks again next time.
+- **Remember exact** (`s`) — Direct-mode tools only (file/git-style calls);
+  the identical invocation won't ask again this session.
+- **Allow pattern going forward** (`p`) — shows the literal pattern that
+  would be added (e.g. `bash(cargo test *)`) before committing, then writes
+  it to your personal `permissions.toml` and applies it for the rest of this
+  session immediately, no restart needed.
+- **Deny** (`d`/Esc) — blocks the call.
+- **Deny with feedback** (`f`) — same, plus a short note that reaches the
+  agent as context for what to do instead, so it doesn't have to be
+  re-explained next turn.
+
+### Permission modes
+
+`Alt+P` cycles the session's oversight level, shown in help (`?`) when you
+cycle modes:
+
+- **Manual** — today's default: shell commands ask for approval, file writes
+  don't.
+- **Accept Edits** — currently the same as Manual (Forge doesn't gate any
+  other write-class tool by default); kept as its own mode for forward
+  compatibility with a stricter default.
+
+A mode only pre-seeds which side-effect classes gate — it never overrides an
+ACL deny, and it never touches your loaded `permissions.toml` rules. A
+third, stricter `Locked` mode (deny instead of ask, for scripted/CI runs)
+was intentionally left out: Forge has no non-interactive entry point yet for
+"nothing can answer a prompt" to apply to.
 
 ## Built-in tools
 

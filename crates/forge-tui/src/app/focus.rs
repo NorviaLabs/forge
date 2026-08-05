@@ -10,7 +10,11 @@ impl TuiApp {
     pub(super) fn focus_availability(&self) -> FocusAvailability {
         FocusAvailability {
             files: self.workspace_files.visible,
-            inspector: self.inspector.visible,
+            // No standalone preference flag — the sidebar only ever hides
+            // via the layout's own narrow-width defensive floor, which this
+            // preference-only check can't see (see render.rs's geometry-based
+            // FocusAvailability for that case).
+            sidebar: true,
             bottom_panel: self.bottom_panel.open,
         }
     }
@@ -113,11 +117,21 @@ impl TuiApp {
         self.normalize_focus();
     }
 
-    pub(super) fn open_bottom_panel(&mut self, tab: Option<BottomPanelTab>) {
-        if let Some(tab) = tab {
-            self.bottom_panel.active = tab;
-        }
+    pub(super) fn open_bottom_panel(&mut self) {
         self.bottom_panel.open = true;
+        if self.interactive_terminal.is_none() {
+            match crate::interactive_terminal::InteractiveTerminal::spawn(
+                self.session.workspace_root(),
+                80,
+                8,
+            ) {
+                Ok(terminal) => self.interactive_terminal = Some(terminal),
+                Err(error) => self.set_feedback(
+                    FeedbackSeverity::Error,
+                    format!("could not start terminal: {error}"),
+                ),
+            }
+        }
         self.focus_block(FocusBlock::BottomPanel);
     }
 
@@ -125,9 +139,11 @@ impl TuiApp {
         if self.explorer_dialog.current.is_some() {
             return Some("Enter confirm · Esc cancel".into());
         }
+        if self.approval_card.is_some() {
+            return Some("Tab move · Enter allow once · Esc deny".into());
+        }
         if let Some(overlay) = self.overlay.as_ref() {
             return match overlay {
-                Overlay::Hitl { .. } => Some("Tab move · Enter allow once · Esc deny".into()),
                 Overlay::TurnLimit { .. } => Some("Enter confirm · Esc cancel".into()),
                 Overlay::ConnectApiKey { .. } => Some("Enter confirm · Esc cancel".into()),
                 Overlay::ConnectOauth { .. } => Some("Enter continue · Esc cancel".into()),

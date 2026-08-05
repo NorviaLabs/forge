@@ -5,15 +5,19 @@ mod apply_patch;
 mod builtins;
 mod fast_file_tools;
 mod registry;
+mod skills;
+mod unified_exec;
 mod validation;
 pub mod web_search;
 
 pub use apply_patch::{ApplyPatchArgs, ApplyPatchTool};
 pub use builtins::{
     default_builtins, default_builtins_with_web_search, run_shell_command, BashTool, GitTool,
-    ReadFileTool, WriteFileTool, PROVIDER_CREDENTIAL_ENV,
+    ReadFileTool, UpdatePlanTool, WriteFileTool, PROVIDER_CREDENTIAL_ENV,
 };
 pub use registry::{ToolContext, ToolRegistry};
+pub use skills::{LoadSkillArgs, LoadSkillTool};
+pub use unified_exec::{ExecCommandTool, WriteStdinTool};
 pub use validation::{validate_args, validation_error_signature, ValidationBudget};
 pub use web_search::{should_register_web_search, web_search_tool, WebSearchArgs, WebSearchTool};
 

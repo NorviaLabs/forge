@@ -95,7 +95,7 @@ impl TuiApp {
 
     fn current_workspace_file(&self) -> Option<&Path> {
         match &self.workspace_navigation.current {
-            WorkspaceView::File(path) => Some(path.as_path()),
+            Some(WorkspaceView::File(path)) => Some(path.as_path()),
             _ => None,
         }
     }

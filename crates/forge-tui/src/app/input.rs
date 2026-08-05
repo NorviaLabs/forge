@@ -156,6 +156,20 @@ impl TuiApp {
             *error = None;
             return;
         }
+        if self.approval_card.is_some() {
+            return;
+        }
+        if self.focus.block == FocusBlock::BottomPanel {
+            if let Some(terminal) = self.interactive_terminal.as_mut() {
+                if let Err(error) = terminal.write(data.as_bytes()) {
+                    self.set_feedback(
+                        FeedbackSeverity::Error,
+                        format!("terminal paste failed: {error}"),
+                    );
+                }
+                return;
+            }
+        }
         if let Some(ref mut ov) = self.overlay {
             let _ = handle_overlay_key(ov, OverlayKey::Paste(data.to_string()));
             return;
@@ -225,8 +239,11 @@ impl TuiApp {
             return Ok(());
         }
 
-        match input_route::classify_input(&self.session.active_task, self.overlay.is_some(), &line)
-        {
+        match input_route::classify_input(
+            &self.session.active_task,
+            self.overlay.is_some() || self.approval_card.is_some(),
+            &line,
+        ) {
             input_route::InputRoute::StartNewTask => {
                 self.dispatch_line(&line).await?;
             }
@@ -332,7 +349,26 @@ impl TuiApp {
                 self.source_viewer.move_to_last_line();
                 true
             }
+            KeyCode::Char('i') if key.modifiers.is_empty() => {
+                self.source_viewer.enter_insert_mode();
+                true
+            }
+            KeyCode::Esc
+                if key.modifiers.is_empty()
+                    && self.source_viewer.mode == crate::source_viewer::ViewerMode::Insert =>
+            {
+                self.source_viewer.enter_normal_mode();
+                true
+            }
             _ => false,
+        }
+    }
+
+    async fn handle_sidebar_key(&mut self, key: event::KeyEvent) -> Result<bool, TuiError> {
+        if let Some(command) = self.semantic_command_for_sidebar_key(key) {
+            self.execute_semantic_command(command).await
+        } else {
+            Ok(false)
         }
     }
 
@@ -340,40 +376,21 @@ impl TuiApp {
         if !self.bottom_panel.open {
             return Ok(false);
         }
-        match key.code {
-            KeyCode::Char(c)
-                if self.bottom_panel.active == BottomPanelTab::Run
-                    && self.run.editing
-                    && key.modifiers.is_empty() =>
-            {
-                if self.run.editing_directory {
-                    let mut text = self.run.draft.working_directory.display().to_string();
-                    text.push(c);
-                    self.run.draft.working_directory = PathBuf::from(text);
-                } else {
-                    self.run.draft.command_input.push(c);
+        if let Some(bytes) = terminal_key_bytes(key) {
+            if let Some(terminal) = self.interactive_terminal.as_mut() {
+                if let Err(error) = terminal.write(&bytes) {
+                    self.set_feedback(
+                        FeedbackSeverity::Error,
+                        format!("terminal input failed: {error}"),
+                    );
                 }
-                Ok(true)
+                return Ok(true);
             }
-            KeyCode::Backspace
-                if self.bottom_panel.active == BottomPanelTab::Run && self.run.editing =>
-            {
-                if self.run.editing_directory {
-                    let mut text = self.run.draft.working_directory.display().to_string();
-                    text.pop();
-                    self.run.draft.working_directory = PathBuf::from(text);
-                } else {
-                    self.run.draft.command_input.pop();
-                }
-                Ok(true)
-            }
-            _ => {
-                if let Some(command) = self.semantic_command_for_bottom_panel_key(key) {
-                    self.execute_semantic_command(command).await
-                } else {
-                    Ok(false)
-                }
-            }
+        }
+        if let Some(command) = self.semantic_command_for_bottom_panel_key(key) {
+            self.execute_semantic_command(command).await
+        } else {
+            Ok(false)
         }
     }
 
@@ -453,14 +470,8 @@ impl TuiApp {
         match self.focus.block {
             FocusBlock::Files => self.handle_file_explorer_key(key).await,
             FocusBlock::Workspace => self.handle_workspace_navigation_key(key).await,
+            FocusBlock::Sidebar => self.handle_sidebar_key(key).await,
             FocusBlock::Composer => Ok(false),
-            FocusBlock::Inspector => {
-                if let Some(command) = self.semantic_command_for_inspector_key(key) {
-                    self.execute_semantic_command(command).await
-                } else {
-                    Ok(false)
-                }
-            }
             FocusBlock::BottomPanel => self.handle_bottom_panel_key(key).await,
         }
     }
@@ -603,6 +614,13 @@ impl TuiApp {
             return Ok(());
         }
 
+        if let Some(ref mut card) = self.approval_card {
+            let ok = map_key(key);
+            let action = handle_approval_card_key(card, ok);
+            self.apply_overlay_action(action).await?;
+            return Ok(());
+        }
+
         if matches!(self.overlay, Some(Overlay::StatusReport { .. })) {
             let ok = map_key(key);
             match ok {
@@ -686,6 +704,41 @@ impl TuiApp {
     }
 }
 
+fn terminal_key_bytes(key: event::KeyEvent) -> Option<Vec<u8>> {
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        if let KeyCode::Char(c) = key.code {
+            let c = c.to_ascii_lowercase();
+            if c.is_ascii_lowercase() {
+                return Some(vec![c as u8 - b'a' + 1]);
+            }
+        }
+    }
+    if key.modifiers.contains(KeyModifiers::ALT) {
+        if let KeyCode::Char(c) = key.code {
+            return Some(vec![0x1b, c as u8]);
+        }
+    }
+    match key.code {
+        KeyCode::Char(c) if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT => {
+            Some(c.to_string().into_bytes())
+        }
+        KeyCode::Enter => Some(vec![b'\r']),
+        KeyCode::Backspace => Some(vec![0x7f]),
+        KeyCode::Tab => Some(vec![b'\t']),
+        KeyCode::Up => Some(b"\x1b[A".to_vec()),
+        KeyCode::Down => Some(b"\x1b[B".to_vec()),
+        KeyCode::Right => Some(b"\x1b[C".to_vec()),
+        KeyCode::Left => Some(b"\x1b[D".to_vec()),
+        KeyCode::Home => Some(b"\x1b[H".to_vec()),
+        KeyCode::End => Some(b"\x1b[F".to_vec()),
+        KeyCode::Delete => Some(b"\x1b[3~".to_vec()),
+        KeyCode::PageUp => Some(b"\x1b[5~".to_vec()),
+        KeyCode::PageDown => Some(b"\x1b[6~".to_vec()),
+        KeyCode::Esc => None,
+        _ => None,
+    }
+}
+
 fn map_key(key: event::KeyEvent) -> OverlayKey {
     match key.code {
         KeyCode::Esc => OverlayKey::Esc,
@@ -709,6 +762,8 @@ mod tests {
     use forge_model::MockModelClient;
     use forge_tools::ToolRegistry;
     use forge_types::ModelResponse;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
     use std::path::PathBuf;
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -833,6 +888,27 @@ mod tests {
         assert_eq!(TuiApp::printable_chat_char(press(KeyCode::Up)), None);
     }
 
+    #[test]
+    fn terminal_key_bytes_preserve_shell_editing_controls() {
+        assert_eq!(
+            terminal_key_bytes(press(KeyCode::Char('x'))),
+            Some(b"x".to_vec())
+        );
+        assert_eq!(
+            terminal_key_bytes(press_with(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            Some(vec![3])
+        );
+        assert_eq!(terminal_key_bytes(press(KeyCode::Enter)), Some(vec![b'\r']));
+        assert_eq!(
+            terminal_key_bytes(press(KeyCode::Up)),
+            Some(b"\x1b[A".to_vec())
+        );
+        assert_eq!(
+            terminal_key_bytes(press(KeyCode::Backspace)),
+            Some(vec![0x7f])
+        );
+    }
+
     #[tokio::test]
     async fn release_events_are_ignored_but_arrow_repeats_are_honoured() {
         let (_dir, mut app) = app().await;
@@ -898,6 +974,31 @@ mod tests {
         assert_eq!(app.input.cursor, 1);
         app.handle_key(press(KeyCode::Right)).await.unwrap();
         assert_eq!(app.input.cursor, 2);
+    }
+
+    #[tokio::test]
+    async fn composer_keeps_accepting_text_after_wrapping_to_a_second_row() {
+        let (_dir, mut app) = app().await;
+        focus_composer(&mut app);
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+
+        // The sidebar composer is 30 columns wide at 80 terminal columns.
+        // This phrase wraps before "fifth", then keeps typing through the
+        // second visual row without an explicit newline.
+        for c in "first second third fourth fifth sixth".chars() {
+            app.handle_key(press(KeyCode::Char(c))).await.unwrap();
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+        }
+        for c in " seventh eighth ninth".chars() {
+            app.handle_key(press(KeyCode::Char(c))).await.unwrap();
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+        }
+
+        assert_eq!(
+            app.input.text,
+            "first second third fourth fifth sixth seventh eighth ninth"
+        );
+        assert_eq!(app.focus.block, FocusBlock::Composer);
     }
 
     #[tokio::test]

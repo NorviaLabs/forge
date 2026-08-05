@@ -36,12 +36,42 @@ impl ApprovalIdentity {
     }
 }
 
+/// Build the `ToolCall` a `HitlPayload` represents, for matching against
+/// session-scoped pattern-allow rules (which are keyed on the call shape,
+/// not an exact-invocation identity like `ApprovalIdentity`).
+fn tool_call_for_payload(payload: &HitlPayload) -> forge_types::ToolCall {
+    forge_types::ToolCall {
+        id: payload.call_id.clone(),
+        name: payload.tool.clone(),
+        arguments: payload.args_redacted.clone(),
+    }
+}
+
 impl TuiApp {
     fn approval_state_for_payload(&self, payload: &HitlPayload) -> ApprovalOverlayState {
         ApprovalOverlayState::for_payload(
             payload,
             self.session.workspace_root().display().to_string(),
         )
+    }
+
+    /// Whether a session-scoped pattern rule (added this session via "allow
+    /// this pattern going forward") already covers `payload`. Distinct from
+    /// `Governance.pattern_allow`, which is fixed for the session from the
+    /// permissions file at startup — this lets a rule added mid-session take
+    /// effect immediately without a restart.
+    fn pattern_allows(&self, payload: &HitlPayload) -> bool {
+        let call = tool_call_for_payload(payload);
+        self.hitl_session
+            .pattern_allow
+            .iter()
+            .any(|rule| rule.matches(&call))
+    }
+
+    pub fn approval_card_dock_height(&self, width: u16) -> Option<u16> {
+        self.approval_card
+            .as_ref()
+            .map(|card| approval_card_dock_height(card, width))
     }
 
     pub(super) fn approval_identity_for_payload(
@@ -62,8 +92,8 @@ impl TuiApp {
         })
     }
 
-    pub(super) fn open_hitl_overlay(&mut self, payload: HitlPayload) {
-        self.overlay = Some(Overlay::hitl_with_working_directory(
+    pub(super) fn open_approval_card(&mut self, payload: HitlPayload) {
+        self.approval_card = Some(ApprovalCardState::for_payload(
             payload,
             self.session.workspace_root().display().to_string(),
         ));
@@ -101,7 +131,7 @@ impl TuiApp {
         remember_exact_direct: bool,
     ) -> Result<(), TuiError> {
         let Some(payload) = self.session.pending_hitl().cloned() else {
-            self.overlay = None;
+            self.approval_card = None;
             return Ok(());
         };
 
@@ -122,7 +152,7 @@ impl TuiApp {
         if let Some(identity) = identity_to_remember {
             self.hitl_session.allowed.insert(identity);
         }
-        self.overlay = None;
+        self.approval_card = None;
         match decision {
             HitlDecision::Approve if remember_exact_direct => {
                 self.push_toast("remembered exact Direct invocation");
@@ -157,34 +187,102 @@ impl TuiApp {
     }
 
     pub fn maybe_open_hitl(&mut self) {
-        if self.overlay.is_none() {
+        if self.approval_card.is_none() {
             if let Some(p) = self.session.pending_hitl() {
-                if self
+                let identity_allowed = self
                     .approval_identity_for_payload(p)
-                    .is_some_and(|identity| self.hitl_session.allowed.contains(&identity))
-                {
+                    .is_some_and(|identity| self.hitl_session.allowed.contains(&identity));
+                if identity_allowed || self.pattern_allows(p) {
                     // Will be drained by `drain_auto_hitl` in the event loop.
                     return;
                 }
-                self.open_hitl_overlay(p.clone());
+                self.open_approval_card(p.clone());
             }
         }
     }
 
-    /// Auto-approve HITL for exact Direct invocations remembered this session.
+    /// Auto-approve HITL for exact Direct invocations remembered this
+    /// session, or calls matching a pattern rule added this session.
     pub async fn drain_auto_hitl(&mut self) -> Result<(), TuiError> {
-        if let Some(ref p) = self.session.pending_hitl().cloned() {
-            if let Some(identity) = self.approval_identity_for_payload(p) {
-                if !self.hitl_session.allowed.contains(&identity) {
-                    return Ok(());
-                }
-                self.session
-                    .resolve_hitl(HitlDecision::Approve, "tui-session")
-                    .await?;
-                self.push_toast(format!("auto-approved {}", identity.label()));
-                self.resume_turn_after_hitl();
-            }
+        let Some(payload) = self.session.pending_hitl().cloned() else {
+            return Ok(());
+        };
+        let identity = self.approval_identity_for_payload(&payload);
+        let identity_allowed = identity
+            .as_ref()
+            .is_some_and(|identity| self.hitl_session.allowed.contains(identity));
+        let pattern_allowed = self.pattern_allows(&payload);
+        if !identity_allowed && !pattern_allowed {
+            return Ok(());
         }
+        self.session
+            .resolve_hitl(HitlDecision::Approve, "tui-session")
+            .await?;
+        let label = identity
+            .map(|identity| identity.label())
+            .unwrap_or(payload.tool);
+        self.push_toast(format!("auto-approved {label}"));
+        self.resume_turn_after_hitl();
+        Ok(())
+    }
+
+    /// Approve the pending call and add `pattern` as a durable `allow` rule:
+    /// persisted to the personal permissions file for future launches, and
+    /// added to the in-session pattern-allow list so it takes effect
+    /// immediately without a restart. A write failure still lets the
+    /// approval through — the user made a decision either way — but is
+    /// surfaced so they know it won't outlive this session.
+    pub(super) async fn resolve_hitl_overlay_with_pattern(
+        &mut self,
+        pattern: String,
+    ) -> Result<(), TuiError> {
+        if self.session.pending_hitl().is_none() {
+            self.approval_card = None;
+            return Ok(());
+        }
+        let Some(rule) = forge_governance::PatternRule::parse(&pattern) else {
+            self.set_feedback(FeedbackSeverity::Warn, "could not parse the pattern rule");
+            return Ok(());
+        };
+        if let Err(error) = forge_config::append_user_allow_rule(&pattern) {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                format!("pattern rule not saved to disk ({error}); active for this session only"),
+            );
+        }
+        self.hitl_session.pattern_allow.push(rule);
+        self.session
+            .resolve_hitl(HitlDecision::Approve, "tui")
+            .await?;
+        self.approval_card = None;
+        self.push_toast(format!("allowed going forward: {pattern}"));
+        self.resume_turn_after_hitl();
+        Ok(())
+    }
+
+    /// Deny the pending call, optionally carrying a short note back to the
+    /// agent as tool-result context for what to do instead (opencode's
+    /// `CorrectedError`). Blank feedback behaves like a plain deny.
+    pub(super) async fn resolve_hitl_overlay_with_feedback(
+        &mut self,
+        feedback: String,
+    ) -> Result<(), TuiError> {
+        if self.session.pending_hitl().is_none() {
+            self.approval_card = None;
+            return Ok(());
+        }
+        let trimmed = feedback.trim();
+        let feedback_opt = (!trimmed.is_empty()).then_some(trimmed);
+        self.session
+            .resolve_hitl_with_feedback(HitlDecision::Deny, "tui", feedback_opt)
+            .await?;
+        self.approval_card = None;
+        self.push_toast(if feedback_opt.is_some() {
+            "denied with feedback"
+        } else {
+            "denied"
+        });
+        self.resume_turn_after_hitl();
         Ok(())
     }
 }

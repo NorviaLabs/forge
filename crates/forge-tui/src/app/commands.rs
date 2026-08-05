@@ -7,6 +7,16 @@
 
 use super::*;
 
+const MAX_SKILL_DESC_CHARS: usize = 100;
+
+fn truncate_skill_description(desc: &str) -> String {
+    if desc.chars().count() <= MAX_SKILL_DESC_CHARS {
+        desc.to_string()
+    } else {
+        desc.chars().take(MAX_SKILL_DESC_CHARS).collect::<String>() + "…"
+    }
+}
+
 impl TuiApp {
     /// Filtered slash suggestions for the current textbox (empty if not in slash mode).
     pub fn slash_suggestions(&self) -> Vec<PaletteItem> {
@@ -16,7 +26,31 @@ impl TuiApp {
         }
         // Filter by text after leading `/`
         let filter = t.trim_start_matches('/');
-        filter_palette(filter)
+        let mut items = filter_palette(filter);
+        items.extend(
+            forge_context::discover_skills(self.session.workspace_root())
+                .into_iter()
+                .map(|skill| PaletteItem {
+                    cmd: format!("/{}", skill.name),
+                    desc: truncate_skill_description(&skill.description),
+                })
+                .filter(|item| {
+                    let filter = filter.to_ascii_lowercase();
+                    item.cmd.to_ascii_lowercase().contains(&filter)
+                        || item.desc.to_ascii_lowercase().contains(&filter)
+                }),
+        );
+        items.sort_by_key(|item| {
+            let command = item.cmd.trim_start_matches('/').to_ascii_lowercase();
+            if command.starts_with(&filter.to_ascii_lowercase()) {
+                0
+            } else if command.contains(&filter.to_ascii_lowercase()) {
+                1
+            } else {
+                2
+            }
+        });
+        items
     }
 
     pub(super) fn clamp_slash_suggest(&mut self) {
@@ -67,18 +101,7 @@ impl TuiApp {
             KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => {
                 Some(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
             }
-            KeyCode::Char('1') if key.modifiers.contains(KeyModifiers::ALT) => {
-                Some(SemanticCommand::OpenRun(RunCommandTarget::Current))
-            }
-            KeyCode::Char('2') if key.modifiers.contains(KeyModifiers::ALT) => Some(
-                SemanticCommand::OpenBottomPanel(BottomPanelTab::Diagnostics),
-            ),
-            KeyCode::Char('3') if key.modifiers.contains(KeyModifiers::ALT) => {
-                Some(SemanticCommand::OpenBottomPanel(BottomPanelTab::Terminal))
-            }
-            KeyCode::Char('4') if key.modifiers.contains(KeyModifiers::ALT) => {
-                Some(SemanticCommand::OpenBottomPanel(BottomPanelTab::Activity))
-            }
+
             KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(SemanticCommand::MoveQueueSelection(-1))
             }
@@ -100,15 +123,6 @@ impl TuiApp {
             KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(SemanticCommand::ToggleFiles)
             }
-            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                Some(SemanticCommand::ToggleInspector)
-            }
-            KeyCode::Char('[') if key.modifiers.contains(KeyModifiers::ALT) => {
-                Some(SemanticCommand::CycleInspectorTab { forward: false })
-            }
-            KeyCode::Char(']') if key.modifiers.contains(KeyModifiers::ALT) => {
-                Some(SemanticCommand::CycleInspectorTab { forward: true })
-            }
             KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(SemanticCommand::OpenQuickOpen)
             }
@@ -117,6 +131,12 @@ impl TuiApp {
             }
             KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::ALT) => {
                 Some(SemanticCommand::QuickSwitchModel)
+            }
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::ALT) => Some(
+                SemanticCommand::OpenModelControl(ConnectModelColumn::Models),
+            ),
+            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::ALT) => {
+                Some(SemanticCommand::CyclePermissionMode)
             }
             KeyCode::F(1) if self.overlay.is_none() => Some(SemanticCommand::OpenHelp),
             _ => None,
@@ -214,20 +234,17 @@ impl TuiApp {
             {
                 Some(SemanticCommand::RefreshDiff)
             }
-            KeyCode::Esc if key.modifiers.is_empty() => {
-                if self.current_workspace_is_conversation() {
-                    Some(SemanticCommand::CancelCurrentInteraction)
-                } else {
-                    Some(SemanticCommand::GoBack)
-                }
-            }
-            KeyCode::Enter
+            KeyCode::Esc
                 if key.modifiers.is_empty()
-                    && self.current_workspace_is_conversation()
-                    && self.activity_summary_command().is_some() =>
+                    && self.current_workspace_is_file()
+                    && self.source_viewer.mode == crate::source_viewer::ViewerMode::Insert =>
             {
-                Some(SemanticCommand::ActivateActivitySummary)
+                // Let `handle_editor_key` consume this Esc to drop back to
+                // NORMAL mode instead of navigating away; a second Esc (now
+                // in NORMAL) falls through to the GoBack arm below.
+                None
             }
+            KeyCode::Esc if key.modifiers.is_empty() => Some(SemanticCommand::GoBack),
             KeyCode::Enter if key.modifiers.is_empty() && self.current_workspace_is_run() => {
                 Some(SemanticCommand::RunOrCancel)
             }
@@ -242,26 +259,6 @@ impl TuiApp {
         }
     }
 
-    pub(super) fn semantic_command_for_inspector_key(
-        &self,
-        key: event::KeyEvent,
-    ) -> Option<SemanticCommand> {
-        match self.tab_nav_command(key) {
-            Some(TabNavCommand::PreviousTab) => {
-                Some(SemanticCommand::CycleInspectorTab { forward: false })
-            }
-            Some(TabNavCommand::NextTab) => {
-                Some(SemanticCommand::CycleInspectorTab { forward: true })
-            }
-            None => match key.code {
-                KeyCode::Esc if key.modifiers.is_empty() => {
-                    Some(SemanticCommand::CancelCurrentInteraction)
-                }
-                _ => None,
-            },
-        }
-    }
-
     pub(super) fn semantic_command_for_bottom_panel_key(
         &self,
         key: event::KeyEvent,
@@ -269,53 +266,35 @@ impl TuiApp {
         if !self.bottom_panel.open {
             return None;
         }
-        match self.tab_nav_command(key) {
-            Some(TabNavCommand::PreviousTab) => {
-                return Some(SemanticCommand::CycleBottomPanelTab { forward: false });
-            }
-            Some(TabNavCommand::NextTab) => {
-                return Some(SemanticCommand::CycleBottomPanelTab { forward: true });
-            }
-            None => {}
-        }
         match key.code {
-            KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => {
-                Some(SemanticCommand::CycleBottomPanelTab { forward: false })
+            KeyCode::Esc if key.modifiers.is_empty() => {
+                Some(SemanticCommand::CancelCurrentInteraction)
             }
-            KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => {
-                Some(SemanticCommand::CycleBottomPanelTab { forward: true })
-            }
-            KeyCode::Enter if self.bottom_panel.active == BottomPanelTab::Run => {
-                Some(SemanticCommand::RunOrCancel)
-            }
-            KeyCode::Char('r') if self.bottom_panel.active == BottomPanelTab::Run => {
-                Some(SemanticCommand::Rerun)
-            }
-            KeyCode::Char('e') if self.bottom_panel.active == BottomPanelTab::Run => {
-                Some(SemanticCommand::EditAndRerun)
-            }
-            KeyCode::Char('m') if self.bottom_panel.active == BottomPanelTab::Run => {
-                Some(SemanticCommand::ToggleRunExecutionMode)
-            }
-            KeyCode::Char('i') if self.bottom_panel.active == BottomPanelTab::Run => {
-                Some(SemanticCommand::EditRunCommand)
-            }
-            KeyCode::Char('d') if self.bottom_panel.active == BottomPanelTab::Run => {
-                Some(SemanticCommand::EditRunDirectory)
-            }
-            KeyCode::Up if self.bottom_panel.active == BottomPanelTab::Tasks => {
+            _ => None,
+        }
+    }
+
+    /// Background-task selection/cancel/approve/deny — moved out of the
+    /// bottom panel's (now-deleted) Tasks tab; gated on the sidebar itself
+    /// having focus, since the task strip lives there now.
+    pub(super) fn semantic_command_for_sidebar_key(
+        &self,
+        key: event::KeyEvent,
+    ) -> Option<SemanticCommand> {
+        match key.code {
+            KeyCode::Up if key.modifiers.is_empty() => {
                 Some(SemanticCommand::MoveTasksSelection(-1))
             }
-            KeyCode::Down if self.bottom_panel.active == BottomPanelTab::Tasks => {
+            KeyCode::Down if key.modifiers.is_empty() => {
                 Some(SemanticCommand::MoveTasksSelection(1))
             }
-            KeyCode::Char('x') if self.bottom_panel.active == BottomPanelTab::Tasks => {
+            KeyCode::Char('x') if key.modifiers.is_empty() => {
                 Some(SemanticCommand::CancelSelectedBackgroundTask)
             }
-            KeyCode::Char('a') if self.bottom_panel.active == BottomPanelTab::Tasks => {
+            KeyCode::Char('a') if key.modifiers.is_empty() => {
                 Some(SemanticCommand::ApproveSelectedBackgroundTask)
             }
-            KeyCode::Char('d') if self.bottom_panel.active == BottomPanelTab::Tasks => {
+            KeyCode::Char('d') if key.modifiers.is_empty() => {
                 Some(SemanticCommand::DenySelectedBackgroundTask)
             }
             KeyCode::Esc if key.modifiers.is_empty() => {
@@ -407,7 +386,9 @@ impl TuiApp {
                     if let Some(id) = self.current_run_id() {
                         self.navigate_to_workspace_view(WorkspaceView::Run(id));
                     } else {
-                        self.open_bottom_panel(Some(BottomPanelTab::Run));
+                        // Background tasks live in the sidebar strip now,
+                        // not a bottom-panel tab — focus it instead.
+                        self.focus_block(FocusBlock::Sidebar);
                     }
                 }
                 RunCommandTarget::Id(id) => {
@@ -423,7 +404,7 @@ impl TuiApp {
             },
             SemanticCommand::ToggleFiles => self.toggle_files_panel(),
             SemanticCommand::CloseOverlay => {
-                self.overlay = None;
+                self.dismiss_overlay();
                 self.explorer_dialog.current = None;
             }
             SemanticCommand::FocusComposer => self.enter_chat_composer(),
@@ -503,33 +484,11 @@ impl TuiApp {
                 self.dispatch_line(&line).await?;
             }
             SemanticCommand::CycleFocus { forward } => self.cycle_focus_block(forward),
-            SemanticCommand::ToggleInspector => {
-                self.inspector.visible = !self.inspector.visible;
-                if self.inspector.visible {
-                    self.focus_block(FocusBlock::Inspector);
-                } else {
-                    self.restore_focus_after_closing(FocusBlock::Inspector);
-                    self.normalize_focus();
-                }
-            }
-            SemanticCommand::CycleInspectorTab { forward } => {
-                self.inspector.view = if forward {
-                    self.inspector.view.next()
-                } else {
-                    self.inspector.view.previous()
-                };
-            }
             SemanticCommand::ToggleBottomPanel => self.toggle_bottom_panel(),
             SemanticCommand::OpenQuickOpen => self.open_quick_open(),
             SemanticCommand::QuickSwitchModel => self.quick_switch_model(),
-            SemanticCommand::CycleBottomPanelTab { forward } => {
-                if forward {
-                    self.bottom_panel.next_tab();
-                } else {
-                    self.bottom_panel.previous_tab();
-                }
-            }
-            SemanticCommand::OpenBottomPanel(tab) => self.open_bottom_panel(Some(tab)),
+            SemanticCommand::OpenModelControl(focus) => self.open_connect_picker_compact(focus),
+            SemanticCommand::OpenBottomPanel => self.open_bottom_panel(),
             SemanticCommand::RefreshFiles => self.workspace_files.explorer.refresh_selected(),
             SemanticCommand::RefreshEditor => {
                 self.source_viewer.refresh(self.session.workspace_root());
@@ -577,6 +536,14 @@ impl TuiApp {
             SemanticCommand::ToggleCurrentFileAttachment => self.toggle_file_attachment(),
             SemanticCommand::ToggleToolDetails => {
                 self.tool_detail.expanded = !self.tool_detail.expanded
+            }
+            SemanticCommand::CyclePermissionMode => {
+                self.permission_mode = self.permission_mode.next();
+                self.session.apply_permission_mode(self.permission_mode);
+                self.set_feedback(
+                    FeedbackSeverity::Info,
+                    format!("permission mode: {}", self.permission_mode.label()),
+                );
             }
             SemanticCommand::MoveQueueSelection(delta) => self.move_queue_selection(delta),
             SemanticCommand::CancelSelectedQueueMessage => self.cancel_selected_queue().await,
@@ -654,8 +621,10 @@ impl TuiApp {
 
     async fn handle_model_command(&mut self, provider: Option<&str>, model: Option<&str>) {
         if provider.is_none() && model.is_none() {
-            self.overlay = Some(self.build_connect_model_overlay(ConnectModelColumn::Models));
+            self.overlay =
+                Some(self.build_connect_model_overlay(ConnectModelColumn::Models, false));
             self.status_state.message = "pick a model (live catalog when connected)".into();
+            self.start_catalog_refresh();
             return;
         }
 
@@ -712,12 +681,33 @@ impl TuiApp {
             return;
         }
         self.apply_model_selection("native", &model_id, None);
-        if self.resolve_effort_for_model(&model_id) {
-            self.overlay = Some(self.build_connect_model_overlay(ConnectModelColumn::Effort));
-        }
+        // Fall back to a safe effort default for the new model if the
+        // previous one doesn't fit — no forced Effort picker; the user can
+        // open the effort view separately if they want to change it.
+        self.resolve_effort_for_model(&model_id);
     }
 
     pub async fn dispatch_line(&mut self, line: &str) -> Result<(), TuiError> {
+        let skill_line = if let Some(skill_name) = line
+            .split_whitespace()
+            .next()
+            .and_then(|token| token.strip_prefix('/'))
+        {
+            let is_skill = forge_context::discover_skills(self.session.workspace_root())
+                .iter()
+                .any(|skill| skill.name == skill_name);
+            if is_skill {
+                let request = line.strip_prefix('/').unwrap_or(line).trim().to_string();
+                Some(format!(
+                    "Use the `{skill_name}` skill for this task.\n\n{request}"
+                ))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let line = skill_line.as_deref().unwrap_or(line);
         if let Some(cmd_res) = parse_slash(line) {
             let slash_name = line.split_whitespace().next().unwrap_or("/");
             self.push_activity(ActivityKind::Slash, FeedbackSeverity::Info, slash_name);
@@ -829,6 +819,7 @@ impl TuiApp {
                             self.conversation_view.scroll = 0;
                             self.conversation_view.follow = true;
                             self.hitl_session.allowed.clear();
+                            self.hitl_session.pattern_allow.clear();
                             self.maybe_open_hitl();
                         }
                         Err(error) => {
@@ -877,6 +868,12 @@ impl TuiApp {
                 Ok(SlashCommand::Theme { name }) => {
                     self.handle_theme_command(name.as_deref());
                 }
+                Ok(SlashCommand::Status) => {
+                    self.overlay = Some(Overlay::StatusReport {
+                        title: "Status".into(),
+                        lines: self.status_report_lines(),
+                    });
+                }
                 Err(e) => {
                     let msg = e.to_string();
                     self.set_feedback(FeedbackSeverity::Warn, msg.clone());
@@ -884,6 +881,7 @@ impl TuiApp {
                     self.push_toast(msg);
                 }
             }
+            self.expire_info_feedback();
             return Ok(());
         }
 
@@ -975,7 +973,6 @@ impl TuiApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widgets::bottom_panel::BottomPanelTab;
     use forge_core::{AgentSession, LoopConfig};
     use forge_model::MockModelClient;
     use forge_tools::ToolRegistry;
@@ -1083,22 +1080,6 @@ mod tests {
                 SemanticCommand::ReviewChanges(DiffCommandContext::Current),
             ),
             (
-                key(KeyCode::Char('1'), ALT),
-                SemanticCommand::OpenRun(RunCommandTarget::Current),
-            ),
-            (
-                key(KeyCode::Char('2'), ALT),
-                SemanticCommand::OpenBottomPanel(BottomPanelTab::Diagnostics),
-            ),
-            (
-                key(KeyCode::Char('3'), ALT),
-                SemanticCommand::OpenBottomPanel(BottomPanelTab::Terminal),
-            ),
-            (
-                key(KeyCode::Char('4'), ALT),
-                SemanticCommand::OpenBottomPanel(BottomPanelTab::Activity),
-            ),
-            (
                 key(KeyCode::Up, CTRL),
                 SemanticCommand::MoveQueueSelection(-1),
             ),
@@ -1121,24 +1102,16 @@ mod tests {
             ),
             (key(KeyCode::Char('e'), CTRL), SemanticCommand::ToggleFiles),
             (
-                key(KeyCode::Char('b'), CTRL),
-                SemanticCommand::ToggleInspector,
-            ),
-            (
-                key(KeyCode::Char('['), ALT),
-                SemanticCommand::CycleInspectorTab { forward: false },
-            ),
-            (
-                key(KeyCode::Char(']'), ALT),
-                SemanticCommand::CycleInspectorTab { forward: true },
-            ),
-            (
                 key(KeyCode::Char('p'), CTRL),
                 SemanticCommand::OpenQuickOpen,
             ),
             (
                 key(KeyCode::Char('`'), CTRL),
                 SemanticCommand::ToggleBottomPanel,
+            ),
+            (
+                key(KeyCode::Char('p'), ALT),
+                SemanticCommand::CyclePermissionMode,
             ),
         ];
         for (k, expected) in cases {
@@ -1157,6 +1130,31 @@ mod tests {
         assert_eq!(
             app.semantic_command_for_global_key(key(KeyCode::Char('c'), NONE)),
             None
+        );
+    }
+
+    #[tokio::test]
+    async fn cycle_permission_mode_moves_through_manual_and_accept_edits_and_back() {
+        let (_dir, mut app) = app().await;
+        assert_eq!(
+            app.permission_mode,
+            forge_governance::PermissionMode::Manual
+        );
+
+        app.execute_semantic_command(SemanticCommand::CyclePermissionMode)
+            .await
+            .unwrap();
+        assert_eq!(
+            app.permission_mode,
+            forge_governance::PermissionMode::AcceptEdits
+        );
+
+        app.execute_semantic_command(SemanticCommand::CyclePermissionMode)
+            .await
+            .unwrap();
+        assert_eq!(
+            app.permission_mode,
+            forge_governance::PermissionMode::Manual
         );
     }
 
@@ -1264,27 +1262,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn inspector_bindings_cycle_tabs_and_cancel() {
-        let (_d, app) = app().await;
-        assert_eq!(
-            app.semantic_command_for_inspector_key(key(KeyCode::Left, SHIFT)),
-            Some(SemanticCommand::CycleInspectorTab { forward: false })
-        );
-        assert_eq!(
-            app.semantic_command_for_inspector_key(key(KeyCode::Right, SHIFT)),
-            Some(SemanticCommand::CycleInspectorTab { forward: true })
-        );
-        assert_eq!(
-            app.semantic_command_for_inspector_key(key(KeyCode::Esc, NONE)),
-            Some(SemanticCommand::CancelCurrentInteraction)
-        );
-        assert_eq!(
-            app.semantic_command_for_inspector_key(key(KeyCode::Char('x'), NONE)),
-            None
-        );
-    }
-
-    #[tokio::test]
     async fn bottom_panel_bindings_require_an_open_panel() {
         let (_d, mut app) = app().await;
         app.bottom_panel.open = false;
@@ -1294,19 +1271,6 @@ mod tests {
         );
 
         app.bottom_panel.open = true;
-        // Tab cycling is available on any tab, by shifted arrow or Alt+arrow.
-        for (k, forward) in [
-            (key(KeyCode::Left, SHIFT), false),
-            (key(KeyCode::Right, SHIFT), true),
-            (key(KeyCode::Left, ALT), false),
-            (key(KeyCode::Right, ALT), true),
-        ] {
-            assert_eq!(
-                app.semantic_command_for_bottom_panel_key(k),
-                Some(SemanticCommand::CycleBottomPanelTab { forward }),
-                "{k:?}"
-            );
-        }
         assert_eq!(
             app.semantic_command_for_bottom_panel_key(key(KeyCode::Esc, NONE)),
             Some(SemanticCommand::CancelCurrentInteraction)
@@ -1314,51 +1278,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_tab_bindings_are_scoped_to_the_run_tab() {
-        let (_d, mut app) = app().await;
-        app.bottom_panel.open = true;
-        app.bottom_panel.active = BottomPanelTab::Run;
-        let cases: Vec<(event::KeyEvent, SemanticCommand)> = vec![
-            (key(KeyCode::Enter, NONE), SemanticCommand::RunOrCancel),
-            (key(KeyCode::Char('r'), NONE), SemanticCommand::Rerun),
-            (key(KeyCode::Char('e'), NONE), SemanticCommand::EditAndRerun),
+    async fn sidebar_key_bindings_drive_background_task_selection() {
+        let (_d, app) = app().await;
+        for (k, expected) in [
             (
-                key(KeyCode::Char('m'), NONE),
-                SemanticCommand::ToggleRunExecutionMode,
+                key(KeyCode::Up, NONE),
+                SemanticCommand::MoveTasksSelection(-1),
             ),
             (
-                key(KeyCode::Char('i'), NONE),
-                SemanticCommand::EditRunCommand,
+                key(KeyCode::Down, NONE),
+                SemanticCommand::MoveTasksSelection(1),
+            ),
+            (
+                key(KeyCode::Char('x'), NONE),
+                SemanticCommand::CancelSelectedBackgroundTask,
+            ),
+            (
+                key(KeyCode::Char('a'), NONE),
+                SemanticCommand::ApproveSelectedBackgroundTask,
             ),
             (
                 key(KeyCode::Char('d'), NONE),
-                SemanticCommand::EditRunDirectory,
+                SemanticCommand::DenySelectedBackgroundTask,
             ),
-        ];
-        for (k, expected) in &cases {
+        ] {
             assert_eq!(
-                app.semantic_command_for_bottom_panel_key(*k),
+                app.semantic_command_for_sidebar_key(k),
                 Some(expected.clone()),
-                "{k:?} on the Run tab"
+                "{k:?}"
             );
         }
-
-        // The same keys are inert on the other tabs, so they stay available to
-        // whatever those tabs want them for.
-        for tab in [
-            BottomPanelTab::Diagnostics,
-            BottomPanelTab::Terminal,
-            BottomPanelTab::Activity,
-        ] {
-            app.bottom_panel.active = tab;
-            for (k, _) in &cases {
-                assert_eq!(
-                    app.semantic_command_for_bottom_panel_key(*k),
-                    None,
-                    "{k:?} should be inert on {tab:?}"
-                );
-            }
-        }
+        assert_eq!(
+            app.semantic_command_for_sidebar_key(key(KeyCode::Esc, NONE)),
+            Some(SemanticCommand::CancelCurrentInteraction)
+        );
     }
 
     #[tokio::test]

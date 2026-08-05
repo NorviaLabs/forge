@@ -323,8 +323,7 @@ async fn ctrl_p_toggles_bottom_panel_without_touching_input() {
 }
 
 #[tokio::test]
-async fn alt_number_opens_selected_bottom_panel_tab() {
-    use crossterm::event::{KeyCode, KeyModifiers};
+async fn open_bottom_panel_sets_active_tab() {
     let (_dir, session) = test_session().await;
     let mut app = TuiApp::new(
         session,
@@ -341,15 +340,12 @@ async fn alt_number_opens_selected_bottom_panel_tab() {
         },
     );
 
-    app.handle_key(press(KeyCode::Char('4'), KeyModifiers::ALT))
-        .await
-        .unwrap();
+    app.open_bottom_panel();
     assert!(app.bottom_panel.open);
-    assert_eq!(app.bottom_panel.active, BottomPanelTab::Activity);
 }
 
 #[tokio::test]
-async fn focused_bottom_panel_cycles_without_typing_into_chat() {
+async fn focused_bottom_panel_alt_arrows_do_not_type_into_chat() {
     use crossterm::event::{KeyCode, KeyModifiers};
     let (dir, session) = test_session().await;
     let mut app = TuiApp::new(
@@ -367,17 +363,16 @@ async fn focused_bottom_panel_cycles_without_typing_into_chat() {
         },
     );
     app.input.set_text("draft");
-    app.bottom_panel.open_tab(BottomPanelTab::Terminal);
-    app.focus_block(FocusBlock::BottomPanel);
+    app.open_bottom_panel();
 
+    // The bottom panel is Terminal-only now — Alt+Left/Right has nothing
+    // to cycle, but the key still shouldn't leak into the composer.
     app.handle_key(press(KeyCode::Right, KeyModifiers::ALT))
         .await
         .unwrap();
-    assert_eq!(app.bottom_panel.active, BottomPanelTab::Activity);
     app.handle_key(press(KeyCode::Left, KeyModifiers::ALT))
         .await
         .unwrap();
-    assert_eq!(app.bottom_panel.active, BottomPanelTab::Terminal);
     assert_eq!(app.input.text, "draft");
 }
 
@@ -435,6 +430,33 @@ async fn question_mark_opens_help_overlay() {
     assert!(matches!(app.overlay, Some(Overlay::Help)));
     assert!(app.input.text.is_empty());
     assert!(app.feedback.text.contains("Help"));
+}
+
+#[tokio::test]
+async fn slash_command_info_feedback_expires() {
+    let (_dir, session) = test_session().await;
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "mock".into(),
+            provider: "mock".into(),
+            cwd: PathBuf::from("."),
+            version: "0.12.0".into(),
+            startup_notices: Vec::new(),
+            validation_command: None,
+            file_icons: FileIconMode::Unicode,
+            mouse_capture: true,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+
+    app.dispatch_line("/help").await.unwrap();
+    assert!(app.feedback.text.contains("Help"));
+    app.feedback_until = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+    app.tick_feedback();
+
+    assert!(app.feedback.is_empty());
+    assert!(app.status_state.message.is_empty());
 }
 
 #[tokio::test]
@@ -594,6 +616,87 @@ async fn switching_to_a_model_that_drops_the_current_effort_notifies_and_falls_b
 }
 
 #[tokio::test]
+async fn drain_pending_prompt_sends_selected_effort_on_outbound_request() {
+    let _home_guard = isolated_home_guard();
+    let dir = TempDir::new().unwrap();
+    let mock = Arc::new(MockModelClient::script(vec![ModelResponse {
+        text: "ok".into(),
+        tool_calls: vec![],
+        usage: None,
+        thinking: None,
+    }]));
+    let session = session_for_workspace_with_model(dir.path(), mock.clone()).await;
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "anthropic/claude-sonnet-4-6".into(),
+            provider: "anthropic".into(),
+            cwd: dir.path().to_path_buf(),
+            version: "0.12.0".into(),
+            startup_notices: Vec::new(),
+            validation_command: None,
+            file_icons: FileIconMode::Unicode,
+            mouse_capture: true,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+    app.connect.store = CredentialStore::new(dir.path().join("credentials.toml"));
+    app.connect
+        .store
+        .set_api_key("anthropic", "sk-test-anthropic-credential")
+        .unwrap();
+    app.connect.profile = Some("anthropic".into());
+    app.reasoning_effort.value = ReasoningEffort::High;
+
+    app.dispatch_line("hi").await.unwrap();
+    app.drain_pending_prompt(None).await.unwrap();
+
+    let sent = mock
+        .last_request()
+        .expect("model client received a request");
+    assert_eq!(sent.reasoning_effort.as_deref(), Some("high"));
+}
+
+#[tokio::test]
+async fn drain_pending_prompt_omits_effort_for_model_that_does_not_support_it() {
+    let _home_guard = isolated_home_guard();
+    let dir = TempDir::new().unwrap();
+    let mock = Arc::new(MockModelClient::script(vec![ModelResponse {
+        text: "ok".into(),
+        tool_calls: vec![],
+        usage: None,
+        thinking: None,
+    }]));
+    let session = session_for_workspace_with_model(dir.path(), mock.clone()).await;
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "mock".into(),
+            provider: "mock".into(),
+            cwd: dir.path().to_path_buf(),
+            version: "0.12.0".into(),
+            startup_notices: Vec::new(),
+            validation_command: None,
+            file_icons: FileIconMode::Unicode,
+            mouse_capture: true,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+    app.connect.store = CredentialStore::new(dir.path().join("credentials.toml"));
+    // Stale effort left over from a previous model — must not leak onto a
+    // model that doesn't support effort at all.
+    app.reasoning_effort.value = ReasoningEffort::High;
+
+    app.dispatch_line("hi").await.unwrap();
+    app.drain_pending_prompt(None).await.unwrap();
+
+    let sent = mock
+        .last_request()
+        .expect("model client received a request");
+    assert_eq!(sent.reasoning_effort, None);
+}
+
+#[tokio::test]
 async fn model_command_applies_provider_id_to_session() {
     let (_dir, session) = test_session().await;
     let cred_dir = tempfile::tempdir().unwrap();
@@ -732,7 +835,7 @@ async fn app_status_command() {
         },
     );
     app.dispatch_line("/status").await.unwrap();
-    assert!(app.overlay.is_none());
+    assert!(matches!(app.overlay, Some(Overlay::StatusReport { .. })));
     assert!(app.notice_state.items.is_empty());
 }
 
@@ -934,12 +1037,13 @@ async fn enter_runs_slash_from_main_textbox() {
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
+    assert!(matches!(app.overlay, Some(Overlay::StatusReport { .. })));
     assert!(app.notice_state.items.is_empty());
     assert!(app.history.entries().iter().any(|e| e == "/status"));
 }
 
 #[tokio::test]
-async fn inspector_is_closed_by_default_and_opens_on_demand() {
+async fn status_slash_command_opens_overlay_on_enter() {
     let (_dir, session) = test_session().await;
     let mut app = TuiApp::new(
         session,
@@ -947,7 +1051,7 @@ async fn inspector_is_closed_by_default_and_opens_on_demand() {
             model_label: "mock".into(),
             provider: "mock".into(),
             cwd: PathBuf::from("."),
-            version: "test".into(),
+            version: "0.4.0".into(),
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
@@ -955,58 +1059,11 @@ async fn inspector_is_closed_by_default_and_opens_on_demand() {
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
-    assert!(!app.inspector.visible);
-    app.handle_key(press(KeyCode::Char('b'), KeyModifiers::CONTROL))
+    app.input.set_text("/status");
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert!(app.inspector.visible);
-    assert!(split_areas_full(
-        ratatui::layout::Rect::new(0, 0, 120, 30),
-        0,
-        3,
-        app.inspector.visible,
-        0
-    )
-    .sidebar
-    .is_some());
-    app.handle_key(press(KeyCode::Char('b'), KeyModifiers::CONTROL))
-        .await
-        .unwrap();
-    assert!(!app.inspector.visible);
-    assert!(
-        split_areas_full(ratatui::layout::Rect::new(0, 0, 80, 24), 0, 3, true, 0)
-            .sidebar
-            .is_none()
-    );
-}
-
-#[tokio::test]
-async fn inspector_view_shortcuts_cycle_without_opening_sidebar() {
-    let (_dir, session) = test_session().await;
-    let mut app = TuiApp::new(
-        session,
-        TuiRuntimeConfig {
-            model_label: "mock".into(),
-            provider: "mock".into(),
-            cwd: PathBuf::from("."),
-            version: "test".into(),
-            startup_notices: Vec::new(),
-            validation_command: None,
-            file_icons: FileIconMode::Unicode,
-            mouse_capture: true,
-            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
-        },
-    );
-    assert_eq!(app.inspector.view, InspectorView::Task);
-    app.handle_key(press(KeyCode::Char(']'), KeyModifiers::ALT))
-        .await
-        .unwrap();
-    assert_eq!(app.inspector.view, InspectorView::Context);
-    app.handle_key(press(KeyCode::Char('['), KeyModifiers::ALT))
-        .await
-        .unwrap();
-    assert_eq!(app.inspector.view, InspectorView::Task);
-    assert!(!app.inspector.visible);
+    assert!(matches!(app.overlay, Some(Overlay::StatusReport { .. })));
 }
 
 #[tokio::test]
@@ -1163,6 +1220,7 @@ async fn enter_on_highlighted_suggestion_runs_command() {
 async fn bare_slash_lists_all_palette_commands() {
     use crossterm::event::{KeyCode, KeyModifiers};
     let (_dir, session) = test_session().await;
+    let workspace_root = session.workspace_root().to_path_buf();
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
@@ -1182,9 +1240,10 @@ async fn bare_slash_lists_all_palette_commands() {
         .unwrap();
     let suggestions = app.slash_suggestions();
     let expected = crate::overlays::default_palette_items();
+    let skill_count = forge_context::discover_skills(&workspace_root).len();
     assert_eq!(
         suggestions.len(),
-        expected.len(),
+        expected.len() + skill_count,
         "bare / should list every palette command; got {:?}",
         suggestions.iter().map(|s| &s.cmd).collect::<Vec<_>>()
     );

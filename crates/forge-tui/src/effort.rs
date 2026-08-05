@@ -52,6 +52,19 @@ impl ReasoningEffort {
         }
     }
 
+    /// Display label for chrome that always shows *some* effort text (the
+    /// footer control, the Effort column header) — the effort's own label
+    /// when the model actually supports adjustable effort, or an explicit
+    /// "N/A" otherwise. Never returns a level word for a model that can't
+    /// use one.
+    pub fn display_label(self, model: &str) -> &'static str {
+        if Self::model_supports_effort(model) {
+            self.label()
+        } else {
+            "N/A"
+        }
+    }
+
     /// Empty means providers should choose their own default.
     pub fn transport_value(self) -> &'static str {
         match self {
@@ -176,6 +189,23 @@ mod tests {
         assert_eq!("extra-high".parse(), Ok(ReasoningEffort::XHigh));
         assert_eq!(ReasoningEffort::XHigh.to_string(), "xhigh");
         assert_eq!(ReasoningEffort::Auto.transport_value(), "");
+    }
+
+    #[test]
+    fn display_label_is_na_for_a_model_without_adjustable_effort() {
+        assert!(!ReasoningEffort::model_supports_effort("mock"));
+        assert_eq!(ReasoningEffort::Low.display_label("mock"), "N/A");
+        assert_eq!(ReasoningEffort::Auto.display_label("mock"), "N/A");
+    }
+
+    #[test]
+    fn display_label_matches_label_for_a_model_that_supports_effort() {
+        let model = "anthropic/claude-sonnet-4-6";
+        assert!(ReasoningEffort::model_supports_effort(model));
+        assert_eq!(
+            ReasoningEffort::High.display_label(model),
+            ReasoningEffort::High.label()
+        );
     }
 
     #[test]

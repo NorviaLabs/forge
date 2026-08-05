@@ -3,7 +3,6 @@
 mod activity;
 mod app;
 mod commands;
-mod composer_layout;
 mod conversation;
 mod editor;
 mod effort;
@@ -12,11 +11,12 @@ mod file_explorer;
 mod file_ops;
 mod git_status;
 mod history;
+mod interactive_terminal;
 mod layout;
 mod overlays;
 mod run;
-mod sidebar;
 mod source_viewer;
+mod status_glyph;
 mod terminal;
 mod theme;
 mod theme_registry;
@@ -51,7 +51,6 @@ pub use run::{
     RunExecutionMode, RunFreshness, RunHistoryFile, RunInvocation, RunParseError, RunProvenance,
     RunRecord, RunState, RunStateModel, MAX_RECENT_RUNS, RUN_HISTORY_VERSION,
 };
-pub use sidebar::SidebarModel;
 pub use validation::{
     is_cargo_test_command, validation_command_text, CargoTestSummary, ValidationParseState,
     ValidationSnapshot, ValidationStatus, MAX_FAILED_DISPLAY,
