@@ -1,6 +1,7 @@
 //! Conversation view model (TUI-02) — polished chat, thinking, tools, diffs.
 
 use crate::markdown::render_markdown;
+use crate::overlays::{ApprovalExecutionMode, ApprovalOverlayState};
 use crate::status_glyph::{status_glyph, Status};
 use crate::theme;
 use crate::user_message_gutter;
@@ -195,6 +196,9 @@ pub enum ChatItem {
         /// Brief operator-facing explanation for the change.
         rationale: String,
     },
+    /// Pending human-in-the-loop approval — the full redacted payload,
+    /// rendered inline in the transcript until the composer resolves it.
+    ApprovalPending(ApprovalPendingPresentation),
     /// Structured TODO checklist from the `update_plan` tool.
     PlanChecklist {
         explanation: Option<String>,
@@ -223,6 +227,7 @@ pub enum ConversationBlock {
     Callout(CalloutPresentation),
     CodeBlock(CodeBlockPresentation),
     DiffBlock(DiffBlockPresentation),
+    ApprovalPending(ApprovalPendingPresentation),
     PlanChecklist(PlanChecklistPresentation),
     Metadata(MetadataPresentation),
 }
@@ -312,6 +317,16 @@ pub struct DiffBlockPresentation {
     pub path: String,
     pub lines: Vec<String>,
     pub rationale: String,
+}
+
+/// The redacted command awaiting a human approval decision, with enough
+/// context to tell what would run. Resolves via the composer.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ApprovalPendingPresentation {
+    pub tool: String,
+    pub command: String,
+    pub cwd: String,
+    pub env_delta: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -671,20 +686,29 @@ impl ConversationModel {
         self
     }
 
-    pub fn with_blocked_tool(
+    /// Append the pending HITL approval as a full inline transcript item.
+    /// `working_directory` is the workspace-root fallback when the call
+    /// carries no explicit cwd.
+    pub fn with_pending_approval(
         mut self,
-        name: impl Into<String>,
-        summary: impl Into<String>,
+        payload: &forge_types::HitlPayload,
+        working_directory: impl Into<String>,
     ) -> Self {
-        self.items.push(ChatItem::ToolCard {
-            name: name.into(),
-            summary: summary.into(),
-            detail: String::new(),
-            state: ToolCardState::Blocked,
-            duration: None,
-            subcommand: None,
-            outcome: ExecutionOutcome::Success,
-        });
+        let approval = ApprovalOverlayState::for_payload(payload, working_directory);
+        let command = match approval.mode {
+            ApprovalExecutionMode::Shell => approval.shell_command.unwrap_or_default(),
+            ApprovalExecutionMode::Direct => std::iter::once(approval.executable_or_shell.as_str())
+                .chain(approval.arguments.iter().map(String::as_str))
+                .collect::<Vec<_>>()
+                .join(" "),
+        };
+        self.items
+            .push(ChatItem::ApprovalPending(ApprovalPendingPresentation {
+                tool: payload.tool.clone(),
+                command,
+                cwd: approval.working_directory,
+                env_delta: approval.environment_delta,
+            }));
         self
     }
 
@@ -903,6 +927,44 @@ impl ConversationModel {
                                 )));
                             }
                         }
+                    }
+                    if gap {
+                        lines.push(Line::from(""));
+                    }
+                }
+                ConversationBlock::ApprovalPending(p) => {
+                    lines.push(Line::from(vec![
+                        Span::styled("⏸", theme::warn()),
+                        Span::raw(" "),
+                        Span::styled(
+                            format!("approval · {}", p.tool),
+                            theme::text().add_modifier(Modifier::BOLD),
+                        ),
+                    ]));
+                    let sub_width = width.saturating_sub(5);
+                    for (lineno, wrapped) in wrap(&p.command, sub_width).into_iter().enumerate() {
+                        let head = if lineno == 0 { "└─" } else { "│" };
+                        lines.push(Line::from(Span::styled(
+                            format!("{INDENT_UNIT}{head} {wrapped}"),
+                            theme::muted(),
+                        )));
+                    }
+                    for (label, value) in [("cwd", p.cwd.as_str()), ("env", p.env_delta.as_str())] {
+                        for wrapped in wrap(&format!("{label}: {value}"), width.saturating_sub(2)) {
+                            lines.push(Line::from(Span::styled(
+                                format!("{INDENT_UNIT}{wrapped}"),
+                                theme::muted(),
+                            )));
+                        }
+                    }
+                    for wrapped in wrap(
+                        "type yes | no | remember | always | no <note>",
+                        width.saturating_sub(2),
+                    ) {
+                        lines.push(Line::from(Span::styled(
+                            format!("{INDENT_UNIT}{wrapped}"),
+                            theme::metadata_style(),
+                        )));
                     }
                     if gap {
                         lines.push(Line::from(""));
@@ -1184,6 +1246,11 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
                     lines: lines.clone(),
                     rationale: rationale.clone(),
                 }));
+            }
+            ChatItem::ApprovalPending(presentation) => {
+                flush_progress(&mut blocks, &mut progress);
+                flush_activity(&mut blocks, &mut activity_group);
+                blocks.push(ConversationBlock::ApprovalPending(presentation.clone()));
             }
             ChatItem::PlanChecklist { explanation, steps } => {
                 flush_progress(&mut blocks, &mut progress);
@@ -4375,23 +4442,36 @@ mod tests {
     }
 
     #[test]
-    fn blocked_tool_card_shows_redacted_summary() {
+    fn pending_approval_renders_full_redacted_payload_inline() {
         let m = ConversationModel::from_messages(
             &[],
             &[],
             TaskLifecycle::Waiting,
             ConversationViewOpts::default(),
         )
-        .with_blocked_tool("bash", "git push -u origin feature");
+        .with_pending_approval(
+            &forge_types::HitlPayload {
+                call_id: "1".into(),
+                tool: "bash".into(),
+                args_redacted: serde_json::json!({"command": "git push -u origin feature"}),
+                reason: "policy requires human approval".into(),
+            },
+            "workspace",
+        );
         let text = m
             .lines()
             .iter()
             .flat_map(|line| line.spans.iter())
             .map(|span| span.content.as_ref())
             .collect::<String>();
-        assert!(text.contains("⏸ bash"));
-        assert!(!text.contains("git push -u origin feature"));
-        assert!(!text.contains("sk-"));
+        assert!(text.contains("⏸ approval · bash"), "{text}");
+        assert!(text.contains("git push -u origin feature"), "{text}");
+        assert!(text.contains("cwd: workspace"), "{text}");
+        assert!(text.contains("env: inherited"), "{text}");
+        assert!(
+            text.contains("yes | no | remember | always | no <note>"),
+            "{text}"
+        );
     }
 
     #[test]

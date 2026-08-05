@@ -188,6 +188,10 @@ impl TuiApp {
             slash_mode,
             status: self.session.active_task.lifecycle,
             theme_id: crate::theme::active(),
+            pending_hitl: self
+                .session
+                .pending_hitl()
+                .map(|payload| payload.call_id.clone()),
         };
         if self
             .render_cache
@@ -235,13 +239,10 @@ impl TuiApp {
                 }
             }
             if let Some(payload) = self.session.pending_hitl() {
-                let args = payload
-                    .args_redacted
-                    .get("command")
-                    .and_then(|value| value.as_str())
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| payload.args_redacted.to_string());
-                conv = conv.with_blocked_tool(payload.tool.clone(), args);
+                conv = conv.with_pending_approval(
+                    payload,
+                    self.session.workspace_root().display().to_string(),
+                );
             }
             let width = sidebar_width.saturating_sub(2) as usize;
             self.render_cache.conversation = Some(ConversationRenderCache {
@@ -292,27 +293,10 @@ impl TuiApp {
             );
             self.register_activity_summary_region(conversation_area, &cached_lines, &live_lines);
         }
-        // The approval card is safety-critical (command args, redacted
-        // secrets, remember-invocation controls) and needs real width to
-        // stay legible, so it docks at the bottom of the wider center pane
-        // rather than the narrower sidebar — the transcript above stays
-        // fully visible and scrollable instead of being replaced by a modal.
-        let approval_dock_height = self
-            .approval_card_dock_height(regions.chat.width)
-            .unwrap_or(0);
-        let chat_area = if approval_dock_height > 0 {
-            ratatui::layout::Rect {
-                height: regions.chat.height.saturating_sub(approval_dock_height),
-                ..regions.chat
-            }
-        } else {
-            regions.chat
-        };
-        let approval_area = (approval_dock_height > 0).then(|| ratatui::layout::Rect {
-            y: chat_area.y.saturating_add(chat_area.height),
-            height: regions.chat.height.saturating_sub(chat_area.height),
-            ..regions.chat
-        });
+        // The approval decision now lives in the conversation itself (inline
+        // transcript item) and the composer, so the center pane gets its full
+        // height — no docked card carving out a strip at its bottom.
+        let chat_area = regions.chat;
         match self.workspace_navigation.current.clone() {
             None => {
                 self.render_empty_workspace(chat_area, frame.buffer_mut());
@@ -333,12 +317,6 @@ impl TuiApp {
             Some(WorkspaceView::Run(id)) => {
                 self.render_run_workspace(&id, chat_area, frame.buffer_mut());
             }
-        }
-        if let Some(area) = approval_area {
-            if let Some(card) = self.approval_card.as_ref() {
-                frame.render_widget(ApprovalCardWidget { card }, area);
-            }
-            self.register_approval_card_hit_regions(area);
         }
 
         let interactive_terminal_output = self

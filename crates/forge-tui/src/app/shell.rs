@@ -175,7 +175,6 @@ async fn run_loop(
         app.tick_feedback();
         app.tick_notices();
         app.drain_auto_hitl().await?;
-        app.maybe_open_hitl();
         // Grok-style device-code: poll token endpoint while overlay is open
         app.poll_oauth_tick();
         terminal.draw(|f| app.draw(f))?;
