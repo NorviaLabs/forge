@@ -29,10 +29,6 @@ const BUILTIN_THEMES: &[(&str, &str)] = &[
         "solarized-light.toml",
         include_str!("../themes/solarized-light.toml"),
     ),
-    (
-        "tokyo-night-storm.toml",
-        include_str!("../themes/tokyo-night-storm.toml"),
-    ),
 ];
 
 /// All themes available to the TUI (built-ins, user, and workspace drops).
@@ -193,7 +189,6 @@ mod tests {
             ("kanagawa-wave", "Kanagawa Wave", Rgb(31, 31, 40)),
             (THEME_SOLARIZED_DARK, "Solarized Dark", Rgb(0, 43, 54)),
             (THEME_SOLARIZED_LIGHT, "Solarized Light", Rgb(253, 246, 227)),
-            ("tokyo-night-storm", "Tokyo Night Storm", Rgb(36, 40, 59)),
         ];
         for (id, name, background) in expected {
             let theme = registry.get(id).unwrap_or_else(|| panic!("missing {id}"));
