@@ -635,7 +635,6 @@ struct BannerState {
 
 struct RenderCacheState {
     conversation: Option<ConversationRenderCache>,
-    composer_layout: ComposerLayoutCache,
 }
 
 struct BusyState {

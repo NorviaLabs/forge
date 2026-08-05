@@ -52,7 +52,7 @@ futures = "0.3"
 bytes = "1"
 jsonschema = "0.28"
 crossterm = "0.28"
-ratatui = { version = "=0.30.2", default-features = false, features = ["crossterm", "underline-color"] }
+ratatui = { version = "=0.30.2", default-features = false, features = ["crossterm", "underline-color", "unstable-rendered-line-info"] }
 regex = "1"
 notify = "8"
 portable-pty = "0.9"
