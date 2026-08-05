@@ -538,18 +538,14 @@ impl TuiApp {
         area: ratatui::layout::Rect,
         buf: &mut ratatui::buffer::Buffer,
     ) {
-        // Top-aligned with consistent padding so switching Editor <-> Diff has no visual jump.
-        let text = "\nNo file open\n\nSelect one from the explorer.";
-        Paragraph::new(text)
-            .style(theme::muted())
-            .alignment(ratatui::layout::Alignment::Center)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(theme::inactive_panel_border())
-                    .style(theme::panel()),
-            )
-            .render(area, buf);
+        // Vertically centered (identical for Editor and Diff views).
+        render_centered_text(
+            area,
+            buf,
+            "No file open\n\nSelect one from the explorer.",
+            theme::muted(),
+            theme::inactive_panel_border(),
+        );
     }
 
     fn render_diff_workspace(
@@ -585,17 +581,13 @@ impl TuiApp {
             return;
         }
         if gs.status.is_empty() && !self.diff_view.snapshot.stale {
-            // Leading newline keeps identical top padding with Editor empty state.
-            Paragraph::new("\nNo changes\n\nThe working tree is clean.")
-                .style(theme::muted())
-                .alignment(ratatui::layout::Alignment::Center)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(theme::muted())
-                        .style(theme::panel()),
-                )
-                .render(area, buf);
+            render_centered_text(
+                area,
+                buf,
+                "No changes\n\nThe working tree is clean.",
+                theme::muted(),
+                theme::muted(),
+            );
             return;
         }
 
@@ -769,6 +761,39 @@ impl TuiApp {
     }
 }
 
+/// Render text vertically centered inside the given area.
+/// Both Editor and Diff empty states call this for identical vertical alignment.
+fn render_centered_text(
+    area: ratatui::layout::Rect,
+    buf: &mut ratatui::buffer::Buffer,
+    text: &str,
+    style: ratatui::style::Style,
+    border: ratatui::style::Style,
+) {
+    // The bordered block needs the text rows plus its top and bottom border rows.
+    let line_count = text.lines().count() as u16;
+    let block_height = line_count.saturating_add(2);
+    let vertical_pad = area.height.saturating_sub(block_height) / 2;
+
+    let inner = ratatui::layout::Rect {
+        x: area.x,
+        y: area.y + vertical_pad,
+        width: area.width,
+        height: block_height,
+    };
+
+    Paragraph::new(text)
+        .style(style)
+        .alignment(ratatui::layout::Alignment::Center)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(border)
+                .style(theme::panel()),
+        )
+        .render(inner, buf);
+}
+
 #[cfg(test)]
 mod tests {
     use super::composer_input_height;
@@ -785,5 +810,39 @@ mod tests {
         );
 
         assert_eq!(composer_input_height(&input, Rect::new(0, 0, 120, 40)), 8);
+    }
+
+    #[test]
+    fn empty_state_text_renders_fully_vertically_centered() {
+        let area = Rect::new(0, 0, 40, 12);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        super::render_centered_text(
+            area,
+            &mut buf,
+            "No file open\n\nSelect one from the explorer.",
+            crate::theme::muted(),
+            crate::theme::inactive_panel_border(),
+        );
+        let rendered: Vec<String> = (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect();
+
+        assert!(rendered.iter().any(|row| row.contains("No file open")));
+        assert!(
+            rendered
+                .iter()
+                .any(|row| row.contains("Select one from the explorer.")),
+            "all lines must render, not just the first:\n{}",
+            rendered.join("\n")
+        );
+        assert!(
+            rendered.iter().any(|row| row.trim().starts_with('└')),
+            "bottom border must render:\n{}",
+            rendered.join("\n")
+        );
     }
 }

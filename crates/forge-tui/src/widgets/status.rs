@@ -385,14 +385,13 @@ impl Widget for StatusBar<'_> {
         if area.height == 0 || area.width == 0 {
             return;
         }
-        // Centered single block: Forge / <repo>/<branch>/ <status>
-        // Wraps on overflow per requirement.
+        // Centered single block: Forge / <repo>/<branch>
+        // No status per updated requirement. Wraps on overflow.
         let repo = self.model.repo_branch_label().unwrap_or_default();
-        let status = self.model.current_state_label().to_string();
         let content = if repo.is_empty() {
-            format!("Forge / {}", status)
+            "Forge".to_string()
         } else {
-            format!("Forge / {}/ {}", repo, status)
+            format!("Forge / {}", repo)
         };
 
         let width = area.width as usize;
@@ -404,17 +403,8 @@ impl Widget for StatusBar<'_> {
             let padded = format!("{}{}", " ".repeat(pad), content);
             buf.set_line(area.x, area.y, &Line::from(padded), area.width);
         } else {
-            // Too wide: show a centered slice that still contains the status label.
-            // Prefer to keep the rightmost part (status) visible.
-            let status_only = format!("Forge / {}", status);
-            if status_only.chars().count() <= width {
-                let pad = (width.saturating_sub(status_only.chars().count())) / 2;
-                let padded = format!("{}{}", " ".repeat(pad), status_only);
-                buf.set_line(area.x, area.y, &Line::from(padded), area.width);
-            } else {
-                // Fallback: left-align the status label
-                buf.set_line(area.x, area.y, &Line::from(status_only), area.width);
-            }
+            // Too wide: left-align the Forge line
+            buf.set_line(area.x, area.y, &Line::from(content), area.width);
         }
     }
 }
@@ -732,7 +722,7 @@ mod tests {
         // New centered single-block layout
         assert!(rendered.contains("Forge"));
         assert!(rendered.contains("forge/main*"));
-        assert!(rendered.contains("Working"));
+        // status removed from header per requirement
     }
 
     #[test]
@@ -985,15 +975,14 @@ mod tests {
         let mut buf = Buffer::empty(area);
         StatusBar { model: &m }.render(area, &mut buf);
         let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
-        assert!(rendered.contains("Working"), "{rendered}");
+        // Status removed; header only shows Forge + repo/branch
+        assert!(rendered.contains("Forge"), "{rendered}");
 
         let area = Rect::new(0, 0, 24, 1);
         let mut buf = Buffer::empty(area);
         StatusBar { model: &m }.render(area, &mut buf);
         let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
-        assert!(rendered.contains("Working"), "{rendered}");
-        // Progress may be dropped; state remains intact.
-        assert!(!rendered.contains("Inspecting repository") || rendered.contains("Working"));
+        assert!(rendered.contains("Forge"), "{rendered}");
     }
 
     #[test]
