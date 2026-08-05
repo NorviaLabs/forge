@@ -1275,6 +1275,7 @@ name = "forge-syntax"
 version = "0.1.0-beta.1"
 dependencies = [
  "serde_json",
+ "streaming-iterator",
  "tree-sitter",
  "tree-sitter-bash",
  "tree-sitter-css",
