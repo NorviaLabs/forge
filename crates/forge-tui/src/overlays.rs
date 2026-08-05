@@ -405,6 +405,7 @@ impl ApprovalOverlayState {
                 payload
                     .args_redacted
                     .get("command")
+                    .or_else(|| payload.args_redacted.get("cmd"))
                     .and_then(|value| value.as_str())
                     .unwrap_or("")
                     .to_owned()
@@ -1369,9 +1370,10 @@ fn hitl_command(tool: &str, args: &serde_json::Value) -> String {
 }
 
 fn approval_mode_for_tool(tool: &str) -> ApprovalExecutionMode {
-    match tool {
-        "bash" | "sh" | "cmd" | "powershell" | "shell" | "exec" => ApprovalExecutionMode::Shell,
-        _ => ApprovalExecutionMode::Direct,
+    if forge_governance::is_shell_tool(tool) {
+        ApprovalExecutionMode::Shell
+    } else {
+        ApprovalExecutionMode::Direct
     }
 }
 
@@ -1387,6 +1389,7 @@ fn approval_argument_vector(tool: &str, args: &serde_json::Value) -> Vec<String>
     if approval_mode_for_tool(tool) == ApprovalExecutionMode::Shell {
         return args
             .get("command")
+            .or_else(|| args.get("cmd"))
             .and_then(|value| value.as_str())
             .map(|command| vec![command.to_owned()])
             .unwrap_or_default();
