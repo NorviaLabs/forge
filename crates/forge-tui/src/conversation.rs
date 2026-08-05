@@ -169,6 +169,9 @@ pub enum ChatItem {
         state: ToolCardState,
         /// Optional duration label e.g. "142ms" (when known).
         duration: Option<String>,
+        /// Always-visible invocation line under the tool label (e.g.
+        /// `git status --short`, `src/main.rs`). `None` for render-only tools.
+        subcommand: Option<String>,
         /// Real execution result. `ExecutionOutcome::Success` for tools with
         /// no real process/failure concept (e.g. `read_file`, `fffind`).
         outcome: forge_types::ExecutionOutcome,
@@ -257,6 +260,9 @@ pub struct ActivityGroupPresentation {
     pub count_label: String,
     pub outcome: ActivityOutcome,
     pub expanded: bool,
+    /// Always-visible invocation lines under the label (0-1 per tool call
+    /// today; a grouped routine call may later fan out to several).
+    pub subcommands: Vec<String>,
     pub items: Vec<String>,
 }
 
@@ -476,6 +482,7 @@ impl ConversationModel {
                             detail: error,
                             state: ToolCardState::Error,
                             duration: None,
+                            subcommand: None,
                             outcome: forge_types::ExecutionOutcome::Failed { exit_code: None },
                         });
                     } else if looks_like_diff(&m.content)
@@ -494,7 +501,7 @@ impl ConversationModel {
                             .tool_call_id
                             .as_deref()
                             .and_then(|id| tool_calls.get(id).copied());
-                        let (state, summary, detail) =
+                        let (state, summary, invocation, detail) =
                             classify_tool_content(name, &m.content, call, &m.outcome);
                         items.push(ChatItem::ToolCard {
                             name: name.to_string(),
@@ -502,6 +509,7 @@ impl ConversationModel {
                             detail,
                             state,
                             duration: None,
+                            subcommand: invocation,
                             outcome: m.outcome.clone(),
                         });
                     }
@@ -656,6 +664,7 @@ impl ConversationModel {
             detail: String::new(),
             state: ToolCardState::Running,
             duration: None,
+            subcommand: None,
             outcome: ExecutionOutcome::Success,
         });
         self
@@ -672,6 +681,7 @@ impl ConversationModel {
             detail: String::new(),
             state: ToolCardState::Blocked,
             duration: None,
+            subcommand: None,
             outcome: ExecutionOutcome::Success,
         });
         self
@@ -851,21 +861,38 @@ impl ConversationModel {
                         Span::styled(p.label, theme::text().add_modifier(Modifier::BOLD)),
                         Span::styled("  ", theme::metadata_style()),
                     ];
-                    match collapsed_command_summary(&p.count_label, &p.items) {
-                        Some((command, output_lines)) => {
-                            spans.push(Span::styled(command, theme::metadata_style()));
-                            spans.push(Span::styled(
-                                format!(" · {output_lines} output lines"),
-                                theme::dim(),
-                            ));
+                    if p.subcommands.is_empty() {
+                        match collapsed_command_summary(&p.count_label, &p.items) {
+                            Some((command, output_lines)) => {
+                                spans.push(Span::styled(command, theme::metadata_style()));
+                                spans.push(Span::styled(
+                                    format!(" · {output_lines} output lines"),
+                                    theme::dim(),
+                                ));
+                            }
+                            None => {
+                                spans.push(Span::styled(p.count_label, theme::metadata_style()))
+                            }
                         }
-                        None => spans.push(Span::styled(p.count_label, theme::metadata_style())),
                     }
                     spans.push(Span::styled(
                         activity_detail_label(p.expanded),
                         theme::metadata_style(),
                     ));
                     lines.push(Line::from(spans));
+                    for (index, subcommand) in p.subcommands.iter().enumerate() {
+                        let last = index + 1 == p.subcommands.len();
+                        let glyph = if last { "└─" } else { "├─" };
+                        let sub_width = width.saturating_sub(5);
+                        for (lineno, wrapped) in wrap(subcommand, sub_width).into_iter().enumerate()
+                        {
+                            let head = if lineno == 0 { glyph } else { "│" };
+                            lines.push(Line::from(Span::styled(
+                                format!("{INDENT_UNIT}{head} {wrapped}"),
+                                theme::muted(),
+                            )));
+                        }
+                    }
                     if p.expanded {
                         for item in p.items {
                             for line in wrap(&item, width.saturating_sub(2)) {
@@ -1076,12 +1103,18 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
                 summary,
                 detail,
                 state,
+                subcommand,
                 outcome,
                 ..
             } => {
-                if let Some(entry) =
-                    activity_entry_from_tool(name, summary, detail, *state, outcome)
-                {
+                if let Some(entry) = activity_entry_from_tool(
+                    name,
+                    summary,
+                    detail,
+                    *state,
+                    outcome,
+                    subcommand.as_deref(),
+                ) {
                     append_activity_entry(&mut blocks, &mut activity_group, entry);
                 } else {
                     flush_progress(&mut blocks, &mut progress);
@@ -1098,6 +1131,7 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
                                 ToolCardState::Error => ActivityOutcome::from(outcome),
                             },
                             expanded: tool_expanded,
+                            subcommands: subcommand_line(subcommand.as_deref(), summary),
                             items: vec![format!("{name}: {summary}\n{detail}")],
                         },
                     ));
@@ -1132,6 +1166,7 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
                         count_label: summary.clone(),
                         outcome: activity_outcome,
                         expanded: tool_expanded,
+                        subcommands: Vec::new(),
                         items: vec![detail.clone()],
                     },
                 );
@@ -1357,6 +1392,7 @@ fn activity_entry_from_tool(
     detail: &str,
     state: ToolCardState,
     execution_outcome: &ExecutionOutcome,
+    subcommand: Option<&str>,
 ) -> Option<ActivityGroupPresentation> {
     let category = routine_tool_category(name, summary, None)?;
     let lower = detail.to_ascii_lowercase();
@@ -1378,6 +1414,19 @@ fn activity_entry_from_tool(
         ToolCardState::Running => category.label(true).to_string(),
         _ => category.label(false).to_string(),
     };
+    // Validation commands keep their pass/fail phrase (never re-derived from
+    // rendered text) on the always-visible subcommand line.
+    let subcommands = if category == ActivityCategory::Validating {
+        match subcommand {
+            Some(invocation) => vec![format!(
+                "{invocation} · {}",
+                validation_outcome_summary(execution_outcome)
+            )],
+            None => Vec::new(),
+        }
+    } else {
+        subcommand_line(subcommand, summary)
+    };
     Some(ActivityGroupPresentation {
         id: format!("activity:{category:?}"),
         label,
@@ -1397,8 +1446,22 @@ fn activity_entry_from_tool(
         },
         outcome,
         expanded: matches!(state, ToolCardState::Error),
+        subcommands,
         items: vec![format!("{name}: {summary}\n{detail}")],
     })
+}
+
+/// Always-visible invocation line(s) under a tool label. When the fused
+/// summary already leads with the invocation (e.g. `git status --short ·
+/// 12 output lines`) the whole summary is kept so counts ride along;
+/// otherwise just the invocation is shown (e.g. write tools, whose summary
+/// is an output preview, not the path).
+fn subcommand_line(invocation: Option<&str>, summary: &str) -> Vec<String> {
+    match invocation {
+        Some(invocation) if summary.starts_with(invocation) => vec![summary.to_string()],
+        Some(invocation) => vec![invocation.to_string()],
+        None => Vec::new(),
+    }
 }
 
 /// If the message content begins with an Active-file context block, strip it
@@ -1595,9 +1658,9 @@ fn number_diff_lines(lines: &[String]) -> Vec<NumberedDiffLine> {
 
 fn activity_detail_label(expanded: bool) -> &'static str {
     if expanded {
-        "  · Ctrl+O collapse"
+        "  [Ctrl + o] collapse"
     } else {
-        "  · Ctrl+O details"
+        "  [Ctrl + o]"
     }
 }
 
@@ -2110,8 +2173,15 @@ fn classify_tool_content(
     content: &str,
     call: Option<&ToolCall>,
     outcome: &forge_types::ExecutionOutcome,
-) -> (ToolCardState, String, String) {
+) -> (ToolCardState, String, Option<String>, String) {
     let detail = redact_tool_output(content);
+    // Human-readable invocation for the subcommand line under the tool label.
+    // Redacted the same way as the command text: a sensitive command must not
+    // surface on an always-visible line.
+    let invocation = call
+        .and_then(|call| forge_tools::tool_invocation(name, &call.arguments))
+        .map(|s| redact_tool_output(&s))
+        .and_then(|s| (s != "[redacted tool output]").then_some(s));
     if matches!(name, "exec_command" | "write_stdin") {
         if let Ok(payload) = serde_json::from_str::<serde_json::Value>(&detail) {
             let output = payload["output"].as_str().unwrap_or_default();
@@ -2130,7 +2200,7 @@ fn classify_tool_content(
                 (None, Some(id)) => format!("session #{id} · {label}"),
                 (None, None) => label.into(),
             };
-            return (state, summary, output.into());
+            return (state, summary, invocation, output.into());
         }
     }
     let lower = detail.to_ascii_lowercase();
@@ -2219,7 +2289,7 @@ fn classify_tool_content(
         }
         _ => detail.chars().take(160).collect(),
     };
-    (state, summary, detail)
+    (state, summary, invocation, detail)
 }
 
 fn redact_tool_output(content: &str) -> String {
@@ -2672,6 +2742,7 @@ mod tests {
                     detail: "src/lib.rs".into(),
                     state: ToolCardState::Done,
                     duration: None,
+                    subcommand: None,
                     outcome: forge_types::ExecutionOutcome::Success,
                 },
                 ChatItem::ToolCard {
@@ -2680,6 +2751,7 @@ mod tests {
                     detail: "src/main.rs".into(),
                     state: ToolCardState::Done,
                     duration: None,
+                    subcommand: None,
                     outcome: forge_types::ExecutionOutcome::Success,
                 },
             ],
@@ -2738,6 +2810,7 @@ mod tests {
                     detail: "src/lib.rs".into(),
                     state: ToolCardState::Done,
                     duration: None,
+                    subcommand: None,
                     outcome: forge_types::ExecutionOutcome::Success,
                 },
             ],
@@ -2770,6 +2843,7 @@ mod tests {
                     detail: "README.md".into(),
                     state: ToolCardState::Done,
                     duration: None,
+                    subcommand: None,
                     outcome: forge_types::ExecutionOutcome::Success,
                 },
                 ChatItem::ToolCard {
@@ -2778,6 +2852,7 @@ mod tests {
                     detail: "crates/".into(),
                     state: ToolCardState::Done,
                     duration: None,
+                    subcommand: None,
                     outcome: forge_types::ExecutionOutcome::Success,
                 },
                 ChatItem::Assistant {
@@ -2861,6 +2936,7 @@ mod tests {
                     detail: "offset type mismatch".into(),
                     state: ToolCardState::Error,
                     duration: None,
+                    subcommand: None,
                     outcome: forge_types::ExecutionOutcome::Failed { exit_code: None },
                 },
                 ChatItem::Banner {
@@ -3009,6 +3085,7 @@ mod tests {
                 detail: "status 101".into(),
                 state: ToolCardState::Error,
                 duration: None,
+                subcommand: None,
                 outcome: forge_types::ExecutionOutcome::Failed { exit_code: None },
             }],
             scroll: 0,
@@ -3421,6 +3498,7 @@ mod tests {
                     detail: "a".into(),
                     state: ToolCardState::Done,
                     duration: None,
+                    subcommand: None,
                     outcome: forge_types::ExecutionOutcome::Success,
                 },
                 ChatItem::ToolCard {
@@ -3429,6 +3507,7 @@ mod tests {
                     detail: "a.rs:1:needle".into(),
                     state: ToolCardState::Done,
                     duration: None,
+                    subcommand: None,
                     outcome: forge_types::ExecutionOutcome::Success,
                 },
                 ChatItem::User {
@@ -3440,6 +3519,7 @@ mod tests {
                     detail: "status 101".into(),
                     state: ToolCardState::Error,
                     duration: None,
+                    subcommand: None,
                     outcome: forge_types::ExecutionOutcome::Failed { exit_code: None },
                 },
             ]),
@@ -3475,6 +3555,7 @@ mod tests {
                 detail: "status 101".into(),
                 state: ToolCardState::Error,
                 duration: None,
+                subcommand: None,
                 outcome: ExecutionOutcome::Failed {
                     exit_code: Some(101),
                 },
@@ -3500,7 +3581,7 @@ mod tests {
         // classified as an error when the real outcome is Success — the old
         // bug was exactly this: substring-matching rendered text instead of
         // the real execution result.
-        let (state, _, _) = classify_tool_content(
+        let (state, _, _, _) = classify_tool_content(
             "bash",
             "ran the validation suite successfully",
             None,
@@ -3510,8 +3591,51 @@ mod tests {
     }
 
     #[test]
+    fn classify_tool_content_derives_invocation_from_call_arguments() {
+        let call = ToolCall {
+            id: "call_1".into(),
+            name: "git".into(),
+            arguments: serde_json::json!({"subcommand": "status", "args": ["--short"]}),
+        };
+        let (_, _, invocation, _) =
+            classify_tool_content("git", "", Some(&call), &ExecutionOutcome::Success);
+        assert_eq!(invocation, Some("git status --short".into()));
+    }
+
+    #[test]
+    fn classify_tool_content_yields_no_invocation_for_render_only_tools() {
+        let call = ToolCall {
+            id: "call_2".into(),
+            name: "apply_patch".into(),
+            arguments: serde_json::json!({"patch": "*** Begin Patch"}),
+        };
+        let (_, _, invocation, _) = classify_tool_content(
+            "apply_patch",
+            "...",
+            Some(&call),
+            &ExecutionOutcome::Success,
+        );
+        assert_eq!(invocation, None);
+    }
+
+    #[test]
+    fn classify_tool_content_redacts_sensitive_invocations() {
+        let call = ToolCall {
+            id: "call_3".into(),
+            name: "bash".into(),
+            arguments: serde_json::json!({"command": "curl -H 'Authorization: Bearer sk-abc123' /secret"}),
+        };
+        let (_, _, invocation, _) =
+            classify_tool_content("bash", "", Some(&call), &ExecutionOutcome::Success);
+        assert_eq!(
+            invocation, None,
+            "a sensitive command must never surface on the always-visible subcommand line"
+        );
+    }
+
+    #[test]
     fn classify_tool_content_bash_success_yields_tests_passed_copy() {
-        let (state, summary, _) =
+        let (state, summary, _, _) =
             classify_tool_content("bash", "", None, &ExecutionOutcome::Success);
         assert_eq!(state, ToolCardState::Done);
         assert!(summary.contains("completed"), "{summary}");
@@ -3519,7 +3643,7 @@ mod tests {
 
     #[test]
     fn classify_tool_content_bash_nonzero_yields_exit_code_copy() {
-        let (state, summary, _) = classify_tool_content(
+        let (state, summary, _, _) = classify_tool_content(
             "bash",
             "boom",
             None,
@@ -3533,7 +3657,7 @@ mod tests {
 
     #[test]
     fn classify_tool_content_bash_spawn_failed_yields_command_not_found_copy() {
-        let (state, summary, _) = classify_tool_content(
+        let (state, summary, _, _) = classify_tool_content(
             "bash",
             "boom",
             None,
@@ -3547,7 +3671,7 @@ mod tests {
 
     #[test]
     fn classify_tool_content_bash_denied_yields_skipped_denied_copy() {
-        let (state, summary, _) = classify_tool_content(
+        let (state, summary, _, _) = classify_tool_content(
             "bash",
             "denied by ACL: bash",
             None,
@@ -3561,7 +3685,7 @@ mod tests {
 
     #[test]
     fn classify_tool_content_bash_cancelled_yields_cancelled_copy() {
-        let (state, summary, _) =
+        let (state, summary, _, _) =
             classify_tool_content("bash", "", None, &ExecutionOutcome::Cancelled);
         assert_eq!(state, ToolCardState::Error);
         assert!(summary.contains("cancelled"), "{summary}");
@@ -3569,7 +3693,7 @@ mod tests {
 
     #[test]
     fn classify_tool_content_bash_timed_out_yields_timed_out_copy() {
-        let (state, summary, _) =
+        let (state, summary, _, _) =
             classify_tool_content("bash", "", None, &ExecutionOutcome::TimedOut);
         assert_eq!(state, ToolCardState::Error);
         assert!(summary.contains("timed out"), "{summary}");
@@ -3622,6 +3746,7 @@ mod tests {
                 detail: "full file output".into(),
                 state: ToolCardState::Done,
                 duration: None,
+                subcommand: None,
                 outcome: forge_types::ExecutionOutcome::Success,
             }],
             scroll: 0,
@@ -3663,6 +3788,7 @@ mod tests {
                     .join("\n"),
                 state: ToolCardState::Done,
                 duration: None,
+                subcommand: Some(format!("$ {command}")),
                 outcome: forge_types::ExecutionOutcome::Success,
             }],
             scroll: 0,
@@ -3675,18 +3801,21 @@ mod tests {
     }
 
     #[test]
-    fn long_command_entry_collapses_with_truncated_line_and_output_count() {
-        let long_command = "cargo test --workspace --all-features -- --test-threads=1 --nocapture; git diff --check; git status --short";
+    fn long_command_subcommand_wraps_with_connector() {
+        let long_command = "cargo build --workspace --all-features --jobs 8 && cargo doc --no-deps; ls -la; git status --short";
         let model = bash_tool_card(long_command, "5", false);
         let text = rendered_text(&model);
 
-        assert!(text.contains("$ cargo test"), "{text}");
-        assert!(text.contains("output lines"), "{text}");
-        assert!(text.contains("Ctrl+O details"), "{text}");
+        assert!(text.contains("└─ $ cargo build"), "{text}");
+        // A command too wide for the pane wraps with the connector carried
+        // down, so the full invocation stays visible instead of truncating.
+        assert!(text.contains("--short"), "{text}");
         assert!(
-            !text.contains("git status --short"),
-            "long command should be truncated to its first segment:\n{text}"
+            text.contains("│"),
+            "wrapped continuation must carry the connector:\n{text}"
         );
+        assert!(text.contains("5 output lines"), "{text}");
+        assert!(text.contains("[Ctrl + o]"), "{text}");
     }
 
     #[test]
@@ -3700,7 +3829,7 @@ mod tests {
         // equality with the original string.
         assert!(text.contains("--test-threads=1 --nocapture"), "{text}");
         assert!(text.contains("git status --short"), "{text}");
-        assert!(text.contains("Ctrl+O collapse"), "{text}");
+        assert!(text.contains("[Ctrl + o] collapse"), "{text}");
     }
 
     #[test]
@@ -3711,6 +3840,83 @@ mod tests {
 
         assert!(text.contains(&format!("$ {short_command}")), "{text}");
         assert!(!text.contains('…'), "{text}");
+    }
+
+    #[test]
+    fn tool_card_with_subcommand_renders_connector_line() {
+        let model = ConversationModel {
+            items: vec![ChatItem::ToolCard {
+                name: "git".into(),
+                summary: "git status --short · 12 output lines".into(),
+                detail: " M crates/forge-tui/src/conversation.rs".into(),
+                state: ToolCardState::Done,
+                duration: None,
+                subcommand: Some("git status --short".into()),
+                outcome: forge_types::ExecutionOutcome::Success,
+            }],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+        let text = rendered_text(&model);
+
+        assert!(
+            text.contains("└─ git status --short · 12 output lines"),
+            "invocation must render on its own connector line:\n{text}"
+        );
+        assert!(
+            !text.contains("1 item"),
+            "count label must move off the label line:\n{text}"
+        );
+    }
+
+    #[test]
+    fn tool_card_without_subcommand_keeps_single_line() {
+        // Render-only tools (apply_patch, MCP) keep the old single-line form.
+        let model = ConversationModel {
+            items: vec![ChatItem::ToolCard {
+                name: "apply_patch".into(),
+                summary: "patch applies cleanly".into(),
+                detail: "*** Begin Patch".into(),
+                state: ToolCardState::Done,
+                duration: None,
+                subcommand: None,
+                outcome: forge_types::ExecutionOutcome::Success,
+            }],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+        let text = rendered_text(&model);
+        assert!(!text.contains('└'), "{text}");
+        assert!(text.contains("Implemented changes"), "{text}");
+        assert!(
+            !text.contains("patch applies cleanly"),
+            "summary stays expanded-only:\n{text}"
+        );
+    }
+
+    #[test]
+    fn write_tool_subcommand_uses_path_when_summary_is_output_preview() {
+        let model = ConversationModel {
+            items: vec![ChatItem::ToolCard {
+                name: "write_file".into(),
+                summary: "wrote · +1 -0 src/foo.rs".into(),
+                detail: "wrote src/foo.rs".into(),
+                state: ToolCardState::Done,
+                duration: None,
+                subcommand: Some("src/foo.rs".into()),
+                outcome: forge_types::ExecutionOutcome::Success,
+            }],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+        let text = rendered_text(&model);
+        assert!(
+            text.contains("└─ src/foo.rs"),
+            "write tools should surface the path, not the output preview:\n{text}"
+        );
     }
 
     #[test]
@@ -3767,6 +3973,7 @@ mod tests {
                     detail: "src/lib.rs".into(),
                     state: ToolCardState::Done,
                     duration: None,
+                    subcommand: None,
                     outcome: forge_types::ExecutionOutcome::Success,
                 },
                 ChatItem::ToolCard {
@@ -3775,6 +3982,7 @@ mod tests {
                     detail: "src/app.rs".into(),
                     state: ToolCardState::Done,
                     duration: None,
+                    subcommand: None,
                     outcome: forge_types::ExecutionOutcome::Success,
                 },
             ]),
@@ -3791,8 +3999,8 @@ mod tests {
             ConversationBlock::ActivityGroup(group)
                 if !group.items.is_empty() && group.count_label.contains("2")
         )));
-        assert_eq!(activity_detail_label(true), "  · Ctrl+O collapse");
-        assert_eq!(activity_detail_label(false), "  · Ctrl+O details");
+        assert_eq!(activity_detail_label(true), "  [Ctrl + o] collapse");
+        assert_eq!(activity_detail_label(false), "  [Ctrl + o]");
     }
 
     #[test]
