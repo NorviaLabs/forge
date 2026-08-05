@@ -73,44 +73,53 @@ fn visual_rows_for_line(
 }
 
 /// Word-wrap `line` into byte ranges without allocating per-fragment strings.
+///
+/// Every source byte belongs to one visual row. In particular, a separator at
+/// a wrap boundary remains on the preceding row; dropping it would advance the
+/// input cursor in the buffer without leaving a rendered cell for that cursor.
 fn wrap_line_ranges(line: &str, width: usize) -> Vec<(usize, usize)> {
     if line.is_empty() {
         return vec![(0, 0)];
     }
-    if line.len() <= width {
-        return vec![(0, line.len())];
-    }
 
     let mut out = Vec::new();
-    let mut row_start = 0usize;
-    let mut row_len = 0usize;
-    let mut search_from = 0usize;
-
-    for word in line.split_whitespace() {
-        let word_pos = line[search_from..]
-            .find(word)
-            .map(|p| search_from + p)
-            .unwrap_or(search_from);
-        let word_len = word.len();
-
-        if row_len == 0 {
-            row_start = word_pos;
-            row_len = word_len;
-        } else if row_len + 1 + word_len <= width {
-            row_len += 1 + word_len;
-        } else {
-            out.push((row_start, row_start + row_len));
-            row_start = word_pos;
-            row_len = word_len;
+    let mut row_start = 0;
+    while row_start < line.len() {
+        let remaining = &line[row_start..];
+        if remaining.len() <= width {
+            out.push((row_start, line.len()));
+            break;
         }
-        search_from = word_pos + word_len;
-    }
 
-    if row_len > 0 {
-        out.push((row_start, row_start + row_len));
-    }
-    if out.is_empty() {
-        out.push((0, line.len()));
+        // `width` is currently measured in bytes. Keep the old measurement
+        // contract, but never split a UTF-8 code point.
+        let mut row_end = row_start + width;
+        while !line.is_char_boundary(row_end) {
+            row_end -= 1;
+        }
+
+        // Prefer a word boundary that fits. Include its separator in this
+        // row, so the next row starts with the next word and the cursor after
+        // the separator has a real rendered position.
+        if let Some((offset, whitespace)) = line[row_start..row_end]
+            .char_indices()
+            .rev()
+            .find(|(_, ch)| ch.is_whitespace())
+        {
+            row_end = row_start + offset + whitespace.len_utf8();
+        }
+
+        // A leading whitespace boundary can produce an empty range only at
+        // width zero (which callers exclude), but retain a defensive progress
+        // guard for malformed callers.
+        if row_end == row_start {
+            row_end = line[row_start..]
+                .char_indices()
+                .nth(1)
+                .map_or(line.len(), |(offset, _)| row_start + offset);
+        }
+        out.push((row_start, row_end));
+        row_start = row_end;
     }
     out
 }
@@ -234,6 +243,22 @@ mod tests {
         for row in &rows {
             assert!(row.end >= row.start);
         }
+    }
+
+    #[test]
+    fn wrapped_rows_preserve_space_at_the_wrap_boundary_for_cursor_mapping() {
+        let text = "alpha beta gamma";
+        let rows = build_visual_rows(text, 11);
+
+        assert_eq!(rows[0].fragment(text), "alpha beta ");
+        assert_eq!(rows[1].fragment(text), "gamma");
+        assert_eq!(locate_cursor(text, "alpha beta ".len(), 11), (0, 11));
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.fragment(text))
+                .collect::<String>(),
+            text
+        );
     }
 
     #[test]

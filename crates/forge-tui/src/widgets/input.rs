@@ -296,6 +296,17 @@ fn render_content_spans(
     let col = col.min(fragment.len());
     let (left, right) = fragment.split_at(col);
     if right.is_empty() {
+        // When a typed separator ends a wrapped row, keep the caret on that
+        // separator rather than appending a new cell beyond the row's width.
+        // The buffer cursor is after the space; highlighting its cell gives
+        // it a visible position until the following character is typed.
+        if let Some(last) = left.chars().next_back().filter(|ch| ch.is_whitespace()) {
+            let split = left.len() - last.len_utf8();
+            return vec![
+                Span::styled(left[..split].to_string(), base),
+                Span::styled(last.to_string(), theme::caret()),
+            ];
+        }
         return vec![
             Span::styled(left.to_string(), base),
             Span::styled(" ", theme::caret()),
@@ -792,6 +803,28 @@ mod tests {
             assert!(!row.starts_with(glyph()), "continuation row: {row}");
             assert!(row.starts_with(&" ".repeat(prefix_width)), "row: {row}");
         }
+    }
+
+    #[test]
+    fn cursor_after_wrapped_space_uses_the_space_cell() {
+        let model = InputModel {
+            text: "alpha beta gamma".into(),
+            cursor: "alpha beta ".len(),
+            ..Default::default()
+        };
+        let rows = build_visual_rows(&model.text, 11);
+        let lines = build_input_lines(
+            &model,
+            &rows,
+            2,
+            true,
+            theme::text(),
+            gutter_style_for(THEME_SOLARIZED_DARK, GutterRole::Active),
+        );
+
+        let spans = &lines[0].spans;
+        assert_eq!(spans.last().unwrap().content, " ");
+        assert_eq!(spans.last().unwrap().style, theme::caret());
     }
 
     #[test]
