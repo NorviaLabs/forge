@@ -560,7 +560,9 @@ impl TuiApp {
         area: ratatui::layout::Rect,
         buf: &mut ratatui::buffer::Buffer,
     ) {
-        Paragraph::new("No file open\n\nSelect one from the explorer.")
+        // Top-aligned with consistent padding so switching Editor <-> Diff has no visual jump.
+        let text = "\nNo file open\n\nSelect one from the explorer.";
+        Paragraph::new(text)
             .style(theme::muted())
             .alignment(ratatui::layout::Alignment::Center)
             .block(
@@ -605,7 +607,8 @@ impl TuiApp {
             return;
         }
         if gs.status.is_empty() && !self.diff_view.snapshot.stale {
-            Paragraph::new("No changes\n\nThe working tree is clean.")
+            // Leading newline keeps identical top padding with Editor empty state.
+            Paragraph::new("\nNo changes\n\nThe working tree is clean.")
                 .style(theme::muted())
                 .alignment(ratatui::layout::Alignment::Center)
                 .block(

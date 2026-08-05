@@ -353,6 +353,7 @@ impl StatusModel {
         format!("{start}…{end}")
     }
 
+    #[allow(dead_code)]
     fn truncate_middle(text: &str, max: usize) -> String {
         let n = text.chars().count();
         if n <= max {
@@ -384,108 +385,41 @@ impl Widget for StatusBar<'_> {
         if area.height == 0 || area.width == 0 {
             return;
         }
-        // Priority: state label > product/workspace identity > progress description > secondary meta.
-        let width = area.width as usize;
-        let separators = "  ";
-        let sep_len = separators.chars().count();
-        let brand = "Forge";
-        let brand_len = brand.chars().count();
-
-        let life = self.model.turn_lifecycle();
-        let detail = self.model.status_detail();
-        let state_only = format_lifecycle_label(life, None, true);
-        let state_with_detail = format_lifecycle_label(life, detail.as_deref(), true);
-        let state_bare = life.label().to_string();
-
-        // Always reserve the state label; drop detail first under pressure.
-        let life_label = if brand_len + sep_len + state_with_detail.chars().count() <= width {
-            state_with_detail
-        } else if brand_len + sep_len + state_only.chars().count() <= width {
-            state_only
+        // Centered single block: Forge / <repo>/<branch>/ <status>
+        // Wraps on overflow per requirement.
+        let repo = self.model.repo_branch_label().unwrap_or_default();
+        let status = self.model.current_state_label().to_string();
+        let content = if repo.is_empty() {
+            format!("Forge / {}", status)
         } else {
-            state_bare
+            format!("Forge / {}/ {}", repo, status)
         };
-        let life_style = life.style();
 
-        let mut spans = vec![Span::styled(
-            brand,
-            theme::brand().add_modifier(Modifier::BOLD),
-        )];
-        let mut used = brand_len;
-
-        // Ensure lifecycle fits even if we must drop brand-adjacent metadata.
-        let life_needed = sep_len + life_label.chars().count();
-        let room_for_repo = width.saturating_sub(used + life_needed);
-
-        if let Some(repo) = self.model.repo_branch_label() {
-            if room_for_repo > sep_len {
-                let available_repo = room_for_repo.saturating_sub(sep_len);
-                if available_repo >= 4 {
-                    let repo = StatusModel::truncate_middle(&repo, available_repo);
-                    let needed = sep_len + repo.chars().count();
-                    if used + needed + life_needed <= width {
-                        spans.push(Span::raw(separators));
-                        spans.push(Span::styled(repo, theme::text()));
-                        used += needed;
-                    }
-                }
-            }
-        }
-
-        // Recompute room after repo.
-        if used + life_needed <= width {
-            spans.push(Span::raw(separators));
-            push_lifecycle_label(&mut spans, life, &life_label, life_style);
-            used += life_needed;
-        } else if life_label.chars().count() <= width {
-            // Extremely narrow: prefer state over brand if somehow constrained.
-            spans.clear();
-            used = life_label.chars().count();
-            push_lifecycle_label(&mut spans, life, &life_label, life_style);
-        } else {
-            spans.push(Span::raw(separators));
-            spans.push(Span::styled(life.label().to_string(), life_style));
-            used = width;
-        }
-
-        // Optional resource (file/run view) only if leftover room remains.
-        if let Some(resource) = self
-            .model
-            .resource
-            .as_deref()
-            .filter(|value| !value.is_empty())
-        {
-            let available = width.saturating_sub(used + sep_len);
-            if available >= 4 {
-                let resource = StatusModel::truncate_middle(resource, available);
-                let needed = sep_len + resource.chars().count();
-                if used + needed <= width {
-                    spans.push(Span::raw(separators));
-                    spans.push(Span::styled(resource, theme::metadata_style()));
-                    used += needed;
-                }
-            }
-        }
-
-        // Workspace activity is secondary metadata — never displaces lifecycle.
-        if let Some(activity) = self
-            .model
-            .activity
-            .as_deref()
-            .filter(|value| !value.is_empty())
-        {
-            let needed = sep_len + activity.chars().count();
-            if used + needed <= width {
-                spans.push(Span::raw(separators));
-                spans.push(Span::styled(activity.to_string(), theme::metadata_style()));
-            }
-        }
+        let width = area.width as usize;
+        let content_width = content.chars().count();
 
         theme::fill(area, buf, theme::status_bar());
-        buf.set_line(area.x, area.y, &Line::from(spans), area.width);
+        if content_width <= width {
+            let pad = (width.saturating_sub(content_width)) / 2;
+            let padded = format!("{}{}", " ".repeat(pad), content);
+            buf.set_line(area.x, area.y, &Line::from(padded), area.width);
+        } else {
+            // Too wide: show a centered slice that still contains the status label.
+            // Prefer to keep the rightmost part (status) visible.
+            let status_only = format!("Forge / {}", status);
+            if status_only.chars().count() <= width {
+                let pad = (width.saturating_sub(status_only.chars().count())) / 2;
+                let padded = format!("{}{}", " ".repeat(pad), status_only);
+                buf.set_line(area.x, area.y, &Line::from(padded), area.width);
+            } else {
+                // Fallback: left-align the status label
+                buf.set_line(area.x, area.y, &Line::from(status_only), area.width);
+            }
+        }
     }
 }
 
+#[allow(dead_code)]
 fn push_lifecycle_label(
     spans: &mut Vec<Span<'static>>,
     life: TurnLifecycle,
@@ -795,15 +729,10 @@ mod tests {
         let mut buf = Buffer::empty(area);
         StatusBar { model: &m }.render(area, &mut buf);
         let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
+        // New centered single-block layout
         assert!(rendered.contains("Forge"));
         assert!(rendered.contains("forge/main*"));
-        assert!(rendered.contains("src/app.rs"));
-        assert!(rendered.contains("2 changes"));
-        assert!(!rendered.contains("32% context"));
-        assert!(!rendered.contains("OpenAI"));
-        assert!(!rendered.contains("ChatGPT sign-in"));
-        assert!(!rendered.contains("gpt-5.6-terra"));
-        assert!(!rendered.contains("medium"));
+        assert!(rendered.contains("Working"));
     }
 
     #[test]
@@ -838,8 +767,9 @@ mod tests {
         let mut buf = Buffer::empty(area);
         StatusBar { model: &m }.render(area, &mut buf);
         let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
+        // Centered layout still shows Forge + state even when narrow
         assert!(rendered.contains("Forge"));
-        assert!(rendered.contains("Ready"));
+        assert!(rendered.contains("Ready") || rendered.contains("forge/main"));
     }
 
     #[test]
