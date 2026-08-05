@@ -467,6 +467,7 @@ impl TuiApp {
                 // that -- roughly 200ms plus two draws from keypress to glyph.
                 if terminal.is_some() {
                     drain_events(self, terminal.as_deref_mut()).await?;
+                    self.poll_interactive_terminal();
                     if self.exit.requested {
                         handle.abort();
                         self.busy_state.active = false;
