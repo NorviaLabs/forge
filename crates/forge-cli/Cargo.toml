@@ -14,7 +14,6 @@ path = "src/main.rs"
 forge-config = { workspace = true }
 forge-core = { workspace = true }
 forge-governance = { workspace = true }
-forge-durable = { workspace = true }
 forge-model = { workspace = true }
 forge-tools = { workspace = true }
 forge-mcp = { workspace = true }

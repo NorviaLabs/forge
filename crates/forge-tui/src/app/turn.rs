@@ -466,7 +466,7 @@ impl TuiApp {
                 // next iteration, and so was not painted until the iteration after
                 // that -- roughly 200ms plus two draws from keypress to glyph.
                 if terminal.is_some() {
-                    drain_events(self).await?;
+                    drain_events(self, terminal.as_deref_mut()).await?;
                     if self.exit.requested {
                         handle.abort();
                         self.busy_state.active = false;

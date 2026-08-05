@@ -7,9 +7,7 @@ description = "Workspace file index and fast search (fff) for Forge agents and U
 
 [dependencies]
 fff-search = { workspace = true }
-fff-query-parser = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

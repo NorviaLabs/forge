@@ -15,7 +15,7 @@ impl TuiApp {
 
     pub(super) fn resize_interactive_terminal(&mut self, width: u16, height: u16) {
         if let Some(terminal) = self.interactive_terminal.as_mut() {
-            if let Err(error) = terminal.resize(width.saturating_sub(2), height.min(32)) {
+            if let Err(error) = terminal.resize(width, height) {
                 self.set_feedback(
                     FeedbackSeverity::Error,
                     format!("terminal resize failed: {error}"),
@@ -26,7 +26,10 @@ impl TuiApp {
 }
 
 /// Drain every pending terminal event (paste floods many keys; do not drop them).
-pub(super) async fn drain_events(app: &mut TuiApp) -> Result<(), TuiError> {
+pub(super) async fn drain_events(
+    app: &mut TuiApp,
+    mut terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
+) -> Result<(), TuiError> {
     loop {
         if !event::poll(Duration::from_millis(0))? {
             break;
@@ -41,8 +44,10 @@ pub(super) async fn drain_events(app: &mut TuiApp) -> Result<(), TuiError> {
                 app.handle_paste(&data);
                 app.invalidate_hit_regions();
             }
-            Event::Resize(width, height) => {
-                app.resize_interactive_terminal(width, height);
+            Event::Resize(_, _) => {
+                if let Some(term) = terminal.as_deref_mut() {
+                    term.autoresize()?;
+                }
                 app.invalidate_hit_regions();
             }
             _ => {}
@@ -180,13 +185,12 @@ async fn run_loop(
                     app.handle_paste(&data);
                     app.invalidate_hit_regions();
                 }
-                Event::Resize(width, height) => {
-                    app.resize_interactive_terminal(width, height);
+                Event::Resize(_, _) => {
                     app.invalidate_hit_regions();
                 }
                 _ => {}
             }
-            drain_events(app).await?;
+            drain_events(app, Some(terminal)).await?;
             // Repaint immediately after input so theme and other state changes are visible
             // without waiting for the next idle frame.
             terminal.draw(|f| app.draw(f))?;
