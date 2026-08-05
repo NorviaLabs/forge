@@ -27,12 +27,21 @@ impl TuiApp {
     }
 }
 
-/// Drain every pending terminal event (paste floods many keys; do not drop them).
+/// Keep a redraw cadence while draining a burst of terminal events.
+///
+/// An unbounded drain lets a continuous stream of ordinary key presses starve
+/// the draw that follows it. That becomes especially visible when the composer
+/// first wraps: the input has changed, but the screen does not update until the
+/// user pauses. Bracketed paste is still delivered as one `Event::Paste`; older
+/// terminals that emit a paste as key events are processed over successive
+/// frames without dropping any input.
+const MAX_EVENTS_PER_FRAME: usize = 8;
+
 pub(super) async fn drain_events(
     app: &mut TuiApp,
     mut terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
 ) -> Result<(), TuiError> {
-    loop {
+    for _ in 0..MAX_EVENTS_PER_FRAME {
         if !event::poll(Duration::from_millis(0))? {
             break;
         }
