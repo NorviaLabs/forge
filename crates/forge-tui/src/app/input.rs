@@ -586,6 +586,109 @@ impl TuiApp {
         Ok(consumed)
     }
 
+    /// Navigate composer chips when `composer_chip_focus` is set (`Alt+.`).
+    pub(super) async fn handle_composer_chip_key(
+        &mut self,
+        key: event::KeyEvent,
+    ) -> Result<bool, TuiError> {
+        let Some(idx) = self.composer_chip_focus else {
+            return Ok(false);
+        };
+        let chips = self.current_composer_chips();
+        if chips.is_empty() {
+            self.composer_chip_focus = None;
+            return Ok(false);
+        }
+        let n = chips.len();
+        let idx = idx.min(n - 1);
+        self.composer_chip_focus = Some(idx);
+        match key.code {
+            KeyCode::Left if key.modifiers.is_empty() => {
+                self.composer_chip_focus = Some((idx + n - 1) % n);
+                Ok(true)
+            }
+            KeyCode::Right if key.modifiers.is_empty() => {
+                self.composer_chip_focus = Some((idx + 1) % n);
+                Ok(true)
+            }
+            KeyCode::Esc if key.modifiers.is_empty() => {
+                self.composer_chip_focus = None;
+                Ok(true)
+            }
+            KeyCode::Enter if key.modifiers.is_empty() => {
+                let kind = chips[idx].kind;
+                self.composer_chip_focus = None;
+                self.activate_composer_chip(kind).await?;
+                Ok(true)
+            }
+            _ => {
+                // Global chords (Alt/Ctrl) and typing leave chip focus.
+                if !key.modifiers.is_empty() && key.modifiers != KeyModifiers::SHIFT {
+                    return Ok(false);
+                }
+                if Self::printable_chat_char(key).is_some()
+                    || matches!(key.code, KeyCode::Backspace | KeyCode::Delete)
+                {
+                    self.composer_chip_focus = None;
+                    return Ok(false);
+                }
+                Ok(true)
+            }
+        }
+    }
+
+    fn current_composer_chips(&self) -> Vec<ComposerChip> {
+        let connected = self.is_provider_connected();
+        let vendor = self
+            .connect
+            .profile
+            .as_deref()
+            .and_then(|id| self.vendor_route_labels(id).0);
+        let effort = self
+            .reasoning_effort
+            .value
+            .display_label(&self.runtime.model_label)
+            .to_string();
+        let raw = composer_chips(
+            self.permission_mode.label(),
+            connected,
+            vendor.as_deref(),
+            &self.runtime.model_label,
+            &effort,
+        );
+        // Width unknown here; navigation uses full set (fit only for paint).
+        raw
+    }
+
+    async fn activate_composer_chip(&mut self, kind: ComposerChipKind) -> Result<(), TuiError> {
+        match kind {
+            ComposerChipKind::Mode => {
+                self.execute_semantic_command(SemanticCommand::CyclePermissionMode)
+                    .await?;
+            }
+            ComposerChipKind::Connect => {
+                if self.is_provider_connected() {
+                    self.open_connect_picker_compact(ConnectModelColumn::Providers);
+                } else {
+                    self.open_connect_picker();
+                }
+            }
+            ComposerChipKind::Model => {
+                self.execute_semantic_command(SemanticCommand::OpenModelControl(
+                    ConnectModelColumn::Models,
+                ))
+                .await?;
+            }
+            ComposerChipKind::Effort => {
+                self.execute_semantic_command(SemanticCommand::OpenModelControl(
+                    ConnectModelColumn::Effort,
+                ))
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn scroll_conversation_up(&mut self, amount: u16) {
         self.conversation_view.follow = false;
         self.conversation_view.scroll = self.conversation_view.scroll.saturating_add(amount);
@@ -624,6 +727,10 @@ impl TuiApp {
         }
 
         if self.session.pending_hitl().is_some() && self.handle_approval_menu_key(key).await? {
+            return Ok(());
+        }
+
+        if self.composer_chip_focus.is_some() && self.handle_composer_chip_key(key).await? {
             return Ok(());
         }
 

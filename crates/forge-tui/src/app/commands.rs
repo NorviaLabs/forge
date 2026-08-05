@@ -142,6 +142,9 @@ impl TuiApp {
             KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::ALT) => {
                 Some(SemanticCommand::CyclePermissionMode)
             }
+            KeyCode::Char('.') if key.modifiers.contains(KeyModifiers::ALT) => {
+                Some(SemanticCommand::FocusComposerChips)
+            }
             KeyCode::F(1) if self.overlay.is_none() => Some(SemanticCommand::OpenHelp),
             _ => None,
         }
@@ -560,6 +563,16 @@ impl TuiApp {
                         self.permission_mode.label()
                     ),
                 );
+            }
+            SemanticCommand::FocusComposerChips => {
+                if self.session.pending_hitl().is_none() {
+                    if self.composer_chip_focus.is_some() {
+                        self.composer_chip_focus = None;
+                    } else {
+                        self.enter_chat_composer();
+                        self.composer_chip_focus = Some(0);
+                    }
+                }
             }
             SemanticCommand::MoveQueueSelection(delta) => self.move_queue_selection(delta),
             SemanticCommand::CancelSelectedQueueMessage => self.cancel_selected_queue().await,

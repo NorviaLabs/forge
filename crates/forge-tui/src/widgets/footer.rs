@@ -4,7 +4,6 @@
 use crate::theme;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::text::Span;
 use ratatui::widgets::Widget;
 
 #[derive(Debug, Clone)]
@@ -64,6 +63,7 @@ pub struct FooterBar<'a> {
 pub struct FooterControlSegment {
     pub text: String,
     /// Display-column start, relative to the footer row's own area.
+    #[allow(dead_code)]
     pub start: u16,
 }
 
@@ -121,6 +121,8 @@ impl Widget for FooterBar<'_> {
             return;
         }
         theme::fill(area, buf, theme::canvas());
+        // Steady-state vendor/model/effort moved to the composer chip row.
+        // Footer is contextual navigation hints only.
         if !self.model.hints.is_empty() {
             buf.set_stringn(
                 area.x,
@@ -128,15 +130,6 @@ impl Widget for FooterBar<'_> {
                 self.model.hints.as_str(),
                 area.width as usize,
                 theme::muted(),
-            );
-            return;
-        }
-        for segment in footer_control_segments(self.model, area.width) {
-            buf.set_span(
-                area.x + segment.start,
-                area.y,
-                &Span::styled(segment.text, theme::text()),
-                area.width.saturating_sub(segment.start),
             );
         }
     }
@@ -203,7 +196,8 @@ mod tests {
     }
 
     #[test]
-    fn renders_compact_control_when_connected_and_no_hint() {
+    fn renders_nothing_when_connected_and_no_hint() {
+        // Compact vendor/model/effort moved to the composer chip row.
         let model = connected_model();
         let area = Rect::new(0, 0, 80, 1);
         let mut buf = Buffer::empty(area);
@@ -211,9 +205,7 @@ mod tests {
         FooterBar { model: &model }.render(area, &mut buf);
 
         let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
-        assert!(rendered.contains("Anthropic"), "{rendered}");
-        assert!(rendered.contains("claude-sonnet-4-6"), "{rendered}");
-        assert!(rendered.contains("Low"), "{rendered}");
+        assert!(rendered.trim().is_empty(), "{rendered:?}");
     }
 
     #[test]

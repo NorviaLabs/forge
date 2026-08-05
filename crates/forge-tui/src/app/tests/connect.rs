@@ -1111,11 +1111,12 @@ async fn footer_shows_na_effort_for_a_model_that_does_not_support_it() {
         .unwrap();
     app.connect.profile = Some("openai".into());
 
-    let text = render_app_text(&mut app, 120, 40);
+    // Wide enough that effort chip is not truncated off the composer row.
+    let text = render_app_text(&mut app, 160, 40);
 
     assert!(
         text.contains("N/A"),
-        "expected the footer to show an explicit N/A effort segment:\n{text}"
+        "expected composer chips to show an explicit N/A effort:\n{text}"
     );
     assert!(
         !text.contains("[Auto]") && !text.contains("[Low]"),

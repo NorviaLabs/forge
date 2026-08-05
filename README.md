@@ -155,7 +155,13 @@ controls are:
 | `Alt+1`–`Alt+3` | Open a bottom-panel tab |
 | `Shift+←` / `Shift+→` | Switch the active block's tab |
 | `Alt+P` | Cycle permission mode (Manual ↔ Accept Edits) |
+| `Alt+.` | Focus composer chips (mode · connect · model · effort) |
+| `Alt+C` | Open model picker |
 | `?` | Open help |
+
+The composer shows a chip row under the input: permission mode, connection,
+model, and effort. `Alt+.` then `←`/`→`/`Enter` activates a chip (disconnected
+→ connect flow). `Enter` still sends; `⏎` is a hint only.
 
 When the bottom panel is focused, it is an interactive login shell. Type or
 paste commands directly into it; standard control keys, arrows, Tab, and

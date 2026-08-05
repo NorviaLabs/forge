@@ -58,6 +58,8 @@ impl TuiApp {
             "• Alt+P  Cycle permission mode (now: {})\n",
             self.permission_mode.label()
         ));
+        text.push_str("• Alt+.  Focus composer chips (mode · connect · model · effort)\n");
+        text.push_str("• Alt+C  Open model picker\n");
         text.push_str("• Alt+→  Activate activity summary, else review changes\n");
         text.push_str("• ?  Help\n");
         text.push_str("• Esc  Leave one interaction level\n\n");
@@ -86,6 +88,7 @@ impl TuiApp {
             FocusBlock::Composer => {
                 text.push_str("• Enter  Send\n");
                 text.push_str("• ⇧Enter  Newline\n");
+                text.push_str("• Alt+.  Chip bar · ←/→ select · Enter activate · Esc back\n");
                 text.push_str("• Esc  Return to previous block\n");
             }
             FocusBlock::BottomPanel => {
