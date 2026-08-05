@@ -17,6 +17,8 @@ use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 const DIFF_BLOCK_MARKER: &str = "\u{200b}";
 const DIFF_BLOCK_END_MARKER: &str = "\u{200c}";
 const INDENT_UNIT: &str = "  ";
+const MESSAGE_PADDING: usize = 2;
+const PROSE_MAX_WIDTH: usize = 72;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolCardState {
@@ -797,10 +799,13 @@ impl ConversationModel {
         self.lines_for_width(if self.opts.compact { 88 } else { 100 })
     }
 
-    /// Build display lines for the actual conversation viewport. Paragraph does
-    /// not wrap styled lines itself, so wrapping follows the full pane width.
+    /// Build display lines for the actual conversation viewport. Prose gets a
+    /// readable cap; code and structured blocks keep the full pane width.
     pub(crate) fn lines_for_width(&self, available_width: usize) -> Vec<Line<'static>> {
         let width = available_width.max(4);
+        let prose_width = width
+            .saturating_sub(MESSAGE_PADDING * 2)
+            .clamp(4, PROSE_MAX_WIDTH);
         let mut lines = Vec::new();
         let gap = !self.opts.compact;
         let blocks = self.semantic_blocks();
@@ -826,7 +831,7 @@ impl ConversationModel {
                 // rule — only the padding below needs adding here.
                 lines.push(Line::from(Span::styled("─".repeat(width), theme::border())));
                 if gap {
-                    lines.push(Line::from(""));
+                    lines.extend([Line::from(""), Line::from("")]);
                 }
             }
             match block {
@@ -866,16 +871,22 @@ impl ConversationModel {
                         lines.push(Line::from(spans));
                     }
                     if gap {
-                        lines.push(Line::from(""));
+                        lines.extend([Line::from(""), Line::from("")]);
                     }
                 }
                 ConversationBlock::AssistantAnswer(p) => {
-                    let parts = render_markdown(&p.text, width);
+                    let parts = render_markdown(&p.text, prose_width);
                     for line in parts {
-                        lines.push(line.style(theme::assistant_answer_style()));
+                        let mut spans = vec![Span::raw(" ".repeat(MESSAGE_PADDING))];
+                        spans.extend(line.spans);
+                        let used = spans.iter().map(Span::width).sum::<usize>();
+                        if used < width {
+                            spans.push(Span::raw(" ".repeat(width - used)));
+                        }
+                        lines.push(Line::from(spans).style(theme::assistant_answer_style()));
                     }
                     if gap {
-                        lines.push(Line::from(""));
+                        lines.extend([Line::from(""), Line::from("")]);
                     }
                 }
                 ConversationBlock::ActiveProgress(p) => {
@@ -896,7 +907,7 @@ impl ConversationModel {
                         ),
                     ]));
                     if gap {
-                        lines.push(Line::from(""));
+                        lines.extend([Line::from(""), Line::from("")]);
                     }
                 }
                 ConversationBlock::ActivityGroup(p) => {
@@ -963,7 +974,7 @@ impl ConversationModel {
                         }
                     }
                     if gap {
-                        lines.push(Line::from(""));
+                        lines.extend([Line::from(""), Line::from("")]);
                     }
                 }
                 ConversationBlock::ApprovalPending(p) => {
@@ -1031,7 +1042,7 @@ impl ConversationModel {
                         }
                     }
                     if gap {
-                        lines.push(Line::from(""));
+                        lines.extend([Line::from(""), Line::from("")]);
                     }
                 }
                 ConversationBlock::PatternNudge { pattern, selected } => {
@@ -1071,7 +1082,7 @@ impl ConversationModel {
                         )));
                     }
                     if gap {
-                        lines.push(Line::from(""));
+                        lines.extend([Line::from(""), Line::from("")]);
                     }
                 }
                 ConversationBlock::Callout(p) => {
@@ -1085,7 +1096,7 @@ impl ConversationModel {
                         lines.push(Line::from(Span::styled(format!("▸ {l}"), st)));
                     }
                     if gap {
-                        lines.push(Line::from(""));
+                        lines.extend([Line::from(""), Line::from("")]);
                     }
                 }
                 ConversationBlock::CodeBlock(p) => {
@@ -1093,7 +1104,7 @@ impl ConversationModel {
                         lines.push(line.style(theme::code_block()));
                     }
                     if gap {
-                        lines.push(Line::from(""));
+                        lines.extend([Line::from(""), Line::from("")]);
                     }
                 }
                 ConversationBlock::DiffBlock(p) => {
@@ -1116,13 +1127,13 @@ impl ConversationModel {
                     ));
                     lines.push(Line::from(DIFF_BLOCK_END_MARKER));
                     if gap {
-                        lines.push(Line::from(""));
+                        lines.extend([Line::from(""), Line::from("")]);
                     }
                 }
                 ConversationBlock::PlanChecklist(p) => {
                     lines.extend(render_plan_checklist(&p, width));
                     if gap {
-                        lines.push(Line::from(""));
+                        lines.extend([Line::from(""), Line::from("")]);
                     }
                 }
                 ConversationBlock::Metadata(p) => {
@@ -1130,7 +1141,7 @@ impl ConversationModel {
                         lines.push(Line::from(Span::styled(l, theme::muted())));
                     }
                     if gap {
-                        lines.push(Line::from(""));
+                        lines.extend([Line::from(""), Line::from("")]);
                     }
                 }
             }
@@ -2529,6 +2540,7 @@ pub struct ConversationLinesWidget<'a> {
     pub tail_lines: &'a [Line<'static>],
     pub scroll: u16,
     pub follow: bool,
+    pub bottom_padding: u16,
 }
 
 fn render_conversation_lines(
@@ -2536,11 +2548,13 @@ fn render_conversation_lines(
     tail_lines: &[Line<'static>],
     scroll_from_bottom: u16,
     follow: bool,
+    bottom_padding: u16,
     area: Rect,
     buf: &mut Buffer,
 ) {
     theme::fill(area, buf, theme::assistant_message());
-    let total = lines.len().saturating_add(tail_lines.len());
+    let content_len = lines.len().saturating_add(tail_lines.len());
+    let total = content_len.saturating_add(bottom_padding as usize);
     let max_scroll = total.saturating_sub(area.height as usize);
     let scroll = if follow {
         max_scroll
@@ -2552,8 +2566,10 @@ fn render_conversation_lines(
         .map(|index| {
             if index < lines.len() {
                 lines[index].clone()
-            } else {
+            } else if index < content_len {
                 tail_lines[index - lines.len()].clone()
+            } else {
+                Line::from("")
             }
         })
         .collect::<Vec<_>>();
@@ -2606,6 +2622,7 @@ impl Widget for ConversationLinesWidget<'_> {
             self.tail_lines,
             self.scroll,
             self.follow,
+            self.bottom_padding,
             area,
             buf,
         );
@@ -2626,7 +2643,15 @@ impl Widget for ConversationWidget<'_> {
             height: area.height.saturating_sub(inset_y),
         };
         let lines = self.model.lines_for_width(area.width as usize);
-        render_conversation_lines(&lines, &[], self.model.scroll, self.model.follow, area, buf);
+        render_conversation_lines(
+            &lines,
+            &[],
+            self.model.scroll,
+            self.model.follow,
+            0,
+            area,
+            buf,
+        );
     }
 }
 
@@ -3195,7 +3220,7 @@ mod tests {
             .iter()
             .filter(|line| line.spans.iter().any(|span| span.content.contains("word")))
             .count();
-        assert_eq!(answer_lines, 1);
+        assert_eq!(answer_lines, 2);
     }
 
     #[test]

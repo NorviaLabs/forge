@@ -7,7 +7,7 @@ pub const MIN_WIDTH: u16 = 80;
 pub const MIN_HEIGHT: u16 = 18;
 const CONTENT_WIDTH_PERCENT: u32 = 95;
 /// Composer input band (visual lines + chrome), capped for normal chat.
-pub const MAX_COMPOSER_INPUT_H: u16 = 8;
+pub const MAX_COMPOSER_INPUT_H: u16 = 10;
 /// Bottom theme picker dock: fits built-in themes without scrolling; scrolls for more.
 pub const THEME_DOCK_H: u16 = 12;
 

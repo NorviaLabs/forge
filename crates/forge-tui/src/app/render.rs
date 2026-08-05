@@ -15,7 +15,7 @@ fn composer_input_height(input: &InputModel, area: ratatui::layout::Rect) -> u16
         .saturating_sub(gutter_prefix_width(ACTIVE_GLYPH))
         .max(1);
     // +2 chrome/gutter band, +1 chip row under the text.
-    (input.visual_lines_for_width(content_width) + 3).clamp(4, crate::layout::MAX_COMPOSER_INPUT_H)
+    (input.visual_lines_for_width(content_width) + 3).clamp(5, crate::layout::MAX_COMPOSER_INPUT_H)
 }
 
 impl TuiApp {
@@ -290,6 +290,11 @@ impl TuiApp {
                     tail_lines: &live_lines,
                     scroll: self.conversation_view.scroll,
                     follow: self.conversation_view.follow,
+                    bottom_padding: if self.session.pending_hitl().is_some() {
+                        0
+                    } else {
+                        input_h.saturating_add(1)
+                    },
                 },
                 conversation_area,
             );
@@ -820,7 +825,7 @@ mod tests {
                 .join(" "),
         );
 
-        assert_eq!(composer_input_height(&input, Rect::new(0, 0, 120, 40)), 8);
+        assert_eq!(composer_input_height(&input, Rect::new(0, 0, 120, 40)), 10);
     }
 
     #[test]

@@ -24,7 +24,7 @@ pub struct InputModel {
 }
 
 const LARGE_PASTE_CHAR_THRESHOLD: usize = 1000;
-const MAX_VISIBLE_ROWS: usize = 6;
+const MAX_VISIBLE_ROWS: usize = 8;
 const CURSOR_GLYPH: &str = "▏";
 
 #[derive(Debug, Clone)]
