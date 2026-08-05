@@ -575,9 +575,15 @@ async fn tui09_narrow_frame_still_shows_model_or_ctx() {
         text.contains("Forge"),
         "narrow frame missing app identity:\n{text}"
     );
+    // Model/vendor live once, in the footer chip row — never duplicated in
+    // the narrow header chrome.
     assert!(
-        !text.contains("mymodel") && !text.contains("mock") && !text.contains("ctx"),
-        "narrow default chrome duplicated secondary metadata:\n{text}"
+        text.contains("[mymodel]"),
+        "model chip should render in the footer:\n{text}"
+    );
+    assert!(
+        !text.contains("ctx"),
+        "narrow chrome must not duplicate ctx/usage metadata:\n{text}"
     );
 }
 
