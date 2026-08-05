@@ -182,12 +182,15 @@ async fn final_shell_rendering_matrix_covers_v31_states_without_obsolete_chrome(
     scenarios.push(("run failed", dir, app, vec!["Failed", "Exit status: 101"]));
 
     let (dir, mut app) = focus_test_app().await;
-    app.open_approval_card(direct_hitl_payload("matrix-approval", "src/main.rs"));
+    set_pending_hitl(
+        &mut app,
+        direct_hitl_payload("matrix-approval", "src/main.rs"),
+    );
     scenarios.push((
         "approval",
         dir,
         app,
-        vec!["Approval required", "Allow once", "Deny"],
+        vec!["approval · read_file", "type yes | no | remember"],
     ));
 
     let (dir, app) = focus_test_app().await;

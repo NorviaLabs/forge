@@ -332,7 +332,6 @@ enum HitTarget {
     ActivitySummary,
     VisibleControl(SemanticCommand),
     Composer,
-    OverlayAction(OverlayAction),
     /// The persistent conversation sidebar. Kept distinct from `Pane` since
     /// there's no `FocusBlock` for it — used only to route wheel-scroll
     /// events to the conversation regardless of what the center pane shows.
@@ -494,6 +493,9 @@ struct ConversationRenderKey {
     slash_mode: bool,
     status: forge_types::TaskLifecycle,
     theme_id: String,
+    /// Pending HITL request identity, so the inline approval item rebuilds
+    /// when a new request replaces the previous one while still `Waiting`.
+    pending_hitl: Option<String>,
 }
 
 struct ConversationRenderCache {
@@ -659,10 +661,6 @@ pub struct TuiApp {
     pub(crate) session: AgentSession,
     input: InputModel,
     pub(crate) overlay: Option<Overlay>,
-    /// Pending HITL decision, rendered as an inline card docked at the
-    /// bottom of the scrollback rather than folded into `overlay` — an
-    /// approval decision is not a distinct application mode.
-    pub(crate) approval_card: Option<ApprovalCardState>,
     exit: ExitState,
     startup_resume: StartupResumeState,
     busy_state: BusyState,
