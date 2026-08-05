@@ -127,6 +127,7 @@ impl TuiApp {
                 allowed: HashSet::new(),
                 pattern_allow: Vec::new(),
                 menu: ApprovalMenuState::default(),
+                pattern_nudge: None,
             },
             toast: ToastState { current: None },
             conversation_view: ConversationViewState {
