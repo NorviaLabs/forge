@@ -3,6 +3,7 @@
 //! Split out of `app/tests/mod.rs` per #19. Moved verbatim.
 
 use super::prelude::*;
+use crate::overlays::{handle_overlay_key, Key as OverlayKey, ModelItem, OverlayAction};
 
 #[tokio::test]
 async fn connect_opencode_go_opens_api_key_overlay() {
@@ -260,6 +261,222 @@ async fn model_selection_with_explicit_route_never_crosses_wires_between_openai_
 
     assert_eq!(app.connect.profile.as_deref(), Some("openai"));
     assert_eq!(app.runtime.model_label, "openai/gpt-5.6");
+}
+
+/// A model picker overlay open on the Models column with a single,
+/// deterministic catalog row — avoids depending on `model_picker_items`'
+/// live/cached catalog fetch for these tests.
+fn model_picker_overlay_with(model: &str, profile_id: &str) -> Overlay {
+    Overlay::connect_model_open(
+        vec![],
+        vec![ModelItem {
+            provider: "native".into(),
+            model: model.into(),
+            profile_id: Some(profile_id.into()),
+            source: forge_connect::CatalogSource::Default,
+            route_label: profile_id.into(),
+        }],
+        Some(profile_id),
+        model,
+        ReasoningEffort::default(),
+        ConnectModelColumn::Models,
+    )
+}
+
+async fn model_switch_test_app(cred_dir: &tempfile::TempDir) -> TuiApp {
+    let (_dir, session) = test_session().await;
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "openai/gpt-5.6".into(),
+            provider: "native".into(),
+            cwd: PathBuf::from("."),
+            version: "0.6.1".into(),
+            startup_notices: Vec::new(),
+            validation_command: None,
+            file_icons: FileIconMode::Unicode,
+            mouse_capture: true,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+    app.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
+    app.connect
+        .store
+        .set_api_key("openai", "sk-test-openai-credential")
+        .unwrap();
+    app.connect.profile = Some("openai".into());
+    app.session.set_active_model("openai/gpt-5.6");
+    app
+}
+
+#[tokio::test]
+async fn selecting_the_current_model_is_a_no_op_and_keeps_the_same_route() {
+    let cred_dir = tempfile::tempdir().unwrap();
+    let mut app = model_switch_test_app(&cred_dir).await;
+
+    app.overlay = Some(model_picker_overlay_with("openai/gpt-5.6", "openai"));
+    let action = handle_overlay_key(app.overlay.as_mut().unwrap(), OverlayKey::Enter);
+    app.apply_overlay_action(action).await.unwrap();
+
+    assert_eq!(app.connect.profile.as_deref(), Some("openai"));
+    assert_eq!(app.runtime.model_label, "openai/gpt-5.6");
+    assert_eq!(app.session.active_model, "openai/gpt-5.6");
+}
+
+#[tokio::test]
+async fn switching_to_another_model_updates_label_route_and_session_together() {
+    // Regression for "openai-codex/luna is not found": reach the row via a
+    // *partial* filter (a substring of the full id), exactly as the picker's
+    // search box is used in practice, and confirm the complete id survives.
+    let cred_dir = tempfile::tempdir().unwrap();
+    let mut app = model_switch_test_app(&cred_dir).await;
+
+    app.overlay = Some(Overlay::connect_model_open(
+        vec![],
+        vec![ModelItem {
+            provider: "native".into(),
+            model: "openai/gpt-5.6-luna".into(),
+            profile_id: Some("openai".into()),
+            source: forge_connect::CatalogSource::Default,
+            route_label: "openai".into(),
+        }],
+        Some("openai"),
+        "openai/gpt-5.6",
+        ReasoningEffort::default(),
+        ConnectModelColumn::Models,
+    ));
+    for c in "luna".chars() {
+        handle_overlay_key(app.overlay.as_mut().unwrap(), OverlayKey::Char(c));
+    }
+    let action = handle_overlay_key(app.overlay.as_mut().unwrap(), OverlayKey::Enter);
+    assert!(
+        matches!(&action, OverlayAction::SelectModel { model, .. } if model == "openai/gpt-5.6-luna"),
+        "expected a resolved SelectModel action, got {action:?}"
+    );
+    app.apply_overlay_action(action).await.unwrap();
+
+    assert_eq!(app.connect.profile.as_deref(), Some("openai"));
+    assert_eq!(app.runtime.model_label, "openai/gpt-5.6-luna");
+    assert_eq!(app.session.active_model, "openai/gpt-5.6-luna");
+}
+
+#[tokio::test]
+async fn changing_effort_after_a_model_switch_persists_the_new_value() {
+    let cred_dir = tempfile::tempdir().unwrap();
+    let mut app = model_switch_test_app(&cred_dir).await;
+
+    app.overlay = Some(model_picker_overlay_with("openai/gpt-5.6-luna", "openai"));
+    let action = handle_overlay_key(app.overlay.as_mut().unwrap(), OverlayKey::Enter);
+    app.apply_overlay_action(action).await.unwrap();
+
+    app.apply_overlay_action(OverlayAction::SelectEffort(ReasoningEffort::High))
+        .await
+        .unwrap();
+
+    assert_eq!(app.reasoning_effort.value, ReasoningEffort::High);
+    app.persist_selection();
+    assert_eq!(
+        app.connect.store.last_effort().unwrap().as_deref(),
+        Some("high")
+    );
+}
+
+#[tokio::test]
+async fn cancelling_at_the_models_column_leaves_active_selection_untouched() {
+    let cred_dir = tempfile::tempdir().unwrap();
+    let mut app = model_switch_test_app(&cred_dir).await;
+    let (before_label, before_profile) =
+        (app.runtime.model_label.clone(), app.connect.profile.clone());
+
+    app.overlay = Some(model_picker_overlay_with("openai/gpt-5.6-luna", "openai"));
+    for c in "luna".chars() {
+        handle_overlay_key(app.overlay.as_mut().unwrap(), OverlayKey::Char(c));
+    }
+    let action = handle_overlay_key(app.overlay.as_mut().unwrap(), OverlayKey::Esc);
+    assert_eq!(action, OverlayAction::Close);
+    app.apply_overlay_action(action).await.unwrap();
+
+    assert!(app.overlay.is_none());
+    assert_eq!(app.runtime.model_label, before_label);
+    assert_eq!(app.connect.profile, before_profile);
+}
+
+#[tokio::test]
+async fn cancelling_at_the_effort_column_leaves_active_selection_untouched() {
+    let cred_dir = tempfile::tempdir().unwrap();
+    let mut app = model_switch_test_app(&cred_dir).await;
+    let before_effort = app.reasoning_effort.value;
+
+    app.overlay = Some(Overlay::connect_model_open(
+        vec![],
+        vec![],
+        Some("openai"),
+        "openai/gpt-5.6",
+        ReasoningEffort::default(),
+        ConnectModelColumn::Effort,
+    ));
+    let action = handle_overlay_key(app.overlay.as_mut().unwrap(), OverlayKey::Esc);
+    assert_eq!(action, OverlayAction::Close);
+    app.apply_overlay_action(action).await.unwrap();
+
+    assert!(app.overlay.is_none());
+    assert_eq!(app.reasoning_effort.value, before_effort);
+}
+
+#[tokio::test]
+async fn restart_restores_the_persisted_selection_via_restore_saved_auth() {
+    let cred_dir = tempfile::tempdir().unwrap();
+    let mut app = model_switch_test_app(&cred_dir).await;
+
+    app.overlay = Some(model_picker_overlay_with("openai/gpt-5.6-luna", "openai"));
+    let action = handle_overlay_key(app.overlay.as_mut().unwrap(), OverlayKey::Enter);
+    app.apply_overlay_action(action).await.unwrap();
+    app.apply_overlay_action(OverlayAction::SelectEffort(ReasoningEffort::High))
+        .await
+        .unwrap();
+    app.persist_selection();
+
+    let (_dir2, session2) = test_session().await;
+    let restarted = TuiApp::new(
+        session2,
+        TuiRuntimeConfig {
+            model_label: String::new(),
+            provider: "native".into(),
+            cwd: PathBuf::from("."),
+            version: "0.6.1".into(),
+            startup_notices: Vec::new(),
+            validation_command: None,
+            file_icons: FileIconMode::Unicode,
+            mouse_capture: true,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+    let mut restarted = restarted;
+    restarted.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
+    restarted
+        .connect
+        .store
+        .set_api_key("openai", "sk-test-openai-credential")
+        .unwrap();
+    let restarted = restarted.restore_saved_auth();
+
+    assert_eq!(restarted.connect.profile.as_deref(), Some("openai"));
+    assert_eq!(restarted.runtime.model_label, "openai/gpt-5.6-luna");
+    assert_eq!(restarted.reasoning_effort.value, ReasoningEffort::High);
+    assert_eq!(restarted.session.active_model, "openai/gpt-5.6-luna");
+}
+
+#[tokio::test]
+async fn first_request_after_switching_models_uses_the_new_complete_id() {
+    let cred_dir = tempfile::tempdir().unwrap();
+    let mut app = model_switch_test_app(&cred_dir).await;
+
+    app.overlay = Some(model_picker_overlay_with("openai/gpt-5.6-luna", "openai"));
+    let action = handle_overlay_key(app.overlay.as_mut().unwrap(), OverlayKey::Enter);
+    app.apply_overlay_action(action).await.unwrap();
+
+    let request = app.session.build_model_request();
+    assert_eq!(request.model, "openai/gpt-5.6-luna");
 }
 
 #[tokio::test]

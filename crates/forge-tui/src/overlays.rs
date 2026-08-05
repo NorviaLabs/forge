@@ -1252,20 +1252,29 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                     // Every row already names one specific route (single-route
                     // groups render as one row; multi-route groups render one
                     // row per route) — no auto-pick needed, the selected row
-                    // *is* the explicit route choice.
+                    // *is* the explicit route choice. `model_selected` is
+                    // always reset to 0 on every input-changing keystroke and
+                    // clamped on navigation, so `chosen_route` is `None` iff
+                    // `filtered`/`rows` is genuinely empty — never merely
+                    // because the typed substring differs from the row's full
+                    // canonical id. Trust the resolved row whenever there is
+                    // one; only fall back to free text when there truly is no
+                    // catalog match at all (previously this compared the raw
+                    // filter text against the full id, which almost never
+                    // matched and silently discarded a correct selection —
+                    // see `openai-codex/luna is not found` regression).
                     let chosen_route = rows
                         .get(*model_selected)
                         .and_then(|row| flat_row_item(&filtered, row));
-                    let typed = model_input.trim();
-                    if !typed.is_empty()
-                        && !chosen_route.is_some_and(|m| m.model.eq_ignore_ascii_case(typed))
-                    {
-                        // No catalog match for the typed text — let the caller
-                        // re-dispatch it as a free-text `/model <arg>` for
-                        // advanced users naming an unlisted model.
-                        return OverlayAction::RunCommand(format!("/model {typed}"));
-                    }
                     let Some(route) = chosen_route else {
+                        let typed = model_input.trim();
+                        if !typed.is_empty() {
+                            // No catalog match for the typed text — let the
+                            // caller re-dispatch it as a free-text
+                            // `/model <arg>` for advanced users naming an
+                            // unlisted model.
+                            return OverlayAction::RunCommand(format!("/model {typed}"));
+                        }
                         return OverlayAction::None;
                     };
                     // Models is a standalone view now — the app applies the
@@ -3184,6 +3193,60 @@ mod tests {
             }
             _ => panic!("expected model select"),
         }
+    }
+
+    fn hyphenated_model_item() -> ModelItem {
+        ModelItem {
+            provider: "native".into(),
+            model: "openai-codex/gpt-5.6-luna".into(),
+            profile_id: Some("openai_codex".into()),
+            source: forge_connect::CatalogSource::Default,
+            route_label: "OpenAI Codex".into(),
+        }
+    }
+
+    #[test]
+    fn model_partial_filter_match_selects_the_highlighted_catalog_row_not_free_text() {
+        // Regression for "openai-codex/luna is not found": typing a substring
+        // of a real catalog id must confirm the already-highlighted row, not
+        // discard it and re-dispatch the raw substring as free text.
+        let mut overlay = model_overlay(vec![hyphenated_model_item()], ConnectModelColumn::Models);
+        for c in "luna".chars() {
+            handle_overlay_key(&mut overlay, Key::Char(c));
+        }
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::SelectModel {
+                provider: "native".into(),
+                model: "openai-codex/gpt-5.6-luna".into(),
+                profile_id: Some("openai_codex".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn model_no_catalog_match_falls_back_to_free_text() {
+        let mut overlay = model_overlay(vec![hyphenated_model_item()], ConnectModelColumn::Models);
+        for c in "totally-unknown-model".chars() {
+            handle_overlay_key(&mut overlay, Key::Char(c));
+        }
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::RunCommand("/model totally-unknown-model".into())
+        );
+    }
+
+    #[test]
+    fn model_empty_filter_selects_current_row_on_enter() {
+        let mut overlay = model_overlay(vec![hyphenated_model_item()], ConnectModelColumn::Models);
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::SelectModel {
+                provider: "native".into(),
+                model: "openai-codex/gpt-5.6-luna".into(),
+                profile_id: Some("openai_codex".into()),
+            }
+        );
     }
 
     #[test]
