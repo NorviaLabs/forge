@@ -13,6 +13,7 @@ mod git_status;
 mod history;
 mod interactive_terminal;
 mod layout;
+mod markdown;
 mod overlays;
 mod run;
 mod source_viewer;
