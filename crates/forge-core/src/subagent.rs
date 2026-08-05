@@ -94,6 +94,7 @@ impl AgentSession {
         Ok(AgentSession {
             session_id,
             messages: vec![Message {
+                outcome: Default::default(),
                 role: MessageRole::System,
                 content: system,
                 tool_call_id: None,
@@ -146,6 +147,7 @@ impl AgentSession {
         let context = forge_context::ContextEngine::new(workspace.clone(), session_id);
         let system = assemble_system_prompt(&context.load_agents_md(), &context.load_skills());
         let system_message = Message {
+            outcome: Default::default(),
             role: MessageRole::System,
             content: system,
             tool_call_id: None,

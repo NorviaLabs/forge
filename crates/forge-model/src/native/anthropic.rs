@@ -392,6 +392,7 @@ mod tests {
                 Message::new(MessageRole::System, "system"),
                 Message::new(MessageRole::User, "hello"),
                 Message {
+                    outcome: Default::default(),
                     role: MessageRole::Assistant,
                     content: String::new(),
                     tool_call_id: None,
@@ -405,6 +406,7 @@ mod tests {
                     }],
                 },
                 Message {
+                    outcome: Default::default(),
                     role: MessageRole::Tool,
                     content: "contents".into(),
                     tool_call_id: Some("tool-1".into()),

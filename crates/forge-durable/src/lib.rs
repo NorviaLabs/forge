@@ -579,6 +579,7 @@ impl Journal {
                             || !response.tool_calls.is_empty()
                         {
                             state.messages.push(Message {
+                                outcome: Default::default(),
                                 role: MessageRole::Assistant,
                                 content: response.text.clone(),
                                 tool_call_id: None,
@@ -603,6 +604,7 @@ impl Journal {
                     if let Ok(p) = serde_json::from_value::<ToolResultPayload>(payload.clone()) {
                         open_intents.remove(&p.call_id);
                         state.messages.push(Message {
+                            outcome: p.output.effective_outcome(),
                             role: MessageRole::Tool,
                             content: p.output.content.clone(),
                             tool_call_id: Some(p.call_id.clone()),
@@ -787,6 +789,7 @@ mod tests {
             sid,
             &call,
             &ToolOutput {
+                outcome: Default::default(),
                 content: "ok".into(),
                 is_error: false,
                 exit_code: None,
@@ -834,6 +837,7 @@ mod tests {
                 sid,
                 &response.tool_calls[0],
                 &ToolOutput {
+                    outcome: Default::default(),
                     content: "contents".into(),
                     is_error: false,
                     exit_code: None,

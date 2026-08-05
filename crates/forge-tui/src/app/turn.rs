@@ -89,6 +89,7 @@ impl TuiApp {
         let text = self.stream.preview.trim_end().to_string();
         if !text.is_empty() {
             self.session.messages.push(Message {
+                outcome: Default::default(),
                 role: MessageRole::Assistant,
                 content: format!("{text}\n\n[Interrupted: {error}]"),
                 tool_call_id: None,
