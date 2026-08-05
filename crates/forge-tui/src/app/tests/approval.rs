@@ -1,9 +1,7 @@
-//! HITL approval overlay and remember-session tests.
-//!
-//! Split out of `app/tests/mod.rs` per #19. Moved verbatim.
+//! Inline HITL approval (transcript item + typed composer resolution) and
+//! remember-session tests.
 
 use super::prelude::*;
-use crate::overlays::ApprovalStage;
 
 fn bash_hitl_payload(call_id: &str, command: &str) -> HitlPayload {
     HitlPayload {
@@ -14,27 +12,37 @@ fn bash_hitl_payload(call_id: &str, command: &str) -> HitlPayload {
     }
 }
 
-#[tokio::test]
-async fn edge_approval_at_80x24_keeps_required_fields_and_actions() {
-    let (_dir, mut app) = focus_test_app().await;
-    app.open_approval_card(direct_hitl_payload("call-1", "src/main.rs"));
+async fn submit_line(app: &mut TuiApp, line: &str) {
+    app.input.set_text(line);
+    app.submit_composer_message().await.unwrap();
+}
 
-    let rendered = render_app_text(&mut app, 80, 24);
-    assert!(rendered.contains("Approval required"), "{rendered}");
-    assert!(rendered.contains("Direct"), "{rendered}");
-    assert!(rendered.contains("read_file"), "{rendered}");
-    assert!(rendered.contains("Working directory"), "{rendered}");
-    assert!(rendered.contains("test approval"), "{rendered}");
-    assert!(rendered.contains("Allow once"), "{rendered}");
-    assert!(rendered.contains("Deny"), "{rendered}");
+#[tokio::test]
+async fn inline_approval_renders_full_payload_in_sidebar() {
+    let (_dir, mut app) = focus_test_app().await;
+    set_pending_hitl(
+        &mut app,
+        HitlPayload {
+            call_id: "call-1".into(),
+            tool: "bash".into(),
+            args_redacted: json!({"command": "git push -u origin main"}),
+            reason: "test approval".into(),
+        },
+    );
+
+    let rendered = render_app_text(&mut app, 100, 30);
+    assert!(rendered.contains("approval · bash"), "{rendered}");
+    assert!(rendered.contains("git push -u origin main"), "{rendered}");
+    assert!(rendered.contains("cwd:"), "{rendered}");
+    assert!(rendered.contains("env: inherited"), "{rendered}");
     assert!(
-        rendered.contains("Remember this exact Direct invocation"),
+        rendered.contains("yes | no | remember | always | no <note>"),
         "{rendered}"
     );
 }
 
 #[tokio::test]
-async fn approval_overlay_preserves_underlying_workspace() {
+async fn approval_leaves_underlying_workspace_untouched() {
     let (dir, mut app) = focus_test_app().await;
     let path = dir.path().join("main.rs");
     fs::write(&path, "fn main() {}\n").unwrap();
@@ -52,9 +60,8 @@ async fn approval_overlay_preserves_underlying_workspace() {
         },
     );
 
-    app.maybe_open_hitl();
-
-    assert!(app.approval_card.is_some());
+    let rendered = render_app_text(&mut app, 100, 30);
+    assert!(rendered.contains("approval · bash"), "{rendered}");
     assert_eq!(app.workspace_navigation, before);
     assert!(app.activity_summary().is_none());
     assert_eq!(
@@ -64,15 +71,12 @@ async fn approval_overlay_preserves_underlying_workspace() {
 }
 
 #[tokio::test]
-async fn approval_direct_allow_once_resolves_without_remembering() {
+async fn typing_yes_approves_once_without_remembering() {
     let (dir, mut app) = focus_test_app().await;
     fs::write(dir.path().join("allowed.txt"), "ok").unwrap();
     set_pending_hitl(&mut app, direct_hitl_payload("direct-once", "allowed.txt"));
-    app.maybe_open_hitl();
 
-    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
-        .await
-        .unwrap();
+    submit_line(&mut app, "yes").await;
 
     assert!(app.session.pending_hitl().is_none());
     assert!(app.hitl_session.allowed.is_empty());
@@ -84,16 +88,13 @@ async fn approval_direct_allow_once_resolves_without_remembering() {
 }
 
 #[tokio::test]
-async fn approval_remembered_direct_invocation_matches_exact_identity() {
+async fn typing_remember_approves_and_matches_exact_identity() {
     let (dir, mut app) = focus_test_app().await;
     fs::write(dir.path().join("remember.txt"), "ok").unwrap();
     let payload = direct_hitl_payload("remember", "remember.txt");
     set_pending_hitl(&mut app, payload.clone());
-    app.maybe_open_hitl();
 
-    app.handle_key(press(KeyCode::Char('s'), KeyModifiers::NONE))
-        .await
-        .unwrap();
+    submit_line(&mut app, "remember").await;
 
     let identity = app.approval_identity_for_payload(&payload).unwrap();
     assert!(app.hitl_session.allowed.contains(&identity));
@@ -129,15 +130,13 @@ async fn approval_remembered_direct_invocation_matches_exact_identity() {
 }
 
 #[tokio::test]
-async fn approval_remembered_direct_expires_with_session() {
+async fn remembered_approval_expires_with_session() {
     let (dir, mut app) = focus_test_app().await;
     fs::write(dir.path().join("session.txt"), "ok").unwrap();
     let payload = direct_hitl_payload("session", "session.txt");
     set_pending_hitl(&mut app, payload.clone());
-    app.maybe_open_hitl();
-    app.handle_key(press(KeyCode::Char('s'), KeyModifiers::NONE))
-        .await
-        .unwrap();
+
+    submit_line(&mut app, "remember").await;
 
     let next_session = session_for_workspace(dir.path()).await;
     let next_app = TuiApp::new(
@@ -163,25 +162,20 @@ async fn approval_remembered_direct_expires_with_session() {
 }
 
 #[tokio::test]
-async fn approval_shell_mode_cannot_be_remembered() {
+async fn shell_approval_cannot_be_remembered() {
     let (_dir, mut app) = focus_test_app().await;
-    set_pending_hitl(
-        &mut app,
-        HitlPayload {
-            call_id: "shell".into(),
-            tool: "bash".into(),
-            args_redacted: json!({"command": "git push origin main"}),
-            reason: "test approval".into(),
-        },
-    );
-    app.maybe_open_hitl();
+    set_pending_hitl(&mut app, bash_hitl_payload("shell", "git push origin main"));
 
-    let Some(card) = &app.approval_card else {
-        panic!("expected approval card");
-    };
-    let approval = &card.approval;
-    assert_eq!(approval.mode, ApprovalExecutionMode::Shell);
-    assert!(!approval.remember_eligible);
+    submit_line(&mut app, "remember").await;
+
+    // Ineligible verb: warned, nothing resolved.
+    assert!(app.session.pending_hitl().is_some());
+    assert!(app.hitl_session.allowed.is_empty());
+    assert!(
+        app.feedback.text.contains("cannot be remembered"),
+        "{}",
+        app.feedback.text
+    );
     assert_eq!(
         app.approval_identity_for_payload(app.session.pending_hitl().unwrap()),
         None
@@ -189,25 +183,35 @@ async fn approval_shell_mode_cannot_be_remembered() {
 }
 
 #[tokio::test]
-async fn approval_escape_denies_and_underlying_commands_are_blocked() {
+async fn unrecognized_line_preserves_text_and_keeps_pending() {
     let (dir, mut app) = focus_test_app().await;
     fs::write(dir.path().join("blocked.txt"), "ok").unwrap();
-    set_pending_hitl(&mut app, direct_hitl_payload("esc", "blocked.txt"));
-    app.maybe_open_hitl();
-    let before_history = app.workspace_navigation.clone();
+    set_pending_hitl(&mut app, direct_hitl_payload("stale", "blocked.txt"));
 
-    app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
-        .await
-        .unwrap();
-    assert!(app.input.text.is_empty());
+    app.input.set_text("run the tests instead");
+    app.submit_composer_message().await.unwrap();
+
+    // The operator's text survives so they can edit it into a valid answer.
+    assert_eq!(app.input.text, "run the tests instead");
     assert!(app.session.pending_hitl().is_some());
+    assert!(
+        app.feedback
+            .text
+            .contains("type yes | no | remember | always"),
+        "{}",
+        app.feedback.text
+    );
+}
 
-    app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
-        .await
-        .unwrap();
+#[tokio::test]
+async fn typing_no_denies() {
+    let (dir, mut app) = focus_test_app().await;
+    fs::write(dir.path().join("blocked.txt"), "ok").unwrap();
+    set_pending_hitl(&mut app, direct_hitl_payload("deny", "blocked.txt"));
+
+    submit_line(&mut app, "no").await;
 
     assert!(app.session.pending_hitl().is_none());
-    assert_eq!(app.workspace_navigation, before_history);
     assert!(app
         .session
         .messages
@@ -221,198 +225,14 @@ async fn approval_escape_denies_and_underlying_commands_are_blocked() {
 }
 
 #[tokio::test]
-async fn approval_duplicate_confirmation_is_idempotent() {
-    let (dir, mut app) = focus_test_app().await;
-    fs::write(dir.path().join("dup.txt"), "ok").unwrap();
-    set_pending_hitl(&mut app, direct_hitl_payload("dup", "dup.txt"));
-    app.maybe_open_hitl();
-
-    app.resolve_hitl_overlay(HitlDecision::Approve, false)
-        .await
-        .unwrap();
-    app.resolve_hitl_overlay(HitlDecision::Approve, false)
-        .await
-        .unwrap();
-
-    let successful_tool_messages = app
-        .session
-        .messages
-        .iter()
-        .filter(|message| message.content == "ok")
-        .count();
-    assert_eq!(successful_tool_messages, 1);
-}
-
-#[tokio::test]
-async fn approval_overlay_80x24_renders_actions_and_redacts_secrets() {
-    let (_dir, mut app) = focus_test_app().await;
-    set_pending_hitl(
-        &mut app,
-        HitlPayload {
-            call_id: "secret".into(),
-            tool: "read_file".into(),
-            args_redacted: json!({"path": "config.txt", "api_key": "[REDACTED]"}),
-            reason: "secret test".into(),
-        },
-    );
-    app.maybe_open_hitl();
-
-    let rendered = render_app_text(&mut app, 80, 24);
-
-    assert!(rendered.contains("Approval required"), "{rendered}");
-    assert!(rendered.contains("Mode: Direct"), "{rendered}");
-    assert!(rendered.contains("Executable: read_file"), "{rendered}");
-    assert!(rendered.contains("Working directory:"), "{rendered}");
-    assert!(rendered.contains("[Allow once]"), "{rendered}");
-    assert!(rendered.contains("[Deny]"), "{rendered}");
-    assert!(rendered.contains("[REDACTED]"), "{rendered}");
-    assert!(
-        !rendered.contains("Remember this exact Direct invocation"),
-        "{rendered}"
-    );
-    assert!(
-        !rendered.contains("[Allow pattern]"),
-        "a redacted call must not offer to persist a pattern derived from it: {rendered}"
-    );
-}
-
-#[tokio::test]
-async fn allow_pattern_is_offered_for_shell_commands_unlike_remember() {
-    // Shell-mode calls can never be remembered exactly (every invocation
-    // differs in its trailing args), but a command-prefix pattern makes
-    // sense for exactly that case — so `AllowPattern` must be offered here
-    // even though `RememberDirect` isn't.
-    let (_dir, mut app) = focus_test_app().await;
-    set_pending_hitl(&mut app, bash_hitl_payload("call-1", "cargo test --all"));
-    app.maybe_open_hitl();
-
-    let rendered = render_app_text(&mut app, 100, 30);
-    assert!(rendered.contains("[Allow pattern]"), "{rendered}");
-    assert!(rendered.contains("bash(cargo test *)"), "{rendered}");
-    assert!(!rendered.contains("[Remember exact Direct]"), "{rendered}");
-}
-
-#[tokio::test]
-async fn allow_pattern_confirmation_shows_the_literal_pattern_before_committing() {
-    let (_dir, mut app) = focus_test_app().await;
-    set_pending_hitl(&mut app, bash_hitl_payload("call-1", "cargo test --all"));
-    app.maybe_open_hitl();
-
-    app.handle_key(press(KeyCode::Char('p'), KeyModifiers::NONE))
-        .await
-        .unwrap();
-
-    assert!(matches!(
-        app.approval_card.as_ref().unwrap().stage,
-        ApprovalStage::ConfirmPattern
-    ));
-    let rendered = render_app_text(&mut app, 100, 30);
-    assert!(rendered.contains("Add this rule?"), "{rendered}");
-    assert!(rendered.contains("bash(cargo test *)"), "{rendered}");
-    // Still pending — the confirmation step must not itself resolve anything.
-    assert!(app.session.pending_hitl().is_some());
-}
-
-#[tokio::test]
-async fn allow_pattern_esc_cancels_confirmation_without_resolving() {
-    let (_dir, mut app) = focus_test_app().await;
-    set_pending_hitl(&mut app, bash_hitl_payload("call-1", "cargo test --all"));
-    app.maybe_open_hitl();
-    app.handle_key(press(KeyCode::Char('p'), KeyModifiers::NONE))
-        .await
-        .unwrap();
-
-    app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
-        .await
-        .unwrap();
-
-    assert!(matches!(
-        app.approval_card.as_ref().unwrap().stage,
-        ApprovalStage::Decide
-    ));
-    assert!(app.session.pending_hitl().is_some());
-    assert!(app.hitl_session.pattern_allow.is_empty());
-}
-
-#[tokio::test]
-async fn allow_pattern_confirm_approves_and_auto_allows_matching_calls_this_session() {
-    // Confirming writes the pattern to the personal permissions file too
-    // (`forge_config::append_user_allow_rule`), which resolves via
-    // `dirs::config_dir()`. Redirect that to a throwaway `HOME` so the test
-    // never touches the developer's real config directory.
-    let _env_guard = ScopedEnvGuard::new(&["HOME", "XDG_CONFIG_HOME"]);
-    let home_dir = TempDir::new().unwrap();
-    std::env::set_var("HOME", home_dir.path());
-
-    let (_dir, mut app) = focus_test_app().await;
-    set_pending_hitl(&mut app, bash_hitl_payload("call-1", "cargo test --all"));
-    app.maybe_open_hitl();
-
-    app.handle_key(press(KeyCode::Char('p'), KeyModifiers::NONE))
-        .await
-        .unwrap();
-    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
-        .await
-        .unwrap();
-
-    assert!(app.session.pending_hitl().is_none());
-    assert!(app.approval_card.is_none());
-    assert_eq!(app.hitl_session.pattern_allow.len(), 1);
-    assert_eq!(app.hitl_session.pattern_allow[0].raw, "bash(cargo test *)");
-    let persisted = forge_config::user_permissions_path()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .expect("pattern should be persisted to the redirected personal permissions file");
-    assert!(persisted.contains("bash(cargo test *)"), "{persisted}");
-
-    // A second, differently-worded but matching call auto-approves without
-    // opening a new card — the pattern covers it, not just the exact call.
-    set_pending_hitl(
-        &mut app,
-        bash_hitl_payload("call-2", "cargo test --release"),
-    );
-    app.maybe_open_hitl();
-    assert!(
-        app.approval_card.is_none(),
-        "a call matching the session pattern rule must not reopen the card"
-    );
-    app.drain_auto_hitl().await.unwrap();
-    assert!(app.session.pending_hitl().is_none());
-
-    // But a non-matching command on the same tool still gates normally.
-    set_pending_hitl(&mut app, bash_hitl_payload("call-3", "rm -rf /"));
-    app.maybe_open_hitl();
-    assert!(app.approval_card.is_some());
-}
-
-#[tokio::test]
-async fn deny_with_feedback_reaches_the_agent_as_tool_result_content() {
+async fn typing_no_with_feedback_reaches_the_agent_as_tool_result_content() {
     let (dir, mut app) = focus_test_app().await;
     fs::write(dir.path().join("blocked.txt"), "ok").unwrap();
     set_pending_hitl(&mut app, direct_hitl_payload("call-1", "blocked.txt"));
-    app.maybe_open_hitl();
 
-    app.handle_key(press(KeyCode::Char('f'), KeyModifiers::NONE))
-        .await
-        .unwrap();
-    assert!(matches!(
-        app.approval_card.as_ref().unwrap().stage,
-        ApprovalStage::DenyFeedback { .. }
-    ));
-
-    for ch in "use --dry-run instead".chars() {
-        app.handle_key(press(KeyCode::Char(ch), KeyModifiers::NONE))
-            .await
-            .unwrap();
-    }
-    let rendered = render_app_text(&mut app, 100, 30);
-    assert!(rendered.contains("use --dry-run instead"), "{rendered}");
-
-    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
-        .await
-        .unwrap();
+    submit_line(&mut app, "no use --dry-run instead").await;
 
     assert!(app.session.pending_hitl().is_none());
-    assert!(app.approval_card.is_none());
     let tool_message = app
         .session
         .messages
@@ -425,50 +245,61 @@ async fn deny_with_feedback_reaches_the_agent_as_tool_result_content() {
 }
 
 #[tokio::test]
-async fn deny_with_feedback_esc_cancels_without_denying() {
-    let (dir, mut app) = focus_test_app().await;
-    fs::write(dir.path().join("blocked.txt"), "ok").unwrap();
-    set_pending_hitl(&mut app, direct_hitl_payload("call-1", "blocked.txt"));
-    app.maybe_open_hitl();
+async fn typing_always_persists_pattern_and_auto_allows_matching_calls() {
+    // Writes the pattern to the personal permissions file
+    // (`forge_config::append_user_allow_rule`), which resolves via
+    // `dirs::config_dir()`. Redirect that to a throwaway `HOME` so the test
+    // never touches the developer's real config directory.
+    let _env_guard = ScopedEnvGuard::new(&["HOME", "XDG_CONFIG_HOME"]);
+    let home_dir = TempDir::new().unwrap();
+    std::env::set_var("HOME", home_dir.path());
 
-    app.handle_key(press(KeyCode::Char('f'), KeyModifiers::NONE))
-        .await
-        .unwrap();
-    app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
-        .await
-        .unwrap();
-    app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
-        .await
-        .unwrap();
+    let (_dir, mut app) = focus_test_app().await;
+    set_pending_hitl(&mut app, bash_hitl_payload("call-1", "cargo test --all"));
 
-    assert!(matches!(
-        app.approval_card.as_ref().unwrap().stage,
-        ApprovalStage::Decide
-    ));
+    submit_line(&mut app, "always").await;
+
+    assert!(app.session.pending_hitl().is_none());
+    assert_eq!(app.hitl_session.pattern_allow.len(), 1);
+    assert_eq!(app.hitl_session.pattern_allow[0].raw, "bash(cargo test *)");
+    let persisted = forge_config::user_permissions_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .expect("pattern should be persisted to the redirected personal permissions file");
+    assert!(persisted.contains("bash(cargo test *)"), "{persisted}");
+
+    // A second, differently-worded but matching call auto-approves without
+    // presenting an inline approval item — the pattern covers it, not just
+    // the exact call.
+    set_pending_hitl(
+        &mut app,
+        bash_hitl_payload("call-2", "cargo test --release"),
+    );
+    app.drain_auto_hitl().await.unwrap();
+    assert!(app.session.pending_hitl().is_none());
+
+    // But a non-matching command on the same tool still gates normally.
+    set_pending_hitl(&mut app, bash_hitl_payload("call-3", "rm -rf /"));
     assert!(app.session.pending_hitl().is_some());
 }
 
 #[tokio::test]
-async fn deny_with_blank_feedback_behaves_like_a_plain_deny() {
+async fn approval_duplicate_confirmation_is_idempotent() {
     let (dir, mut app) = focus_test_app().await;
-    fs::write(dir.path().join("blocked.txt"), "ok").unwrap();
-    set_pending_hitl(&mut app, direct_hitl_payload("call-1", "blocked.txt"));
-    app.maybe_open_hitl();
+    fs::write(dir.path().join("dup.txt"), "ok").unwrap();
+    set_pending_hitl(&mut app, direct_hitl_payload("dup", "dup.txt"));
 
-    app.handle_key(press(KeyCode::Char('f'), KeyModifiers::NONE))
+    app.resolve_approval_line(input_route::ApprovalAction::Approve)
         .await
         .unwrap();
-    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+    app.resolve_approval_line(input_route::ApprovalAction::Approve)
         .await
         .unwrap();
 
-    assert!(app.session.pending_hitl().is_none());
-    let tool_message = app
+    let successful_tool_messages = app
         .session
         .messages
         .iter()
-        .rev()
-        .find(|m| m.role == MessageRole::Tool)
-        .unwrap();
-    assert_eq!(tool_message.content, "HITL denied by tui");
+        .filter(|message| message.content == "ok")
+        .count();
+    assert_eq!(successful_tool_messages, 1);
 }
