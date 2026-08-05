@@ -226,7 +226,7 @@ async fn files_visibility_auto_collapses_and_restores_without_mutating_preferenc
         app.workspace_files.visible,
         "auto-collapse must not persist close"
     );
-    assert_eq!(app.focus.block, FocusBlock::Workspace);
+    assert_eq!(app.focus.block, FocusBlock::Sidebar);
 
     let wide = render_app_text(&mut app, 160, 50);
     assert!(wide.contains("FILES"), "{wide}");
