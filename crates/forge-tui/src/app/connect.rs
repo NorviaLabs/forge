@@ -245,6 +245,11 @@ impl TuiApp {
         };
         let mut connected = svc.connected_profiles().unwrap_or_default();
         connected.sort_by(|a, b| a.id.cmp(&b.id));
+        // Effort and the model/profile selection are persisted (and restored)
+        // independently — a session can have a saved effort with no saved
+        // model/profile yet (e.g. before ever connecting), so this
+        // deliberately doesn't gate on `last_selection_struct()`, which would
+        // only return `Some` when a complete selection exists.
         let saved_selection = self.connect.store.last_selection().ok().flatten();
         if let Some(effort) = self
             .connect
@@ -292,9 +297,12 @@ impl TuiApp {
                             || (prefix == "grok" && pid == "xai")
                     });
                 if let Some(model) = saved_model.or_else(|| profile.default_model()) {
-                    self.runtime.model_label = model.to_string();
-                    self.runtime.provider = "native".into();
-                    self.session.set_active_model(model);
+                    self.apply_selection(&ModelSelection {
+                        provider: "native".into(),
+                        model: model.to_string(),
+                        profile_id: Some(profile.id.clone()),
+                        effort: self.reasoning_effort.value.to_string(),
+                    });
                 }
             } else if self.session.active_model.is_empty() {
                 self.session
@@ -357,6 +365,26 @@ impl TuiApp {
         self.session.set_reasoning_effort(value);
     }
 
+    /// The single place `runtime.provider`, `runtime.model_label`,
+    /// `session.active_model`, and `connect.profile` are set together (effort
+    /// only when the selection carries a parseable one) — every model/route
+    /// change must go through this rather than assigning the fields by hand,
+    /// so the copies can't drift the way the picker's Enter-key bug once let
+    /// a discarded selection produce a mismatched model id.
+    pub(super) fn apply_selection(&mut self, selection: &ModelSelection) {
+        self.runtime.provider = if selection.provider.trim().is_empty() {
+            "native".into()
+        } else {
+            selection.provider.clone()
+        };
+        self.runtime.model_label = selection.model.clone();
+        self.session.set_active_model(&selection.model);
+        self.connect.profile = selection.profile_id.clone();
+        if let Ok(effort) = selection.effort.parse::<ReasoningEffort>() {
+            self.reasoning_effort.value = effort;
+        }
+    }
+
     pub(super) fn persist_selection(&self) {
         if let Some(profile_id) = self.connect.profile.as_deref() {
             let _ = self
@@ -396,14 +424,13 @@ impl TuiApp {
         match self.connect.store.quick_switch() {
             Ok(Some((profile_id, model, effort))) => {
                 self.connect.auth_suspended = false;
-                self.connect.profile = Some(profile_id.clone());
-                self.runtime.provider = "native".into();
-                self.runtime.model_label = model.clone();
-                self.session.set_active_model(&model);
+                self.apply_selection(&ModelSelection {
+                    provider: "native".into(),
+                    model: model.clone(),
+                    profile_id: Some(profile_id.clone()),
+                    effort,
+                });
                 self.apply_connect_credentials(&profile_id);
-                if let Ok(effort) = effort.parse::<ReasoningEffort>() {
-                    self.reasoning_effort.value = effort;
-                }
                 self.feedback = FeedbackModel::default();
                 self.status_state.message.clear();
                 self.notice_state.items.clear();
@@ -566,10 +593,13 @@ impl TuiApp {
             self.open_model_picker_after_connect(profile_id);
             return;
         };
-        self.runtime.model_label = model.clone();
-        self.runtime.provider = "native".into();
-        self.session.set_active_model(model.clone());
-        self.reasoning_effort.value = ReasoningEffort::default_for_model(&model);
+        let effort = ReasoningEffort::default_for_model(&model);
+        self.apply_selection(&ModelSelection {
+            provider: "native".into(),
+            model: model.clone(),
+            profile_id: Some(profile_id.to_string()),
+            effort: effort.to_string(),
+        });
         self.persist_selection();
         self.record_deliberate_selection();
         self.overlay = None;
@@ -895,37 +925,41 @@ impl TuiApp {
         if model.is_empty() {
             return;
         }
-        self.runtime.provider = if provider.trim().is_empty() {
-            "native".into()
-        } else {
-            provider.to_string()
-        };
         self.connect.auth_suspended = false;
-        self.runtime.model_label = model.to_string();
-        self.session.set_active_model(model);
-        if let Some(profile_id) = profile_id {
-            self.connect.profile = Some(profile_id.to_string());
-        } else {
-            // Match the selected model to its connected profile even when a
-            // different provider was active before opening the picker.
-            let prefix = model.split('/').next().unwrap_or("");
-            let svc = ConnectService {
-                registry: &self.connect.registry,
-                store: &self.connect.store,
-                active_profile_id: None,
-                active_model: None,
-            };
-            if let Ok(connected) = svc.connected_profiles() {
-                if let Some(profile) = connected.iter().find(|p| {
-                    p.model_provider_prefix == prefix
-                        || p.id == prefix
-                        || (prefix == "opencode-go" && p.id == "opencode_go")
-                        || (prefix == "opencode-zen" && p.id == "opencode_zen")
-                }) {
-                    self.connect.profile = Some(profile.id.clone());
-                }
+        let resolved_profile_id = match profile_id {
+            Some(profile_id) => Some(profile_id.to_string()),
+            None => {
+                // Match the selected model to its connected profile even when a
+                // different provider was active before opening the picker.
+                let prefix = model.split('/').next().unwrap_or("");
+                let svc = ConnectService {
+                    registry: &self.connect.registry,
+                    store: &self.connect.store,
+                    active_profile_id: None,
+                    active_model: None,
+                };
+                svc.connected_profiles().ok().and_then(|connected| {
+                    connected
+                        .iter()
+                        .find(|p| {
+                            p.model_provider_prefix == prefix
+                                || p.id == prefix
+                                || (prefix == "opencode-go" && p.id == "opencode_go")
+                                || (prefix == "opencode-zen" && p.id == "opencode_zen")
+                        })
+                        .map(|p| p.id.clone())
+                })
             }
-        }
+        };
+        // Effort is untouched here — the caller resolves it separately (see
+        // `resolve_effort_for_model`), so carry the current value through
+        // unchanged rather than resetting it.
+        self.apply_selection(&ModelSelection {
+            provider: provider.to_string(),
+            model: model.to_string(),
+            profile_id: resolved_profile_id,
+            effort: self.reasoning_effort.value.to_string(),
+        });
         if let Some(profile_id) = self.connect.profile.clone() {
             self.apply_connect_credentials(&profile_id);
         }

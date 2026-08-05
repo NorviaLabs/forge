@@ -192,7 +192,6 @@ confirms, Esc restores the previous theme. `/theme <id>` applies immediately.
 | --- | --- |
 | `solarized-dark` | Solarized Dark (default) |
 | `solarized-light` | Solarized Light |
-| `tokyo-night-storm` | Tokyo Night Storm |
 | `catppuccin-mocha` | Catppuccin Mocha |
 | `gruvbox-dark` | Gruvbox Dark |
 | `kanagawa-wave` | Kanagawa Wave |

@@ -9,6 +9,7 @@ use thiserror::Error;
 
 use crate::auth::OauthTokens;
 use crate::profile::KeySource;
+use crate::selection::ModelSelection;
 
 /// A credential-store operation failed.
 ///
@@ -192,6 +193,24 @@ impl CredentialStore {
         file.last_profile_id = Some(profile_id.trim().to_string());
         file.last_model = Some(model.trim().to_string());
         self.save(&file)
+    }
+
+    /// Compose the last provider/model/effort selection into one
+    /// `ModelSelection`, when a complete selection was recorded. Doesn't
+    /// change the on-disk format — just a single-call convenience over
+    /// `last_selection`/`last_effort` for callers that want the structured
+    /// value instead of reading the two independently.
+    pub fn last_selection_struct(&self) -> Result<Option<ModelSelection>, StoreError> {
+        let Some((profile_id, model)) = self.last_selection()? else {
+            return Ok(None);
+        };
+        let effort = self.last_effort()?.unwrap_or_default();
+        Ok(Some(ModelSelection {
+            provider: "native".into(),
+            model,
+            profile_id: Some(profile_id),
+            effort,
+        }))
     }
 
     /// Return the last reasoning effort selected by the interactive client.
@@ -453,6 +472,28 @@ mod tests {
         store.clear_last_selection(Some("anthropic")).unwrap();
         assert_eq!(store.last_selection().unwrap(), None);
         assert_eq!(store.last_effort().unwrap(), None);
+    }
+
+    #[test]
+    fn last_selection_struct_composes_profile_model_and_effort() {
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+        assert_eq!(store.last_selection_struct().unwrap(), None);
+
+        store
+            .set_last_selection("openai_codex", "openai-codex/gpt-5.6-luna")
+            .unwrap();
+        store.set_last_effort("high").unwrap();
+
+        assert_eq!(
+            store.last_selection_struct().unwrap(),
+            Some(ModelSelection {
+                provider: "native".into(),
+                model: "openai-codex/gpt-5.6-luna".into(),
+                profile_id: Some("openai_codex".into()),
+                effort: "high".into(),
+            })
+        );
     }
 
     #[test]
