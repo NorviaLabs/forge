@@ -490,7 +490,6 @@ impl TuiApp {
         }
 
         let attachment_label = self.attachment.pending.as_ref().map(|a| a.label());
-        let glyph = ACTIVE_GLYPH;
         if theme_picking {
             if let Some(Overlay::Theme {
                 selected,
@@ -507,20 +506,9 @@ impl TuiApp {
                 );
             }
         } else {
-            let composer_content_width = regions
-                .input
-                .width
-                .saturating_sub(gutter_prefix_width(glyph) as u16)
-                .max(1) as usize;
-            let composer_rows = self.render_cache.composer_layout.rows(
-                self.input.layout_revision,
-                &self.input.text,
-                composer_content_width,
-            );
             frame.render_widget(
                 InputBar {
                     model: &self.input,
-                    rows: composer_rows,
                     attachment: attachment_label.as_deref(),
                     dimmed: self.busy_state.active && self.input.text.is_empty(),
                     not_connected: !connected,

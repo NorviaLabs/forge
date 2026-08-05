@@ -138,10 +138,7 @@ impl TuiApp {
                 context_reset_snapshot: None,
                 splash_dismissed: false,
             },
-            render_cache: RenderCacheState {
-                conversation: None,
-                composer_layout: ComposerLayoutCache::default(),
-            },
+            render_cache: RenderCacheState { conversation: None },
             model_cost_cache: None,
             footer_limits: FooterLimitsState {
                 cache: None,
