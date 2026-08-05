@@ -254,36 +254,40 @@ that's still the ACL's job. Two files are read and merged:
   blast radius than a human approved locally. Its `deny` entries are always
   honored, since narrowing approval further is safe regardless of source.
 
-Every approval card offers a spectrum of decisions, not just yes/no:
+Menu rows (when a prompt appears):
 
-- **Allow once** (`a`/Enter) — runs this call, asks again next time.
-- **Remember exact** (`s`) — Direct-mode tools only (file/git-style calls);
-  the identical invocation won't ask again this session.
-- **Allow pattern going forward** (`p`) — shows the literal pattern that
-  would be added (e.g. `bash(cargo test *)`) before committing, then writes
-  it to your personal `permissions.toml` and applies it for the rest of this
-  session immediately, no restart needed.
-- **Deny** (`d`/Esc) — blocks the call.
-- **Deny with feedback** (`f`) — same, plus a short note that reaches the
-  agent as context for what to do instead, so it doesn't have to be
-  re-explained next turn.
+- **Allow once** — run this call; ask again next time.
+- **Allow pattern going forward** — shows e.g. `bash(cargo test *)`, writes
+  it to personal `permissions.toml`, applies immediately (covers
+  `background_run` / `exec_command` with the same command too).
+- **Remember exact** — Direct tools only; identical invocation this session.
+- **Deny** / **Deny with note…** — block; optional note reaches the agent.
 
 ### Permission modes
 
-`Alt+P` cycles the session's oversight level, shown in help (`?`) when you
-cycle modes:
+`Alt+P` cycles the session's oversight level (persisted per workspace).
+Default is **Accept Edits**.
 
-- **Manual** — today's default: shell commands ask for approval, file writes
-  don't.
-- **Accept Edits** — currently the same as Manual (Forge doesn't gate any
-  other write-class tool by default); kept as its own mode for forward
-  compatibility with a stricter default.
+- **Accept Edits** (default) — file writes free; a tight shell allow list
+  runs without prompts: `cargo test|build|check|clippy|fmt`, `rg`, `fd`,
+  `ls`, `cat`, `head`, `git status|diff|log` (including via `background_run`).
+  Other shell still asks. Add a `deny` pattern to re-prompt on a seed.
+- **Manual** — every shell-equivalent command asks unless your personal
+  `permissions.toml` (or session `always`) allows it.
 
-A mode only pre-seeds which side-effect classes gate — it never overrides an
-ACL deny, and it never touches your loaded `permissions.toml` rules. A
-third, stricter `Locked` mode (deny instead of ask, for scripted/CI runs)
-was intentionally left out: Forge has no non-interactive entry point yet for
-"nothing can answer a prompt" to apply to.
+Modes never override an ACL deny or ignore your `permissions.toml` rules.
+A stricter `Locked` mode is deferred until headless/CI entry exists.
+
+### Approving shell commands
+
+When a command needs approval, use the inline menu:
+
+- **↑ / ↓** — move selection (default: Allow once)
+- **Enter** — confirm
+- **Esc** — deny (or back out of “Deny with note”)
+
+Optional text aliases still work: `yes`, `no`, `remember`, `always`,
+`no <note>`.
 
 ## Built-in tools
 

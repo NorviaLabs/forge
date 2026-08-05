@@ -266,7 +266,7 @@ impl TuiApp {
                 self.input.set_text(line);
                 self.set_feedback(
                     FeedbackSeverity::Warn,
-                    "resolve the pending approval first — type yes | no | remember | always | no <note>",
+                    "resolve the pending approval first — ↑↓ select · Enter confirm · Esc deny (or type yes/no/…)",
                 );
             }
         }
@@ -616,6 +616,10 @@ impl TuiApp {
 
         if self.explorer_dialog.current.is_some() {
             self.handle_explorer_dialog_key(key);
+            return Ok(());
+        }
+
+        if self.session.pending_hitl().is_some() && self.handle_approval_menu_key(key).await? {
             return Ok(());
         }
 

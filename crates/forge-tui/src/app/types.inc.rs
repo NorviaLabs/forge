@@ -101,6 +101,8 @@ struct RepositoryUiState {
     files_visibility: FilesVisibility,
     #[serde(default)]
     theme: Option<String>,
+    #[serde(default)]
+    permission_mode: Option<forge_governance::PermissionMode>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -450,6 +452,8 @@ struct ConversationRenderKey {
     /// Pending HITL request identity, so the inline approval item rebuilds
     /// when a new request replaces the previous one while still `Waiting`.
     pending_hitl: Option<String>,
+    approval_menu_selected: usize,
+    approval_menu_deny_feedback: bool,
 }
 
 struct ConversationRenderCache {
@@ -568,12 +572,37 @@ struct ExitState {
     code: ExitCode,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum ApprovalMenuPhase {
+    #[default]
+    Choose,
+    DenyFeedback,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ApprovalMenuKind {
+    AllowOnce,
+    AllowPattern,
+    Remember,
+    Deny,
+    DenyWithNote,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ApprovalMenuState {
+    /// `call_id` of the pending payload this menu was built for.
+    call_id: Option<String>,
+    selected: usize,
+    phase: ApprovalMenuPhase,
+}
+
 struct HitlSessionState {
     allowed: HashSet<ApprovalIdentity>,
     /// Pattern rules added via "allow this pattern going forward" this
     /// session — takes effect immediately, independent of whether the
     /// write to the persisted permissions file succeeded.
     pattern_allow: Vec<forge_governance::PatternRule>,
+    menu: ApprovalMenuState,
 }
 
 struct ToastState {

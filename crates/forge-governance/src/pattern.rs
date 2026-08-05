@@ -52,12 +52,21 @@ impl PatternRule {
     }
 
     pub fn matches(&self, call: &ToolCall) -> bool {
+        let Some(pattern) = &self.argument_pattern else {
+            // Bare tool name: exact tool only (not unified across shell-eq).
+            return self.tool == call.name;
+        };
+        // Shell-eq tools share a command subject: `bash(cargo test *)` also
+        // matches `background_run` / `exec_command` with the same command.
+        if is_shell_tool(&self.tool) && is_shell_tool(&call.name) {
+            return match subject_for(&call.name, &call.arguments) {
+                Some(subject) => glob_match_anywhere(pattern, &subject),
+                None => false,
+            };
+        }
         if self.tool != call.name {
             return false;
         }
-        let Some(pattern) = &self.argument_pattern else {
-            return true;
-        };
         match subject_for(&call.name, &call.arguments) {
             Some(subject) => glob_match_anywhere(pattern, &subject),
             None => false,
@@ -92,18 +101,20 @@ pub fn suggest_pattern(call: &ToolCall) -> String {
         return call.name.clone();
     };
     if is_shell_tool(&call.name) {
+        // Canonical form is always `bash(...)` so one allow rule covers every
+        // shell-equivalent tool name (background_run, exec_command, …).
         let mut words = subject.split_whitespace();
         let prefix: Vec<&str> = words.by_ref().take(2).collect();
         if prefix.is_empty() {
-            return format!("{}(*)", call.name);
+            return "bash(*)".into();
         }
         // Only append a wildcard when there's more command left after the
         // prefix — otherwise `"ls *"` (with the trailing space baked in)
         // would never match the literal subject `"ls"` it was suggested for.
         return if words.next().is_some() {
-            format!("{}({} *)", call.name, prefix.join(" "))
+            format!("bash({} *)", prefix.join(" "))
         } else {
-            format!("{}({})", call.name, prefix.join(" "))
+            format!("bash({})", prefix.join(" "))
         };
     }
     if is_file_tool(&call.name) {
@@ -122,6 +133,7 @@ fn subject_for(tool: &str, args: &serde_json::Value) -> Option<String> {
     if is_shell_tool(tool) {
         return args
             .get("command")
+            .or_else(|| args.get("cmd"))
             .and_then(|v| v.as_str())
             .map(str::to_owned);
     }
@@ -137,11 +149,21 @@ fn subject_for(tool: &str, args: &serde_json::Value) -> Option<String> {
     None
 }
 
-fn is_shell_tool(tool: &str) -> bool {
+/// Tools that run an arbitrary shell command string (HITL + unified patterns).
+pub fn is_shell_tool(tool: &str) -> bool {
     matches!(
         tool,
-        "bash" | "sh" | "shell" | "cmd" | "powershell" | "exec"
+        "bash" | "sh" | "shell" | "cmd" | "powershell" | "exec" | "background_run" | "exec_command"
     )
+}
+
+/// Default `hitl_tools` entries for shell-equivalent execution.
+pub fn default_shell_hitl_tools() -> Vec<String> {
+    vec![
+        "bash".into(),
+        "background_run".into(),
+        "exec_command".into(),
+    ]
 }
 
 fn is_file_tool(tool: &str) -> bool {
@@ -223,6 +245,31 @@ mod tests {
         assert!(rule.matches(&call("bash", json!({"command": "cargo test --all"}))));
         assert!(!rule.matches(&call("bash", json!({"command": "cargo publish"}))));
         assert!(!rule.matches(&call("bash", json!({"command": "rm -rf /"}))));
+    }
+
+    #[test]
+    fn bash_pattern_matches_background_run_and_exec_command_same_subject() {
+        let rule = PatternRule::parse("bash(cargo test *)").unwrap();
+        assert!(rule.matches(&call(
+            "background_run",
+            json!({"command": "cargo test --all"})
+        )));
+        assert!(rule.matches(&call(
+            "exec_command",
+            json!({"cmd": "cargo test -p forge-tui"})
+        )));
+        assert!(!rule.matches(&call("background_run", json!({"command": "rm -rf /tmp/x"}))));
+    }
+
+    #[test]
+    fn suggest_pattern_canonicalizes_shell_eq_to_bash() {
+        let c = call(
+            "background_run",
+            json!({"command": "cargo test --all --release"}),
+        );
+        assert_eq!(suggest_pattern(&c), "bash(cargo test *)");
+        let c = call("exec_command", json!({"cmd": "ls -la /tmp"}));
+        assert_eq!(suggest_pattern(&c), "bash(ls -la *)");
     }
 
     #[test]
