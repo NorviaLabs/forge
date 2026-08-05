@@ -977,25 +977,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn composer_keeps_accepting_text_after_a_newline_and_reflow() {
+    async fn composer_keeps_accepting_text_after_wrapping_to_a_second_row() {
         let (_dir, mut app) = app().await;
         focus_composer(&mut app);
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
 
-        for c in "first line".chars() {
+        // The sidebar composer is 30 columns wide at 80 terminal columns.
+        // This phrase wraps before "fifth", then keeps typing through the
+        // second visual row without an explicit newline.
+        for c in "first second third fourth fifth sixth".chars() {
             app.handle_key(press(KeyCode::Char(c))).await.unwrap();
             terminal.draw(|frame| app.draw(frame)).unwrap();
         }
-        app.handle_key(press_with(KeyCode::Enter, KeyModifiers::SHIFT))
-            .await
-            .unwrap();
-        terminal.draw(|frame| app.draw(frame)).unwrap();
-        for c in "three more words still typing".chars() {
+        for c in " seventh eighth ninth".chars() {
             app.handle_key(press(KeyCode::Char(c))).await.unwrap();
             terminal.draw(|frame| app.draw(frame)).unwrap();
         }
 
-        assert_eq!(app.input.text, "first line\nthree more words still typing");
+        assert_eq!(
+            app.input.text,
+            "first second third fourth fifth sixth seventh eighth ninth"
+        );
         assert_eq!(app.focus.block, FocusBlock::Composer);
     }
 
