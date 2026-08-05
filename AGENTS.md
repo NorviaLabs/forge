@@ -22,6 +22,7 @@ Key crates:
 
 ## Development Rules
 
+- Never commit directly to `main`. Do all work on a feature branch and open a PR (see `Git Workflow`).
 - Keep changes focused; avoid unrelated refactors, dependency updates, or formatting churn.
 - Prefer small root-cause fixes over call-site patches.
 - Match existing Rust style and crate-local patterns.
@@ -58,6 +59,13 @@ cargo test --package forge-model
 cargo test --package forge-tui
 cargo build --package forge-cli
 ```
+
+## Git Workflow
+
+- Do all work on a feature branch (`fix/<slug>` or `feat/<slug>`), never on `main`.
+- `main` is protected on the remote: force-pushes are blocked, so a commit pushed to `main` cannot be removed — always branch first.
+- Open a PR for every change and let it merge via PR, not direct push.
+- Keep commits focused; squash-friendly single commits per PR are the norm in this repo.
 
 ## Provider/Model Notes
 
