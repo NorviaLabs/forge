@@ -10,7 +10,7 @@ use forge_syntax::highlight_to_lines;
 use forge_types::{ExecutionOutcome, Message, MessageRole, TaskLifecycle, ToolCall};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Modifier;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
@@ -370,8 +370,8 @@ pub struct ApprovalMenuRow {
 }
 
 /// The redacted command awaiting a human approval decision, with enough
-/// context to tell what would run. Primary path is the selectable menu;
-/// composer text remains an alias path.
+/// context to tell what would run. Resolution is menu-only; the composer is
+/// not an answer input.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ApprovalPendingPresentation {
     pub tool: String,
@@ -380,8 +380,8 @@ pub struct ApprovalPendingPresentation {
     pub env_delta: String,
     pub options: Vec<ApprovalMenuRow>,
     pub selected: usize,
-    /// When true, composer is capturing deny-with-note text.
-    pub deny_feedback: bool,
+    /// Whether the approval card itself holds focus (accent border vs muted).
+    pub focused: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -612,7 +612,7 @@ impl ConversationModel {
         items = group_routine_activity(items);
         if status == TaskLifecycle::Waiting {
             items.push(ChatItem::Banner {
-                text: "Awaiting approval · ↑↓ select · Enter confirm · Esc deny".into(),
+                text: "Awaiting approval · ↑↓ select · Enter confirm · Esc cancel".into(),
                 kind: BannerKind::Warn,
             });
         }
@@ -759,7 +759,7 @@ impl ConversationModel {
         working_directory: impl Into<String>,
         options: Vec<ApprovalMenuRow>,
         selected: usize,
-        deny_feedback: bool,
+        focused: bool,
     ) -> Self {
         let approval = ApprovalOverlayState::for_payload(payload, working_directory);
         let command = match approval.mode {
@@ -782,7 +782,7 @@ impl ConversationModel {
                 env_delta: approval.environment_delta,
                 options,
                 selected,
-                deny_feedback,
+                focused,
             }));
         self
     }
@@ -1031,69 +1031,61 @@ impl ConversationModel {
                     }
                 }
                 ConversationBlock::ApprovalPending(p) => {
-                    lines.push(Line::from(vec![
-                        Span::styled("⏸", theme::warn()),
-                        Span::raw(" "),
-                        Span::styled(
-                            format!("approval · {}", p.tool),
-                            theme::text().add_modifier(Modifier::BOLD),
-                        ),
-                    ]));
-                    let sub_width = width.saturating_sub(5);
-                    for (lineno, wrapped) in wrap(&p.command, sub_width).into_iter().enumerate() {
-                        let head = if lineno == 0 { "└─" } else { "│" };
-                        lines.push(Line::from(Span::styled(
-                            format!("{INDENT_UNIT}{head} {wrapped}"),
-                            theme::muted(),
-                        )));
-                    }
-                    for (label, value) in [("cwd", p.cwd.as_str()), ("env", p.env_delta.as_str())] {
-                        for wrapped in wrap(&format!("{label}: {value}"), width.saturating_sub(2)) {
-                            lines.push(Line::from(Span::styled(
-                                format!("{INDENT_UNIT}{wrapped}"),
-                                theme::muted(),
-                            )));
-                        }
-                    }
-                    if p.deny_feedback {
-                        for wrapped in wrap(
-                            "deny with note — type feedback · Enter submit · Esc back",
-                            width.saturating_sub(2),
-                        ) {
-                            lines.push(Line::from(Span::styled(
-                                format!("{INDENT_UNIT}{wrapped}"),
-                                theme::metadata_style(),
-                            )));
-                        }
+                    let border = if p.focused {
+                        theme::approval_accent()
                     } else {
-                        for (idx, opt) in p.options.iter().enumerate() {
-                            let marker = if idx == p.selected { "›" } else { " " };
-                            let style = if idx == p.selected {
-                                theme::text().add_modifier(Modifier::BOLD)
-                            } else {
-                                theme::muted()
-                            };
-                            let row = match &opt.detail {
-                                Some(detail) => format!("{marker} {}  {detail}", opt.label),
-                                None => format!("{marker} {}", opt.label),
-                            };
-                            for wrapped in wrap(&row, width.saturating_sub(2)) {
-                                lines.push(Line::from(Span::styled(
-                                    format!("{INDENT_UNIT}{wrapped}"),
-                                    style,
-                                )));
-                            }
-                        }
-                        for wrapped in wrap(
-                            "↑↓ select · Enter confirm · Esc deny",
-                            width.saturating_sub(2),
-                        ) {
-                            lines.push(Line::from(Span::styled(
-                                format!("{INDENT_UNIT}{wrapped}"),
-                                theme::metadata_style(),
-                            )));
+                        theme::border_muted()
+                    };
+                    // Boxed card: border corners + `│ ` / ` │` padding leave
+                    // `width - 4` columns of content.
+                    let inner_w = width.saturating_sub(4);
+                    let boxed_line = |s: &str, style: Style| -> Line<'static> {
+                        let pad = " ".repeat(inner_w.saturating_sub(s.chars().count()));
+                        Line::from(vec![
+                            Span::styled("│ ", border),
+                            Span::styled(format!("{s}{pad}"), style),
+                            Span::styled(" │", border),
+                        ])
+                    };
+                    let title = "⏸ APPROVAL REQUIRED";
+                    let top_fill = width
+                        .saturating_sub(5)
+                        .saturating_sub(title.chars().count());
+                    lines.push(Line::from(vec![Span::styled(
+                        format!("┌─ {title} {}┐", "─".repeat(top_fill)),
+                        border,
+                    )]));
+                    lines.push(boxed_line("", theme::panel()));
+                    for wrapped in wrap(&p.command, inner_w) {
+                        lines.push(boxed_line(&wrapped, theme::muted()));
+                    }
+                    for wrapped in wrap(&format!("cwd: {}  env: {}", p.cwd, p.env_delta), inner_w) {
+                        lines.push(boxed_line(&wrapped, theme::muted()));
+                    }
+                    lines.push(boxed_line("", theme::panel()));
+                    for (idx, opt) in p.options.iter().enumerate() {
+                        let marker = if idx == p.selected { "›" } else { " " };
+                        let style = if idx == p.selected {
+                            theme::text().add_modifier(Modifier::BOLD)
+                        } else {
+                            theme::muted()
+                        };
+                        let row = match &opt.detail {
+                            Some(detail) => format!("{marker} {}  {detail}", opt.label),
+                            None => format!("{marker} {}", opt.label),
+                        };
+                        for wrapped in wrap(&row, inner_w) {
+                            lines.push(boxed_line(&wrapped, style));
                         }
                     }
+                    for wrapped in wrap("↑↓ select · Enter confirm · Esc cancel", inner_w) {
+                        lines.push(boxed_line(&wrapped, theme::metadata_style()));
+                    }
+                    lines.push(boxed_line("", theme::panel()));
+                    lines.push(Line::from(vec![Span::styled(
+                        format!("└{}┘", "─".repeat(width.saturating_sub(2))),
+                        border,
+                    )]));
                     if gap {
                         lines.extend([Line::from(""), Line::from("")]);
                     }
@@ -4721,14 +4713,14 @@ mod tests {
             .flat_map(|line| line.spans.iter())
             .map(|span| span.content.as_ref())
             .collect::<String>();
-        assert!(text.contains("⏸ approval · bash"), "{text}");
+        assert!(text.contains("⏸ APPROVAL REQUIRED"), "{text}");
         assert!(text.contains("git push -u origin feature"), "{text}");
         assert!(text.contains("cwd: workspace"), "{text}");
         assert!(text.contains("env: inherited"), "{text}");
         assert!(text.contains("› Allow once"), "{text}");
         assert!(text.contains("bash(git push *)"), "{text}");
         assert!(
-            text.contains("↑↓ select · Enter confirm · Esc deny"),
+            text.contains("↑↓ select · Enter confirm · Esc cancel"),
             "{text}"
         );
     }

@@ -91,6 +91,12 @@ impl TuiApp {
                 text.push_str("• F3  Chip bar · ←/→ select · Enter activate · Esc back\n");
                 text.push_str("• Esc  Return to previous block\n");
             }
+            FocusBlock::Approval => {
+                text.push_str("• ↑/↓  Select an approval option\n");
+                text.push_str("• Enter  Confirm selection\n");
+                text.push_str("• Esc  Cancel (deny) the pending call\n");
+                text.push_str("• Tab  Navigate away (approval stays pending)\n");
+            }
             FocusBlock::BottomPanel => {
                 text.push_str("• Type / paste  Send input to the shell\n");
                 text.push_str("• Ctrl+C / arrows / Tab  Shell controls\n");

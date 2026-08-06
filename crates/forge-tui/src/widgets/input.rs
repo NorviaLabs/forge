@@ -19,6 +19,9 @@ pub struct InputModel {
     pub history_browse: bool,
     /// No live LLM provider — chrome warns; chat send is gated in the app.
     pub not_connected: bool,
+    /// Approval pending — the composer is not the answer input. Renders a
+    /// distinct waiting border and suppresses the empty-state hint.
+    pub waiting: bool,
     /// Full payloads represented by compact, atomic placeholders in `text`.
     pending_pastes: Vec<PendingPaste>,
 }
@@ -382,12 +385,17 @@ pub struct InputBar<'a> {
     pub dimmed: bool,
     pub not_connected: bool,
     pub focused: bool,
+    /// Approval pending — show the distinct waiting border (see `InputModel.waiting`).
+    pub waiting: bool,
     /// Non-interactive send affordance on the first text row.
     pub show_send_hint: bool,
 }
 
 fn composer_text(model: &InputModel, show_cursor: bool) -> String {
     if model.text.is_empty() {
+        if model.waiting {
+            return String::new();
+        }
         return if show_cursor {
             format!("{CURSOR_GLYPH}{}", model.hint)
         } else {
@@ -433,6 +441,8 @@ impl Widget for InputBar<'_> {
         let text_focused = self.focused;
         let border = if text_focused {
             theme::active_panel_border()
+        } else if self.waiting {
+            theme::waiting_border()
         } else if self.not_connected {
             theme::warn()
         } else {
@@ -553,6 +563,7 @@ mod tests {
                     dimmed: model.dimmed,
                     not_connected,
                     focused,
+                    waiting: model.waiting,
                     show_send_hint: false,
                 },
                 f.area(),
@@ -758,6 +769,30 @@ mod tests {
             .join("\n");
         assert!(rendered.contains("type here"));
         assert!(rendered.contains(glyph()));
+    }
+
+    #[test]
+    fn waiting_state_uses_waiting_border_and_hides_hint() {
+        let m = InputModel {
+            waiting: true,
+            hint: "type here".into(),
+            ..Default::default()
+        };
+        let buf = draw_input_bar(&m, 48, 5, false, false, None);
+        let border = &buf[(0, 0)];
+        assert_eq!(
+            border.style().fg,
+            Some(theme::palette(&theme::active()).waiting_border)
+        );
+        let rendered: String = (0..buf.area().height)
+            .map(|y| {
+                (0..buf.area().width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!rendered.contains("type here"), "{rendered}");
     }
 
     #[test]
