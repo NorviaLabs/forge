@@ -757,7 +757,8 @@ impl TuiApp {
                 }
                 Ok(SlashCommand::Resume { session_id }) => {
                     match self.session.resume_session(session_id).await {
-                        Ok(_report) => {
+                        Ok(report) => {
+                            self.history.load_resumed(report.composer_lines);
                             self.overlay = None;
                             self.notice_state.items.clear();
                             self.busy_state.active = false;

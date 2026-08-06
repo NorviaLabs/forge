@@ -132,6 +132,110 @@ async fn resume_command_replaces_active_conversation_in_app() {
         .any(|item| item.summary.contains("session resumed")));
 }
 
+#[tokio::test]
+async fn resume_restores_input_history_for_up_down_recall() {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    let (dir, session) = test_session().await;
+    let model = Arc::new(MockModelClient::script(vec![]));
+    let mut previous = AgentSession::create(
+        LoopConfig {
+            max_turns: 4,
+            workspace: dir.path().to_path_buf(),
+            journal_dir: dir.path().join("j"),
+            enable_context_lifecycle: true,
+            enable_governance: true,
+            ..Default::default()
+        },
+        model,
+        ToolRegistry::new(),
+    )
+    .await
+    .unwrap();
+    // A real submission records both — the unified ComposerLineSubmitted
+    // event (for history) and the model-directed UserMessage (for the
+    // transcript) — mirroring what `record_submitted_line` + `dispatch_line`
+    // do together in the live TUI.
+    previous
+        .record_composer_line("first message")
+        .await
+        .unwrap();
+    previous.append_user_message("first message").await.unwrap();
+    let previous_id = previous.session_id;
+
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "mock".into(),
+            provider: "mock".into(),
+            cwd: dir.path().to_path_buf(),
+            version: "0.12.0".into(),
+            startup_notices: Vec::new(),
+            file_icons: FileIconMode::Unicode,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+    // A brand-new TuiApp starts with empty history — resuming should
+    // populate it from the target session's own past input.
+    assert!(app.history.is_empty());
+    app.dispatch_line(&format!("/resume {previous_id}"))
+        .await
+        .unwrap();
+    assert_eq!(app.history.len(), 1);
+
+    app.handle_key(press(KeyCode::Up, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.input.text, "first message");
+}
+
+#[tokio::test]
+async fn resume_restores_local_only_slash_commands_too() {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    let (dir, session) = test_session().await;
+    let model = Arc::new(MockModelClient::script(vec![]));
+    let previous = AgentSession::create(
+        LoopConfig {
+            max_turns: 4,
+            workspace: dir.path().to_path_buf(),
+            journal_dir: dir.path().join("j"),
+            enable_context_lifecycle: true,
+            enable_governance: true,
+            ..Default::default()
+        },
+        model,
+        ToolRegistry::new(),
+    )
+    .await
+    .unwrap();
+    // "/status" never reaches the model (no `append_user_message`) — it's
+    // exactly the kind of local-only command the old, UserMessage-only
+    // history restoration used to drop.
+    previous.record_composer_line("/status").await.unwrap();
+    let previous_id = previous.session_id;
+
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "mock".into(),
+            provider: "mock".into(),
+            cwd: dir.path().to_path_buf(),
+            version: "0.12.0".into(),
+            startup_notices: Vec::new(),
+            file_icons: FileIconMode::Unicode,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+    app.dispatch_line(&format!("/resume {previous_id}"))
+        .await
+        .unwrap();
+    assert_eq!(app.history.len(), 1);
+
+    app.handle_key(press(KeyCode::Up, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.input.text, "/status");
+}
+
 /// F-RESUME-01: the bare `/resume` list previously showed only a raw UUID
 /// and timestamp per session, giving the user no way to tell sessions
 /// apart without opening each one. It now shows a title hint derived from
