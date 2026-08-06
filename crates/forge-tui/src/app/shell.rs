@@ -168,6 +168,8 @@ async fn run_loop(
         app.tick_feedback();
         app.tick_notices();
         app.drain_auto_hitl().await?;
+        // Newly arrived approvals claim focus + scroll-into-view once.
+        app.sync_approval_focus();
         // Grok-style device-code: poll token endpoint while overlay is open
         app.poll_oauth_tick();
         terminal.draw(|f| app.draw(f))?;

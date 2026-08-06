@@ -16,6 +16,7 @@ impl TuiApp {
             // FocusAvailability for that case).
             sidebar: true,
             bottom_panel: self.bottom_panel.open,
+            approval: self.session.pending_hitl().is_some(),
         }
     }
 
@@ -143,14 +144,7 @@ impl TuiApp {
             return Some("? pattern · ↑↓ select · Enter confirm · Esc skip".into());
         }
         if self.session.pending_hitl().is_some() {
-            return Some(match self.hitl_session.menu.phase {
-                ApprovalMenuPhase::DenyFeedback => {
-                    "⏸ deny note · type feedback · Enter submit · Esc back".into()
-                }
-                ApprovalMenuPhase::Choose => {
-                    "⏸ approval · ↑↓ select · Enter confirm · Esc deny".into()
-                }
-            });
+            return Some("⏸ approval · ↑↓ select · Enter confirm · Esc cancel".into());
         }
         if let Some(overlay) = self.overlay.as_ref() {
             return match overlay {

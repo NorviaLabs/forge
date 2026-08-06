@@ -143,6 +143,9 @@ pub(crate) enum FocusBlock {
     Sidebar,
     Composer,
     BottomPanel,
+    /// The pending human-approval card inside the transcript. Present in the
+    /// focus cycle only while a HITL request is outstanding.
+    Approval,
 }
 
 impl FocusBlock {
@@ -153,6 +156,7 @@ impl FocusBlock {
             Self::Sidebar => "SIDEBAR",
             Self::Composer => "COMPOSER",
             Self::BottomPanel => "PANEL",
+            Self::Approval => "APPROVAL",
         }
     }
 }
@@ -161,11 +165,13 @@ impl FocusBlock {
     // Sidebar sits right before Composer since they're the same physical
     // column post-sidebar layout (background strip above the composer that
     // lives inside it) — tabbing out of the transcript naturally lands in
-    // its own composer next.
-    const ORDER: [Self; 5] = [
+    // its own composer next. The approval card is reachable in the cycle
+    // while a decision is pending.
+    const ORDER: [Self; 6] = [
         Self::Files,
         Self::Workspace,
         Self::Sidebar,
+        Self::Approval,
         Self::Composer,
         Self::BottomPanel,
     ];
@@ -364,6 +370,7 @@ struct FocusAvailability {
     files: bool,
     sidebar: bool,
     bottom_panel: bool,
+    approval: bool,
 }
 
 impl FocusAvailability {
@@ -374,6 +381,7 @@ impl FocusAvailability {
             FocusBlock::Sidebar => self.sidebar,
             FocusBlock::Composer => true,
             FocusBlock::BottomPanel => self.bottom_panel,
+            FocusBlock::Approval => self.approval,
         }
     }
 }
@@ -458,7 +466,7 @@ struct ConversationRenderKey {
     /// when a new request replaces the previous one while still `Waiting`.
     pending_hitl: Option<String>,
     approval_menu_selected: usize,
-    approval_menu_deny_feedback: bool,
+    approval_focused: bool,
     pattern_nudge: Option<(String, usize)>,
 }
 
@@ -578,20 +586,12 @@ struct ExitState {
     code: ExitCode,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-enum ApprovalMenuPhase {
-    #[default]
-    Choose,
-    DenyFeedback,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ApprovalMenuKind {
     AllowOnce,
     AllowPattern,
     Remember,
     Deny,
-    DenyWithNote,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -599,7 +599,6 @@ struct ApprovalMenuState {
     /// `call_id` of the pending payload this menu was built for.
     call_id: Option<String>,
     selected: usize,
-    phase: ApprovalMenuPhase,
 }
 
 /// After "Allow once" on a pattern-eligible call: offer to persist the pattern.

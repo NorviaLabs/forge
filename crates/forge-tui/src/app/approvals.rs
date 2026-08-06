@@ -66,7 +66,6 @@ impl TuiApp {
                     self.hitl_session.menu = ApprovalMenuState {
                         call_id: Some(payload.call_id.clone()),
                         selected: 0,
-                        phase: ApprovalMenuPhase::Choose,
                     };
                 }
                 let n = self.approval_menu_kinds().len();
@@ -74,6 +73,20 @@ impl TuiApp {
                     self.hitl_session.menu.selected = self.hitl_session.menu.selected.min(n - 1);
                 }
             }
+        }
+    }
+
+    /// When a new approval arrives, claim focus on the approval card and
+    /// scroll it into view — once. Runs from the event loop (never from
+    /// render, so a draw can't move focus). After the user Tabs away, the
+    /// transition is over and this must not re-grab focus.
+    pub(super) fn sync_approval_focus(&mut self) {
+        let Some(payload) = self.session.pending_hitl() else {
+            return;
+        };
+        if self.hitl_session.menu.call_id.as_deref() != Some(payload.call_id.as_str()) {
+            self.focus_block(FocusBlock::Approval);
+            self.conversation_view.follow = true;
         }
     }
 
@@ -90,7 +103,6 @@ impl TuiApp {
             kinds.push(ApprovalMenuKind::Remember);
         }
         kinds.push(ApprovalMenuKind::Deny);
-        kinds.push(ApprovalMenuKind::DenyWithNote);
         kinds
     }
 
@@ -118,15 +130,14 @@ impl TuiApp {
                     label: "Deny".into(),
                     detail: None,
                 },
-                ApprovalMenuKind::DenyWithNote => crate::conversation::ApprovalMenuRow {
-                    label: "Deny with note…".into(),
-                    detail: None,
-                },
             })
             .collect()
     }
 
     /// Handle keys for the inline approval menu. Returns true if consumed.
+    /// Only active while the approval card itself holds focus — the operator
+    /// may Tab elsewhere mid-approval (file navigation, panels), and there
+    /// the menu keys must not hijack normal block navigation.
     pub(super) async fn handle_approval_menu_key(
         &mut self,
         key: event::KeyEvent,
@@ -134,71 +145,50 @@ impl TuiApp {
         if self.session.pending_hitl().is_none() {
             return Ok(false);
         }
+        if self.focus.block != FocusBlock::Approval {
+            return Ok(false);
+        }
         self.sync_approval_menu();
-        match self.hitl_session.menu.phase {
-            ApprovalMenuPhase::DenyFeedback => match key.code {
-                KeyCode::Esc if key.modifiers.is_empty() => {
-                    self.hitl_session.menu.phase = ApprovalMenuPhase::Choose;
-                    self.input.clear();
-                    Ok(true)
-                }
-                KeyCode::Enter if key.modifiers.is_empty() => {
-                    let note = self.input.take();
-                    self.hitl_session.menu.phase = ApprovalMenuPhase::Choose;
-                    self.resolve_approval_line(input_route::ApprovalAction::DenyWithFeedback(note))
-                        .await?;
-                    Ok(true)
-                }
-                _ => Ok(false), // let composer edit the note
-            },
-            ApprovalMenuPhase::Choose => match key.code {
-                KeyCode::Up if key.modifiers.is_empty() => {
-                    let n = self.approval_menu_kinds().len().max(1);
-                    self.hitl_session.menu.selected = (self.hitl_session.menu.selected + n - 1) % n;
-                    Ok(true)
-                }
-                KeyCode::Down if key.modifiers.is_empty() => {
-                    let n = self.approval_menu_kinds().len().max(1);
-                    self.hitl_session.menu.selected = (self.hitl_session.menu.selected + 1) % n;
-                    Ok(true)
-                }
-                KeyCode::Esc if key.modifiers.is_empty() => {
-                    self.resolve_approval_line(input_route::ApprovalAction::Deny)
-                        .await?;
-                    Ok(true)
-                }
-                KeyCode::Enter if key.modifiers.is_empty() => {
-                    let kinds = self.approval_menu_kinds();
-                    let Some(kind) = kinds.get(self.hitl_session.menu.selected).copied() else {
-                        return Ok(true);
-                    };
-                    match kind {
-                        ApprovalMenuKind::AllowOnce => {
-                            self.resolve_approval_line(input_route::ApprovalAction::Approve)
-                                .await?;
-                        }
-                        ApprovalMenuKind::AllowPattern => {
-                            self.resolve_approval_line(input_route::ApprovalAction::AllowPattern)
-                                .await?;
-                        }
-                        ApprovalMenuKind::Remember => {
-                            self.resolve_approval_line(input_route::ApprovalAction::Remember)
-                                .await?;
-                        }
-                        ApprovalMenuKind::Deny => {
-                            self.resolve_approval_line(input_route::ApprovalAction::Deny)
-                                .await?;
-                        }
-                        ApprovalMenuKind::DenyWithNote => {
-                            self.hitl_session.menu.phase = ApprovalMenuPhase::DenyFeedback;
-                            self.input.clear();
-                            self.enter_chat_composer();
-                        }
+        match key.code {
+            KeyCode::Up if key.modifiers.is_empty() => {
+                let n = self.approval_menu_kinds().len().max(1);
+                self.hitl_session.menu.selected = (self.hitl_session.menu.selected + n - 1) % n;
+                Ok(true)
+            }
+            KeyCode::Down if key.modifiers.is_empty() => {
+                let n = self.approval_menu_kinds().len().max(1);
+                self.hitl_session.menu.selected = (self.hitl_session.menu.selected + 1) % n;
+                Ok(true)
+            }
+            KeyCode::Esc if key.modifiers.is_empty() => {
+                self.resolve_approval_line(ApprovalMenuKind::Deny).await?;
+                Ok(true)
+            }
+            KeyCode::Enter if key.modifiers.is_empty() => {
+                let kinds = self.approval_menu_kinds();
+                let Some(kind) = kinds.get(self.hitl_session.menu.selected).copied() else {
+                    return Ok(true);
+                };
+                match kind {
+                    ApprovalMenuKind::AllowOnce => {
+                        self.resolve_approval_line(ApprovalMenuKind::AllowOnce)
+                            .await?;
                     }
-                    Ok(true)
+                    ApprovalMenuKind::AllowPattern => {
+                        self.resolve_approval_line(ApprovalMenuKind::AllowPattern)
+                            .await?;
+                    }
+                    ApprovalMenuKind::Remember => {
+                        self.resolve_approval_line(ApprovalMenuKind::Remember)
+                            .await?;
+                    }
+                    ApprovalMenuKind::Deny => {
+                        self.resolve_approval_line(ApprovalMenuKind::Deny).await?;
+                    }
                 }
-                _ => Ok(false),
-            },
+                Ok(true)
+            }
+            _ => Ok(false),
         }
     }
 
@@ -312,15 +302,15 @@ impl TuiApp {
         })
     }
 
-    /// Apply a parsed approval line to the pending HITL request. Eligibility
-    /// for `remember`/`always` is checked here, not in the composer parser,
-    /// so an ineligible verb is warned about without acting.
+    /// Apply a menu choice to the pending HITL request. Eligibility for
+    /// `remember`/`always` is checked here, not in the menu builder, so an
+    /// ineligible choice is warned about without acting.
     pub(super) async fn resolve_approval_line(
         &mut self,
-        action: input_route::ApprovalAction,
+        action: ApprovalMenuKind,
     ) -> Result<(), TuiError> {
         match action {
-            input_route::ApprovalAction::Approve => {
+            ApprovalMenuKind::AllowOnce => {
                 let nudge_pattern = self.pattern_nudge_after_allow_once();
                 self.resolve_hitl_overlay(HitlDecision::Approve, false)
                     .await?;
@@ -332,10 +322,10 @@ impl TuiApp {
                 }
                 Ok(())
             }
-            input_route::ApprovalAction::Remember => {
+            ApprovalMenuKind::Remember => {
                 self.resolve_hitl_overlay(HitlDecision::Approve, true).await
             }
-            input_route::ApprovalAction::AllowPattern => {
+            ApprovalMenuKind::AllowPattern => {
                 let Some(payload) = self.session.pending_hitl() else {
                     return Ok(());
                 };
@@ -343,19 +333,14 @@ impl TuiApp {
                 if !approval.pattern_allow_eligible {
                     self.set_feedback(
                         FeedbackSeverity::Warn,
-                        "this call has no allow pattern to persist; use yes or no",
+                        "this call has no allow pattern to persist; use Allow once or Deny",
                     );
                     return Ok(());
                 }
                 self.resolve_hitl_overlay_with_pattern(approval.suggested_pattern)
                     .await
             }
-            input_route::ApprovalAction::Deny => {
-                self.resolve_hitl_overlay(HitlDecision::Deny, false).await
-            }
-            input_route::ApprovalAction::DenyWithFeedback(feedback) => {
-                self.resolve_hitl_overlay_with_feedback(feedback).await
-            }
+            ApprovalMenuKind::Deny => self.resolve_hitl_overlay(HitlDecision::Deny, false).await,
         }
     }
 
@@ -379,6 +364,7 @@ impl TuiApp {
         };
         self.push_notice(vec![self.status_state.message.clone()]);
         self.busy_state.phase = BusyPhase::Idle;
+        self.enter_chat_composer();
         if let Some(term) = terminal {
             let _ = term.draw(|f| self.draw(f));
         }
@@ -421,6 +407,7 @@ impl TuiApp {
             _ => self.push_toast("denied"),
         }
         self.resume_turn_after_hitl();
+        self.enter_chat_composer();
         Ok(())
     }
 
@@ -466,6 +453,11 @@ impl TuiApp {
             .unwrap_or(payload.tool);
         self.push_toast(format!("auto-approved {label}"));
         self.resume_turn_after_hitl();
+        // The card just disappeared under the user; drop back to the composer
+        // rather than letting normalize_focus strand focus on a ghost block.
+        if self.focus.block == FocusBlock::Approval {
+            self.enter_chat_composer();
+        }
         Ok(())
     }
 
@@ -492,30 +484,7 @@ impl TuiApp {
             .resolve_hitl(HitlDecision::Approve, "tui")
             .await?;
         self.resume_turn_after_hitl();
-        Ok(())
-    }
-
-    /// Deny the pending call, optionally carrying a short note back to the
-    /// agent as tool-result context for what to do instead (opencode's
-    /// `CorrectedError`). Blank feedback behaves like a plain deny.
-    pub(super) async fn resolve_hitl_overlay_with_feedback(
-        &mut self,
-        feedback: String,
-    ) -> Result<(), TuiError> {
-        if self.session.pending_hitl().is_none() {
-            return Ok(());
-        }
-        let trimmed = feedback.trim();
-        let feedback_opt = (!trimmed.is_empty()).then_some(trimmed);
-        self.session
-            .resolve_hitl_with_feedback(HitlDecision::Deny, "tui", feedback_opt)
-            .await?;
-        self.push_toast(if feedback_opt.is_some() {
-            "denied with feedback"
-        } else {
-            "denied"
-        });
-        self.resume_turn_after_hitl();
+        self.enter_chat_composer();
         Ok(())
     }
 }
