@@ -26,12 +26,19 @@ pub(crate) struct SelectionRect {
     pub col_end: u16,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CopyPane {
+    Conversation,
+    Editor,
+}
+
 /// State machine for a drag-selection. Screen-anchored; the text is finalised
 /// on mouse-up and reused by the context-menu Copy action.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct MouseSelection {
     anchor: Option<Cell>,
     current: Option<Cell>,
+    pub pane: Option<CopyPane>,
     /// Whether a selection is being made / is currently displayed.
     pub active: bool,
     /// Copied text, populated after mouse-up.
@@ -39,9 +46,10 @@ pub(crate) struct MouseSelection {
 }
 
 impl MouseSelection {
-    pub(crate) fn start(&mut self, cell: Cell) {
+    pub(crate) fn start_in(&mut self, pane: CopyPane, cell: Cell) {
         self.anchor = Some(cell);
         self.current = Some(cell);
+        self.pane = Some(pane);
         self.active = true;
         self.text.clear();
     }
@@ -58,6 +66,7 @@ impl MouseSelection {
     pub(crate) fn clear(&mut self) {
         self.anchor = None;
         self.current = None;
+        self.pane = None;
         self.active = false;
         self.text.clear();
     }
@@ -216,6 +225,68 @@ pub(crate) fn editor_selection_text(
     out.join("\n")
 }
 
+/// Extract a selection from rows already clipped to a pane's visible area.
+/// Rendered rows are used intentionally: this preserves markdown wrapping and
+/// the exact scroll position the user selected. `strip_prefix` removes
+/// presentation-only rails from the Conversation pane.
+pub(crate) fn visible_rows_selection_text(
+    rows: &[String],
+    area: Rect,
+    sel: &MouseSelection,
+    strip_prefix: bool,
+) -> String {
+    let Some(rect) = sel.rect() else {
+        return String::new();
+    };
+    let mut output = Vec::new();
+    for row in rect.row_start..=rect.row_end {
+        if row < area.y || row >= area.bottom() {
+            continue;
+        }
+        let Some(raw) = rows.get((row - area.y) as usize) else {
+            continue;
+        };
+        let line = if strip_prefix {
+            strip_conversation_prefix(raw)
+        } else {
+            raw.clone()
+        };
+        let chars: Vec<char> = line.chars().collect();
+        let start = rect.col_start.saturating_sub(area.x) as usize;
+        let end = rect.col_end.saturating_sub(area.x) as usize;
+        let selected = if row == rect.row_start && row == rect.row_end {
+            chars
+                .get(start.min(chars.len())..=end.min(chars.len().saturating_sub(1)))
+                .unwrap_or(&[])
+                .iter()
+                .collect()
+        } else if row == rect.row_start {
+            chars
+                .get(start.min(chars.len())..)
+                .unwrap_or(&[])
+                .iter()
+                .collect()
+        } else if row == rect.row_end {
+            chars
+                .get(..=end.min(chars.len().saturating_sub(1)))
+                .unwrap_or(&[])
+                .iter()
+                .collect()
+        } else {
+            line
+        };
+        output.push(selected);
+    }
+    output.join("\n")
+}
+
+fn strip_conversation_prefix(line: &str) -> String {
+    line.strip_prefix("│ ")
+        .or_else(|| line.strip_prefix("│"))
+        .unwrap_or(line)
+        .to_string()
+}
+
 /// Is a screen cell inside a rectangle?
 pub(crate) fn cell_inside(area: Rect, col: u16, row: u16) -> bool {
     col >= area.x
@@ -230,7 +301,7 @@ mod tests {
 
     fn sel(a: Cell, c: Cell) -> MouseSelection {
         let mut s = MouseSelection::default();
-        s.start(a);
+        s.start_in(CopyPane::Editor, a);
         s.update(c);
         s
     }
@@ -285,6 +356,19 @@ mod tests {
         // content starts at col 7; select the first two character cells.
         let s = sel(Cell { row: 2, col: 7 }, Cell { row: 2, col: 9 });
         assert_eq!(editor_selection_text(&lines, 0, 0, area, &s), "λ🙂");
+    }
+
+    #[test]
+    fn conversation_extraction_removes_rail_and_preserves_rows() {
+        let rows = vec!["│ hello".to_string(), "│ world".to_string()];
+        let area = Rect::new(4, 10, 20, 2);
+        let mut selection = MouseSelection::default();
+        selection.start_in(CopyPane::Conversation, Cell { row: 10, col: 4 });
+        selection.update(Cell { row: 11, col: 10 });
+        assert_eq!(
+            visible_rows_selection_text(&rows, area, &selection, true),
+            "hello\nworld"
+        );
     }
 
     #[test]

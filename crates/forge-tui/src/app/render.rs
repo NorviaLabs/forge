@@ -355,6 +355,22 @@ impl TuiApp {
                     },
                 ));
             let conversation_area = sidebar_block.inner(sidebar);
+            self.conversation_area = Some(conversation_area);
+            let bottom_padding = if self.session.pending_hitl().is_some() {
+                0
+            } else if theme_picking {
+                1
+            } else {
+                input_h.saturating_add(1)
+            };
+            self.conversation_rows = visible_conversation_copy_rows(
+                &cached_lines,
+                &live_lines,
+                self.conversation_view.scroll,
+                self.conversation_view.follow,
+                bottom_padding,
+                conversation_area,
+            );
             sidebar_block.render(sidebar, frame.buffer_mut());
             frame.render_widget(
                 crate::conversation::ConversationLinesWidget {
@@ -362,15 +378,7 @@ impl TuiApp {
                     tail_lines: &live_lines,
                     scroll: self.conversation_view.scroll,
                     follow: self.conversation_view.follow,
-                    bottom_padding: if self.session.pending_hitl().is_some() {
-                        0
-                    } else if theme_picking {
-                        // The dock replaces the composer, so reserving its full
-                        // height would scroll a short transcript out of view.
-                        1
-                    } else {
-                        input_h.saturating_add(1)
-                    },
+                    bottom_padding,
                 },
                 conversation_area,
             );
@@ -789,6 +797,40 @@ impl TuiApp {
             )
             .render(area, buf);
     }
+}
+
+fn visible_conversation_copy_rows(
+    lines: &[Line<'static>],
+    tail_lines: &[Line<'static>],
+    scroll_from_bottom: u16,
+    follow: bool,
+    bottom_padding: u16,
+    area: ratatui::layout::Rect,
+) -> Vec<String> {
+    let content_len = lines.len().saturating_add(tail_lines.len());
+    let total = content_len.saturating_add(bottom_padding as usize);
+    let max_scroll = total.saturating_sub(area.height as usize);
+    let scroll = if follow {
+        max_scroll
+    } else {
+        max_scroll.saturating_sub((scroll_from_bottom as usize).min(max_scroll))
+    };
+    let end = scroll.saturating_add(area.height as usize).min(total);
+    (scroll..end)
+        .map(|index| {
+            let line = if index < lines.len() {
+                lines[index].clone()
+            } else if index < content_len {
+                tail_lines[index - lines.len()].clone()
+            } else {
+                Line::from("")
+            };
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect()
+        })
+        .collect()
 }
 
 /// Render text vertically centered inside the given area.

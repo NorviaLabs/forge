@@ -158,6 +158,8 @@ impl TuiApp {
             editor_area: None,
             selection: crate::selection::MouseSelection::default(),
             context_menu: None,
+            conversation_area: None,
+            conversation_rows: Vec::new(),
             catalog_fetch: CatalogFetchState {
                 refresh_rx: None,
                 warmed: false,
