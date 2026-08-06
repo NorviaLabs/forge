@@ -80,25 +80,9 @@ pub fn verify_api_key(api_key: &str, base_url: &str) -> Result<(), VerifyError> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
-    use std::thread;
 
     fn mock_server(status: u16) -> String {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut buf = [0_u8; 1024];
-            let _ = stream.read(&mut buf);
-            let body = r#"{"data":[]}"#;
-            let response = format!(
-                "HTTP/1.1 {status} test\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            stream.write_all(response.as_bytes()).unwrap();
-        });
-        format!("http://{addr}/")
+        crate::test_support::serve(vec![status], r#"{"data":[]}"#)
     }
 
     #[test]
