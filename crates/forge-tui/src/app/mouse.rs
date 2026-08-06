@@ -1,13 +1,16 @@
 //! Mouse input routing for [`TuiApp`].
 //!
 //! Split out of `app.rs` per the `input.rs` precedent (#19). v1 scope is
-//! **vertical wheel only**, routed by focus (not pointer position). The
-//! composer delegates to the conversation view; the interactive terminal and
-//! overlays are no-ops. Horizontal wheel and click/drag/motion events are
-//! ignored cheaply so they never consume the event-loop budget.
+//! **vertical wheel only**, routed by focus (not pointer position). Selection
+//! support (drag-to-select + right-click context menu, v1: the Editor pane) is
+//! routed by pointer position within the editor rect. Hover `Moved` events are
+//! not emitted unless `EnableMouseMotion` is also enabled (it is not).
 
 use super::*;
-use crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+use crate::clipboard;
+use crate::selection::{self, cell_inside, Cell, ContextMenuItem};
 
 /// Conversation/explorer rows moved per plain wheel notch.
 const WHEEL_NOTCH: isize = 1;
@@ -16,18 +19,183 @@ const WHEEL_NOTCH: isize = 1;
 const WHEEL_PAGE: isize = 5;
 
 impl TuiApp {
-    /// Route a terminal mouse event. Only vertical wheel notches are handled in
-    /// v1; everything else is a cheap no-op.
+    /// Route a terminal mouse event.
     pub(crate) async fn handle_mouse(&mut self, event: MouseEvent) -> Result<(), TuiError> {
-        let direction = match event.kind {
-            MouseEventKind::ScrollUp => -1,
-            MouseEventKind::ScrollDown => 1,
-            // Horizontal wheel and click/drag/motion events are out of v1 scope.
-            _ => return Ok(()),
-        };
-        let shift = event.modifiers.contains(KeyModifiers::SHIFT);
-        self.dispatch_mouse_scroll(direction, shift);
+        // A context menu owns the pointer while it is open.
+        if self.context_menu.is_some() {
+            self.handle_mouse_context_menu(&event);
+            return Ok(());
+        }
+
+        match event.kind {
+            MouseEventKind::ScrollUp => {
+                self.dispatch_mouse_scroll(-1, event.modifiers.contains(KeyModifiers::SHIFT));
+            }
+            MouseEventKind::ScrollDown => {
+                self.dispatch_mouse_scroll(1, event.modifiers.contains(KeyModifiers::SHIFT));
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.mouse_start_selection(event.column, event.row);
+            }
+            MouseEventKind::Drag(_) | MouseEventKind::Moved => {
+                self.mouse_update_selection(event.column, event.row);
+            }
+            MouseEventKind::Up(MouseButton::Left) => self.mouse_finish_selection(),
+            MouseEventKind::Down(MouseButton::Right) => {
+                self.mouse_open_context_menu(event.column, event.row);
+            }
+            // The right-button release completes opening the menu; it must not
+            // be interpreted as an outside click against the newly-created menu.
+            MouseEventKind::Up(MouseButton::Right) => {}
+            // Horizontal wheel / other buttons are ignored cheaply.
+            _ => {}
+        }
         Ok(())
+    }
+
+    /// Block click/selection routing when a modal or transient surface owns the
+    /// pointer (mirrors the wheel guard's precedence in `dispatch_mouse_scroll`).
+    fn pointer_blocked(&self) -> bool {
+        self.explorer_dialog.current.is_some()
+            || self.hitl_session.pattern_nudge.is_some()
+            || self.session.pending_hitl().is_some()
+            || self.composer_chip_focus.is_some()
+            || self.overlay.is_some()
+    }
+
+    fn mouse_start_selection(&mut self, col: u16, row: u16) {
+        let over_editor = self
+            .editor_area
+            .is_some_and(|area| cell_inside(area, col, row))
+            && self.current_workspace_is_file();
+        if self.pointer_blocked() || !over_editor {
+            // Clicking elsewhere clears any prior selection (v1: editor only).
+            self.selection.clear();
+            return;
+        }
+        self.selection.start(Cell { row, col });
+    }
+
+    fn mouse_update_selection(&mut self, col: u16, row: u16) {
+        if self.selection.is_active() {
+            self.selection.update(Cell { row, col });
+        }
+    }
+
+    fn mouse_finish_selection(&mut self) {
+        if !self.selection.is_active() {
+            return;
+        }
+        let text = match self.editor_area {
+            Some(area) => selection::editor_selection_text(
+                &self.source_viewer.lines,
+                self.source_viewer.top_line,
+                self.source_viewer.h_scroll,
+                area,
+                &self.selection,
+            ),
+            None => String::new(),
+        };
+        self.selection.finish(text);
+    }
+
+    fn mouse_open_context_menu(&mut self, col: u16, row: u16) {
+        if self.pointer_blocked() {
+            return;
+        }
+        let x = col.saturating_add(1);
+        let y = row.saturating_add(1);
+        self.context_menu = Some(selection::ContextMenu::new(x, y));
+    }
+
+    fn handle_mouse_context_menu(&mut self, event: &MouseEvent) {
+        let (col, row) = (event.column, event.row);
+        match event.kind {
+            MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Down(MouseButton::Right) => {
+                let inside = self
+                    .context_menu
+                    .as_ref()
+                    .is_some_and(|menu| menu.index_at(col, row).is_some());
+                if !inside {
+                    self.context_menu = None;
+                } else if let Some(menu) = self.context_menu.as_mut() {
+                    if let Some(i) = menu.index_at(col, row) {
+                        menu.selected = i;
+                    }
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                let action = self
+                    .context_menu
+                    .as_ref()
+                    .and_then(|menu| menu.index_at(col, row))
+                    .map(|i| menu_item_at(&self.context_menu, i));
+                if let Some(action) = action {
+                    self.activate_context_menu(action);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn activate_context_menu(&mut self, action: ContextMenuItem) {
+        match action {
+            ContextMenuItem::Copy => {
+                if self.selection.text.is_empty() {
+                    self.set_feedback(
+                        crate::widgets::FeedbackSeverity::Error,
+                        "Nothing selected to copy",
+                    );
+                } else {
+                    let text = self.selection.text.clone();
+                    match clipboard::write_osc52(&text) {
+                        Ok(()) => self.set_feedback(
+                            crate::widgets::FeedbackSeverity::Ok,
+                            "Copied selection to clipboard",
+                        ),
+                        Err(error) => self.set_feedback(
+                            crate::widgets::FeedbackSeverity::Error,
+                            format!("Copy failed: {error}"),
+                        ),
+                    }
+                    self.selection.clear();
+                }
+                self.context_menu = None;
+            }
+            ContextMenuItem::ClearSelection => {
+                self.selection.clear();
+                self.context_menu = None;
+            }
+        }
+    }
+
+    pub(super) fn handle_context_menu_key(&mut self, key: event::KeyEvent) {
+        match key.code {
+            KeyCode::Esc => self.context_menu = None,
+            KeyCode::Down | KeyCode::Char('j') => {
+                if let Some(menu) = self.context_menu.as_mut() {
+                    menu.selected = (menu.selected + 1) % menu.items.len();
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let Some(menu) = self.context_menu.as_mut() {
+                    menu.selected = menu
+                        .selected
+                        .checked_sub(1)
+                        .unwrap_or(menu.items.len().saturating_sub(1));
+                }
+            }
+            KeyCode::Enter => {
+                let action = self
+                    .context_menu
+                    .as_ref()
+                    .map(|menu| menu_item_at(&self.context_menu, menu.selected));
+                if let Some(action) = action {
+                    self.activate_context_menu(action);
+                }
+            }
+            _ => {}
+        }
     }
 
     fn dispatch_mouse_scroll(&mut self, direction: isize, shift: bool) {
@@ -94,4 +262,12 @@ impl TuiApp {
         self.source_viewer
             .move_cursor_vertical(delta, page.max(1) as usize);
     }
+}
+
+/// Resolve the selected menu item by index (indirection to sidestep borrow
+/// conflicts between `self.context_menu` reads and `&mut self` mutation).
+fn menu_item_at(menu: &Option<selection::ContextMenu>, index: usize) -> ContextMenuItem {
+    menu.as_ref()
+        .and_then(|m| m.items.get(index).copied())
+        .unwrap_or(ContextMenuItem::ClearSelection)
 }
