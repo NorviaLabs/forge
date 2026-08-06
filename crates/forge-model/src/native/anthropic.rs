@@ -4,7 +4,7 @@ use forge_types::{MessageRole, ModelResponse, ModelStreamEvent, ToolCall, Usage}
 use futures::StreamExt;
 use serde_json::{json, Value};
 
-use super::NativeModelClient;
+use super::{process_sse_lines, NativeModelClient};
 use crate::prompt_cache::{apply_anthropic_prompt_cache, usage_from_provider};
 use crate::{ModelError, ModelRequest, StreamEventTx};
 
@@ -93,14 +93,12 @@ pub(super) async fn complete(
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|error| ModelError::Transport(error.to_string()))?;
         pending.push_str(&String::from_utf8_lossy(&chunk));
-        while let Some(newline) = pending.find('\n') {
-            let line = pending[..newline].trim().to_string();
-            pending.drain(..=newline);
+        process_sse_lines(&mut pending, |line| {
             let Some(data) = line.strip_prefix("data:").map(str::trim) else {
-                continue;
+                return Ok(());
             };
             if data.is_empty() {
-                continue;
+                return Ok(());
             }
             let event: Value = serde_json::from_str(data)
                 .map_err(|error| ModelError::Protocol(format!("invalid SSE JSON: {error}")))?;
@@ -115,7 +113,8 @@ pub(super) async fn complete(
                 &mut completion_tokens,
                 tx.as_ref(),
             )?;
-        }
+            Ok(())
+        })?;
     }
 
     let tool_calls = finalize_tool_uses(tool_uses)?;

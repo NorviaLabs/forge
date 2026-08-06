@@ -280,16 +280,52 @@ impl TuiApp {
         }
         let width = sidebar_width.saturating_sub(2) as usize;
         let live_lines = if self.busy_state.active && self.pending_turn.prompt.is_none() {
-            ConversationModel::from_messages(
-                &[],
-                &[],
-                self.session.active_task.lifecycle,
-                ConversationViewOpts { busy: true, ..opts },
-            )
-            .with_streaming_preview(self.stream.thinking.clone(), self.stream.preview.clone())
-            .lines_for_width(width)
+            let key = (
+                width as u16,
+                self.stream.thinking.len(),
+                self.stream.preview.len(),
+            );
+            if let Some((cached_width, cached_thinking, cached_preview, lines)) =
+                self.stream.live_lines.as_ref()
+            {
+                if (*cached_width, *cached_thinking, *cached_preview) == key {
+                    Arc::clone(lines)
+                } else {
+                    let lines = Arc::new(
+                        ConversationModel::from_messages(
+                            &[],
+                            &[],
+                            self.session.active_task.lifecycle,
+                            ConversationViewOpts { busy: true, ..opts },
+                        )
+                        .with_streaming_preview(
+                            self.stream.thinking.clone(),
+                            self.stream.preview.clone(),
+                        )
+                        .lines_for_width(width),
+                    );
+                    self.stream.live_lines = Some((key.0, key.1, key.2, Arc::clone(&lines)));
+                    lines
+                }
+            } else {
+                let lines = Arc::new(
+                    ConversationModel::from_messages(
+                        &[],
+                        &[],
+                        self.session.active_task.lifecycle,
+                        ConversationViewOpts { busy: true, ..opts },
+                    )
+                    .with_streaming_preview(
+                        self.stream.thinking.clone(),
+                        self.stream.preview.clone(),
+                    )
+                    .lines_for_width(width),
+                );
+                self.stream.live_lines = Some((key.0, key.1, key.2, Arc::clone(&lines)));
+                lines
+            }
         } else {
-            Vec::new()
+            Arc::new(Vec::new())
         };
         let cached = self
             .render_cache
@@ -381,8 +417,7 @@ impl TuiApp {
                     run: &self.run,
                     terminal_title: self.terminal_capture.title.as_deref(),
                     terminal_content: interactive_terminal_output
-                        .as_deref()
-                        .unwrap_or(&self.terminal_capture.content),
+                        .unwrap_or(self.terminal_capture.content.as_str()),
                     terminal_truncated: self.terminal_capture.truncated,
                     terminal_running: interactive_terminal.is_some_and(|terminal| terminal.running),
                     terminal_shell: interactive_terminal.map(|terminal| terminal.shell.as_str()),
@@ -612,12 +647,20 @@ impl TuiApp {
     }
 
     fn render_diff_workspace(
-        &self,
+        &mut self,
         area: ratatui::layout::Rect,
         buf: &mut ratatui::buffer::Buffer,
     ) {
-        let gs = &self.workspace_files.explorer.git_status;
-        if gs.loading && gs.status.is_empty() && !self.diff_view.snapshot.stale {
+        let (loading, error, status_empty, changed) = {
+            let gs = &self.workspace_files.explorer.git_status;
+            (
+                gs.loading,
+                gs.error.is_some(),
+                gs.status.is_empty(),
+                gs.changed_files(),
+            )
+        };
+        if loading && status_empty && !self.diff_view.snapshot.stale {
             Paragraph::new("Loading changes…")
                 .style(theme::muted())
                 .alignment(ratatui::layout::Alignment::Center)
@@ -630,7 +673,7 @@ impl TuiApp {
                 .render(area, buf);
             return;
         }
-        if gs.error.is_some() && !self.diff_view.snapshot.stale {
+        if error && !self.diff_view.snapshot.stale {
             Paragraph::new("Changes unavailable\n\nGit status could not be read.\nThe rest of Forge remains usable.")
                 .style(theme::muted())
                 .alignment(ratatui::layout::Alignment::Center)
@@ -643,7 +686,7 @@ impl TuiApp {
                 .render(area, buf);
             return;
         }
-        if gs.status.is_empty() && !self.diff_view.snapshot.stale {
+        if status_empty && !self.diff_view.snapshot.stale {
             render_centered_text(
                 area,
                 buf,
@@ -654,7 +697,6 @@ impl TuiApp {
             return;
         }
 
-        let changed = gs.changed_files();
         let review_paths =
             if self.diff_view.snapshot.stale && !self.diff_view.snapshot.paths.is_empty() {
                 self.diff_view.snapshot.paths.clone()
@@ -695,7 +737,12 @@ impl TuiApp {
         lines.push(Line::from(Span::styled("UNSTAGED DIFF", theme::info())));
 
         if let Some(path) = selected_path {
-            match gs.get_unstaged_diff(&self.runtime.cwd, path) {
+            match self
+                .workspace_files
+                .explorer
+                .git_status
+                .get_unstaged_diff(&self.runtime.cwd, path)
+            {
                 Ok(diff) => {
                     for line in diff.lines().take(20) {
                         let style = if line.starts_with('+') {

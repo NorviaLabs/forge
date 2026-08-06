@@ -99,7 +99,12 @@ impl TaskQueue {
     /// Final step of atomic promotion, called only after the task/attempt
     /// were actually created.
     pub fn mark_promoted(&mut self, id: QueueItemId) -> bool {
-        self.transition_status(id, QueueItemStatus::Promoting, QueueItemStatus::Promoted)
+        let changed =
+            self.transition_status(id, QueueItemStatus::Promoting, QueueItemStatus::Promoted);
+        if changed {
+            self.compact_terminal();
+        }
+        changed
     }
 
     /// Roll a `Promoting` item back to `Queued` — used when promotion fails
@@ -115,10 +120,21 @@ impl TaskQueue {
     /// under an in-flight promotion.
     pub fn remove(&mut self, id: QueueItemId) -> Option<QueuedTask> {
         if self.transition_status(id, QueueItemStatus::Queued, QueueItemStatus::Removed) {
-            self.items.iter().find(|i| i.id == id).cloned()
+            let removed = self.items.iter().find(|i| i.id == id).cloned();
+            self.compact_terminal();
+            removed
         } else {
             None
         }
+    }
+
+    fn compact_terminal(&mut self) {
+        self.items.retain(|item| {
+            matches!(
+                item.status,
+                QueueItemStatus::Queued | QueueItemStatus::Promoting
+            )
+        });
     }
 
     /// Cancel by 1-based position in the *visible* list — matches the

@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use forge_types::{ToolDescriptor, ToolOutput};
+use forge_types::{ToolDescriptor, ToolOutput, ToolValidationError};
+use jsonschema::Validator;
 use serde_json::Value;
 
-use crate::validation::{validate_args, ValidationBudget};
+use crate::validation::{validate_args_with, ValidationBudget};
 use crate::{Tool, ToolError};
 
 #[derive(Debug, Clone)]
@@ -123,17 +124,24 @@ fn escapes_workspace(rel: &str) -> ToolError {
 
 pub struct ToolRegistry {
     tools: HashMap<String, Arc<dyn Tool>>,
+    schemas: HashMap<String, Value>,
+    validators: Mutex<HashMap<String, Arc<Validator>>>,
 }
 
 impl ToolRegistry {
     pub fn new() -> Self {
         Self {
             tools: HashMap::new(),
+            schemas: HashMap::new(),
+            validators: Mutex::new(HashMap::new()),
         }
     }
 
     pub fn register(&mut self, tool: Arc<dyn Tool>) {
-        self.tools.insert(tool.name().to_string(), tool);
+        let name = tool.name().to_string();
+        self.schemas.insert(name.clone(), tool.input_schema());
+        self.validators.get_mut().unwrap().remove(&name);
+        self.tools.insert(name, tool);
     }
 
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
@@ -141,7 +149,17 @@ impl ToolRegistry {
     }
 
     pub fn list_descriptors(&self) -> Vec<ToolDescriptor> {
-        let mut v: Vec<_> = self.tools.values().map(|t| t.descriptor()).collect();
+        let mut v: Vec<_> = self
+            .tools
+            .values()
+            .map(|tool| ToolDescriptor {
+                name: tool.name().to_string(),
+                description: tool.description().to_string(),
+                input_schema: self.schemas[tool.name()].clone(),
+                side_effect_class: tool.side_effect_class(),
+                idempotent: tool.idempotent(),
+            })
+            .collect();
         v.sort_by(|a, b| a.name.cmp(&b.name));
         v
     }
@@ -164,7 +182,19 @@ impl ToolRegistry {
             .get(name)
             .ok_or_else(|| ToolError::Unknown(name.to_string()))?;
 
-        if let Err(ve) = validate_args(name, &tool.input_schema(), &args) {
+        let validator = match self.validators(name) {
+            Ok(v) => v,
+            Err(compile_error) => {
+                return Err(ToolError::Validation(ToolValidationError {
+                    tool: name.to_string(),
+                    path: "$".into(),
+                    message: format!("invalid tool schema: {compile_error}"),
+                    schema_hint: None,
+                }))
+            }
+        };
+
+        if let Err(ve) = validate_args_with(name, &self.schemas[name], &validator, &args) {
             let signature =
                 crate::validation::validation_error_signature(name, &ve.path, &ve.message);
             budget
@@ -174,6 +204,20 @@ impl ToolRegistry {
         }
 
         tool.call(ctx, args).await
+    }
+
+    fn validators(&self, name: &str) -> Result<Arc<Validator>, String> {
+        let schema = self
+            .schemas
+            .get(name)
+            .ok_or_else(|| format!("no schema for `{name}`"))?;
+        let mut cache = self.validators.lock().unwrap();
+        if let Some(v) = cache.get(name) {
+            return Ok(v.clone());
+        }
+        let validator = Arc::new(crate::validation::compile_validator(schema)?);
+        cache.insert(name.to_string(), validator.clone());
+        Ok(validator)
     }
 }
 
@@ -231,6 +275,20 @@ mod tests {
             .unwrap();
         assert_eq!(out.content, "hi");
         assert!(!out.is_error);
+    }
+
+    #[test]
+    fn compiled_validator_is_cached_per_tool() {
+        let mut reg = ToolRegistry::new();
+        reg.register(Arc::new(ReadFileTool));
+        assert!(reg.validators("read_file").is_ok());
+        let first = reg.validators("read_file").unwrap();
+        let second = reg.validators("read_file").unwrap();
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "validator must be compiled once"
+        );
+        assert!(reg.validators("nope").is_err());
     }
 
     #[test]

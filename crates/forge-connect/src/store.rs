@@ -404,10 +404,22 @@ pub fn resolve_connected(
     profile_id: &str,
     store: &CredentialStore,
 ) -> Result<Option<KeySource>, StoreError> {
-    if store.get_oauth(profile_id)?.is_some() {
+    let file = store.load()?;
+    if file.oauth.contains_key(profile_id) {
         return Ok(Some(KeySource::Oauth));
     }
-    Ok(resolve_key(profile_env_names, profile_id, store)?.map(|(_, s)| s))
+    for name in profile_env_names {
+        if let Ok(value) = std::env::var(name) {
+            if !value.trim().is_empty() {
+                return Ok(Some(KeySource::Env));
+            }
+        }
+    }
+    Ok(file
+        .keys
+        .get(profile_id)
+        .filter(|key| !key.trim().is_empty())
+        .map(|_| KeySource::File))
 }
 
 #[cfg(test)]

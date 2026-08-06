@@ -402,6 +402,7 @@ impl TuiApp {
         self.busy_state.phase = BusyPhase::Model;
         self.stream.preview.clear();
         self.stream.thinking.clear();
+        self.stream.live_lines = None;
         self.timing.started.get_or_insert_with(Instant::now);
         self.timing.thinking_started = None;
         self.timing.thought_secs = None;
@@ -546,6 +547,7 @@ impl TuiApp {
             let thought = self.timing.thought_secs.take();
             self.stream.preview.clear();
             self.stream.thinking.clear();
+            self.stream.live_lines = None;
             // Keep turn_started until full agent turn ends (multi-tool steps).
             if let Some(call) = last.tool_calls.first() {
                 self.busy_state.phase = BusyPhase::Tool {
