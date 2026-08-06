@@ -49,6 +49,9 @@ pub(super) async fn drain_events(
             Event::Key(key) => {
                 app.handle_key(key).await?;
             }
+            Event::Mouse(event) => {
+                app.handle_mouse(event).await?;
+            }
             Event::Paste(data) => {
                 app.handle_paste(&data);
             }
@@ -114,7 +117,12 @@ async fn run_tui_inner(
     // Ensure the terminal is restored on panic, returned errors and normal exit.
     let _guard = TerminalGuard::install();
     let mut stdout = stdout();
-    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableBracketedPaste,
+        EnableMouseCapture
+    )?;
     execute!(
         stdout,
         PushKeyboardEnhancementFlags(
@@ -206,6 +214,9 @@ async fn run_loop(
             match event::read()? {
                 Event::Key(key) => {
                     app.handle_key(key).await?;
+                }
+                Event::Mouse(event) => {
+                    app.handle_mouse(event).await?;
                 }
                 Event::Paste(data) => {
                     app.handle_paste(&data);

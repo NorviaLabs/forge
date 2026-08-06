@@ -15,6 +15,7 @@ mod explorer;
 mod focus;
 pub(crate) mod helpers;
 mod highlight;
+mod mouse;
 mod prelude;
 mod tasks;
 mod theme;

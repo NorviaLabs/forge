@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use crossterm::event::{
-    self, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers,
+    self, EnableBracketedPaste, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
     KeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
@@ -83,6 +83,7 @@ mod files;
 mod focus;
 mod input;
 mod input_route;
+mod mouse;
 mod new;
 mod overlays;
 mod persist;
