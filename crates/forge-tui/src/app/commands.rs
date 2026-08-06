@@ -337,6 +337,13 @@ impl TuiApp {
             SemanticCommand::PushView(view) => self.push_workspace_view(view),
             SemanticCommand::ReplaceView(view) => self.replace_workspace_view(view),
             SemanticCommand::CancelCurrentInteraction => {
+                // A mouse selection takes priority: Esc's first job is to
+                // deselect (mirrors browser/native-terminal behavior), not
+                // interrupt a turn or move focus.
+                if self.selection.is_active() {
+                    self.selection.clear();
+                    return Ok(true);
+                }
                 // While a turn is running, Esc is the scoped, low-risk way to
                 // interrupt just this turn — mirrors the graceful first press
                 // of Ctrl+C (`QuitOrInterrupt`) without its second-press quit
@@ -1439,6 +1446,38 @@ mod tests {
         assert!(
             !app.exit.requested,
             "Esc must never quit the app, unlike a second Ctrl+C"
+        );
+    }
+
+    #[tokio::test]
+    async fn esc_clears_an_active_selection_before_interrupting_or_navigating() {
+        let (_d, mut app) = app().await;
+        app.busy_state.active = true;
+        app.focus.block = FocusBlock::Composer;
+        app.selection.start_in(
+            crate::selection::CopyPane::Conversation,
+            crate::selection::Cell { row: 1, col: 1 },
+        );
+        app.selection
+            .update(crate::selection::Cell { row: 2, col: 5 });
+        assert!(app.selection.is_active());
+
+        app.execute_semantic_command(SemanticCommand::CancelCurrentInteraction)
+            .await
+            .unwrap();
+
+        assert!(
+            !app.selection.is_active(),
+            "Esc's first job is to clear an active mouse selection"
+        );
+        assert!(
+            !app.cancellation.requested,
+            "Esc must not also interrupt a busy turn when it only cleared a selection"
+        );
+        assert_eq!(
+            app.focus.block,
+            FocusBlock::Composer,
+            "Esc must not also navigate focus when it only cleared a selection"
         );
     }
 

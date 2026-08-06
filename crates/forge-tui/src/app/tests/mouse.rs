@@ -109,6 +109,80 @@ async fn wheel_over_overlay_is_a_noop() {
     assert_eq!(app.conversation_view.scroll, 0);
 }
 
+fn left_click(column: u16, row: u16) -> event::MouseEvent {
+    event::MouseEvent {
+        kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    }
+}
+
+fn left_release(column: u16, row: u16) -> event::MouseEvent {
+    event::MouseEvent {
+        kind: crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Left),
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    }
+}
+
+#[tokio::test]
+async fn click_without_drag_clears_selection_instead_of_copying() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.conversation_area = Some(ratatui::layout::Rect::new(0, 0, 80, 20));
+    app.conversation_rows = vec!["hello world".to_string()];
+
+    // Down and up at the same cell: no drag occurred.
+    app.handle_mouse(left_click(5, 2)).await.unwrap();
+    assert!(
+        app.selection.is_active(),
+        "mouse-down should start a selection"
+    );
+
+    app.handle_mouse(left_release(5, 2)).await.unwrap();
+
+    assert!(
+        !app.selection.is_active(),
+        "a click without a drag must clear rather than leave a one-cell selection"
+    );
+    assert!(
+        app.feedback.is_empty(),
+        "a click without a drag must not trigger the auto-copy feedback toast"
+    );
+}
+
+#[tokio::test]
+async fn dragged_selection_auto_copies_and_reports_line_count() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.conversation_area = Some(ratatui::layout::Rect::new(0, 0, 80, 20));
+    app.conversation_rows = vec!["│ hello".to_string(), "│ world".to_string()];
+
+    // Start the drag at the pane's left edge (col == area.x): the existing
+    // rail-stripping in `visible_rows_selection_text` computes offsets
+    // against the raw (pre-strip) row, so a start column mid-line would
+    // land in the wrong place post-strip — an existing quirk, not something
+    // this change touches.
+    app.handle_mouse(left_click(0, 0)).await.unwrap();
+    app.handle_mouse(event::MouseEvent {
+        kind: crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Left),
+        column: 6,
+        row: 1,
+        modifiers: KeyModifiers::NONE,
+    })
+    .await
+    .unwrap();
+    app.handle_mouse(left_release(6, 1)).await.unwrap();
+
+    assert!(
+        app.selection.is_active(),
+        "the highlight should persist after auto-copy, like a native text selection"
+    );
+    assert_eq!(app.selection.text, "hello\nworld");
+    assert_eq!(app.feedback.severity, crate::widgets::FeedbackSeverity::Ok);
+    assert_eq!(app.feedback.text, "Copied 2 lines");
+}
+
 #[tokio::test]
 async fn horizontal_wheel_is_ignored() {
     let (_dir, mut app) = focus_test_app().await;
