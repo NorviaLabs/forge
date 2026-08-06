@@ -251,9 +251,6 @@ impl TuiApp {
             input_route::InputRoute::QueueFutureTask => {
                 self.enqueue_user_message(line).await;
             }
-            input_route::InputRoute::ResolveApproval(action) => {
-                self.resolve_approval_line(action).await?;
-            }
             input_route::InputRoute::AnswerClarification
             | input_route::InputRoute::ResolveSelection => {
                 // No runtime producer exists yet for these wait reasons —
@@ -262,11 +259,11 @@ impl TuiApp {
             }
             input_route::InputRoute::RejectStaleResponse => {
                 // Keep the operator's text so they can edit it into a valid
-                // approval answer instead of retyping from scratch.
+                // message instead of retyping from scratch.
                 self.input.set_text(line);
                 self.set_feedback(
                     FeedbackSeverity::Warn,
-                    "resolve the pending approval first — ↑↓ select · Enter confirm · Esc deny (or type yes/no/…)",
+                    "resolve the pending approval first — ↑↓ select · Enter confirm · Esc cancel",
                 );
             }
         }
@@ -466,6 +463,9 @@ impl TuiApp {
             FocusBlock::Sidebar => self.handle_sidebar_key(key).await,
             FocusBlock::Composer => Ok(false),
             FocusBlock::BottomPanel => self.handle_bottom_panel_key(key).await,
+            // Menu keys (↑↓ Enter Esc) are consumed by `handle_approval_menu_key`
+            // before routing; everything else is ignored here.
+            FocusBlock::Approval => Ok(false),
         }
     }
 
@@ -485,6 +485,12 @@ impl TuiApp {
     }
 
     async fn type_to_compose(&mut self, key: event::KeyEvent) -> Result<bool, TuiError> {
+        // While an approval is pending the composer is not the answer input;
+        // typing must neither move focus off the approval card nor accumulate
+        // text behind the waiting state.
+        if self.session.pending_hitl().is_some() {
+            return Ok(false);
+        }
         let Some(c) = Self::printable_chat_char(key) else {
             return Ok(false);
         };

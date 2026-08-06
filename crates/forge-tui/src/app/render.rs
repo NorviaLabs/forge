@@ -100,6 +100,7 @@ impl TuiApp {
             files: regions.files.is_some(),
             sidebar: regions.sidebar.is_some(),
             bottom_panel: self.bottom_panel.open && regions.bottom_panel.height > 0,
+            approval: self.session.pending_hitl().is_some(),
         };
         if self.bottom_panel.open && regions.bottom_panel.height > 1 {
             self.resize_interactive_terminal(
@@ -203,10 +204,7 @@ impl TuiApp {
                 .pending_hitl()
                 .map(|payload| payload.call_id.clone()),
             approval_menu_selected: self.hitl_session.menu.selected,
-            approval_menu_deny_feedback: matches!(
-                self.hitl_session.menu.phase,
-                ApprovalMenuPhase::DenyFeedback
-            ),
+            approval_focused: self.focus.block == FocusBlock::Approval,
             pattern_nudge: self
                 .hitl_session
                 .pattern_nudge
@@ -262,12 +260,9 @@ impl TuiApp {
             if let Some(payload) = self.session.pending_hitl().cloned() {
                 let rows = self.approval_menu_rows();
                 let selected = self.hitl_session.menu.selected;
-                let deny_feedback = matches!(
-                    self.hitl_session.menu.phase,
-                    ApprovalMenuPhase::DenyFeedback
-                );
+                let approval_focused = self.focus.block == FocusBlock::Approval;
                 let cwd = self.session.workspace_root().display().to_string();
-                conv = conv.with_pending_approval(&payload, cwd, rows, selected, deny_feedback);
+                conv = conv.with_pending_approval(&payload, cwd, rows, selected, approval_focused);
             }
             if let Some(nudge) = self.hitl_session.pattern_nudge.as_ref() {
                 conv = conv.with_pattern_nudge(nudge.pattern.clone(), nudge.selected);
@@ -590,10 +585,12 @@ impl TuiApp {
                 InputBar {
                     model: &self.input,
                     attachment: attachment_label.as_deref(),
-                    dimmed: self.busy_state.active && self.input.text.is_empty(),
+                    dimmed: (self.busy_state.active && self.input.text.is_empty())
+                        || self.session.pending_hitl().is_some(),
                     not_connected: !connected,
                     focused: self.focus.mode == FocusMode::Navigation
                         && self.focus.block == FocusBlock::Composer,
+                    waiting: self.session.pending_hitl().is_some(),
                     show_send_hint: true,
                 },
                 regions.input,

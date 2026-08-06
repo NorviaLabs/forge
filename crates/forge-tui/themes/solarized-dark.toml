@@ -32,6 +32,8 @@ cursor = "#EEE8D5"
 user_gutter_active = "#58A2D3"
 tag = "#93A1A1"
 search_match = "#284028"
+waiting_border = "#B58900"
+approval_accent = "#268BD2"
 
 [syntax]
 comment = "#586E75"

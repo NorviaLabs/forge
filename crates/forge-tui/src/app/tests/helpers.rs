@@ -92,6 +92,14 @@ pub(crate) async fn session_for_workspace_with_model(
 }
 
 pub(crate) async fn focus_test_app() -> (TempDir, TuiApp) {
+    focus_test_app_with_theme(forge_config::DEFAULT_THEME_ID).await
+}
+
+/// Like `focus_test_app`, but built under the given theme id. Callers that
+/// exercise a specific shipped palette must also `crate::theme::install` that
+/// theme on the test thread (the app records the id; rendering resolves it
+/// through the thread-local theme registry).
+pub(crate) async fn focus_test_app_with_theme(theme_id: &str) -> (TempDir, TuiApp) {
     let (dir, session) = test_session().await;
     let mut app = TuiApp::new(
         session,
@@ -103,7 +111,7 @@ pub(crate) async fn focus_test_app() -> (TempDir, TuiApp) {
             startup_notices: Vec::new(),
             validation_command: None,
             file_icons: FileIconMode::Unicode,
-            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+            theme_id: theme_id.to_string(),
         },
     );
     // `TuiApp::new` restores any real, ambient connect credentials from the

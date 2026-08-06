@@ -566,6 +566,18 @@ pub fn inactive_panel_border() -> Style {
     border_muted()
 }
 
+/// Composer border while an approval is pending — distinct from busy-dim and
+/// the inactive border, so the "waiting for a decision" state reads on its
+/// own and survives the busy-resume immediately after a decision.
+pub fn waiting_border() -> Style {
+    Style::default().fg(active_palette().waiting_border)
+}
+
+/// Accent border for the focused approval card.
+pub fn approval_accent() -> Style {
+    Style::default().fg(active_palette().approval_accent)
+}
+
 /// Active panel title: primary text, bold.
 pub fn active_panel_title() -> Style {
     text().add_modifier(Modifier::BOLD)
@@ -625,6 +637,10 @@ pub struct Palette {
     pub border: Color,
     pub border_muted: Color,
     pub search_match: Color,
+    /// Composer border while an approval is pending (see [`waiting_border`]).
+    pub waiting_border: Color,
+    /// Accent border for the focused approval card (see [`approval_accent`]).
+    pub approval_accent: Color,
     /// Foreground for text painted on top of `selection` (see [`SELECTION_FG`]).
     pub selection_fg: Color,
     /// "current" / "connected" tag label color (see [`TAG`]).
@@ -664,6 +680,8 @@ fn palette_from_source(src: &ThemePalette) -> Palette {
         border: to_color(src.border),
         border_muted: to_color(src.border_muted),
         search_match: to_color(src.search_match),
+        waiting_border: to_color(src.waiting_border),
+        approval_accent: to_color(src.approval_accent),
         selection_fg: to_color(src.text_primary),
         tag: to_color(src.tag),
         cursor: to_color(src.cursor),
