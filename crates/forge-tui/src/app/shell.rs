@@ -160,7 +160,6 @@ async fn run_loop(
     while !app.exit.requested {
         app.poll_file_changes();
         app.poll_interactive_terminal();
-        app.poll_run();
         app.warm_catalog_once_connected();
         app.poll_catalog_refresh();
         app.poll_background_tasks().await?;
@@ -193,10 +192,6 @@ async fn run_loop(
         }
         if app.external_editor.requested {
             app.drain_pending_external_editor(Some(terminal)).await?;
-            continue;
-        }
-        if app.run_execution.execution.pending_validation {
-            app.drain_pending_validation(Some(terminal)).await?;
             continue;
         }
 

@@ -183,7 +183,6 @@ async fn remembered_approval_expires_with_session() {
             cwd: dir.path().to_path_buf(),
             version: "test".into(),
             startup_notices: Vec::new(),
-            validation_command: None,
             file_icons: FileIconMode::Unicode,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },

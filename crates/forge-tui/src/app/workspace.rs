@@ -1,6 +1,6 @@
 //! Workspace view navigation for [`TuiApp`].
 //!
-//! Split out of `app.rs` per #19. Conversation, file, diff-review and run views
+//! Split out of `app.rs` per #19. Conversation, file and diff-review views
 //! share one navigation stack; these methods push, replace and validate views.
 //! Methods are moved verbatim.
 
@@ -21,12 +21,6 @@ impl TuiApp {
         )
     }
 
-    pub(super) fn current_workspace_is_run(&self) -> bool {
-        matches!(
-            self.workspace_navigation.current,
-            Some(WorkspaceView::Run(_))
-        )
-    }
     pub(super) fn toggle_files_panel(&mut self) {
         self.workspace_files.visible = !self.workspace_files.visible;
         self.save_ui_state();
@@ -42,7 +36,6 @@ impl TuiApp {
         match view {
             WorkspaceView::File(path) => path.is_file() || path.is_symlink(),
             WorkspaceView::Diff(DiffCommandContext::Current) => true,
-            WorkspaceView::Run(id) => self.run_exists(id),
         }
     }
 
@@ -53,17 +46,6 @@ impl TuiApp {
             }
             WorkspaceView::Diff(DiffCommandContext::Current) => {
                 self.focus_block(FocusBlock::Workspace);
-            }
-            WorkspaceView::Run(id) => {
-                if self.run_exists(id) {
-                    self.focus_block(FocusBlock::Workspace);
-                } else {
-                    self.set_feedback(
-                        FeedbackSeverity::Warn,
-                        format!("Run is no longer available: {id}"),
-                    );
-                    self.workspace_navigation.current = None;
-                }
             }
         }
         self.normalize_focus();

@@ -1,7 +1,6 @@
 use crate::activity::ActivityFeed;
 use crate::theme;
 use crate::widgets::BusyPhase;
-use crate::RunStateModel;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
@@ -17,11 +16,7 @@ pub struct BottomPanelModel<'a> {
     pub state: &'a BottomPanelState,
     pub busy_phase: &'a BusyPhase,
     pub activity: &'a ActivityFeed,
-    #[allow(dead_code)]
-    pub run: &'a RunStateModel,
-    pub terminal_title: Option<&'a str>,
     pub terminal_content: &'a str,
-    pub terminal_truncated: bool,
     pub terminal_running: bool,
     pub terminal_shell: Option<&'a str>,
 }
@@ -50,9 +45,7 @@ impl Widget for BottomPanel<'_> {
         let lines = terminal_lines(
             self.model.busy_phase,
             self.model.activity,
-            self.model.terminal_title,
             self.model.terminal_content,
-            self.model.terminal_truncated,
             self.model.terminal_running,
             self.model.terminal_shell,
         );
@@ -64,9 +57,7 @@ impl Widget for BottomPanel<'_> {
 fn terminal_lines<'a>(
     busy_phase: &'a BusyPhase,
     activity: &'a ActivityFeed,
-    terminal_title: Option<&'a str>,
     terminal_content: &'a str,
-    terminal_truncated: bool,
     terminal_running: bool,
     terminal_shell: Option<&'a str>,
 ) -> Vec<Line<'a>> {
@@ -84,16 +75,10 @@ fn terminal_lines<'a>(
     if let Some(shell) = terminal_shell {
         lines.push(Line::styled(format!("$ {shell} -l"), theme::muted()));
     }
-    if let Some(title) = terminal_title {
-        lines.push(Line::styled(title.to_string(), theme::text()));
-    }
     if !terminal_content.is_empty() {
         let content = terminal_content.lines().collect::<Vec<_>>();
         for line in content.iter().rev().take(20).rev() {
             lines.push(Line::styled((*line).to_string(), theme::muted()));
-        }
-        if terminal_truncated {
-            lines.push(Line::styled("Output truncated", theme::muted()));
         }
         return lines;
     }
@@ -126,10 +111,8 @@ fn terminal_lines<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::RunStateModel;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    use std::path::PathBuf;
 
     fn rendered_text(model: BottomPanelModel<'_>, focused: bool) -> String {
         let area = Rect::new(0, 0, 80, 12);
@@ -150,12 +133,6 @@ mod tests {
             .join("\n")
     }
 
-    fn run_model() -> RunStateModel {
-        let mut run = RunStateModel::new(PathBuf::from("/repo"), None);
-        run.draft.command_input = "cargo test -p forge-tui".into();
-        run
-    }
-
     #[test]
     fn default_panel_is_closed() {
         let state = BottomPanelState::default();
@@ -174,10 +151,7 @@ mod tests {
             state: &state,
             busy_phase: &BusyPhase::Idle,
             activity: &activity,
-            run: &run_model(),
-            terminal_title: None,
             terminal_content: "",
-            terminal_truncated: false,
             terminal_running: false,
             terminal_shell: None,
         };
@@ -199,10 +173,7 @@ mod tests {
             state: &state,
             busy_phase: &BusyPhase::Idle,
             activity: &activity,
-            run: &run_model(),
-            terminal_title: None,
             terminal_content: "",
-            terminal_truncated: false,
             terminal_running: false,
             terminal_shell: None,
         };
@@ -225,10 +196,7 @@ mod tests {
             state: &state,
             busy_phase: &BusyPhase::Idle,
             activity: &activity,
-            run: &run_model(),
-            terminal_title: None,
             terminal_content: &content,
-            terminal_truncated: false,
             terminal_running: true,
             terminal_shell: Some("sh"),
         };

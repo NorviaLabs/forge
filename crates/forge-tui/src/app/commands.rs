@@ -249,15 +249,6 @@ impl TuiApp {
                 None
             }
             KeyCode::Esc if key.modifiers.is_empty() => Some(SemanticCommand::GoBack),
-            KeyCode::Enter if key.modifiers.is_empty() && self.current_workspace_is_run() => {
-                Some(SemanticCommand::RunOrCancel)
-            }
-            KeyCode::Char('r') if key.modifiers.is_empty() && self.current_workspace_is_run() => {
-                Some(SemanticCommand::Rerun)
-            }
-            KeyCode::Char('e') if key.modifiers.is_empty() && self.current_workspace_is_run() => {
-                Some(SemanticCommand::EditAndRerun)
-            }
             _ if self.current_workspace_is_file() => self.semantic_command_for_editor_key(key),
             _ => None,
         }
@@ -385,27 +376,6 @@ impl TuiApp {
                 self.capture_diff_snapshot();
                 self.navigate_to_workspace_view(WorkspaceView::Diff(DiffCommandContext::Current))
             }
-            SemanticCommand::OpenRun(target) => match target {
-                RunCommandTarget::Current => {
-                    if let Some(id) = self.current_run_id() {
-                        self.navigate_to_workspace_view(WorkspaceView::Run(id));
-                    } else {
-                        // Background tasks live in the sidebar strip now,
-                        // not a bottom-panel tab — focus it instead.
-                        self.focus_block(FocusBlock::Sidebar);
-                    }
-                }
-                RunCommandTarget::Id(id) => {
-                    if self.run_exists(&id) {
-                        self.navigate_to_workspace_view(WorkspaceView::Run(id));
-                    } else {
-                        self.set_feedback(
-                            FeedbackSeverity::Warn,
-                            format!("Run is no longer available: {id}"),
-                        );
-                    }
-                }
-            },
             SemanticCommand::ToggleFiles => self.toggle_files_panel(),
             SemanticCommand::CloseOverlay => {
                 self.dismiss_overlay();
@@ -596,34 +566,6 @@ impl TuiApp {
                 }
             }
             SemanticCommand::Quit => self.exit.requested = true,
-            SemanticCommand::RunOrCancel => {
-                if self
-                    .run
-                    .current
-                    .as_ref()
-                    .is_some_and(|record| record.state == RunState::Running)
-                {
-                    self.cancel_run();
-                } else {
-                    self.run_current_draft();
-                }
-            }
-            SemanticCommand::Rerun => self.rerun_current(),
-            SemanticCommand::EditAndRerun => self.edit_and_rerun_current(),
-            SemanticCommand::ToggleRunExecutionMode => {
-                self.run.draft.execution_mode = match self.run.draft.execution_mode {
-                    RunExecutionMode::Direct => RunExecutionMode::Shell,
-                    RunExecutionMode::Shell => RunExecutionMode::Direct,
-                };
-            }
-            SemanticCommand::EditRunCommand => {
-                self.run.editing = true;
-                self.run.editing_directory = false;
-            }
-            SemanticCommand::EditRunDirectory => {
-                self.run.editing = true;
-                self.run.editing_directory = true;
-            }
         }
         Ok(true)
     }
@@ -1059,7 +1001,6 @@ mod tests {
                 cwd: PathBuf::from("/tmp"),
                 version: "forge test".into(),
                 startup_notices: Vec::new(),
-                validation_command: None,
                 file_icons: forge_config::FileIconMode::Unicode,
                 theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
             },
@@ -1551,7 +1492,6 @@ mod tests {
                 cwd: dir.path().to_path_buf(),
                 version: "forge test".into(),
                 startup_notices: Vec::new(),
-                validation_command: None,
                 file_icons: forge_config::FileIconMode::Unicode,
                 theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
             },
