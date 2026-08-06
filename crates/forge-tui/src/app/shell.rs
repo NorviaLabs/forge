@@ -218,9 +218,7 @@ async fn run_loop(
             }
             drain_events(app, Some(terminal)).await?;
             app.poll_interactive_terminal();
-            // Repaint immediately after input so theme and other state changes are visible
-            // without waiting for the next idle frame.
-            terminal.draw(|f| app.draw(f))?;
+            // Next loop iteration draws once after all input and background polls.
         }
     }
     Ok(())

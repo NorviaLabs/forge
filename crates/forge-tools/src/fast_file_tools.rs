@@ -130,10 +130,18 @@ impl Tool for FffFindTool {
     async fn call(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
         let args: FffFindArgs = serde_json::from_value(args)
             .map_err(|e| ToolError::Execution(format!("fff args: {e}")))?;
-        let index = self.state.index_for(&ctx.workspace_root)?;
-        let response = index
-            .find_files(&args.query, args.max_results as usize, None)
-            .map_err(search_err)?;
+        let state = self.state.clone();
+        let root = ctx.workspace_root.clone();
+        let query = args.query.clone();
+        let max_results = args.max_results as usize;
+        let response = tokio::task::spawn_blocking(move || {
+            state
+                .index_for(&root)?
+                .find_files(&query, max_results, None)
+                .map_err(search_err)
+        })
+        .await
+        .map_err(|e| ToolError::Execution(format!("fff worker: {e}")))??;
 
         Ok(ToolOutput {
             outcome: Default::default(),
@@ -191,15 +199,19 @@ impl Tool for FffGrepTool {
             .as_ref()
             .map(GrepQueryMode::from)
             .unwrap_or(GrepQueryMode::Plain);
-        let index = self.state.index_for(&ctx.workspace_root)?;
-        let response = index
-            .grep(
-                &args.pattern,
-                args.path.as_deref(),
-                mode,
-                args.max_results as usize,
-            )
-            .map_err(search_err)?;
+        let state = self.state.clone();
+        let root = ctx.workspace_root.clone();
+        let pattern = args.pattern.clone();
+        let path = args.path.clone();
+        let max_results = args.max_results as usize;
+        let response = tokio::task::spawn_blocking(move || {
+            state
+                .index_for(&root)?
+                .grep(&pattern, path.as_deref(), mode, max_results)
+                .map_err(search_err)
+        })
+        .await
+        .map_err(|e| ToolError::Execution(format!("ffgrep worker: {e}")))??;
 
         Ok(ToolOutput {
             outcome: Default::default(),

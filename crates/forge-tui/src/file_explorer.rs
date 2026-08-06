@@ -305,21 +305,22 @@ impl FileExplorer {
             .map(|_| path.clone())
     }
 
-    pub fn ensure_selection_visible(&mut self, height: usize) {
+    fn ensure_selection_visible(&mut self, height: usize) -> Vec<VisibleNode> {
         let visible = self.visible_nodes();
         let Some(selected) = self.selected_path.as_ref() else {
-            return;
+            return visible;
         };
         let Some(index) = visible.iter().position(|node| &node.path == selected) else {
             self.selected_path = visible.first().map(|node| node.path.clone());
             self.scroll = 0;
-            return;
+            return visible;
         };
         if index < self.scroll {
             self.scroll = index;
         } else if height > 0 && index >= self.scroll + height {
             self.scroll = index + 1 - height;
         }
+        visible
     }
 
     fn contains(&self, path: &Path) -> bool {
@@ -553,8 +554,7 @@ impl Widget for FileExplorerWidget<'_> {
         let inner = block.inner(area);
         block.render(area, buf);
         let height = inner.height.saturating_sub(1) as usize;
-        self.explorer.ensure_selection_visible(height);
-        let visible = self.explorer.visible_nodes();
+        let visible = self.explorer.ensure_selection_visible(height);
         let mut lines = Vec::new();
         if self.explorer.root.is_none() {
             lines.push(Line::from("No repository detected"));

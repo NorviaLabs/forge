@@ -2,6 +2,7 @@
 
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
 
 use chrono::Utc;
 use forge_storage::{LocalRuntimeStorage, RuntimeDataKind, RuntimeStorage};
@@ -92,6 +93,7 @@ pub struct ContextEngine {
     pub workspace: PathBuf,
     pub session_id: SessionId,
     pub goal: String,
+    skills_cache: Arc<RwLock<Option<Vec<SkillManifest>>>>,
 }
 
 impl ContextEngine {
@@ -101,6 +103,7 @@ impl ContextEngine {
             workspace,
             session_id,
             goal: String::new(),
+            skills_cache: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -223,7 +226,27 @@ impl ContextEngine {
     }
 
     pub fn load_skills(&self) -> Vec<SkillManifest> {
-        discover_skills(&self.workspace)
+        if let Some(skills) = self
+            .skills_cache
+            .read()
+            .ok()
+            .and_then(|cache| cache.clone())
+        {
+            return skills;
+        }
+        let skills = discover_skills(&self.workspace);
+        if let Ok(mut cache) = self.skills_cache.write() {
+            *cache = Some(skills.clone());
+        }
+        skills
+    }
+
+    pub fn refresh_skills(&self) -> Vec<SkillManifest> {
+        let skills = discover_skills(&self.workspace);
+        if let Ok(mut cache) = self.skills_cache.write() {
+            *cache = Some(skills.clone());
+        }
+        skills
     }
 
     /// CTX-02 hard reset: write progress, clear window, rehydrate slim messages.

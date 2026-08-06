@@ -188,16 +188,25 @@ impl TuiApp {
         if !self.busy_state.active {
             return None;
         }
-        // Prefer durable progress.json in_progress when present.
-        if let Ok(text) = std::fs::read_to_string(self.runtime.cwd.join(".forge/progress.json")) {
-            if let Ok(doc) = serde_json::from_str::<ProgressDocument>(&text) {
-                let step = doc.in_progress.trim();
-                if !step.is_empty() {
-                    return Some(step.to_string());
-                }
-            }
+        // Prefer durable progress.json in_progress when present. Reparse only
+        // after mtime changes; this runs during every render tick while busy.
+        let path = self.runtime.cwd.join(".forge/progress.json");
+        let modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+        let mut progress = self.progress_state.borrow_mut();
+        if modified != progress.modified {
+            progress.modified = modified;
+            progress.description = std::fs::read_to_string(path)
+                .ok()
+                .and_then(|text| serde_json::from_str::<ProgressDocument>(&text).ok())
+                .and_then(|doc| {
+                    let step = doc.in_progress.trim().to_string();
+                    (!step.is_empty()).then_some(step)
+                });
         }
-        self.busy_state.phase.progress_description()
+        progress
+            .description
+            .clone()
+            .or_else(|| self.busy_state.phase.progress_description())
     }
 
     fn header_waiting_detail(&self) -> Option<String> {

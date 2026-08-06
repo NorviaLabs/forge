@@ -114,17 +114,31 @@ fn coerce_args(schema: &Value, args: &mut Value) {
     }
 }
 
+/// Compile a schema into a reusable validator.
+pub fn compile_validator(schema: &Value) -> Result<Validator, String> {
+    Validator::new(schema).map_err(|e| e.to_string())
+}
+
 /// Validate `args` against a JSON Schema object. Fail closed.
 pub fn validate_args(tool: &str, schema: &Value, args: &Value) -> Result<(), ToolValidationError> {
-    let mut args = args.clone();
-    coerce_args(schema, &mut args);
-
-    let validator = Validator::new(schema).map_err(|e| ToolValidationError {
+    let validator = compile_validator(schema).map_err(|e| ToolValidationError {
         tool: tool.to_string(),
         path: "$".into(),
         message: format!("invalid tool schema: {e}"),
         schema_hint: None,
     })?;
+    validate_args_with(tool, schema, &validator, args)
+}
+
+/// Validate `args` with a pre-compiled validator.
+pub fn validate_args_with(
+    tool: &str,
+    schema: &Value,
+    validator: &Validator,
+    args: &Value,
+) -> Result<(), ToolValidationError> {
+    let mut args = args.clone();
+    coerce_args(schema, &mut args);
 
     if let Err(err) = validator.validate(&args) {
         let path = err.instance_path().to_string();

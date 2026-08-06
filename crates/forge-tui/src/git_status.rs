@@ -1,5 +1,6 @@
 //! Lightweight Git status cache for the file explorer.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -55,6 +56,7 @@ pub struct GitStatusCache {
     pub error: Option<String>,
     pending: Option<Receiver<Result<HashMap<PathBuf, GitStatusKind>, String>>>,
     revision: u64,
+    diff_cache: RefCell<HashMap<(u64, PathBuf), Result<String, String>>>,
 }
 
 impl GitStatusCache {
@@ -65,6 +67,7 @@ impl GitStatusCache {
             error: None,
             pending: None,
             revision: 0,
+            diff_cache: RefCell::new(HashMap::new()),
         }
     }
 
@@ -78,6 +81,7 @@ impl GitStatusCache {
         self.loading = true;
         self.error = None;
         self.revision = self.revision.wrapping_add(1);
+        self.diff_cache.borrow_mut().clear();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let _ = tx.send(load_git_status(&root));
@@ -143,18 +147,28 @@ impl GitStatusCache {
 
     /// Returns the unstaged unified diff for one path.
     pub fn get_unstaged_diff(&self, root: &Path, path: &Path) -> Result<String, String> {
-        let output = std::process::Command::new("git")
-            .args(["diff", "--no-color", "--", path.to_str().unwrap_or("")])
-            .current_dir(root)
-            .output()
-            .map_err(|e| format!("failed to run git diff: {e}"))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("git diff failed: {stderr}"));
+        let key = (self.revision, path.to_path_buf());
+        if let Some(diff) = self.diff_cache.borrow().get(&key) {
+            return diff.clone();
         }
-        String::from_utf8(output.stdout).map_err(|e| format!("diff output is not valid UTF-8: {e}"))
+        let diff = load_unstaged_diff(root, path);
+        self.diff_cache.borrow_mut().insert(key, diff.clone());
+        diff
     }
+}
+
+fn load_unstaged_diff(root: &Path, path: &Path) -> Result<String, String> {
+    let output = std::process::Command::new("git")
+        .args(["diff", "--no-color", "--", path.to_str().unwrap_or("")])
+        .current_dir(root)
+        .output()
+        .map_err(|e| format!("failed to run git diff: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("git diff failed: {stderr}"));
+    }
+    String::from_utf8(output.stdout).map_err(|e| format!("diff output is not valid UTF-8: {e}"))
 }
 
 fn load_git_status(root: &Path) -> Result<HashMap<PathBuf, GitStatusKind>, String> {
@@ -509,6 +523,31 @@ mod tests {
         assert!(!cache.loading);
         assert!(cache.error.is_none());
         assert!(cache.status.is_empty());
+    }
+
+    #[test]
+    fn diff_cache_is_keyed_by_revision_and_path() {
+        let root = tempfile::tempdir().unwrap();
+        Command::new("git")
+            .arg("init")
+            .current_dir(root.path())
+            .output()
+            .unwrap();
+        let path = PathBuf::from("cached.txt");
+        let key = (0, path.clone());
+        let mut cache = GitStatusCache::new();
+        cache
+            .diff_cache
+            .borrow_mut()
+            .insert(key, Ok("cached diff".to_string()));
+
+        assert_eq!(
+            cache.get_unstaged_diff(root.path(), &path).unwrap(),
+            "cached diff"
+        );
+
+        cache.start_refresh(root.path().to_path_buf());
+        assert_eq!(cache.get_unstaged_diff(root.path(), &path).unwrap(), "");
     }
 
     #[test]

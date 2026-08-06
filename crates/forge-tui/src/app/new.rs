@@ -86,6 +86,7 @@ impl TuiApp {
             stream: StreamState {
                 preview: String::new(),
                 thinking: String::new(),
+                live_lines: None,
             },
             timing: TurnTimingState {
                 started: None,
@@ -151,6 +152,7 @@ impl TuiApp {
                 refreshed_at: Instant::now(),
                 cwd: repo_header_cwd.clone(),
             },
+            progress_state: std::cell::RefCell::new(ProgressState::default()),
             terminal_capture: TerminalCapture::default(),
             interactive_terminal: None,
             workspace_search: WorkspaceSearchState {
