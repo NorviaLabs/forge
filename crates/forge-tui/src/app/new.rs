@@ -155,6 +155,9 @@ impl TuiApp {
                 error: None,
             },
             editor_viewport: EditorViewportState { height: 24 },
+            editor_area: None,
+            selection: crate::selection::MouseSelection::default(),
+            context_menu: None,
             catalog_fetch: CatalogFetchState {
                 refresh_rx: None,
                 warmed: false,
