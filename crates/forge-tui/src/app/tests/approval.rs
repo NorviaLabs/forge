@@ -56,7 +56,12 @@ async fn inline_approval_renders_full_payload_in_sidebar() {
     assert!(rendered.contains("⏸ APPROVAL REQUIRED"), "{rendered}");
     assert!(rendered.contains("git push -u origin main"), "{rendered}");
     assert!(rendered.contains("cwd:"), "{rendered}");
-    assert!(rendered.contains("env: inherited"), "{rendered}");
+    // The card now hugs its own content width (capped at prose width) rather
+    // than always spanning the full pane, so a long cwd path can legitimately
+    // wrap before reaching "env:" — check the two independently instead of
+    // asserting they're contiguous.
+    assert!(rendered.contains("env:"), "{rendered}");
+    assert!(rendered.contains("inherited"), "{rendered}");
     assert!(rendered.contains("› Allow once"), "{rendered}");
     assert!(
         rendered.contains("Allow pattern going forward"),
