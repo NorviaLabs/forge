@@ -10,7 +10,7 @@ use forge_syntax::highlight_to_lines;
 use forge_types::{ExecutionOutcome, Message, MessageRole, TaskLifecycle, ToolCall};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
@@ -45,14 +45,102 @@ fn ensure_blank_line(lines: &mut Vec<Line<'static>>) {
     }
 }
 
-/// Prepend the left-rail glyph to a rendered line.
-fn prefix_line_rail(line: &mut Line<'static>) {
-    let mut spans = vec![
-        Span::styled(RAIL_GLYPH, theme::border_muted()),
-        Span::raw(" "),
-    ];
+/// A bordered card's top edge: `┌─ {title} ───┐` when `title` is set
+/// (Approval), or a plain `┌────┐` when it isn't (Plan). `total_width` is the
+/// full rendered line width (the card's content width plus its 2 side
+/// borders and 2 padding columns).
+fn card_top_border(total_width: usize, title: Option<&str>, border: Style) -> Line<'static> {
+    match title {
+        Some(title) => {
+            let fill = total_width
+                .saturating_sub(5)
+                .saturating_sub(title.chars().count());
+            Line::from(vec![Span::styled(
+                format!("┌─ {title} {}┐", "─".repeat(fill)),
+                border,
+            )])
+        }
+        None => Line::from(vec![Span::styled(
+            format!("┌{}┐", "─".repeat(total_width.saturating_sub(2))),
+            border,
+        )]),
+    }
+}
+
+/// A bordered card's bottom edge: `└────┘`.
+fn card_bottom_border(total_width: usize, border: Style) -> Line<'static> {
+    Line::from(vec![Span::styled(
+        format!("└{}┘", "─".repeat(total_width.saturating_sub(2))),
+        border,
+    )])
+}
+
+/// A bordered card's content row: `│ {content, padded to interior_width} │`.
+/// `fill`, when set, paints the row's background edge-to-edge (Approval
+/// wants `panel_alt`; Plan wants none — canvas shows through).
+fn card_content_line(
+    content: &str,
+    interior_width: usize,
+    style: Style,
+    border: Style,
+    fill: Option<Color>,
+) -> Line<'static> {
+    let pad = " ".repeat(interior_width.saturating_sub(content.chars().count()));
+    let border_style = match fill {
+        Some(bg) => border.bg(bg),
+        None => border,
+    };
+    let content_style = match fill {
+        Some(bg) => style.bg(bg),
+        None => style,
+    };
+    Line::from(vec![
+        Span::styled("│ ", border_style),
+        Span::styled(format!("{content}{pad}"), content_style),
+        Span::styled(" │", border_style),
+    ])
+}
+
+/// Like [`card_content_line`], but for a row built from several differently
+/// styled spans (e.g. a colored status marker followed by plain body text)
+/// instead of one uniformly styled string.
+fn card_content_spans(
+    mut spans: Vec<Span<'static>>,
+    interior_width: usize,
+    border: Style,
+    fill: Option<Color>,
+) -> Line<'static> {
+    let used: usize = spans.iter().map(Span::width).sum();
+    let pad = " ".repeat(interior_width.saturating_sub(used));
+    if let Some(bg) = fill {
+        for span in &mut spans {
+            span.style = span.style.bg(bg);
+        }
+    }
+    let border_style = match fill {
+        Some(bg) => border.bg(bg),
+        None => border,
+    };
+    let mut line_spans = vec![Span::styled("│ ", border_style)];
+    line_spans.append(&mut spans);
+    line_spans.push(Span::styled(
+        pad,
+        fill.map_or(Style::default(), |bg| Style::default().bg(bg)),
+    ));
+    line_spans.push(Span::styled(" │", border_style));
+    Line::from(line_spans)
+}
+
+/// Prepend a rail glyph in the given style to a rendered line.
+fn prefix_line_with(line: &mut Line<'static>, glyph_style: Style) {
+    let mut spans = vec![Span::styled(RAIL_GLYPH, glyph_style), Span::raw(" ")];
     spans.extend(std::mem::take(&mut line.spans));
     line.spans = spans;
+}
+
+/// Prepend the left-rail glyph to a rendered line.
+fn prefix_line_rail(line: &mut Line<'static>) {
+    prefix_line_with(line, theme::border_muted());
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -273,6 +361,16 @@ pub enum ConversationBlock {
     PatternNudge { pattern: String, selected: usize },
     PlanChecklist(PlanChecklistPresentation),
     Metadata(MetadataPresentation),
+    Thinking(ThinkingPresentation),
+}
+
+/// Model reasoning. Recedes rather than announces: dim italic, indented past
+/// tool activity, no glyph or status word — distinct from `ActiveProgress`
+/// (which still owns in-flight tool-call status).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ThinkingPresentation {
+    pub text: String,
+    pub duration_secs: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -849,40 +947,38 @@ impl ConversationModel {
         let gap = !self.opts.compact;
         let rail = width >= RAIL_MIN_WIDTH;
         let blocks = self.semantic_blocks();
-        // Full-width rules open only distinct task phases: the first plan
-        // checklist of a turn. User turns carry their own boundary (the
-        // message wash), gates and answers stay un-ruled, and everything on
-        // the tool rail is grouped compactly instead of walled off.
-        let mut plan_seen = false;
+        // A full-width rule opens every turn boundary (every UserMessage
+        // after the first block in the transcript) — independent of whether
+        // that turn has a plan checklist. Everything on the tool rail stays
+        // grouped compactly instead of walled off.
+        let mut seen_any_block = false;
         for block in blocks {
-            if matches!(block, ConversationBlock::UserMessage(_)) {
-                plan_seen = false;
-            }
+            let is_turn_start = matches!(block, ConversationBlock::UserMessage(_));
             let railed = is_railed_block(&block);
             if !railed && gap && !lines.is_empty() {
                 // Major blocks read as boundaries: separate them from the
                 // preceding tool trail with a single blank line.
                 ensure_blank_line(&mut lines);
             }
-            if let ConversationBlock::PlanChecklist(_) = &block {
-                if !plan_seen && !lines.is_empty() {
-                    if gap {
-                        ensure_blank_line(&mut lines);
-                    }
-                    lines.push(Line::from(Span::styled("─".repeat(width), theme::border())));
-                    if gap {
-                        lines.extend([Line::from(""), Line::from("")]);
-                    }
+            if is_turn_start && seen_any_block {
+                if gap {
+                    ensure_blank_line(&mut lines);
                 }
-                plan_seen = true;
+                lines.push(Line::from(Span::styled(
+                    "─".repeat(width),
+                    theme::border_muted(),
+                )));
+                if gap {
+                    lines.extend([Line::from(""), Line::from("")]);
+                }
             }
+            seen_any_block = true;
             match block {
                 ConversationBlock::UserMessage(p) => {
                     let theme_id = crate::theme::active();
                     let glyph = user_message_gutter::ACTIVE_GLYPH;
                     let gutter_style = theme::user_gutter_active_style_for(&theme_id);
                     let prefix_width = user_message_gutter::gutter_prefix_width(glyph);
-                    let blank_prefix = " ".repeat(prefix_width);
                     let user_lines = user_message_gutter::render_user_message_lines(
                         &p.text,
                         width.saturating_sub(prefix_width),
@@ -890,15 +986,15 @@ impl ConversationModel {
                         false,
                         wrap,
                     );
-                    for (row_idx, line) in user_lines.into_iter().enumerate() {
-                        let mut spans = if row_idx == 0 {
-                            vec![
-                                Span::styled(glyph, gutter_style),
-                                Span::styled(user_message_gutter::GUTTER_GAP, theme::text()),
-                            ]
-                        } else {
-                            vec![Span::raw(blank_prefix.clone())]
-                        };
+                    for line in user_lines.into_iter() {
+                        // Repeat the marker on every wrapped row (Markdown
+                        // blockquote-style) instead of only the first, so the
+                        // block reads as one continuous, gap-free unit rather
+                        // than a single prompt glyph followed by blank rows.
+                        let mut spans = vec![
+                            Span::styled(glyph, gutter_style),
+                            Span::styled(user_message_gutter::GUTTER_GAP, theme::text()),
+                        ];
                         spans.extend(line.spans.into_iter().map(|mut span| {
                             span.style = span.style.bg(theme::accent_soft_bg());
                             span
@@ -1036,30 +1132,45 @@ impl ConversationModel {
                     } else {
                         theme::border_muted()
                     };
-                    // Boxed card: border corners + `│ ` / ` │` padding leave
-                    // `width - 4` columns of content.
-                    let inner_w = width.saturating_sub(4);
-                    let boxed_line = |s: &str, style: Style| -> Line<'static> {
-                        let pad = " ".repeat(inner_w.saturating_sub(s.chars().count()));
-                        Line::from(vec![
-                            Span::styled("│ ", border),
-                            Span::styled(format!("{s}{pad}"), style),
-                            Span::styled(" │", border),
-                        ])
-                    };
                     let title = "⏸ APPROVAL REQUIRED";
-                    let top_fill = width
-                        .saturating_sub(5)
-                        .saturating_sub(title.chars().count());
-                    lines.push(Line::from(vec![Span::styled(
-                        format!("┌─ {title} {}┐", "─".repeat(top_fill)),
-                        border,
-                    )]));
+                    const HINT: &str = "↑↓ select · Enter confirm · Esc cancel";
+                    let cwd_env = format!("cwd: {}  env: {}", p.cwd, p.env_delta);
+                    let option_rows: Vec<String> = p
+                        .options
+                        .iter()
+                        .map(|opt| match &opt.detail {
+                            Some(detail) => format!("›  {}  {detail}", opt.label),
+                            None => format!("›  {}", opt.label),
+                        })
+                        .collect();
+                    // Hug the card's own content instead of always spanning
+                    // the full pane width; still capped at prose width for
+                    // readability and clamped to what the pane can show.
+                    let longest_content = [
+                        title.chars().count() + 5,
+                        cwd_env.chars().count(),
+                        HINT.chars().count(),
+                        p.command.chars().count(),
+                    ]
+                    .into_iter()
+                    .chain(option_rows.iter().map(|r| r.chars().count()))
+                    .max()
+                    .unwrap_or(0);
+                    let available_interior = width.saturating_sub(4);
+                    let inner_w = longest_content
+                        .min(PROSE_MAX_WIDTH)
+                        .min(available_interior)
+                        .max((title.chars().count() + 1).min(available_interior));
+                    let card_width = inner_w + 4;
+                    let fill = Some(theme::panel_alt_bg());
+                    let boxed_line =
+                        |s: &str, style: Style| card_content_line(s, inner_w, style, border, fill);
+                    lines.push(card_top_border(card_width, Some(title), border));
                     lines.push(boxed_line("", theme::panel()));
                     for wrapped in wrap(&p.command, inner_w) {
                         lines.push(boxed_line(&wrapped, theme::muted()));
                     }
-                    for wrapped in wrap(&format!("cwd: {}  env: {}", p.cwd, p.env_delta), inner_w) {
+                    for wrapped in wrap(&cwd_env, inner_w) {
                         lines.push(boxed_line(&wrapped, theme::muted()));
                     }
                     lines.push(boxed_line("", theme::panel()));
@@ -1078,14 +1189,11 @@ impl ConversationModel {
                             lines.push(boxed_line(&wrapped, style));
                         }
                     }
-                    for wrapped in wrap("↑↓ select · Enter confirm · Esc cancel", inner_w) {
+                    for wrapped in wrap(HINT, inner_w) {
                         lines.push(boxed_line(&wrapped, theme::metadata_style()));
                     }
                     lines.push(boxed_line("", theme::panel()));
-                    lines.push(Line::from(vec![Span::styled(
-                        format!("└{}┘", "─".repeat(width.saturating_sub(2))),
-                        border,
-                    )]));
+                    lines.push(card_bottom_border(card_width, border));
                     if gap {
                         lines.extend([Line::from(""), Line::from("")]);
                     }
@@ -1189,6 +1297,26 @@ impl ConversationModel {
                         lines.extend([Line::from(""), Line::from("")]);
                     }
                 }
+                ConversationBlock::Thinking(p) => {
+                    // Recedes rather than announces: no glyph, no bold label,
+                    // no status word — deeper-indented and dim so it reads as
+                    // background reasoning, not another activity item.
+                    let indent = INDENT_UNIT.repeat(2);
+                    let content_width = width.saturating_sub(indent.chars().count());
+                    let full_text = match p.duration_secs {
+                        Some(secs) => format!("{} · {}", p.text, format_elapsed_tenths(secs)),
+                        None => p.text.clone(),
+                    };
+                    for l in wrap(&full_text, content_width) {
+                        lines.push(Line::from(Span::styled(
+                            format!("{indent}{l}"),
+                            theme::dim().add_modifier(Modifier::ITALIC),
+                        )));
+                    }
+                    if gap {
+                        lines.extend([Line::from(""), Line::from("")]);
+                    }
+                }
             }
         }
         lines
@@ -1240,30 +1368,16 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
                     text: text.clone(),
                 }));
             }
-            ChatItem::Thinking { text, .. } => {
+            ChatItem::Thinking {
+                text,
+                duration_secs,
+            } => {
                 flush_progress(&mut blocks, &mut progress);
                 flush_activity(&mut blocks, &mut activity_group);
-                if let ChatItem::Thinking {
-                    duration_secs: Some(duration_secs),
-                    ..
-                } = item
-                {
-                    blocks.push(ConversationBlock::Metadata(MetadataPresentation {
-                        text: format!(
-                            "Thought for {} · {text}",
-                            format_elapsed_tenths(*duration_secs)
-                        ),
-                    }));
-                } else {
-                    blocks.push(ConversationBlock::ActiveProgress(
-                        ActiveProgressPresentation {
-                            id: "thinking".into(),
-                            label: "Thinking".into(),
-                            summary: text.clone(),
-                            status: ActiveProgressStatus::Updated,
-                        },
-                    ));
-                }
+                blocks.push(ConversationBlock::Thinking(ThinkingPresentation {
+                    text: text.clone(),
+                    duration_secs: *duration_secs,
+                }));
             }
             ChatItem::Assistant { text } => {
                 flush_progress(&mut blocks, &mut progress);
@@ -1531,7 +1645,8 @@ fn compose_turn_presentation(blocks: Vec<ConversationBlock>) -> Vec<Conversation
                 }
                 ConversationBlock::ActivityGroup(_)
                 | ConversationBlock::DiffBlock(_)
-                | ConversationBlock::PlanChecklist(_) => activity.push(block),
+                | ConversationBlock::PlanChecklist(_)
+                | ConversationBlock::Thinking(_) => activity.push(block),
                 ConversationBlock::ActiveProgress(_) => progress.push(block),
                 other_block => other.push(other_block),
             }
@@ -2330,16 +2445,12 @@ fn parse_update_plan_args(call: &ToolCall) -> Option<forge_types::UpdatePlanArgs
 fn render_plan_checklist(plan: &PlanChecklistPresentation, width: usize) -> Vec<Line<'static>> {
     use forge_types::PlanStepStatus;
     let mut lines = Vec::new();
-    lines.push(Line::from(vec![Span::styled(
-        "Plan",
-        theme::brand().add_modifier(Modifier::BOLD),
-    )]));
-    if let Some(explanation) = plan
+    let explanation = plan
         .explanation
         .as_deref()
         .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
+        .filter(|s| !s.is_empty());
+    if let Some(explanation) = explanation {
         for l in wrap(explanation, width.saturating_sub(2)) {
             lines.push(Line::from(vec![
                 Span::raw(INDENT_UNIT),
@@ -2347,27 +2458,48 @@ fn render_plan_checklist(plan: &PlanChecklistPresentation, width: usize) -> Vec<
             ]));
         }
     }
+    // A bordered, unfilled card — no "Plan" caption. The border itself
+    // signals "this is a checklist"; ✓/►/○ markers signal step status.
+    let longest_content = plan
+        .steps
+        .iter()
+        .map(|item| item.step.chars().count() + 2) // marker + space
+        .chain(explanation.map(|e| e.chars().count()))
+        .max()
+        .unwrap_or(0);
+    let available_interior = width.saturating_sub(4);
+    let inner_w = longest_content.min(PROSE_MAX_WIDTH).min(available_interior);
+    let border = theme::accent_style();
+    lines.push(card_top_border(inner_w + 4, None, border));
     for item in &plan.steps {
         let (marker, style) = match item.status {
             PlanStepStatus::Completed => ("✓", theme::ok()),
             PlanStepStatus::InProgress => ("►", theme::warn()),
             PlanStepStatus::Pending => ("○", theme::muted()),
         };
-        let body_width = width.saturating_sub(4).max(8);
+        let body_width = inner_w.saturating_sub(2).max(4);
         let mut wrapped = wrap(&item.step, body_width).into_iter();
         if let Some(first) = wrapped.next() {
-            lines.push(Line::from(vec![
-                Span::styled(format!("{marker} "), style),
-                Span::styled(first, theme::text()),
-            ]));
+            lines.push(card_content_spans(
+                vec![
+                    Span::styled(format!("{marker} "), style),
+                    Span::styled(first, theme::text()),
+                ],
+                inner_w,
+                border,
+                None,
+            ));
         }
         for cont in wrapped {
-            lines.push(Line::from(vec![
-                Span::raw(INDENT_UNIT),
-                Span::styled(cont, theme::text()),
-            ]));
+            lines.push(card_content_spans(
+                vec![Span::raw("  "), Span::styled(cont, theme::text())],
+                inner_w,
+                border,
+                None,
+            ));
         }
     }
+    lines.push(card_bottom_border(inner_w + 4, border));
     lines
 }
 
@@ -2831,8 +2963,8 @@ mod tests {
             "tool result should classify into semantic activity blocks: {semantic:?}"
         );
         assert!(
-            rendered.contains("Thought for 2.4s · **ponder**"),
-            "completed thought should remain visible:\n{rendered}"
+            rendered.contains("**ponder** · 2.4s"),
+            "completed thought should remain visible, without a spelled-out caption:\n{rendered}"
         );
     }
 
@@ -3290,6 +3422,70 @@ mod tests {
     }
 
     #[test]
+    fn thinking_renders_dim_italic_indented_and_precedes_the_answer() {
+        let msgs = vec![Message {
+            outcome: Default::default(),
+            role: MessageRole::Assistant,
+            content: "final answer".into(),
+            tool_call_id: None,
+            name: None,
+            thinking: Some("reasoning text".into()),
+            thinking_duration_secs: Some(2.4),
+            tool_calls: vec![],
+        }];
+        let m = ConversationModel::from_messages(
+            &msgs,
+            &[],
+            TaskLifecycle::Ready,
+            ConversationViewOpts::default(),
+        );
+        let lines = m.lines_for_width(80);
+
+        let thinking_idx = lines
+            .iter()
+            .position(|l| line_text(l).contains("reasoning text"))
+            .expect("thinking line present");
+        let answer_idx = lines
+            .iter()
+            .position(|l| line_text(l).contains("final answer"))
+            .expect("answer line present");
+        assert!(
+            thinking_idx < answer_idx,
+            "thinking must render before the answer, got thinking@{thinking_idx} answer@{answer_idx}: {lines:?}"
+        );
+
+        let thinking_line = &lines[thinking_idx];
+        let thinking_text = line_text(thinking_line);
+        assert!(
+            thinking_text.starts_with(&INDENT_UNIT.repeat(2)),
+            "thinking should be indented past normal content, got {thinking_text:?}"
+        );
+        let dark = theme::palette(forge_config::THEME_SOLARIZED_DARK);
+        let span = thinking_line
+            .spans
+            .iter()
+            .find(|s| s.content.contains("reasoning text"))
+            .expect("thinking span present");
+        assert_eq!(
+            span.style.fg,
+            Some(dark.dim),
+            "thinking should use the dim token"
+        );
+        assert!(
+            span.style.add_modifier.contains(Modifier::ITALIC),
+            "thinking should be italic"
+        );
+        assert!(
+            !span.style.add_modifier.contains(Modifier::BOLD),
+            "thinking should not be bold — no label, unlike tool activity"
+        );
+        assert!(
+            thinking_text.contains("2.4s"),
+            "duration should still be shown, got {thinking_text:?}"
+        );
+    }
+
+    #[test]
     fn wide_viewport_does_not_wrap_at_the_old_column_limit() {
         let content = std::iter::repeat_n("word", 24)
             .collect::<Vec<_>>()
@@ -3435,6 +3631,45 @@ mod tests {
         assert!(!rendered.contains('›'), "{rendered}");
         assert!(!rendered.contains(" │"), "{rendered}");
         assert!(rendered.contains("hello world"), "{rendered}");
+    }
+
+    #[test]
+    fn wrapped_user_message_repeats_the_prompt_marker_on_every_row() {
+        const WIDTH: usize = 20;
+        let msgs = vec![Message {
+            outcome: Default::default(),
+            role: MessageRole::User,
+            content: "one two three four five six seven".into(),
+            tool_call_id: None,
+            name: None,
+            thinking: None,
+            thinking_duration_secs: None,
+            tool_calls: vec![],
+        }];
+        let m = ConversationModel::from_messages(
+            &msgs,
+            &[],
+            TaskLifecycle::Working,
+            ConversationViewOpts::default(),
+        );
+        let lines = m.lines_for_width(WIDTH);
+        let user_rows: Vec<&Line<'static>> = lines
+            .iter()
+            .take_while(|line| {
+                line.spans
+                    .first()
+                    .is_some_and(|s| s.content.as_ref() == user_message_gutter::ACTIVE_GLYPH)
+            })
+            .collect();
+        assert!(
+            user_rows.len() > 1,
+            "message should wrap to more than one row at width {WIDTH}: {lines:?}"
+        );
+        let dark = theme::palette(forge_config::THEME_SOLARIZED_DARK);
+        for row in &user_rows {
+            assert_eq!(row.spans[0].content.as_ref(), ">");
+            assert_eq!(row.spans[0].style.fg, Some(dark.user_gutter_active));
+        }
     }
 
     #[test]
@@ -4313,7 +4548,9 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(text.contains("Plan"), "{text}");
+        // No spelled-out "Plan" caption by design — the bordered card and
+        // ✓/►/○ markers carry the meaning instead.
+        assert!(text.contains("Next steps"), "{text}");
         assert!(text.contains("Inspect code"), "{text}");
         assert!(text.contains("Implement tool"), "{text}");
         assert!(text.contains("Add tests"), "{text}");
@@ -4321,6 +4558,47 @@ mod tests {
             m.semantic_blocks().as_slice(),
             [ConversationBlock::PlanChecklist(_)]
         ));
+    }
+
+    #[test]
+    fn plan_checklist_card_is_bordered_with_no_background_fill() {
+        let plan = PlanChecklistPresentation {
+            explanation: Some("Next steps".into()),
+            steps: vec![forge_types::PlanItem {
+                step: "Inspect code".into(),
+                status: forge_types::PlanStepStatus::Completed,
+            }],
+        };
+        let lines = render_plan_checklist(&plan, 80);
+        // The explanation ("Next steps") renders as an unboxed intro line
+        // above the card — only the step list itself is bordered.
+        let top = lines
+            .iter()
+            .find(|l| line_text(l).starts_with('┌'))
+            .expect("top border present");
+        assert!(
+            !line_text(top).contains("Plan"),
+            "no spelled-out caption in the border, got {:?}",
+            line_text(top)
+        );
+        assert!(
+            lines
+                .iter()
+                .rev()
+                .find(|l| !line_text(l).is_empty())
+                .is_some_and(|l| line_text(l).starts_with('└')),
+            "plan card should close with a bottom border"
+        );
+        let content_row = lines
+            .iter()
+            .find(|l| line_text(l).contains("Inspect code"))
+            .expect("step content row present");
+        for span in &content_row.spans {
+            assert_eq!(
+                span.style.bg, None,
+                "plan card content must have no background fill — canvas shows through, got {span:?}"
+            );
+        }
     }
 
     #[test]
@@ -4726,6 +5004,50 @@ mod tests {
     }
 
     #[test]
+    fn approval_card_hugs_short_content_instead_of_spanning_the_full_pane() {
+        const PANE_WIDTH: usize = 100;
+        let m = ConversationModel::from_messages(
+            &[],
+            &[],
+            TaskLifecycle::Waiting,
+            ConversationViewOpts::default(),
+        )
+        .with_pending_approval(
+            &forge_types::HitlPayload {
+                call_id: "1".into(),
+                tool: "bash".into(),
+                args_redacted: serde_json::json!({"command": "ls"}),
+                reason: "test".into(),
+            },
+            "wd",
+            vec![ApprovalMenuRow {
+                label: "Allow once".into(),
+                detail: None,
+            }],
+            0,
+            false,
+        );
+        let lines = m.lines_for_width(PANE_WIDTH);
+        let top_border = lines
+            .iter()
+            .find(|l| line_text(l).starts_with('┌'))
+            .expect("top border present");
+        let border_width = line_text(top_border).chars().count();
+        assert!(
+            border_width < PANE_WIDTH,
+            "a short command's card should not span the full {PANE_WIDTH}-col pane, got {border_width}: {lines:?}"
+        );
+        // But every content row and the bottom border must still match the
+        // top border's width exactly, or the box wouldn't line up.
+        let bottom_border = lines
+            .iter()
+            .rev()
+            .find(|l| line_text(l).starts_with('└'))
+            .expect("bottom border present");
+        assert_eq!(line_text(bottom_border).chars().count(), border_width);
+    }
+
+    #[test]
     fn context_handoff_card_shows_lifecycle_and_progress() {
         let m = ConversationModel {
             items: vec![ChatItem::ContextHandoff {
@@ -4983,48 +5305,54 @@ mod tests {
     }
 
     #[test]
-    fn plan_less_turns_render_without_full_width_rules() {
+    fn every_turn_boundary_gets_a_rule_even_without_a_plan() {
         let model = three_block_model();
         assert_eq!(model.semantic_blocks().len(), 3);
 
         let lines = model.lines_for_width(60);
-        // [question, answer, question]: user turns carry their own message
-        // wash, so a plan-less conversation has no full-width rules at all.
-        assert_eq!(rule_lines(&lines).len(), 0, "no rules without a plan phase");
+        // [question, answer, question]: two turns, no plan checklist at all.
+        // The rule is a turn-boundary marker now, not tied to plan presence,
+        // so the second turn still opens with exactly one rule.
+        assert_eq!(
+            rule_lines(&lines).len(),
+            1,
+            "a new turn opens with a rule even without a plan"
+        );
 
         let first = lines.first().expect("non-empty transcript");
-        let last = lines.last().expect("non-empty transcript");
         assert!(!is_rule_line(first), "no separator before the first entry");
-        assert!(!is_rule_line(last), "no separator after the last entry");
+
+        let rule_pos = lines.iter().position(is_rule_line).expect("rule present");
+        let after = lines[rule_pos + 1..]
+            .iter()
+            .map(line_text)
+            .find(|t| !t.is_empty())
+            .expect("content after the rule");
+        assert!(
+            after.contains("third"),
+            "the rule immediately precedes the second turn's user message, got {after:?}"
+        );
     }
 
     #[test]
-    fn first_plan_of_turn_opens_with_a_rule_and_updates_do_not() {
+    fn plan_checklists_alone_do_not_open_a_rule_only_turn_boundaries_do() {
+        // `planned_turn_model()` is a single turn containing two consecutive
+        // PlanChecklist items (a plan_update). The rule is now purely a
+        // turn-boundary marker, decoupled from plan presence — so a
+        // single-turn conversation gets zero rules, plan or no plan, and a
+        // second plan_update in the same turn still doesn't add one either.
         let model = planned_turn_model();
         let lines = model.lines_for_width(80);
-        let rules = rule_lines(&lines);
         assert_eq!(
-            rules.len(),
-            1,
-            "exactly one rule for the first plan of the turn, not one per plan_update"
-        );
-
-        let rule_pos = lines.iter().position(is_rule_line).expect("rule present");
-        let after: Vec<String> = lines[rule_pos + 1..]
-            .iter()
-            .map(line_text)
-            .filter(|t| !t.is_empty())
-            .collect();
-        assert!(
-            after.first().is_some_and(|t| t.starts_with("Plan")),
-            "the rule opens the plan phase, got {:?}",
-            after.first()
+            rule_lines(&lines).len(),
+            0,
+            "a plan checklist alone must not open a rule without a new turn"
         );
     }
 
     #[test]
     fn hairline_rule_width_tracks_pane_width() {
-        let model = planned_turn_model();
+        let model = three_block_model();
         for width in [40usize, 90usize] {
             let lines = model.lines_for_width(width);
             let rules = rule_lines(&lines);

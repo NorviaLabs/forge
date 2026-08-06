@@ -18,15 +18,21 @@ impl ReasoningEffort {
     pub const USAGE: &'static str = "auto|minimal|low|medium|high|xhigh|max";
 
     pub fn default_for_model(model: &str) -> Self {
+        // Temporarily hardcoded to a real effort level for every provider
+        // (was `Auto` for openai-codex/openai/fallback) so reasoning content
+        // — and therefore the conversation pane's Thinking block — actually
+        // gets exercised without the user having to configure it by hand.
+        // This costs real reasoning tokens and latency on every new session
+        // by default; revisit before shipping.
         let model = model.to_ascii_lowercase();
         if model.starts_with("openai-codex/") {
-            return Self::Auto;
+            return Self::Medium;
         }
         if model.starts_with("anthropic/") {
             return Self::Low;
         }
         if model.starts_with("openai/") {
-            return Self::Auto;
+            return Self::Medium;
         }
         if model.starts_with("xai/") || model.starts_with("grok/") {
             return Self::Medium;
@@ -34,7 +40,7 @@ impl ReasoningEffort {
         if model.starts_with("opencode-") {
             return Self::Medium;
         }
-        Self::Auto
+        Self::Medium
     }
 
     /// Display label for the picker UI. Differs from `Display`/the wire
@@ -218,9 +224,12 @@ mod tests {
 
     #[test]
     fn default_matches_provider_family() {
+        // Temporarily hardcoded to a real effort level (was `Auto`) for
+        // openai/openai-codex/fallback so reasoning content actually gets
+        // requested by default — see the comment on `default_for_model`.
         assert_eq!(
             ReasoningEffort::default_for_model("openai/gpt-4.1-mini"),
-            ReasoningEffort::Auto
+            ReasoningEffort::Medium
         );
         assert_eq!(
             ReasoningEffort::default_for_model("anthropic/claude-sonnet-4"),
@@ -288,6 +297,6 @@ mod tests {
     #[test]
     fn unknown_model_returns_default() {
         let opts = ReasoningEffort::options_for_model("mocked/model");
-        assert_eq!(opts, vec![ReasoningEffort::Auto]);
+        assert_eq!(opts, vec![ReasoningEffort::Medium]);
     }
 }
