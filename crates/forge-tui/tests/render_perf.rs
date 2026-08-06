@@ -175,7 +175,6 @@ async fn app_with_turns(turns: usize) -> (TempDir, TuiApp) {
             cwd: dir.path().to_path_buf(),
             version: "perf-guard".into(),
             startup_notices: Vec::new(),
-            validation_command: None,
             file_icons: FileIconMode::Unicode,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },

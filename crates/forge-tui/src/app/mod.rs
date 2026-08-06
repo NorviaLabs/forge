@@ -58,7 +58,6 @@ use crate::overlays::{
     ApprovalExecutionMode, ApprovalOverlayState, ConnectModelColumn, FileExplorerItem, Key,
     Key as OverlayKey, Overlay, OverlayAction, OverlayWidget, PaletteItem, ResumeSessionItem,
 };
-use crate::run::{RunExecutionMode, RunHistoryFile, RunState, RunStateModel};
 use crate::source_viewer::{SourceViewer, SourceViewerWidget};
 use crate::terminal::TerminalGuard;
 use crate::theme;
@@ -68,9 +67,9 @@ use crate::widgets::{
     BusyPhase, ComposerChip, ComposerChipKind, FeedbackBar, FeedbackModel, FeedbackSeverity,
     FooterBar, FooterModel, InputBar, InputModel, StatusBar, StatusModel,
 };
-use forge_config::{CommandConfig, FileIconMode};
+use forge_config::FileIconMode;
 
-use crate::{ExitCode, MAX_RECENT_RUNS, RUN_HISTORY_VERSION};
+use crate::ExitCode;
 
 mod approvals;
 // `TuiApp` holds a set of these and the overlay renderer reads their labels,
@@ -91,7 +90,6 @@ mod persist;
 /// for a type across several modules of the same crate, so this is a file split
 /// only — `TuiApp`'s fields and every signature are unchanged.
 mod render;
-mod run;
 mod search;
 mod shell;
 mod turn;

@@ -16,7 +16,6 @@ mod focus;
 pub(crate) mod helpers;
 mod highlight;
 mod prelude;
-mod run;
 mod tasks;
 mod theme;
 mod watch;

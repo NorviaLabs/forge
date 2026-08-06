@@ -70,7 +70,6 @@ mod tests {
                 cwd: PathBuf::from("/tmp"),
                 version: "forge 0.8.0".into(),
                 startup_notices: Vec::new(),
-                validation_command: None,
                 file_icons: forge_config::FileIconMode::Unicode,
                 theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
             },

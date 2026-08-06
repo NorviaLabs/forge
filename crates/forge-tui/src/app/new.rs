@@ -1,7 +1,7 @@
 //! `TuiApp` construction.
 //!
 //! Split out of `app/mod.rs` per #19. Startup wiring only — field defaults and
-//! the initial load of run history, UI state, and saved auth. Moved verbatim.
+//! the initial load of UI state and saved auth. Moved verbatim.
 
 use super::*;
 
@@ -29,7 +29,6 @@ impl TuiApp {
         let mut startup_notices = runtime.startup_notices.clone();
         startup_notices.extend(theme_notices);
         let file_icons = runtime.file_icons;
-        let run = RunStateModel::new(workspace_root.clone(), runtime.validation_command.clone());
         let (file_change_tx, file_change_rx) = mpsc::channel();
         // One synchronous read at startup so the first frame shows the real branch
         // instead of blanking until the first background refresh lands.
@@ -108,10 +107,6 @@ impl TuiApp {
                 change_tx: file_change_tx,
             },
             bottom_panel: BottomPanelState::default(),
-            run,
-            run_execution: RunExecutionState {
-                execution: run::RunExecution::default(),
-            },
             workspace_files: WorkspaceFilesState {
                 // Make Forge's editor/file-browser surface discoverable on a
                 // first launch. A saved per-repository preference is applied
@@ -154,7 +149,6 @@ impl TuiApp {
                 cwd: repo_header_cwd.clone(),
             },
             progress_state: std::cell::RefCell::new(ProgressState::default()),
-            terminal_capture: TerminalCapture::default(),
             interactive_terminal: None,
             workspace_search: WorkspaceSearchState {
                 index: None,
@@ -167,9 +161,7 @@ impl TuiApp {
             },
         };
         app.init_file_watcher();
-        app.load_run_history();
         app.load_ui_state();
-        app.normalize_restored_run();
         app.restore_saved_auth().apply_connection_chrome()
     }
 }

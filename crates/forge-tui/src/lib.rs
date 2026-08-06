@@ -15,7 +15,6 @@ mod interactive_terminal;
 mod layout;
 mod markdown;
 mod overlays;
-mod run;
 mod source_viewer;
 mod status_glyph;
 mod terminal;
@@ -46,11 +45,6 @@ pub use layout::{
 pub use overlays::{
     default_palette_items, filter_palette, handle_overlay_key, models_from_catalog,
     Key as OverlayKey, Overlay, OverlayAction, ResumeSessionItem,
-};
-pub use run::{
-    command_text as run_command_text, legacy_command_text, RunDraft, RunEnvironmentChange,
-    RunExecutionMode, RunFreshness, RunHistoryFile, RunInvocation, RunParseError, RunProvenance,
-    RunRecord, RunState, RunStateModel, MAX_RECENT_RUNS, RUN_HISTORY_VERSION,
 };
 pub use validation::{
     is_cargo_test_command, validation_command_text, CargoTestSummary, ValidationParseState,

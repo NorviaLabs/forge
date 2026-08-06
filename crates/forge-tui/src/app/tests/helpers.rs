@@ -109,7 +109,6 @@ pub(crate) async fn focus_test_app_with_theme(theme_id: &str) -> (TempDir, TuiAp
             cwd: dir.path().to_path_buf(),
             version: "test".into(),
             startup_notices: Vec::new(),
-            validation_command: None,
             file_icons: FileIconMode::Unicode,
             theme_id: theme_id.to_string(),
         },

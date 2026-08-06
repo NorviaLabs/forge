@@ -151,37 +151,6 @@ async fn final_shell_rendering_matrix_covers_v31_states_without_obsolete_chrome(
     scenarios.push(("diff", dir, app, vec!["Describe a task"]));
 
     let (dir, mut app) = focus_test_app().await;
-    app.run.draft.command_input = "cargo test".into();
-    app.run_current_draft();
-    scenarios.push((
-        "background run",
-        dir,
-        app,
-        vec!["Running cargo test", "View output"],
-    ));
-
-    let (dir, mut app) = focus_test_app().await;
-    app.run.draft.command_input = "cargo test".into();
-    app.run_current_draft();
-    app.execute_semantic_command(SemanticCommand::OpenRun(RunCommandTarget::Current))
-        .await
-        .unwrap();
-    scenarios.push(("run open", dir, app, vec!["Describe a task"]));
-
-    let (dir, mut app) = focus_test_app().await;
-    app.run.draft.command_input = "cargo test".into();
-    app.run_current_draft();
-    if let Some(record) = app.run.current.as_mut() {
-        record.state = RunState::Failed;
-        record.exit_status = Some(101);
-    }
-    let run_id = app.current_run_id().unwrap();
-    app.execute_semantic_command(SemanticCommand::OpenRun(RunCommandTarget::Id(run_id)))
-        .await
-        .unwrap();
-    scenarios.push(("run failed", dir, app, vec!["Describe a task"]));
-
-    let (dir, mut app) = focus_test_app().await;
     set_pending_hitl(
         &mut app,
         direct_hitl_payload("matrix-approval", "src/main.rs"),
@@ -309,7 +278,6 @@ async fn header_status_follows_session_lifecycle() {
             cwd: dir.path().to_path_buf(),
             version: "test".into(),
             startup_notices: Vec::new(),
-            validation_command: None,
             file_icons: FileIconMode::Unicode,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
@@ -403,7 +371,6 @@ async fn header_status_switches_with_selected_session() {
             cwd: dir.path().to_path_buf(),
             version: "test".into(),
             startup_notices: Vec::new(),
-            validation_command: None,
             file_icons: FileIconMode::Unicode,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
@@ -450,7 +417,6 @@ async fn status_chrome_shows_not_connected_badge() {
             cwd: PathBuf::from("."),
             version: "0.11.0".into(),
             startup_notices: Vec::new(),
-            validation_command: None,
             file_icons: FileIconMode::Unicode,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
@@ -493,7 +459,6 @@ async fn tui09_chrome_includes_model_on_frame() {
             cwd: PathBuf::from("."),
             version: "0.10.0".into(),
             startup_notices: Vec::new(),
-            validation_command: None,
             file_icons: FileIconMode::Unicode,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
@@ -545,7 +510,6 @@ async fn tui09_narrow_frame_still_shows_model_or_ctx() {
             cwd: PathBuf::from("."),
             version: "0.10.0".into(),
             startup_notices: Vec::new(),
-            validation_command: None,
             file_icons: FileIconMode::Unicode,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
@@ -599,7 +563,6 @@ async fn tui09_status_renders_structured_session_card() {
             cwd: PathBuf::from("."),
             version: "0.10.0".into(),
             startup_notices: Vec::new(),
-            validation_command: None,
             file_icons: FileIconMode::Unicode,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
@@ -653,7 +616,6 @@ async fn tui08_report_error_writes_banner_feedback_and_activity() {
             cwd: PathBuf::from("."),
             version: "0.10.0".into(),
             startup_notices: Vec::new(),
-            validation_command: None,
             file_icons: FileIconMode::Unicode,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
@@ -694,7 +656,6 @@ async fn tui08_feedback_strip_visible_on_frame() {
             cwd: PathBuf::from("."),
             version: "0.10.0".into(),
             startup_notices: Vec::new(),
-            validation_command: None,
             file_icons: FileIconMode::Unicode,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
@@ -728,7 +689,6 @@ async fn tui10_activity_feed_records_model_and_error() {
             cwd: PathBuf::from("."),
             version: "0.10.0".into(),
             startup_notices: Vec::new(),
-            validation_command: None,
             file_icons: FileIconMode::Unicode,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
@@ -766,7 +726,6 @@ async fn elapsed_status_persists_during_answer_and_tool_processing() {
             cwd: PathBuf::from("."),
             version: "0.10.0".into(),
             startup_notices: Vec::new(),
-            validation_command: None,
             file_icons: FileIconMode::Unicode,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
@@ -797,7 +756,6 @@ async fn tui10_busy_phase_model_during_turn_clears_after() {
             cwd: PathBuf::from("."),
             version: "0.10.0".into(),
             startup_notices: Vec::new(),
-            validation_command: None,
             file_icons: FileIconMode::Unicode,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
@@ -828,7 +786,6 @@ async fn tui08_context_sets_feedback_strip() {
             cwd: PathBuf::from("."),
             version: "0.10.0".into(),
             startup_notices: Vec::new(),
-            validation_command: None,
             file_icons: FileIconMode::Unicode,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },

@@ -62,58 +62,10 @@ async fn activity_summary_priority_renders_one_actionable_row() {
         .insert(PathBuf::from("changed.rs"), GitStatusKind::Modified);
     app.busy_state.active = true;
     app.busy_state.phase = BusyPhase::Model;
-    app.run.draft.command_input = "cargo test".into();
-    app.run_current_draft();
 
-    let rendered = render_app_text(&mut app, 100, 30);
-    assert!(rendered.contains("Running cargo test"), "{rendered}");
-    // The sidebar's narrower column can wrap "View output" across two
-    // rendered rows, splitting the phrase — check both words independently
-    // rather than the exact contiguous substring.
-    assert_eq!(rendered.matches("View").count(), 1, "{rendered}");
-    assert_eq!(rendered.matches("output").count(), 1, "{rendered}");
-    assert!(
-        !rendered.contains("files changed · Review"),
-        "Run summary must outrank changes:\n{rendered}"
-    );
-    assert!(
-        !rendered.contains("Forge is thinking"),
-        "Run summary must outrank thinking:\n{rendered}"
-    );
-
-    let (tx, rx) = std::sync::mpsc::channel();
-    app.run_execution.execution.rx = Some(rx);
-    tx.send(RunEvent::Finished {
-        exit_code: Some(1),
-        success: false,
-    })
-    .unwrap();
-    app.poll_run();
-
-    let rendered = render_app_text(&mut app, 100, 30);
-    assert!(rendered.contains("Run failed: cargo test"), "{rendered}");
-    assert_eq!(rendered.matches("Inspect").count(), 1, "{rendered}");
-    assert!(
-        !rendered.contains("Running cargo test"),
-        "Failure summary must replace active-run summary:\n{rendered}"
-    );
-}
-
-#[tokio::test]
-async fn summary_action_opens_expected_workspace_view() {
-    let (_dir, mut app) = focus_test_app().await;
-    app.run.draft.command_input = "true".into();
-    app.run_current_draft();
-    let id = app.run.current.as_ref().unwrap().id.clone();
-
-    app.handle_key(press(KeyCode::Right, KeyModifiers::ALT))
-        .await
-        .unwrap();
-
-    assert_eq!(
-        app.workspace_navigation.current,
-        Some(WorkspaceView::Run(id))
-    );
+    let summary = app.activity_summary().expect("changes summary");
+    assert_eq!(summary.label, "1 file changed");
+    assert_eq!(summary.action_label, Some("Review"));
 }
 
 #[tokio::test]

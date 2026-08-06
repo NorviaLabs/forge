@@ -3,7 +3,6 @@
 pub use super::super::*;
 pub(crate) use super::helpers::*;
 pub use crate::widgets::status::TurnLifecycle;
-pub use forge_config::CommandConfig;
 pub use forge_core::LoopConfig;
 pub use forge_model::MockModelClient;
 pub use forge_tools::ToolRegistry;

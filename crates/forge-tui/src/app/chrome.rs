@@ -267,13 +267,6 @@ impl TuiApp {
                 Some(relative_display(self.session.workspace_root(), path))
             }
             Some(WorkspaceView::Diff(DiffCommandContext::Current)) => Some("Review changes".into()),
-            Some(WorkspaceView::Run(id)) => self
-                .run
-                .current
-                .as_ref()
-                .filter(|record| record.id == *id)
-                .map(|record| format!("Run: {}", record.invocation.summary()))
-                .or_else(|| Some("Run".into())),
         }
     }
 
@@ -283,23 +276,6 @@ impl TuiApp {
                 let total = self.workspace_files.explorer.git_status.status.len();
                 (total > 0).then(|| format!("{} of {} changes", self.diff_view.selected + 1, total))
             }
-            Some(WorkspaceView::Run(id)) => self
-                .run
-                .current
-                .as_ref()
-                .filter(|record| record.id == *id)
-                .map(|record| {
-                    (match record.state {
-                        RunState::Queued => "Queued",
-                        RunState::Running => "Running",
-                        RunState::Succeeded => "Succeeded",
-                        RunState::Failed => "Failed",
-                        RunState::Cancelled => "Cancelled",
-                        RunState::StartFailed => "Could not start",
-                        RunState::CaptureFailed => "Capture failed",
-                    })
-                    .to_string()
-                }),
             _ => {
                 let changes = self.workspace_files.explorer.git_status.status.len();
                 if changes > 0 {
@@ -316,29 +292,6 @@ impl TuiApp {
         // Approval is represented by the inline approval card, not a background summary.
         if self.overlay.is_some() || self.session.pending_hitl().is_some() {
             return None;
-        }
-
-        if let Some(record) = self.run.current.as_ref() {
-            let command = record.invocation.summary();
-            if matches!(
-                record.state,
-                RunState::Failed | RunState::StartFailed | RunState::CaptureFailed
-            ) {
-                return Some(ActivitySummaryModel {
-                    label: format!("Run failed: {command}"),
-                    action_label: Some("Inspect"),
-                    action: Some(ActivitySummaryAction::OpenRun(record.id.clone())),
-                    kind: BannerKind::Error,
-                });
-            }
-            if matches!(record.state, RunState::Queued | RunState::Running) {
-                return Some(ActivitySummaryModel {
-                    label: format!("Running {command}"),
-                    action_label: Some("View output"),
-                    action: Some(ActivitySummaryAction::OpenRun(record.id.clone())),
-                    kind: BannerKind::Info,
-                });
-            }
         }
 
         let changes = self.workspace_files.explorer.git_status.status.len();
@@ -371,25 +324,8 @@ impl TuiApp {
             .map(|summary| (summary.label, summary.action_label, summary.kind))
     }
 
-    /// Maps the activity-summary banner action to a semantic command.
-    /// Used by tests and by `Alt+→` when a banner action is present.
-    #[cfg(test)]
-    pub(super) fn activity_summary_command(&self) -> Option<SemanticCommand> {
-        match self.activity_summary()?.action? {
-            ActivitySummaryAction::OpenRun(id) => {
-                Some(SemanticCommand::OpenRun(RunCommandTarget::Id(id)))
-            }
-            ActivitySummaryAction::ReviewChanges => {
-                Some(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
-            }
-        }
-    }
-
     pub(super) fn activate_activity_summary(&mut self) {
         match self.activity_summary().and_then(|summary| summary.action) {
-            Some(ActivitySummaryAction::OpenRun(id)) => {
-                self.navigate_to_workspace_view(WorkspaceView::Run(id));
-            }
             Some(ActivitySummaryAction::ReviewChanges) => {
                 // Unlike the Alt+-> / `ReviewChanges` command path, entering
                 // here skipped `capture_diff_snapshot()`, so a review opened

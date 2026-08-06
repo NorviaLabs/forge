@@ -76,34 +76,3 @@ async fn characterization_80x24_draws_without_panic() {
     let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
     terminal.draw(|frame| app.draw(frame)).unwrap();
 }
-
-#[cfg(unix)]
-#[tokio::test]
-async fn characterization_run_completion_preserves_bottom_panel_focus() {
-    let (_dir, mut app) = focus_test_app().await;
-    app.open_bottom_panel();
-    app.run.draft.command_input = "/usr/bin/true".into();
-    app.run_current_draft();
-    assert_eq!(app.focus.block, FocusBlock::BottomPanel);
-    assert!(app.run_execution.execution.pending_validation);
-
-    app.drain_pending_validation(None).await.unwrap();
-    for _ in 0..50 {
-        app.poll_run();
-        if app
-            .run
-            .current
-            .as_ref()
-            .is_some_and(|record| record.state != RunState::Running)
-        {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-
-    assert_eq!(app.focus.block, FocusBlock::BottomPanel);
-    assert!(app.run.current.as_ref().is_some_and(|record| matches!(
-        record.state,
-        RunState::Succeeded | RunState::Failed | RunState::StartFailed
-    )));
-}
