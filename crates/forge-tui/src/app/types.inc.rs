@@ -650,6 +650,9 @@ struct StreamState {
     preview: String,
     thinking: String,
     live_lines: Option<(u16, usize, usize, Arc<Vec<Line<'static>>>)>,
+    /// When the live preview was last re-rendered; throttles the per-token
+    /// markdown rebuild so a long stream is O(n) renders, not O(tokens).
+    last_preview_render: Option<Instant>,
 }
 
 struct RunExecutionState {

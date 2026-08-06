@@ -20,11 +20,11 @@
 //! - Bounded by total bytes with least-recently-used eviction, so a long session
 //!   cannot trade a CPU leak for a memory leak.
 
+use crate::highlight::HighlightTheme;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
-
-use crate::highlight::HighlightTheme;
 
 /// Total cached segment bytes allowed before eviction begins. Large enough to
 /// hold the code blocks of a long session, small enough to stay unremarkable.
@@ -37,11 +37,24 @@ const SEGMENT_OVERHEAD: usize = 32;
 type Segment = (String, (u8, u8, u8), bool, bool);
 type Lines = Vec<Vec<Segment>>;
 
-#[derive(PartialEq, Eq, Hash)]
+#[derive(PartialEq, Eq)]
 struct Key {
     lang: String,
     code: String,
     theme: HighlightTheme,
+}
+
+/// Hash of a key's contents, computed directly from borrowed data. Used as the
+/// bucket index so a lookup needs no owned `Key` — no string allocations on a
+/// hit. Exactness is preserved because the full [`Key`] still lives in the
+/// bucket and every hit is confirmed with a full compare, so a hash collision
+/// costs one extra compare, never a wrong render.
+fn hash_key(lang: &str, code: &str, theme: &HighlightTheme) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    lang.hash(&mut hasher);
+    code.hash(&mut hasher);
+    theme.hash(&mut hasher);
+    hasher.finish()
 }
 
 struct Entry {
@@ -54,7 +67,9 @@ struct Entry {
 
 #[derive(Default)]
 struct Cache {
-    map: HashMap<Key, Entry>,
+    /// Bucketed by [`hash_key`]; each bucket holds the full exact key so hits
+    /// stay collision-proof.
+    map: HashMap<u64, Vec<(Key, Entry)>>,
     bytes: usize,
     hits: u64,
     misses: u64,
@@ -114,15 +129,15 @@ pub(crate) fn cached_or_compute<F>(
 where
     F: FnOnce() -> Lines,
 {
-    let key = Key {
-        lang: lang.to_string(),
-        code: code.to_string(),
-        theme: *theme,
-    };
+    let hash = hash_key(lang, code, theme);
 
     {
         let mut guard = cache();
-        if let Some(entry) = guard.map.get_mut(&key) {
+        if let Some((_, entry)) = guard.map.get_mut(&hash).and_then(|bucket| {
+            bucket
+                .iter_mut()
+                .find(|(key, _)| key.lang == lang && key.code == code && key.theme == *theme)
+        }) {
             entry.used = TICK.fetch_add(1, Ordering::Relaxed);
             let lines = Arc::clone(&entry.lines);
             guard.hits += 1;
@@ -142,17 +157,31 @@ where
 
     let mut guard = cache();
     // A concurrent caller may have inserted the same key while we computed.
-    if !guard.map.contains_key(&key) {
-        let used = TICK.fetch_add(1, Ordering::Relaxed);
+    let inserted = {
+        let bucket = guard.map.entry(hash).or_default();
+        if bucket
+            .iter()
+            .any(|(key, _)| key.lang == lang && key.code == code && key.theme == *theme)
+        {
+            false
+        } else {
+            bucket.push((
+                Key {
+                    lang: lang.to_string(),
+                    code: code.to_string(),
+                    theme: *theme,
+                },
+                Entry {
+                    lines: Arc::clone(&lines),
+                    bytes,
+                    used: TICK.fetch_add(1, Ordering::Relaxed),
+                },
+            ));
+            true
+        }
+    };
+    if inserted {
         guard.bytes += bytes;
-        guard.map.insert(
-            key,
-            Entry {
-                lines: Arc::clone(&lines),
-                bytes,
-                used,
-            },
-        );
         evict_to_budget(&mut guard);
     }
     lines
@@ -160,21 +189,34 @@ where
 
 fn evict_to_budget(guard: &mut MutexGuard<'static, Cache>) {
     while guard.bytes > MAX_BYTES {
-        let victim = guard
+        let Some((hash, index)) = guard
             .map
             .iter()
-            .min_by_key(|(_, entry)| entry.used)
-            .map(|(key, _)| Key {
-                lang: key.lang.clone(),
-                code: key.code.clone(),
-                theme: key.theme,
-            });
-        let Some(victim) = victim else { break };
-        if let Some(entry) = guard.map.remove(&victim) {
-            guard.bytes = guard.bytes.saturating_sub(entry.bytes);
-            guard.evictions += 1;
-        } else {
+            .flat_map(|(hash, bucket)| {
+                bucket
+                    .iter()
+                    .enumerate()
+                    .map(move |(index, (_, entry))| (*hash, index, entry.used))
+            })
+            .min_by_key(|&(_, _, used)| used)
+            .map(|(hash, index, _)| (hash, index))
+        else {
             break;
+        };
+        // `index` came from the map's own iteration, so it is in bounds;
+        // `Vec::remove` panics on an out-of-bounds index regardless.
+        let (entry, bucket_empty) = {
+            let bucket = guard
+                .map
+                .get_mut(&hash)
+                .expect("hash came from the map's own iteration");
+            let entry = bucket.remove(index).1;
+            (entry, bucket.is_empty())
+        };
+        guard.bytes = guard.bytes.saturating_sub(entry.bytes);
+        guard.evictions += 1;
+        if bucket_empty {
+            guard.map.remove(&hash);
         }
     }
 }
@@ -186,7 +228,7 @@ pub fn highlight_cache_stats() -> HighlightCacheStats {
         hits: guard.hits,
         misses: guard.misses,
         evictions: guard.evictions,
-        entries: guard.map.len(),
+        entries: guard.map.values().map(Vec::len).sum(),
         bytes: guard.bytes,
     }
 }
