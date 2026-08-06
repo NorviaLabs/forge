@@ -691,6 +691,8 @@ pub struct TuiApp {
     pub(crate) selection: crate::selection::MouseSelection,
     /// Open right-click context menu, if any.
     pub(crate) context_menu: Option<crate::selection::ContextMenu>,
+    pub(crate) conversation_area: Option<ratatui::layout::Rect>,
+    pub(crate) conversation_rows: Vec<String>,
     catalog_fetch: CatalogFetchState,
 }
 
