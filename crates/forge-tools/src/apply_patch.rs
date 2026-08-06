@@ -79,12 +79,12 @@ impl Tool for ApplyPatchTool {
                     original,
                     content,
                     ..
-                } => unified_diff(display_path, original.as_deref(), content).await?,
+                } => unified_diff(display_path, original.as_deref(), content)?,
                 PreparedChange::Delete {
                     display_path,
                     original,
                     ..
-                } => unified_diff(display_path, Some(original), "").await?,
+                } => unified_diff(display_path, Some(original), "")?,
             };
             if !diff.trim().is_empty() {
                 diffs.push(diff);
@@ -316,13 +316,20 @@ fn safe_patch_path(ctx: &ToolContext, path: &str) -> Result<PathBuf, ToolError> 
 fn apply_hunks(original: &str, hunks: &[Hunk], path: &str) -> Result<String, ToolError> {
     let had_trailing_newline = original.ends_with('\n');
     let mut lines: Vec<String> = original.lines().map(str::to_string).collect();
+    // Precompute once; the rolling window makes each hunk O(N) instead of
+    // O(N*M) per-position string comparisons.
+    let mut line_hashes = lines.iter().map(|line| hash_line(line)).collect::<Vec<_>>();
     let mut cursor = 0;
 
     for hunk in hunks {
-        let position = find_sequence(&lines, &hunk.old_lines, cursor)
+        let position = find_sequence(&lines, &line_hashes, &hunk.old_lines, cursor)
             .ok_or_else(|| ToolError::Execution(format!("hunk did not match file `{path}`")))?;
         let old_len = hunk.old_lines.len();
         lines.splice(position..position + old_len, hunk.new_lines.clone());
+        line_hashes.splice(
+            position..position + old_len,
+            hunk.new_lines.iter().map(|line| hash_line(line)),
+        );
         cursor = position + hunk.new_lines.len();
     }
 
@@ -333,15 +340,50 @@ fn apply_hunks(original: &str, hunks: &[Hunk], path: &str) -> Result<String, Too
     Ok(content)
 }
 
-fn find_sequence(lines: &[String], needle: &[String], start: usize) -> Option<usize> {
+/// FNV-1a over the line bytes. Collisions are harmless: a match is always
+/// confirmed with an exact string compare, so a hash collision at worst costs
+/// one extra compare.
+fn hash_line(line: &str) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in line.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// Locate `needle` at or after `start` via a rolling hash window over
+/// `line_hashes`, confirmed by an exact slice compare on candidate positions.
+fn find_sequence(
+    lines: &[String],
+    line_hashes: &[u64],
+    needle: &[String],
+    start: usize,
+) -> Option<usize> {
     if needle.is_empty() {
         return Some(start.min(lines.len()));
     }
     if needle.len() > lines.len() || start > lines.len() - needle.len() {
         return None;
     }
-    (start..=lines.len() - needle.len())
-        .find(|&index| lines[index..index + needle.len()] == *needle)
+    let needle_hash: u64 = needle
+        .iter()
+        .fold(0u64, |hash, line| hash.wrapping_add(hash_line(line)));
+    let end = lines.len() - needle.len();
+    let mut window_hash: u64 = line_hashes[start..start + needle.len()]
+        .iter()
+        .fold(0u64, |hash, &value| hash.wrapping_add(value));
+    for index in start..=end {
+        if window_hash == needle_hash && lines[index..index + needle.len()] == *needle {
+            return Some(index);
+        }
+        if index < end {
+            window_hash = window_hash
+                .wrapping_sub(line_hashes[index])
+                .wrapping_add(line_hashes[index + needle.len()]);
+        }
+    }
+    None
 }
 
 fn join_patch_lines(lines: &[&str]) -> String {
@@ -665,27 +707,30 @@ mod tests {
     #[test]
     fn find_sequence_with_empty_needle_returns_clamped_start() {
         let lines = vec!["a".to_string(), "b".to_string()];
-        assert_eq!(find_sequence(&lines, &[], 1), Some(1));
+        let hashes = lines.iter().map(|line| hash_line(line)).collect::<Vec<_>>();
+        assert_eq!(find_sequence(&lines, &hashes, &[], 1), Some(1));
         // A start position past the end of `lines` is clamped, not returned raw.
-        assert_eq!(find_sequence(&lines, &[], 50), Some(2));
+        assert_eq!(find_sequence(&lines, &hashes, &[], 50), Some(2));
     }
 
     #[test]
     fn find_sequence_returns_none_when_needle_cannot_fit() {
         let lines = vec!["a".to_string(), "b".to_string()];
+        let hashes = lines.iter().map(|line| hash_line(line)).collect::<Vec<_>>();
         let needle = vec!["a".to_string(), "b".to_string(), "c".to_string()];
-        assert_eq!(find_sequence(&lines, &needle, 0), None);
+        assert_eq!(find_sequence(&lines, &hashes, &needle, 0), None);
 
         // Needle fits in `lines` overall but not from this late a start index.
         let short_needle = vec!["b".to_string()];
-        assert_eq!(find_sequence(&lines, &short_needle, 5), None);
+        assert_eq!(find_sequence(&lines, &hashes, &short_needle, 5), None);
     }
 
     #[test]
     fn find_sequence_locates_a_matching_run() {
         let lines = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let hashes = lines.iter().map(|line| hash_line(line)).collect::<Vec<_>>();
         let needle = vec!["b".to_string(), "c".to_string()];
-        assert_eq!(find_sequence(&lines, &needle, 0), Some(1));
+        assert_eq!(find_sequence(&lines, &hashes, &needle, 0), Some(1));
     }
 
     #[test]

@@ -108,6 +108,10 @@ async fn streaming_updates_reuse_cached_transcript_lines() {
         cached_capacity,
         "stream deltas must not rebuild historical transcript lines"
     );
+    // The live preview is rebuilt on a cadence (not per token), so a frame that
+    // lands inside the window renders the previous batch. Advance past it.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    terminal.draw(|frame| app.draw(frame)).unwrap();
     let rendered = terminal
         .backend()
         .buffer()

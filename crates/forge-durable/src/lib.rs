@@ -10,7 +10,7 @@ use forge_types::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::{Row, SqlitePool};
 use thiserror::Error;
 use uuid::Uuid;
@@ -149,7 +149,15 @@ impl Journal {
         let db_path = dir.join(format!("{session_id}.db"));
         let opts = SqliteConnectOptions::new()
             .filename(&db_path)
-            .create_if_missing(true);
+            .create_if_missing(true)
+            // WAL + NORMAL: each event append is one fsync instead of the two
+            // (rollback journal) or three (journal + journal-header + db) the
+            // default synchronous=FULL path costs per write. The WAL is a
+            // crash-safe append log; NORMAL only risks losing recent commits on
+            // power loss, not corrupting the db — right trade for a per-event
+            // agent journal that is replayed, not trusted blindly.
+            .journal_mode(SqliteJournalMode::Wal)
+            .synchronous(SqliteSynchronous::Normal);
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect_with(opts)
