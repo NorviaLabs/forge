@@ -17,13 +17,23 @@ pub(crate) struct Cell {
     pub col: u16,
 }
 
-/// A normalized (top-left -> bottom-right) screen rectangle.
+/// A normalized selection span, in reading order (top-to-bottom,
+/// left-to-right within a row) rather than an independently-normalized
+/// rectangle. `start_col`/`end_col` are paired with `row_start`/`row_end`
+/// specifically — the column of whichever endpoint (anchor or current) came
+/// first in reading order, and the column of whichever came last. This
+/// matters whenever a drag isn't purely down-right or up-left: e.g.
+/// dragging from (row 0, col 5) down to (row 2, col 3) is a down-left drag,
+/// and naively min/maxing rows and columns independently would swap which
+/// column belongs to the first vs. last row, corrupting the selection
+/// shape. Using reading order keeps `start_col` as row 0's boundary and
+/// `end_col` as row 2's, matching what every other terminal app selects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SelectionRect {
     pub row_start: u16,
     pub row_end: u16,
-    pub col_start: u16,
-    pub col_end: u16,
+    pub start_col: u16,
+    pub end_col: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +53,16 @@ pub(crate) struct MouseSelection {
     pub pane: Option<CopyPane>,
     /// Whether a selection is being made / is currently displayed.
     pub active: bool,
+    /// True only while the mouse button is actually held, from `start_in`
+    /// until `finish`/`clear` — distinct from `active`, which stays `true`
+    /// after `finish` so the highlight persists for copying. Gates whether
+    /// further pointer-move events should keep extending the selection:
+    /// without this, a finished selection was "sticky" — any stray
+    /// Moved/Drag event arriving after mouse-up (some terminals send these
+    /// even with no button held) would still call `update` and keep
+    /// changing the selection, since `active` alone doesn't distinguish
+    /// "still dragging" from "drag finished, just showing the result."
+    dragging: bool,
     /// Copied text, populated after mouse-up.
     pub text: String,
 }
@@ -53,6 +73,7 @@ impl MouseSelection {
         self.current = Some(cell);
         self.pane = Some(pane);
         self.active = true;
+        self.dragging = true;
         self.text.clear();
     }
 
@@ -60,8 +81,11 @@ impl MouseSelection {
         self.current = Some(cell);
     }
 
-    /// Finalise a drag with the text extracted from the pane.
+    /// Finalise a drag with the text extracted from the pane. The
+    /// selection stays `active` (highlighted, copyable) but is no longer
+    /// `dragging` — further pointer movement won't change it.
     pub(crate) fn finish(&mut self, text: String) {
+        self.dragging = false;
         self.text = text;
     }
 
@@ -70,23 +94,38 @@ impl MouseSelection {
         self.current = None;
         self.pane = None;
         self.active = false;
+        self.dragging = false;
         self.text.clear();
+    }
+
+    /// Whether the mouse button is currently held for this selection —
+    /// gates whether pointer-move events should update it. See `dragging`.
+    pub(crate) fn is_dragging(&self) -> bool {
+        self.dragging && self.anchor.is_some()
     }
 
     pub(crate) fn is_active(&self) -> bool {
         self.active && self.anchor.is_some() && self.current.is_some()
     }
 
-    /// Normalized selection rectangle, if a selection is in progress.
+    /// Normalized selection span, if a selection is in progress. Orders the
+    /// anchor/current pair by reading order (row, then column) rather than
+    /// min/maxing rows and columns independently — see `SelectionRect`'s
+    /// doc comment for why that distinction matters.
     pub(crate) fn rect(&self) -> Option<SelectionRect> {
         let (Some(a), Some(c)) = (self.anchor, self.current) else {
             return None;
         };
+        let (start, end) = if (a.row, a.col) <= (c.row, c.col) {
+            (a, c)
+        } else {
+            (c, a)
+        };
         Some(SelectionRect {
-            row_start: a.row.min(c.row),
-            row_end: a.row.max(c.row),
-            col_start: a.col.min(c.col),
-            col_end: a.col.max(c.col),
+            row_start: start.row,
+            row_end: end.row,
+            start_col: start.col,
+            end_col: end.col,
         })
     }
 }
@@ -209,14 +248,14 @@ pub(crate) fn editor_selection_text(
         let last = row == rect.row_end;
 
         if first && last {
-            let a = char_for_col(rect.col_start).min(line.chars().count());
-            let b = char_for_col(rect.col_end).max(a).min(line.chars().count());
+            let a = char_for_col(rect.start_col).min(line.chars().count());
+            let b = char_for_col(rect.end_col).max(a).min(line.chars().count());
             out.push(slice_chars(line, a, Some(b)));
         } else if first {
-            let a = char_for_col(rect.col_start).min(line.chars().count());
+            let a = char_for_col(rect.start_col).min(line.chars().count());
             out.push(slice_chars(line, a, None));
         } else if last {
-            let b = char_for_col(rect.col_end).min(line.chars().count());
+            let b = char_for_col(rect.end_col).min(line.chars().count());
             out.push(slice_chars(line, 0, Some(b)));
         } else {
             // Interior rows copy the full logical line (the gutter was never
@@ -254,8 +293,8 @@ pub(crate) fn visible_rows_selection_text(
             raw.clone()
         };
         let chars: Vec<char> = line.chars().collect();
-        let start = rect.col_start.saturating_sub(area.x) as usize;
-        let end = rect.col_end.saturating_sub(area.x) as usize;
+        let start = rect.start_col.saturating_sub(area.x) as usize;
+        let end = rect.end_col.saturating_sub(area.x) as usize;
         let selected = if row == rect.row_start && row == rect.row_end {
             chars
                 .get(start.min(chars.len())..=end.min(chars.len().saturating_sub(1)))
@@ -309,13 +348,58 @@ mod tests {
     }
 
     #[test]
+    fn dragging_stops_on_finish_but_active_persists_for_the_highlight() {
+        let mut s = MouseSelection::default();
+        assert!(!s.is_dragging());
+        assert!(!s.is_active());
+
+        s.start_in(CopyPane::Conversation, Cell { row: 0, col: 0 });
+        assert!(
+            s.is_dragging(),
+            "should be dragging while the button is held"
+        );
+        assert!(s.is_active());
+
+        s.update(Cell { row: 1, col: 5 });
+        assert!(s.is_dragging(), "update alone must not end the drag");
+
+        s.finish("hello".into());
+        assert!(
+            !s.is_dragging(),
+            "finish (mouse-up) must end dragging so further pointer movement is ignored"
+        );
+        assert!(
+            s.is_active(),
+            "finish must keep the selection active so the highlight persists for copying"
+        );
+
+        s.clear();
+        assert!(!s.is_dragging());
+        assert!(!s.is_active());
+    }
+
+    #[test]
     fn rect_normalizes_any_drag_direction() {
         let s = sel(Cell { row: 5, col: 30 }, Cell { row: 2, col: 4 });
         let r = s.rect().unwrap();
         assert_eq!(r.row_start, 2);
         assert_eq!(r.row_end, 5);
-        assert_eq!(r.col_start, 4);
-        assert_eq!(r.col_end, 30);
+        assert_eq!(r.start_col, 4);
+        assert_eq!(r.end_col, 30);
+    }
+
+    /// A down-left (or up-right) drag has row and column moving in opposite
+    /// directions — independently min/maxing rows and columns would swap
+    /// which column belongs to which row, corrupting the shape. Reading
+    /// order keeps the anchor's own column (5) paired with its own row (0).
+    #[test]
+    fn rect_pairs_columns_with_their_own_row_on_a_diagonal_opposite_drag() {
+        let s = sel(Cell { row: 0, col: 5 }, Cell { row: 2, col: 3 });
+        let r = s.rect().unwrap();
+        assert_eq!(r.row_start, 0);
+        assert_eq!(r.row_end, 2);
+        assert_eq!(r.start_col, 5, "row 0's own column, not the global min");
+        assert_eq!(r.end_col, 3, "row 2's own column, not the global max");
     }
 
     #[test]

@@ -96,13 +96,16 @@ impl TuiApp {
     }
 
     fn mouse_update_selection(&mut self, col: u16, row: u16) {
-        if self.selection.is_active() {
+        if self.selection.is_dragging() {
             self.selection.update(Cell { row, col });
         }
     }
 
     fn mouse_finish_selection(&mut self) {
-        if !self.selection.is_active() {
+        // Guard on `is_dragging`, not `is_active`: a spurious duplicate Up
+        // event after the drag already finished must be a no-op, not
+        // re-derive and re-copy the same text again.
+        if !self.selection.is_dragging() {
             return;
         }
         // A click without a drag (anchor == current) is not a selection —
@@ -111,7 +114,7 @@ impl TuiApp {
         let dragged = self
             .selection
             .rect()
-            .is_some_and(|r| r.row_start != r.row_end || r.col_start != r.col_end);
+            .is_some_and(|r| r.row_start != r.row_end || r.start_col != r.end_col);
         if !dragged {
             self.selection.clear();
             return;
