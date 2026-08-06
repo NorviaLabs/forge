@@ -502,6 +502,26 @@ impl TuiApp {
         Ok(true)
     }
 
+    /// Moves the composer cursor one visual row up/down within the live
+    /// draft. Returns `false` when already on the first/last visual row (or
+    /// the composer's width isn't known yet), so the caller falls through
+    /// to history recall.
+    fn move_composer_cursor(&mut self, up: bool) -> bool {
+        let Some(area) = self.composer_area else {
+            return false;
+        };
+        let attachment_label = self.attachment.pending.as_ref().map(|a| a.label());
+        let Some(width) = composer_text_area_width(&self.input, area, attachment_label.as_deref())
+        else {
+            return false;
+        };
+        if up {
+            self.input.move_cursor_up(width as usize)
+        } else {
+            self.input.move_cursor_down(width as usize)
+        }
+    }
+
     async fn handle_chat_composer_key(&mut self, key: event::KeyEvent) -> Result<bool, TuiError> {
         let input_was_empty = self.input.text.is_empty();
         if let Some(command) = self.semantic_command_for_composer_key(key) {
@@ -529,6 +549,8 @@ impl TuiApp {
                     self.slash_suggestions.selected =
                         (self.slash_suggestions.selected + suggestions.len() - 1)
                             % suggestions.len();
+                } else if !self.history.browsing() && self.move_composer_cursor(true) {
+                    // Moved within a multi-line draft — history untouched.
                 } else if let Some(text) = self.history.up(&self.input.text) {
                     self.apply_history_text(text);
                 }
@@ -542,6 +564,8 @@ impl TuiApp {
                 {
                     self.slash_suggestions.selected =
                         (self.slash_suggestions.selected + 1) % suggestions.len();
+                } else if !self.history.browsing() && self.move_composer_cursor(false) {
+                    // Moved within a multi-line draft — history untouched.
                 } else if let Some(text) = self.history.down() {
                     self.apply_history_text(text);
                 }

@@ -630,6 +630,7 @@ impl TuiApp {
             }
         }
         if theme_picking {
+            self.composer_area = None;
             if let Some(Overlay::Theme {
                 selected,
                 current,
@@ -645,6 +646,7 @@ impl TuiApp {
                 );
             }
         } else {
+            self.composer_area = Some(regions.input);
             let composer_focused = self.focus.mode == FocusMode::Navigation
                 && self.focus.block == FocusBlock::Composer;
             frame.render_widget(

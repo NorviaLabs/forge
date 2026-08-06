@@ -925,6 +925,85 @@ async fn history_up_via_key_when_no_overlay() {
 }
 
 #[tokio::test]
+async fn up_down_navigate_multiline_draft_before_touching_history() {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    let (_dir, session) = test_session().await;
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "m".into(),
+            provider: "mock".into(),
+            cwd: PathBuf::from("."),
+            version: "0.9.0".into(),
+            startup_notices: Vec::new(),
+            file_icons: FileIconMode::Unicode,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+    app.history.push("alpha");
+    app.history.push("beta");
+    // Wide composer area so these short lines don't word-wrap — one visual
+    // row per explicit line.
+    app.composer_area = Some(ratatui::layout::Rect::new(0, 0, 60, 10));
+    app.input.set_text("line one\nline two\nline three");
+    // Cursor on the middle line — neither the first nor the last visual row.
+    app.input.cursor = "line one\nline ".len();
+
+    app.handle_key(press(KeyCode::Up, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(
+        app.input.text, "line one\nline two\nline three",
+        "Up on a middle line should move the cursor, not touch history"
+    );
+    assert!(!app.history.browsing());
+
+    // Now on the first line — the next Up should fall through to history.
+    app.handle_key(press(KeyCode::Up, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(
+        app.input.text, "beta",
+        "Up on the first line should recall history"
+    );
+    assert!(app.history.browsing());
+}
+
+#[tokio::test]
+async fn browsing_history_ignores_cursor_row_and_always_cycles() {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    let (_dir, session) = test_session().await;
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "m".into(),
+            provider: "mock".into(),
+            cwd: PathBuf::from("."),
+            version: "0.9.0".into(),
+            startup_notices: Vec::new(),
+            file_icons: FileIconMode::Unicode,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+    app.history.push("first\nentry\nhere");
+    app.history.push("second entry");
+    app.composer_area = Some(ratatui::layout::Rect::new(0, 0, 60, 10));
+
+    app.handle_key(press(KeyCode::Up, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.input.text, "second entry");
+    assert!(app.history.browsing());
+
+    // Still browsing — Up must cycle further into history regardless of
+    // where the cursor sits in the currently-shown (multi-line) entry.
+    app.handle_key(press(KeyCode::Up, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.input.text, "first\nentry\nhere");
+}
+
+#[tokio::test]
 async fn slash_stays_in_textbox_does_not_open_palette() {
     use crossterm::event::{KeyCode, KeyModifiers};
     let (_dir, session) = test_session().await;
