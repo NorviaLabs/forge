@@ -17,6 +17,7 @@ schemars = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 jsonschema = { workspace = true }
+similar = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

@@ -122,6 +122,7 @@ impl AgentSession {
             turn: TurnState::new(),
             last_completion: None,
             journaled_tool_results: HashMap::new(),
+            ctx_tokens_cache: std::sync::Mutex::new(None),
         })
     }
 
@@ -201,6 +202,7 @@ impl AgentSession {
             turn: TurnState::new(),
             last_completion: None,
             journaled_tool_results: state.tool_results.clone(),
+            ctx_tokens_cache: std::sync::Mutex::new(None),
         };
         child.reconcile_incomplete_intents(&incomplete).await?;
         // Deliberately no `mark_interrupted_if_stale()` here — that method

@@ -279,34 +279,33 @@ impl TuiApp {
             });
         }
         let width = sidebar_width.saturating_sub(2) as usize;
+        // Rebuilding the live preview re-parses the whole accumulated markdown
+        // (and re-highlights its code blocks), so it is rate-limited rather than
+        // run once per streaming frame: at token rate it is O(n^2) over a turn.
+        const STREAM_PREVIEW_RENDER_INTERVAL: Duration = Duration::from_millis(150);
         let live_lines = if self.busy_state.active && self.pending_turn.prompt.is_none() {
             let key = (
                 width as u16,
                 self.stream.thinking.len(),
                 self.stream.preview.len(),
             );
-            if let Some((cached_width, cached_thinking, cached_preview, lines)) =
-                self.stream.live_lines.as_ref()
-            {
-                if (*cached_width, *cached_thinking, *cached_preview) == key {
-                    Arc::clone(lines)
-                } else {
-                    let lines = Arc::new(
-                        ConversationModel::from_messages(
-                            &[],
-                            &[],
-                            self.session.active_task.lifecycle,
-                            ConversationViewOpts { busy: true, ..opts },
-                        )
-                        .with_streaming_preview(
-                            self.stream.thinking.clone(),
-                            self.stream.preview.clone(),
-                        )
-                        .lines_for_width(width),
-                    );
-                    self.stream.live_lines = Some((key.0, key.1, key.2, Arc::clone(&lines)));
-                    lines
-                }
+            let key_matches = self
+                .stream
+                .live_lines
+                .as_ref()
+                .map(|(w, t, p, _)| (*w, *t, *p) == key)
+                .unwrap_or(false);
+            let ready = self
+                .stream
+                .last_preview_render
+                .map(|at| at.elapsed() >= STREAM_PREVIEW_RENDER_INTERVAL)
+                .unwrap_or(true);
+            if key_matches || !ready {
+                self.stream
+                    .live_lines
+                    .as_ref()
+                    .map(|(.., lines)| Arc::clone(lines))
+                    .unwrap_or_else(|| Arc::new(Vec::new()))
             } else {
                 let lines = Arc::new(
                     ConversationModel::from_messages(
@@ -322,6 +321,7 @@ impl TuiApp {
                     .lines_for_width(width),
                 );
                 self.stream.live_lines = Some((key.0, key.1, key.2, Arc::clone(&lines)));
+                self.stream.last_preview_render = Some(Instant::now());
                 lines
             }
         } else {

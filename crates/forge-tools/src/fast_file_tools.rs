@@ -75,21 +75,32 @@ impl FastFileState {
 
     fn index_for(&self, root: &Path) -> Result<Arc<WorkspaceIndex>, ToolError> {
         let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-        let mut guard = self
+        if let Some(index) = self
             .indices
             .lock()
-            .map_err(|e| ToolError::Execution(format!("fff cache lock: {e}")))?;
-        if let Some(index) = guard.get(&canonical) {
+            .map_err(|e| ToolError::Execution(format!("fff cache lock: {e}")))?
+            .get(&canonical)
+        {
             return Ok(index.clone());
         }
+        // Build outside the cache lock: the first scan of a large workspace can
+        // take seconds, and holding the mutex across it serialized every
+        // concurrent find/grep behind the cold-cache scan. `watch: true` (the
+        // default the TUI already uses) keeps the tool index live so files the
+        // agent itself writes become searchable, instead of freezing the first
+        // scan for the whole session.
         let index = WorkspaceIndex::open_with_options(
             &canonical,
             WorkspaceIndexOptions {
-                watch: false,
+                watch: true,
                 ..Default::default()
             },
         )
         .map_err(search_err)?;
+        let mut guard = self
+            .indices
+            .lock()
+            .map_err(|e| ToolError::Execution(format!("fff cache lock: {e}")))?;
         guard.insert(canonical, index.clone());
         Ok(index)
     }

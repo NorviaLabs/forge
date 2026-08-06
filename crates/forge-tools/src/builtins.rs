@@ -3,9 +3,8 @@ use forge_types::{ExecutionOutcome, SideEffectClass, ToolOutput};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Stdio;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
 use tokio::process::Command;
 
@@ -91,61 +90,22 @@ pub struct WriteFileArgs {
 
 pub struct WriteFileTool;
 
-fn unique_temp_path(label: &str) -> PathBuf {
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    std::env::temp_dir().join(format!(
-        "forge-write-{label}-{stamp}-{}",
-        std::process::id()
-    ))
-}
-
-pub(crate) async fn unified_diff(
-    path: &str,
-    old: Option<&str>,
-    new: &str,
-) -> Result<String, ToolError> {
-    let old_path = unique_temp_path("old");
-    let new_path = unique_temp_path("new");
-    let old_content = old.unwrap_or("");
-    tokio::fs::write(&old_path, old_content).await?;
-    tokio::fs::write(&new_path, new).await?;
-
-    let mut child = Command::new("git")
-        .arg("diff")
-        .arg("--no-index")
-        .arg("--no-color")
-        .arg("--unified=3")
-        .arg(&old_path)
-        .arg(&new_path)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| ToolError::Execution(e.to_string()))?;
-    let (status, stdout, stderr) = collect_bounded_output(&mut child).await?;
-
-    let _ = tokio::fs::remove_file(&old_path).await;
-    let _ = tokio::fs::remove_file(&new_path).await;
-
-    if !matches!(status.code(), Some(0 | 1)) {
-        let error = String::from_utf8_lossy(&stderr).trim().to_string();
-        return Err(ToolError::Execution(if error.is_empty() {
-            format!("git diff failed with {status}")
-        } else {
-            error
-        }));
+/// Unified diff between `old` and `new` for `path`, in the same shape
+/// `git diff` emits (header + `---`/`+++` + `@@` hunks). In-process via
+/// `similar` — a pure-Rust Myers diff — replacing the old `git diff --no-index`
+/// subprocess that wrote two temp files and spawned a process per call.
+pub(crate) fn unified_diff(path: &str, old: Option<&str>, new: &str) -> Result<String, ToolError> {
+    let old = old.unwrap_or("");
+    if old == new {
+        return Ok(String::new());
     }
-
-    let old_name = old_path.to_string_lossy();
-    let new_name = new_path.to_string_lossy();
-    let old_name = old_name.trim_start_matches('/');
-    let new_name = new_name.trim_start_matches('/');
-    let diff = String::from_utf8_lossy(&stdout)
-        .replace(&format!("a/{old_name}"), &format!("a/{path}"))
-        .replace(&format!("b/{new_name}"), &format!("b/{path}"));
-    Ok(diff)
+    let diff = similar::TextDiff::from_lines(old, new);
+    let mut out = format!("diff --git a/{path} b/{path}\n");
+    let mut unified = diff.unified_diff();
+    unified.context_radius(3);
+    unified.header(&format!("a/{path}"), &format!("b/{path}"));
+    out.push_str(&unified.to_string());
+    Ok(out)
 }
 
 #[async_trait]
@@ -172,7 +132,7 @@ impl Tool for WriteFileTool {
             tokio::fs::create_dir_all(parent).await?;
         }
         tokio::fs::write(&path, a.content.as_bytes()).await?;
-        let diff = unified_diff(&a.path, old.as_deref(), &a.content).await?;
+        let diff = unified_diff(&a.path, old.as_deref(), &a.content)?;
         let content = if diff.trim().is_empty() {
             format!("wrote {} bytes to {}", a.content.len(), a.path)
         } else {
