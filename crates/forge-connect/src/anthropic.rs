@@ -123,27 +123,9 @@ fn verify_via_messages(key: &str, base: &str) -> Result<(), VerifyError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
-    use std::thread;
 
     fn mock_server(statuses: Vec<u16>) -> String {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        thread::spawn(move || {
-            for status in statuses {
-                let (mut stream, _) = listener.accept().unwrap();
-                let mut buf = [0_u8; 1024];
-                let _ = stream.read(&mut buf);
-                let body = r#"{"ok":true}"#;
-                let response = format!(
-                    "HTTP/1.1 {status} test\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                    body.len()
-                );
-                stream.write_all(response.as_bytes()).unwrap();
-            }
-        });
-        format!("http://{addr}/")
+        crate::test_support::serve(statuses, r#"{"ok":true}"#)
     }
 
     #[test]

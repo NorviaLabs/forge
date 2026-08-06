@@ -19,6 +19,8 @@ mod service;
 mod store;
 #[cfg(test)]
 mod test_env;
+#[cfg(test)]
+mod test_support;
 mod verify;
 mod xai;
 
