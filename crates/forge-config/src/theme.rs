@@ -123,6 +123,10 @@ pub struct ThemePalette {
     pub user_gutter_active: Rgb,
     pub tag: Rgb,
     pub search_match: Rgb,
+    /// Border for the composer while an approval is pending ("paused" look).
+    pub waiting_border: Rgb,
+    /// Accent for the focused approval card border.
+    pub approval_accent: Rgb,
     pub syntax: SyntaxPalette,
 }
 
@@ -162,6 +166,12 @@ struct ThemeFile {
     user_gutter_active: Rgb,
     tag: Rgb,
     search_match: Rgb,
+    /// Optional: falls back to the theme's `warning`/`accent` when absent, so
+    /// existing user theme drops without these keys keep parsing.
+    #[serde(default)]
+    waiting_border: Option<Rgb>,
+    #[serde(default)]
+    approval_accent: Option<Rgb>,
     syntax: ThemeFileSyntax,
 }
 
@@ -213,6 +223,8 @@ impl From<ThemeFile> for ThemeDefinition {
                 user_gutter_active: file.user_gutter_active,
                 tag: file.tag,
                 search_match: file.search_match,
+                waiting_border: file.waiting_border.unwrap_or(file.warning),
+                approval_accent: file.approval_accent.unwrap_or(file.accent),
                 syntax: SyntaxPalette {
                     comment: file.syntax.comment,
                     keyword: file.syntax.keyword,
