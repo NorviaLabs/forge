@@ -10,6 +10,12 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+/// Serializes every test in this crate that touches process env (`rustc` runs
+/// tests in parallel threads). Hoisted to the crate root so the `permissions`
+/// tests (separate module) can share it with `lib.rs`'s own env guards.
+#[cfg(test)]
+pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub use permissions::{
     append_user_allow_rule, load_permissions, parse_permissions_toml, user_permissions_path,
     workspace_permissions_path, PermissionsFile,
@@ -878,11 +884,7 @@ mod tests {
     }
     use super::*;
     use std::io::Write;
-    use std::sync::Mutex;
     use tempfile::tempdir;
-
-    /// Serializes tests that touch process env (rustc may run tests in parallel).
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     const FORGE_ENV_KEYS: &[&str] = &[
         "FORGE_MODEL_PROVIDER",
@@ -911,7 +913,7 @@ mod tests {
 
     impl EnvGuard {
         fn clear_forge_env() -> Self {
-            let lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let lock = crate::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
             let mut saved = Vec::new();
             for key in FORGE_ENV_KEYS {
                 saved.push(((*key).to_string(), env::var(key).ok()));
@@ -1614,7 +1616,7 @@ model = "claude-sonnet"
     /// straddle another test's mutation of `HOME`/`XDG_CONFIG_HOME`.
     #[test]
     fn user_config_path_is_a_forge_config_toml_under_config_dir() {
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let expected = dirs::config_dir().map(|d| d.join("forge").join("config.toml"));
         assert_eq!(user_config_path(), expected);
     }
@@ -1630,7 +1632,7 @@ model = "claude-sonnet"
 
     impl XdgEnvGuard {
         fn clear() -> Self {
-            let lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let lock = crate::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
             let mut saved = Vec::new();
             for key in FORGE_ENV_KEYS
                 .iter()
