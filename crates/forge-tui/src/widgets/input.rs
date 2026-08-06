@@ -774,13 +774,15 @@ impl Widget for InputBar<'_> {
 mod tests {
     use super::*;
     use crate::theme;
-    use crate::user_message_gutter::ACTIVE_GLYPH;
     use forge_config::THEME_SOLARIZED_DARK;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
+    /// The composer has no leading marker at all (see `TEXT_INSET`) — this
+    /// only guards against a stray `|` leaking into stored/copied text from
+    /// paste/backspace/take logic, not an actual rendered glyph.
     fn glyph() -> &'static str {
-        ACTIVE_GLYPH
+        "|"
     }
 
     fn draw_input_bar(
