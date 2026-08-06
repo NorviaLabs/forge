@@ -13,10 +13,13 @@ use super::*;
 fn composer_input_height(input: &InputModel, area: ratatui::layout::Rect) -> u16 {
     let content_width = crate::layout::estimate_composer_content_width(area)
         .saturating_sub(2) // side borders
-        .saturating_sub(gutter_prefix_width(ACTIVE_GLYPH))
+        .saturating_sub(crate::widgets::input::TEXT_INSET as usize)
         .max(1);
-    // +2 top border & gutter band, +1 bottom border (chips live in the footer).
-    (input.visual_lines_for_width(content_width) + 3).clamp(5, crate::layout::MAX_COMPOSER_INPUT_H)
+    // +2 borders, +2 padding (one row above/below the content) so short
+    // content has room to actually be vertically centered — with only 1
+    // spare row, integer-division centering has nowhere to put the second
+    // half and just sits at the top.
+    (input.visual_lines_for_width(content_width) + 4).min(crate::layout::MAX_COMPOSER_INPUT_H)
 }
 
 impl TuiApp {
@@ -642,6 +645,8 @@ impl TuiApp {
                 );
             }
         } else {
+            let composer_focused = self.focus.mode == FocusMode::Navigation
+                && self.focus.block == FocusBlock::Composer;
             frame.render_widget(
                 InputBar {
                     model: &self.input,
@@ -649,13 +654,21 @@ impl TuiApp {
                     dimmed: (self.busy_state.active && self.input.text.is_empty())
                         || self.session.pending_hitl().is_some(),
                     not_connected: !connected,
-                    focused: self.focus.mode == FocusMode::Navigation
-                        && self.focus.block == FocusBlock::Composer,
+                    focused: composer_focused,
                     waiting: self.session.pending_hitl().is_some(),
                     show_send_hint: true,
                 },
                 regions.input,
             );
+            if composer_focused {
+                if let Some((x, y)) = composer_cursor_position(
+                    &self.input,
+                    regions.input,
+                    attachment_label.as_deref(),
+                ) {
+                    frame.set_cursor_position((x, y));
+                }
+            }
         }
 
         let footer = FooterModel {

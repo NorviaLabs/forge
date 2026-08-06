@@ -217,10 +217,13 @@ pub fn canvas() -> Style {
 /// ~62%-opacity dark panel sitting on top of it. Ratatui cells have no alpha
 /// channel, so this is a one-shot blend rather than true compositing.
 fn dim_toward_overlay(color: Color, overlay: Color) -> Color {
-    const ALPHA: f32 = 0.62;
+    blend_toward(color, overlay, 0.62)
+}
+
+fn blend_toward(color: Color, overlay: Color, alpha: f32) -> Color {
     match (color, overlay) {
         (Color::Rgb(r, g, b), Color::Rgb(overlay_r, overlay_g, overlay_b)) => {
-            let blend = |c: u8, d: f32| ((c as f32) * (1.0 - ALPHA) + d * ALPHA).round() as u8;
+            let blend = |c: u8, d: f32| ((c as f32) * (1.0 - alpha) + d * alpha).round() as u8;
             Color::Rgb(
                 blend(r, overlay_r as f32),
                 blend(g, overlay_g as f32),
@@ -597,8 +600,39 @@ pub fn status_bar() -> Style {
     panel_alt()
 }
 
-/// Composer surface while focused.
-pub fn composer_focused() -> Style {
+/// Composer border in its idle (unfocused, connected, not-waiting) state.
+///
+/// Sits between `border_muted()` and `active_panel_border()`'s full accent —
+/// the composer is the smallest panel in the IDE layout and competes for
+/// attention with a much larger editor pane, so it stays visually prominent
+/// even when `FocusBlock` has moved elsewhere (attention and app focus state
+/// aren't the same thing).
+pub fn composer_border_idle() -> Style {
+    Style::default().fg(active_palette().accent_soft)
+}
+
+/// Composer typed-text emphasis, applied regardless of focus state for the
+/// same reason as [`composer_border_idle`].
+pub fn composer_text() -> Style {
+    text().add_modifier(Modifier::BOLD)
+}
+
+/// Composer placeholder ("Describe a task…") style — dim, distinct from
+/// [`composer_text`]'s bold emphasis for actual typed content, signaling
+/// "type here" rather than "this is content." No italic modifier: many
+/// terminal fonts render their italic variant with a different baseline/
+/// vertical metric than the regular variant, which visually misaligns the
+/// placeholder against the non-italic prompt glyph and cursor next to it on
+/// the same row (found live — not a hypothetical).
+pub fn composer_placeholder() -> Style {
+    dim()
+}
+
+/// Composer surface background, applied regardless of focus state. Reuses
+/// the theme's `surface_raised` token (relative to the theme's own palette,
+/// not a hardcoded color) so it stays safe across light/dark terminal
+/// themes.
+pub fn composer_surface() -> Style {
     panel_alt()
 }
 

@@ -3620,10 +3620,10 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let rendered = rendered_lines.join("\n");
-        assert_eq!(rendered_lines[0].trim_end(), "> hello world", "{rendered}");
+        assert_eq!(rendered_lines[0].trim_end(), "| hello world", "{rendered}");
         let dark = theme::palette(forge_config::THEME_SOLARIZED_DARK);
         let first = &lines[0];
-        assert_eq!(first.spans[0].content.as_ref(), ">");
+        assert_eq!(first.spans[0].content.as_ref(), "|");
         assert_eq!(first.spans[0].style.fg, Some(dark.user_gutter_active));
         assert_eq!(first.spans[2].content.as_ref(), "hello world");
         assert_eq!(first.spans[2].style.fg, Some(dark.text));
@@ -3667,7 +3667,7 @@ mod tests {
         );
         let dark = theme::palette(forge_config::THEME_SOLARIZED_DARK);
         for row in &user_rows {
-            assert_eq!(row.spans[0].content.as_ref(), ">");
+            assert_eq!(row.spans[0].content.as_ref(), "|");
             assert_eq!(row.spans[0].style.fg, Some(dark.user_gutter_active));
         }
     }

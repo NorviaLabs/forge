@@ -270,7 +270,6 @@ mod tests {
         let buf = term.backend().buffer();
         let area = buf.area();
         let mut found_sel_bg = false;
-        let mut found_caret_bg = false;
         for y in 0..area.height {
             for x in 0..area.width {
                 let cell = &buf[(x, y)];
@@ -278,19 +277,22 @@ mod tests {
                 {
                     found_sel_bg = true;
                 }
-                // Block cursor: solid inverted cell (space or inverted char)
-                if cell.style().bg == crate::theme::caret().bg {
-                    found_caret_bg = true;
-                }
             }
         }
         assert!(
             found_sel_bg,
             "selected suggestion must have selected-surface background"
         );
+        // The composer cursor is now the real terminal cursor
+        // (`Frame::set_cursor_position`), not an in-buffer block glyph.
         assert!(
-            found_caret_bg,
-            "block cursor must have solid TEXT background"
+            term.backend().cursor_visible(),
+            "expected the composer to show the real terminal cursor"
+        );
+        let cursor = term.backend().cursor_position();
+        assert!(
+            area.contains(cursor),
+            "expected the terminal cursor at {cursor:?} to sit inside the frame"
         );
     }
 

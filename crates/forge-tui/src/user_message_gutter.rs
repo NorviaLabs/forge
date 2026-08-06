@@ -1,7 +1,6 @@
 //! Submitted user-message rendering and active-composer prompt helpers.
 
 use crate::theme;
-use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 #[cfg(test)]
@@ -12,19 +11,16 @@ const FALLBACK_GLYPH_PIPE: &str = "│";
 const FALLBACK_GLYPH_ASCII: &str = "|";
 pub const GUTTER_GAP: &str = " ";
 
-/// Prompt marker for the active composer. Plain ASCII, so unlike
-/// [`gutter_glyph`] it needs no encoding fallback. Callers show this on the
-/// composer's first visual row only. The input widget reserves matching blank
-/// padding for its wrapped content, so a multi-line draft reads as one prompt,
-/// not one per wrapped line the way the transcript's per-row gutter does.
-pub const ACTIVE_GLYPH: &str = ">";
-
-/// Active-composer gutter role.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GutterRole {
-    /// Active composer input (Prompt 12P).
-    Active,
-}
+/// Prompt marker for submitted user messages in the transcript (see
+/// `conversation.rs`). The live composer itself has no leading marker —
+/// several were tried (a Unicode chevron, plain `>`, this same `|`) and each
+/// had a live vertical-alignment problem against the composer's text
+/// (`>`-family glyphs are treated as math operators by most fonts and
+/// centered on the x-height rather than baseline-aligned like letters), so
+/// the composer marker was removed rather than keep chasing font-specific
+/// glyph metrics. This glyph lives on for the transcript, where it repeats
+/// on every wrapped row of a submitted message (blockquote-style).
+pub const ACTIVE_GLYPH: &str = "|";
 
 /// Decorative gutter glyph for the active theme.
 ///
@@ -60,13 +56,6 @@ pub fn glyph_display_width(glyph: &str) -> usize {
 /// Display width of gutter glyph plus separating space.
 pub fn gutter_prefix_width(glyph: &str) -> usize {
     glyph_display_width(glyph) + GUTTER_GAP.len()
-}
-
-/// Style for the decorative gutter marker.
-pub fn gutter_style_for(theme: &str, role: GutterRole) -> Style {
-    match role {
-        GutterRole::Active => theme::user_gutter_active_style_for(theme),
-    }
 }
 
 /// Build wrapped visual rows for a submitted user message.
@@ -150,7 +139,8 @@ mod tests {
             .map(|line| line_plain(&line))
             .filter(|row| !row.is_empty() && !row.chars().all(|c| c == '─'))
             .map(|row| {
-                row.strip_prefix("> ")
+                let active_prefix = format!("{ACTIVE_GLYPH}{GUTTER_GAP}");
+                row.strip_prefix(active_prefix.as_str())
                     .or_else(|| row.strip_prefix("  "))
                     .unwrap_or(&row)
                     .to_string()
@@ -570,13 +560,14 @@ mod tests {
     }
 
     fn snapshot_model(model: &ConversationModel, width: usize, label: &str) {
+        let active_prefix = format!("{ACTIVE_GLYPH}{GUTTER_GAP}");
         let lines = model.lines_for_width(width);
         assert!(
             lines
                 .iter()
                 .map(line_plain)
                 .filter(|text| !text.is_empty() && !text.chars().all(|c| c == '─'))
-                .all(|text| text.starts_with("> ") || text.starts_with("  ")),
+                .all(|text| text.starts_with(active_prefix.as_str()) || text.starts_with("  ")),
             "{label}: request is not left-aligned with the prompt gutter:\n{}",
             lines.iter().map(line_plain).collect::<Vec<_>>().join("\n")
         );
