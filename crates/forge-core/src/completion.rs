@@ -12,6 +12,8 @@
 //! `TaskLifecycle` (from `forge_types`) is reused as the decision's state
 //! instead of introducing a parallel `TaskState` enum.
 
+use std::collections::HashMap;
+
 use forge_types::TaskLifecycle;
 
 /// What a turn was expected to accomplish, derived from the tool calls the
@@ -450,8 +452,14 @@ fn evaluate_tool_execution(
     }
     let mut ok = Vec::new();
     let mut failed = Vec::new();
+    let mut by_operation = HashMap::new();
+    for entry in &evidence.0 {
+        if let Some(operation_id) = entry.operation_id.as_deref() {
+            by_operation.entry(operation_id).or_insert(entry);
+        }
+    }
     for expectation in required_tools {
-        match evidence.find(&expectation.operation_id, None) {
+        match by_operation.get(expectation.operation_id.as_str()).copied() {
             Some(entry)
                 if entry.event() == ExecutionEvent::ToolFinished && entry.exit_code == Some(0) =>
             {

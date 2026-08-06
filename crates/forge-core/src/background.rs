@@ -116,6 +116,8 @@ pub struct BackgroundTaskRegistry {
 }
 
 impl BackgroundTaskRegistry {
+    const MAX_TERMINAL_TASKS: usize = 64;
+
     pub fn new() -> Self {
         Self {
             tasks: HashMap::new(),
@@ -225,11 +227,32 @@ impl BackgroundTaskRegistry {
     }
 
     pub fn set_status(&mut self, id: BackgroundTaskId, status: BackgroundTaskStatus) {
+        let terminal = status.is_terminal();
         if let Some(task) = self.tasks.get_mut(&id) {
-            if status.is_terminal() {
+            if terminal {
                 task.finished_at = Some(Utc::now());
             }
             task.status = status;
+        }
+        if terminal {
+            self.prune_terminal_tasks();
+        }
+    }
+
+    fn prune_terminal_tasks(&mut self) {
+        let mut terminal: Vec<_> = self
+            .tasks
+            .values()
+            .filter(|task| task.status.is_terminal())
+            .map(|task| (task.id, task.finished_at))
+            .collect();
+        if terminal.len() <= Self::MAX_TERMINAL_TASKS {
+            return;
+        }
+        let remove_count = terminal.len() - Self::MAX_TERMINAL_TASKS;
+        terminal.sort_by_key(|(_, finished_at)| *finished_at);
+        for (id, _) in terminal.into_iter().take(remove_count) {
+            self.tasks.remove(&id);
         }
     }
 
@@ -850,6 +873,27 @@ mod tests {
         let task = reg.get(id).unwrap();
         assert!(task.status.is_terminal());
         assert!(task.finished_at.is_some());
+    }
+
+    #[test]
+    fn terminal_history_is_bounded() {
+        let mut reg = BackgroundTaskRegistry::new();
+        for _ in 0..(BackgroundTaskRegistry::MAX_TERMINAL_TASKS + 10) {
+            let id = reg.spawn_slot(
+                BackgroundTaskKind::Shell {
+                    command: "x".into(),
+                },
+                "x",
+                tid(1),
+                CancellationToken::new(),
+                None,
+            );
+            reg.set_status(id, BackgroundTaskStatus::Cancelled);
+        }
+        assert_eq!(
+            reg.list().count(),
+            BackgroundTaskRegistry::MAX_TERMINAL_TASKS
+        );
     }
 
     #[test]
