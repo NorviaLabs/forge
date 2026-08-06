@@ -6,7 +6,6 @@ use crate::widgets::FeedbackSeverity;
 pub enum ActivityKind {
     Model,
     Tool,
-    Run,
     Connect,
     Slash,
     System,

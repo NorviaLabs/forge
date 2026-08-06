@@ -1,9 +1,9 @@
-//! UI state and run-history persistence for [`TuiApp`].
+//! UI state persistence for [`TuiApp`].
 //!
-//! Split out of `app.rs` per #19. Loads and saves per-repository Files visibility,
-//! theme choice, and recent run records — routed through the centralized
-//! runtime-storage resolver (`.forge/local/ui-state`, or an application-data
-//! fallback outside a Git repository) rather than a hardcoded `.forge/` join.
+//! Split out of `app.rs` per #19. Loads and saves per-repository Files visibility
+//! and theme choice — routed through the centralized runtime-storage resolver
+//! (`.forge/local/ui-state`, or an application-data fallback outside a Git
+//! repository) rather than a hardcoded `.forge/` join.
 
 use super::*;
 use forge_storage::{LocalRuntimeStorage, RuntimeDataKind, RuntimeStorage};
@@ -28,50 +28,8 @@ impl TuiApp {
             .unwrap_or_else(|_| workspace.join(".forge"))
     }
 
-    pub(super) fn run_history_path(&self) -> PathBuf {
-        self.ui_state_storage_dir_for_read()
-            .join("run-history.json")
-    }
-
     pub(super) fn ui_state_path(&self) -> PathBuf {
         self.ui_state_storage_dir_for_read().join("ui-state.json")
-    }
-
-    pub(super) fn load_run_history(&mut self) {
-        let Ok(text) = fs::read_to_string(self.run_history_path()) else {
-            return;
-        };
-        let Ok(history) = serde_json::from_str::<RunHistoryFile>(&text) else {
-            self.run.error = Some("run history is malformed; recent runs were not loaded".into());
-            return;
-        };
-        let workspace_id = self.session.workspace_root().display().to_string();
-        if history.version == RUN_HISTORY_VERSION
-            && history.repository_or_workspace_id == workspace_id
-        {
-            self.run.recent = history.recent.into_iter().take(MAX_RECENT_RUNS).collect();
-        }
-    }
-
-    pub(super) fn save_run_history(&mut self) {
-        let path = self
-            .ui_state_storage_dir_for_write()
-            .join("run-history.json");
-        let history = RunHistoryFile {
-            version: RUN_HISTORY_VERSION,
-            repository_or_workspace_id: self.session.workspace_root().display().to_string(),
-            recent: self.run.recent.iter().cloned().collect(),
-        };
-        let result =
-            fs::create_dir_all(path.parent().unwrap_or_else(|| Path::new("."))).and_then(|_| {
-                fs::write(
-                    &path,
-                    serde_json::to_vec_pretty(&history).unwrap_or_default(),
-                )
-            });
-        if let Err(error) = result {
-            self.run.error = Some(format!("could not persist recent runs: {error}"));
-        }
     }
 
     pub(super) fn repository_or_workspace_id(&self) -> String {
@@ -143,7 +101,6 @@ mod tests {
                 cwd: dir.to_path_buf(),
                 version: "test".into(),
                 startup_notices: Vec::new(),
-                validation_command: None,
                 file_icons: forge_config::FileIconMode::Unicode,
                 theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
             },
@@ -178,33 +135,5 @@ mod tests {
         reloaded.workspace_files.visible = true;
         reloaded.load_ui_state();
         assert!(!reloaded.workspace_files.visible);
-    }
-
-    #[tokio::test]
-    async fn run_history_resolves_repository_locally_and_round_trips() {
-        let dir = TempDir::new().unwrap();
-        init_repo(dir.path());
-        let mut app = test_app(dir.path()).await;
-
-        let path = app.run_history_path();
-        let repo_local_root = dir
-            .path()
-            .canonicalize()
-            .unwrap()
-            .join(".forge")
-            .join("local");
-        assert!(path.starts_with(&repo_local_root));
-        assert!(path.ends_with(std::path::Path::new("ui-state").join("run-history.json")));
-
-        app.save_run_history();
-        assert!(path.is_file());
-
-        let text = fs::read_to_string(&path).unwrap();
-        let history: RunHistoryFile = serde_json::from_str(&text).unwrap();
-        assert_eq!(history.version, RUN_HISTORY_VERSION);
-        assert_eq!(
-            history.repository_or_workspace_id,
-            app.repository_or_workspace_id()
-        );
     }
 }
