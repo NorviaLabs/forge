@@ -437,10 +437,6 @@ pub fn user_message_style() -> Style {
     user_message().fg(active_palette().text)
 }
 
-pub fn user_gutter_active_style_for(theme_id: &str) -> Style {
-    user_message().fg(palette(theme_id).user_gutter_active)
-}
-
 pub fn assistant_answer_style() -> Style {
     assistant_message()
         .fg(active_palette().text)
@@ -671,7 +667,6 @@ pub struct Palette {
     pub surface_hover: Color,
     pub user_bg: Color,
     pub response_bg: Color,
-    pub user_gutter_active: Color,
     pub border: Color,
     pub border_muted: Color,
     pub search_match: Color,
@@ -714,7 +709,6 @@ fn palette_from_source(src: &ThemePalette) -> Palette {
         surface_hover: to_color(src.surface_hover),
         user_bg: to_color(src.background_deep),
         response_bg: to_color(src.background),
-        user_gutter_active: to_color(src.user_gutter_active),
         border: to_color(src.border),
         border_muted: to_color(src.border_muted),
         search_match: to_color(src.search_match),
