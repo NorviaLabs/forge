@@ -105,35 +105,75 @@ impl TuiApp {
         if !self.selection.is_active() {
             return;
         }
-        let text = match (self.selection.pane, self.editor_area) {
-            (Some(CopyPane::Editor), Some(area)) => selection::editor_selection_text(
-                &self.source_viewer.lines,
-                self.source_viewer.top_line,
-                self.source_viewer.h_scroll,
-                area,
-                &self.selection,
-            ),
-            (Some(CopyPane::Conversation), Some(area)) => selection::visible_rows_selection_text(
-                &self.conversation_rows,
-                area,
-                &self.selection,
-                true,
-            ),
-            (Some(CopyPane::Diff), Some(area)) => selection::visible_rows_selection_text(
-                &self.diff_rows,
-                area,
-                &self.selection,
-                false,
-            ),
-            (Some(CopyPane::Terminal), Some(area)) => selection::visible_rows_selection_text(
-                &self.terminal_rows,
-                area,
-                &self.selection,
-                false,
-            ),
-            _ => String::new(),
+        // A click without a drag (anchor == current) is not a selection —
+        // treat it as "click elsewhere to deselect" rather than copying a
+        // single cell.
+        let dragged = self
+            .selection
+            .rect()
+            .is_some_and(|r| r.row_start != r.row_end || r.col_start != r.col_end);
+        if !dragged {
+            self.selection.clear();
+            return;
+        }
+        let text = match self.selection.pane {
+            Some(CopyPane::Editor) => match self.editor_area {
+                Some(area) => selection::editor_selection_text(
+                    &self.source_viewer.lines,
+                    self.source_viewer.top_line,
+                    self.source_viewer.h_scroll,
+                    area,
+                    &self.selection,
+                ),
+                None => String::new(),
+            },
+            Some(CopyPane::Conversation) => match self.conversation_area {
+                Some(area) => selection::visible_rows_selection_text(
+                    &self.conversation_rows,
+                    area,
+                    &self.selection,
+                    true,
+                ),
+                None => String::new(),
+            },
+            Some(CopyPane::Diff) => match self.diff_area {
+                Some(area) => selection::visible_rows_selection_text(
+                    &self.diff_rows,
+                    area,
+                    &self.selection,
+                    false,
+                ),
+                None => String::new(),
+            },
+            Some(CopyPane::Terminal) => match self.terminal_area {
+                Some(area) => selection::visible_rows_selection_text(
+                    &self.terminal_rows,
+                    area,
+                    &self.selection,
+                    false,
+                ),
+                None => String::new(),
+            },
+            None => String::new(),
         };
-        self.selection.finish(text);
+        self.selection.finish(text.clone());
+        if text.is_empty() {
+            return;
+        }
+        let lines = text.lines().count().max(1);
+        match clipboard::write_osc52(&text) {
+            Ok(()) => {
+                let noun = if lines == 1 { "line" } else { "lines" };
+                self.set_feedback(
+                    crate::widgets::FeedbackSeverity::Ok,
+                    format!("Copied {lines} {noun}"),
+                );
+            }
+            Err(error) => self.set_feedback(
+                crate::widgets::FeedbackSeverity::Error,
+                format!("Copy failed: {error}"),
+            ),
+        }
     }
 
     fn mouse_open_context_menu(&mut self, col: u16, row: u16) {
