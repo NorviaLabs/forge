@@ -6,6 +6,7 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
 use tokio::process::Command;
 
 use crate::registry::ToolContext;
@@ -53,8 +54,26 @@ impl Tool for ReadFileTool {
             ToolError::Execution(format!("internal deserialize after validation: {e}"))
         })?;
         let path = ctx.resolve_path(&a.path)?;
-        let text = tokio::fs::read_to_string(&path).await?;
-        let content = slice_lines(&text, a.offset, a.limit);
+        let file = tokio::fs::File::open(&path).await?;
+        let mut lines = BufReader::new(file).lines();
+        let start = a.offset.unwrap_or(1).saturating_sub(1);
+        for _ in 0..start {
+            if lines.next_line().await?.is_none() {
+                break;
+            }
+        }
+        let mut content = String::new();
+        let mut count = 0;
+        while a.limit.is_none_or(|limit| count < limit) {
+            let Some(line) = lines.next_line().await? else {
+                break;
+            };
+            if !content.is_empty() {
+                content.push('\n');
+            }
+            content.push_str(&line);
+            count += 1;
+        }
         Ok(ToolOutput {
             outcome: Default::default(),
             content,
@@ -62,19 +81,6 @@ impl Tool for ReadFileTool {
             exit_code: None,
         })
     }
-}
-
-fn slice_lines(text: &str, offset: Option<u64>, limit: Option<u64>) -> String {
-    let start = offset.unwrap_or(1).saturating_sub(1) as usize;
-    let lines: Vec<&str> = text.lines().collect();
-    let end = limit
-        .map(|l| start + l as usize)
-        .unwrap_or(lines.len())
-        .min(lines.len());
-    if start >= lines.len() {
-        return String::new();
-    }
-    lines[start..end].join("\n")
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -107,7 +113,7 @@ pub(crate) async fn unified_diff(
     tokio::fs::write(&old_path, old_content).await?;
     tokio::fs::write(&new_path, new).await?;
 
-    let out = Command::new("git")
+    let mut child = Command::new("git")
         .arg("diff")
         .arg("--no-index")
         .arg("--no-color")
@@ -116,17 +122,17 @@ pub(crate) async fn unified_diff(
         .arg(&new_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
-        .await
+        .spawn()
         .map_err(|e| ToolError::Execution(e.to_string()))?;
+    let (status, stdout, stderr) = collect_bounded_output(&mut child).await?;
 
     let _ = tokio::fs::remove_file(&old_path).await;
     let _ = tokio::fs::remove_file(&new_path).await;
 
-    if !matches!(out.status.code(), Some(0 | 1)) {
-        let error = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    if !matches!(status.code(), Some(0 | 1)) {
+        let error = String::from_utf8_lossy(&stderr).trim().to_string();
         return Err(ToolError::Execution(if error.is_empty() {
-            format!("git diff failed with {}", out.status)
+            format!("git diff failed with {status}")
         } else {
             error
         }));
@@ -136,7 +142,7 @@ pub(crate) async fn unified_diff(
     let new_name = new_path.to_string_lossy();
     let old_name = old_name.trim_start_matches('/');
     let new_name = new_name.trim_start_matches('/');
-    let diff = String::from_utf8_lossy(&out.stdout)
+    let diff = String::from_utf8_lossy(&stdout)
         .replace(&format!("a/{old_name}"), &format!("a/{path}"))
         .replace(&format!("b/{new_name}"), &format!("b/{path}"));
     Ok(diff)
@@ -227,12 +233,12 @@ pub async fn run_shell_command(
         shell.env_remove(name);
     }
 
-    let out = shell
-        .output()
-        .await
+    let mut child = shell
+        .spawn()
         .map_err(|e| ToolError::Execution(e.to_string()))?;
-    let mut content = String::from_utf8_lossy(&out.stdout).into_owned();
-    let err = String::from_utf8_lossy(&out.stderr);
+    let (status, stdout, stderr) = collect_bounded_output(&mut child).await?;
+    let mut content = String::from_utf8_lossy(&stdout).into_owned();
+    let err = String::from_utf8_lossy(&stderr);
     if !err.is_empty() {
         if !content.is_empty() {
             content.push('\n');
@@ -240,8 +246,8 @@ pub async fn run_shell_command(
         content.push_str(&err);
     }
 
-    let is_error = !out.status.success();
-    let exit_code = out.status.code();
+    let is_error = !status.success();
+    let exit_code = status.code();
     let outcome = if !is_error {
         ExecutionOutcome::Success
     } else if exit_code == Some(127) {
@@ -258,6 +264,46 @@ pub async fn run_shell_command(
         is_error,
         exit_code,
     })
+}
+
+const MAX_CAPTURED_COMMAND_BYTES: usize = 512 * 1024;
+
+async fn read_bounded<R: AsyncRead + Unpin>(mut reader: R) -> std::io::Result<Vec<u8>> {
+    let mut output = Vec::new();
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let count = reader.read(&mut buffer).await?;
+        if count == 0 {
+            return Ok(output);
+        }
+        if output.len() < MAX_CAPTURED_COMMAND_BYTES {
+            let remaining = MAX_CAPTURED_COMMAND_BYTES - output.len();
+            output.extend_from_slice(&buffer[..count.min(remaining)]);
+        }
+    }
+}
+
+async fn collect_bounded_output(
+    child: &mut tokio::process::Child,
+) -> Result<(std::process::ExitStatus, Vec<u8>, Vec<u8>), ToolError> {
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| ToolError::Execution("missing command stdout".into()))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| ToolError::Execution("missing command stderr".into()))?;
+    let stdout_task = tokio::spawn(read_bounded(stdout));
+    let stderr_task = tokio::spawn(read_bounded(stderr));
+    let status = child.wait().await?;
+    let stdout = stdout_task
+        .await
+        .map_err(|e| ToolError::Execution(e.to_string()))??;
+    let stderr = stderr_task
+        .await
+        .map_err(|e| ToolError::Execution(e.to_string()))??;
+    Ok((status, stdout, stderr))
 }
 
 #[async_trait]

@@ -260,11 +260,27 @@ impl TuiApp {
         let Some(rx) = self.run_execution.execution.rx.take() else {
             return;
         };
-        match rx.try_recv() {
-            Ok(RunEvent::Output(chunk)) => {
-                self.append_terminal_output(&chunk);
-                self.run_execution.execution.rx = Some(rx);
+        const MAX_EVENTS_PER_POLL: usize = 64;
+        let mut output = Vec::new();
+        let mut event = Err(std::sync::mpsc::TryRecvError::Empty);
+        for _ in 0..MAX_EVENTS_PER_POLL {
+            match rx.try_recv() {
+                Ok(RunEvent::Output(chunk)) => output.extend(chunk),
+                other => {
+                    event = other;
+                    break;
+                }
             }
+        }
+        if !output.is_empty() {
+            self.append_terminal_output(&output);
+        }
+        if matches!(event, Err(std::sync::mpsc::TryRecvError::Empty)) {
+            self.run_execution.execution.rx = Some(rx);
+            return;
+        }
+        match event {
+            Ok(RunEvent::Output(_)) | Err(std::sync::mpsc::TryRecvError::Empty) => unreachable!(),
             Ok(RunEvent::Finished { exit_code, success }) => {
                 self.run_execution.execution.abort = None;
                 self.run_execution.execution.pending_validation = false;
@@ -349,9 +365,6 @@ impl TuiApp {
                 }
                 self.terminal_capture.content = error.clone();
                 self.report_error(&format!("run output capture failed: {error}"));
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => {
-                self.run_execution.execution.rx = Some(rx);
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.run_execution.execution.abort = None;

@@ -1034,6 +1034,10 @@ impl AgentSession {
             .collect()
     }
 
+    pub fn loaded_skills(&self) -> Vec<forge_context::SkillManifest> {
+        self.context.load_skills()
+    }
+
     pub fn list_tools(&self) -> Vec<String> {
         let desc = self.tools.list_descriptors();
         if self.enable_gov {

@@ -14,7 +14,10 @@ use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
+use tokio::time::{timeout, Duration};
 use tracing::warn;
+
+const MCP_IO_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Error)]
 #[non_exhaustive]
@@ -25,6 +28,8 @@ pub enum McpError {
     Json(#[from] serde_json::Error),
     #[error("protocol: {0}")]
     Protocol(String),
+    #[error("MCP {0} timed out")]
+    Timeout(&'static str),
     #[error("server `{0}` not found")]
     NotFound(String),
 }
@@ -89,6 +94,7 @@ pub struct McpStdioClient {
     stdin: Mutex<ChildStdin>,
     stdout: Mutex<BufReader<ChildStdout>>,
     next_id: Mutex<u64>,
+    request_lock: Mutex<()>,
     server_id: String,
 }
 
@@ -104,7 +110,7 @@ impl McpStdioClient {
             .args(&cfg.args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::null())
             .spawn()?;
         let stdin = child
             .stdin
@@ -119,10 +125,11 @@ impl McpStdioClient {
             stdin: Mutex::new(stdin),
             stdout: Mutex::new(BufReader::new(stdout)),
             next_id: Mutex::new(1),
+            request_lock: Mutex::new(()),
             server_id: cfg.id.clone(),
         };
         // initialize
-        let _ = client
+        client
             .request(
                 "initialize",
                 json!({
@@ -131,12 +138,21 @@ impl McpStdioClient {
                     "clientInfo": { "name": "forge", "version": "0.1.0" }
                 }),
             )
-            .await;
-        let _ = client.notify("notifications/initialized", json!({})).await;
+            .await?;
+        client
+            .notify("notifications/initialized", json!({}))
+            .await?;
         Ok(client)
     }
 
     async fn notify(&self, method: &str, params: Value) -> Result<(), McpError> {
+        let _request_guard = self.request_lock.lock().await;
+        timeout(MCP_IO_TIMEOUT, self.notify_inner(method, params))
+            .await
+            .map_err(|_| McpError::Timeout("notification"))?
+    }
+
+    async fn notify_inner(&self, method: &str, params: Value) -> Result<(), McpError> {
         let msg = json!({
             "jsonrpc": "2.0",
             "method": method,
@@ -151,6 +167,13 @@ impl McpStdioClient {
     }
 
     async fn request(&self, method: &str, params: Value) -> Result<Value, McpError> {
+        let _request_guard = self.request_lock.lock().await;
+        timeout(MCP_IO_TIMEOUT, self.request_inner(method, params))
+            .await
+            .map_err(|_| McpError::Timeout("request"))?
+    }
+
+    async fn request_inner(&self, method: &str, params: Value) -> Result<Value, McpError> {
         let id = {
             let mut n = self.next_id.lock().await;
             let id = *n;
@@ -353,7 +376,13 @@ mod tests {
         std::fs::write(
             &script,
             r#"#!/bin/sh
-while IFS= read -r line; do
+ while IFS= read -r line; do
+   i=0
+   while [ "$i" -lt 4096 ]; do
+     printf '%s\n' 'mcp server diagnostic' >&2
+     i=$((i + 1))
+   done
+   id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
   case "$line" in
     *'"method":"initialize"'*)
       printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"capabilities":{}}}'
@@ -362,7 +391,7 @@ while IFS= read -r line; do
       printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"echo","description":"Echo text","inputSchema":{"type":"object"}},{"name":"bad","inputSchema":"invalid"},{"description":"missing name"}]}}'
       ;;
     *'"method":"tools/call"'*)
-      printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"hello"}],"isError":true}}'
+      printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"hello\"}],\"isError\":true}}"
       ;;
   esac
 done
@@ -485,6 +514,29 @@ done
             .unwrap();
         assert!(output.is_error);
         assert!(output.content.contains("hello"));
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn concurrent_requests_keep_matching_responses() {
+        let directory = fixture_server();
+        let cfg = McpServerConfig {
+            id: "fixture".into(),
+            transport: "stdio".into(),
+            command: directory
+                .path()
+                .join("mcp-server.sh")
+                .to_string_lossy()
+                .into_owned(),
+            args: Vec::new(),
+        };
+        let client = McpStdioClient::spawn(&cfg).await.unwrap();
+        let (first, second) = tokio::join!(
+            client.call_tool("echo", json!({"n": 1})),
+            client.call_tool("echo", json!({"n": 2}))
+        );
+        assert!(first.unwrap().content.contains("hello"));
+        assert!(second.unwrap().content.contains("hello"));
     }
 
     #[tokio::test]

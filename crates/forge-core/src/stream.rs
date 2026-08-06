@@ -5,8 +5,6 @@
 //! the final [`ModelResponse`], and so tool-call streaming can surface as turn
 //! events without duplicating provider-specific parsing in the TUI.
 
-use std::sync::mpsc::Receiver;
-
 use forge_model::StreamEventTx;
 use forge_types::{ModelResponse, ModelStreamEvent, Usage};
 
@@ -77,7 +75,7 @@ pub fn observe_stream_event(
 }
 
 fn drain_stream_rx(
-    rx: &Receiver<ModelStreamEvent>,
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<ModelStreamEvent>,
     session: &mut AgentSession,
     forward: Option<&StreamEventTx>,
     acc: &mut ModelStepAccumulator,
@@ -95,28 +93,52 @@ impl AgentSession {
         forward: Option<StreamEventTx>,
     ) -> Result<ModelResponse, LoopError> {
         let req = self.prepare_model_step(turn).await?;
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (tx, std_rx) = std::sync::mpsc::channel();
+        let (async_tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let relay = tokio::task::spawn_blocking(move || {
+            while let Ok(event) = std_rx.recv() {
+                if async_tx.send(event).is_err() {
+                    break;
+                }
+            }
+        });
         let model = self.model.clone();
         let handle = tokio::spawn(async move { model.complete_with_stream(req, Some(tx)).await });
 
         let mut acc = ModelStepAccumulator::default();
-        while !handle.is_finished() {
+        tokio::pin!(handle);
+        let cancel_token = self.cancel_token.clone();
+        let response = loop {
             // Only ever `Some` for a subagent session (see `AgentSession::cancel_token`'s
             // doc comment) — the foreground session is cancelled via the TUI's own
             // `cancel_requested` bool instead, checked in `app/turn.rs`.
-            if self.cancel_token.as_ref().is_some_and(|t| t.is_cancelled()) {
-                handle.abort();
-                return Err(LoopError::Cancelled);
+            tokio::select! {
+                event = rx.recv() => {
+                    if let Some(event) = event {
+                        observe_stream_event(self, &event, forward.as_ref(), &mut acc);
+                    }
+                }
+                result = &mut handle => {
+                    break result
+                        .map_err(|error| LoopError::Other(format!("model task join: {error}")))?
+                        .map_err(|error| LoopError::Other(error.to_string()))?;
+                }
+                _ = async {
+                    if let Some(token) = cancel_token.clone() {
+                        token.cancelled().await;
+                    } else {
+                        std::future::pending::<()>().await;
+                    }
+                } => {
+                    handle.as_mut().abort();
+                    return Err(LoopError::Cancelled);
+                }
             }
-            drain_stream_rx(&rx, self, forward.as_ref(), &mut acc);
-            tokio::task::yield_now().await;
-        }
-        drain_stream_rx(&rx, self, forward.as_ref(), &mut acc);
-
-        let response = handle
+        };
+        drain_stream_rx(&mut rx, self, forward.as_ref(), &mut acc);
+        relay
             .await
-            .map_err(|error| LoopError::Other(format!("model task join: {error}")))?
-            .map_err(|error| LoopError::Other(error.to_string()))?;
+            .map_err(|error| LoopError::Other(format!("stream relay join: {error}")))?;
         Ok(merge_streamed_response(response, &acc))
     }
 }

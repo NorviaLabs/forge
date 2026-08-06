@@ -12,6 +12,8 @@ pub(crate) struct InteractiveTerminal {
     child: Box<dyn Child + Send + Sync>,
     output_rx: Receiver<Vec<u8>>,
     screen: vt100::Parser,
+    display: String,
+    size: (u16, u16),
     pub(crate) running: bool,
     pub(crate) shell: String,
 }
@@ -56,6 +58,8 @@ impl InteractiveTerminal {
             child,
             output_rx,
             screen: vt100::Parser::new(rows.max(2), cols.max(20), SCROLLBACK_LINES),
+            display: String::new(),
+            size: (cols.max(20), rows.max(2)),
             running: true,
             shell,
         })
@@ -71,6 +75,9 @@ impl InteractiveTerminal {
         while let Ok(bytes) = self.output_rx.try_recv() {
             self.screen.process(&bytes);
             changed = true;
+        }
+        if changed {
+            self.display = self.screen.screen().contents();
         }
         let child_running = match self.child.try_wait() {
             Ok(Some(_)) | Err(_) => false,
@@ -91,6 +98,9 @@ impl InteractiveTerminal {
     pub(crate) fn resize(&mut self, cols: u16, rows: u16) -> io::Result<()> {
         let rows = rows.max(2);
         let cols = cols.max(20);
+        if self.size == (cols, rows) {
+            return Ok(());
+        }
         self.master
             .resize(PtySize {
                 rows,
@@ -100,11 +110,13 @@ impl InteractiveTerminal {
             })
             .map_err(other)?;
         self.screen.set_size(rows, cols);
+        self.size = (cols, rows);
+        self.display = self.screen.screen().contents();
         Ok(())
     }
 
-    pub(crate) fn display_output(&self) -> String {
-        self.screen.screen().contents()
+    pub(crate) fn display_output(&self) -> &str {
+        &self.display
     }
 }
 

@@ -756,20 +756,35 @@ fn find_matches(lines: &[String], query: &str) -> Vec<Match> {
     if query_lower.is_empty() {
         return Vec::new();
     }
+    let mut prefix = vec![0; query_lower.len()];
+    for i in 1..query_lower.len() {
+        let mut length = prefix[i - 1];
+        while length > 0 && query_lower[i] != query_lower[length] {
+            length = prefix[length - 1];
+        }
+        if query_lower[i] == query_lower[length] {
+            length += 1;
+        }
+        prefix[i] = length;
+    }
     let mut matches = Vec::new();
     for (line_idx, line) in lines.iter().enumerate() {
-        let line_lower: Vec<char> = line.to_lowercase().chars().collect();
-        if line_lower.len() < query_lower.len() {
-            continue;
-        }
-        let max_start = line_lower.len() - query_lower.len();
-        for start in 0..=max_start {
-            if line_lower[start..start + query_lower.len()] == query_lower[..] {
+        let mut matched = 0;
+        for (position, ch) in line.to_lowercase().chars().enumerate() {
+            while matched > 0 && ch != query_lower[matched] {
+                matched = prefix[matched - 1];
+            }
+            if ch == query_lower[matched] {
+                matched += 1;
+            }
+            if matched == query_lower.len() {
+                let start = position + 1 - matched;
                 matches.push(Match {
                     line: line_idx,
                     start,
                     end: start + query_lower.len(),
                 });
+                matched = prefix[matched - 1];
             }
         }
     }
@@ -1603,6 +1618,15 @@ mod tests {
         assert_eq!(matches[0].start, 0);
         assert_eq!(matches[1].line, 1);
         assert_eq!(matches[1].start, 1);
+    }
+
+    #[test]
+    fn find_matches_keeps_overlapping_matches() {
+        let matches = find_matches(&["aaaa".into()], "aa");
+        assert_eq!(
+            matches.iter().map(|m| (m.start, m.end)).collect::<Vec<_>>(),
+            vec![(0, 2), (1, 3), (2, 4)]
+        );
     }
 
     #[test]

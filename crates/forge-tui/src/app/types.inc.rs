@@ -649,6 +649,7 @@ pub(crate) struct StatusMessageState {
 struct StreamState {
     preview: String,
     thinking: String,
+    live_lines: Option<(u16, usize, usize, Arc<Vec<Line<'static>>>)>,
 }
 
 struct RunExecutionState {
@@ -723,6 +724,7 @@ pub struct TuiApp {
     /// Last known repo header. Refreshed off-thread by `poll_repo_header`; the
     /// render path only ever reads it, never derives it.
     repo_header_state: RepoHeaderState,
+    progress_state: std::cell::RefCell<ProgressState>,
     terminal_capture: TerminalCapture,
     interactive_terminal: Option<InteractiveTerminal>,
     workspace_search: WorkspaceSearchState,
@@ -742,6 +744,12 @@ struct RepoHeaderState {
     refreshed_at: Instant,
     /// Directory the cached header describes, so a cwd change invalidates it.
     cwd: PathBuf,
+}
+
+#[derive(Debug, Default)]
+struct ProgressState {
+    modified: Option<std::time::SystemTime>,
+    description: Option<String>,
 }
 
 /// Off-thread model-catalog refresh, matching `RepoHeaderState`'s

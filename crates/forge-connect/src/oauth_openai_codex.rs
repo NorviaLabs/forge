@@ -69,10 +69,13 @@ impl OpenAiCodexOauthClient {
         url: &str,
         body: serde_json::Value,
     ) -> Result<(u16, String), OpenAiCodexOauthError> {
-        let request = ureq::post(url).set("Content-Type", "application/json").set(
-            "User-Agent",
-            &format!("forge/{}", env!("CARGO_PKG_VERSION")),
-        );
+        let request = ureq::post(url)
+            .set("Content-Type", "application/json")
+            .set(
+                "User-Agent",
+                &format!("forge/{}", env!("CARGO_PKG_VERSION")),
+            )
+            .timeout(std::time::Duration::from_secs(30));
         match request.send_json(body) {
             Ok(response) => Ok((response.status(), Self::response_body(response))),
             Err(ureq::Error::Status(status, response)) => {
@@ -88,7 +91,8 @@ impl OpenAiCodexOauthClient {
             .set(
                 "User-Agent",
                 &format!("forge/{}", env!("CARGO_PKG_VERSION")),
-            );
+            )
+            .timeout(std::time::Duration::from_secs(30));
         match request.send_form(form) {
             Ok(response) => Ok((response.status(), Self::response_body(response))),
             Err(ureq::Error::Status(status, response)) => {

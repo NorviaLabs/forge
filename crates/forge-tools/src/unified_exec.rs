@@ -55,7 +55,25 @@ struct Session {
     stdout: ChildStdout,
     stderr: ChildStderr,
     output: String,
+    output_truncated: bool,
     started: Instant,
+}
+
+const MAX_SESSION_OUTPUT: usize = 1024 * 1024;
+
+fn append_output(session: &mut Session, bytes: &[u8]) {
+    if session.output.len() >= MAX_SESSION_OUTPUT {
+        session.output_truncated = true;
+        return;
+    }
+    let text = String::from_utf8_lossy(bytes);
+    let remaining = MAX_SESSION_OUTPUT - session.output.len();
+    let end = text.len().min(remaining);
+    let end = text.floor_char_boundary(end);
+    session.output.push_str(&text[..end]);
+    if end < text.len() {
+        session.output_truncated = true;
+    }
 }
 
 type Sessions = Arc<Mutex<HashMap<u64, Arc<Mutex<Session>>>>>;
@@ -74,6 +92,7 @@ fn output_for(session_id: u64, session: &Session, max_tokens: Option<usize>) -> 
             let end = raw.floor_char_boundary(limit);
             format!("{}\n[output truncated]", &raw[..end])
         }
+        _ if session.output_truncated => format!("{raw}\n[output truncated]"),
         _ => raw.clone(),
     };
     json!({
@@ -97,16 +116,17 @@ async fn collect(
     let mut stderr_buffer = [0_u8; 4096];
     loop {
         if let Some(status) = session.child.try_wait().map_err(ToolError::Io)? {
-            session.output.push_str(&format!(
+            let exit = format!(
                 "\n[process exited with code {}]",
                 status.code().unwrap_or(-1)
-            ));
+            );
+            append_output(session, exit.as_bytes());
             let mut tail = Vec::new();
             session.stdout.read_to_end(&mut tail).await?;
-            session.output.push_str(&String::from_utf8_lossy(&tail));
+            append_output(session, &tail);
             let mut tail = Vec::new();
             session.stderr.read_to_end(&mut tail).await?;
-            session.output.push_str(&String::from_utf8_lossy(&tail));
+            append_output(session, &tail);
             let body = output_for(session_id, session, max_tokens);
             return Ok(ToolOutput {
                 outcome: Default::default(),
@@ -122,11 +142,11 @@ async fn collect(
         tokio::select! {
             result = session.stdout.read(&mut stdout_buffer) => {
                 let count = result?;
-                if count > 0 { session.output.push_str(&String::from_utf8_lossy(&stdout_buffer[..count])); }
+                if count > 0 { append_output(session, &stdout_buffer[..count]); }
             }
             result = session.stderr.read(&mut stderr_buffer) => {
                 let count = result?;
-                if count > 0 { session.output.push_str(&String::from_utf8_lossy(&stderr_buffer[..count])); }
+                if count > 0 { append_output(session, &stderr_buffer[..count]); }
             }
             _ = tokio::time::sleep(remaining.min(Duration::from_millis(20))) => {}
         }
@@ -185,6 +205,7 @@ async fn start(ctx: &ToolContext, args: ExecCommandArgs) -> Result<ToolOutput, T
             .ok_or_else(|| ToolError::Execution("failed to open stderr".into()))?,
         child,
         output: String::new(),
+        output_truncated: false,
         started: Instant::now(),
     };
     let id = next_id();

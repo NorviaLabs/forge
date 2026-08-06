@@ -4,7 +4,7 @@ use forge_types::{ModelResponse, ModelStreamEvent, ToolCall, Usage};
 use futures::StreamExt;
 use serde_json::{json, Value};
 
-use super::NativeModelClient;
+use super::{process_sse_lines, NativeModelClient};
 use crate::normalize::{forge_messages_to_wire, tools_to_openai_functions};
 use crate::prompt_cache::{apply_openai_prompt_cache, usage_from_provider};
 use crate::{ModelError, ModelRequest, StreamEventTx};
@@ -67,14 +67,12 @@ pub(super) async fn complete(
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|error| ModelError::Transport(error.to_string()))?;
         pending.push_str(&String::from_utf8_lossy(&chunk));
-        while let Some(newline) = pending.find('\n') {
-            let line = pending[..newline].trim().to_string();
-            pending.drain(..=newline);
+        process_sse_lines(&mut pending, |line| {
             let Some(data) = line.strip_prefix("data:").map(str::trim) else {
-                continue;
+                return Ok(());
             };
             if data.is_empty() || data == "[DONE]" {
-                continue;
+                return Ok(());
             }
             let event: Value = serde_json::from_str(data)
                 .map_err(|error| ModelError::Protocol(format!("invalid SSE JSON: {error}")))?;
@@ -86,7 +84,8 @@ pub(super) async fn complete(
                 &mut usage,
                 tx.as_ref(),
             );
-        }
+            Ok(())
+        })?;
     }
 
     let tool_calls = finalize_tool_calls(tool_calls)?;
@@ -291,14 +290,9 @@ fn accumulate_tool_arguments(acc: &mut String, fragment: &Value) {
                 return;
             }
             // Provider sent a full JSON object snapshot as a string (not a delta).
-            if let (Ok(_), Ok(Value::Object(_))) = (
-                serde_json::from_str::<Value>(acc),
-                serde_json::from_str::<Value>(s),
-            ) {
-                if !acc.is_empty() {
-                    *acc = s.clone();
-                    return;
-                }
+            if matches!(serde_json::from_str::<Value>(s), Ok(Value::Object(_))) {
+                *acc = s.clone();
+                return;
             }
             acc.push_str(s);
         }

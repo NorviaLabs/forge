@@ -28,7 +28,8 @@ impl TuiApp {
         let filter = t.trim_start_matches('/');
         let mut items = filter_palette(filter);
         items.extend(
-            forge_context::discover_skills(self.session.workspace_root())
+            self.session
+                .loaded_skills()
                 .into_iter()
                 .map(|skill| PaletteItem {
                     cmd: format!("/{}", skill.name),
@@ -718,7 +719,9 @@ impl TuiApp {
             .next()
             .and_then(|token| token.strip_prefix('/'))
         {
-            let is_skill = forge_context::discover_skills(self.session.workspace_root())
+            let is_skill = self
+                .session
+                .loaded_skills()
                 .iter()
                 .any(|skill| skill.name == skill_name);
             if is_skill {

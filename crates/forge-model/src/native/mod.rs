@@ -72,6 +72,40 @@ use forge_types::ModelResponse;
 
 use crate::{ModelClient, ModelError, ModelRequest, StreamEventTx};
 
+pub(super) fn process_sse_lines(
+    pending: &mut String,
+    mut consume: impl FnMut(&str) -> Result<(), ModelError>,
+) -> Result<(), ModelError> {
+    let mut start = 0;
+    while let Some(relative) = pending[start..].find('\n') {
+        let newline = start + relative;
+        consume(pending[start..newline].trim())?;
+        start = newline + 1;
+    }
+    if start != 0 {
+        pending.drain(..start);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod sse_tests {
+    use super::process_sse_lines;
+
+    #[test]
+    fn keeps_partial_line_after_batch() {
+        let mut pending = "data: one\ndata: two\ndata: par".into();
+        let mut lines = Vec::new();
+        process_sse_lines(&mut pending, |line| {
+            lines.push(line.to_string());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(lines, ["data: one", "data: two"]);
+        assert_eq!(pending, "data: par");
+    }
+}
+
 pub struct NativeModelClient {
     http: reqwest::Client,
     default_model: String,
