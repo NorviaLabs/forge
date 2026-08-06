@@ -1,12 +1,11 @@
 //! Input bar — multi-line paste / Shift+Enter newline.
 
 use crate::theme;
-use crate::user_message_gutter::{gutter_prefix_width, GutterRole, ACTIVE_GLYPH};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Modifier;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Widget, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Widget, Wrap};
 use std::ops::Range;
 
 #[derive(Debug, Clone, Default)]
@@ -422,21 +421,129 @@ fn cursor_scroll(model: &InputModel, content_width: u16, visible_rows: u16) -> u
 
 const SEND_HINT: &str = "⏎";
 
+/// Left inset before composer text — simple breathing room from the border,
+/// replacing the removed prompt-glyph gutter column.
+pub(crate) const TEXT_INSET: u16 = 1;
+
+/// Composer geometry derived from `model`/`area`/`attachment`/
+/// `show_send_hint` — no styling. Shared by [`InputBar::render`] and
+/// [`composer_cursor_position`] so the two never drift apart.
+struct ComposerGeometry {
+    input_area: Rect,
+    text_area: Rect,
+    send_w: u16,
+}
+
+fn composer_geometry(
+    model: &InputModel,
+    area: Rect,
+    attachment: Option<&str>,
+    show_send_hint: bool,
+) -> Option<ComposerGeometry> {
+    let block = Block::default().borders(Borders::ALL);
+    let inner = block.inner(area);
+    if inner.width == 0 || inner.height == 0 {
+        return None;
+    }
+
+    let attach_h = u16::from(attachment.is_some() && inner.height > 1);
+    let y = inner.y.saturating_add(attach_h);
+    let remain = inner.height.saturating_sub(attach_h);
+    let text_h = remain.max(1);
+    let input_area = Rect::new(inner.x, y, inner.width, text_h);
+
+    let send_w = if show_send_hint && input_area.width > TEXT_INSET + 2 {
+        SEND_HINT.chars().count() as u16
+    } else {
+        0
+    };
+    let raw_text_area = Rect::new(
+        input_area.x.saturating_add(TEXT_INSET),
+        input_area.y,
+        input_area
+            .width
+            .saturating_sub(TEXT_INSET)
+            .saturating_sub(send_w.saturating_add(u16::from(send_w > 0))),
+        input_area.height,
+    );
+
+    // Vertically center content that's shorter than the box (the common
+    // case: an idle/short-draft composer sitting in a box tall enough for
+    // growth). Once content fills or exceeds the available rows, use the
+    // full height instead so cursor navigation still has room to scroll.
+    let total_lines = Paragraph::new(composer_text(model, true))
+        .wrap(Wrap { trim: false })
+        .line_count(raw_text_area.width.max(1));
+    let visible_content_rows = (total_lines as u16).min(raw_text_area.height).max(1);
+    let top_pad = raw_text_area.height.saturating_sub(visible_content_rows) / 2;
+    let text_area = Rect::new(
+        raw_text_area.x,
+        raw_text_area.y.saturating_add(top_pad),
+        raw_text_area.width,
+        raw_text_area.height.saturating_sub(top_pad),
+    );
+
+    Some(ComposerGeometry {
+        input_area,
+        text_area,
+        send_w,
+    })
+}
+
+/// Absolute `(x, y)` of the composer's cursor cell within `area`, for driving
+/// the real terminal cursor (`Frame::set_cursor_position`). Renders the same
+/// composer text used for display into a scratch buffer and scans for the
+/// cursor sentinel — mirrors the display render exactly rather than
+/// reimplementing wrap math independently.
+pub fn composer_cursor_position(
+    model: &InputModel,
+    area: Rect,
+    attachment: Option<&str>,
+) -> Option<(u16, u16)> {
+    let geometry = composer_geometry(model, area, attachment, false)?;
+    let text_area = geometry.text_area;
+    if text_area.width == 0 || text_area.height == 0 {
+        return None;
+    }
+
+    let scroll = cursor_scroll(model, text_area.width, text_area.height);
+    let mut scratch = Buffer::empty(text_area);
+    Paragraph::new(composer_text(model, true))
+        .wrap(Wrap { trim: false })
+        .scroll((scroll, 0))
+        .render(text_area, &mut scratch);
+
+    for y in text_area.top()..text_area.bottom() {
+        for x in text_area.left()..text_area.right() {
+            if scratch[(x, y)].symbol() == CURSOR_GLYPH {
+                return Some((x, y));
+            }
+        }
+    }
+    None
+}
+
 impl Widget for InputBar<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         if area.width == 0 || area.height == 0 {
             return;
         }
 
+        // Placeholder text follows the universal empty-input-field
+        // convention (italic/dim = "type here") rather than the emphasized
+        // style real typed content gets — a bold placeholder reads as
+        // content, not an invitation to type.
+        let is_placeholder = self.model.text.is_empty() && !self.model.waiting;
         let base = if self.dimmed {
             theme::dim()
         } else if self.model.history_browse {
             theme::history_active()
+        } else if is_placeholder {
+            theme::composer_placeholder()
         } else {
-            theme::text()
+            theme::composer_text()
         };
         let theme = crate::theme::active();
-        let gutter_style = crate::user_message_gutter::gutter_style_for(&theme, GutterRole::Active);
 
         let text_focused = self.focused;
         let border = if text_focused {
@@ -446,17 +553,20 @@ impl Widget for InputBar<'_> {
         } else if self.not_connected {
             theme::warn()
         } else {
-            theme::inactive_panel_border()
+            theme::composer_border_idle()
         };
         let block = Block::default()
             .borders(Borders::ALL)
+            // Thick border — no other panel in the app (Files, Chat, editor)
+            // uses anything but the default Plain shape, so this is a
+            // structural "this is an input" signal that survives even
+            // without color (reduced-color terminals, colorblind users).
+            .border_type(BorderType::Thick)
             .border_style(border)
             .style(if self.dimmed {
                 theme::surface_hover()
-            } else if text_focused || self.model.history_browse {
-                theme::composer_focused()
             } else {
-                theme::panel()
+                theme::composer_surface()
             });
         let inner = block.inner(area);
         if inner.width == 0 || inner.height == 0 {
@@ -464,43 +574,25 @@ impl Widget for InputBar<'_> {
         }
         block.render(area, buf);
 
-        let attach_h = u16::from(self.attachment.is_some() && inner.height > 1);
+        let Some(geometry) =
+            composer_geometry(self.model, area, self.attachment, self.show_send_hint)
+        else {
+            return;
+        };
+        let input_area = geometry.input_area;
+        let text_area = geometry.text_area;
+        let send_w = geometry.send_w;
 
-        let mut y = inner.y;
-        let mut remain = inner.height;
-
-        if attach_h > 0 {
+        if self.attachment.is_some() && inner.height > 1 {
             let att_text = self.attachment.unwrap_or("");
             let att_line = Line::from(vec![
                 Span::styled("» ", theme::info()),
                 Span::styled(att_text, theme::info()),
                 Span::styled("  [Ctrl+A or /cf to remove]", theme::dim()),
             ]);
-            Paragraph::new(att_line).render(Rect::new(inner.x, y, inner.width, 1), buf);
-            y = y.saturating_add(1);
-            remain = remain.saturating_sub(1);
+            Paragraph::new(att_line).render(Rect::new(inner.x, inner.y, inner.width, 1), buf);
         }
 
-        let text_h = remain.max(1);
-        let input_area = Rect::new(inner.x, y, inner.width, text_h);
-
-        Paragraph::new(Span::styled(ACTIVE_GLYPH, gutter_style))
-            .render(Rect::new(input_area.x, input_area.y, 1, 1), buf);
-        let prefix_width = gutter_prefix_width(ACTIVE_GLYPH) as u16;
-        let send_w = if self.show_send_hint && input_area.width > prefix_width + 2 {
-            SEND_HINT.chars().count() as u16
-        } else {
-            0
-        };
-        let text_area = Rect::new(
-            input_area.x.saturating_add(prefix_width),
-            input_area.y,
-            input_area
-                .width
-                .saturating_sub(prefix_width)
-                .saturating_sub(send_w.saturating_add(u16::from(send_w > 0))),
-            input_area.height,
-        );
         let scroll = if text_focused {
             cursor_scroll(self.model, text_area.width, text_area.height)
         } else {
@@ -520,10 +612,18 @@ impl Widget for InputBar<'_> {
             buf.set_stringn(sx, input_area.y, SEND_HINT, send_w as usize, theme::dim());
         }
         if text_focused {
+            // The real terminal cursor (driven by `composer_cursor_position`
+            // from the caller) renders the visible caret now — blend this
+            // sentinel cell into its own background instead of styling it as
+            // a fake caret, so it doesn't double up with the real cursor.
             for y in text_area.top()..text_area.bottom() {
                 for x in text_area.left()..text_area.right() {
                     if buf[(x, y)].symbol() == CURSOR_GLYPH {
-                        buf[(x, y)].set_style(theme::caret());
+                        let bg = buf[(x, y)]
+                            .style()
+                            .bg
+                            .unwrap_or_else(|| theme::palette(&theme).panel);
+                        buf[(x, y)].set_style(Style::default().fg(bg).bg(bg));
                         break;
                     }
                 }
@@ -536,7 +636,7 @@ impl Widget for InputBar<'_> {
 mod tests {
     use super::*;
     use crate::theme;
-    use crate::user_message_gutter::{gutter_prefix_width, gutter_style_for, GutterRole};
+    use crate::user_message_gutter::ACTIVE_GLYPH;
     use forge_config::THEME_SOLARIZED_DARK;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
@@ -697,30 +797,41 @@ mod tests {
         assert_eq!(m.take(), "before\n\tmiddle after");
     }
 
+    /// The real terminal cursor (driven by `composer_cursor_position`) is now
+    /// the visible caret, so the in-buffer sentinel is intentionally blended
+    /// into its own background — this asserts the sentinel cell still exists
+    /// (for `composer_cursor_position` to find) and that it's actually
+    /// invisible (fg == bg), not that it's rendered with caret styling.
     #[test]
-    fn caret_marker_is_visible() {
+    fn cursor_sentinel_cell_exists_and_is_blended_invisible() {
         let mut m = InputModel::default();
         m.set_text("ab");
         m.cursor = 2;
         let buf = draw_input_bar(&m, 40, 5, true, false, None);
         let area = buf.area();
-        let mut found = false;
+        let mut found = None;
         for y in 0..area.height {
             for x in 0..area.width {
-                let cell = &buf[(x, y)];
-                if cell.symbol() == CURSOR_GLYPH {
-                    found = true;
+                if buf[(x, y)].symbol() == CURSOR_GLYPH {
+                    found = Some(buf[(x, y)].style());
                 }
             }
         }
-        assert!(found, "expected visible cursor marker");
+        let style = found.expect("expected cursor sentinel cell");
+        assert_eq!(
+            style.fg, style.bg,
+            "sentinel should blend into its background"
+        );
     }
 
     #[test]
     fn empty_input_starts_with_caret_cell() {
         let m = InputModel::default();
         let buf = draw_input_bar(&m, 40, 5, true, false, None);
-        let cell = &buf[(3, 1)];
+        // Short content is vertically centered in the box (height 5 → 3
+        // inner rows, 1 line of content → 1 row of top padding), and text
+        // starts right after TEXT_INSET, not a removed gutter column.
+        let cell = &buf[(2, 2)];
         assert_eq!(cell.symbol(), CURSOR_GLYPH);
     }
 
@@ -747,6 +858,43 @@ mod tests {
     }
 
     #[test]
+    fn composer_cursor_position_locates_glyph_for_single_line_text() {
+        let mut m = InputModel::default();
+        m.set_text("ab");
+        m.cursor = 2;
+        let area = Rect::new(0, 0, 40, 5);
+        let (x, y) = composer_cursor_position(&m, area, None).expect("expected cursor position");
+        // Height 5 → 3 inner rows; 1 line of short content is vertically
+        // centered, landing on the second inner row (1 row of padding
+        // above it).
+        assert_eq!(y, 2);
+        assert!(x > area.x, "cursor x should be inside the border");
+    }
+
+    #[test]
+    fn composer_cursor_position_none_when_waiting_hides_the_composer() {
+        let m = InputModel {
+            waiting: true,
+            ..Default::default()
+        };
+        let area = Rect::new(0, 0, 40, 5);
+        assert_eq!(composer_cursor_position(&m, area, None), None);
+    }
+
+    #[test]
+    fn composer_cursor_position_advances_to_the_wrapped_row() {
+        let mut m = InputModel::default();
+        m.set_text("word ".repeat(30).trim().to_string());
+        m.cursor = m.text.len();
+        let area = Rect::new(0, 0, 24, 8);
+        let (_, y) = composer_cursor_position(&m, area, None).expect("expected cursor position");
+        assert!(
+            y > 1,
+            "cursor should have advanced past the first wrapped row"
+        );
+    }
+
+    #[test]
     fn renders_mode_label_and_connection_hint() {
         let m = InputModel {
             not_connected: true,
@@ -768,7 +916,6 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(rendered.contains("type here"));
-        assert!(rendered.contains(glyph()));
     }
 
     #[test]
@@ -821,9 +968,8 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(rendered.contains("file.txt"));
-        // Non-repeating prompt marker: exactly one `>`, on the true first
-        // row, not one per wrapped/continuation line.
-        assert_eq!(rendered.matches(glyph()).count(), 1);
+        assert!(rendered.contains("line1"));
+        assert!(rendered.contains("line2"));
     }
 
     #[test]
@@ -847,20 +993,23 @@ mod tests {
     }
 
     #[test]
-    fn empty_composer_renders_placeholder_gutter() {
+    fn empty_composer_renders_placeholder_without_marker() {
         let m = InputModel {
             hint: "Ask Forge anything…".into(),
             ..Default::default()
         };
         let rows = render_lines(&m, 60, 5, true);
         assert_eq!(rows.len(), 1);
-        assert!(rows[0].starts_with(glyph()));
-        assert!(rows[0].contains("Ask Forge anything…"));
+        // Leading space is TEXT_INSET; focused so the cursor sentinel
+        // precedes the hint text — neither is the removed marker glyph.
+        assert!(rows[0]
+            .trim_start()
+            .starts_with(&format!("{CURSOR_GLYPH}Ask Forge anything…")));
         assert!(m.copy_text().is_empty());
     }
 
     #[test]
-    fn single_line_input_has_continuous_gutter() {
+    fn single_line_input_has_no_marker() {
         let m = InputModel {
             text: "Summarize this codebase".into(),
             cursor: 0,
@@ -868,12 +1017,14 @@ mod tests {
         };
         let rows = render_lines(&m, 60, 5, true);
         assert_eq!(rows.len(), 1);
-        assert!(rows[0].starts_with(&format!("{} {CURSOR_GLYPH}Summarize", glyph())));
+        assert!(rows[0]
+            .trim_start()
+            .starts_with(&format!("{CURSOR_GLYPH}Summarize")));
         assert_eq!(m.copy_text(), "Summarize this codebase");
     }
 
     #[test]
-    fn wrapped_input_has_gutter_only_on_first_row() {
+    fn wrapped_input_has_no_marker_on_any_row() {
         let m = InputModel {
             text: "word ".repeat(30).trim().to_string(),
             cursor: 0,
@@ -881,13 +1032,8 @@ mod tests {
         };
         let rows = render_lines(&m, 24, 8, true);
         assert!(rows.len() >= 3);
-        assert!(rows[0].starts_with(glyph()));
-        // Continuation rows get blank padding of the same width, not a
-        // repeated `>` — but text still lines up under the first row.
-        let prefix_width = gutter_prefix_width(glyph());
-        for row in &rows[1..] {
-            assert!(!row.starts_with(glyph()), "continuation row: {row}");
-            assert!(row.starts_with(&" ".repeat(prefix_width)), "row: {row}");
+        for row in &rows {
+            assert!(!row.trim_start().starts_with(glyph()), "row: {row}");
         }
     }
 
@@ -902,17 +1048,14 @@ mod tests {
     }
 
     #[test]
-    fn explicit_newlines_have_gutter_only_on_first_row() {
+    fn explicit_newlines_render_one_row_each() {
         let m = InputModel {
             text: "one\ntwo\nthree".into(),
             ..Default::default()
         };
-        let rows = render_lines(&m, 60, 8, true);
-        assert_eq!(
-            rows.iter().filter(|row| row.starts_with(glyph())).count(),
-            1
-        );
-        assert!(rows[0].starts_with(glyph()));
+        let raw_rows = render_lines(&m, 60, 8, false);
+        let rows: Vec<&str> = raw_rows.iter().map(|row| row.trim_start()).collect();
+        assert_eq!(rows, vec!["one", "two", "three"]);
     }
 
     #[test]
@@ -922,13 +1065,6 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(composer_text(&model, false), "First.\n\nSecond.");
-    }
-
-    #[test]
-    fn active_gutter_uses_configured_theme_token() {
-        let style = gutter_style_for(THEME_SOLARIZED_DARK, GutterRole::Active);
-        let dark = theme::palette(THEME_SOLARIZED_DARK);
-        assert_eq!(style.fg, Some(dark.user_gutter_active));
     }
 
     #[test]
@@ -951,15 +1087,13 @@ mod tests {
     }
 
     #[test]
-    fn history_recall_preserves_buffer_without_gutter() {
+    fn history_recall_preserves_buffer() {
         let text = "line1\nline2";
         let mut m = InputModel::default();
         m.set_text(text);
-        let rows = render_lines(&m, 60, 8, true);
-        assert_eq!(
-            rows.iter().filter(|row| row.starts_with(glyph())).count(),
-            1
-        );
+        let raw_rows = render_lines(&m, 60, 8, false);
+        let rows: Vec<&str> = raw_rows.iter().map(|row| row.trim_start()).collect();
+        assert_eq!(rows, vec!["line1", "line2"]);
         assert_eq!(m.copy_text(), text);
     }
 
@@ -983,8 +1117,5 @@ mod tests {
         };
         let rows = render_lines(&m, 60, 5, true);
         assert!(rows.iter().any(|row| row.contains("line5")));
-        // The prompt gutter belongs to the compositor itself and remains
-        // stable while Ratatui scrolls the paragraph content below it.
-        assert!(rows.iter().any(|row| row.starts_with(glyph())));
     }
 }
