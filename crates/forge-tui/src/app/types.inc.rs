@@ -687,6 +687,10 @@ pub struct TuiApp {
     /// Editor pane's terminal rect from the most recent draw, used for mouse
     /// hit-testing (mouse events arrive between frames).
     editor_area: Option<ratatui::layout::Rect>,
+    /// Composer's terminal rect from the most recent draw, used by key
+    /// handling (which runs before the next render) to compute wrap width
+    /// for cursor line navigation.
+    pub(crate) composer_area: Option<ratatui::layout::Rect>,
     /// Active mouse text selection (v1: Editor pane).
     pub(crate) selection: crate::selection::MouseSelection,
     /// Open right-click context menu, if any.

@@ -67,8 +67,9 @@ impl InputHistory {
         self.reset_browse();
     }
 
-    /// Move to older entry. `draft` is current input text when leaving live mode.
-    /// Returns text to show in the input bar, or `None` if no history / already at oldest.
+    /// Move to older entry, wrapping from the oldest back to the newest.
+    /// `draft` is current input text when leaving live mode. Returns text to
+    /// show in the input bar, or `None` if there's no history at all.
     pub fn up(&mut self, draft: &str) -> Option<String> {
         if self.entries.is_empty() {
             return None;
@@ -81,8 +82,10 @@ impl InputHistory {
                 Some(self.entries[i].clone())
             }
             Some(0) => {
-                // already oldest
-                Some(self.entries[0].clone())
+                // Wrap to the newest entry.
+                let i = self.entries.len() - 1;
+                self.browse_index = Some(i);
+                Some(self.entries[i].clone())
             }
             Some(i) => {
                 let i = i - 1;
@@ -92,9 +95,8 @@ impl InputHistory {
         }
     }
 
-    /// Move toward newer; past newest restores stash and live mode.
-    /// Returns `Some(text)` for the input bar. When leaving browse to live, returns stash
-    /// (possibly empty).
+    /// Move to newer entry, wrapping from the newest back to the oldest.
+    /// Returns `None` when not currently browsing (nothing to cycle).
     pub fn down(&mut self) -> Option<String> {
         let i = self.browse_index?;
         if i + 1 < self.entries.len() {
@@ -102,11 +104,21 @@ impl InputHistory {
             self.browse_index = Some(i);
             Some(self.entries[i].clone())
         } else {
-            // leave history → live
-            let draft = self.stash.take().unwrap_or_default();
-            self.browse_index = None;
-            Some(draft)
+            // Wrap to the oldest entry.
+            self.browse_index = Some(0);
+            Some(self.entries[0].clone())
         }
+    }
+
+    /// Explicitly leave browse mode (e.g. Esc), restoring the stashed live
+    /// draft. Unlike `up`/`down`, which now wrap around indefinitely, this is
+    /// the only way back to the live draft. Returns `None` when not
+    /// currently browsing.
+    pub fn leave_browse(&mut self) -> Option<String> {
+        self.browse_index?;
+        let draft = self.stash.take().unwrap_or_default();
+        self.browse_index = None;
+        Some(draft)
     }
 
     pub fn reset_browse(&mut self) {
@@ -153,14 +165,52 @@ mod tests {
         assert_eq!(h.up("draft").as_deref(), Some("three"));
         assert_eq!(h.up("ignored").as_deref(), Some("two"));
         assert_eq!(h.up("").as_deref(), Some("one"));
-        // stay at oldest
-        assert_eq!(h.up("").as_deref(), Some("one"));
         assert_eq!(h.down().as_deref(), Some("two"));
         assert_eq!(h.down().as_deref(), Some("three"));
-        assert_eq!(h.down().as_deref(), Some("draft"));
+        assert!(h.browsing());
+        assert_eq!(
+            h.leave_browse().as_deref(),
+            Some("draft"),
+            "explicit leave restores the stashed live draft"
+        );
         assert!(!h.browsing());
-        // further down is no-op (None)
-        assert!(h.down().is_none());
+    }
+
+    #[test]
+    fn up_wraps_from_oldest_to_newest() {
+        let mut h = InputHistory::new(100);
+        h.push("one");
+        h.push("two");
+        h.push("three");
+        assert_eq!(h.up("draft").as_deref(), Some("three"));
+        assert_eq!(h.up("").as_deref(), Some("two"));
+        assert_eq!(h.up("").as_deref(), Some("one"));
+        assert_eq!(
+            h.up("").as_deref(),
+            Some("three"),
+            "Up past oldest wraps to newest"
+        );
+    }
+
+    #[test]
+    fn down_wraps_from_newest_to_oldest() {
+        let mut h = InputHistory::new(100);
+        h.push("one");
+        h.push("two");
+        h.push("three");
+        h.up("draft");
+        assert_eq!(
+            h.down().as_deref(),
+            Some("one"),
+            "Down past newest wraps to oldest"
+        );
+    }
+
+    #[test]
+    fn leave_browse_is_noop_when_not_browsing() {
+        let mut h = InputHistory::new(10);
+        h.push("one");
+        assert!(h.leave_browse().is_none());
     }
 
     #[test]
@@ -233,7 +283,8 @@ mod tests {
         assert_eq!(h.up("ignored").as_deref(), Some("hello"));
         assert_eq!(h.down().as_deref(), Some("/status"));
         assert_eq!(h.down().as_deref(), Some("world"));
-        assert_eq!(h.down().as_deref(), Some("draft"));
+        assert!(h.browsing());
+        assert_eq!(h.leave_browse().as_deref(), Some("draft"));
         assert!(!h.browsing());
     }
 }
