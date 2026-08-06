@@ -126,6 +126,53 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    /// Points the platform config dir (via `HOME`/`XDG_CONFIG_HOME`) at an
+    /// empty temp dir for the duration of the test, so `load_permissions`'s
+    /// user scope never reads the developer's real `permissions.toml`. Shares
+    /// the crate-wide `ENV_LOCK` with `lib.rs`'s env guards (rustc runs tests
+    /// in parallel threads), and restores the environment on drop — including
+    /// on assertion failure.
+    struct IsolatedUserConfig {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        _home: TempDir,
+        saved: Vec<(String, Option<String>)>,
+    }
+
+    impl IsolatedUserConfig {
+        fn new() -> Self {
+            let _lock = crate::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let mut saved = Vec::new();
+            for key in ["HOME", "XDG_CONFIG_HOME"] {
+                saved.push((key.to_string(), std::env::var(key).ok()));
+            }
+            let home = TempDir::new().unwrap();
+            std::env::remove_var("XDG_CONFIG_HOME");
+            std::env::set_var("HOME", home.path());
+            Self {
+                _lock,
+                _home: home,
+                saved,
+            }
+        }
+
+        /// The user-scope file path under the redirected config dir, so a test
+        /// can seed a real personal file and assert it is loaded.
+        fn user_permissions_path(&self) -> PathBuf {
+            user_permissions_path().expect("config dir resolves under redirected HOME")
+        }
+    }
+
+    impl Drop for IsolatedUserConfig {
+        fn drop(&mut self) {
+            for (key, val) in self.saved.drain(..) {
+                match val {
+                    Some(v) => std::env::set_var(&key, v),
+                    None => std::env::remove_var(&key),
+                }
+            }
+        }
+    }
+
     #[test]
     fn parses_allow_and_deny_arrays() {
         let file = parse_permissions_toml(
@@ -145,6 +192,7 @@ mod tests {
 
     #[test]
     fn repo_allow_entries_are_ignored_but_deny_entries_are_honored() {
+        let _user = IsolatedUserConfig::new();
         let dir = TempDir::new().unwrap();
         let forge_dir = dir.path().join(".forge");
         std::fs::create_dir_all(&forge_dir).unwrap();
@@ -169,6 +217,7 @@ mod tests {
 
     #[test]
     fn missing_files_merge_to_empty_without_diagnostics() {
+        let _user = IsolatedUserConfig::new();
         let dir = TempDir::new().unwrap();
         let (merged, diagnostics) = load_permissions(dir.path());
         assert!(merged.allow.is_empty());
@@ -178,6 +227,7 @@ mod tests {
 
     #[test]
     fn malformed_repo_file_is_skipped_with_a_diagnostic() {
+        let _user = IsolatedUserConfig::new();
         let dir = TempDir::new().unwrap();
         let forge_dir = dir.path().join(".forge");
         std::fs::create_dir_all(&forge_dir).unwrap();
@@ -187,6 +237,20 @@ mod tests {
         assert!(merged.allow.is_empty());
         assert!(merged.deny.is_empty());
         assert!(diagnostics.iter().any(|d| d.contains("skipped")));
+    }
+
+    #[test]
+    fn user_scope_file_is_still_loaded_under_isolation() {
+        let user = IsolatedUserConfig::new();
+        let path = user.user_permissions_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "allow = [\"bash(cargo test *)\"]\n").unwrap();
+
+        let dir = TempDir::new().unwrap();
+        let (merged, diagnostics) = load_permissions(dir.path());
+        assert_eq!(merged.allow, vec!["bash(cargo test *)".to_string()]);
+        assert!(merged.deny.is_empty());
+        assert!(diagnostics.is_empty());
     }
 
     #[test]
