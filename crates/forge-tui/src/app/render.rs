@@ -101,6 +101,12 @@ impl TuiApp {
         } else {
             None
         };
+        self.conversation_area = None;
+        self.diff_area = None;
+        self.terminal_area = None;
+        self.conversation_rows.clear();
+        self.diff_rows.clear();
+        self.terminal_rows.clear();
         // Layout can hide a requested side/bottom panel. Focus must follow the
         // rendered geometry rather than leaving an invisible key owner behind.
         let available = FocusAvailability {
@@ -403,6 +409,12 @@ impl TuiApp {
                     );
                 }
                 Some(WorkspaceView::Diff(DiffCommandContext::Current)) => {
+                    self.diff_area = Some(ratatui::layout::Rect {
+                        x: chat_area.x.saturating_add(1),
+                        y: chat_area.y.saturating_add(1),
+                        width: chat_area.width.saturating_sub(2),
+                        height: chat_area.height.saturating_sub(2),
+                    });
                     self.render_diff_workspace(chat_area, frame.buffer_mut());
                 }
             }
@@ -417,6 +429,26 @@ impl TuiApp {
                 regions.chat,
                 self.source_viewer.lines.len(),
             );
+        }
+        if self.selection.active
+            && matches!(
+                self.selection.pane,
+                Some(
+                    crate::selection::CopyPane::Conversation
+                        | crate::selection::CopyPane::Diff
+                        | crate::selection::CopyPane::Terminal
+                )
+            )
+        {
+            let area = match self.selection.pane {
+                Some(crate::selection::CopyPane::Conversation) => self.conversation_area,
+                Some(crate::selection::CopyPane::Diff) => self.diff_area,
+                Some(crate::selection::CopyPane::Terminal) => self.terminal_area,
+                _ => None,
+            };
+            if let Some(area) = area {
+                paint_rows_selection(frame.buffer_mut(), &self.selection, area);
+            }
         }
 
         let interactive_terminal_output = self
@@ -438,6 +470,18 @@ impl TuiApp {
             },
             regions.bottom_panel,
         );
+        if regions.bottom_panel.height > 1 && self.bottom_panel.open {
+            self.terminal_area = Some(ratatui::layout::Rect {
+                x: regions.bottom_panel.x,
+                y: regions.bottom_panel.y.saturating_add(1),
+                width: regions.bottom_panel.width,
+                height: regions.bottom_panel.height.saturating_sub(1),
+            });
+            self.terminal_rows = terminal_copy_rows(
+                interactive_terminal_output.unwrap_or(""),
+                self.terminal_area.unwrap().height,
+            );
+        }
 
         // Notices (help, connect list, multi-line status) just above input
         if !self.notice_state.items.is_empty() && self.overlay.is_none() {
@@ -787,6 +831,19 @@ impl TuiApp {
             lines.push(Line::from("No unstaged file selected."));
         }
 
+        self.diff_rows = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
+            .take(
+                self.diff_area
+                    .map_or(usize::MAX, |area| area.height as usize),
+            )
+            .collect();
         Paragraph::new(lines)
             .style(theme::text())
             .block(
@@ -831,6 +888,18 @@ fn visible_conversation_copy_rows(
                 .collect()
         })
         .collect()
+}
+
+fn terminal_copy_rows(content: &str, height: u16) -> Vec<String> {
+    let mut rows: Vec<String> = content.lines().map(str::to_string).collect();
+    let visible = height as usize;
+    if rows.len() > visible {
+        rows = rows.split_off(rows.len() - visible);
+    }
+    while rows.len() < visible {
+        rows.insert(0, String::new());
+    }
+    rows
 }
 
 /// Render text vertically centered inside the given area.
@@ -908,6 +977,25 @@ fn paint_editor_selection(
             let cell = &mut buf[(col, row)];
             let style = cell.style();
             cell.set_style(style.add_modifier(Modifier::REVERSED));
+        }
+    }
+}
+
+fn paint_rows_selection(
+    buf: &mut ratatui::buffer::Buffer,
+    sel: &crate::selection::MouseSelection,
+    area: ratatui::layout::Rect,
+) {
+    use ratatui::style::Modifier;
+    let Some(rect) = sel.rect() else {
+        return;
+    };
+    for row in rect.row_start..=rect.row_end {
+        for col in rect.col_start.max(area.x)..=rect.col_end.min(area.right().saturating_sub(1)) {
+            if row >= area.y && row < area.bottom() {
+                let cell = &mut buf[(col, row)];
+                cell.set_style(cell.style().add_modifier(Modifier::REVERSED));
+            }
         }
     }
 }

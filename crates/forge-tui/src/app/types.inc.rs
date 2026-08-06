@@ -693,6 +693,10 @@ pub struct TuiApp {
     pub(crate) context_menu: Option<crate::selection::ContextMenu>,
     pub(crate) conversation_area: Option<ratatui::layout::Rect>,
     pub(crate) conversation_rows: Vec<String>,
+    pub(crate) diff_area: Option<ratatui::layout::Rect>,
+    pub(crate) diff_rows: Vec<String>,
+    pub(crate) terminal_area: Option<ratatui::layout::Rect>,
+    pub(crate) terminal_rows: Vec<String>,
     catalog_fetch: CatalogFetchState,
 }
 
