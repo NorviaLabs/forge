@@ -976,12 +976,12 @@ fn paint_editor_selection(
             continue;
         }
         let left = if row == rect.row_start {
-            rect.col_start.max(content_x)
+            rect.start_col.max(content_x)
         } else {
             content_x
         };
         let right = if row == rect.row_end {
-            rect.col_end.min(right_edge)
+            rect.end_col.min(right_edge)
         } else {
             right_edge
         };
@@ -996,6 +996,13 @@ fn paint_editor_selection(
     }
 }
 
+/// Paint a live drag-selection over a rows-based pane (Conversation, Diff,
+/// Terminal) as reverse video, matching `paint_editor_selection`'s stream
+/// shape rather than a literal rectangle: the first row runs from the
+/// anchor column to the row's right edge, interior rows are highlighted in
+/// full, and the last row runs from the row's left edge to the current
+/// column — the same shape most terminal apps use, and how the text is
+/// actually extracted in `visible_rows_selection_text`.
 fn paint_rows_selection(
     buf: &mut ratatui::buffer::Buffer,
     sel: &crate::selection::MouseSelection,
@@ -1005,12 +1012,28 @@ fn paint_rows_selection(
     let Some(rect) = sel.rect() else {
         return;
     };
+    let left_edge = area.x;
+    let right_edge = area.right().saturating_sub(1);
     for row in rect.row_start..=rect.row_end {
-        for col in rect.col_start.max(area.x)..=rect.col_end.min(area.right().saturating_sub(1)) {
-            if row >= area.y && row < area.bottom() {
-                let cell = &mut buf[(col, row)];
-                cell.set_style(cell.style().add_modifier(Modifier::REVERSED));
-            }
+        if row < area.y || row >= area.bottom() {
+            continue;
+        }
+        let left = if row == rect.row_start {
+            rect.start_col.max(left_edge)
+        } else {
+            left_edge
+        };
+        let right = if row == rect.row_end {
+            rect.end_col.min(right_edge)
+        } else {
+            right_edge
+        };
+        if left > right {
+            continue;
+        }
+        for col in left..=right {
+            let cell = &mut buf[(col, row)];
+            cell.set_style(cell.style().add_modifier(Modifier::REVERSED));
         }
     }
 }
@@ -1065,6 +1088,48 @@ mod tests {
         );
 
         assert_eq!(composer_input_height(&input, Rect::new(0, 0, 120, 40)), 10);
+    }
+
+    #[test]
+    fn paint_rows_selection_uses_stream_shape_not_rectangle() {
+        use crate::selection::{Cell, CopyPane, MouseSelection};
+        use ratatui::style::Modifier;
+
+        let area = Rect::new(0, 0, 10, 3);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        let mut sel = MouseSelection::default();
+        sel.start_in(CopyPane::Conversation, Cell { row: 0, col: 5 });
+        sel.update(Cell { row: 2, col: 3 });
+        super::paint_rows_selection(&mut buf, &sel, area);
+
+        let reversed = |x: u16, y: u16| {
+            buf[(x, y)]
+                .style()
+                .add_modifier
+                .contains(Modifier::REVERSED)
+        };
+
+        // First row: selection starts mid-row (col 5), so only cols 5..=9
+        // (the right edge) are highlighted — not the whole row.
+        for x in 0..5 {
+            assert!(!reversed(x, 0), "col {x} row 0 should not be selected");
+        }
+        for x in 5..10 {
+            assert!(reversed(x, 0), "col {x} row 0 should be selected");
+        }
+        // Interior row: highlighted in full.
+        for x in 0..10 {
+            assert!(reversed(x, 1), "col {x} row 1 should be selected");
+        }
+        // Last row: selection ends mid-row (col 3), so only cols 0..=3 (the
+        // left edge onward) are highlighted — a rectangle would also
+        // highlight cols 4..9 here, which is exactly the bug this guards.
+        for x in 0..=3 {
+            assert!(reversed(x, 2), "col {x} row 2 should be selected");
+        }
+        for x in 4..10 {
+            assert!(!reversed(x, 2), "col {x} row 2 should not be selected");
+        }
     }
 
     #[test]

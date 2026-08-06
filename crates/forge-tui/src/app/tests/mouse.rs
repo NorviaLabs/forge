@@ -184,6 +184,59 @@ async fn dragged_selection_auto_copies_and_reports_line_count() {
 }
 
 #[tokio::test]
+async fn selection_does_not_change_after_mouse_up() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.conversation_area = Some(ratatui::layout::Rect::new(0, 0, 80, 20));
+    app.conversation_rows = vec!["│ hello".to_string(), "│ world".to_string()];
+
+    app.handle_mouse(left_click(0, 0)).await.unwrap();
+    app.handle_mouse(event::MouseEvent {
+        kind: crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Left),
+        column: 6,
+        row: 1,
+        modifiers: KeyModifiers::NONE,
+    })
+    .await
+    .unwrap();
+    app.handle_mouse(left_release(6, 1)).await.unwrap();
+    let text_after_release = app.selection.text.clone();
+    assert_eq!(text_after_release, "hello\nworld");
+
+    // Stray pointer movement after mouse-up (some terminals send Moved or
+    // even Drag events with no button held) must not keep extending a
+    // selection that already finished — this is the "sticky selection" bug.
+    app.handle_mouse(event::MouseEvent {
+        kind: crossterm::event::MouseEventKind::Moved,
+        column: 0,
+        row: 0,
+        modifiers: KeyModifiers::NONE,
+    })
+    .await
+    .unwrap();
+    app.handle_mouse(event::MouseEvent {
+        kind: crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Left),
+        column: 0,
+        row: 0,
+        modifiers: KeyModifiers::NONE,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        app.selection.text, text_after_release,
+        "pointer movement after mouse-up must not change a finished selection"
+    );
+    // A duplicate/spurious Up event after the drag already finished must
+    // also be a no-op, not re-derive and re-copy the same text again.
+    app.feedback = crate::widgets::FeedbackModel::default();
+    app.handle_mouse(left_release(0, 0)).await.unwrap();
+    assert!(
+        app.feedback.text.is_empty(),
+        "a spurious duplicate mouse-up must not re-trigger the copy feedback toast"
+    );
+}
+
+#[tokio::test]
 async fn horizontal_wheel_is_ignored() {
     let (_dir, mut app) = focus_test_app().await;
     app.focus_block(FocusBlock::Composer);
