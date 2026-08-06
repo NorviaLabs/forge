@@ -321,6 +321,10 @@ pub fn accent_color() -> Color {
     active_palette().accent
 }
 
+pub fn accent_style() -> Style {
+    Style::default().fg(accent_color())
+}
+
 #[cfg(test)]
 pub fn background_color() -> Color {
     active_palette().canvas
