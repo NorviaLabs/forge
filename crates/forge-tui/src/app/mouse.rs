@@ -10,7 +10,7 @@ use super::*;
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
 use crate::clipboard;
-use crate::selection::{self, cell_inside, Cell, ContextMenuItem};
+use crate::selection::{self, cell_inside, Cell, ContextMenuItem, CopyPane};
 
 /// Conversation/explorer rows moved per plain wheel notch.
 const WHEEL_NOTCH: isize = 1;
@@ -64,16 +64,25 @@ impl TuiApp {
     }
 
     fn mouse_start_selection(&mut self, col: u16, row: u16) {
-        let over_editor = self
+        let pane = if self
             .editor_area
             .is_some_and(|area| cell_inside(area, col, row))
-            && self.current_workspace_is_file();
-        if self.pointer_blocked() || !over_editor {
-            // Clicking elsewhere clears any prior selection (v1: editor only).
+            && self.current_workspace_is_file()
+        {
+            Some(CopyPane::Editor)
+        } else if self
+            .conversation_area
+            .is_some_and(|area| cell_inside(area, col, row))
+        {
+            Some(CopyPane::Conversation)
+        } else {
+            None
+        };
+        if self.pointer_blocked() || pane.is_none() {
             self.selection.clear();
             return;
         }
-        self.selection.start(Cell { row, col });
+        self.selection.start_in(pane.unwrap(), Cell { row, col });
     }
 
     fn mouse_update_selection(&mut self, col: u16, row: u16) {
@@ -86,15 +95,21 @@ impl TuiApp {
         if !self.selection.is_active() {
             return;
         }
-        let text = match self.editor_area {
-            Some(area) => selection::editor_selection_text(
+        let text = match (self.selection.pane, self.editor_area) {
+            (Some(CopyPane::Editor), Some(area)) => selection::editor_selection_text(
                 &self.source_viewer.lines,
                 self.source_viewer.top_line,
                 self.source_viewer.h_scroll,
                 area,
                 &self.selection,
             ),
-            None => String::new(),
+            (Some(CopyPane::Conversation), Some(area)) => selection::visible_rows_selection_text(
+                &self.conversation_rows,
+                area,
+                &self.selection,
+                true,
+            ),
+            _ => String::new(),
         };
         self.selection.finish(text);
     }
