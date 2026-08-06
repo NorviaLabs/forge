@@ -62,10 +62,10 @@ use crate::source_viewer::{SourceViewer, SourceViewerWidget};
 use crate::terminal::TerminalGuard;
 use crate::theme;
 use crate::widgets::{
-    classify_operator_error, composer_chips, composer_cursor_position, BottomPanel,
-    BottomPanelModel, BottomPanelState, BusyPhase, ComposerChip, ComposerChipKind, FeedbackBar,
-    FeedbackModel, FeedbackSeverity, FooterBar, FooterModel, InputBar, InputModel, StatusBar,
-    StatusModel,
+    classify_operator_error, composer_chips, composer_cursor_position, composer_text_area_width,
+    BottomPanel, BottomPanelModel, BottomPanelState, BusyPhase, ComposerChip, ComposerChipKind,
+    FeedbackBar, FeedbackModel, FeedbackSeverity, FooterBar, FooterModel, InputBar, InputModel,
+    StatusBar, StatusModel,
 };
 use forge_config::FileIconMode;
 

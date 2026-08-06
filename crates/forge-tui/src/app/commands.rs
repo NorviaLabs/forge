@@ -355,6 +355,15 @@ impl TuiApp {
                         self.push_toast("interrupt requested");
                     }
                 }
+                // History Up/Down now wrap indefinitely rather than exiting
+                // to the live draft at an edge, so this is the only way
+                // back to it — checked before the slash-clear branch since
+                // a recalled entry may itself start with '/'.
+                else if self.focus.block == FocusBlock::Composer && self.history.browsing() {
+                    if let Some(draft) = self.history.leave_browse() {
+                        self.apply_history_text(draft);
+                    }
+                }
                 // An open slash-command palette/suggestion is its own
                 // interaction level: the first Esc must close *that* and
                 // keep composer focus, not silently move focus away while

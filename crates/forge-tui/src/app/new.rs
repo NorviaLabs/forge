@@ -156,6 +156,7 @@ impl TuiApp {
             },
             editor_viewport: EditorViewportState { height: 24 },
             editor_area: None,
+            composer_area: None,
             selection: crate::selection::MouseSelection::default(),
             context_menu: None,
             conversation_area: None,

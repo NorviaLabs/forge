@@ -142,6 +142,97 @@ impl InputModel {
         self.cursor += next;
     }
 
+    /// Move the cursor up one visual (wrapped) row, preserving column
+    /// position where possible. Returns `false` when already on the first
+    /// visual row (nothing to do — the caller should fall through to
+    /// history recall instead).
+    pub fn move_cursor_up(&mut self, width: usize) -> bool {
+        self.move_cursor_vertically(width, true)
+    }
+
+    /// Move the cursor down one visual (wrapped) row. Returns `false` when
+    /// already on the last visual row.
+    pub fn move_cursor_down(&mut self, width: usize) -> bool {
+        self.move_cursor_vertically(width, false)
+    }
+
+    fn move_cursor_vertically(&mut self, width: usize, up: bool) -> bool {
+        let width = (width as u16).max(1);
+        let (start_row, start_col, total_rows) = visual_row_col(self, width, self.cursor);
+        if up {
+            if start_row == 0 {
+                return false;
+            }
+        } else if start_row + 1 >= total_rows {
+            return false;
+        }
+        let target_row = if up { start_row - 1 } else { start_row + 1 };
+        let original_cursor = self.cursor;
+
+        // Step toward target_row using the existing (already-correct)
+        // horizontal movement, which already handles pending-paste atomic
+        // jumps — never lands the cursor inside a paste placeholder.
+        loop {
+            let before = self.cursor;
+            if up {
+                if self.cursor == 0 {
+                    break;
+                }
+                self.move_left();
+            } else {
+                if self.cursor >= self.text.len() {
+                    break;
+                }
+                self.move_right();
+            }
+            if self.cursor == before {
+                break;
+            }
+            let (row, _, _) = visual_row_col(self, width, self.cursor);
+            if row == target_row {
+                break;
+            }
+            // Adjacent-row target should never be overshot, but guard
+            // against an infinite loop if it somehow is.
+            if (up && row < target_row) || (!up && row > target_row) {
+                break;
+            }
+        }
+
+        // Approximate the original column within target_row. Walking left
+        // (up) naturally lands on the row's *last* column first (approached
+        // from the row below), so it needs to walk back left toward
+        // start_col; walking right (down) lands on the row's *first* column
+        // first, so it advances right toward start_col.
+        loop {
+            let (row, col, _) = visual_row_col(self, width, self.cursor);
+            let done = if up {
+                row != target_row || col <= start_col
+            } else {
+                row != target_row || col >= start_col
+            };
+            if done {
+                break;
+            }
+            let before = self.cursor;
+            if up {
+                self.move_left();
+            } else {
+                self.move_right();
+            }
+            if self.cursor == before {
+                break;
+            }
+            let (row2, _, _) = visual_row_col(self, width, self.cursor);
+            if row2 != target_row {
+                self.cursor = before;
+                break;
+            }
+        }
+
+        self.cursor != original_cursor
+    }
+
     pub fn clear(&mut self) {
         self.text.clear();
         self.cursor = 0;
@@ -419,6 +510,38 @@ fn cursor_scroll(model: &InputModel, content_width: u16, visible_rows: u16) -> u
         .saturating_sub(visible_rows as usize) as u16
 }
 
+/// `(row, col, total_rows)` of `offset` in `model.text`'s full, unscrolled
+/// wrapped layout at `width` — independent of the current viewport/scroll
+/// (unlike [`cursor_scroll`], which is about keeping a position visible in
+/// a *limited* window). Used to drive [`InputModel::move_cursor_up`]/
+/// [`InputModel::move_cursor_down`]: splices the same cursor sentinel used
+/// for display at `offset` and renders through the real `Paragraph` +
+/// `Wrap`, so results are pixel-identical to what's on screen rather than
+/// reimplementing word-wrap in string space.
+fn visual_row_col(model: &InputModel, width: u16, offset: usize) -> (u16, u16, u16) {
+    let width = width.max(1);
+    let offset = offset.min(model.text.len());
+    let (before, after) = model.text.split_at(offset);
+    let probe_text = format!("{before}{CURSOR_GLYPH}{after}");
+    let total_rows = Paragraph::new(probe_text.clone())
+        .wrap(Wrap { trim: false })
+        .line_count(width)
+        .max(1) as u16;
+    let scratch_area = Rect::new(0, 0, width, total_rows);
+    let mut scratch = Buffer::empty(scratch_area);
+    Paragraph::new(probe_text)
+        .wrap(Wrap { trim: false })
+        .render(scratch_area, &mut scratch);
+    for y in 0..total_rows {
+        for x in 0..width {
+            if scratch[(x, y)].symbol() == CURSOR_GLYPH {
+                return (y, x, total_rows);
+            }
+        }
+    }
+    (0, 0, total_rows)
+}
+
 const SEND_HINT: &str = "⏎";
 
 /// Left inset before composer text — simple breathing room from the border,
@@ -521,6 +644,21 @@ pub fn composer_cursor_position(
         }
     }
     None
+}
+
+/// Composer's actual rendered text-area width — for key handling (which runs
+/// before the next render) to pass into
+/// [`InputModel::move_cursor_up`]/[`InputModel::move_cursor_down`]. Reuses
+/// [`composer_geometry`], the single source of truth `InputBar::render`
+/// itself uses, rather than re-deriving the border/inset/attachment
+/// arithmetic separately and risking drift.
+pub fn composer_text_area_width(
+    model: &InputModel,
+    area: Rect,
+    attachment: Option<&str>,
+) -> Option<u16> {
+    let geometry = composer_geometry(model, area, attachment, false)?;
+    Some(geometry.text_area.width)
 }
 
 impl Widget for InputBar<'_> {
@@ -725,6 +863,102 @@ mod tests {
         assert_eq!(m.cursor, 1);
         m.insert('X');
         assert_eq!(m.text, "hXi");
+    }
+
+    #[test]
+    fn move_cursor_vertically_no_op_on_single_line() {
+        let mut m = InputModel {
+            text: "hello".into(),
+            cursor: 3,
+            ..Default::default()
+        };
+        assert!(!m.move_cursor_up(40));
+        assert_eq!(m.cursor, 3);
+        assert!(!m.move_cursor_down(40));
+        assert_eq!(m.cursor, 3);
+    }
+
+    #[test]
+    fn move_cursor_vertically_across_explicit_newlines_preserves_column() {
+        // "one\ntwo\nthree" — cursor starts at offset 5 ("tw|o", col 1).
+        let mut m = InputModel {
+            text: "one\ntwo\nthree".into(),
+            cursor: 5,
+            ..Default::default()
+        };
+        assert!(m.move_cursor_up(40));
+        assert_eq!(m.cursor, 1, "should land on col 1 of \"one\"");
+        assert!(m.move_cursor_down(40));
+        assert_eq!(m.cursor, 5, "should return to col 1 of \"two\"");
+        assert!(m.move_cursor_down(40));
+        assert_eq!(m.cursor, 9, "should advance to col 1 of \"three\"");
+        assert!(!m.move_cursor_down(40), "already on the last line");
+        assert_eq!(m.cursor, 9);
+    }
+
+    #[test]
+    fn move_cursor_up_returns_false_on_first_line() {
+        let mut m = InputModel {
+            text: "one\ntwo".into(),
+            cursor: 1,
+            ..Default::default()
+        };
+        assert!(!m.move_cursor_up(40));
+        assert_eq!(m.cursor, 1);
+    }
+
+    #[test]
+    fn move_cursor_down_clamps_column_to_a_shorter_target_line() {
+        let mut m = InputModel {
+            text: "hello\nhi".into(),
+            cursor: 5,
+            ..Default::default()
+        };
+        assert!(m.move_cursor_down(40));
+        assert_eq!(
+            m.cursor, 8,
+            "should clamp to the end of the shorter \"hi\" line"
+        );
+    }
+
+    #[test]
+    fn move_cursor_vertically_wraps_within_a_single_logical_line() {
+        let mut m = InputModel::default();
+        m.set_text("word ".repeat(30).trim().to_string());
+        let width = 20u16;
+        let (start_row, _, total_rows) = visual_row_col(&m, width, m.cursor);
+        assert!(total_rows > 1, "expected the text to wrap to multiple rows");
+        assert_eq!(
+            start_row,
+            total_rows - 1,
+            "set_text moves cursor to the end"
+        );
+        assert!(m.move_cursor_up(width as usize));
+        let (row_after, _, _) = visual_row_col(&m, width, m.cursor);
+        assert!(
+            row_after < start_row,
+            "expected the cursor to move to an earlier wrapped row"
+        );
+    }
+
+    #[test]
+    fn move_cursor_vertically_never_lands_inside_a_pending_paste() {
+        let mut m = InputModel::default();
+        m.insert_str("before\n");
+        m.insert_paste(&"x".repeat(LARGE_PASTE_CHAR_THRESHOLD + 1));
+        m.insert_str("\nafter");
+        let paste_range = m.pending_pastes[0].range.clone();
+        let width = 10u16;
+        for _ in 0..10 {
+            if !m.move_cursor_up(width as usize) {
+                break;
+            }
+            assert!(
+                m.cursor <= paste_range.start || m.cursor >= paste_range.end,
+                "cursor landed inside the paste placeholder: {}",
+                m.cursor
+            );
+        }
     }
 
     #[test]
