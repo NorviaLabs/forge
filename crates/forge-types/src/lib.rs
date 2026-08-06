@@ -327,6 +327,13 @@ pub enum JournalEventType {
     /// journal under its own `SessionId`.
     SubagentSpawned,
     SubagentFinished,
+    /// A line was submitted in the composer — slash command, plain chat, or
+    /// any future submission type (e.g. a planned `!shell` direct-execute
+    /// prefix) — independent of whether it became a model-directed
+    /// `UserMessage`. Feeds the TUI's Up/Down arrow-key history on resume;
+    /// unlike `UserMessage`, this fires for every submission, not just ones
+    /// that reach the model.
+    ComposerLineSubmitted,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

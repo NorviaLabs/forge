@@ -532,6 +532,12 @@ pub struct ResumeReport {
     pub model_steps: usize,
     pub tool_results: usize,
     pub incomplete_intents: usize,
+    /// Every composer submission for this session, oldest → newest —
+    /// slash commands and plain chat alike, independent of whether it
+    /// became a model-directed message — for restoring the TUI composer's
+    /// Up/Down arrow-key history on resume. See
+    /// `JournalEventType::ComposerLineSubmitted`.
+    pub composer_lines: Vec<String>,
 }
 
 pub struct AgentSession {
@@ -629,6 +635,21 @@ impl AgentSession {
         session_id: SessionId,
     ) -> Result<ResumeReport, LoopError> {
         if session_id == self.session_id {
+            // No in-memory record of local-only composer lines exists (only
+            // the journal has it) — re-open and replay this session's own
+            // journal rather than track a parallel in-memory copy. This is
+            // the trivial "resume into the session you're already in"
+            // branch, not the common path, so the extra read is cheap and
+            // acceptable. Best-effort: a read glitch here degrades to no
+            // recalled history rather than failing the whole no-op resume.
+            let composer_lines = match Journal::open(self.journal.directory(), session_id).await {
+                Ok(journal) => journal
+                    .replay(session_id)
+                    .await
+                    .map(|state| state.composer_lines)
+                    .unwrap_or_default(),
+                Err(_) => Vec::new(),
+            };
             return Ok(ResumeReport {
                 last_seq: self.events.len() as u64,
                 model_steps: self.token_usage.model_steps as usize,
@@ -638,6 +659,7 @@ impl AgentSession {
                     .filter(|message| message.role == MessageRole::Tool)
                     .count(),
                 incomplete_intents: 0,
+                composer_lines,
             });
         }
 
@@ -683,6 +705,7 @@ impl AgentSession {
             model_steps: state.model_responses.len(),
             tool_results: state.tool_results.len(),
             incomplete_intents: state.incomplete_intents.len(),
+            composer_lines: state.composer_lines,
         };
         self.session_id = session_id;
         self.active_task = ActiveTaskState::from_restored(session_id, state.status, wait_reason);
@@ -1207,6 +1230,21 @@ impl AgentSession {
         // must never leak into this one's decision.
         self.turn.reset();
         self.last_completion = None;
+        Ok(())
+    }
+
+    /// Lightweight, side-effect-free record of a composer submission — slash
+    /// command, plain chat, or any future submission type — independent of
+    /// whether it becomes a model-directed `UserMessage` via
+    /// `append_user_message`. No lifecycle transition, no message-list
+    /// mutation, callable regardless of session state (unlike
+    /// `append_user_message`, which is gated on not being `Waiting`).
+    /// Feeds `ResumeReport::composer_lines`, restoring the TUI's Up/Down
+    /// arrow-key history on resume for lines that never reach the model.
+    pub async fn record_composer_line(&self, text: &str) -> Result<(), LoopError> {
+        self.journal
+            .append_composer_line(self.session_id, text)
+            .await?;
         Ok(())
     }
 
@@ -3147,6 +3185,57 @@ mod tests {
             .await
             .unwrap();
         assert!(state.incomplete_intents.is_empty());
+    }
+
+    #[tokio::test]
+    async fn resume_session_report_includes_composer_lines_in_order() {
+        use forge_durable::{new_session_id, Journal};
+
+        let dir = tempdir().unwrap();
+        let journal_dir = dir.path().join("j");
+        let sid = new_session_id();
+        let journal = Journal::open(&journal_dir, sid).await.unwrap();
+        journal.append_session_created(sid).await.unwrap();
+        // A mix of a local-only command and real messages — all should come
+        // back, since ComposerLineSubmitted fires for every submission.
+        journal.append_composer_line(sid, "/status").await.unwrap();
+        journal.append_composer_line(sid, "second").await.unwrap();
+        journal.append_composer_line(sid, "third").await.unwrap();
+
+        let mut current = AgentSession::create(
+            base_cfg(dir.path()),
+            Arc::new(MockModelClient::script(vec![])),
+            ToolRegistry::new(),
+        )
+        .await
+        .unwrap();
+
+        let report = current.resume_session(sid).await.unwrap();
+        assert_eq!(
+            report.composer_lines,
+            vec![
+                "/status".to_string(),
+                "second".to_string(),
+                "third".to_string()
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_session_into_self_derives_composer_lines_from_own_journal() {
+        let dir = tempdir().unwrap();
+        let mut session = AgentSession::create(
+            base_cfg(dir.path()),
+            Arc::new(MockModelClient::script(vec![])),
+            ToolRegistry::new(),
+        )
+        .await
+        .unwrap();
+        session.record_composer_line("only message").await.unwrap();
+        let sid = session.session_id;
+
+        let report = session.resume_session(sid).await.unwrap();
+        assert_eq!(report.composer_lines, vec!["only message".to_string()]);
     }
 
     #[tokio::test]

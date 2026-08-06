@@ -86,6 +86,12 @@ pub struct ReplayState {
     /// tool intents without results (fail-safe)
     pub incomplete_intents: Vec<String>,
     pub user_messages: Vec<String>,
+    /// Every composer submission, oldest → newest, independent of whether it
+    /// became a model-directed `UserMessage` — see
+    /// `JournalEventType::ComposerLineSubmitted`. Feeds the TUI's Up/Down
+    /// arrow-key history on resume; distinct from `user_messages`, which
+    /// stays scoped to true model-directed text (used for session titling).
+    pub composer_lines: Vec<String>,
     /// Ordered active conversation reconstructed from journal events.
     pub messages: Vec<Message>,
     /// Completed model responses, used to restore cumulative usage metrics.
@@ -238,6 +244,21 @@ impl Journal {
         self.append(
             session_id,
             JournalEventType::UserMessage,
+            json!({ "content": text }),
+        )
+        .await
+    }
+
+    /// Records a composer submission independent of whether it became a
+    /// model-directed `UserMessage` — see `JournalEventType::ComposerLineSubmitted`.
+    pub async fn append_composer_line(
+        &self,
+        session_id: SessionId,
+        text: &str,
+    ) -> Result<u64, JournalError> {
+        self.append(
+            session_id,
+            JournalEventType::ComposerLineSubmitted,
             json!({ "content": text }),
         )
         .await
@@ -519,6 +540,7 @@ impl Journal {
             tool_results: HashMap::new(),
             incomplete_intents: Vec::new(),
             user_messages: Vec::new(),
+            composer_lines: Vec::new(),
             messages: Vec::new(),
             model_responses: Vec::new(),
             events: Vec::new(),
@@ -572,6 +594,11 @@ impl Journal {
                     }
                     if let Some(id) = promoting_item {
                         promoted_without_confirmation.insert(id);
+                    }
+                }
+                JournalEventType::ComposerLineSubmitted => {
+                    if let Some(c) = payload.get("content").and_then(|v| v.as_str()) {
+                        state.composer_lines.push(c.to_string());
                     }
                 }
                 JournalEventType::ModelResponse => {
@@ -811,6 +838,28 @@ mod tests {
         let cached = Journal::cached_tool_result(&state2, "c1").unwrap();
         assert_eq!(cached.output.content, "ok");
         assert_eq!(state2.user_messages, vec!["hi".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn composer_lines_and_user_messages_dont_cross_contaminate() {
+        let dir = tempdir().unwrap();
+        let sid = new_session_id();
+        let j = Journal::open(dir.path(), sid).await.unwrap();
+        j.append_session_created(sid).await.unwrap();
+        // A local-only command (never becomes a UserMessage)...
+        j.append_composer_line(sid, "/status").await.unwrap();
+        // ...and a real model-directed message, which per the "unified
+        // event" design also gets a ComposerLineSubmitted record alongside
+        // its UserMessage one.
+        j.append_composer_line(sid, "hello").await.unwrap();
+        j.append_user_message(sid, "hello").await.unwrap();
+
+        let state = j.replay(sid).await.unwrap();
+        assert_eq!(
+            state.composer_lines,
+            vec!["/status".to_string(), "hello".to_string()]
+        );
+        assert_eq!(state.user_messages, vec!["hello".to_string()]);
     }
 
     #[tokio::test]
