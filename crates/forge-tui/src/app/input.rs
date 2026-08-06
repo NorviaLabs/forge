@@ -192,6 +192,20 @@ impl TuiApp {
         }
     }
 
+    /// Records a submitted composer line in both local Up/Down history and
+    /// the session journal, so the two never drift apart. Journal recording
+    /// is best-effort (`let _ =`) — a persistence hiccup here must never
+    /// block sending the message — and gated by the same `should_store`
+    /// policy `history.push` already applies internally, keeping the two
+    /// stores policy-consistent (no secret-looking or empty lines in
+    /// either).
+    async fn record_submitted_line(&mut self, line: &str) {
+        self.history.push(line);
+        if InputHistory::should_store(line) {
+            let _ = self.session.record_composer_line(line).await;
+        }
+    }
+
     pub(super) async fn submit_composer_message(&mut self) -> Result<(), TuiError> {
         let suggestions = self.slash_suggestions();
         if self.input.text.starts_with('/')
@@ -208,7 +222,7 @@ impl TuiApp {
                 self.input.take()
             };
             if !line.is_empty() {
-                self.history.push(&line);
+                self.record_submitted_line(&line).await;
                 self.slash_suggestions.selected = 0;
                 self.notice_state.items.clear();
                 self.input.history_browse = false;
@@ -227,7 +241,7 @@ impl TuiApp {
 
         // Slash commands always dispatch immediately regardless of lifecycle.
         if line.trim_start().starts_with('/') {
-            self.history.push(&line);
+            self.record_submitted_line(&line).await;
             self.slash_suggestions.selected = 0;
             self.notice_state.items.clear();
             self.input.history_browse = false;
@@ -239,7 +253,7 @@ impl TuiApp {
             input_route::classify_input(&self.session.active_task, self.overlay.is_some(), &line);
         let consumed = !matches!(route, input_route::InputRoute::RejectStaleResponse);
         if consumed {
-            self.history.push(&line);
+            self.record_submitted_line(&line).await;
             self.slash_suggestions.selected = 0;
             self.notice_state.items.clear();
             self.input.history_browse = false;

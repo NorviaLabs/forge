@@ -126,6 +126,20 @@ impl InputHistory {
         self.stash = None;
     }
 
+    /// Replace all entries with a resumed session's own past input lines
+    /// (oldest → newest), for restoring Up/Down arrow-key recall on
+    /// `/resume`. Reuses `push`'s existing policy (secret-line filtering,
+    /// consecutive-dup skipping, `max_entries` trimming) rather than
+    /// reimplementing it, so resumed history follows the same rules as
+    /// history built from live typing.
+    pub fn load_resumed(&mut self, entries: impl IntoIterator<Item = String>) {
+        self.entries.clear();
+        self.reset_browse();
+        for entry in entries {
+            self.push(&entry);
+        }
+    }
+
     pub fn entries(&self) -> &[String] {
         &self.entries
     }
@@ -211,6 +225,42 @@ mod tests {
         let mut h = InputHistory::new(10);
         h.push("one");
         assert!(h.leave_browse().is_none());
+    }
+
+    #[test]
+    fn load_resumed_replaces_entries_in_order() {
+        let mut h = InputHistory::new(100);
+        h.push("stale");
+        h.load_resumed(["one".to_string(), "two".to_string(), "three".to_string()]);
+        assert_eq!(
+            h.entries(),
+            &["one".to_string(), "two".to_string(), "three".to_string()]
+        );
+        assert_eq!(h.up("draft").as_deref(), Some("three"));
+    }
+
+    #[test]
+    fn load_resumed_applies_the_same_filtering_as_push() {
+        let mut h = InputHistory::new(100);
+        h.load_resumed([
+            "hello".to_string(),
+            "".to_string(),
+            "hello".to_string(), // consecutive dup, skipped
+            "sk-abcdefghijklmnopqrstuvwxyz012345".to_string(), // secret-like, skipped
+            "world".to_string(),
+        ]);
+        assert_eq!(h.entries(), &["hello".to_string(), "world".to_string()]);
+    }
+
+    #[test]
+    fn load_resumed_resets_browse_state() {
+        let mut h = InputHistory::new(100);
+        h.push("one");
+        h.push("two");
+        h.up("draft");
+        assert!(h.browsing());
+        h.load_resumed(["a".to_string(), "b".to_string()]);
+        assert!(!h.browsing());
     }
 
     #[test]
