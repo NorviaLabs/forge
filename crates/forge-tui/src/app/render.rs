@@ -252,9 +252,7 @@ impl TuiApp {
                 self.task_selection.queue,
             );
             if let BusyPhase::Tool { name } = &self.busy_state.phase {
-                if name != "run" {
-                    conv = conv.with_running_tool(name.clone());
-                }
+                conv = conv.with_running_tool(name.clone());
             }
             self.sync_approval_menu();
             if let Some(payload) = self.session.pending_hitl().cloned() {
@@ -392,9 +390,6 @@ impl TuiApp {
                 Some(WorkspaceView::Diff(DiffCommandContext::Current)) => {
                     self.render_diff_workspace(chat_area, frame.buffer_mut());
                 }
-                Some(WorkspaceView::Run(id)) => {
-                    self.render_run_workspace(&id, chat_area, frame.buffer_mut());
-                }
             }
         }
 
@@ -409,11 +404,7 @@ impl TuiApp {
                     state: &self.bottom_panel,
                     busy_phase: &self.busy_state.phase,
                     activity: &self.activity,
-                    run: &self.run,
-                    terminal_title: self.terminal_capture.title.as_deref(),
-                    terminal_content: interactive_terminal_output
-                        .unwrap_or(self.terminal_capture.content.as_str()),
-                    terminal_truncated: self.terminal_capture.truncated,
+                    terminal_content: interactive_terminal_output.unwrap_or(""),
                     terminal_running: interactive_terminal.is_some_and(|terminal| terminal.running),
                     terminal_shell: interactive_terminal.map(|terminal| terminal.shell.as_str()),
                 },
@@ -772,97 +763,6 @@ impl TuiApp {
                     .borders(Borders::ALL)
                     .border_style(self.workspace_border())
                     .style(theme::panel()),
-            )
-            .render(area, buf);
-    }
-
-    fn render_run_workspace(
-        &self,
-        id: &str,
-        area: ratatui::layout::Rect,
-        buf: &mut ratatui::buffer::Buffer,
-    ) {
-        let current = self.run.current.as_ref().filter(|record| record.id == id);
-        let mut lines = Vec::new();
-        if let Some(record) = current {
-            lines.push(Line::from(vec![
-                Span::styled("Run ", theme::muted()),
-                Span::styled(record.invocation.summary(), theme::text()),
-            ]));
-            lines.push(Line::styled(
-                format!(
-                    "State: {}",
-                    match record.state {
-                        RunState::Queued => "Queued",
-                        RunState::Running => "Running",
-                        RunState::Succeeded => "Succeeded",
-                        RunState::Failed => "Failed",
-                        RunState::Cancelled => "Cancelled",
-                        RunState::StartFailed => "Could not start",
-                        RunState::CaptureFailed => "Capture failed",
-                    }
-                ),
-                theme::text(),
-            ));
-            if let Some(code) = record.exit_status {
-                lines.push(Line::styled(format!("Exit status: {code}"), theme::muted()));
-            }
-            if record.state == RunState::StartFailed {
-                lines.push(Line::styled(
-                    format!("Executable: {}", record.invocation.executable),
-                    theme::muted(),
-                ));
-                lines.push(Line::styled(
-                    format!("Arguments: {:?}", record.invocation.arguments),
-                    theme::muted(),
-                ));
-                lines.push(Line::styled(
-                    format!(
-                        "Directory: {}",
-                        record.invocation.working_directory.display()
-                    ),
-                    theme::muted(),
-                ));
-                if let Some(error) = record.spawn_error.as_deref() {
-                    lines.push(Line::styled(format!("Cause: {error}"), theme::danger()));
-                }
-            }
-        } else {
-            lines.push(Line::styled("Run is no longer available.", theme::warn()));
-        }
-        if !self.terminal_capture.content.is_empty() {
-            lines.push(Line::styled("Output", theme::muted()));
-            for line in self.terminal_capture.content.lines().take(12) {
-                lines.push(Line::styled(line.to_string(), theme::text()));
-            }
-            if self.terminal_capture.truncated {
-                lines.push(Line::styled("Output truncated", theme::muted()));
-            }
-        } else if let Some(record) = current {
-            lines.push(Line::styled(
-                format!(
-                    "Directory: {}",
-                    record.invocation.working_directory.display()
-                ),
-                theme::muted(),
-            ));
-        }
-        lines.push(Line::styled(
-            "Back · Enter cancel while running · r rerun · e edit rerun",
-            theme::muted(),
-        ));
-
-        Paragraph::new(lines)
-            .wrap(ratatui::widgets::Wrap { trim: true })
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(if self.focus.block == FocusBlock::Workspace {
-                        theme::active_panel_border()
-                    } else {
-                        theme::inactive_panel_border()
-                    })
-                    .title(Span::styled(" Run ", theme::active_panel_title())),
             )
             .render(area, buf);
     }

@@ -9,14 +9,12 @@ const UI_STATE_VERSION: u32 = 2;
 enum WorkspaceView {
     File(PathBuf),
     Diff(DiffCommandContext),
-    Run(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WorkspaceViewKind {
     File,
     Diff,
-    Run,
 }
 
 impl WorkspaceView {
@@ -24,7 +22,6 @@ impl WorkspaceView {
         match self {
             Self::File(_) => WorkspaceViewKind::File,
             Self::Diff(_) => WorkspaceViewKind::Diff,
-            Self::Run(_) => WorkspaceViewKind::Run,
         }
     }
 }
@@ -105,13 +102,6 @@ struct RepositoryUiState {
     permission_mode: Option<forge_governance::PermissionMode>,
 }
 
-#[derive(Debug, Clone, Default)]
-struct TerminalCapture {
-    title: Option<String>,
-    content: String,
-    truncated: bool,
-}
-
 #[derive(Debug, Clone)]
 struct FileChangeEvent {
     path: PathBuf,
@@ -121,17 +111,6 @@ struct FileWatchState {
     watcher: Option<RecommendedWatcher>,
     change_rx: Receiver<FileChangeEvent>,
     change_tx: Sender<FileChangeEvent>,
-}
-
-#[derive(Debug)]
-enum RunEvent {
-    Output(Vec<u8>),
-    Finished {
-        exit_code: Option<i32>,
-        success: bool,
-    },
-    SpawnFailed(String),
-    CaptureFailed(String),
 }
 
 /// The spatially stable keyboard regions.  This is intentionally small:
@@ -232,16 +211,8 @@ enum DiffCommandContext {
     Current,
 }
 
-#[allow(dead_code)]
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum RunCommandTarget {
-    Current,
-    Id(String),
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ActivitySummaryAction {
-    OpenRun(String),
     ReviewChanges,
 }
 
@@ -269,7 +240,6 @@ enum SemanticCommand {
     ReplaceView(WorkspaceView),
     OpenFile(PathBuf),
     ReviewChanges(DiffCommandContext),
-    OpenRun(RunCommandTarget),
     ToggleFiles,
     CloseOverlay,
     FocusComposer,
@@ -326,12 +296,6 @@ enum SemanticCommand {
     DenySelectedBackgroundTask,
     QuitOrInterrupt,
     Quit,
-    RunOrCancel,
-    Rerun,
-    EditAndRerun,
-    ToggleRunExecutionMode,
-    EditRunCommand,
-    EditRunDirectory,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -410,7 +374,6 @@ pub struct TuiRuntimeConfig {
     pub cwd: PathBuf,
     pub version: String,
     pub startup_notices: Vec<String>,
-    pub validation_command: Option<CommandConfig>,
     pub file_icons: FileIconMode,
     pub theme_id: String,
 }
@@ -423,7 +386,6 @@ impl Default for TuiRuntimeConfig {
             cwd: PathBuf::from("."),
             version: "test".into(),
             startup_notices: Vec::new(),
-            validation_command: None,
             file_icons: FileIconMode::default(),
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         }
@@ -653,11 +615,6 @@ struct StreamState {
     /// markdown rebuild so a long stream is O(n) renders, not O(tokens).
     last_preview_render: Option<Instant>,
 }
-
-struct RunExecutionState {
-    execution: run::RunExecution,
-}
-
 pub struct TuiApp {
     pub(crate) session: AgentSession,
     input: InputModel,
@@ -705,8 +662,6 @@ pub struct TuiApp {
     pub(crate) source_viewer: SourceViewer,
     file_watch: FileWatchState,
     bottom_panel: BottomPanelState,
-    run: RunStateModel,
-    run_execution: RunExecutionState,
     pub(crate) workspace_files: WorkspaceFilesState,
     explorer_dialog: ExplorerDialogState,
     /// Authoritative keyboard ownership. Legacy component `focused` flags are
@@ -727,7 +682,6 @@ pub struct TuiApp {
     /// render path only ever reads it, never derives it.
     repo_header_state: RepoHeaderState,
     progress_state: std::cell::RefCell<ProgressState>,
-    terminal_capture: TerminalCapture,
     interactive_terminal: Option<InteractiveTerminal>,
     workspace_search: WorkspaceSearchState,
     catalog_fetch: CatalogFetchState,

@@ -266,14 +266,6 @@ async fn semantic_commands_dispatch_without_rendering_a_frame() {
         app.source_viewer.path.as_deref(),
         Some(path.canonicalize().unwrap().as_path())
     );
-
-    // With no current run, background tasks live in the sidebar now —
-    // OpenRun(Current) focuses it instead of a bottom-panel Tasks tab.
-    app.execute_semantic_command(SemanticCommand::OpenRun(RunCommandTarget::Current))
-        .await
-        .unwrap();
-    assert!(!app.bottom_panel.open);
-    assert_eq!(app.focus.block, FocusBlock::Sidebar);
 }
 
 #[tokio::test]
@@ -290,11 +282,6 @@ async fn semantic_dispatch_handles_invalid_or_stale_identifiers_without_panic() 
     app.execute_semantic_command(SemanticCommand::OpenFile(missing))
         .await
         .unwrap();
-    app.execute_semantic_command(SemanticCommand::OpenRun(RunCommandTarget::Id(
-        "missing-run".into(),
-    )))
-    .await
-    .unwrap();
 
     assert_eq!(app.workspace_navigation.current, None);
     assert!(!app.bottom_panel.open);
@@ -463,7 +450,6 @@ async fn helper_labels_reflect_focus_mode() {
             cwd: PathBuf::from("."),
             version: "test".into(),
             startup_notices: Vec::new(),
-            validation_command: None,
             file_icons: FileIconMode::Unicode,
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
