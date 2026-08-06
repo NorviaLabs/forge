@@ -26,3 +26,5 @@ node_modules/
 package-lock.json
 package.json
 docs
+.agents
+.claude
