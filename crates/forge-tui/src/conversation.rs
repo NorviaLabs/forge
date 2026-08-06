@@ -2459,11 +2459,11 @@ fn render_plan_checklist(plan: &PlanChecklistPresentation, width: usize) -> Vec<
         }
     }
     // A bordered, unfilled card — no "Plan" caption. The border itself
-    // signals "this is a checklist"; ✓/►/○ markers signal step status.
+    // signals "this is a checklist"; [✓]/[►]/[ ] checkboxes signal step status.
     let longest_content = plan
         .steps
         .iter()
-        .map(|item| item.step.chars().count() + 2) // marker + space
+        .map(|item| item.step.chars().count() + 4) // checkbox + space
         .chain(explanation.map(|e| e.chars().count()))
         .max()
         .unwrap_or(0);
@@ -2473,11 +2473,11 @@ fn render_plan_checklist(plan: &PlanChecklistPresentation, width: usize) -> Vec<
     lines.push(card_top_border(inner_w + 4, None, border));
     for item in &plan.steps {
         let (marker, style) = match item.status {
-            PlanStepStatus::Completed => ("✓", theme::ok()),
-            PlanStepStatus::InProgress => ("►", theme::warn()),
-            PlanStepStatus::Pending => ("○", theme::muted()),
+            PlanStepStatus::Completed => ("[✓]", theme::ok()),
+            PlanStepStatus::InProgress => ("[►]", theme::warn()),
+            PlanStepStatus::Pending => ("[ ]", theme::muted()),
         };
-        let body_width = inner_w.saturating_sub(2).max(4);
+        let body_width = inner_w.saturating_sub(4).max(4);
         let mut wrapped = wrap(&item.step, body_width).into_iter();
         if let Some(first) = wrapped.next() {
             lines.push(card_content_spans(
@@ -2492,7 +2492,7 @@ fn render_plan_checklist(plan: &PlanChecklistPresentation, width: usize) -> Vec<
         }
         for cont in wrapped {
             lines.push(card_content_spans(
-                vec![Span::raw("  "), Span::styled(cont, theme::text())],
+                vec![Span::raw("    "), Span::styled(cont, theme::text())],
                 inner_w,
                 border,
                 None,
@@ -4549,7 +4549,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         // No spelled-out "Plan" caption by design — the bordered card and
-        // ✓/►/○ markers carry the meaning instead.
+        // [✓]/[►]/[ ] checkboxes carry the meaning instead.
         assert!(text.contains("Next steps"), "{text}");
         assert!(text.contains("Inspect code"), "{text}");
         assert!(text.contains("Implement tool"), "{text}");
