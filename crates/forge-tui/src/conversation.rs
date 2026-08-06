@@ -19,6 +19,41 @@ const DIFF_BLOCK_END_MARKER: &str = "\u{200c}";
 const INDENT_UNIT: &str = "  ";
 const MESSAGE_PADDING: usize = 2;
 const PROSE_MAX_WIDTH: usize = 72;
+/// Subtle left rail grouping tool calls and progress under the current turn.
+const RAIL_GLYPH: &str = "│";
+/// Pane widths below this drop the rail and indent (flat mode).
+const RAIL_MIN_WIDTH: usize = 50;
+/// Columns the rail unit (`│ `) consumes from wrapped content.
+const RAIL_EXTRA: usize = 2;
+
+/// Blocks rendered on the turn's tool rail: grouped under the turn, compact,
+/// and subordinate to user turns, phases, gates, and the final answer.
+fn is_railed_block(block: &ConversationBlock) -> bool {
+    matches!(
+        block,
+        ConversationBlock::ActivityGroup(_) | ConversationBlock::ActiveProgress(_)
+    )
+}
+
+/// Add a blank separator line unless the last line is already blank.
+fn ensure_blank_line(lines: &mut Vec<Line<'static>>) {
+    let last_blank = lines
+        .last()
+        .is_none_or(|l| l.spans.iter().all(|s| s.content.is_empty()));
+    if !last_blank {
+        lines.push(Line::from(""));
+    }
+}
+
+/// Prepend the left-rail glyph to a rendered line.
+fn prefix_line_rail(line: &mut Line<'static>) {
+    let mut spans = vec![
+        Span::styled(RAIL_GLYPH, theme::border_muted()),
+        Span::raw(" "),
+    ];
+    spans.extend(std::mem::take(&mut line.spans));
+    line.spans = spans;
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolCardState {
@@ -812,31 +847,34 @@ impl ConversationModel {
             .clamp(4, PROSE_MAX_WIDTH);
         let mut lines = Vec::new();
         let gap = !self.opts.compact;
+        let rail = width >= RAIL_MIN_WIDTH;
         let blocks = self.semantic_blocks();
-        // A question is paired with the answer that immediately follows it —
-        // together they read as one entry, so neither the hairline rule nor
-        // the entry gap belongs between them. The rule still separates this
-        // pair from whatever comes next.
-        let paired_with_answer: Vec<bool> = blocks
-            .iter()
-            .enumerate()
-            .map(|(i, block)| {
-                matches!(block, ConversationBlock::UserMessage(_))
-                    && matches!(
-                        blocks.get(i + 1),
-                        Some(ConversationBlock::AssistantAnswer(_))
-                    )
-            })
-            .collect();
-        for (index, block) in blocks.into_iter().enumerate() {
-            if index > 0 && !paired_with_answer[index - 1] {
-                // The previous entry already appended a trailing blank line
-                // (when `gap`), so that alone serves as padding above the
-                // rule — only the padding below needs adding here.
-                lines.push(Line::from(Span::styled("─".repeat(width), theme::border())));
-                if gap {
-                    lines.extend([Line::from(""), Line::from("")]);
+        // Full-width rules open only distinct task phases: the first plan
+        // checklist of a turn. User turns carry their own boundary (the
+        // message wash), gates and answers stay un-ruled, and everything on
+        // the tool rail is grouped compactly instead of walled off.
+        let mut plan_seen = false;
+        for block in blocks {
+            if matches!(block, ConversationBlock::UserMessage(_)) {
+                plan_seen = false;
+            }
+            let railed = is_railed_block(&block);
+            if !railed && gap && !lines.is_empty() {
+                // Major blocks read as boundaries: separate them from the
+                // preceding tool trail with a single blank line.
+                ensure_blank_line(&mut lines);
+            }
+            if let ConversationBlock::PlanChecklist(_) = &block {
+                if !plan_seen && !lines.is_empty() {
+                    if gap {
+                        ensure_blank_line(&mut lines);
+                    }
+                    lines.push(Line::from(Span::styled("─".repeat(width), theme::border())));
+                    if gap {
+                        lines.extend([Line::from(""), Line::from("")]);
+                    }
                 }
+                plan_seen = true;
             }
             match block {
                 ConversationBlock::UserMessage(p) => {
@@ -896,7 +934,7 @@ impl ConversationModel {
                 ConversationBlock::ActiveProgress(p) => {
                     let label = format!("{} · {}", p.label, p.summary);
                     let prefix = if p.id == "stream" { "▍ " } else { "● " };
-                    lines.push(Line::from(vec![
+                    let mut line = Line::from(vec![
                         Span::styled(prefix, theme::progress_style()),
                         Span::styled(label, theme::text().add_modifier(Modifier::BOLD)),
                         Span::styled("  ", theme::metadata_style()),
@@ -909,10 +947,11 @@ impl ConversationModel {
                             },
                             theme::metadata_style(),
                         ),
-                    ]));
-                    if gap {
-                        lines.extend([Line::from(""), Line::from("")]);
+                    ]);
+                    if rail {
+                        prefix_line_rail(&mut line);
                     }
+                    lines.push(line);
                 }
                 ConversationBlock::ActivityGroup(p) => {
                     let (prefix, separator) = match p.outcome {
@@ -953,32 +992,42 @@ impl ConversationModel {
                         activity_detail_label(p.expanded),
                         theme::metadata_style(),
                     ));
-                    lines.push(Line::from(spans));
+                    let mut line = Line::from(spans);
+                    if rail {
+                        prefix_line_rail(&mut line);
+                    }
+                    lines.push(line);
+                    let rail_extra = if rail { RAIL_EXTRA } else { 0 };
                     for (index, subcommand) in p.subcommands.iter().enumerate() {
                         let last = index + 1 == p.subcommands.len();
                         let glyph = if last { "└─" } else { "├─" };
-                        let sub_width = width.saturating_sub(5);
+                        let sub_width = width.saturating_sub(5 + rail_extra);
                         for (lineno, wrapped) in wrap(subcommand, sub_width).into_iter().enumerate()
                         {
                             let head = if lineno == 0 { glyph } else { "│" };
-                            lines.push(Line::from(Span::styled(
+                            let mut sub_line = Line::from(Span::styled(
                                 format!("{INDENT_UNIT}{head} {wrapped}"),
                                 theme::muted(),
-                            )));
+                            ));
+                            if rail {
+                                prefix_line_rail(&mut sub_line);
+                            }
+                            lines.push(sub_line);
                         }
                     }
                     if p.expanded {
                         for item in p.items {
-                            for line in wrap(&item, width.saturating_sub(2)) {
-                                lines.push(Line::from(Span::styled(
-                                    format!("{INDENT_UNIT}{line}"),
+                            for wrapped in wrap(&item, width.saturating_sub(2 + rail_extra)) {
+                                let mut item_line = Line::from(Span::styled(
+                                    format!("{INDENT_UNIT}{wrapped}"),
                                     theme::muted(),
-                                )));
+                                ));
+                                if rail {
+                                    prefix_line_rail(&mut item_line);
+                                }
+                                lines.push(item_line);
                             }
                         }
-                    }
-                    if gap {
-                        lines.extend([Line::from(""), Line::from("")]);
                     }
                 }
                 ConversationBlock::ApprovalPending(p) => {
@@ -4830,54 +4879,13 @@ mod tests {
         )
     }
 
+    fn is_rule_line(line: &Line<'static>) -> bool {
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        !text.is_empty() && text.chars().all(|c| c == '─')
+    }
+
     fn rule_lines<'a>(lines: &'a [Line<'static>]) -> Vec<&'a Line<'static>> {
-        lines
-            .iter()
-            .filter(|line| {
-                let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-                !text.is_empty() && text.chars().all(|c| c == '─')
-            })
-            .collect()
-    }
-
-    #[test]
-    fn hairline_separators_sit_between_entries_only() {
-        let model = three_block_model();
-        assert_eq!(model.semantic_blocks().len(), 3);
-
-        let lines = model.lines_for_width(60);
-        let rules = rule_lines(&lines);
-        // The model is [question, answer, question]. The first question is
-        // paired with its answer (one entry, no rule between them), so the
-        // only rule is between that pair and the trailing question.
-        assert_eq!(
-            rules.len(),
-            1,
-            "expected one separator between the Q/A pair and the next entry"
-        );
-
-        let first = lines.first().expect("non-empty transcript");
-        let last = lines.last().expect("non-empty transcript");
-        let is_rule = |line: &Line<'static>| {
-            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-            !text.is_empty() && text.chars().all(|c| c == '─')
-        };
-        assert!(!is_rule(first), "no separator before the first entry");
-        assert!(!is_rule(last), "no separator after the last entry");
-    }
-
-    #[test]
-    fn hairline_separator_width_tracks_pane_width() {
-        let model = three_block_model();
-        for width in [40usize, 90usize] {
-            let lines = model.lines_for_width(width);
-            let rules = rule_lines(&lines);
-            assert!(!rules.is_empty());
-            for rule in rules {
-                let text: String = rule.spans.iter().map(|s| s.content.as_ref()).collect();
-                assert_eq!(text.chars().count(), width.max(4));
-            }
-        }
+        lines.iter().filter(|line| is_rule_line(line)).collect()
     }
 
     fn rendered_text(model: &ConversationModel) -> String {
@@ -4887,5 +4895,261 @@ mod tests {
             .flat_map(|line| line.spans.iter())
             .map(|span| span.content.as_ref())
             .collect::<String>()
+    }
+
+    fn line_text(line: &Line<'static>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    fn tool_turn_items() -> Vec<ChatItem> {
+        vec![
+            ChatItem::User {
+                text: "fix the failing test".into(),
+            },
+            ChatItem::ToolCard {
+                name: "read_file".into(),
+                summary: "src/lib.rs · 2 lines".into(),
+                detail: "src/lib.rs".into(),
+                state: ToolCardState::Done,
+                duration: None,
+                subcommand: None,
+                outcome: forge_types::ExecutionOutcome::Success,
+            },
+            ChatItem::ToolCard {
+                name: "run_shell".into(),
+                summary: "cargo test · failed".into(),
+                detail: "output".into(),
+                state: ToolCardState::Done,
+                duration: None,
+                subcommand: Some("cargo test".into()),
+                outcome: forge_types::ExecutionOutcome::Failed {
+                    exit_code: Some(101),
+                },
+            },
+            ChatItem::Assistant {
+                text: "Root cause: float rounding.".into(),
+            },
+        ]
+    }
+
+    fn tool_turn_model() -> ConversationModel {
+        ConversationModel {
+            items: tool_turn_items(),
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        }
+    }
+
+    fn plan_items() -> Vec<forge_types::PlanItem> {
+        use forge_types::PlanStepStatus;
+        vec![
+            forge_types::PlanItem {
+                step: "Inspect failure".into(),
+                status: PlanStepStatus::Completed,
+            },
+            forge_types::PlanItem {
+                step: "Fix float comparison".into(),
+                status: PlanStepStatus::InProgress,
+            },
+        ]
+    }
+
+    fn planned_turn_model() -> ConversationModel {
+        ConversationModel {
+            items: vec![
+                ChatItem::User {
+                    text: "fix the failing test".into(),
+                },
+                ChatItem::PlanChecklist {
+                    explanation: Some("Next steps".into()),
+                    steps: plan_items(),
+                },
+                // A later plan_update in the same turn re-renders the
+                // checklist but must not open another phase rule.
+                ChatItem::PlanChecklist {
+                    explanation: Some("Next steps".into()),
+                    steps: plan_items(),
+                },
+                ChatItem::ToolCard {
+                    name: "run_shell".into(),
+                    summary: "cargo test · passed".into(),
+                    detail: "output".into(),
+                    state: ToolCardState::Done,
+                    duration: None,
+                    subcommand: Some("cargo test".into()),
+                    outcome: forge_types::ExecutionOutcome::Success,
+                },
+                ChatItem::Assistant {
+                    text: "Fixed.".into(),
+                },
+            ],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        }
+    }
+
+    #[test]
+    fn plan_less_turns_render_without_full_width_rules() {
+        let model = three_block_model();
+        assert_eq!(model.semantic_blocks().len(), 3);
+
+        let lines = model.lines_for_width(60);
+        // [question, answer, question]: user turns carry their own message
+        // wash, so a plan-less conversation has no full-width rules at all.
+        assert_eq!(rule_lines(&lines).len(), 0, "no rules without a plan phase");
+
+        let first = lines.first().expect("non-empty transcript");
+        let last = lines.last().expect("non-empty transcript");
+        assert!(!is_rule_line(first), "no separator before the first entry");
+        assert!(!is_rule_line(last), "no separator after the last entry");
+    }
+
+    #[test]
+    fn first_plan_of_turn_opens_with_a_rule_and_updates_do_not() {
+        let model = planned_turn_model();
+        let lines = model.lines_for_width(80);
+        let rules = rule_lines(&lines);
+        assert_eq!(
+            rules.len(),
+            1,
+            "exactly one rule for the first plan of the turn, not one per plan_update"
+        );
+
+        let rule_pos = lines.iter().position(is_rule_line).expect("rule present");
+        let after: Vec<String> = lines[rule_pos + 1..]
+            .iter()
+            .map(line_text)
+            .filter(|t| !t.is_empty())
+            .collect();
+        assert!(
+            after.first().is_some_and(|t| t.starts_with("Plan")),
+            "the rule opens the plan phase, got {:?}",
+            after.first()
+        );
+    }
+
+    #[test]
+    fn hairline_rule_width_tracks_pane_width() {
+        let model = planned_turn_model();
+        for width in [40usize, 90usize] {
+            let lines = model.lines_for_width(width);
+            let rules = rule_lines(&lines);
+            assert_eq!(rules.len(), 1);
+            for rule in rules {
+                let text = line_text(rule);
+                assert_eq!(text.chars().count(), width.max(4));
+            }
+        }
+    }
+
+    #[test]
+    fn tool_activity_groups_on_the_turn_rail() {
+        let model = tool_turn_model();
+        let lines = model.lines_for_width(80);
+        assert_eq!(rule_lines(&lines).len(), 0);
+
+        let railed: Vec<&Line<'static>> = lines
+            .iter()
+            .filter(|l| line_text(l).starts_with('│'))
+            .collect();
+        assert!(!railed.is_empty(), "tool trail renders on the rail");
+        assert!(railed
+            .iter()
+            .any(|l| line_text(l).contains("Explored repository")));
+        assert!(railed.iter().any(|l| line_text(l).contains("cargo test")));
+
+        // User message and final answer break out of the rail.
+        let user = lines
+            .iter()
+            .find(|l| line_text(l).contains("fix the failing test"))
+            .expect("user message");
+        assert!(!line_text(user).starts_with('│'));
+        let answer = lines
+            .iter()
+            .find(|l| line_text(l).contains("Root cause"))
+            .expect("answer");
+        assert!(!line_text(answer).starts_with('│'));
+        let answer_idx = lines
+            .iter()
+            .position(|l| line_text(l).contains("Root cause"))
+            .unwrap();
+        assert!(
+            lines[answer_idx - 1]
+                .spans
+                .iter()
+                .all(|s| s.content.is_empty()),
+            "the answer is separated from the rail trail by a blank line"
+        );
+    }
+
+    #[test]
+    fn narrow_panes_drop_the_rail() {
+        let model = tool_turn_model();
+        let lines = model.lines_for_width(40);
+        assert!(lines.iter().all(|l| !line_text(l).contains('│')));
+        assert_eq!(rule_lines(&lines).len(), 0);
+    }
+
+    #[test]
+    fn expand_does_not_change_rule_or_rail_structure() {
+        let collapsed = ConversationModel {
+            items: tool_turn_items(),
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+        let expanded = ConversationModel {
+            items: tool_turn_items(),
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts {
+                tool_expanded: true,
+                ..Default::default()
+            },
+        };
+        let collapsed_lines = collapsed.lines_for_width(80);
+        let expanded_lines = expanded.lines_for_width(80);
+        assert_eq!(
+            rule_lines(&collapsed_lines).len(),
+            rule_lines(&expanded_lines).len(),
+            "expand must not change phase boundaries"
+        );
+        let railed =
+            |ls: &[Line<'static>]| ls.iter().filter(|l| line_text(l).starts_with('│')).count();
+        assert!(
+            railed(&expanded_lines) >= railed(&collapsed_lines),
+            "expanded tool items stay on the rail"
+        );
+    }
+
+    #[test]
+    fn rule_and_rail_structure_is_identical_across_themes() {
+        let model = planned_turn_model();
+        let registry = crate::theme_registry::ThemeRegistry::load(None);
+        let mut baseline: Option<(usize, usize)> = None;
+        for id in [
+            "gruvbox-dark",
+            "kanagawa-wave",
+            "catppuccin-mocha",
+            "solarized-dark",
+            "solarized-light",
+        ] {
+            crate::theme::install(registry.clone(), id);
+            let lines = model.lines_for_width(80);
+            let cur = (
+                rule_lines(&lines).len(),
+                lines
+                    .iter()
+                    .filter(|l| line_text(l).starts_with('│'))
+                    .count(),
+            );
+            if let Some(prev) = baseline {
+                assert_eq!(cur, prev, "structural layout differs under theme {id}");
+            } else {
+                baseline = Some(cur);
+            }
+        }
     }
 }
