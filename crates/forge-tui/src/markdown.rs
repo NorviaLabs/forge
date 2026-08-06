@@ -440,7 +440,7 @@ fn render_table(table: &TableBuilder, width: usize) -> Vec<Line<'static>> {
             natural[column] = natural[column].max(cell_len(cell));
         }
     }
-    let sep_total = TABLE_SEP.len() * col_count.saturating_sub(1);
+    let sep_total = TABLE_SEP.chars().count() * col_count.saturating_sub(1);
     let widths = if natural.iter().sum::<usize>() + sep_total <= width {
         natural
     } else {
@@ -466,11 +466,23 @@ fn render_table(table: &TableBuilder, width: usize) -> Vec<Line<'static>> {
 /// Distribute available width across columns, keeping at least the narrowest
 /// natural content visible and shrinking the widest columns first.
 fn shrink_widths(natural: &[usize], available: usize) -> Vec<usize> {
-    let mut widths = natural
-        .iter()
-        .copied()
-        .map(|n| n.min(4))
-        .collect::<Vec<usize>>();
+    let col_count = natural.len();
+    let floor = 4usize;
+    let mut widths = if floor.saturating_mul(col_count) <= available {
+        natural
+            .iter()
+            .map(|n| (*n).min(floor))
+            .collect::<Vec<usize>>()
+    } else {
+        // Even the floor doesn't fit: split `available` evenly instead of
+        // letting each column claim `floor` regardless, which would push the
+        // row past the render width.
+        let base = available / col_count.max(1);
+        let extra = available % col_count.max(1);
+        (0..col_count)
+            .map(|i| base + usize::from(i < extra))
+            .collect()
+    };
     let mut remaining = available.saturating_sub(widths.iter().sum::<usize>());
     loop {
         let over_wide = widths
@@ -607,6 +619,46 @@ Some **bold** and *italic* and ~struck~ and `code` text.
         let rendered = render_markdown("First paragraph.\n\nSecond paragraph.", 80);
         assert_eq!(rendered.len(), 3);
         assert!(rendered[1].width() == 0);
+    }
+
+    #[test]
+    fn shrink_widths_never_exceeds_available_with_many_narrow_columns() {
+        // 10 columns each wanting >= 4 cols (the old floor) but only 15
+        // available: floor * col_count (40) blows past `available` (15).
+        let natural = vec![10usize; 10];
+        let widths = shrink_widths(&natural, 15);
+        assert_eq!(widths.len(), 10);
+        assert!(
+            widths.iter().sum::<usize>() <= 15,
+            "widths {widths:?} sum past available width"
+        );
+    }
+
+    #[test]
+    fn shrink_widths_still_grows_widest_columns_when_floor_fits() {
+        // Unaffected case: floor fits comfortably, so the existing
+        // grow-widest-first behavior should be untouched.
+        let natural = vec![10usize, 20usize];
+        let widths = shrink_widths(&natural, 24);
+        assert_eq!(widths.iter().sum::<usize>(), 24);
+        assert!(widths[1] >= widths[0]);
+    }
+
+    #[test]
+    fn table_never_exceeds_width_with_many_narrow_columns() {
+        let width = 20usize;
+        let md = "\
+| wa wb wc | xa xb xc | ya yb yc | za zb zc |
+|---|---|---|---|
+| p q r | s t u | v w x | y z aa |
+";
+        let rendered = render_markdown(md, width);
+        for line in &rendered {
+            assert!(
+                line.width() <= width,
+                "line exceeds width {width}: {line:?}"
+            );
+        }
     }
 
     #[test]
