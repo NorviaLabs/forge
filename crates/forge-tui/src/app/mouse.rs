@@ -75,6 +75,16 @@ impl TuiApp {
             .is_some_and(|area| cell_inside(area, col, row))
         {
             Some(CopyPane::Conversation)
+        } else if self
+            .diff_area
+            .is_some_and(|area| cell_inside(area, col, row))
+        {
+            Some(CopyPane::Diff)
+        } else if self
+            .terminal_area
+            .is_some_and(|area| cell_inside(area, col, row))
+        {
+            Some(CopyPane::Terminal)
         } else {
             None
         };
@@ -108,6 +118,18 @@ impl TuiApp {
                 area,
                 &self.selection,
                 true,
+            ),
+            (Some(CopyPane::Diff), Some(area)) => selection::visible_rows_selection_text(
+                &self.diff_rows,
+                area,
+                &self.selection,
+                false,
+            ),
+            (Some(CopyPane::Terminal), Some(area)) => selection::visible_rows_selection_text(
+                &self.terminal_rows,
+                area,
+                &self.selection,
+                false,
             ),
             _ => String::new(),
         };
