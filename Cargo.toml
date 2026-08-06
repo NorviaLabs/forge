@@ -61,6 +61,7 @@ vt100 = "0.15"
 fff-search = "0.10.1"
 fff-grep = "0.10.1"
 fff-query-parser = "0.10.1"
+similar = "2"
 
 forge-types = { path = "crates/forge-types" }
 forge-config = { path = "crates/forge-config" }

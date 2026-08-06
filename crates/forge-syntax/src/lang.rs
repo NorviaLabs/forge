@@ -114,6 +114,11 @@ fn language_map() -> &'static HashMap<&'static str, SyntaxLanguage> {
     LANGUAGE_MAP.get_or_init(build_language_map)
 }
 
+/// JSON content detection above this many bytes skips the full parse (see
+/// [`detect_language`]); large enough to hold any reasonable code block, small
+/// enough that a per-render parse is free.
+const MAX_JSON_DETECT_BYTES: usize = 256 * 1024;
+
 /// Get a parser for a syntax language.
 pub fn get_parser(lang: SyntaxLanguage) -> Parser {
     let mut parser = Parser::new();
@@ -140,6 +145,11 @@ pub fn detect_language(input: &str) -> Result<SyntaxLanguage, &'static str> {
     // Check for JSON
     if ((trimmed.starts_with('{') && trimmed.ends_with('}'))
         || (trimmed.starts_with('[') && trimmed.ends_with(']')))
+        // The parse allocates the whole value tree and runs on every render
+        // of a `{`/`[`-delimited block, even when its highlight is cached,
+        // so gate it on size: below the ceiling it is exact, above it the
+        // delimiters alone decide. ponytail: size cap, exact below.
+        && trimmed.len() <= MAX_JSON_DETECT_BYTES
         && serde_json::from_str::<serde_json::Value>(trimmed).is_ok()
     {
         return Ok(SyntaxLanguage::Json);
@@ -217,6 +227,17 @@ mod tests {
     fn detect_json() {
         let json = r#"{"key": "value", "num": 42}"#;
         assert_eq!(detect_language(json).unwrap(), SyntaxLanguage::Json);
+    }
+
+    #[test]
+    fn oversized_brace_block_skips_the_json_parse() {
+        // The size cap keeps a huge `{`-delimited block from triggering a
+        // full parse on every render; it falls through to Unknown rather
+        // than mis-detecting as a different language.
+        let mut huge = String::from("{\"pad\": \"");
+        huge.push_str(&"x".repeat(MAX_JSON_DETECT_BYTES));
+        huge.push_str("\"}");
+        assert_eq!(detect_language(&huge).unwrap(), SyntaxLanguage::Unknown);
     }
 
     #[test]

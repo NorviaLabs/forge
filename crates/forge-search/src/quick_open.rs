@@ -194,10 +194,17 @@ fn score_fuzzy_word_boundary(
         h_len: usize,
         n_len: usize,
         penalize_suffix: bool,
+        /// Best score seen for each (needle index, scan start) state. The score
+        /// accumulated on the path to a state plus the scoring of the *rest* of
+        /// the match depend only on that state, so a strictly better arrival
+        /// dominates a worse one — pruning on it is exact, not heuristic. This
+        /// bounds the search at O(needle * haystack) instead of the naive
+        /// exponential blow-up (every combination of character positions).
+        seen: Vec<Vec<i32>>,
     }
 
     fn visit(
-        ctx: &VisitCtx<'_>,
+        ctx: &mut VisitCtx<'_>,
         h_start: usize,
         n_idx: usize,
         last_match: Option<usize>,
@@ -205,6 +212,11 @@ fn score_fuzzy_word_boundary(
         matches: &mut Vec<usize>,
         best: &mut Option<(i32, Vec<usize>)>,
     ) {
+        if score <= ctx.seen[n_idx][h_start] {
+            return;
+        }
+        ctx.seen[n_idx][h_start] = score;
+
         if n_idx == ctx.n_len {
             let mut final_score = score;
             if ctx.penalize_suffix {
@@ -225,7 +237,10 @@ fn score_fuzzy_word_boundary(
         }
 
         let n_lower = ctx.n_bytes[n_idx].to_ascii_lowercase();
-        for h_idx in h_start..ctx.h_len {
+        // The current char cannot sit past the point where the remaining needle
+        // chars would no longer fit in the haystack.
+        let last_possible = ctx.h_len - (ctx.n_len - n_idx);
+        for h_idx in h_start..=last_possible {
             if ctx.h_bytes[h_idx].to_ascii_lowercase() != n_lower {
                 continue;
             }
@@ -270,15 +285,16 @@ fn score_fuzzy_word_boundary(
         }
     }
 
-    let ctx = VisitCtx {
+    let mut ctx = VisitCtx {
         haystack,
         h_bytes,
         n_bytes,
         h_len,
         n_len,
         penalize_suffix,
+        seen: vec![vec![i32::MIN; h_len + 1]; n_len + 1],
     };
-    visit(&ctx, 0, 0, None, 0, &mut matches, &mut best);
+    visit(&mut ctx, 0, 0, None, 0, &mut matches, &mut best);
 
     let (score, indices) = best?;
     if score <= 0 {

@@ -31,7 +31,7 @@ pub use subagent::{SubagentOutcome, SubagentSpec};
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use forge_config::WebSearchConfig;
 use forge_context::{estimate_messages_tokens, estimate_tokens, ContextEngine};
@@ -583,6 +583,13 @@ pub struct AgentSession {
     pub last_completion: Option<CompletionDecision>,
     /// Journaled tool results indexed by call id — used to avoid re-execution on resume.
     journaled_tool_results: HashMap<String, forge_durable::ToolResultPayload>,
+    /// Memoized `estimate_messages_tokens` total, keyed by `messages.len()`.
+    /// Messages only ever grow (append) or are wholesale replaced (context
+    /// reset), so a length match means the sum is current. The status bar asks
+    /// for this on every frame from an `&self` path; the lock is uncontended and
+    /// held only to read/write two words, so it stays cheaper than the O(history)
+    /// char scan it avoids.
+    ctx_tokens_cache: Mutex<Option<(usize, usize)>>,
 }
 
 /// A short, human-readable hint for a resumable session — its first user
@@ -747,6 +754,7 @@ impl AgentSession {
             turn: TurnState::new(),
             last_completion: None,
             journaled_tool_results: HashMap::new(),
+            ctx_tokens_cache: Mutex::new(None),
         })
     }
 
@@ -824,6 +832,7 @@ impl AgentSession {
             turn: TurnState::new(),
             last_completion: None,
             journaled_tool_results: state.tool_results.clone(),
+            ctx_tokens_cache: Mutex::new(None),
         };
         session.reconcile_incomplete_intents(&incomplete).await?;
         session
@@ -1052,7 +1061,26 @@ impl AgentSession {
     }
 
     pub fn context_usage_ratio(&self) -> f64 {
-        self.context.usage_ratio(&self.messages)
+        self.context_tokens_estimate() as f64 / self.context.config.capacity_tokens.max(1) as f64
+    }
+
+    /// Estimated in-context tokens for `self.messages`, memoized across frames.
+    /// Safe because message transcripts only grow by append or get replaced
+    /// wholesale (context reset) — both change the length, so the length key is
+    /// a faithful dirty check. See `ctx_tokens_cache`.
+    fn context_tokens_estimate(&self) -> usize {
+        let mut cache = self
+            .ctx_tokens_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((len, total)) = *cache {
+            if len == self.messages.len() {
+                return total;
+            }
+        }
+        let total = estimate_messages_tokens(&self.messages);
+        *cache = Some((self.messages.len(), total));
+        total
     }
 
     pub fn context_reset_ratio(&self) -> f64 {
@@ -1093,8 +1121,9 @@ impl AgentSession {
                 _ => user_tokens_est = user_tokens_est.saturating_add(n),
             }
         }
-        let context_tokens_est =
-            estimate_messages_tokens(&self.messages).saturating_add(thinking_in_context_est);
+        let context_tokens_est = self
+            .context_tokens_estimate()
+            .saturating_add(thinking_in_context_est);
         let context_capacity = self.context.config.capacity_tokens.max(1);
         let context_pct = (context_tokens_est as f64 / context_capacity as f64) * 100.0;
         TokenUsageReport {
