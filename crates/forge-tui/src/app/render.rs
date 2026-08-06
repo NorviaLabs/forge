@@ -94,6 +94,13 @@ impl TuiApp {
                 0,
             )
         };
+        // Remember the rendered editor rect so mouse events (which arrive
+        // between frames) can be hit-tested against it for selection.
+        self.editor_area = if self.current_workspace_is_file() {
+            Some(regions.chat)
+        } else {
+            None
+        };
         // Layout can hide a requested side/bottom panel. Focus must follow the
         // rendered geometry rather than leaving an invisible key owner behind.
         let available = FocusAvailability {
@@ -393,6 +400,17 @@ impl TuiApp {
             }
         }
 
+        // Highlight a live drag-selection over the editor (sorted after the
+        // source viewer so reverse-video is applied on top of its spans).
+        if self.selection.active && self.current_workspace_is_file() {
+            paint_editor_selection(
+                frame.buffer_mut(),
+                &self.selection,
+                regions.chat,
+                self.source_viewer.lines.len(),
+            );
+        }
+
         let interactive_terminal_output = self
             .interactive_terminal
             .as_ref()
@@ -606,6 +624,11 @@ impl TuiApp {
                 _ => frame.render_widget(OverlayWidget { overlay: ov }, area),
             }
         }
+
+        // The right-click context menu is the topmost layer.
+        if let Some(menu) = self.context_menu.as_ref() {
+            render_context_menu(frame.buffer_mut(), menu);
+        }
     }
 
     /// Center-pane placeholder for when nothing is open — `workspace_navigation.current`
@@ -799,6 +822,86 @@ fn render_centered_text(
                 .style(theme::panel()),
         )
         .render(inner, buf);
+}
+
+/// Paint a live drag-selection over the editor pane as reverse video. Only the
+/// visible selection rows within the editor body are touched; any part dragged
+/// outside the pane is ignored.
+fn paint_editor_selection(
+    buf: &mut ratatui::buffer::Buffer,
+    sel: &crate::selection::MouseSelection,
+    area: ratatui::layout::Rect,
+    line_count: usize,
+) {
+    use ratatui::style::Modifier;
+    let body = crate::selection::editor_body(area);
+    let Some(rect) = sel.rect() else {
+        return;
+    };
+    if body.height == 0 || body.width == 0 {
+        return;
+    }
+    let total = line_count.max(1);
+    let gutter = (total.to_string().len().max(3) + 3) as u16;
+    let content_x = body.x.saturating_add(gutter);
+    let right_edge = body.x.saturating_add(body.width).saturating_sub(1);
+    for row in rect.row_start..=rect.row_end {
+        if row < body.y || row >= body.y.saturating_add(body.height) {
+            continue;
+        }
+        let left = if row == rect.row_start {
+            rect.col_start.max(content_x)
+        } else {
+            content_x
+        };
+        let right = if row == rect.row_end {
+            rect.col_end.min(right_edge)
+        } else {
+            right_edge
+        };
+        if left > right {
+            continue;
+        }
+        for col in left..=right {
+            let cell = &mut buf[(col, row)];
+            let style = cell.style();
+            cell.set_style(style.add_modifier(Modifier::REVERSED));
+        }
+    }
+}
+
+/// Draw the right-click context menu as a small popover list.
+fn render_context_menu(buf: &mut ratatui::buffer::Buffer, menu: &crate::selection::ContextMenu) {
+    let rect = menu.rect();
+    let max_y = buf.area().height;
+    let max_x = buf.area().width;
+    for (i, item) in menu.items.iter().enumerate() {
+        let y = menu.y.saturating_add(i as u16);
+        if y >= max_y {
+            break;
+        }
+        let label = match item {
+            crate::selection::ContextMenuItem::Copy => "Copy selection",
+            crate::selection::ContextMenuItem::ClearSelection => "Clear selection",
+        };
+        let style = if i == menu.selected {
+            theme::selected_row()
+        } else {
+            theme::panel()
+        };
+        let mut text = format!(" {label}");
+        while (text.chars().count() as u16) < rect.width.saturating_sub(2) {
+            text.push(' ');
+        }
+        for (x_off, ch) in text.chars().enumerate() {
+            let x = menu.x.saturating_add(x_off as u16);
+            if x >= max_x {
+                break;
+            }
+            let cell = &mut buf[(x, y)];
+            cell.set_symbol(&ch.to_string()).set_style(style);
+        }
+    }
 }
 
 #[cfg(test)]

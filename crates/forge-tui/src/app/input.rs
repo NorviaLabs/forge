@@ -728,6 +728,11 @@ impl TuiApp {
             return Ok(());
         }
 
+        if self.context_menu.is_some() {
+            self.handle_context_menu_key(key);
+            return Ok(());
+        }
+
         if self.hitl_session.pattern_nudge.is_some() && self.handle_pattern_nudge_key(key) {
             return Ok(());
         }

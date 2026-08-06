@@ -2,6 +2,7 @@
 
 mod activity;
 mod app;
+mod clipboard;
 mod commands;
 mod conversation;
 mod editor;
@@ -15,6 +16,7 @@ mod interactive_terminal;
 mod layout;
 mod markdown;
 mod overlays;
+mod selection;
 mod source_viewer;
 mod status_glyph;
 mod terminal;

@@ -684,6 +684,13 @@ pub struct TuiApp {
     progress_state: std::cell::RefCell<ProgressState>,
     interactive_terminal: Option<InteractiveTerminal>,
     workspace_search: WorkspaceSearchState,
+    /// Editor pane's terminal rect from the most recent draw, used for mouse
+    /// hit-testing (mouse events arrive between frames).
+    editor_area: Option<ratatui::layout::Rect>,
+    /// Active mouse text selection (v1: Editor pane).
+    pub(crate) selection: crate::selection::MouseSelection,
+    /// Open right-click context menu, if any.
+    pub(crate) context_menu: Option<crate::selection::ContextMenu>,
     catalog_fetch: CatalogFetchState,
 }
 
