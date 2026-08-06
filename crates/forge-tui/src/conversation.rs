@@ -976,9 +976,7 @@ impl ConversationModel {
             match block {
                 ConversationBlock::UserMessage(p) => {
                     let theme_id = crate::theme::active();
-                    let glyph = user_message_gutter::ACTIVE_GLYPH;
-                    let gutter_style = theme::user_gutter_active_style_for(&theme_id);
-                    let prefix_width = user_message_gutter::gutter_prefix_width(glyph);
+                    let prefix_width = MESSAGE_PADDING;
                     let user_lines = user_message_gutter::render_user_message_lines(
                         &p.text,
                         width.saturating_sub(prefix_width),
@@ -987,14 +985,14 @@ impl ConversationModel {
                         wrap,
                     );
                     for line in user_lines.into_iter() {
-                        // Repeat the marker on every wrapped row (Markdown
-                        // blockquote-style) instead of only the first, so the
-                        // block reads as one continuous, gap-free unit rather
-                        // than a single prompt glyph followed by blank rows.
-                        let mut spans = vec![
-                            Span::styled(glyph, gutter_style),
-                            Span::styled(user_message_gutter::GUTTER_GAP, theme::text()),
-                        ];
+                        // No leading marker — just an indent matching
+                        // assistant messages' own left padding, with the
+                        // highlighted background carried all the way to the
+                        // edge so the block reads as one seamless bar.
+                        let mut spans = vec![Span::styled(
+                            " ".repeat(prefix_width),
+                            theme::text().bg(theme::accent_soft_bg()),
+                        )];
                         spans.extend(line.spans.into_iter().map(|mut span| {
                             span.style = span.style.bg(theme::accent_soft_bg());
                             span
@@ -3591,7 +3589,7 @@ mod tests {
     }
 
     #[test]
-    fn user_messages_render_left_aligned_with_prompt_glyph() {
+    fn user_messages_render_left_aligned_with_indent() {
         const WIDTH: usize = 100;
         let msgs = vec![Message {
             outcome: Default::default(),
@@ -3620,21 +3618,23 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let rendered = rendered_lines.join("\n");
-        assert_eq!(rendered_lines[0].trim_end(), "| hello world", "{rendered}");
+        assert_eq!(rendered_lines[0].trim_end(), "  hello world", "{rendered}");
         let dark = theme::palette(forge_config::THEME_SOLARIZED_DARK);
         let first = &lines[0];
-        assert_eq!(first.spans[0].content.as_ref(), "|");
-        assert_eq!(first.spans[0].style.fg, Some(dark.user_gutter_active));
-        assert_eq!(first.spans[2].content.as_ref(), "hello world");
-        assert_eq!(first.spans[2].style.fg, Some(dark.text));
-        assert_eq!(first.spans[2].style.bg, Some(dark.accent_soft));
+        // No leading marker — a plain indent, background carried to the edge.
+        assert_eq!(first.spans[0].content.as_ref(), "  ");
+        assert_eq!(first.spans[0].style.bg, Some(dark.accent_soft));
+        assert_eq!(first.spans[1].content.as_ref(), "hello world");
+        assert_eq!(first.spans[1].style.fg, Some(dark.text));
+        assert_eq!(first.spans[1].style.bg, Some(dark.accent_soft));
+        assert!(!rendered.contains('|'), "{rendered}");
         assert!(!rendered.contains('›'), "{rendered}");
         assert!(!rendered.contains(" │"), "{rendered}");
         assert!(rendered.contains("hello world"), "{rendered}");
     }
 
     #[test]
-    fn wrapped_user_message_repeats_the_prompt_marker_on_every_row() {
+    fn wrapped_user_message_keeps_indent_and_background_on_every_row() {
         const WIDTH: usize = 20;
         let msgs = vec![Message {
             outcome: Default::default(),
@@ -3653,22 +3653,22 @@ mod tests {
             ConversationViewOpts::default(),
         );
         let lines = m.lines_for_width(WIDTH);
+        let dark = theme::palette(forge_config::THEME_SOLARIZED_DARK);
         let user_rows: Vec<&Line<'static>> = lines
             .iter()
             .take_while(|line| {
                 line.spans
                     .first()
-                    .is_some_and(|s| s.content.as_ref() == user_message_gutter::ACTIVE_GLYPH)
+                    .is_some_and(|s| s.style.bg == Some(dark.accent_soft))
             })
             .collect();
         assert!(
             user_rows.len() > 1,
             "message should wrap to more than one row at width {WIDTH}: {lines:?}"
         );
-        let dark = theme::palette(forge_config::THEME_SOLARIZED_DARK);
         for row in &user_rows {
-            assert_eq!(row.spans[0].content.as_ref(), "|");
-            assert_eq!(row.spans[0].style.fg, Some(dark.user_gutter_active));
+            assert_eq!(row.spans[0].content.as_ref(), "  ");
+            assert_eq!(row.spans[0].style.bg, Some(dark.accent_soft));
         }
     }
 
