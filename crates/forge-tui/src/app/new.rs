@@ -160,6 +160,10 @@ impl TuiApp {
             context_menu: None,
             conversation_area: None,
             conversation_rows: Vec::new(),
+            diff_area: None,
+            diff_rows: Vec::new(),
+            terminal_area: None,
+            terminal_rows: Vec::new(),
             catalog_fetch: CatalogFetchState {
                 refresh_rx: None,
                 warmed: false,
