@@ -30,6 +30,10 @@ async fn tab_cycles_visible_blocks_and_skips_hidden_ones() {
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await
         .unwrap();
+    assert_eq!(app.focus.block, FocusBlock::Footer);
+    app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
+        .await
+        .unwrap();
     assert_eq!(app.focus.block, FocusBlock::BottomPanel);
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await
@@ -45,6 +49,87 @@ async fn tab_cycles_visible_blocks_and_skips_hidden_ones() {
         .await
         .unwrap();
     assert_eq!(app.focus.block, FocusBlock::Files);
+}
+
+#[tokio::test]
+async fn tabbing_into_footer_selects_which_llm_first() {
+    // Entering FocusBlock::Footer (an ordinary Tab stop, not a separate
+    // F3 side-channel) selects the first control (which-LLM, index 0).
+    let (_dir, mut app) = focus_test_app().await;
+    app.focus_block(FocusBlock::Composer);
+    app.composer_chip_focus = None;
+
+    app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    assert_eq!(app.focus.block, FocusBlock::Footer);
+    assert_eq!(app.composer_chip_focus, Some(0));
+}
+
+#[tokio::test]
+async fn left_right_move_between_footer_controls() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.focus_block(FocusBlock::Footer);
+    assert_eq!(app.composer_chip_focus, Some(0));
+
+    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.composer_chip_focus, Some(1));
+
+    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.composer_chip_focus, Some(0), "wraps back to which-LLM");
+
+    app.handle_key(press(KeyCode::Left, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.composer_chip_focus, Some(1), "wraps the other way too");
+}
+
+#[tokio::test]
+async fn leaving_footer_clears_its_sub_focus() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.focus_block(FocusBlock::Footer);
+    assert_eq!(app.composer_chip_focus, Some(0));
+
+    app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    assert_ne!(app.focus.block, FocusBlock::Footer);
+    assert_eq!(app.composer_chip_focus, None);
+}
+
+#[tokio::test]
+async fn esc_leaves_footer_back_to_previous_block() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.focus_block(FocusBlock::Workspace);
+    app.focus_block(FocusBlock::Footer);
+
+    app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    assert_ne!(app.focus.block, FocusBlock::Footer);
+    assert_eq!(app.composer_chip_focus, None);
+}
+
+#[tokio::test]
+async fn f3_no_longer_focuses_the_footer() {
+    // F3 used to be a standalone side-channel into chip navigation;
+    // reaching the footer is an ordinary Tab stop now.
+    let (_dir, mut app) = focus_test_app().await;
+    app.focus_block(FocusBlock::Composer);
+
+    app.handle_key(press(KeyCode::F(3), KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    assert_eq!(app.focus.block, FocusBlock::Composer);
+    assert_eq!(app.composer_chip_focus, None);
 }
 
 #[tokio::test]

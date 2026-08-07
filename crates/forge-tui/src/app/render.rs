@@ -615,19 +615,14 @@ impl TuiApp {
             .value
             .display_label(&self.runtime.model_label)
             .to_string();
-        let chips = composer_chips(
-            self.permission_mode.label(),
-            connected,
-            vendor_label.as_deref(),
-            &self.runtime.model_label,
-            &effort_label,
+        let llm_label = format!(
+            "{}/{}",
+            vendor_label.as_deref().unwrap_or("model"),
+            footer_short_model_id(&self.runtime.model_label)
         );
+        // Only two focusable footer controls now (which-LLM, effort).
         if let Some(idx) = self.composer_chip_focus {
-            if chips.is_empty() {
-                self.composer_chip_focus = None;
-            } else {
-                self.composer_chip_focus = Some(idx.min(chips.len() - 1));
-            }
+            self.composer_chip_focus = Some(idx.min(1));
         }
         if theme_picking {
             self.composer_area = None;
@@ -659,6 +654,7 @@ impl TuiApp {
                     focused: composer_focused,
                     waiting: self.session.pending_hitl().is_some(),
                     show_send_hint: true,
+                    permission_mode: self.permission_mode,
                 },
                 regions.input,
             );
@@ -675,9 +671,19 @@ impl TuiApp {
 
         let footer = FooterModel {
             hints: contextual_hint.unwrap_or_default(),
-            chips,
-            chip_focus: self.composer_chip_focus,
-            chips_dimmed: self.session.pending_hitl().is_some(),
+            llm_label,
+            llm_connected: connected,
+            effort_label,
+            focus: self.composer_chip_focus.map(|idx| {
+                if idx == 0 {
+                    FooterFocus::Llm
+                } else {
+                    FooterFocus::Effort
+                }
+            }),
+            dimmed: self.session.pending_hitl().is_some(),
+            lifecycle: status.turn_lifecycle(),
+            ctx_pct: status.ctx_pct,
         };
         frame.render_widget(FooterBar { model: &footer }, regions.footer);
 
