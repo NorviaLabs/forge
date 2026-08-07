@@ -38,7 +38,7 @@ impl PermissionMode {
     pub fn label(self) -> &'static str {
         match self {
             Self::Manual => "Manual",
-            Self::AcceptEdits => "Accept Edits",
+            Self::AcceptEdits => "Auto",
         }
     }
 
