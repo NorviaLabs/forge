@@ -106,7 +106,7 @@ mod tests {
         term.draw(|f| app.draw(f)).unwrap();
         let text = buffer_text(&term);
         let top = text.lines().next().unwrap_or_default();
-        assert!(top.contains("Forge"), "missing header brand:\n{text}");
+        assert!(top.contains("forge"), "missing header directory:\n{text}");
         assert!(top.contains("main*"), "missing dirty branch:\n{text}");
     }
 
@@ -128,7 +128,10 @@ mod tests {
         term.draw(|f| app.draw(f)).unwrap();
         let text = buffer_text(&term);
         let top = text.lines().next().unwrap_or_default();
-        assert!(top.contains("Forge"), "missing Forge:\n{text}");
+        // At 40 cols the raw tmp-dir path can truncate before reaching the
+        // repo-name segment — real path-truncation rules for very narrow
+        // terminals are still an open question, not decided by this test.
+        assert!(top.contains('⌂'), "missing directory identity:\n{text}");
         assert!(
             !top.contains("mock"),
             "model should not be duplicated:\n{text}"

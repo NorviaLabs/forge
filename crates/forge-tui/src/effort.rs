@@ -108,6 +108,23 @@ impl ReasoningEffort {
         vec![Minimal, Low, Medium, High, XHigh]
     }
 
+    /// Step one level forward/back within this model's valid options
+    /// (`Alt+,`/`Alt+.`). Clamps at either end rather than wrapping —
+    /// reaching an option not currently selected still requires the full
+    /// picker (`F4`), this only moves within `options_for_model`.
+    pub fn step(self, model: &str, forward: bool) -> Self {
+        let options = Self::options_for_model(model);
+        let Some(idx) = options.iter().position(|&o| o == self) else {
+            return self;
+        };
+        let next = if forward {
+            idx.saturating_add(1).min(options.len() - 1)
+        } else {
+            idx.saturating_sub(1)
+        };
+        options[next]
+    }
+
     pub fn model_supports_effort(model: &str) -> bool {
         let model = model.to_ascii_lowercase();
         let model_id = model
@@ -275,6 +292,40 @@ mod tests {
         assert!(
             !ReasoningEffort::options_for_model("anthropic/claude-sonnet-4-6")
                 .contains(&ReasoningEffort::XHigh)
+        );
+    }
+
+    #[test]
+    fn step_moves_within_model_options_and_clamps() {
+        let model = "openai/gpt-5.2"; // [Minimal, Low, Medium, High, XHigh]
+        assert_eq!(
+            ReasoningEffort::Medium.step(model, true),
+            ReasoningEffort::High
+        );
+        assert_eq!(
+            ReasoningEffort::Medium.step(model, false),
+            ReasoningEffort::Low
+        );
+        assert_eq!(
+            ReasoningEffort::XHigh.step(model, true),
+            ReasoningEffort::XHigh,
+            "clamps at the top rather than wrapping"
+        );
+        assert_eq!(
+            ReasoningEffort::Minimal.step(model, false),
+            ReasoningEffort::Minimal,
+            "clamps at the bottom rather than wrapping"
+        );
+    }
+
+    #[test]
+    fn step_is_a_noop_when_current_value_is_not_a_valid_option() {
+        // A model with no adjustable effort only ever offers its single
+        // default value from `options_for_model` — stepping must not panic
+        // or invent a level the model doesn't actually support.
+        assert_eq!(
+            ReasoningEffort::High.step("mock", true),
+            ReasoningEffort::High
         );
     }
 

@@ -57,7 +57,6 @@ impl TuiApp {
             "• F2  Cycle permission mode (now: {})\n",
             self.permission_mode.label()
         ));
-        text.push_str("• F3  Focus composer chips (mode · connect · model · effort)\n");
         text.push_str("• F4  Open model picker\n");
         text.push_str("• Alt+→  Activate activity summary, else review changes\n");
         text.push_str("• ?  Help\n");
@@ -87,7 +86,12 @@ impl TuiApp {
             FocusBlock::Composer => {
                 text.push_str("• Enter  Send\n");
                 text.push_str("• ⇧Enter  Newline\n");
-                text.push_str("• F3  Chip bar · ←/→ select · Enter activate · Esc back\n");
+                text.push_str("• Tab  Next block (Footer, then Bottom Panel)\n");
+                text.push_str("• Esc  Return to previous block\n");
+            }
+            FocusBlock::Footer => {
+                text.push_str("• ←/→  Select which-LLM or effort\n");
+                text.push_str("• Enter  Open picker for the selected control\n");
                 text.push_str("• Esc  Return to previous block\n");
             }
             FocusBlock::Approval => {

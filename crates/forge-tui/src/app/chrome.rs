@@ -174,6 +174,7 @@ impl TuiApp {
             repo_name: repo.repo_name.clone(),
             branch: repo.branch.clone(),
             dirty: repo.dirty,
+            cwd_display: crate::widgets::status::shorten_home_path(&self.runtime.cwd),
             resource: self.workspace_resource_label(),
             // Workspace secondary metadata only — never overall task lifecycle.
             activity: self.workspace_activity_label(),

@@ -138,10 +138,15 @@ impl TuiApp {
                 Some(SemanticCommand::QuickSwitchModel)
             }
             KeyCode::F(2) if key.modifiers.is_empty() => Some(SemanticCommand::CyclePermissionMode),
-            KeyCode::F(3) if key.modifiers.is_empty() => Some(SemanticCommand::FocusComposerChips),
             KeyCode::F(4) if key.modifiers.is_empty() => Some(SemanticCommand::OpenModelControl(
                 ConnectModelColumn::Models,
             )),
+            KeyCode::Char(',') if key.modifiers.contains(KeyModifiers::ALT) => {
+                Some(SemanticCommand::StepReasoningEffort(false))
+            }
+            KeyCode::Char('.') if key.modifiers.contains(KeyModifiers::ALT) => {
+                Some(SemanticCommand::StepReasoningEffort(true))
+            }
             KeyCode::F(1) if self.overlay.is_none() => Some(SemanticCommand::OpenHelp),
             _ => None,
         }
@@ -547,14 +552,18 @@ impl TuiApp {
                     ),
                 );
             }
-            SemanticCommand::FocusComposerChips => {
-                if self.session.pending_hitl().is_none() {
-                    if self.composer_chip_focus.is_some() {
-                        self.composer_chip_focus = None;
-                    } else {
-                        self.enter_chat_composer();
-                        self.composer_chip_focus = Some(0);
-                    }
+            SemanticCommand::StepReasoningEffort(forward) => {
+                let stepped = self
+                    .reasoning_effort
+                    .value
+                    .step(&self.runtime.model_label, forward);
+                if stepped != self.reasoning_effort.value {
+                    self.reasoning_effort.value = stepped;
+                    self.record_deliberate_selection();
+                    self.set_feedback(
+                        FeedbackSeverity::Info,
+                        format!("reasoning effort: {}", stepped.label()),
+                    );
                 }
             }
             SemanticCommand::MoveQueueSelection(delta) => self.move_queue_selection(delta),
@@ -1098,12 +1107,16 @@ mod tests {
                 SemanticCommand::CyclePermissionMode,
             ),
             (
-                key(KeyCode::F(3), NONE),
-                SemanticCommand::FocusComposerChips,
-            ),
-            (
                 key(KeyCode::F(4), NONE),
                 SemanticCommand::OpenModelControl(ConnectModelColumn::Models),
+            ),
+            (
+                key(KeyCode::Char(','), ALT),
+                SemanticCommand::StepReasoningEffort(false),
+            ),
+            (
+                key(KeyCode::Char('.'), ALT),
+                SemanticCommand::StepReasoningEffort(true),
             ),
         ];
         for (k, expected) in cases {
@@ -1128,11 +1141,13 @@ mod tests {
             None
         );
         assert_eq!(
-            app.semantic_command_for_global_key(key(KeyCode::Char('.'), ALT)),
+            app.semantic_command_for_global_key(key(KeyCode::Char('c'), ALT)),
             None
         );
+        // F3 no longer opens a side-channel footer focus — reaching the
+        // footer's controls is an ordinary Tab stop now (FocusBlock::Footer).
         assert_eq!(
-            app.semantic_command_for_global_key(key(KeyCode::Char('c'), ALT)),
+            app.semantic_command_for_global_key(key(KeyCode::F(3), NONE)),
             None
         );
     }
