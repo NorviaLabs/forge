@@ -81,12 +81,62 @@ async fn left_right_move_between_footer_controls() {
     app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
         .await
         .unwrap();
+    assert_eq!(app.composer_chip_focus, Some(2));
+
+    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
+        .await
+        .unwrap();
     assert_eq!(app.composer_chip_focus, Some(0), "wraps back to which-LLM");
 
     app.handle_key(press(KeyCode::Left, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.composer_chip_focus, Some(1), "wraps the other way too");
+    assert_eq!(app.composer_chip_focus, Some(2), "wraps the other way too");
+}
+
+#[tokio::test]
+async fn enter_on_which_llm_chip_opens_the_connect_picker() {
+    // With nothing connected, Enter on the which-LLM chip opens the same
+    // provider/model picker (see activate_composer_chip).
+    let (_dir, mut app) = focus_test_app().await;
+    app.focus_block(FocusBlock::Footer);
+    assert_eq!(app.composer_chip_focus, Some(0));
+
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(
+        matches!(app.overlay, Some(Overlay::ConnectModel { .. })),
+        "Enter on which-LLM chip should open the model picker, got {:?}",
+        app.overlay
+    );
+}
+
+#[tokio::test]
+async fn mode_chip_cycles_permission_mode_with_enter() {
+    // The footer's third control is the mode chip: Enter toggles Manual/Auto
+    // (the old F2), while ←/→ keep moving between chips.
+    let (_dir, mut app) = focus_test_app().await;
+    app.focus_block(FocusBlock::Footer);
+    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.composer_chip_focus, Some(2));
+
+    let before = app.permission_mode;
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_ne!(app.permission_mode, before, "Enter should cycle the mode");
+    assert_eq!(app.composer_chip_focus, Some(2), "stays on the mode chip");
+
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.permission_mode, before, "Enter cycles back");
 }
 
 #[tokio::test]
@@ -177,10 +227,10 @@ async fn opening_and_closing_bottom_panel_transfers_focus() {
 }
 
 #[tokio::test]
-async fn shift_arrow_tabs_only_apply_to_the_active_navigation_block() {
+async fn arrows_switch_tabs_only_in_the_active_navigation_block() {
     let (_dir, mut app) = focus_test_app().await;
     app.focus_block(FocusBlock::Workspace);
-    app.handle_key(press(KeyCode::Right, KeyModifiers::SHIFT))
+    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
         .await
         .unwrap();
     assert_eq!(
@@ -189,11 +239,11 @@ async fn shift_arrow_tabs_only_apply_to_the_active_navigation_block() {
     );
 
     // The bottom panel is Terminal-only now (Tasks moved to the sidebar),
-    // so shift-arrow has nothing to cycle while it's focused — workspace
+    // so left/right has nothing to cycle while it's focused — workspace
     // navigation stays exactly where it was.
     app.open_bottom_panel();
     app.focus_block(FocusBlock::BottomPanel);
-    app.handle_key(press(KeyCode::Right, KeyModifiers::SHIFT))
+    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
         .await
         .unwrap();
     assert_eq!(
@@ -275,7 +325,7 @@ async fn semantic_key_paths_emit_existing_commands() {
 
     app.focus_block(FocusBlock::Workspace);
     assert_eq!(
-        app.semantic_command_for_workspace_key(press(KeyCode::Right, KeyModifiers::SHIFT)),
+        app.semantic_command_for_workspace_key(press(KeyCode::Right, KeyModifiers::NONE)),
         Some(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
     );
     assert_eq!(
@@ -546,14 +596,14 @@ async fn helper_labels_reflect_focus_mode() {
 }
 
 #[tokio::test]
-async fn tab_nav_command_recognizes_shifted_plain_arrows_only() {
+async fn tab_nav_command_recognizes_plain_arrows_only() {
     let (_dir, app) = focus_test_app().await;
     assert_eq!(
-        app.tab_nav_command(press(KeyCode::Left, KeyModifiers::SHIFT)),
+        app.tab_nav_command(press(KeyCode::Left, KeyModifiers::NONE)),
         Some(TabNavCommand::PreviousTab)
     );
     assert_eq!(
-        app.tab_nav_command(press(KeyCode::Right, KeyModifiers::SHIFT)),
+        app.tab_nav_command(press(KeyCode::Right, KeyModifiers::NONE)),
         Some(TabNavCommand::NextTab)
     );
     assert_eq!(
@@ -562,6 +612,10 @@ async fn tab_nav_command_recognizes_shifted_plain_arrows_only() {
     );
     assert_eq!(
         app.tab_nav_command(press(KeyCode::Right, KeyModifiers::CONTROL)),
+        None
+    );
+    assert_eq!(
+        app.tab_nav_command(press(KeyCode::Right, KeyModifiers::SHIFT)),
         None
     );
 }
@@ -599,5 +653,34 @@ async fn contextual_hint_appears_only_for_transient_or_blocking_state() {
     assert_eq!(
         app.contextual_hint().as_deref(),
         Some("Enter confirm · Esc cancel")
+    );
+}
+
+#[tokio::test]
+async fn footer_focus_hint_is_relevant_to_the_selected_chip() {
+    // Chips stay visible when the footer is focused; the hint names the
+    // action of the currently selected chip, and follows focus.
+    let (_dir, mut app) = focus_test_app().await;
+    app.focus_block(FocusBlock::Footer);
+    assert_eq!(app.composer_chip_focus, Some(0));
+    let llm_hint = app.contextual_hint().expect("footer focus should hint");
+    assert!(llm_hint.contains("Hit Enter ⏎ to open model"), "{llm_hint}");
+
+    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    let effort_hint = app.contextual_hint().expect("footer focus should hint");
+    assert!(
+        effort_hint.contains("Hit Enter ⏎ to change effort"),
+        "{effort_hint}"
+    );
+
+    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    let mode_hint = app.contextual_hint().expect("footer focus should hint");
+    assert!(
+        mode_hint.contains("Hit Enter ⏎ to cycle permission mode"),
+        "{mode_hint}"
     );
 }

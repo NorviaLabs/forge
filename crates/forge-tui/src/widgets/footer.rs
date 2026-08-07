@@ -16,17 +16,24 @@ use ratatui::widgets::Widget;
 pub enum FooterFocus {
     Llm,
     Effort,
+    Mode,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct FooterModel {
-    /// Contextual action hints, right-aligned; overrides the activity
-    /// display for this frame when set (e.g. during a dialog/HITL prompt).
+    /// Contextual action hints. When `hint_replaces_row` is set (blocking
+    /// dialog/HITL states) the hint takes over the whole row; the focused
+    /// footer's per-chip hint instead shares the row, swapping out only the
+    /// right-side activity so the chips stay visible.
     pub hints: String,
+    /// Blocking hints replace the entire row; footer-focus hints don't.
+    pub hint_replaces_row: bool,
     /// `provider/model`, already short-formed — see [`footer_short_model_id`].
     pub llm_label: String,
     pub llm_connected: bool,
     pub effort_label: String,
+    /// Permission-mode label (Manual / Auto) for the footer's mode chip.
+    pub mode_label: String,
     pub focus: Option<FooterFocus>,
     /// HITL pending — dim the row, don't look interactive.
     pub dimmed: bool,
@@ -79,22 +86,6 @@ fn lifecycle_dot(life: TurnLifecycle) -> (&'static str, Style) {
     }
 }
 
-/// A filled "step button" glyph — the actual control, distinct from the
-/// plain-text label it sits next to. `accent` picks the fill color; the
-/// glyph color is always the canvas background so it reads as inverted
-/// (a pressable pill), not more colored text.
-fn step_button(spans: &mut Vec<ratatui::text::Span<'static>>, glyph: &'static str, fill: Style) {
-    let canvas_bg = theme::canvas().bg;
-    let inverted = match (fill.fg, canvas_bg) {
-        (Some(fg), Some(bg)) => Style::default().bg(fg).fg(bg),
-        _ => fill,
-    };
-    spans.push(ratatui::text::Span::styled(
-        glyph,
-        inverted.add_modifier(Modifier::BOLD),
-    ));
-}
-
 impl Widget for FooterBar<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         if area.height == 0 || area.width == 0 {
@@ -103,10 +94,12 @@ impl Widget for FooterBar<'_> {
         theme::fill(area, buf, theme::canvas());
         let m = self.model;
 
-        // A transient hint (dialog/HITL) takes over the whole row for this
-        // frame rather than competing with the persistent activity display.
+        // A blocking hint (HITL/dialog) takes over the whole row for this
+        // frame — the chips are dimmed and irrelevant then. The focused
+        // footer's per-chip hint is non-blocking: it shares the row,
+        // replacing only the right-side activity.
         let hints = m.hints.trim_end();
-        if !hints.is_empty() {
+        if m.hint_replaces_row && !hints.is_empty() {
             let hint_w = (hints.chars().count() as u16).min(area.width);
             buf.set_stringn(
                 area.x + area.width - hint_w,
@@ -118,10 +111,32 @@ impl Widget for FooterBar<'_> {
             return;
         }
 
+        // ---- right: live activity, or the custom hint when one is set ----
         use ratatui::text::Span;
-        let dim = m.dimmed;
+        let right = if hints.is_empty() {
+            self.activity_line()
+        } else {
+            // The focused footer's per-chip hint reads as a whisper: dimmed
+            // and italic, clearly secondary to the chips it describes.
+            let hint_style = theme::dim().add_modifier(Modifier::ITALIC);
+            ratatui::text::Line::from(Span::styled(hints.to_string(), hint_style))
+        };
+        let right_w = right.width() as u16;
 
-        // ---- left: configuration (which-LLM, effort) ----
+        // ---- left: configuration chips (which-LLM, effort, mode) ----
+        let dim = m.dimmed;
+        let mode_display = m.mode_label.clone();
+        let config_chrome = 1 // " " after the model label
+            + 2 + 1 + 2 // "  ·  " separator
+            + 2 + 1 + 2 // "  ·  " before the mode chip
+            + mode_display.chars().count();
+        let effort_chars = m.effort_label.chars().count() as u16;
+        let left_budget = area.width.saturating_sub(right_w).saturating_sub(1);
+        let model_max = left_budget
+            .saturating_sub(config_chrome as u16 + effort_chars)
+            .min(left_budget);
+        let llm_label = truncate_middle(&m.llm_label, model_max as usize);
+
         let mut left: Vec<Span<'static>> = Vec::new();
         let llm_style = if dim {
             theme::dim()
@@ -135,17 +150,13 @@ impl Widget for FooterBar<'_> {
         // (warn-colored) — connection state is a color signal, not a reason
         // to hide which model you'd be talking to.
         left.push(Span::styled(
-            m.llm_label.clone(),
+            llm_label,
             if llm_focused && !dim {
                 theme::focused_selection_style()
             } else {
                 llm_style
             },
         ));
-        left.push(Span::raw(" "));
-        if !dim {
-            step_button(&mut left, "▴", llm_style);
-        }
         left.push(Span::raw("  "));
         left.push(Span::styled("·", theme::dim()));
         left.push(Span::raw("  "));
@@ -155,9 +166,6 @@ impl Widget for FooterBar<'_> {
             theme::accent_style().add_modifier(Modifier::BOLD)
         };
         let effort_focused = m.focus == Some(FooterFocus::Effort);
-        if !dim {
-            step_button(&mut left, "◂", effort_style);
-        }
         left.push(Span::styled(
             m.effort_label.clone(),
             if effort_focused && !dim {
@@ -166,11 +174,48 @@ impl Widget for FooterBar<'_> {
                 effort_style
             },
         ));
-        if !dim {
-            step_button(&mut left, "▸", effort_style);
-        }
+        left.push(Span::raw("  "));
+        left.push(Span::styled("·", theme::dim()));
+        left.push(Span::raw("  "));
+        let mode_style = if dim {
+            theme::dim()
+        } else {
+            theme::accent_style().add_modifier(Modifier::BOLD)
+        };
+        let mode_focused = m.focus == Some(FooterFocus::Mode);
+        left.push(Span::styled(
+            mode_display,
+            if mode_focused && !dim {
+                theme::focused_selection_style()
+            } else {
+                mode_style
+            },
+        ));
 
-        // ---- right: live activity (state, context, reserved badge) ----
+        let left_line = ratatui::text::Line::from(left);
+        let left_w = left_line.width() as u16;
+
+        // Activity (right) never yields when it's the read-only state — it's
+        // short by construction (fixed-width bar + state word). Configuration
+        // (left) clips first under pressure, since a long provider/model
+        // string is the only side that can grow unboundedly.
+        if right_w <= area.width {
+            buf.set_line(area.x + area.width - right_w, area.y, &right, right_w);
+            let left_rend_budget = area.width.saturating_sub(right_w).saturating_sub(1);
+            buf.set_line(area.x, area.y, &left_line, left_rend_budget.min(left_w));
+        } else {
+            // Pathologically narrow — right itself doesn't fit; give it
+            // the whole row rather than showing nothing or corrupting it.
+            buf.set_line(area.x, area.y, &right, area.width);
+        }
+    }
+}
+
+impl FooterBar<'_> {
+    fn activity_line(&self) -> ratatui::text::Line<'static> {
+        use ratatui::text::Span;
+        let m = self.model;
+        let dim = m.dimmed;
         let (glyph, dot_style) = lifecycle_dot(m.lifecycle);
         let mut right: Vec<Span<'static>> = vec![
             Span::styled(glyph, dot_style.add_modifier(Modifier::BOLD)),
@@ -196,26 +241,32 @@ impl Widget for FooterBar<'_> {
                 span.style = theme::dim();
             }
         }
-
-        let left_line = ratatui::text::Line::from(left);
-        let right_line = ratatui::text::Line::from(right);
-        let left_w = left_line.width() as u16;
-        let right_w = right_line.width() as u16;
-
-        // Activity (right) never yields — it's read-only and short by
-        // construction (fixed-width bar + state word). Configuration
-        // (left) clips first under pressure, since a long provider/model
-        // string is the only side that can grow unboundedly.
-        if right_w <= area.width {
-            buf.set_line(area.x + area.width - right_w, area.y, &right_line, right_w);
-            let left_budget = area.width.saturating_sub(right_w).saturating_sub(1);
-            buf.set_line(area.x, area.y, &left_line, left_budget.min(left_w));
-        } else {
-            // Pathologically narrow — right itself doesn't fit; give it
-            // the whole row rather than showing nothing or corrupting it.
-            buf.set_line(area.x, area.y, &right_line, area.width);
-        }
+        ratatui::text::Line::from(right)
     }
+}
+
+/// Middle-truncate `text` to at most `max` chars, keeping both ends (the
+/// vendor prefix and the model id stay recognizable); drops the ellipsis
+/// entirely when `max` is too small to afford one.
+fn truncate_middle(text: &str, max: usize) -> String {
+    let n = text.chars().count();
+    if n <= max {
+        return text.to_string();
+    }
+    if max < 5 {
+        return text.chars().take(max).collect();
+    }
+    let keep = (max - 1) / 2;
+    let start: String = text.chars().take(keep).collect();
+    let end: String = text
+        .chars()
+        .rev()
+        .take(max - keep - 1)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    format!("{start}…{end}")
 }
 
 #[cfg(test)]
@@ -227,6 +278,7 @@ mod tests {
             llm_label: "openai/gpt-5.6-luna".into(),
             llm_connected: true,
             effort_label: "Medium".into(),
+            mode_label: "Auto".into(),
             lifecycle,
             ctx_pct,
             ..Default::default()
@@ -241,11 +293,18 @@ mod tests {
     }
 
     #[test]
-    fn renders_llm_and_effort_on_the_left() {
+    fn renders_llm_effort_and_mode_as_plain_labels() {
+        // Chips are plain text — no glyphs (▴/⏎/>>) — the interactions are
+        // taught by the hint row, not by decorating the labels.
         let m = model(TurnLifecycle::Ready, 0.34);
         let out = rendered(&m, 90);
         assert!(out.contains("openai/gpt-5.6-luna"), "{out:?}");
         assert!(out.contains("Medium"), "{out:?}");
+        assert!(out.contains("Auto"), "{out:?}");
+        assert!(
+            !out.contains('▴') && !out.contains('⏎') && !out.contains(">>"),
+            "{out:?}"
+        );
         assert!(out.trim_start().starts_with("openai"), "{out:?}");
     }
 
@@ -282,8 +341,9 @@ mod tests {
     }
 
     #[test]
-    fn hints_take_over_the_row_when_set() {
+    fn blocking_hint_takes_over_the_row_when_set() {
         let mut m = model(TurnLifecycle::Ready, 0.1);
+        m.hint_replaces_row = true;
         m.hints = "Enter confirm · Esc cancel".into();
         let out = rendered(&m, 60);
         assert!(
@@ -291,14 +351,58 @@ mod tests {
             "{out:?}"
         );
         assert!(!out.contains("Working"), "{out:?}");
+        assert!(!out.contains("openai/gpt-5.6-luna"), "chips yield: {out:?}");
     }
 
     #[test]
-    fn dimmed_row_does_not_panic_and_hides_step_buttons() {
+    fn footer_hint_shares_the_row_with_the_chips() {
+        // The focused footer's per-chip hint is non-blocking: it swaps out
+        // only the right-side activity, never the chips, and never needs a
+        // second row. It reads "Hit Enter ⏎ to <action>" in dimmed italics.
+        let mut m = model(TurnLifecycle::Working, 0.34);
+        m.hints = "Hit Enter ⏎ to open model".into();
+        let out = rendered(&m, 90);
+        assert!(out.contains("openai/gpt-5.6-luna"), "{out:?}");
+        assert!(out.contains("Medium"), "{out:?}");
+        assert!(out.contains("Hit Enter ⏎ to open model"), "{out:?}");
+        assert!(
+            !out.contains("Working"),
+            "activity yields to the hint: {out:?}"
+        );
+        let area = Rect::new(0, 0, 90, 1);
+        let mut buf = Buffer::empty(area);
+        FooterBar { model: &m }.render(area, &mut buf);
+        let hint_cell = (0..area.width)
+            .find(|&x| buf[(x, 0)].symbol() == "⏎")
+            .expect("hint glyph should render");
+        let style = buf[(hint_cell, 0)].style();
+        assert!(
+            style.add_modifier.contains(Modifier::ITALIC),
+            "hint should be italic: {style:?}"
+        );
+    }
+
+    #[test]
+    fn dimmed_row_does_not_panic() {
         let mut m = model(TurnLifecycle::Ready, 0.1);
         m.dimmed = true;
         let out = rendered(&m, 90);
         assert!(out.contains("openai/gpt-5.6-luna"), "{out:?}");
+    }
+
+    #[test]
+    fn long_model_truncates_but_keeps_the_effort_control() {
+        // The read-only model label is the side that shrinks under pressure;
+        // the effort and mode chips must stay fully visible.
+        let mut m = model(TurnLifecycle::Working, 0.34);
+        m.llm_label = "OpenCode/deepseek-v4-flash-free".into();
+        let out = rendered(&m, 76);
+        assert!(out.contains("Medium"), "{out:?}");
+        assert!(out.contains("Auto"), "{out:?}");
+        assert!(
+            out.contains('…'),
+            "long model should middle-truncate: {out:?}"
+        );
     }
 
     #[test]
@@ -312,11 +416,14 @@ mod tests {
     #[test]
     fn fits_at_min_width_floor_without_dropping_anything() {
         // 76 usable cols is layout.rs::MIN_WIDTH's realistic floor (80-col
-        // terminal, 95% content width). Both halves must render in full.
+        // terminal, 95% content width). Plain chips (no glyphs) free enough
+        // budget for the full model label here; every control and both
+        // activity halves must render in full.
         let m = model(TurnLifecycle::Working, 0.34);
         let out = rendered(&m, 76);
         assert!(out.contains("openai/gpt-5.6-luna"), "{out:?}");
         assert!(out.contains("Medium"), "{out:?}");
+        assert!(out.contains("Auto"), "{out:?}");
         assert!(out.contains("Working"), "{out:?}");
         assert!(out.contains("34%"), "{out:?}");
     }

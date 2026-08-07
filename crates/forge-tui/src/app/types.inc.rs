@@ -121,9 +121,9 @@ pub(crate) enum FocusBlock {
     Workspace,
     Sidebar,
     Composer,
-    /// The footer's two controls (which-LLM, effort) — a normal Tab stop,
-    /// not a separate `F3` side-channel. See `focus.rs::normalize_focus`
-    /// for how `composer_chip_focus` (which of the two is selected) tracks
+    /// The footer's three controls (which-LLM, effort, mode) — a normal Tab
+    /// stop, not a separate `F3` side-channel. See `focus.rs::normalize_focus`
+    /// for how `composer_chip_focus` (which of the three is selected) tracks
     /// entry/exit from this block.
     Footer,
     BottomPanel,
@@ -659,12 +659,13 @@ pub struct TuiApp {
     /// Phase 10 / TUI-10 — activity ring buffer.
     activity: ActivityFeed,
     reasoning_effort: ReasoningEffortState,
-    /// Active oversight level — cycled with F2 (`SemanticCommand::CyclePermissionMode`).
+    /// Active oversight level — cycled with `←`/`→` on the footer's mode
+    /// chip (`SemanticCommand::CyclePermissionMode`).
     /// Mirrors what's actually applied to `session`'s `Governance` via
     /// `apply_permission_mode`; this field exists only because `Governance`
     /// doesn't remember which named mode produced its current fields.
     permission_mode: forge_governance::PermissionMode,
-    /// When `Some`, composer chip bar is focused at this index (`F3`).
+    /// When `Some`, composer chip bar is focused at this index.
     composer_chip_focus: Option<usize>,
     tool_detail: ToolDetailState,
     /// V3.1 contextual workspace navigation.

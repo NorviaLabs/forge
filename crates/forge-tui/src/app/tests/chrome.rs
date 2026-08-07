@@ -540,11 +540,16 @@ async fn tui09_narrow_frame_still_shows_model_or_ctx() {
         text.contains('⌂'),
         "narrow frame missing app identity:\n{text}"
     );
-    // Model/vendor live once, in the footer's which-LLM control — never
-    // duplicated in the narrow header chrome.
+    // Plain chips (no glyphs) free most of the budget, but at this narrow
+    // floor the model id still middle-truncates — assert its tail survives
+    // in the footer. Header chrome must never duplicate model/vendor/ctx.
     assert!(
-        text.contains("mymodel"),
-        "model should render in the footer:\n{text}"
+        text.contains("odel"),
+        "model id should render in the footer:\n{text}"
+    );
+    assert!(
+        text.contains("Auto"),
+        "mode chip should render in the footer:\n{text}"
     );
     assert!(
         !text.contains("ctx"),

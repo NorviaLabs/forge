@@ -362,24 +362,10 @@ pub struct InputBar<'a> {
     pub waiting: bool,
     /// Non-interactive send affordance on the first text row.
     pub show_send_hint: bool,
-    /// Drives the composer's border color + glyph/label tag — mode lives
-    /// here, not as a footer chip, since it changes what forge is allowed
-    /// to do, not just how it thinks. See [`mode_tag`].
+    /// Drives the composer's border color — amber when Manual (expect more
+    /// interruptions), ordinary idle otherwise. The mode itself shows on
+    /// the footer's mode chip, not as a border tag.
     pub permission_mode: forge_governance::PermissionMode,
-}
-
-/// Glyph + label + color for the composer's mode border-tag. No brackets/
-/// arrows — mirrors Claude Code's own `⏵⏵ accept edits on` status-line
-/// convention and forge's `SourceViewer` NORMAL/INSERT border-tag, neither
-/// of which brackets a mode indicator.
-fn mode_tag(mode: forge_governance::PermissionMode) -> (&'static str, Style) {
-    // One unified prefix for both modes (not a distinct glyph per mode) —
-    // ASCII, so it renders reliably in any terminal font; color alone
-    // carries which mode this is.
-    match mode {
-        forge_governance::PermissionMode::Manual => (">>", theme::warn()),
-        forge_governance::PermissionMode::AcceptEdits => (">>", theme::accent_style()),
-    }
 }
 
 fn composer_text(model: &InputModel, show_cursor: bool) -> String {
@@ -585,7 +571,6 @@ impl Widget for InputBar<'_> {
         let theme = crate::theme::active();
 
         let text_focused = self.focused;
-        let (mode_glyph, mode_style) = mode_tag(self.permission_mode);
         let border = if text_focused {
             theme::active_panel_border()
         } else if self.waiting {
@@ -608,10 +593,6 @@ impl Widget for InputBar<'_> {
             // without color (reduced-color terminals, colorblind users).
             .border_type(BorderType::Thick)
             .border_style(border)
-            .title(Line::styled(
-                format!(" {mode_glyph} {} ", self.permission_mode.label()),
-                mode_style.add_modifier(Modifier::BOLD),
-            ))
             .style(if self.dimmed {
                 theme::surface_hover()
             } else {
@@ -1095,12 +1076,15 @@ mod tests {
     }
 
     #[test]
-    fn manual_mode_border_tag_is_amber() {
+    fn manual_mode_border_is_amber_without_a_text_tag() {
         let buf = render_input_bar_with_mode(forge_governance::PermissionMode::Manual);
         let top: String = (0..buf.area().width)
             .map(|x| buf[(x, 0)].symbol())
             .collect();
-        assert!(top.contains(">> Manual"), "{top:?}");
+        assert!(
+            !top.contains(">>"),
+            "mode no longer renders as a composer border tag: {top:?}"
+        );
         assert_eq!(
             buf[(0, 0)].style().fg,
             Some(theme::palette(THEME_SOLARIZED_DARK).warn)
@@ -1108,12 +1092,15 @@ mod tests {
     }
 
     #[test]
-    fn auto_mode_border_tag_is_accent() {
+    fn auto_mode_keeps_idle_border_without_a_text_tag() {
         let buf = render_input_bar_with_mode(forge_governance::PermissionMode::AcceptEdits);
         let top: String = (0..buf.area().width)
             .map(|x| buf[(x, 0)].symbol())
             .collect();
-        assert!(top.contains(">> Auto"), "{top:?}");
+        assert!(
+            !top.contains(">>"),
+            "mode no longer renders as a composer border tag: {top:?}"
+        );
     }
 
     #[test]

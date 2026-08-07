@@ -81,12 +81,14 @@ impl TuiApp {
     }
 
     pub(super) fn tab_nav_command(&self, key: event::KeyEvent) -> Option<TabNavCommand> {
-        let shifted = key.modifiers.contains(KeyModifiers::SHIFT);
+        // Plain Left/Right is the unified in-panel horizontal navigation:
+        // inside the workspace panel it switches between file/review views.
         let plain = !key.modifiers.contains(KeyModifiers::CONTROL)
-            && !key.modifiers.contains(KeyModifiers::ALT);
+            && !key.modifiers.contains(KeyModifiers::ALT)
+            && !key.modifiers.contains(KeyModifiers::SHIFT);
         match key.code {
-            KeyCode::Left if shifted && plain => Some(TabNavCommand::PreviousTab),
-            KeyCode::Right if shifted && plain => Some(TabNavCommand::NextTab),
+            KeyCode::Left if plain => Some(TabNavCommand::PreviousTab),
+            KeyCode::Right if plain => Some(TabNavCommand::NextTab),
             _ => None,
         }
     }
@@ -137,7 +139,6 @@ impl TuiApp {
             KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::ALT) => {
                 Some(SemanticCommand::QuickSwitchModel)
             }
-            KeyCode::F(2) if key.modifiers.is_empty() => Some(SemanticCommand::CyclePermissionMode),
             KeyCode::F(4) if key.modifiers.is_empty() => Some(SemanticCommand::OpenModelControl(
                 ConnectModelColumn::Models,
             )),
@@ -1044,20 +1045,21 @@ mod tests {
     const NONE: KeyModifiers = KeyModifiers::NONE;
 
     #[tokio::test]
-    async fn tab_nav_needs_shift_and_rejects_control_or_alt() {
+    async fn tab_nav_uses_plain_arrows_and_rejects_shift_or_chords() {
         let (_d, app) = app().await;
+        // Plain Left/Right is the unified in-panel horizontal nav: unshifted.
         assert_eq!(
-            app.tab_nav_command(key(KeyCode::Left, SHIFT)),
+            app.tab_nav_command(key(KeyCode::Left, NONE)),
             Some(TabNavCommand::PreviousTab)
         );
         assert_eq!(
-            app.tab_nav_command(key(KeyCode::Right, SHIFT)),
+            app.tab_nav_command(key(KeyCode::Right, NONE)),
             Some(TabNavCommand::NextTab)
         );
-        // Unshifted arrows are ordinary navigation, not tab switching.
-        assert_eq!(app.tab_nav_command(key(KeyCode::Left, NONE)), None);
-        assert_eq!(app.tab_nav_command(key(KeyCode::Right, NONE)), None);
-        // Shift combined with a chord modifier belongs to another binding.
+        // Shift is no longer required for tab switching; chords belong to
+        // other bindings.
+        assert_eq!(app.tab_nav_command(key(KeyCode::Left, SHIFT)), None);
+        assert_eq!(app.tab_nav_command(key(KeyCode::Right, SHIFT)), None);
         assert_eq!(app.tab_nav_command(key(KeyCode::Left, SHIFT | CTRL)), None);
         assert_eq!(app.tab_nav_command(key(KeyCode::Right, SHIFT | ALT)), None);
         assert_eq!(app.tab_nav_command(key(KeyCode::Up, SHIFT)), None);
@@ -1101,10 +1103,6 @@ mod tests {
             (
                 key(KeyCode::Char('`'), CTRL),
                 SemanticCommand::ToggleBottomPanel,
-            ),
-            (
-                key(KeyCode::F(2), NONE),
-                SemanticCommand::CyclePermissionMode,
             ),
             (
                 key(KeyCode::F(4), NONE),

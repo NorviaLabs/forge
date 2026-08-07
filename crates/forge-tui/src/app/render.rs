@@ -66,7 +66,9 @@ impl TuiApp {
             .map(|id| self.vendor_route_labels(id))
             .unwrap_or((None, None));
         // Model/vendor/effort live on the footer chip row; the composer band
-        // is text-only and the footer always reserves one row.
+        // is text-only and the footer always reserves one row. The focused
+        // footer's hint shares that row (replacing the right-side activity
+        // while focused), never adds a second row.
         let hint_h: u16 = 1;
         let expand_conversation = !matches!(
             self.workspace_navigation.current,
@@ -620,9 +622,9 @@ impl TuiApp {
             vendor_label.as_deref().unwrap_or("model"),
             footer_short_model_id(&self.runtime.model_label)
         );
-        // Only two focusable footer controls now (which-LLM, effort).
+        // Only three focusable footer controls now (which-LLM, effort, mode).
         if let Some(idx) = self.composer_chip_focus {
-            self.composer_chip_focus = Some(idx.min(1));
+            self.composer_chip_focus = Some(idx.min(2));
         }
         if theme_picking {
             self.composer_area = None;
@@ -671,15 +673,19 @@ impl TuiApp {
 
         let footer = FooterModel {
             hints: contextual_hint.unwrap_or_default(),
+            // The footer's own per-chip hint shares the row; every other
+            // hint source (HITL/dialog/transient) is blocking and takes the
+            // whole row.
+            hint_replaces_row: !(self.focus.mode == FocusMode::Navigation
+                && self.focus.block == FocusBlock::Footer),
             llm_label,
             llm_connected: connected,
             effort_label,
-            focus: self.composer_chip_focus.map(|idx| {
-                if idx == 0 {
-                    FooterFocus::Llm
-                } else {
-                    FooterFocus::Effort
-                }
+            mode_label: self.permission_mode.label().to_string(),
+            focus: self.composer_chip_focus.map(|idx| match idx {
+                0 => FooterFocus::Llm,
+                1 => FooterFocus::Effort,
+                _ => FooterFocus::Mode,
             }),
             dimmed: self.session.pending_hitl().is_some(),
             lifecycle: status.turn_lifecycle(),

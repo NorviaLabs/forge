@@ -242,8 +242,8 @@ fn split_areas_with_chrome_mode(
     let bottom_panel = left_rows[1];
 
     let show_files =
-        show_files && content_area.width >= FILES_WIDTH_THRESHOLD && top.width >= 24 + 40;
-    let file_width = (content_area.width / 5).clamp(24, 32);
+        show_files && content_area.width >= FILES_WIDTH_THRESHOLD && top.width >= 28 + 40;
+    let file_width = (content_area.width / 4).clamp(28, 37);
     let (files, chat) = if show_files {
         let columns = Layout::default()
             .direction(Direction::Horizontal)
@@ -428,8 +428,8 @@ mod tests {
     fn files_panel_reserves_bounded_left_space() {
         let area = Rect::new(0, 0, 120, 40);
         let r = split_areas_with_side_panels(area, 0, 3, true, 0, 0, true, 0);
-        assert_eq!(r.files, Some(Rect::new(3, 1, 24, 39)));
-        assert_eq!(r.chat, Rect::new(27, 1, 58, 39));
+        assert_eq!(r.files, Some(Rect::new(3, 1, 28, 39)));
+        assert_eq!(r.chat, Rect::new(31, 1, 54, 39));
         assert_eq!(r.sidebar, Some(Rect::new(85, 1, 32, 36)));
     }
 
@@ -454,10 +454,10 @@ mod tests {
             true,
             0,
         );
-        assert_eq!(r.files, Some(Rect::new(3, 1, 24, 39)));
+        assert_eq!(r.files, Some(Rect::new(3, 1, 28, 39)));
         assert_eq!(r.chat.width, 0);
-        assert_eq!(r.sidebar, Some(Rect::new(27, 1, 90, 36)));
-        assert_eq!(r.input.width, 90);
+        assert_eq!(r.sidebar, Some(Rect::new(31, 1, 86, 36)));
+        assert_eq!(r.input.width, 86);
     }
 
     #[test]
