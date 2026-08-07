@@ -196,10 +196,10 @@ async fn final_shell_rendering_matrix_covers_v31_states_without_obsolete_chrome(
                 "{name} at {width}x{height} missing expected state {:?}:\n{text}",
                 expected
             );
-            // New centered header still contains "Forge" and the lifecycle state
+            // Top bar is identity-only now — directory + branch, always present.
             assert!(
-                text.contains("Forge"),
-                "top bar should contain Forge brand: {text}"
+                text.contains('⌂'),
+                "top bar should contain the directory identity line: {text}"
             );
         }
     }
@@ -258,6 +258,7 @@ fn status_model_from_app_fields() {
         repo_name: None,
         branch: None,
         dirty: false,
+        cwd_display: "~".to_string(),
         resource: None,
         activity: None,
         progress_description: None,
@@ -486,10 +487,10 @@ async fn tui09_chrome_includes_model_on_frame() {
         }
         text.push('\n');
     }
-    // Model lives on the composer chip row (not the status header).
+    // Model lives on the footer's which-LLM control (not the status header).
     assert!(
         text.contains("gpt-test"),
-        "expected model on composer chips:\n{text}"
+        "expected model in the footer:\n{text}"
     );
     assert!(
         !text.contains("in 0 · out 0 · total 0"),
@@ -536,14 +537,14 @@ async fn tui09_narrow_frame_still_shows_model_or_ctx() {
         text.push('\n');
     }
     assert!(
-        text.contains("Forge"),
+        text.contains('⌂'),
         "narrow frame missing app identity:\n{text}"
     );
-    // Model/vendor live once, in the footer chip row — never duplicated in
-    // the narrow header chrome.
+    // Model/vendor live once, in the footer's which-LLM control — never
+    // duplicated in the narrow header chrome.
     assert!(
-        text.contains("[mymodel]"),
-        "model chip should render in the footer:\n{text}"
+        text.contains("mymodel"),
+        "model should render in the footer:\n{text}"
     );
     assert!(
         !text.contains("ctx"),

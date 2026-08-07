@@ -121,6 +121,11 @@ pub(crate) enum FocusBlock {
     Workspace,
     Sidebar,
     Composer,
+    /// The footer's two controls (which-LLM, effort) — a normal Tab stop,
+    /// not a separate `F3` side-channel. See `focus.rs::normalize_focus`
+    /// for how `composer_chip_focus` (which of the two is selected) tracks
+    /// entry/exit from this block.
+    Footer,
     BottomPanel,
     /// The pending human-approval card inside the transcript. Present in the
     /// focus cycle only while a HITL request is outstanding.
@@ -134,6 +139,7 @@ impl FocusBlock {
             Self::Workspace => "CHAT",
             Self::Sidebar => "SIDEBAR",
             Self::Composer => "COMPOSER",
+            Self::Footer => "FOOTER",
             Self::BottomPanel => "PANEL",
             Self::Approval => "APPROVAL",
         }
@@ -145,13 +151,15 @@ impl FocusBlock {
     // column post-sidebar layout (background strip above the composer that
     // lives inside it) — tabbing out of the transcript naturally lands in
     // its own composer next. The approval card is reachable in the cycle
-    // while a decision is pending.
-    const ORDER: [Self; 6] = [
+    // while a decision is pending. Footer follows Composer — the natural
+    // next stop after typing is the row of dials right below it.
+    const ORDER: [Self; 7] = [
         Self::Files,
         Self::Workspace,
         Self::Sidebar,
         Self::Approval,
         Self::Composer,
+        Self::Footer,
         Self::BottomPanel,
     ];
 }
@@ -286,8 +294,10 @@ enum SemanticCommand {
     ToggleCurrentFileAttachment,
     ToggleToolDetails,
     CyclePermissionMode,
-    /// Focus the composer chip bar (`F3`); ←/→ move, Enter activates.
-    FocusComposerChips,
+    /// Step reasoning effort one level (`Alt+,` back, `Alt+.` forward)
+    /// within the current model's valid options — see
+    /// [`crate::effort::ReasoningEffort::step`].
+    StepReasoningEffort(bool),
     MoveQueueSelection(i32),
     CancelSelectedQueueMessage,
     MoveTasksSelection(i32),
@@ -344,6 +354,7 @@ impl FocusAvailability {
             FocusBlock::Workspace => true,
             FocusBlock::Sidebar => self.sidebar,
             FocusBlock::Composer => true,
+            FocusBlock::Footer => true,
             FocusBlock::BottomPanel => self.bottom_panel,
             FocusBlock::Approval => self.approval,
         }

@@ -351,123 +351,6 @@ fn normalize_pasted_text(pasted: &str) -> String {
     normalized
 }
 
-/// Steady-state control chip under the composer text.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ComposerChipKind {
-    Mode,
-    Connect,
-    Model,
-    Effort,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ComposerChip {
-    pub kind: ComposerChipKind,
-    pub label: String,
-}
-
-/// Priority when truncating: keep mode, then model, then connect, then effort.
-const CHIP_DROP_ORDER: [ComposerChipKind; 4] = [
-    ComposerChipKind::Effort,
-    ComposerChipKind::Connect,
-    ComposerChipKind::Model,
-    ComposerChipKind::Mode,
-];
-
-/// Build the full chip set before width fitting.
-pub fn composer_chips(
-    mode_label: &str,
-    connected: bool,
-    vendor: Option<&str>,
-    model: &str,
-    effort: &str,
-) -> Vec<ComposerChip> {
-    let mut chips = vec![ComposerChip {
-        kind: ComposerChipKind::Mode,
-        label: mode_label.to_string(),
-    }];
-    chips.push(ComposerChip {
-        kind: ComposerChipKind::Connect,
-        label: if connected {
-            vendor
-                .filter(|v| !v.is_empty())
-                .unwrap_or("connected")
-                .to_string()
-        } else {
-            "not connected".into()
-        },
-    });
-    let short = crate::widgets::footer::footer_short_model_id(model);
-    if !short.is_empty() {
-        chips.push(ComposerChip {
-            kind: ComposerChipKind::Model,
-            label: short.to_string(),
-        });
-    }
-    if !effort.is_empty() {
-        chips.push(ComposerChip {
-            kind: ComposerChipKind::Effort,
-            label: effort.to_string(),
-        });
-    }
-    chips
-}
-
-/// Drop lowest-priority chips until the bracketed row fits `width`
-/// (`[label]` per chip, single-space separators).
-pub fn fit_composer_chips(mut chips: Vec<ComposerChip>, width: u16) -> Vec<ComposerChip> {
-    let width = width as usize;
-    let row_width = |chips: &[ComposerChip]| {
-        if chips.is_empty() {
-            return 0;
-        }
-        chips
-            .iter()
-            .map(|c| c.label.chars().count() + 2)
-            .sum::<usize>()
-            + chips.len().saturating_sub(1)
-    };
-    // Keep explicit N/A effort over vendor when space is tight — it signals
-    // "this model has no effort control".
-    let na_effort = chips
-        .iter()
-        .any(|c| c.kind == ComposerChipKind::Effort && c.label == "N/A");
-    let drop_order: &[ComposerChipKind] = if na_effort {
-        &[
-            ComposerChipKind::Connect,
-            ComposerChipKind::Model,
-            ComposerChipKind::Effort,
-            ComposerChipKind::Mode,
-        ]
-    } else {
-        &CHIP_DROP_ORDER
-    };
-    for drop_kind in drop_order {
-        if row_width(&chips) <= width || chips.len() <= 1 {
-            break;
-        }
-        if let Some(i) = chips.iter().position(|c| c.kind == *drop_kind) {
-            // Never drop Mode if anything else remains.
-            if *drop_kind == ComposerChipKind::Mode && chips.len() > 1 {
-                continue;
-            }
-            chips.remove(i);
-        }
-    }
-    while row_width(&chips) > width && chips.len() > 1 {
-        chips.pop();
-    }
-    let w = row_width(&chips);
-    if w > width && width > 1 {
-        if let Some(last) = chips.last_mut() {
-            let excess = w - width;
-            let keep = last.label.chars().count().saturating_sub(excess + 1).max(1);
-            last.label = last.label.chars().take(keep).collect::<String>() + "…";
-        }
-    }
-    chips
-}
-
 pub struct InputBar<'a> {
     pub model: &'a InputModel,
     /// Optional file-attachment label shown above the prompt line.
@@ -479,6 +362,24 @@ pub struct InputBar<'a> {
     pub waiting: bool,
     /// Non-interactive send affordance on the first text row.
     pub show_send_hint: bool,
+    /// Drives the composer's border color + glyph/label tag — mode lives
+    /// here, not as a footer chip, since it changes what forge is allowed
+    /// to do, not just how it thinks. See [`mode_tag`].
+    pub permission_mode: forge_governance::PermissionMode,
+}
+
+/// Glyph + label + color for the composer's mode border-tag. No brackets/
+/// arrows — mirrors Claude Code's own `⏵⏵ accept edits on` status-line
+/// convention and forge's `SourceViewer` NORMAL/INSERT border-tag, neither
+/// of which brackets a mode indicator.
+fn mode_tag(mode: forge_governance::PermissionMode) -> (&'static str, Style) {
+    // One unified prefix for both modes (not a distinct glyph per mode) —
+    // ASCII, so it renders reliably in any terminal font; color alone
+    // carries which mode this is.
+    match mode {
+        forge_governance::PermissionMode::Manual => (">>", theme::warn()),
+        forge_governance::PermissionMode::AcceptEdits => (">>", theme::accent_style()),
+    }
 }
 
 fn composer_text(model: &InputModel, show_cursor: bool) -> String {
@@ -684,11 +585,17 @@ impl Widget for InputBar<'_> {
         let theme = crate::theme::active();
 
         let text_focused = self.focused;
+        let (mode_glyph, mode_style) = mode_tag(self.permission_mode);
         let border = if text_focused {
             theme::active_panel_border()
         } else if self.waiting {
             theme::waiting_border()
         } else if self.not_connected {
+            theme::warn()
+        } else if self.permission_mode == forge_governance::PermissionMode::Manual {
+            // Amber means "expect more interruptions" (every shell-equivalent
+            // call asks) — not "unsafe." Accept Edits keeps the ordinary
+            // idle border; it's the default, calmer mode.
             theme::warn()
         } else {
             theme::composer_border_idle()
@@ -701,6 +608,10 @@ impl Widget for InputBar<'_> {
             // without color (reduced-color terminals, colorblind users).
             .border_type(BorderType::Thick)
             .border_style(border)
+            .title(Line::styled(
+                format!(" {mode_glyph} {} ", self.permission_mode.label()),
+                mode_style.add_modifier(Modifier::BOLD),
+            ))
             .style(if self.dimmed {
                 theme::surface_hover()
             } else {
@@ -805,6 +716,7 @@ mod tests {
                     focused,
                     waiting: model.waiting,
                     show_send_hint: false,
+                    permission_mode: forge_governance::PermissionMode::default(),
                 },
                 f.area(),
             );
@@ -1154,6 +1066,56 @@ mod tests {
         assert!(rendered.contains("type here"));
     }
 
+    fn render_input_bar_with_mode(
+        mode: forge_governance::PermissionMode,
+    ) -> ratatui::buffer::Buffer {
+        let model = InputModel {
+            hint: "type here".into(),
+            ..Default::default()
+        };
+        let backend = TestBackend::new(40, 5);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| {
+            f.render_widget(
+                InputBar {
+                    model: &model,
+                    attachment: None,
+                    dimmed: false,
+                    not_connected: false,
+                    focused: false,
+                    waiting: false,
+                    show_send_hint: false,
+                    permission_mode: mode,
+                },
+                f.area(),
+            );
+        })
+        .unwrap();
+        term.backend().buffer().clone()
+    }
+
+    #[test]
+    fn manual_mode_border_tag_is_amber() {
+        let buf = render_input_bar_with_mode(forge_governance::PermissionMode::Manual);
+        let top: String = (0..buf.area().width)
+            .map(|x| buf[(x, 0)].symbol())
+            .collect();
+        assert!(top.contains(">> Manual"), "{top:?}");
+        assert_eq!(
+            buf[(0, 0)].style().fg,
+            Some(theme::palette(THEME_SOLARIZED_DARK).warn)
+        );
+    }
+
+    #[test]
+    fn auto_mode_border_tag_is_accent() {
+        let buf = render_input_bar_with_mode(forge_governance::PermissionMode::AcceptEdits);
+        let top: String = (0..buf.area().width)
+            .map(|x| buf[(x, 0)].symbol())
+            .collect();
+        assert!(top.contains(">> Auto"), "{top:?}");
+    }
+
     #[test]
     fn waiting_state_uses_waiting_border_and_hides_hint() {
         let m = InputModel {
@@ -1206,26 +1168,6 @@ mod tests {
         assert!(rendered.contains("file.txt"));
         assert!(rendered.contains("line1"));
         assert!(rendered.contains("line2"));
-    }
-
-    #[test]
-    fn fit_composer_chips_drops_effort_before_mode() {
-        let chips = composer_chips(
-            "Accept Edits",
-            true,
-            Some("Anthropic"),
-            "anthropic/claude-sonnet-4",
-            "High",
-        );
-        let fitted = fit_composer_chips(chips, 28);
-        assert!(
-            fitted.iter().any(|c| c.kind == ComposerChipKind::Mode),
-            "{fitted:?}"
-        );
-        assert!(
-            !fitted.iter().any(|c| c.kind == ComposerChipKind::Effort),
-            "effort should drop first: {fitted:?}"
-        );
     }
 
     #[test]

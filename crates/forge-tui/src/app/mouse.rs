@@ -59,7 +59,6 @@ impl TuiApp {
         self.explorer_dialog.current.is_some()
             || self.hitl_session.pattern_nudge.is_some()
             || self.session.pending_hitl().is_some()
-            || self.composer_chip_focus.is_some()
             || self.overlay.is_some()
     }
 
@@ -285,7 +284,6 @@ impl TuiApp {
         if self.explorer_dialog.current.is_some()
             || self.hitl_session.pattern_nudge.is_some()
             || self.session.pending_hitl().is_some()
-            || self.composer_chip_focus.is_some()
             || self.overlay.is_some()
             || matches!(
                 self.focus.mode,

@@ -54,7 +54,7 @@ pub use validation::{
 };
 pub use widgets::{
     classify_operator_error, session_chrome_lines, BusyPhase, FeedbackModel, FeedbackSeverity,
-    FooterModel, InputModel, StatusModel,
+    FooterModel, InputModel, StatusModel, TurnLifecycle,
 };
 
 /// Process exit codes.

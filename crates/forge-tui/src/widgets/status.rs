@@ -8,7 +8,24 @@ use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Widget;
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Collapse a home-directory prefix to `~` for the top-bar identity line.
+/// No further truncation — a home-relative path is the only case the
+/// design covers today.
+pub fn shorten_home_path(path: &Path) -> String {
+    if let Some(home) = dirs::home_dir() {
+        if let Ok(rest) = path.strip_prefix(&home) {
+            return if rest.as_os_str().is_empty() {
+                "~".to_string()
+            } else {
+                format!("~/{}", rest.display())
+            };
+        }
+    }
+    path.display().to_string()
+}
 
 /// Progressive busy phase (Phase 10 / TUI-10; also used in chrome label).
 /// This is activity detail, not overall turn lifecycle.
@@ -80,9 +97,10 @@ fn tool_progress_description(name: &str) -> String {
 }
 
 /// First-class turn lifecycle — separate from tool/activity status.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TurnLifecycle {
     /// No active turn; ready for input.
+    #[default]
     Ready,
     /// Agent turn in progress.
     Working,
@@ -216,6 +234,9 @@ pub struct StatusModel {
     pub repo_name: Option<String>,
     pub branch: Option<String>,
     pub dirty: bool,
+    /// Shortened working-directory path for the top-bar identity line
+    /// (home-dir prefix collapsed to `~`) — see [`shorten_home_path`].
+    pub cwd_display: String,
     pub resource: Option<String>,
     pub activity: Option<String>,
     /// Typed progress description for Working (from structured busy phase / progress).
@@ -260,6 +281,21 @@ impl StatusModel {
             text.push('*');
         }
         Some(text)
+    }
+
+    /// Top-bar identity line: `⌂ path  ·  ⎇ branch*`. Path is always
+    /// shown (falls back to `cwd_display` even with no git repo); branch
+    /// is omitted when there isn't one.
+    pub fn identity_line(&self) -> String {
+        let mut line = format!("⌂ {}", self.cwd_display);
+        if let Some(branch) = self.branch.as_deref().filter(|b| !b.is_empty()) {
+            line.push_str("  ·  ⎇ ");
+            line.push_str(branch);
+            if self.dirty {
+                line.push('*');
+            }
+        }
+        line
     }
 
     /// Detail text after the lifecycle label (progress / waiting / failure category).
@@ -385,14 +421,9 @@ impl Widget for StatusBar<'_> {
         if area.height == 0 || area.width == 0 {
             return;
         }
-        // Centered single block: Forge / <repo>/<branch>
-        // No status per updated requirement. Wraps on overflow.
-        let repo = self.model.repo_branch_label().unwrap_or_default();
-        let content = if repo.is_empty() {
-            "Forge".to_string()
-        } else {
-            format!("Forge / {}", repo)
-        };
+        // Centered single block: ⌂ path  ·  ⎇ branch — identity only,
+        // full window width, changes only on project/branch switch.
+        let content = self.model.identity_line();
 
         let width = area.width as usize;
         let content_width = content.chars().count();
@@ -479,6 +510,37 @@ mod tests {
     use super::*;
     use ratatui::buffer::Buffer;
 
+    #[test]
+    fn shortens_home_prefix_to_tilde() {
+        if let Some(home) = dirs::home_dir() {
+            let path = home.join("Projects/forge");
+            assert_eq!(shorten_home_path(&path), "~/Projects/forge");
+            assert_eq!(shorten_home_path(&home), "~");
+        }
+    }
+
+    #[test]
+    fn leaves_non_home_paths_unshortened() {
+        assert_eq!(shorten_home_path(Path::new("/opt/other")), "/opt/other");
+    }
+
+    #[test]
+    fn identity_line_omits_branch_when_absent() {
+        let mut m = status_model(TaskLifecycle::Ready, false, BusyPhase::Idle);
+        m.cwd_display = "~/Projects/forge".into();
+        m.branch = None;
+        assert_eq!(m.identity_line(), "⌂ ~/Projects/forge");
+    }
+
+    #[test]
+    fn identity_line_appends_dirty_marker() {
+        let mut m = status_model(TaskLifecycle::Ready, false, BusyPhase::Idle);
+        m.cwd_display = "~/Projects/forge".into();
+        m.branch = Some("main".into());
+        m.dirty = true;
+        assert_eq!(m.identity_line(), "⌂ ~/Projects/forge  ·  ⎇ main*");
+    }
+
     fn status_model(status: TaskLifecycle, busy: bool, busy_phase: BusyPhase) -> StatusModel {
         StatusModel {
             status,
@@ -500,6 +562,7 @@ mod tests {
             repo_name: None,
             branch: None,
             dirty: false,
+            cwd_display: "~/Projects/forge".to_string(),
             resource: None,
             activity: None,
             progress_description: None,
@@ -530,6 +593,7 @@ mod tests {
             repo_name: None,
             branch: None,
             dirty: false,
+            cwd_display: "~/Projects/forge".to_string(),
             resource: None,
             activity: None,
             progress_description: None,
@@ -561,6 +625,7 @@ mod tests {
             repo_name: None,
             branch: None,
             dirty: false,
+            cwd_display: "~/Projects/forge".to_string(),
             resource: None,
             activity: None,
             progress_description: None,
@@ -594,6 +659,7 @@ mod tests {
             repo_name: None,
             branch: None,
             dirty: false,
+            cwd_display: "~/Projects/forge".to_string(),
             resource: None,
             activity: None,
             progress_description: None,
@@ -630,6 +696,7 @@ mod tests {
             repo_name: Some("forge".into()),
             branch: Some("main".into()),
             dirty: true,
+            cwd_display: "~/Projects/forge".to_string(),
             resource: Some("src/app.rs".into()),
             activity: Some("2 changes · Review".into()),
             progress_description: None,
@@ -678,6 +745,7 @@ mod tests {
             repo_name: Some("forge".into()),
             branch: Some("main".into()),
             dirty: false,
+            cwd_display: "~/Projects/forge".to_string(),
             resource: None,
             activity: None,
             progress_description: None,
@@ -709,6 +777,7 @@ mod tests {
             repo_name: Some("forge".into()),
             branch: Some("main".into()),
             dirty: true,
+            cwd_display: "~/Projects/forge".to_string(),
             resource: Some("src/app.rs".into()),
             activity: Some("2 changes · Review".into()),
             progress_description: None,
@@ -719,14 +788,13 @@ mod tests {
         let mut buf = Buffer::empty(area);
         StatusBar { model: &m }.render(area, &mut buf);
         let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
-        // New centered single-block layout
-        assert!(rendered.contains("Forge"));
-        assert!(rendered.contains("forge/main*"));
-        // status removed from header per requirement
+        // Identity-only centered line: directory + branch, no status.
+        assert!(rendered.contains("~/Projects/forge"));
+        assert!(rendered.contains("main*"));
     }
 
     #[test]
-    fn status_bar_preserves_state_on_narrow_width() {
+    fn status_bar_preserves_identity_on_narrow_width() {
         let m = StatusModel {
             status: TaskLifecycle::Ready,
             session_short: "abc".into(),
@@ -747,6 +815,7 @@ mod tests {
             repo_name: Some("forge".into()),
             branch: Some("main".into()),
             dirty: false,
+            cwd_display: "~/Projects/forge".to_string(),
             resource: None,
             activity: Some("2 changes".into()),
             progress_description: None,
@@ -757,9 +826,8 @@ mod tests {
         let mut buf = Buffer::empty(area);
         StatusBar { model: &m }.render(area, &mut buf);
         let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
-        // Centered layout still shows Forge + state even when narrow
-        assert!(rendered.contains("Forge"));
-        assert!(rendered.contains("Ready") || rendered.contains("forge/main"));
+        // Narrow width falls back to left-aligned rather than dropping content.
+        assert!(rendered.contains("Projects/forge") || rendered.contains("main"));
     }
 
     #[test]
@@ -960,7 +1028,7 @@ mod tests {
     }
 
     #[test]
-    fn narrow_width_keeps_state_label() {
+    fn narrow_width_keeps_identity_line() {
         let mut m = status_model(
             TaskLifecycle::Working,
             true,
@@ -975,14 +1043,14 @@ mod tests {
         let mut buf = Buffer::empty(area);
         StatusBar { model: &m }.render(area, &mut buf);
         let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
-        // Status removed; header only shows Forge + repo/branch
-        assert!(rendered.contains("Forge"), "{rendered}");
+        // Status removed from the top bar; it's identity-only now.
+        assert!(rendered.contains("Projects/forge"), "{rendered}");
 
         let area = Rect::new(0, 0, 24, 1);
         let mut buf = Buffer::empty(area);
         StatusBar { model: &m }.render(area, &mut buf);
         let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
-        assert!(rendered.contains("Forge"), "{rendered}");
+        assert!(rendered.contains("Projects/forge"), "{rendered}");
     }
 
     #[test]

@@ -476,6 +476,7 @@ impl TuiApp {
             FocusBlock::Workspace => self.handle_workspace_navigation_key(key).await,
             FocusBlock::Sidebar => self.handle_sidebar_key(key).await,
             FocusBlock::Composer => Ok(false),
+            FocusBlock::Footer => self.handle_footer_key(key).await,
             FocusBlock::BottomPanel => self.handle_bottom_panel_key(key).await,
             // Menu keys (↑↓ Enter Esc) are consumed by `handle_approval_menu_key`
             // before routing; everything else is ignored here.
@@ -630,100 +631,56 @@ impl TuiApp {
         Ok(consumed)
     }
 
-    /// Navigate composer chips when `composer_chip_focus` is set (`F3`).
-    pub(super) async fn handle_composer_chip_key(
-        &mut self,
-        key: event::KeyEvent,
-    ) -> Result<bool, TuiError> {
-        let Some(idx) = self.composer_chip_focus else {
-            return Ok(false);
-        };
-        let chips = self.current_composer_chips();
-        if chips.is_empty() {
-            self.composer_chip_focus = None;
-            return Ok(false);
-        }
-        let n = chips.len();
-        let idx = idx.min(n - 1);
-        self.composer_chip_focus = Some(idx);
+    /// Navigate the footer's two controls (which-LLM, effort) while
+    /// `FocusBlock::Footer` is active — an ordinary Tab stop now, not a
+    /// separate `F3` side-channel. 0 = which-LLM, 1 = effort;
+    /// `composer_chip_focus`'s lifecycle is managed by
+    /// `focus.rs::normalize_focus`.
+    async fn handle_footer_key(&mut self, key: event::KeyEvent) -> Result<bool, TuiError> {
+        const N: usize = 2;
+        let idx = self.composer_chip_focus.unwrap_or(0).min(N - 1);
         match key.code {
             KeyCode::Left if key.modifiers.is_empty() => {
-                self.composer_chip_focus = Some((idx + n - 1) % n);
+                self.composer_chip_focus = Some((idx + N - 1) % N);
                 Ok(true)
             }
             KeyCode::Right if key.modifiers.is_empty() => {
-                self.composer_chip_focus = Some((idx + 1) % n);
-                Ok(true)
-            }
-            KeyCode::Esc if key.modifiers.is_empty() => {
-                self.composer_chip_focus = None;
+                self.composer_chip_focus = Some((idx + 1) % N);
                 Ok(true)
             }
             KeyCode::Enter if key.modifiers.is_empty() => {
-                let kind = chips[idx].kind;
-                self.composer_chip_focus = None;
-                self.activate_composer_chip(kind).await?;
+                let focus = if idx == 0 {
+                    FooterFocus::Llm
+                } else {
+                    FooterFocus::Effort
+                };
+                self.activate_composer_chip(focus).await?;
                 Ok(true)
             }
-            _ => {
-                // Global chords (Alt/Ctrl) and typing leave chip focus.
-                if !key.modifiers.is_empty() && key.modifiers != KeyModifiers::SHIFT {
-                    return Ok(false);
-                }
-                if Self::printable_chat_char(key).is_some()
-                    || matches!(key.code, KeyCode::Backspace | KeyCode::Delete)
-                {
-                    self.composer_chip_focus = None;
-                    return Ok(false);
-                }
-                Ok(true)
+            KeyCode::Esc if key.modifiers.is_empty() => {
+                self.execute_semantic_command(SemanticCommand::CancelCurrentInteraction)
+                    .await
             }
+            _ => Ok(false),
         }
     }
 
-    fn current_composer_chips(&self) -> Vec<ComposerChip> {
-        let connected = self.is_provider_connected();
-        let vendor = self
-            .connect
-            .profile
-            .as_deref()
-            .and_then(|id| self.vendor_route_labels(id).0);
-        let effort = self
-            .reasoning_effort
-            .value
-            .display_label(&self.runtime.model_label)
-            .to_string();
-        let raw = composer_chips(
-            self.permission_mode.label(),
-            connected,
-            vendor.as_deref(),
-            &self.runtime.model_label,
-            &effort,
-        );
-        // Width unknown here; navigation uses full set (fit only for paint).
-        raw
-    }
-
-    async fn activate_composer_chip(&mut self, kind: ComposerChipKind) -> Result<(), TuiError> {
-        match kind {
-            ComposerChipKind::Mode => {
-                self.execute_semantic_command(SemanticCommand::CyclePermissionMode)
-                    .await?;
-            }
-            ComposerChipKind::Connect => {
+    async fn activate_composer_chip(&mut self, focus: FooterFocus) -> Result<(), TuiError> {
+        match focus {
+            // Which-LLM merges the old Connect+Model chips into one control:
+            // opens the full connect flow when nothing's connected yet,
+            // otherwise jumps straight to picking a model.
+            FooterFocus::Llm => {
                 if self.is_provider_connected() {
-                    self.open_connect_picker_compact(ConnectModelColumn::Providers);
+                    self.execute_semantic_command(SemanticCommand::OpenModelControl(
+                        ConnectModelColumn::Models,
+                    ))
+                    .await?;
                 } else {
                     self.open_connect_picker();
                 }
             }
-            ComposerChipKind::Model => {
-                self.execute_semantic_command(SemanticCommand::OpenModelControl(
-                    ConnectModelColumn::Models,
-                ))
-                .await?;
-            }
-            ComposerChipKind::Effort => {
+            FooterFocus::Effort => {
                 self.execute_semantic_command(SemanticCommand::OpenModelControl(
                     ConnectModelColumn::Effort,
                 ))
@@ -776,10 +733,6 @@ impl TuiApp {
         }
 
         if self.session.pending_hitl().is_some() && self.handle_approval_menu_key(key).await? {
-            return Ok(());
-        }
-
-        if self.composer_chip_focus.is_some() && self.handle_composer_chip_key(key).await? {
             return Ok(());
         }
 

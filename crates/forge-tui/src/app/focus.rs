@@ -46,6 +46,16 @@ impl TuiApp {
                 self.focus.mode,
                 FocusMode::Navigation | FocusMode::Transient(_)
             );
+        // `composer_chip_focus` is the footer's own sub-focus (which of the
+        // two controls — which-LLM, effort — is selected). Its lifecycle
+        // now tracks `FocusBlock::Footer` directly rather than a standalone
+        // `F3` side-channel: entering the block selects the first control,
+        // leaving it clears the selection.
+        if self.focus.block == FocusBlock::Footer && self.focus.mode == FocusMode::Navigation {
+            self.composer_chip_focus = Some(self.composer_chip_focus.unwrap_or(0).min(1));
+        } else {
+            self.composer_chip_focus = None;
+        }
     }
 
     pub(crate) fn focus_block(&mut self, block: FocusBlock) {

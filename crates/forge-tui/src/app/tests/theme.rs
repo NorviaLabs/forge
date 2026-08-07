@@ -204,7 +204,7 @@ async fn light_theme_representative_layout_snapshot() {
     app.input.cursor = app.input.text.len();
 
     let text = render_app_text(&mut app, 120, 40);
-    assert!(text.contains("Forge"), "missing header:\n{text}");
+    assert!(text.contains('⌂'), "missing header:\n{text}");
     assert!(text.contains("FILES"), "missing sidebar:\n{text}");
     assert!(
         text.contains("Please review this change."),
