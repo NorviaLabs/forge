@@ -53,10 +53,6 @@ impl TuiApp {
         text.push_str("Global\n");
         text.push_str("• Tab / Shift+Tab  Move between visible blocks\n");
         text.push_str("• Ctrl+E  Toggle Files (focuses explorer when opening)\n");
-        text.push_str(&format!(
-            "• F2  Cycle permission mode (now: {})\n",
-            self.permission_mode.label()
-        ));
         text.push_str("• F4  Open model picker\n");
         text.push_str("• Alt+→  Activate activity summary, else review changes\n");
         text.push_str("• ?  Help\n");

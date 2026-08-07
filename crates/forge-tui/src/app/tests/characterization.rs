@@ -12,7 +12,7 @@ async fn characterization_contextual_views_are_reachable_with_current_controls()
     app.focus_block(FocusBlock::Workspace);
     assert_eq!(app.workspace_navigation.current, None);
 
-    app.handle_key(press(KeyCode::Right, KeyModifiers::SHIFT))
+    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
         .await
         .unwrap();
     assert_eq!(
@@ -21,7 +21,7 @@ async fn characterization_contextual_views_are_reachable_with_current_controls()
     );
     assert_eq!(app.focus.block, FocusBlock::Workspace);
 
-    app.handle_key(press(KeyCode::Left, KeyModifiers::SHIFT))
+    app.handle_key(press(KeyCode::Left, KeyModifiers::NONE))
         .await
         .unwrap();
     assert_eq!(app.workspace_navigation.current, None);

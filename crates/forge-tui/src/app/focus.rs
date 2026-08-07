@@ -52,7 +52,7 @@ impl TuiApp {
         // `F3` side-channel: entering the block selects the first control,
         // leaving it clears the selection.
         if self.focus.block == FocusBlock::Footer && self.focus.mode == FocusMode::Navigation {
-            self.composer_chip_focus = Some(self.composer_chip_focus.unwrap_or(0).min(1));
+            self.composer_chip_focus = Some(self.composer_chip_focus.unwrap_or(0).min(2));
         } else {
             self.composer_chip_focus = None;
         }
@@ -170,6 +170,16 @@ impl TuiApp {
             }
             FocusMode::Transient(TransientOwner::JumpToLine) => {
                 Some("Enter jump · Esc cancel".into())
+            }
+            // The footer chips stay visible; the hint names the action of
+            // whichever chip is currently selected. Enter is the one action
+            // key across all chips.
+            FocusMode::Navigation if self.focus.block == FocusBlock::Footer => {
+                Some(match self.composer_chip_focus.unwrap_or(0).min(2) {
+                    0 => "Hit Enter ⏎ to open model".into(),
+                    1 => "Hit Enter ⏎ to change effort".into(),
+                    _ => "Hit Enter ⏎ to cycle permission mode".into(),
+                })
             }
             FocusMode::Navigation => None,
         }
