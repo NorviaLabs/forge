@@ -279,6 +279,39 @@ async fn save_conflict_requires_explicit_force_or_reload_choice() {
 }
 
 #[tokio::test]
+async fn dirty_switch_preserves_save_conflict_and_reloads_before_switching() {
+    let (dir, mut app) = focus_test_app().await;
+    let first = dir.path().join("first-conflict.txt");
+    let second = dir.path().join("second-conflict.txt");
+    fs::write(&first, "before").unwrap();
+    fs::write(&second, "second").unwrap();
+    app.open_file_in_editor(&first);
+    let editor = app.editor_session.as_mut().unwrap();
+    editor.handle_key(press(KeyCode::Char('i'), KeyModifiers::NONE));
+    editor.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE));
+    editor.handle_key(press(KeyCode::Esc, KeyModifiers::NONE));
+    fs::write(&first, "outside").unwrap();
+
+    app.open_file_in_editor(&second);
+    app.handle_key(press(KeyCode::Char('s'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(matches!(
+        app.explorer_dialog.current,
+        Some(ExplorerDialog::SaveConflict)
+    ));
+
+    app.handle_key(press(KeyCode::Char('r'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(
+        app.source_viewer.path.as_deref(),
+        Some(second.canonicalize().unwrap().as_path())
+    );
+    assert_eq!(fs::read_to_string(&first).unwrap(), "outside");
+}
+
+#[tokio::test]
 async fn vim_command_line_e_reloads_a_clean_buffer() {
     let (dir, mut app) = focus_test_app().await;
     let path = dir.path().join("reload.txt");

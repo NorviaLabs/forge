@@ -262,7 +262,12 @@ impl TuiApp {
                 }
                 KeyCode::Char('s') | KeyCode::Char('S') | KeyCode::Enter => {
                     self.save_active_editor();
-                    if self
+                    if matches!(
+                        self.explorer_dialog.current,
+                        Some(ExplorerDialog::SaveConflict)
+                    ) {
+                        Some(ExplorerDialog::SaveConflict)
+                    } else if self
                         .editor_session
                         .as_ref()
                         .is_some_and(|editor| !editor.is_dirty())
@@ -290,7 +295,12 @@ impl TuiApp {
                 }
                 KeyCode::Char('s') | KeyCode::Char('S') | KeyCode::Enter => {
                     self.save_active_editor();
-                    if self
+                    if matches!(
+                        self.explorer_dialog.current,
+                        Some(ExplorerDialog::SaveConflict)
+                    ) {
+                        Some(ExplorerDialog::SaveConflict)
+                    } else if self
                         .editor_session
                         .as_ref()
                         .is_some_and(|editor| !editor.is_dirty())
@@ -307,6 +317,14 @@ impl TuiApp {
                 KeyCode::Esc if key.modifiers.is_empty() => None,
                 KeyCode::Char('r') | KeyCode::Char('R') => {
                     self.reload_active_editor_from_disk();
+                    if self.pending_editor_path.is_some()
+                        && self
+                            .editor_session
+                            .as_ref()
+                            .is_some_and(|editor| !editor.is_dirty())
+                    {
+                        self.complete_pending_editor_switch(false);
+                    }
                     None
                 }
                 KeyCode::Char('f') | KeyCode::Char('F') => {
@@ -316,6 +334,9 @@ impl TuiApp {
                         .as_ref()
                         .is_some_and(|editor| !editor.is_dirty())
                     {
+                        if self.pending_editor_path.is_some() {
+                            self.complete_pending_editor_switch(false);
+                        }
                         None
                     } else {
                         Some(ExplorerDialog::SaveConflict)
