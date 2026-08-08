@@ -351,6 +351,54 @@ async fn vim_command_line_e_reloads_a_clean_buffer() {
 }
 
 #[tokio::test]
+async fn vim_command_line_e_same_dirty_file_requires_reload_decision() {
+    let (dir, mut app) = focus_test_app().await;
+    let path = dir.path().join("reload-dirty.txt");
+    fs::write(&path, "before").unwrap();
+    app.open_file_in_editor(&path);
+    let editor = app.editor_session.as_mut().unwrap();
+    editor.handle_key(press(KeyCode::Char('i'), KeyModifiers::NONE));
+    editor.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE));
+    editor.handle_key(press(KeyCode::Esc, KeyModifiers::NONE));
+    let in_memory = app.editor_session.as_ref().unwrap().text();
+
+    for key in [
+        press(KeyCode::Char(':'), KeyModifiers::NONE),
+        press(KeyCode::Char('e'), KeyModifiers::NONE),
+        press(KeyCode::Char(' '), KeyModifiers::NONE),
+        press(KeyCode::Char('r'), KeyModifiers::NONE),
+        press(KeyCode::Char('e'), KeyModifiers::NONE),
+        press(KeyCode::Char('l'), KeyModifiers::NONE),
+        press(KeyCode::Char('o'), KeyModifiers::NONE),
+        press(KeyCode::Char('a'), KeyModifiers::NONE),
+        press(KeyCode::Char('d'), KeyModifiers::NONE),
+        press(KeyCode::Char('-'), KeyModifiers::NONE),
+        press(KeyCode::Char('d'), KeyModifiers::NONE),
+        press(KeyCode::Char('i'), KeyModifiers::NONE),
+        press(KeyCode::Char('r'), KeyModifiers::NONE),
+        press(KeyCode::Char('t'), KeyModifiers::NONE),
+        press(KeyCode::Char('y'), KeyModifiers::NONE),
+        press(KeyCode::Char('.'), KeyModifiers::NONE),
+        press(KeyCode::Char('t'), KeyModifiers::NONE),
+        press(KeyCode::Char('x'), KeyModifiers::NONE),
+        press(KeyCode::Char('t'), KeyModifiers::NONE),
+        press(KeyCode::Enter, KeyModifiers::NONE),
+    ] {
+        app.handle_key(key).await.unwrap();
+    }
+
+    assert!(matches!(
+        app.explorer_dialog.current,
+        Some(ExplorerDialog::SaveConflict)
+    ));
+    app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.editor_session.as_ref().unwrap().text(), in_memory);
+    assert!(app.editor_session.as_ref().unwrap().is_dirty());
+}
+
+#[tokio::test]
 async fn external_editor_preconditions_no_file() {
     let (_dir, session) = test_session().await;
     let mut app = TuiApp::new(

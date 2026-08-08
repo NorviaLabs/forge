@@ -60,7 +60,19 @@ impl TuiApp {
                             .map(|(_, path)| path.trim())
                             .unwrap_or_default();
                         match self.resolve_workspace_path(path) {
-                            Ok(path) if path.is_file() => self.open_file_in_editor(&path),
+                            Ok(path) if path.is_file() => {
+                                if self.source_viewer.path.as_deref() == Some(path.as_path())
+                                    && self
+                                        .editor_session
+                                        .as_ref()
+                                        .is_some_and(|editor| editor.is_dirty())
+                                {
+                                    self.explorer_dialog.current =
+                                        Some(ExplorerDialog::SaveConflict);
+                                } else {
+                                    self.open_file_in_editor(&path);
+                                }
+                            }
                             Ok(_) => self.set_feedback(
                                 FeedbackSeverity::Warn,
                                 "editor target is not a file",
