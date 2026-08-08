@@ -1190,12 +1190,29 @@ impl SourceViewerWidget<'_> {
             .constraints([Constraint::Length(1), Constraint::Min(0)])
             .split(area);
 
-        let total = self.viewer.lines.len().max(1);
+        let (mode, current_line, total) = self
+            .editor
+            .as_deref()
+            .map(|editor| {
+                (
+                    editor.mode().name().to_uppercase(),
+                    editor.cursor_row(),
+                    editor.line_count(),
+                )
+            })
+            .map(|(mode, line, total)| (mode, line, total.max(1)))
+            .unwrap_or_else(|| {
+                (
+                    self.viewer.mode.label().to_string(),
+                    self.viewer.current_line,
+                    self.viewer.lines.len().max(1),
+                )
+            });
         let mut header = format!(
             "{} · {} · line {} of {}",
-            self.viewer.mode.label(),
+            mode,
             self.viewer.rel_path,
-            self.viewer.current_line + 1,
+            current_line + 1,
             total
         );
         if let Some(label) = &self.viewer.language_label {

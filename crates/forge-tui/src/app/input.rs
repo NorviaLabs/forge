@@ -482,6 +482,7 @@ impl TuiApp {
                 return true;
             }
             let _ = editor.handle_key(key);
+            self.source_viewer.current_line = editor.cursor_row();
             return true;
         }
 

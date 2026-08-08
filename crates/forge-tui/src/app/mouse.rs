@@ -347,6 +347,25 @@ impl TuiApp {
         } else {
             direction
         };
+        if let Some(editor) = self.editor_session.as_mut() {
+            let key = if shift {
+                if delta < 0 {
+                    crossterm::event::KeyCode::PageUp
+                } else {
+                    crossterm::event::KeyCode::PageDown
+                }
+            } else if delta < 0 {
+                crossterm::event::KeyCode::Up
+            } else {
+                crossterm::event::KeyCode::Down
+            };
+            editor.handle_key(crossterm::event::KeyEvent::new(
+                key,
+                crossterm::event::KeyModifiers::NONE,
+            ));
+            self.source_viewer.current_line = editor.cursor_row();
+            return;
+        }
         self.source_viewer
             .move_cursor_vertical(delta, page.max(1) as usize);
     }

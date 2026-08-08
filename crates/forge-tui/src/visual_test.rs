@@ -483,9 +483,11 @@ mod tests {
 
         app.handle_key(press(KeyCode::Down)).await.unwrap();
         assert_eq!(app.editor_session.as_ref().unwrap().cursor_row(), 1);
+        assert_eq!(app.source_viewer.current_line, 1);
         app.handle_key(press(KeyCode::Down)).await.unwrap();
         app.handle_key(press(KeyCode::Down)).await.unwrap();
         assert_eq!(app.editor_session.as_ref().unwrap().cursor_row(), 3); // final empty line
+        assert_eq!(app.source_viewer.current_line, 3);
         app.handle_key(press(KeyCode::End)).await.unwrap();
         assert_eq!(app.editor_session.as_ref().unwrap().cursor_col(), 0);
         app.handle_key(press(KeyCode::Home)).await.unwrap();

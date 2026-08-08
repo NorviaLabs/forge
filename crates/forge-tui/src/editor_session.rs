@@ -131,6 +131,10 @@ impl EditorSession {
         self.state.cursor.col
     }
 
+    pub(crate) fn line_count(&self) -> usize {
+        self.state.lines.len()
+    }
+
     pub(crate) fn search_pattern(&self) -> String {
         self.state.search_pattern()
     }
