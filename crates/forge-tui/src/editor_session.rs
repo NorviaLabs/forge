@@ -7,7 +7,12 @@
 #![allow(dead_code)] // The session is introduced before the rendering/input migration.
 
 use crossterm::event::KeyEvent;
-use edtui::{EditorEventHandler, EditorMode, EditorState, Lines};
+use edtui::{
+    EditorEventHandler, EditorMode, EditorState, EditorTheme, EditorView, LineNumbers, Lines,
+};
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use ratatui::widgets::Widget;
 
 #[derive(Clone)]
 pub(crate) struct EditorSession {
@@ -66,6 +71,16 @@ impl EditorSession {
         self.accepted_text = text.to_string();
         self.revision = self.revision.wrapping_add(1);
     }
+
+    /// Render only the editor surface. Forge-owned chrome stays outside this
+    /// method so the edtui widget cannot change the surrounding layout.
+    pub(crate) fn render(&mut self, area: Rect, buf: &mut Buffer) {
+        EditorView::new(&mut self.state)
+            .theme(EditorTheme::default().hide_status_line())
+            .line_numbers(LineNumbers::Absolute)
+            .tab_width(4)
+            .render(area, buf);
+    }
 }
 
 #[cfg(test)]
@@ -116,5 +131,19 @@ mod tests {
         assert_eq!(session.text(), "after");
         assert_eq!(session.mode(), EditorMode::Normal);
         assert!(!session.is_dirty());
+    }
+
+    #[test]
+    fn renders_the_editor_surface_without_an_embedded_status_line() {
+        let mut session = EditorSession::new("hello");
+        let area = Rect::new(0, 0, 20, 4);
+        let mut buffer = Buffer::empty(area);
+
+        session.render(area, &mut buffer);
+
+        let rendered: String = (0..area.width)
+            .map(|x| buffer.cell((x, 0)).unwrap().symbol().to_string())
+            .collect();
+        assert!(rendered.contains("hello"));
     }
 }
