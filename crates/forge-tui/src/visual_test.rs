@@ -597,6 +597,7 @@ mod tests {
                 SourceViewerWidget {
                     viewer: &mut app.source_viewer,
                     focused: false,
+                    editor: None,
                 },
                 f.area(),
             );

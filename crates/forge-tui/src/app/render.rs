@@ -410,6 +410,7 @@ impl TuiApp {
                         SourceViewerWidget {
                             viewer: &mut self.source_viewer,
                             focused: self.focus.block == FocusBlock::Workspace,
+                            editor: self.editor_session.as_mut(),
                         },
                         chat_area,
                     );

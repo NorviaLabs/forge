@@ -10,6 +10,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Padding, Paragraph, Widget};
 
+use crate::editor_session::EditorSession;
 use crate::file_explorer::safe_path;
 use crate::theme;
 
@@ -974,6 +975,9 @@ fn detect_highlight_language(rel_path: &str, content: &str) -> (Option<String>, 
 pub struct SourceViewerWidget<'a> {
     pub viewer: &'a mut SourceViewer,
     pub focused: bool,
+    /// Optional editable surface. The surrounding Forge chrome remains owned
+    /// by this widget; the edtui session only paints the content area.
+    pub editor: Option<&'a mut EditorSession>,
 }
 
 impl Widget for SourceViewerWidget<'_> {
@@ -1061,6 +1065,11 @@ impl SourceViewerWidget<'_> {
 
     fn render_content(&mut self, area: Rect, buf: &mut Buffer) {
         if area.height < 3 || area.width < 10 {
+            return;
+        }
+
+        if self.editor.is_some() {
+            self.render_editor_content(area, buf);
             return;
         }
 
@@ -1202,6 +1211,30 @@ impl SourceViewerWidget<'_> {
         }
     }
 
+    fn render_editor_content(&mut self, area: Rect, buf: &mut Buffer) {
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(0)])
+            .split(area);
+
+        let total = self.viewer.lines.len().max(1);
+        let mut header = format!(
+            "{} · {} · line {} of {}",
+            self.viewer.mode.label(),
+            self.viewer.rel_path,
+            self.viewer.current_line + 1,
+            total
+        );
+        if let Some(label) = &self.viewer.language_label {
+            header.push_str(&format!(" · {label}"));
+        }
+        Paragraph::new(Line::styled(header, theme::muted())).render(rows[0], buf);
+
+        if let Some(editor) = self.editor.as_deref_mut() {
+            editor.render(rows[1], buf);
+        }
+    }
+
     fn render_input(&self, area: Rect, buf: &mut Buffer) {
         if self.viewer.search.open {
             let count = self.viewer.search.matches.len();
@@ -1243,6 +1276,7 @@ mod tests {
         SourceViewerWidget {
             viewer,
             focused: true,
+            editor: None,
         }
         .render(area, &mut buf);
         let mut text = String::new();
@@ -1863,6 +1897,36 @@ mod tests {
         ok.start_jump();
         ok.jump.input = "12".into();
         assert!(render_viewer(&mut ok).contains("Go to line: 12"));
+    }
+
+    #[test]
+    fn source_viewer_widget_keeps_forge_chrome_around_editor_surface() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("notes.txt");
+        fs::write(&path, "old text\n").unwrap();
+
+        let mut viewer = SourceViewer::new();
+        viewer.open(root.path(), &path);
+        let mut editor = EditorSession::new("new text");
+        let area = Rect::new(0, 0, 40, 8);
+        let mut buf = Buffer::empty(area);
+
+        SourceViewerWidget {
+            viewer: &mut viewer,
+            focused: true,
+            editor: Some(&mut editor),
+        }
+        .render(area, &mut buf);
+
+        let mut rendered = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                rendered.push_str(buf[(x, y)].symbol());
+            }
+        }
+        assert!(rendered.contains("notes.txt"));
+        assert!(rendered.contains("new text"));
+        assert!(!rendered.contains("old text"));
     }
 
     #[test]
