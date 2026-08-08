@@ -238,6 +238,26 @@ async fn save_conflict_requires_explicit_force_or_reload_choice() {
 }
 
 #[tokio::test]
+async fn vim_command_line_e_reloads_a_clean_buffer() {
+    let (dir, mut app) = focus_test_app().await;
+    let path = dir.path().join("reload.txt");
+    fs::write(&path, "before").unwrap();
+    app.open_file_in_editor(&path);
+    fs::write(&path, "outside").unwrap();
+
+    for key in [
+        press(KeyCode::Char(':'), KeyModifiers::NONE),
+        press(KeyCode::Char('e'), KeyModifiers::NONE),
+        press(KeyCode::Enter, KeyModifiers::NONE),
+    ] {
+        app.handle_key(key).await.unwrap();
+    }
+
+    assert_eq!(app.editor_session.as_ref().unwrap().text(), "outside");
+    assert!(!app.editor_session.as_ref().unwrap().is_dirty());
+}
+
+#[tokio::test]
 async fn external_editor_preconditions_no_file() {
     let (_dir, session) = test_session().await;
     let mut app = TuiApp::new(

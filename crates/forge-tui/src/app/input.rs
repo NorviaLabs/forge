@@ -44,10 +44,15 @@ impl TuiApp {
                         }
                     }
                     command if command == "e" || command == "edit" => {
-                        self.set_feedback(
-                            FeedbackSeverity::Info,
-                            ":e requires a workspace file path in Forge",
-                        );
+                        if self
+                            .editor_session
+                            .as_ref()
+                            .is_some_and(|editor| editor.is_dirty())
+                        {
+                            self.explorer_dialog.current = Some(ExplorerDialog::SaveConflict);
+                        } else {
+                            self.reload_active_editor_from_disk();
+                        }
                     }
                     command if command.starts_with("e ") || command.starts_with("edit ") => {
                         let path = command
