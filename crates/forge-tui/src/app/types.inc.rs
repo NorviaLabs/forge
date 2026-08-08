@@ -683,6 +683,7 @@ pub struct TuiApp {
     pub(crate) editor_command: Option<String>,
     pub(crate) pending_editor_path: Option<PathBuf>,
     pub(crate) pending_editor_home: bool,
+    pub(crate) pending_editor_diff: bool,
     file_watch: FileWatchState,
     bottom_panel: BottomPanelState,
     pub(crate) workspace_files: WorkspaceFilesState,

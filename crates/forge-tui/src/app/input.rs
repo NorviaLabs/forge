@@ -253,10 +253,12 @@ impl TuiApp {
             ExplorerDialog::DirtyExit => match key.code {
                 KeyCode::Esc if key.modifiers.is_empty() => {
                     self.pending_editor_home = false;
+                    self.pending_editor_diff = false;
                     None
                 }
                 KeyCode::Char('c') | KeyCode::Char('C') => {
                     self.pending_editor_home = false;
+                    self.pending_editor_diff = false;
                     None
                 }
                 KeyCode::Char('d') | KeyCode::Char('D') => {

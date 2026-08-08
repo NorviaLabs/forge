@@ -105,6 +105,7 @@ impl TuiApp {
             editor_command: None,
             pending_editor_path: None,
             pending_editor_home: false,
+            pending_editor_diff: false,
             file_watch: FileWatchState {
                 watcher: None,
                 change_rx: file_change_rx,

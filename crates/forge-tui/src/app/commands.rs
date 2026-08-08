@@ -422,7 +422,7 @@ impl TuiApp {
             }
             SemanticCommand::ReviewChanges(DiffCommandContext::Current) => {
                 self.capture_diff_snapshot();
-                self.navigate_to_workspace_view(WorkspaceView::Diff(DiffCommandContext::Current))
+                self.review_changes_workspace()
             }
             SemanticCommand::ToggleFiles => self.toggle_files_panel(),
             SemanticCommand::CloseOverlay => {

@@ -73,6 +73,7 @@ impl TuiApp {
             .is_some_and(|editor| editor.is_dirty())
         {
             self.pending_editor_home = true;
+            self.pending_editor_diff = false;
             self.explorer_dialog.current = Some(ExplorerDialog::DirtyExit);
             return;
         }
@@ -85,9 +86,26 @@ impl TuiApp {
         if self.pending_editor_home {
             self.pending_editor_home = false;
             self.go_home_workspace();
+        } else if self.pending_editor_diff {
+            self.pending_editor_diff = false;
+            self.navigate_to_workspace_view(WorkspaceView::Diff(DiffCommandContext::Current));
         } else {
             self.go_back_workspace();
         }
+    }
+
+    pub(super) fn review_changes_workspace(&mut self) {
+        if self
+            .editor_session
+            .as_ref()
+            .is_some_and(|editor| editor.is_dirty())
+        {
+            self.pending_editor_home = false;
+            self.pending_editor_diff = true;
+            self.explorer_dialog.current = Some(ExplorerDialog::DirtyExit);
+            return;
+        }
+        self.navigate_to_workspace_view(WorkspaceView::Diff(DiffCommandContext::Current));
     }
 
     pub(super) fn go_back_workspace(&mut self) {
