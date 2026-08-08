@@ -14,18 +14,10 @@ use crate::editor_session::EditorSession;
 use crate::file_explorer::safe_path;
 use crate::theme;
 
-/// Files at most this large are loaded fully.
-const MAX_FULL_BYTES: u64 = 1_048_576; // 1 MiB
-/// Files larger than `MAX_FULL_BYTES` are previewed up to this many bytes.
-const MAX_PREVIEW_BYTES: u64 = 65_536; // 64 KiB
-/// Files larger than this are refused outright.
-const MAX_REFUSE_BYTES: u64 = 10_485_760; // 10 MiB
 /// How many bytes to inspect for binary detection.
 const BINARY_PROBE_BYTES: usize = 8_192;
 /// Tab stops are every N columns.
 const TAB_WIDTH: usize = 4;
-/// Files larger than this are displayed as plain text without syntax highlighting.
-const HIGHLIGHT_DISABLE_BYTES: u64 = 262_144; // 256 KiB
 
 /// Cosmetic vim-style mode tag shown in the editor header. Doesn't change
 /// how any key behaves — `SourceViewer` stays read-only in both modes.
@@ -51,6 +43,7 @@ pub enum ViewerStatus {
     Loading,
     Ok,
     Binary,
+    InvalidUtf8,
     LargeFile { preview: bool },
     TooLarge,
     NotFound,
@@ -254,19 +247,7 @@ impl SourceViewer {
             return;
         }
 
-        if self.size_bytes > MAX_REFUSE_BYTES {
-            self.status = ViewerStatus::TooLarge;
-            return;
-        }
-
-        let limit = if self.size_bytes > MAX_FULL_BYTES {
-            MAX_PREVIEW_BYTES
-        } else {
-            self.size_bytes
-        };
-        self.preview = limit < self.size_bytes;
-
-        let bytes = match read_limited(&resolved, limit as usize) {
+        let bytes = match fs::read(&resolved) {
             Ok(b) => b,
             Err(err) => {
                 self.status = ViewerStatus::Error(format!("{err}"));
@@ -280,13 +261,16 @@ impl SourceViewer {
             return;
         }
 
-        let text = String::from_utf8_lossy(&bytes).into_owned();
-        self.lines = split_lines(&text);
-        self.status = if self.preview {
-            ViewerStatus::LargeFile { preview: true }
-        } else {
-            ViewerStatus::Ok
+        let text = match String::from_utf8(bytes) {
+            Ok(text) => text,
+            Err(_) => {
+                self.status = ViewerStatus::InvalidUtf8;
+                self.lines.clear();
+                return;
+            }
         };
+        self.lines = split_lines(&text);
+        self.status = ViewerStatus::Ok;
         self.rebuild_highlight(&text);
         self.clamp_viewport();
     }
@@ -297,11 +281,6 @@ impl SourceViewer {
         self.highlighted_lines.clear();
         let (label, lang) = detect_highlight_language(&self.rel_path, expanded_text);
         self.language_label = label;
-
-        if self.size_bytes > HIGHLIGHT_DISABLE_BYTES {
-            self.highlight_disabled = true;
-            return;
-        }
 
         let Some(lang) = lang else {
             return;
@@ -713,15 +692,6 @@ impl SourceViewer {
     }
 }
 
-fn read_limited(path: &Path, limit: usize) -> Result<Vec<u8>, std::io::Error> {
-    use std::io::Read;
-    let file = fs::File::open(path)?;
-    let mut reader = file.take(limit as u64);
-    let mut buf = Vec::with_capacity(limit.min(65_536));
-    reader.read_to_end(&mut buf)?;
-    Ok(buf)
-}
-
 fn split_lines(text: &str) -> Vec<String> {
     text.lines().map(expand_tabs).collect()
 }
@@ -1019,6 +989,12 @@ impl Widget for SourceViewerWidget<'_> {
                     &format!("Forge cannot display this file as text.\n{path}{size}"),
                 );
             }
+            ViewerStatus::InvalidUtf8 => self.render_message(
+                inner,
+                buf,
+                "Invalid UTF-8",
+                "This file is read-only in Forge because it is not valid UTF-8.",
+            ),
             ViewerStatus::LargeFile { .. } => {
                 let size = format_size(self.viewer.size_bytes);
                 self.render_message(
@@ -1309,6 +1285,7 @@ mod tests {
         assert!(ViewerStatus::Ok.is_openable());
         assert!(ViewerStatus::LargeFile { preview: true }.is_openable());
         assert!(!ViewerStatus::Binary.is_openable());
+        assert!(!ViewerStatus::InvalidUtf8.is_openable());
         assert!(!ViewerStatus::TooLarge.is_openable());
         assert!(!ViewerStatus::NotFound.is_openable());
         assert!(!ViewerStatus::Error("x".into()).is_openable());
@@ -1421,7 +1398,7 @@ mod tests {
     }
 
     #[test]
-    fn open_shows_preview_for_large_file() {
+    fn open_loads_large_file_without_previewing() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("big.txt");
         fs::write(&path, "x\n".repeat(2_000_000)).unwrap();
@@ -1429,9 +1406,9 @@ mod tests {
         let mut viewer = SourceViewer::new();
         viewer.open(root.path(), &path);
 
-        assert!(matches!(viewer.status, ViewerStatus::LargeFile { .. }));
-        assert!(!viewer.lines.is_empty());
-        assert!(viewer.preview);
+        assert_eq!(viewer.status, ViewerStatus::Ok);
+        assert_eq!(viewer.lines.len(), 2_000_000);
+        assert!(!viewer.preview);
     }
 
     #[test]
@@ -1517,7 +1494,7 @@ mod tests {
     }
 
     #[test]
-    fn large_file_refused_over_threshold() {
+    fn large_file_is_openable_without_an_arbitrary_refusal_threshold() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("huge.txt");
         fs::write(&path, "x".repeat(11 * 1024 * 1024)).unwrap();
@@ -1525,7 +1502,7 @@ mod tests {
         let mut viewer = SourceViewer::new();
         viewer.open(root.path(), &path);
 
-        assert_eq!(viewer.status, ViewerStatus::TooLarge);
+        assert_eq!(viewer.status, ViewerStatus::Ok);
     }
 
     #[test]
@@ -1586,7 +1563,7 @@ mod tests {
     }
 
     #[test]
-    fn large_file_disables_highlighting() {
+    fn large_file_keeps_syntax_highlighting_enabled() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("big.rs");
         fs::write(&path, "let x = 1;\n".repeat(30_000)).unwrap();
@@ -1594,8 +1571,22 @@ mod tests {
         let mut viewer = SourceViewer::new();
         viewer.open(root.path(), &path);
 
-        assert!(viewer.highlight_disabled);
-        assert!(viewer.highlighted_lines.is_empty());
+        assert!(!viewer.highlight_disabled);
+        assert!(!viewer.highlighted_lines.is_empty());
+    }
+
+    #[test]
+    fn invalid_utf8_is_explicitly_read_only() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("bytes.bin");
+        fs::write(&path, [b'a', 0x80]).unwrap();
+
+        let mut viewer = SourceViewer::new();
+        viewer.open(root.path(), &path);
+
+        assert_eq!(viewer.status, ViewerStatus::InvalidUtf8);
+        assert!(viewer.lines.is_empty());
+        assert!(!viewer.status.is_openable());
     }
 
     #[test]
