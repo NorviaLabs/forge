@@ -268,6 +268,26 @@ impl TuiApp {
                 }
                 _ => Some(ExplorerDialog::DirtySwitch { path }),
             },
+            ExplorerDialog::SaveConflict => match key.code {
+                KeyCode::Esc if key.modifiers.is_empty() => None,
+                KeyCode::Char('r') | KeyCode::Char('R') => {
+                    self.reload_active_editor_from_disk();
+                    None
+                }
+                KeyCode::Char('f') | KeyCode::Char('F') => {
+                    self.save_active_editor_with_force(true);
+                    if self
+                        .editor_session
+                        .as_ref()
+                        .is_some_and(|editor| !editor.is_dirty())
+                    {
+                        None
+                    } else {
+                        Some(ExplorerDialog::SaveConflict)
+                    }
+                }
+                _ => Some(ExplorerDialog::SaveConflict),
+            },
         };
         self.explorer_dialog.current = next;
         true

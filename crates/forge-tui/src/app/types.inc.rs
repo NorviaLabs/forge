@@ -213,6 +213,7 @@ enum ExplorerDialog {
     },
     DirtyExit,
     DirtySwitch { path: PathBuf },
+    SaveConflict,
 }
 
 #[allow(dead_code)]

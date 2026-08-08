@@ -192,6 +192,24 @@ impl SourceViewer {
         Self::default()
     }
 
+    /// Check whether the on-disk file differs from the last observed version.
+    /// Size and mtime are the cheap fast path; content is read only when either
+    /// metadata value changed, so a metadata-only touch is not a conflict.
+    pub(crate) fn disk_conflicts_with(
+        &self,
+        path: &Path,
+        expected_disk_text: &[u8],
+    ) -> Result<bool, String> {
+        let metadata = fs::metadata(path).map_err(|error| error.to_string())?;
+        let metadata_same =
+            metadata.len() == self.size_bytes && metadata.modified().ok() == self.modified;
+        if metadata_same {
+            return Ok(false);
+        }
+        let bytes = fs::read(path).map_err(|error| error.to_string())?;
+        Ok(bytes != expected_disk_text)
+    }
+
     /// Open a workspace file. `root` is the workspace root; `path` may be
     /// absolute or relative and is validated to stay inside `root`.
     pub fn open(&mut self, root: &Path, path: &Path) {

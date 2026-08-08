@@ -13,6 +13,10 @@ use crate::source_viewer::ViewerStatus;
 
 impl TuiApp {
     pub(super) fn save_active_editor(&mut self) {
+        self.save_active_editor_with_force(false);
+    }
+
+    pub(super) fn save_active_editor_with_force(&mut self, force: bool) {
         let Some(path) = self.source_viewer.path.clone() else {
             self.set_feedback(FeedbackSeverity::Warn, "No file open to save");
             return;
@@ -21,6 +25,26 @@ impl TuiApp {
             self.set_feedback(FeedbackSeverity::Warn, "The active file is read-only");
             return;
         };
+        if !force {
+            let baseline = editor.accepted_serialized_text();
+            match self
+                .source_viewer
+                .disk_conflicts_with(&path, baseline.as_bytes())
+            {
+                Ok(true) => {
+                    self.explorer_dialog.current = Some(ExplorerDialog::SaveConflict);
+                    return;
+                }
+                Err(error) => {
+                    self.set_feedback(
+                        FeedbackSeverity::Warn,
+                        format!("could not check disk before save: {error}"),
+                    );
+                    return;
+                }
+                Ok(false) => {}
+            }
+        }
         let serialized = editor.serialized_text();
         let permissions = fs::metadata(&path).ok().map(|meta| meta.permissions());
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
@@ -58,6 +82,25 @@ impl TuiApp {
                 self.set_feedback(FeedbackSeverity::Warn, error);
             }
         }
+    }
+
+    pub(super) fn reload_active_editor_from_disk(&mut self) {
+        let Some(path) = self.source_viewer.path.clone() else {
+            return;
+        };
+        let Ok(bytes) = fs::read(&path) else {
+            self.set_feedback(FeedbackSeverity::Warn, "could not reload file from disk");
+            return;
+        };
+        let Ok(text) = String::from_utf8(bytes) else {
+            self.set_feedback(FeedbackSeverity::Warn, "file is no longer valid UTF-8");
+            return;
+        };
+        if let Some(editor) = self.editor_session.as_mut() {
+            editor.replace_text(&text);
+        }
+        self.source_viewer.refresh(self.session.workspace_root());
+        self.set_feedback(FeedbackSeverity::Info, "reloaded file from disk");
     }
 
     pub(super) fn reconcile_open_file_external_rename(&mut self) -> bool {
@@ -601,6 +644,7 @@ impl TuiApp {
             ExplorerDialog::ConfirmRename { .. } => (" Confirm Rename ", theme::warn()),
             ExplorerDialog::DirtyExit => (" Unsaved Changes ", theme::warn()),
             ExplorerDialog::DirtySwitch { .. } => (" Unsaved Changes ", theme::warn()),
+            ExplorerDialog::SaveConflict => (" File Changed on Disk ", theme::warn()),
         };
         match dialog {
             ExplorerDialog::Name {
@@ -743,6 +787,17 @@ impl TuiApp {
                 lines.push(Line::from(""));
                 lines.push(Line::styled(
                     "Save and switch?  Enter/s save · d discard · Esc cancel",
+                    theme::muted(),
+                ));
+            }
+            ExplorerDialog::SaveConflict => {
+                lines.push(Line::styled(
+                    "The file changed outside Forge while you were editing.",
+                    theme::text(),
+                ));
+                lines.push(Line::from(""));
+                lines.push(Line::styled(
+                    "Reload disk?  r reload · f force save · Esc cancel",
                     theme::muted(),
                 ));
             }

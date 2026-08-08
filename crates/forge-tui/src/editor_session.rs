@@ -93,9 +93,16 @@ impl EditorSession {
     /// ending convention. edtui retains whether the final line is empty, so
     /// the final-newline state naturally follows the current buffer contents.
     pub(crate) fn serialized_text(&self) -> String {
-        let text = self.text();
+        self.serialize_text(&self.text())
+    }
+
+    pub(crate) fn accepted_serialized_text(&self) -> String {
+        self.serialize_text(&self.accepted_text)
+    }
+
+    fn serialize_text(&self, text: &str) -> String {
         match self.format.line_ending {
-            LineEnding::Lf => text,
+            LineEnding::Lf => text.to_string(),
             LineEnding::CrLf => text.replace('\n', "\r\n"),
         }
     }

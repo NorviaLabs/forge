@@ -210,6 +210,34 @@ async fn vim_command_line_e_opens_a_workspace_file() {
 }
 
 #[tokio::test]
+async fn save_conflict_requires_explicit_force_or_reload_choice() {
+    let (dir, mut app) = focus_test_app().await;
+    let path = dir.path().join("conflict.txt");
+    fs::write(&path, "before").unwrap();
+    app.open_file_in_editor(&path);
+    let editor = app.editor_session.as_mut().unwrap();
+    editor.handle_key(press(KeyCode::Char('i'), KeyModifiers::NONE));
+    editor.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE));
+    editor.handle_key(press(KeyCode::Esc, KeyModifiers::NONE));
+    fs::write(&path, "outside").unwrap();
+
+    app.execute_semantic_command(SemanticCommand::SaveEditor)
+        .await
+        .unwrap();
+    assert!(matches!(
+        app.explorer_dialog.current,
+        Some(ExplorerDialog::SaveConflict)
+    ));
+    assert_eq!(fs::read_to_string(&path).unwrap(), "outside");
+
+    app.handle_key(press(KeyCode::Char('f'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(app.explorer_dialog.current.is_none());
+    assert_eq!(fs::read_to_string(&path).unwrap(), "xbefore");
+}
+
+#[tokio::test]
 async fn external_editor_preconditions_no_file() {
     let (_dir, session) = test_session().await;
     let mut app = TuiApp::new(
