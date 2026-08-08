@@ -436,7 +436,7 @@ async fn modal_and_transient_precedence_still_wins_over_semantic_bindings() {
     let path = dir.path().join("source.txt");
     fs::write(&path, "alpha\n").unwrap();
     app.open_file_in_editor(&path);
-    app.handle_key(press(KeyCode::Char('f'), KeyModifiers::CONTROL))
+    app.handle_key(press(KeyCode::Char('/'), KeyModifiers::NONE))
         .await
         .unwrap();
     app.handle_key(press(KeyCode::Char('z'), KeyModifiers::NONE))
@@ -444,10 +444,10 @@ async fn modal_and_transient_precedence_still_wins_over_semantic_bindings() {
         .unwrap();
 
     assert_eq!(
-        app.focus.mode,
-        FocusMode::Transient(TransientOwner::SourceSearch)
+        app.editor_session.as_ref().unwrap().mode(),
+        edtui::EditorMode::Search
     );
-    assert_eq!(app.source_viewer.search.query, "z");
+    assert_eq!(app.editor_session.as_ref().unwrap().search_pattern(), "z");
     assert!(app.input.text.is_empty());
 }
 

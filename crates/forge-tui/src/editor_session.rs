@@ -127,6 +127,20 @@ impl EditorSession {
         self.state.cursor.row
     }
 
+    pub(crate) fn cursor_col(&self) -> usize {
+        self.state.cursor.col
+    }
+
+    pub(crate) fn search_pattern(&self) -> String {
+        self.state.search_pattern()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_cursor(&mut self, row: usize, col: usize) {
+        let row = row.min(self.state.lines.len().saturating_sub(1));
+        self.state.cursor = edtui::Index2::new(row, col);
+    }
+
     pub(crate) fn is_dirty(&self) -> bool {
         self.text() != self.accepted_text
     }
