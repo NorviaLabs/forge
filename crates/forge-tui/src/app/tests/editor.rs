@@ -217,6 +217,25 @@ async fn dirty_editor_file_switch_requires_an_explicit_choice() {
 }
 
 #[tokio::test]
+async fn reopening_the_active_dirty_file_keeps_the_embedded_buffer() {
+    let (dir, mut app) = focus_test_app().await;
+    let path = dir.path().join("reopen-dirty.txt");
+    fs::write(&path, "before").unwrap();
+    app.open_file_in_editor(&path);
+    let editor = app.editor_session.as_mut().unwrap();
+    editor.handle_key(press(KeyCode::Char('i'), KeyModifiers::NONE));
+    editor.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE));
+    editor.handle_key(press(KeyCode::Esc, KeyModifiers::NONE));
+    let in_memory = app.editor_session.as_ref().unwrap().text();
+
+    app.open_file_in_editor(&path);
+
+    assert_eq!(app.editor_session.as_ref().unwrap().text(), in_memory);
+    assert!(app.editor_session.as_ref().unwrap().is_dirty());
+    assert!(app.explorer_dialog.current.is_none());
+}
+
+#[tokio::test]
 async fn vim_command_line_e_opens_a_workspace_file() {
     let (dir, mut app) = focus_test_app().await;
     let first = dir.path().join("first.txt");

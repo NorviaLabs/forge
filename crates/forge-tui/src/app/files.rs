@@ -273,7 +273,28 @@ impl TuiApp {
     }
 
     pub(super) fn open_file_in_editor(&mut self, path: &Path) {
-        if self.source_viewer.path.as_deref() != Some(path)
+        let same_path = self.source_viewer.path.as_deref() == Some(path)
+            || self
+                .source_viewer
+                .path
+                .as_ref()
+                .and_then(|current| current.canonicalize().ok())
+                .zip(path.canonicalize().ok())
+                .is_some_and(|(current, requested)| current == requested);
+        if same_path
+            && self
+                .editor_session
+                .as_ref()
+                .is_some_and(|editor| editor.is_dirty())
+        {
+            self.focus_block(FocusBlock::Workspace);
+            self.set_feedback(
+                FeedbackSeverity::Info,
+                "Unsaved editor changes kept; use :e to reload explicitly",
+            );
+            return;
+        }
+        if !same_path
             && self
                 .editor_session
                 .as_ref()
