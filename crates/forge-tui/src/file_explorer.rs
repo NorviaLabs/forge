@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Widget};
+use ratatui::widgets::{Block, Borders, Padding, Paragraph, Widget};
 
 use forge_config::FileIconMode;
 
@@ -545,6 +545,7 @@ impl Widget for FileExplorerWidget<'_> {
                 },
             ))
             .borders(Borders::ALL)
+            .padding(Padding::horizontal(1))
             .border_style(if self.focused {
                 theme::active_panel_border()
             } else {
