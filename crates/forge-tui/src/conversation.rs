@@ -12,7 +12,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Widget};
+use ratatui::widgets::{Block, Borders, Padding, Paragraph, Widget};
 
 const DIFF_BLOCK_MARKER: &str = "\u{200b}";
 const DIFF_BLOCK_END_MARKER: &str = "\u{200c}";
@@ -2783,6 +2783,7 @@ fn render_visible_conversation_lines(lines: &[Line<'static>], area: Rect, buf: &
             let block = Block::default()
                 .title(title)
                 .borders(Borders::ALL)
+                .padding(Padding::horizontal(1))
                 .border_style(theme::inactive_panel_border())
                 .style(theme::panel());
             let inner = block.inner(block_area);

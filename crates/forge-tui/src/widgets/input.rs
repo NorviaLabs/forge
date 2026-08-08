@@ -585,13 +585,21 @@ impl Widget for InputBar<'_> {
         } else {
             theme::composer_border_idle()
         };
+        let border_type = if text_focused
+            || self.waiting
+            || self.not_connected
+            || self.permission_mode == forge_governance::PermissionMode::Manual
+        {
+            BorderType::Thick
+        } else {
+            BorderType::Plain
+        };
         let block = Block::default()
             .borders(Borders::ALL)
-            // Thick border — no other panel in the app (Files, Chat, editor)
-            // uses anything but the default Plain shape, so this is a
-            // structural "this is an input" signal that survives even
-            // without color (reduced-color terminals, colorblind users).
-            .border_type(BorderType::Thick)
+            // Reserve the strong cell shape for composer attention states;
+            // an idle composer still has its accent-soft border but no longer
+            // competes with the focused workspace surface.
+            .border_type(border_type)
             .border_style(border)
             .style(if self.dimmed {
                 theme::surface_hover()
@@ -1101,6 +1109,16 @@ mod tests {
             !top.contains(">>"),
             "mode no longer renders as a composer border tag: {top:?}"
         );
+    }
+
+    #[test]
+    fn composer_uses_strong_border_only_for_attention_states() {
+        let model = InputModel::default();
+        let idle = draw_input_bar(&model, 48, 5, false, false, None);
+        let focused = draw_input_bar(&model, 48, 5, true, false, None);
+
+        assert_eq!(idle[(0, 0)].symbol(), "┌");
+        assert_eq!(focused[(0, 0)].symbol(), "┏");
     }
 
     #[test]

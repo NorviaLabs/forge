@@ -8,7 +8,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Widget};
+use ratatui::widgets::{Block, Borders, Padding, Paragraph, Widget};
 
 use crate::file_explorer::safe_path;
 use crate::theme;
@@ -980,6 +980,7 @@ impl Widget for SourceViewerWidget<'_> {
     fn render(mut self, area: Rect, buf: &mut Buffer) {
         let block = Block::default()
             .borders(Borders::ALL)
+            .padding(Padding::horizontal(1))
             .border_style(if self.focused {
                 theme::active_panel_border()
             } else {
