@@ -22,17 +22,51 @@ pub(crate) struct EditorSession {
     state: EditorState,
     event_handler: EditorEventHandler,
     accepted_text: String,
+    format: DocumentFormat,
     syntax_language: Option<String>,
     syntax_theme: forge_syntax::HighlightTheme,
     revision: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LineEnding {
+    Lf,
+    CrLf,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DocumentFormat {
+    line_ending: LineEnding,
+    final_newline: bool,
+}
+
+impl DocumentFormat {
+    fn detect(text: &str) -> Self {
+        Self {
+            line_ending: if text.contains("\r\n") {
+                LineEnding::CrLf
+            } else {
+                LineEnding::Lf
+            },
+            final_newline: text.ends_with(['\n', '\r']),
+        }
+    }
+}
+
+fn normalize_text(text: &str) -> (String, DocumentFormat) {
+    let format = DocumentFormat::detect(text);
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    (normalized, format)
+}
+
 impl EditorSession {
     pub(crate) fn new(text: &str) -> Self {
+        let (text, format) = normalize_text(text);
         Self {
-            state: EditorState::new(Lines::from(text)),
+            state: EditorState::new(Lines::from(&text)),
             event_handler: EditorEventHandler::vim_mode(),
-            accepted_text: text.to_string(),
+            accepted_text: text,
+            format,
             syntax_language: None,
             syntax_theme: forge_syntax::HighlightTheme::default(),
             revision: 0,
@@ -55,6 +89,29 @@ impl EditorSession {
         self.state.lines.to_string()
     }
 
+    /// Serialize the normalized editor buffer using the file's original line
+    /// ending convention. edtui retains whether the final line is empty, so
+    /// the final-newline state naturally follows the current buffer contents.
+    pub(crate) fn serialized_text(&self) -> String {
+        let text = self.text();
+        match self.format.line_ending {
+            LineEnding::Lf => text,
+            LineEnding::CrLf => text.replace('\n', "\r\n"),
+        }
+    }
+
+    pub(crate) fn line_ending_is_crlf(&self) -> bool {
+        self.format.line_ending == LineEnding::CrLf
+    }
+
+    pub(crate) fn has_final_newline(&self) -> bool {
+        self.text().ends_with('\n')
+    }
+
+    pub(crate) fn original_had_final_newline(&self) -> bool {
+        self.format.final_newline
+    }
+
     pub(crate) fn mode(&self) -> EditorMode {
         self.state.mode
     }
@@ -74,9 +131,11 @@ impl EditorSession {
 
     /// Replace the buffer with text accepted from disk and reset Vim state.
     pub(crate) fn replace_text(&mut self, text: &str) {
-        self.state = EditorState::new(Lines::from(text));
+        let (text, format) = normalize_text(text);
+        self.state = EditorState::new(Lines::from(&text));
         self.event_handler = EditorEventHandler::vim_mode();
-        self.accepted_text = text.to_string();
+        self.accepted_text = text;
+        self.format = format;
         self.revision = self.revision.wrapping_add(1);
         self.refresh_syntax_highlights();
     }
@@ -244,6 +303,22 @@ mod tests {
         assert_eq!(session.text(), "after");
         assert_eq!(session.mode(), EditorMode::Normal);
         assert!(!session.is_dirty());
+    }
+
+    #[test]
+    fn document_format_round_trips_crlf_and_final_newline() {
+        let session = EditorSession::new("one\r\ntwo\r\n");
+
+        assert_eq!(session.text(), "one\ntwo\n");
+        assert_eq!(session.serialized_text(), "one\r\ntwo\r\n");
+        assert!(session.line_ending_is_crlf());
+        assert!(session.has_final_newline());
+        assert!(session.original_had_final_newline());
+
+        let session = EditorSession::new("one\r\ntwo");
+        assert_eq!(session.serialized_text(), "one\r\ntwo");
+        assert!(!session.has_final_newline());
+        assert!(!session.original_had_final_newline());
     }
 
     #[test]
