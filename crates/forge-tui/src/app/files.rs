@@ -485,6 +485,9 @@ impl TuiApp {
                     FeedbackSeverity::Ok,
                     format!("Created {}", relative_display(&root, &result.path)),
                 );
+                if result.kind == FileOperationKind::CreateFile {
+                    self.open_file_in_editor(&result.path);
+                }
             }
             FileOperationKind::RenameEntry => {
                 if let Some(new_path) = result.new_path.as_ref() {
