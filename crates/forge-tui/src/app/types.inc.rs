@@ -672,6 +672,9 @@ pub struct TuiApp {
     workspace_navigation: WorkspaceNavigation,
     /// Read-only source viewer state for the File workspace view.
     pub(crate) source_viewer: SourceViewer,
+    /// Editing state staged for the editable workspace editor.
+    #[allow(dead_code)] // Consumed when the editor rendering/input migration lands.
+    pub(crate) editor_session: Option<EditorSession>,
     file_watch: FileWatchState,
     bottom_panel: BottomPanelState,
     pub(crate) workspace_files: WorkspaceFilesState,

@@ -6,6 +6,7 @@ mod clipboard;
 mod commands;
 mod conversation;
 mod editor;
+mod editor_session;
 mod effort;
 mod file_context;
 mod file_explorer;
