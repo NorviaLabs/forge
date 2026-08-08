@@ -369,6 +369,41 @@ async fn external_editor_rejects_during_tool_execution() {
 }
 
 #[tokio::test]
+async fn external_editor_refresh_reloads_a_clean_embedded_buffer() {
+    let (dir, mut app) = focus_test_app().await;
+    let path = dir.path().join("external.txt");
+    fs::write(&path, "before\n").unwrap();
+    app.open_file_in_editor(&path);
+    fs::write(&path, "after\n").unwrap();
+
+    app.refresh_post_editor();
+
+    let editor = app.editor_session.as_ref().unwrap();
+    assert_eq!(editor.text(), "after\n");
+    assert!(!editor.is_dirty());
+    assert_eq!(editor.mode(), edtui::EditorMode::Normal);
+}
+
+#[tokio::test]
+async fn external_editor_does_not_override_dirty_embedded_buffer() {
+    let (dir, mut app) = focus_test_app().await;
+    let path = dir.path().join("external-dirty.txt");
+    fs::write(&path, "before\n").unwrap();
+    app.open_file_in_editor(&path);
+    let editor = app.editor_session.as_mut().unwrap();
+    editor.handle_key(press(KeyCode::Char('i'), KeyModifiers::NONE));
+    editor.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE));
+    editor.handle_key(press(KeyCode::Esc, KeyModifiers::NONE));
+    app.external_editor.requested = true;
+
+    app.drain_pending_external_editor(None).await.unwrap();
+
+    assert!(!app.external_editor.requested);
+    assert!(app.editor_session.as_ref().unwrap().is_dirty());
+    assert!(app.feedback.text.contains("unsaved changes"));
+}
+
+#[tokio::test]
 async fn source_viewer_mode_defaults_to_normal() {
     let (_dir, app) = focus_test_app().await;
     assert_eq!(
