@@ -14,6 +14,8 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::widgets::Widget;
 
+use crate::theme;
+
 #[derive(Clone)]
 pub(crate) struct EditorSession {
     state: EditorState,
@@ -76,7 +78,14 @@ impl EditorSession {
     /// method so the edtui widget cannot change the surrounding layout.
     pub(crate) fn render(&mut self, area: Rect, buf: &mut Buffer) {
         EditorView::new(&mut self.state)
-            .theme(EditorTheme::default().hide_status_line())
+            .theme(
+                EditorTheme::default()
+                    .base(theme::text().patch(theme::panel()))
+                    .cursor_style(theme::caret())
+                    .selection_style(theme::selected_row())
+                    .line_numbers_style(theme::muted().patch(theme::panel()))
+                    .hide_status_line(),
+            )
             .line_numbers(LineNumbers::Absolute)
             .tab_width(4)
             .render(area, buf);
