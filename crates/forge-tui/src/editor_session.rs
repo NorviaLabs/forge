@@ -22,6 +22,8 @@ pub(crate) struct EditorSession {
     state: EditorState,
     event_handler: EditorEventHandler,
     accepted_text: String,
+    syntax_language: Option<String>,
+    syntax_theme: forge_syntax::HighlightTheme,
     revision: u64,
 }
 
@@ -31,6 +33,8 @@ impl EditorSession {
             state: EditorState::new(Lines::from(text)),
             event_handler: EditorEventHandler::vim_mode(),
             accepted_text: text.to_string(),
+            syntax_language: None,
+            syntax_theme: forge_syntax::HighlightTheme::default(),
             revision: 0,
         }
     }
@@ -42,6 +46,7 @@ impl EditorSession {
         let changed = before != self.text();
         if changed {
             self.revision = self.revision.wrapping_add(1);
+            self.refresh_syntax_highlights();
         }
         changed
     }
@@ -73,6 +78,31 @@ impl EditorSession {
         self.event_handler = EditorEventHandler::vim_mode();
         self.accepted_text = text.to_string();
         self.revision = self.revision.wrapping_add(1);
+        self.refresh_syntax_highlights();
+    }
+
+    /// Configure the Forge grammar used for this buffer. `None` deliberately
+    /// leaves edtui with no custom ranges, which is the plain-text fallback.
+    pub(crate) fn set_syntax_language(&mut self, language: Option<&str>) {
+        self.syntax_language = language.map(str::to_owned);
+        self.refresh_syntax_highlights();
+    }
+
+    pub(crate) fn set_syntax_theme(&mut self, syntax_theme: forge_syntax::HighlightTheme) {
+        self.syntax_theme = syntax_theme;
+        self.refresh_syntax_highlights();
+    }
+
+    fn refresh_syntax_highlights(&mut self) {
+        let Some(language) = self.syntax_language.as_deref() else {
+            self.state.clear_highlights();
+            return;
+        };
+        let source = self.text();
+        let theme = self.syntax_theme;
+        let spans = std::panic::catch_unwind(|| forge_syntax::highlight(language, &source, &theme))
+            .unwrap_or_default();
+        self.set_forge_highlights(&source, &spans, &theme);
     }
 
     /// Replace edtui's position-based highlights with ranges produced by
@@ -268,5 +298,15 @@ mod tests {
         assert_eq!(highlights[0].end, Index2::new(0, 7));
         assert_eq!(highlights[1].start, Index2::new(1, 0));
         assert_eq!(highlights[1].end, Index2::new(1, 6));
+    }
+
+    #[test]
+    fn syntax_highlights_rebuild_after_edit_and_can_fall_back_to_plain_text() {
+        let mut session = EditorSession::new("fn main() {}");
+        session.set_syntax_language(Some("rust"));
+        assert!(!session.state.highlights.is_empty());
+
+        session.set_syntax_language(None);
+        assert!(session.state.highlights.is_empty());
     }
 }
