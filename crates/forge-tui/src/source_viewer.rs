@@ -44,8 +44,6 @@ pub enum ViewerStatus {
     Ok,
     Binary,
     InvalidUtf8,
-    LargeFile { preview: bool },
-    TooLarge,
     NotFound,
     Error(String),
 }
@@ -116,6 +114,8 @@ pub struct SourceViewer {
     pub rel_path: String,
     /// Decoded text lines (possibly a limited preview).
     pub lines: Vec<String>,
+    /// Exact validated UTF-8 document text for the editable session.
+    pub(crate) document_text: Option<String>,
     /// First visible line index (0-based).
     pub top_line: usize,
     /// Current/cursor line index (0-based).
@@ -155,7 +155,7 @@ pub struct SourceViewer {
 impl ViewerStatus {
     /// Whether the viewer has a text file that can be sent to an external editor.
     pub fn is_openable(&self) -> bool {
-        matches!(self, Self::Ok | Self::LargeFile { .. })
+        matches!(self, Self::Ok)
     }
 }
 
@@ -165,6 +165,7 @@ impl Default for SourceViewer {
             path: None,
             rel_path: String::new(),
             lines: Vec::new(),
+            document_text: None,
             top_line: 0,
             current_line: 0,
             h_scroll: 0,
@@ -197,6 +198,7 @@ impl SourceViewer {
         self.path = None;
         self.rel_path = String::new();
         self.lines.clear();
+        self.document_text = None;
         self.top_line = 0;
         self.current_line = 0;
         self.h_scroll = 0;
@@ -269,6 +271,7 @@ impl SourceViewer {
                 return;
             }
         };
+        self.document_text = Some(text.clone());
         self.lines = split_lines(&text);
         self.status = ViewerStatus::Ok;
         self.rebuild_highlight(&text);
@@ -357,10 +360,7 @@ impl SourceViewer {
         self.open(root, &path);
 
         // Restore viewport if the file is still readable.
-        if matches!(
-            self.status,
-            ViewerStatus::Ok | ViewerStatus::LargeFile { .. }
-        ) {
+        if matches!(self.status, ViewerStatus::Ok) {
             self.top_line = old_top.min(self.lines.len().saturating_sub(1));
             self.current_line = old_current.min(self.lines.len().saturating_sub(1));
             self.h_scroll = old_h;
@@ -599,10 +599,7 @@ impl SourceViewer {
     }
 
     fn can_search(&self) -> bool {
-        matches!(
-            self.status,
-            ViewerStatus::Ok | ViewerStatus::LargeFile { .. }
-        ) && !self.lines.is_empty()
+        matches!(self.status, ViewerStatus::Ok) && !self.lines.is_empty()
     }
 
     pub fn update_search_query(&mut self, query: &str) {
@@ -995,24 +992,6 @@ impl Widget for SourceViewerWidget<'_> {
                 "Invalid UTF-8",
                 "This file is read-only in Forge because it is not valid UTF-8.",
             ),
-            ViewerStatus::LargeFile { .. } => {
-                let size = format_size(self.viewer.size_bytes);
-                self.render_message(
-                    inner,
-                    buf,
-                    "Large file",
-                    &format!("This file is {size}.\nShowing a limited preview."),
-                );
-            }
-            ViewerStatus::TooLarge => {
-                let size = format_size(self.viewer.size_bytes);
-                self.render_message(
-                    inner,
-                    buf,
-                    "Large file",
-                    &format!("This file is {size}.\nForge cannot preview files this large."),
-                );
-            }
             ViewerStatus::NotFound => {
                 self.render_message(
                     inner,
@@ -1283,10 +1262,8 @@ mod tests {
         assert!(!ViewerStatus::Empty.is_openable());
         assert!(!ViewerStatus::Loading.is_openable());
         assert!(ViewerStatus::Ok.is_openable());
-        assert!(ViewerStatus::LargeFile { preview: true }.is_openable());
         assert!(!ViewerStatus::Binary.is_openable());
         assert!(!ViewerStatus::InvalidUtf8.is_openable());
-        assert!(!ViewerStatus::TooLarge.is_openable());
         assert!(!ViewerStatus::NotFound.is_openable());
         assert!(!ViewerStatus::Error("x".into()).is_openable());
     }
@@ -1849,16 +1826,6 @@ mod tests {
         let binary_text = render_viewer(&mut binary);
         assert!(binary_text.contains("Binary file"));
         assert!(binary_text.contains("2.0 KB"));
-
-        let mut large = SourceViewer::new();
-        large.status = ViewerStatus::LargeFile { preview: true };
-        large.size_bytes = 2 * 1024 * 1024;
-        assert!(render_viewer(&mut large).contains("Showing a limited preview"));
-
-        let mut too_large = SourceViewer::new();
-        too_large.status = ViewerStatus::TooLarge;
-        too_large.size_bytes = 11 * 1024 * 1024;
-        assert!(render_viewer(&mut too_large).contains("cannot preview"));
 
         let mut missing = SourceViewer::new();
         missing.status = ViewerStatus::NotFound;

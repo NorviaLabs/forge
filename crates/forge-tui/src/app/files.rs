@@ -8,6 +8,7 @@
 use super::*;
 
 use super::util::{rebase_path, relative_display};
+use crate::source_viewer::ViewerStatus;
 
 impl TuiApp {
     pub(super) fn reconcile_open_file_external_rename(&mut self) -> bool {
@@ -163,8 +164,18 @@ impl TuiApp {
     pub(super) fn show_file_in_editor(&mut self, path: &Path) {
         let root = self.session.workspace_root().to_path_buf();
         self.source_viewer.open(&root, path);
+        self.editor_session = self
+            .source_viewer
+            .document_text
+            .as_deref()
+            .filter(|_| self.source_viewer.status == ViewerStatus::Ok)
+            .map(EditorSession::new);
         self.focus_block(FocusBlock::Workspace);
-        self.status_state.message = "Viewing file (readonly)".into();
+        self.status_state.message = if self.editor_session.is_some() {
+            "Editing file · NORMAL mode".into()
+        } else {
+            "Viewing file (readonly)".into()
+        };
         // Keep the file explorer in sync with the active file.
         self.workspace_files.explorer.selected_path = Some(path.to_path_buf());
     }
