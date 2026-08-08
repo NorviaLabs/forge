@@ -332,6 +332,13 @@ impl TuiApp {
                             .is_some_and(|editor| !editor.is_dirty())
                     {
                         self.complete_pending_editor_switch(false);
+                    } else if self
+                        .editor_session
+                        .as_ref()
+                        .is_some_and(|editor| !editor.is_dirty())
+                        && (self.pending_editor_home || self.pending_editor_diff)
+                    {
+                        self.complete_dirty_editor_exit();
                     }
                     None
                 }
@@ -344,6 +351,8 @@ impl TuiApp {
                     {
                         if self.pending_editor_path.is_some() {
                             self.complete_pending_editor_switch(false);
+                        } else if self.pending_editor_home || self.pending_editor_diff {
+                            self.complete_dirty_editor_exit();
                         }
                         None
                     } else {
