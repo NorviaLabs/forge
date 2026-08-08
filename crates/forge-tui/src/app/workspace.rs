@@ -67,8 +67,27 @@ impl TuiApp {
     }
 
     pub(super) fn go_home_workspace(&mut self) {
+        if self
+            .editor_session
+            .as_ref()
+            .is_some_and(|editor| editor.is_dirty())
+        {
+            self.pending_editor_home = true;
+            self.explorer_dialog.current = Some(ExplorerDialog::DirtyExit);
+            return;
+        }
+        self.pending_editor_home = false;
         self.workspace_navigation.home();
         self.normalize_focus();
+    }
+
+    pub(super) fn complete_dirty_editor_exit(&mut self) {
+        if self.pending_editor_home {
+            self.pending_editor_home = false;
+            self.go_home_workspace();
+        } else {
+            self.go_back_workspace();
+        }
     }
 
     pub(super) fn go_back_workspace(&mut self) {

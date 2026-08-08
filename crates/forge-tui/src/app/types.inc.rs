@@ -682,6 +682,7 @@ pub struct TuiApp {
     /// Active Vim-style command line, without the leading `:`.
     pub(crate) editor_command: Option<String>,
     pub(crate) pending_editor_path: Option<PathBuf>,
+    pub(crate) pending_editor_home: bool,
     file_watch: FileWatchState,
     bottom_panel: BottomPanelState,
     pub(crate) workspace_files: WorkspaceFilesState,

@@ -124,6 +124,35 @@ async fn workspace_home_returns_to_empty_and_clears_history() {
 }
 
 #[tokio::test]
+async fn workspace_home_requires_a_dirty_editor_decision() {
+    let (dir, mut app) = focus_test_app().await;
+    let path = dir.path().join("dirty-home.rs");
+    fs::write(&path, "fn main() {}\n").unwrap();
+    app.execute_semantic_command(SemanticCommand::OpenFile(path))
+        .await
+        .unwrap();
+    let editor = app.editor_session.as_mut().unwrap();
+    editor.handle_key(press(KeyCode::Char('i'), KeyModifiers::NONE));
+    editor.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE));
+    editor.handle_key(press(KeyCode::Esc, KeyModifiers::NONE));
+
+    app.execute_semantic_command(SemanticCommand::GoHome)
+        .await
+        .unwrap();
+    assert!(matches!(
+        app.explorer_dialog.current,
+        Some(ExplorerDialog::DirtyExit)
+    ));
+    assert!(app.current_workspace_is_file());
+
+    app.handle_key(press(KeyCode::Char('d'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.workspace_navigation.current, None);
+    assert!(app.workspace_navigation.history.is_empty());
+}
+
+#[tokio::test]
 async fn overlay_open_and_close_do_not_mutate_workspace_history() {
     let (dir, mut app) = focus_test_app().await;
     let path = dir.path().join("main.rs");

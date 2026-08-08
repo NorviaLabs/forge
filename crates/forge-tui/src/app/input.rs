@@ -251,13 +251,19 @@ impl TuiApp {
                 }),
             },
             ExplorerDialog::DirtyExit => match key.code {
-                KeyCode::Esc if key.modifiers.is_empty() => None,
-                KeyCode::Char('c') | KeyCode::Char('C') => None,
+                KeyCode::Esc if key.modifiers.is_empty() => {
+                    self.pending_editor_home = false;
+                    None
+                }
+                KeyCode::Char('c') | KeyCode::Char('C') => {
+                    self.pending_editor_home = false;
+                    None
+                }
                 KeyCode::Char('d') | KeyCode::Char('D') => {
                     if let Some(editor) = self.editor_session.as_mut() {
                         editor.accept_current_text();
                     }
-                    self.go_back_workspace();
+                    self.complete_dirty_editor_exit();
                     None
                 }
                 KeyCode::Char('s') | KeyCode::Char('S') | KeyCode::Enter => {
@@ -272,7 +278,7 @@ impl TuiApp {
                         .as_ref()
                         .is_some_and(|editor| !editor.is_dirty())
                     {
-                        self.go_back_workspace();
+                        self.complete_dirty_editor_exit();
                         None
                     } else {
                         Some(ExplorerDialog::DirtyExit)
