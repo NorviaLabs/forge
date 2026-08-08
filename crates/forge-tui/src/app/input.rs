@@ -322,7 +322,12 @@ impl TuiApp {
                 _ => Some(ExplorerDialog::DirtySwitch { path }),
             },
             ExplorerDialog::SaveConflict => match key.code {
-                KeyCode::Esc if key.modifiers.is_empty() => None,
+                KeyCode::Esc if key.modifiers.is_empty() => {
+                    self.pending_editor_path = None;
+                    self.pending_editor_home = false;
+                    self.pending_editor_diff = false;
+                    None
+                }
                 KeyCode::Char('r') | KeyCode::Char('R') => {
                     self.reload_active_editor_from_disk();
                     if self.pending_editor_path.is_some()

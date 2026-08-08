@@ -189,6 +189,44 @@ async fn review_changes_requires_a_dirty_editor_decision() {
 }
 
 #[tokio::test]
+async fn cancelling_a_navigation_save_conflict_does_not_reuse_its_destination() {
+    let (dir, mut app) = focus_test_app().await;
+    let path = dir.path().join("cancel-diff.rs");
+    fs::write(&path, "fn main() {}\n").unwrap();
+    app.execute_semantic_command(SemanticCommand::OpenFile(path.clone()))
+        .await
+        .unwrap();
+    let editor = app.editor_session.as_mut().unwrap();
+    editor.handle_key(press(KeyCode::Char('i'), KeyModifiers::NONE));
+    editor.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE));
+    editor.handle_key(press(KeyCode::Esc, KeyModifiers::NONE));
+    fs::write(&path, "outside\n").unwrap();
+
+    app.execute_semantic_command(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
+        .await
+        .unwrap();
+    app.handle_key(press(KeyCode::Char('s'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(matches!(
+        app.explorer_dialog.current,
+        Some(ExplorerDialog::SaveConflict)
+    ));
+    app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    app.execute_semantic_command(SemanticCommand::GoBack)
+        .await
+        .unwrap();
+    app.handle_key(press(KeyCode::Char('d'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(!app.current_workspace_is_diff());
+    assert_eq!(app.workspace_navigation.current, None);
+}
+
+#[tokio::test]
 async fn overlay_open_and_close_do_not_mutate_workspace_history() {
     let (dir, mut app) = focus_test_app().await;
     let path = dir.path().join("main.rs");
