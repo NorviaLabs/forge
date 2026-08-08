@@ -33,6 +33,7 @@ notify = { workspace = true }
 portable-pty = { workspace = true }
 vt100 = { workspace = true }
 pulldown-cmark = { workspace = true }
+edtui = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
