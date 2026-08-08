@@ -289,6 +289,11 @@ impl TuiApp {
             return false;
         }
 
+        if let Some(editor) = self.editor_session.as_mut() {
+            let _ = editor.handle_key(key);
+            return true;
+        }
+
         let height = self.editor_viewport.height.saturating_sub(2) as usize;
         // Navigation shortcuts are plain keys so modified combinations can
         // continue to control contextual workspace and chrome commands.

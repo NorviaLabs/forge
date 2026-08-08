@@ -30,6 +30,37 @@ async fn external_editor_keybind_sets_flag() {
 }
 
 #[tokio::test]
+async fn edtui_editor_keeps_plain_e_and_uses_alt_e_for_external_editor() {
+    let (_dir, session) = test_session().await;
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "m".into(),
+            provider: "mock".into(),
+            cwd: PathBuf::from("."),
+            version: "0.10.0".into(),
+            startup_notices: Vec::new(),
+            file_icons: FileIconMode::Unicode,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+    let path = app.session.workspace_root().join("fake.txt");
+    fs::write(&path, "hello").unwrap();
+    app.open_file_in_editor(&path);
+    app.editor_session = Some(crate::editor_session::EditorSession::new("hello"));
+
+    app.handle_key(press(KeyCode::Char('e'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(!app.external_editor.requested);
+
+    app.handle_key(press(KeyCode::Char('e'), KeyModifiers::ALT))
+        .await
+        .unwrap();
+    assert!(app.external_editor.requested);
+}
+
+#[tokio::test]
 async fn external_editor_preconditions_no_file() {
     let (_dir, session) = test_session().await;
     let mut app = TuiApp::new(

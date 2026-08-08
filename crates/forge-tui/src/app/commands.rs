@@ -209,7 +209,10 @@ impl TuiApp {
                 Some(SemanticCommand::StartJumpToLine)
             }
             KeyCode::Char('r') if key.modifiers.is_empty() => Some(SemanticCommand::RefreshEditor),
-            KeyCode::Char('e') if key.modifiers.is_empty() => {
+            KeyCode::Char('e') if key.modifiers.is_empty() && self.editor_session.is_none() => {
+                Some(SemanticCommand::OpenExternalEditor)
+            }
+            KeyCode::Char('e') if key.modifiers == KeyModifiers::ALT => {
                 Some(SemanticCommand::OpenExternalEditor)
             }
             KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -247,7 +250,7 @@ impl TuiApp {
             KeyCode::Esc
                 if key.modifiers.is_empty()
                     && self.current_workspace_is_file()
-                    && self.source_viewer.mode == crate::source_viewer::ViewerMode::Insert =>
+                    && self.editor_is_in_insert_mode() =>
             {
                 // Let `handle_editor_key` consume this Esc to drop back to
                 // NORMAL mode instead of navigating away; a second Esc (now
@@ -258,6 +261,13 @@ impl TuiApp {
             _ if self.current_workspace_is_file() => self.semantic_command_for_editor_key(key),
             _ => None,
         }
+    }
+
+    fn editor_is_in_insert_mode(&self) -> bool {
+        self.editor_session.as_ref().map_or(
+            self.source_viewer.mode == crate::source_viewer::ViewerMode::Insert,
+            |editor| editor.mode() == edtui::EditorMode::Insert,
+        )
     }
 
     pub(super) fn semantic_command_for_bottom_panel_key(
