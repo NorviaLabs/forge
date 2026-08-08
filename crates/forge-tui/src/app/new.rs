@@ -103,6 +103,7 @@ impl TuiApp {
             source_viewer: SourceViewer::new(),
             editor_session: None,
             editor_command: None,
+            pending_editor_path: None,
             file_watch: FileWatchState {
                 watcher: None,
                 change_rx: file_change_rx,

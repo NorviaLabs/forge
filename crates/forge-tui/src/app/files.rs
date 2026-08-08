@@ -230,8 +230,33 @@ impl TuiApp {
     }
 
     pub(super) fn open_file_in_editor(&mut self, path: &Path) {
+        if self.source_viewer.path.as_deref() != Some(path)
+            && self
+                .editor_session
+                .as_ref()
+                .is_some_and(|editor| editor.is_dirty())
+        {
+            self.pending_editor_path = Some(path.to_path_buf());
+            self.explorer_dialog.current = Some(ExplorerDialog::DirtySwitch {
+                path: path.to_path_buf(),
+            });
+            return;
+        }
         self.navigate_to_workspace_view(WorkspaceView::File(path.to_path_buf()));
         self.note_workspace_file_opened(path);
+    }
+
+    pub(super) fn complete_pending_editor_switch(&mut self, discard: bool) {
+        let Some(path) = self.pending_editor_path.take() else {
+            return;
+        };
+        if discard {
+            if let Some(editor) = self.editor_session.as_mut() {
+                editor.accept_current_text();
+            }
+        }
+        self.navigate_to_workspace_view(WorkspaceView::File(path.clone()));
+        self.note_workspace_file_opened(&path);
     }
 
     #[cfg(test)]
@@ -575,6 +600,7 @@ impl TuiApp {
             ExplorerDialog::ConfirmCreate { .. } => (" Confirm Create ", theme::warn()),
             ExplorerDialog::ConfirmRename { .. } => (" Confirm Rename ", theme::warn()),
             ExplorerDialog::DirtyExit => (" Unsaved Changes ", theme::warn()),
+            ExplorerDialog::DirtySwitch { .. } => (" Unsaved Changes ", theme::warn()),
         };
         match dialog {
             ExplorerDialog::Name {
@@ -699,6 +725,24 @@ impl TuiApp {
                 lines.push(Line::from(""));
                 lines.push(Line::styled(
                     "Save and leave?  Enter/s save · d discard · Esc cancel",
+                    theme::muted(),
+                ));
+            }
+            ExplorerDialog::DirtySwitch { path } => {
+                lines.push(Line::styled(
+                    "The current file has unsaved changes.",
+                    theme::text(),
+                ));
+                lines.push(Line::styled(
+                    format!(
+                        "Open {} after resolving them?",
+                        relative_display(self.session.workspace_root(), path)
+                    ),
+                    theme::muted(),
+                ));
+                lines.push(Line::from(""));
+                lines.push(Line::styled(
+                    "Save and switch?  Enter/s save · d discard · Esc cancel",
                     theme::muted(),
                 ));
             }

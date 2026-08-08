@@ -143,6 +143,39 @@ async fn vim_command_line_q_bang_discards_and_exits() {
 }
 
 #[tokio::test]
+async fn dirty_editor_file_switch_requires_an_explicit_choice() {
+    let (dir, mut app) = focus_test_app().await;
+    let first = dir.path().join("first.txt");
+    let second = dir.path().join("second.txt");
+    fs::write(&first, "first").unwrap();
+    fs::write(&second, "second").unwrap();
+    app.open_file_in_editor(&first);
+    let editor = app.editor_session.as_mut().unwrap();
+    editor.handle_key(press(KeyCode::Char('i'), KeyModifiers::NONE));
+    editor.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE));
+    editor.handle_key(press(KeyCode::Esc, KeyModifiers::NONE));
+
+    app.open_file_in_editor(&second);
+    assert!(matches!(
+        app.explorer_dialog.current,
+        Some(ExplorerDialog::DirtySwitch { .. })
+    ));
+    assert_eq!(
+        app.source_viewer.path.as_deref(),
+        Some(first.canonicalize().unwrap().as_path())
+    );
+
+    app.handle_key(press(KeyCode::Char('d'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(
+        app.source_viewer.path.as_deref(),
+        Some(second.canonicalize().unwrap().as_path())
+    );
+    assert_eq!(fs::read_to_string(&first).unwrap(), "first");
+}
+
+#[tokio::test]
 async fn external_editor_preconditions_no_file() {
     let (_dir, session) = test_session().await;
     let mut app = TuiApp::new(

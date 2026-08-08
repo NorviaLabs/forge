@@ -212,6 +212,7 @@ enum ExplorerDialog {
         error: Option<String>,
     },
     DirtyExit,
+    DirtySwitch { path: PathBuf },
 }
 
 #[allow(dead_code)]
@@ -679,6 +680,7 @@ pub struct TuiApp {
     pub(crate) editor_session: Option<EditorSession>,
     /// Active Vim-style command line, without the leading `:`.
     pub(crate) editor_command: Option<String>,
+    pub(crate) pending_editor_path: Option<PathBuf>,
     file_watch: FileWatchState,
     bottom_panel: BottomPanelState,
     pub(crate) workspace_files: WorkspaceFilesState,

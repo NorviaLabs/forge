@@ -217,6 +217,34 @@ impl TuiApp {
                 }
                 _ => Some(ExplorerDialog::DirtyExit),
             },
+            ExplorerDialog::DirtySwitch { path } => match key.code {
+                KeyCode::Esc if key.modifiers.is_empty() => {
+                    self.pending_editor_path = None;
+                    None
+                }
+                KeyCode::Char('c') | KeyCode::Char('C') => {
+                    self.pending_editor_path = None;
+                    None
+                }
+                KeyCode::Char('d') | KeyCode::Char('D') => {
+                    self.complete_pending_editor_switch(true);
+                    None
+                }
+                KeyCode::Char('s') | KeyCode::Char('S') | KeyCode::Enter => {
+                    self.save_active_editor();
+                    if self
+                        .editor_session
+                        .as_ref()
+                        .is_some_and(|editor| !editor.is_dirty())
+                    {
+                        self.complete_pending_editor_switch(false);
+                        None
+                    } else {
+                        Some(ExplorerDialog::DirtySwitch { path })
+                    }
+                }
+                _ => Some(ExplorerDialog::DirtySwitch { path }),
+            },
         };
         self.explorer_dialog.current = next;
         true
