@@ -23,7 +23,7 @@ async fn external_editor_keybind_sets_flag() {
     let path = app.session.workspace_root().join("fake.txt");
     fs::write(&path, "hello").unwrap();
     app.open_file_in_editor(&path);
-    app.handle_key(press(KeyCode::Char('e'), KeyModifiers::NONE))
+    app.handle_key(press(KeyCode::Char('e'), KeyModifiers::ALT))
         .await
         .unwrap();
     assert!(app.external_editor.requested);
@@ -140,7 +140,7 @@ async fn source_viewer_mode_defaults_to_normal() {
 }
 
 #[tokio::test]
-async fn source_viewer_i_enters_insert_mode_without_changing_navigation() {
+async fn edtui_editor_i_enters_insert_mode() {
     let (dir, mut app) = focus_test_app().await;
     let path = dir.path().join("main.rs");
     fs::write(&path, "one\ntwo\nthree\n").unwrap();
@@ -153,17 +153,11 @@ async fn source_viewer_i_enters_insert_mode_without_changing_navigation() {
         .await
         .unwrap();
     assert_eq!(
-        app.source_viewer.mode,
-        crate::source_viewer::ViewerMode::Insert
+        app.editor_session.as_ref().unwrap().mode(),
+        edtui::EditorMode::Insert
     );
     assert_eq!(app.source_viewer.current_line, before_line);
     assert_eq!(app.source_viewer.lines, vec!["one", "two", "three"]);
-
-    // Navigation keys behave identically in both modes — INSERT doesn't gate them.
-    app.handle_key(press(KeyCode::Char('j'), KeyModifiers::NONE))
-        .await
-        .unwrap();
-    assert_eq!(app.source_viewer.current_line, before_line + 1);
 }
 
 #[tokio::test]
@@ -174,15 +168,17 @@ async fn source_viewer_esc_exits_insert_before_navigating_back() {
     app.execute_semantic_command(SemanticCommand::OpenFile(path.clone()))
         .await
         .unwrap();
-    app.source_viewer.enter_insert_mode();
+    app.handle_key(press(KeyCode::Char('i'), KeyModifiers::NONE))
+        .await
+        .unwrap();
 
     // First Esc: drops back to NORMAL, stays on the file view.
     app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
         .await
         .unwrap();
     assert_eq!(
-        app.source_viewer.mode,
-        crate::source_viewer::ViewerMode::Normal
+        app.editor_session.as_ref().unwrap().mode(),
+        edtui::EditorMode::Normal
     );
     assert_eq!(
         app.workspace_navigation.current,
