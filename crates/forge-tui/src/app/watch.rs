@@ -148,7 +148,19 @@ impl TuiApp {
         let renamed_open_file = self.reconcile_open_file_external_rename();
         let renamed_notice = renamed_open_file.then(|| "File renamed externally".to_string());
         if active_file_changed {
-            self.refresh_active_source_viewer();
+            let deleted = self
+                .source_viewer
+                .path
+                .as_ref()
+                .is_some_and(|path| !path.exists());
+            if self.editor_session.is_some() && !deleted {
+                // The editor owns its in-memory buffer. A watcher event only
+                // records the external change; save/reload resolves it later.
+                self.source_viewer.notice =
+                    Some("File changed on disk · save, reload, or force-save".into());
+            } else {
+                self.refresh_active_source_viewer();
+            }
             self.notice_state.items.clear();
         } else if renamed_open_file {
             self.notice_state.items.clear();
