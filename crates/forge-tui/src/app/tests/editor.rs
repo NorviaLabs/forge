@@ -92,6 +92,33 @@ async fn save_editor_writes_atomically_and_clears_dirty_state() {
 }
 
 #[tokio::test]
+async fn dirty_editor_exit_requires_an_explicit_discard_or_save_choice() {
+    let (dir, mut app) = focus_test_app().await;
+    let path = dir.path().join("dirty.txt");
+    fs::write(&path, "before").unwrap();
+    app.open_file_in_editor(&path);
+    let editor = app.editor_session.as_mut().unwrap();
+    editor.handle_key(press(KeyCode::Char('i'), KeyModifiers::NONE));
+    editor.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE));
+    editor.handle_key(press(KeyCode::Esc, KeyModifiers::NONE));
+
+    app.execute_semantic_command(SemanticCommand::GoBack)
+        .await
+        .unwrap();
+    assert!(matches!(
+        app.explorer_dialog.current,
+        Some(ExplorerDialog::DirtyExit)
+    ));
+    assert!(app.current_workspace_is_file());
+
+    app.handle_key(press(KeyCode::Char('d'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(!app.current_workspace_is_file());
+    assert_eq!(fs::read_to_string(&path).unwrap(), "before");
+}
+
+#[tokio::test]
 async fn external_editor_preconditions_no_file() {
     let (_dir, session) = test_session().await;
     let mut app = TuiApp::new(

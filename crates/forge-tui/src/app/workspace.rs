@@ -72,6 +72,14 @@ impl TuiApp {
     }
 
     pub(super) fn go_back_workspace(&mut self) {
+        if self
+            .editor_session
+            .as_ref()
+            .is_some_and(|editor| editor.is_dirty())
+        {
+            self.explorer_dialog.current = Some(ExplorerDialog::DirtyExit);
+            return;
+        }
         let mut next = None;
         while let Some(candidate) = self.workspace_navigation.history.pop() {
             if self.workspace_view_is_valid(&candidate) {

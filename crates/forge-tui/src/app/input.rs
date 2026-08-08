@@ -140,6 +140,31 @@ impl TuiApp {
                     error,
                 }),
             },
+            ExplorerDialog::DirtyExit => match key.code {
+                KeyCode::Esc if key.modifiers.is_empty() => None,
+                KeyCode::Char('c') | KeyCode::Char('C') => None,
+                KeyCode::Char('d') | KeyCode::Char('D') => {
+                    if let Some(editor) = self.editor_session.as_mut() {
+                        editor.accept_current_text();
+                    }
+                    self.go_back_workspace();
+                    None
+                }
+                KeyCode::Char('s') | KeyCode::Char('S') | KeyCode::Enter => {
+                    self.save_active_editor();
+                    if self
+                        .editor_session
+                        .as_ref()
+                        .is_some_and(|editor| !editor.is_dirty())
+                    {
+                        self.go_back_workspace();
+                        None
+                    } else {
+                        Some(ExplorerDialog::DirtyExit)
+                    }
+                }
+                _ => Some(ExplorerDialog::DirtyExit),
+            },
         };
         self.explorer_dialog.current = next;
         true

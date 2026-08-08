@@ -574,6 +574,7 @@ impl TuiApp {
             ExplorerDialog::ConfirmDelete { .. } => (" Delete ", theme::warn()),
             ExplorerDialog::ConfirmCreate { .. } => (" Confirm Create ", theme::warn()),
             ExplorerDialog::ConfirmRename { .. } => (" Confirm Rename ", theme::warn()),
+            ExplorerDialog::DirtyExit => (" Unsaved Changes ", theme::warn()),
         };
         match dialog {
             ExplorerDialog::Name {
@@ -689,6 +690,17 @@ impl TuiApp {
                         lines.push(Line::styled("Enter/y confirm · Esc cancel", theme::muted()));
                     }
                 }
+            }
+            ExplorerDialog::DirtyExit => {
+                lines.push(Line::styled(
+                    "The current file has unsaved changes.",
+                    theme::text(),
+                ));
+                lines.push(Line::from(""));
+                lines.push(Line::styled(
+                    "Save and leave?  Enter/s save · d discard · Esc cancel",
+                    theme::muted(),
+                ));
             }
         }
         Paragraph::new(lines)

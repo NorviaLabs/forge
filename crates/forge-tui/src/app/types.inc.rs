@@ -211,6 +211,7 @@ enum ExplorerDialog {
         permanent: bool,
         error: Option<String>,
     },
+    DirtyExit,
 }
 
 #[allow(dead_code)]
