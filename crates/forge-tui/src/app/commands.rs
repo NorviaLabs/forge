@@ -202,13 +202,21 @@ impl TuiApp {
             KeyCode::Esc if key.modifiers.is_empty() => {
                 Some(SemanticCommand::CancelCurrentInteraction)
             }
-            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Char('f')
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && self.editor_session.is_none() =>
+            {
                 Some(SemanticCommand::StartSourceSearch)
             }
-            KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Char('g')
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && self.editor_session.is_none() =>
+            {
                 Some(SemanticCommand::StartJumpToLine)
             }
-            KeyCode::Char('r') if key.modifiers.is_empty() => Some(SemanticCommand::RefreshEditor),
+            KeyCode::Char('r') if key.modifiers.is_empty() && self.editor_session.is_none() => {
+                Some(SemanticCommand::RefreshEditor)
+            }
             KeyCode::Char('s') if key.modifiers == KeyModifiers::CONTROL => {
                 Some(SemanticCommand::SaveEditor)
             }
@@ -253,7 +261,7 @@ impl TuiApp {
             KeyCode::Esc
                 if key.modifiers.is_empty()
                     && self.current_workspace_is_file()
-                    && self.editor_is_in_insert_mode() =>
+                    && self.editor_handles_escape() =>
             {
                 // Let `handle_editor_key` consume this Esc to drop back to
                 // NORMAL mode instead of navigating away; a second Esc (now
@@ -266,10 +274,15 @@ impl TuiApp {
         }
     }
 
-    fn editor_is_in_insert_mode(&self) -> bool {
+    fn editor_handles_escape(&self) -> bool {
         self.editor_session.as_ref().map_or(
             self.source_viewer.mode == crate::source_viewer::ViewerMode::Insert,
-            |editor| editor.mode() == edtui::EditorMode::Insert,
+            |editor| {
+                matches!(
+                    editor.mode(),
+                    edtui::EditorMode::Insert | edtui::EditorMode::Search
+                )
+            },
         )
     }
 

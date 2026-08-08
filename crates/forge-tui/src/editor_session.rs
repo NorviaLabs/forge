@@ -123,6 +123,10 @@ impl EditorSession {
         self.state.mode
     }
 
+    pub(crate) fn cursor_row(&self) -> usize {
+        self.state.cursor.row
+    }
+
     pub(crate) fn is_dirty(&self) -> bool {
         self.text() != self.accepted_text
     }
