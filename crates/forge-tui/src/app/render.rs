@@ -351,6 +351,7 @@ impl TuiApp {
             let sidebar_focused = self.focus.block == FocusBlock::Sidebar;
             let sidebar_block = Block::default()
                 .borders(Borders::ALL)
+                .padding(ratatui::widgets::Padding::horizontal(1))
                 .border_style(if sidebar_focused {
                     theme::active_panel_border()
                 } else {
@@ -757,6 +758,7 @@ impl TuiApp {
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
+                        .padding(ratatui::widgets::Padding::horizontal(1))
                         .border_style(self.workspace_border())
                         .style(theme::panel()),
                 )
@@ -770,6 +772,7 @@ impl TuiApp {
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
+                        .padding(ratatui::widgets::Padding::horizontal(1))
                         .border_style(self.workspace_border())
                         .style(theme::panel()),
                 )
@@ -876,6 +879,7 @@ impl TuiApp {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
+                    .padding(ratatui::widgets::Padding::horizontal(1))
                     .border_style(self.workspace_border())
                     .style(theme::panel()),
             )
