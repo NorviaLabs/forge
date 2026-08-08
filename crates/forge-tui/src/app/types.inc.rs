@@ -677,6 +677,8 @@ pub struct TuiApp {
     /// Editing state staged for the editable workspace editor.
     #[allow(dead_code)] // Consumed when the editor rendering/input migration lands.
     pub(crate) editor_session: Option<EditorSession>,
+    /// Active Vim-style command line, without the leading `:`.
+    pub(crate) editor_command: Option<String>,
     file_watch: FileWatchState,
     bottom_panel: BottomPanelState,
     pub(crate) workspace_files: WorkspaceFilesState,

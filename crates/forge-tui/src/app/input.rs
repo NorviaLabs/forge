@@ -8,6 +8,58 @@
 use super::*;
 
 impl TuiApp {
+    async fn handle_editor_command_key(&mut self, key: event::KeyEvent) -> Result<bool, TuiError> {
+        let Some(command) = self.editor_command.as_mut() else {
+            return Ok(false);
+        };
+        match key.code {
+            KeyCode::Esc if key.modifiers.is_empty() => {
+                self.editor_command = None;
+                self.status_state.message = "Editor command cancelled".into();
+            }
+            KeyCode::Backspace if key.modifiers.is_empty() => {
+                command.pop();
+                self.status_state.message = format!(":{command}");
+            }
+            KeyCode::Enter if key.modifiers.is_empty() => {
+                let command = std::mem::take(command);
+                self.editor_command = None;
+                match command.as_str() {
+                    "w" | "write" => self.save_active_editor(),
+                    "q" | "quit" => self.go_back_workspace(),
+                    "q!" | "quit!" => {
+                        if let Some(editor) = self.editor_session.as_mut() {
+                            editor.accept_current_text();
+                        }
+                        self.go_back_workspace();
+                    }
+                    "wq" | "x" => {
+                        self.save_active_editor();
+                        if self
+                            .editor_session
+                            .as_ref()
+                            .is_some_and(|editor| !editor.is_dirty())
+                        {
+                            self.go_back_workspace();
+                        }
+                    }
+                    _ => self.set_feedback(
+                        FeedbackSeverity::Warn,
+                        format!("unknown editor command: :{command}"),
+                    ),
+                }
+            }
+            KeyCode::Char(ch)
+                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+            {
+                command.push(ch);
+                self.status_state.message = format!(":{command}");
+            }
+            _ => {}
+        }
+        Ok(true)
+    }
+
     fn handle_explorer_dialog_key(&mut self, key: event::KeyEvent) -> bool {
         let Some(dialog) = self.explorer_dialog.current.take() else {
             return false;
@@ -315,6 +367,14 @@ impl TuiApp {
         }
 
         if let Some(editor) = self.editor_session.as_mut() {
+            if key.code == KeyCode::Char(':')
+                && key.modifiers.is_empty()
+                && editor.mode() == edtui::EditorMode::Normal
+            {
+                self.editor_command = Some(String::new());
+                self.status_state.message = ":".into();
+                return true;
+            }
             let _ = editor.handle_key(key);
             return true;
         }
@@ -802,6 +862,10 @@ impl TuiApp {
         }
 
         self.normalize_focus();
+        if self.editor_command.is_some() {
+            self.handle_editor_command_key(key).await?;
+            return Ok(());
+        }
         match self.focus.mode {
             FocusMode::Transient(TransientOwner::SourceSearch) => {
                 self.handle_search_key(key);

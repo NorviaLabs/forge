@@ -102,6 +102,7 @@ impl TuiApp {
             workspace_navigation: WorkspaceNavigation::default(),
             source_viewer: SourceViewer::new(),
             editor_session: None,
+            editor_command: None,
             file_watch: FileWatchState {
                 watcher: None,
                 change_rx: file_change_rx,
