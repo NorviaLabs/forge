@@ -262,6 +262,10 @@ impl TuiApp {
             .as_deref()
             .filter(|_| self.source_viewer.status == ViewerStatus::Ok)
             .map(EditorSession::new);
+        if let Some(editor) = self.editor_session.as_mut() {
+            editor.set_syntax_language(self.source_viewer.language_label.as_deref());
+            editor.set_syntax_theme(crate::theme::syntax_theme());
+        }
         self.focus_block(FocusBlock::Workspace);
         self.status_state.message = if self.editor_session.is_some() {
             "Editing file · NORMAL mode".into()

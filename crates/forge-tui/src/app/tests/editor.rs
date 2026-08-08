@@ -61,6 +61,24 @@ async fn edtui_editor_keeps_plain_e_and_uses_alt_e_for_external_editor() {
 }
 
 #[tokio::test]
+async fn embedded_editor_uses_forge_language_and_theme() {
+    let (dir, mut app) = focus_test_app().await;
+    let path = dir.path().join("main.rs");
+    fs::write(&path, "fn main() {}\n").unwrap();
+
+    app.open_file_in_editor(&path);
+    let editor = app.editor_session.as_ref().unwrap();
+    assert_eq!(editor.syntax_language(), Some("rust"));
+    assert_eq!(editor.syntax_theme(), crate::theme::syntax_theme());
+
+    app.set_theme_active("solarized-light");
+    assert_eq!(
+        app.editor_session.as_ref().unwrap().syntax_theme(),
+        crate::theme::syntax_theme()
+    );
+}
+
+#[tokio::test]
 async fn save_editor_writes_atomically_and_clears_dirty_state() {
     let (dir, mut app) = focus_test_app().await;
     let path = dir.path().join("save.txt");

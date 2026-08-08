@@ -239,6 +239,16 @@ impl EditorSession {
         self.refresh_syntax_highlights();
     }
 
+    #[cfg(test)]
+    pub(crate) fn syntax_language(&self) -> Option<&str> {
+        self.syntax_language.as_deref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn syntax_theme(&self) -> forge_syntax::HighlightTheme {
+        self.syntax_theme
+    }
+
     fn refresh_syntax_highlights(&mut self) {
         let Some(language) = self.syntax_language.as_deref() else {
             self.state.clear_highlights();

@@ -265,6 +265,9 @@ impl TuiApp {
     pub(super) fn set_theme_active(&mut self, theme_id: &str) {
         crate::theme::set_active(theme_id);
         self.runtime.theme_id = theme_id.to_string();
+        if let Some(editor) = self.editor_session.as_mut() {
+            editor.set_syntax_theme(crate::theme::syntax_theme());
+        }
         self.render_cache.conversation = None;
     }
 
