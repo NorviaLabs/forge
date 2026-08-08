@@ -13,6 +13,7 @@ use crate::status_glyph::{status_glyph, Status};
 use crate::theme;
 
 const HIDDEN_DIRS: &[&str] = &[".git", "target"];
+const TREE_INDENT: &str = "  ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileKind {
@@ -586,7 +587,7 @@ impl Widget for FileExplorerWidget<'_> {
                         FileKind::Directory => "▸",
                         FileKind::File | FileKind::Symlink | FileKind::Unknown => " ",
                     };
-                    let prefix = " ".repeat(node.depth);
+                    let prefix = TREE_INDENT.repeat(node.depth);
                     let status = if matches!(node.kind, FileKind::File | FileKind::Symlink) {
                         self.explorer.git_status_for(&node.path)
                     } else {
@@ -711,6 +712,28 @@ mod tests {
             .collect();
         assert_eq!(text, "  long_filename.rs M");
         assert_eq!(line.spans.last().unwrap().content.as_ref(), "M");
+    }
+
+    #[test]
+    fn tree_depth_uses_a_consistent_two_cell_indent() {
+        let prefix = TREE_INDENT.repeat(2);
+        let line = explorer_row_line(
+            &prefix,
+            "▸",
+            Path::new("src/ui/app.rs"),
+            "app.rs",
+            FileKind::File,
+            false,
+            false,
+            None,
+            FileIconMode::Unicode,
+        );
+        let text: String = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(text, "    ▸ app.rs");
     }
 
     #[test]
