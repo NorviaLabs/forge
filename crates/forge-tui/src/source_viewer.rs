@@ -1190,7 +1190,7 @@ impl SourceViewerWidget<'_> {
             .constraints([Constraint::Length(1), Constraint::Min(0)])
             .split(area);
 
-        let (mode, current_line, total) = self
+        let (mode, current_line, total, modified) = self
             .editor
             .as_deref()
             .map(|editor| {
@@ -1198,14 +1198,16 @@ impl SourceViewerWidget<'_> {
                     editor.mode().name().to_uppercase(),
                     editor.cursor_row(),
                     editor.line_count(),
+                    editor.is_dirty(),
                 )
             })
-            .map(|(mode, line, total)| (mode, line, total.max(1)))
+            .map(|(mode, line, total, modified)| (mode, line, total.max(1), modified))
             .unwrap_or_else(|| {
                 (
                     self.viewer.mode.label().to_string(),
                     self.viewer.current_line,
                     self.viewer.lines.len().max(1),
+                    false,
                 )
             });
         let mut header = format!(
@@ -1217,6 +1219,9 @@ impl SourceViewerWidget<'_> {
         );
         if let Some(label) = &self.viewer.language_label {
             header.push_str(&format!(" · {label}"));
+        }
+        if modified {
+            header.push_str(" · modified");
         }
         Paragraph::new(Line::styled(header, theme::muted())).render(rows[0], buf);
 
@@ -1920,6 +1925,42 @@ mod tests {
         assert!(rendered.contains("notes.txt"));
         assert!(rendered.contains("new text"));
         assert!(!rendered.contains("old text"));
+    }
+
+    #[test]
+    fn editor_header_identifies_unsaved_changes() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("notes.txt");
+        fs::write(&path, "old text\n").unwrap();
+
+        let mut viewer = SourceViewer::new();
+        viewer.open(root.path(), &path);
+        let mut editor = EditorSession::new("old text\n");
+        editor.handle_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('i'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        editor.handle_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('x'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+
+        let area = Rect::new(0, 0, 100, 8);
+        let mut buf = Buffer::empty(area);
+        SourceViewerWidget {
+            viewer: &mut viewer,
+            focused: true,
+            editor: Some(&mut editor),
+        }
+        .render(area, &mut buf);
+
+        let mut rendered = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                rendered.push_str(buf[(x, y)].symbol());
+            }
+        }
+        assert!(rendered.contains("modified"));
     }
 
     #[test]
