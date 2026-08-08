@@ -176,6 +176,40 @@ async fn dirty_editor_file_switch_requires_an_explicit_choice() {
 }
 
 #[tokio::test]
+async fn vim_command_line_e_opens_a_workspace_file() {
+    let (dir, mut app) = focus_test_app().await;
+    let first = dir.path().join("first.txt");
+    let second = dir.path().join("second.txt");
+    fs::write(&first, "first").unwrap();
+    fs::write(&second, "second").unwrap();
+    app.open_file_in_editor(&first);
+
+    for key in [
+        press(KeyCode::Char(':'), KeyModifiers::NONE),
+        press(KeyCode::Char('e'), KeyModifiers::NONE),
+        press(KeyCode::Char(' '), KeyModifiers::NONE),
+        press(KeyCode::Char('s'), KeyModifiers::NONE),
+        press(KeyCode::Char('e'), KeyModifiers::NONE),
+        press(KeyCode::Char('c'), KeyModifiers::NONE),
+        press(KeyCode::Char('o'), KeyModifiers::NONE),
+        press(KeyCode::Char('n'), KeyModifiers::NONE),
+        press(KeyCode::Char('d'), KeyModifiers::NONE),
+        press(KeyCode::Char('.'), KeyModifiers::NONE),
+        press(KeyCode::Char('t'), KeyModifiers::NONE),
+        press(KeyCode::Char('x'), KeyModifiers::NONE),
+        press(KeyCode::Char('t'), KeyModifiers::NONE),
+        press(KeyCode::Enter, KeyModifiers::NONE),
+    ] {
+        app.handle_key(key).await.unwrap();
+    }
+
+    assert_eq!(
+        app.source_viewer.path.as_deref(),
+        Some(second.canonicalize().unwrap().as_path())
+    );
+}
+
+#[tokio::test]
 async fn external_editor_preconditions_no_file() {
     let (_dir, session) = test_session().await;
     let mut app = TuiApp::new(

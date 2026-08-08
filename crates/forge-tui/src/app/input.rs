@@ -43,6 +43,29 @@ impl TuiApp {
                             self.go_back_workspace();
                         }
                     }
+                    command if command == "e" || command == "edit" => {
+                        self.set_feedback(
+                            FeedbackSeverity::Info,
+                            ":e requires a workspace file path in Forge",
+                        );
+                    }
+                    command if command.starts_with("e ") || command.starts_with("edit ") => {
+                        let path = command
+                            .split_once(' ')
+                            .map(|(_, path)| path.trim())
+                            .unwrap_or_default();
+                        match self.resolve_workspace_path(path) {
+                            Ok(path) if path.is_file() => self.open_file_in_editor(&path),
+                            Ok(_) => self.set_feedback(
+                                FeedbackSeverity::Warn,
+                                "editor target is not a file",
+                            ),
+                            Err(error) => self.set_feedback(
+                                FeedbackSeverity::Warn,
+                                format!("cannot open editor target: {error}"),
+                            ),
+                        }
+                    }
                     _ => self.set_feedback(
                         FeedbackSeverity::Warn,
                         format!("unknown editor command: :{command}"),
