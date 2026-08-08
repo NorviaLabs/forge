@@ -281,6 +281,7 @@ enum SemanticCommand {
     OpenBottomPanel,
     RefreshFiles,
     RefreshEditor,
+    SaveEditor,
     RefreshDiff,
     BeginCreateFile,
     BeginCreateDirectory,

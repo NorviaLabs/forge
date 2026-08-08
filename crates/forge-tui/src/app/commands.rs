@@ -209,6 +209,9 @@ impl TuiApp {
                 Some(SemanticCommand::StartJumpToLine)
             }
             KeyCode::Char('r') if key.modifiers.is_empty() => Some(SemanticCommand::RefreshEditor),
+            KeyCode::Char('s') if key.modifiers == KeyModifiers::CONTROL => {
+                Some(SemanticCommand::SaveEditor)
+            }
             KeyCode::Char('e') if key.modifiers.is_empty() && self.editor_session.is_none() => {
                 Some(SemanticCommand::OpenExternalEditor)
             }
@@ -503,6 +506,7 @@ impl TuiApp {
                     self.refresh_diff_review();
                 }
             }
+            SemanticCommand::SaveEditor => self.save_active_editor(),
             SemanticCommand::RefreshDiff => self.refresh_diff_review(),
             SemanticCommand::BeginCreateFile => {
                 self.open_explorer_name_dialog(ExplorerNameAction::CreateFile)

@@ -61,6 +61,37 @@ async fn edtui_editor_keeps_plain_e_and_uses_alt_e_for_external_editor() {
 }
 
 #[tokio::test]
+async fn save_editor_writes_atomically_and_clears_dirty_state() {
+    let (dir, mut app) = focus_test_app().await;
+    let path = dir.path().join("save.txt");
+    fs::write(&path, "before\r\n").unwrap();
+    app.open_file_in_editor(&path);
+    app.editor_session = Some(crate::editor_session::EditorSession::new("after\r\n"));
+    app.editor_session
+        .as_mut()
+        .unwrap()
+        .handle_key(press(KeyCode::Char('i'), KeyModifiers::NONE));
+    app.editor_session
+        .as_mut()
+        .unwrap()
+        .handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE));
+    app.editor_session
+        .as_mut()
+        .unwrap()
+        .handle_key(press(KeyCode::Esc, KeyModifiers::NONE));
+    // The session is deliberately made dirty through its public input path;
+    // the save command must serialize CRLF and accept only after replacement.
+    assert!(app.editor_session.as_ref().unwrap().is_dirty());
+
+    app.execute_semantic_command(SemanticCommand::SaveEditor)
+        .await
+        .unwrap();
+
+    assert_eq!(fs::read(&path).unwrap(), b"xafter\r\n");
+    assert!(!app.editor_session.as_ref().unwrap().is_dirty());
+}
+
+#[tokio::test]
 async fn external_editor_preconditions_no_file() {
     let (_dir, session) = test_session().await;
     let mut app = TuiApp::new(

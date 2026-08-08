@@ -6,11 +6,60 @@
 //! verbatim.
 
 use super::*;
+use std::io::Write;
 
 use super::util::{rebase_path, relative_display};
 use crate::source_viewer::ViewerStatus;
 
 impl TuiApp {
+    pub(super) fn save_active_editor(&mut self) {
+        let Some(path) = self.source_viewer.path.clone() else {
+            self.set_feedback(FeedbackSeverity::Warn, "No file open to save");
+            return;
+        };
+        let Some(editor) = self.editor_session.as_ref() else {
+            self.set_feedback(FeedbackSeverity::Warn, "The active file is read-only");
+            return;
+        };
+        let serialized = editor.serialized_text();
+        let permissions = fs::metadata(&path).ok().map(|meta| meta.permissions());
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+
+        let result = (|| -> Result<(), String> {
+            let mut temporary = tempfile::NamedTempFile::new_in(parent)
+                .map_err(|error| format!("could not create temporary save file: {error}"))?;
+            temporary
+                .write_all(serialized.as_bytes())
+                .map_err(|error| format!("could not write file: {error}"))?;
+            temporary
+                .as_file()
+                .sync_all()
+                .map_err(|error| format!("could not flush file: {error}"))?;
+            if let Some(permissions) = permissions {
+                fs::set_permissions(temporary.path(), permissions)
+                    .map_err(|error| format!("could not preserve permissions: {error}"))?;
+            }
+            temporary
+                .persist(&path)
+                .map_err(|error| format!("could not replace file: {}", error.error))?;
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => {
+                if let Some(editor) = self.editor_session.as_mut() {
+                    editor.accept_current_text();
+                }
+                self.source_viewer.refresh(self.session.workspace_root());
+                self.workspace_files.explorer.refresh_git_status();
+                self.set_feedback(FeedbackSeverity::Ok, format!("saved {}", path.display()));
+            }
+            Err(error) => {
+                self.set_feedback(FeedbackSeverity::Warn, error);
+            }
+        }
+    }
+
     pub(super) fn reconcile_open_file_external_rename(&mut self) -> bool {
         let Some(open_path) = self.source_viewer.path.clone() else {
             return false;
