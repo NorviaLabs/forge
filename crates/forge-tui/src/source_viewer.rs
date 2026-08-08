@@ -1,4 +1,4 @@
-//! Read-only source viewer for the workspace Editor tab.
+//! Source viewer and Forge-owned chrome for the workspace Editor tab.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -19,8 +19,8 @@ const BINARY_PROBE_BYTES: usize = 8_192;
 /// Tab stops are every N columns.
 const TAB_WIDTH: usize = 4;
 
-/// Cosmetic vim-style mode tag shown in the editor header. Doesn't change
-/// how any key behaves — `SourceViewer` stays read-only in both modes.
+/// Legacy mode tag used by the non-editable fallback viewer. Editable text
+/// files derive their mode from [`EditorSession`] instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ViewerMode {
     #[default]
@@ -124,7 +124,7 @@ pub struct SourceViewer {
     pub h_scroll: usize,
     /// Whether the editor panel currently has focus. Affects current-line emphasis.
     pub focused: bool,
-    /// Cosmetic vim-style mode tag. See [`ViewerMode`].
+    /// Fallback-viewer mode tag. Editable text files use [`EditorSession`].
     pub mode: ViewerMode,
     pub status: ViewerStatus,
     /// Raw size on disk when the file was loaded.
