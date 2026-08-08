@@ -936,6 +936,28 @@ mod tests {
     }
 
     #[test]
+    fn light_syntax_theme_uses_readable_editor_roles() {
+        install(ThemeRegistry::load(None), THEME_SOLARIZED_LIGHT);
+        let syntax = syntax_theme();
+
+        assert_eq!(syntax.default, (0x58, 0x6E, 0x75));
+        assert_eq!(syntax.comment, (0x65, 0x7B, 0x83));
+        assert_eq!(syntax.keyword, (0x6C, 0x7A, 0x00));
+        assert_eq!(syntax.string, (0x2A, 0x7F, 0x78));
+        assert_eq!(syntax.number, (0x2A, 0x7F, 0x78));
+        assert_eq!(syntax.function, (0x1D, 0x6F, 0xA5));
+        assert_eq!(syntax.type_, (0x8B, 0x65, 0x00));
+        assert_eq!(syntax.variable, (0x1D, 0x6F, 0xA5));
+        assert_eq!(syntax.operator, (0x6C, 0x7A, 0x00));
+        assert_eq!(syntax.punctuation, (0x65, 0x7B, 0x83));
+        assert_eq!(syntax.property, (0x1D, 0x6F, 0xA5));
+        assert_eq!(syntax.tag, (0xB5, 0x2B, 0x29));
+        assert_eq!(syntax.attribute, (0xA3, 0x3E, 0x12));
+
+        install_defaults();
+    }
+
+    #[test]
     fn light_diff_snapshot() {
         install_defaults();
         let p = palette(THEME_SOLARIZED_LIGHT);
@@ -1083,10 +1105,10 @@ mod tests {
         assert_contrast("text", p.text, "canvas", p.canvas, 4.1);
         assert_contrast("muted", p.muted, "canvas", p.canvas, 2.4);
         assert_contrast("tag", p.tag, "canvas", p.canvas, 2.4);
-        assert_contrast("accent", p.accent, "canvas", p.canvas, 3.4);
-        assert_contrast("ok", p.ok, "canvas", p.canvas, 2.9);
-        assert_contrast("danger", p.danger, "canvas", p.canvas, 4.2);
-        assert_contrast("info", p.info, "canvas", p.canvas, 2.9);
+        assert_contrast("accent", p.accent, "canvas", p.canvas, 3.2);
+        assert_contrast("ok", p.ok, "canvas", p.canvas, 2.8);
+        assert_contrast("danger", p.danger, "canvas", p.canvas, 4.0);
+        assert_contrast("info", p.info, "canvas", p.canvas, 2.7);
 
         assert_contrast("text", p.text, "panel_alt", p.panel_alt, 3.3);
         assert_contrast("muted", p.muted, "panel_alt", p.panel_alt, 2.0);

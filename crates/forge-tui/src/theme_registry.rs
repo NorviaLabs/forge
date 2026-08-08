@@ -167,7 +167,7 @@ mod tests {
             ("gruvbox-dark", "Gruvbox Dark", Rgb(40, 40, 40)),
             ("kanagawa-wave", "Kanagawa Wave", Rgb(31, 31, 40)),
             (THEME_SOLARIZED_DARK, "Solarized Dark", Rgb(0, 43, 54)),
-            (THEME_SOLARIZED_LIGHT, "Solarized Light", Rgb(253, 246, 227)),
+            (THEME_SOLARIZED_LIGHT, "Solarized Light", Rgb(245, 240, 222)),
         ];
         for (id, name, background) in expected {
             let theme = registry.get(id).unwrap_or_else(|| panic!("missing {id}"));
