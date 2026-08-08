@@ -8,7 +8,8 @@
 
 use crossterm::event::KeyEvent;
 use edtui::{
-    EditorEventHandler, EditorMode, EditorState, EditorTheme, EditorView, LineNumbers, Lines,
+    EditorEventHandler, EditorMode, EditorState, EditorTheme, EditorView, Highlight, Index2,
+    LineNumbers, Lines,
 };
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -74,6 +75,19 @@ impl EditorSession {
         self.revision = self.revision.wrapping_add(1);
     }
 
+    /// Replace edtui's position-based highlights with ranges produced by
+    /// Forge's Tree-sitter pipeline. Forge's spans are byte ranges and edtui
+    /// expects zero-based character columns with an inclusive end position.
+    pub(crate) fn set_forge_highlights(
+        &mut self,
+        source: &str,
+        spans: &[forge_syntax::HighlightSpan],
+        syntax_theme: &forge_syntax::HighlightTheme,
+    ) {
+        self.state
+            .set_highlights(forge_highlights_to_edtui(source, spans, syntax_theme));
+    }
+
     /// Render only the editor surface. Forge-owned chrome stays outside this
     /// method so the edtui widget cannot change the surrounding layout.
     pub(crate) fn render(&mut self, area: Rect, buf: &mut Buffer) {
@@ -90,6 +104,66 @@ impl EditorSession {
             .tab_width(4)
             .render(area, buf);
     }
+}
+
+fn forge_highlights_to_edtui(
+    source: &str,
+    spans: &[forge_syntax::HighlightSpan],
+    syntax_theme: &forge_syntax::HighlightTheme,
+) -> Vec<Highlight> {
+    let line_offsets: Vec<usize> = std::iter::once(0)
+        .chain(source.match_indices('\n').map(|(offset, _)| offset + 1))
+        .collect();
+    let mut highlights = Vec::new();
+
+    for span in spans {
+        let start = span.range.start.min(source.len());
+        let end = span.range.end.min(source.len());
+        if start >= end || !source.is_char_boundary(start) || !source.is_char_boundary(end) {
+            continue;
+        }
+
+        let first_line = line_offsets
+            .partition_point(|offset| *offset <= start)
+            .saturating_sub(1);
+        let last_line = line_offsets
+            .partition_point(|offset| *offset < end)
+            .saturating_sub(1);
+        let rgb = span.style.rgb(syntax_theme);
+        let mut style = theme::syntax_segment(rgb, theme::panel().bg);
+        if span.style.is_bold() {
+            style = style.add_modifier(ratatui::style::Modifier::BOLD);
+        }
+        if span.style.is_italic() {
+            style = style.add_modifier(ratatui::style::Modifier::ITALIC);
+        }
+
+        for line in first_line..=last_line.min(line_offsets.len().saturating_sub(1)) {
+            let line_start = line_offsets[line];
+            let line_content_end = line_offsets
+                .get(line + 1)
+                .copied()
+                .map(|offset| offset.saturating_sub(1))
+                .unwrap_or(source.len());
+            let segment_start = start.max(line_start).min(line_content_end);
+            let segment_end = end.min(line_content_end).max(segment_start);
+            if segment_start >= segment_end {
+                continue;
+            }
+
+            let start_col = source[line_start..segment_start].chars().count();
+            let end_col = source[line_start..segment_end].chars().count();
+            if end_col > start_col {
+                highlights.push(Highlight::new(
+                    Index2::new(line, start_col),
+                    Index2::new(line, end_col - 1),
+                    style,
+                ));
+            }
+        }
+    }
+
+    highlights
 }
 
 #[cfg(test)]
@@ -154,5 +228,45 @@ mod tests {
             .map(|x| buffer.cell((x, 0)).unwrap().symbol().to_string())
             .collect();
         assert!(rendered.contains("hello"));
+    }
+
+    #[test]
+    fn forge_highlights_convert_utf8_byte_ranges_to_character_columns() {
+        let source = "α let value";
+        let start = source.find("let").unwrap();
+        let end = source.find("value").unwrap();
+        let spans = vec![forge_syntax::HighlightSpan {
+            range: start..end,
+            style: forge_syntax::HighlightStyle {
+                class: forge_syntax::HighlightClass::Keyword,
+            },
+        }];
+
+        let highlights =
+            forge_highlights_to_edtui(source, &spans, &forge_syntax::HighlightTheme::default());
+
+        assert_eq!(highlights.len(), 1);
+        assert_eq!(highlights[0].start, Index2::new(0, 2));
+        assert_eq!(highlights[0].end, Index2::new(0, 5));
+    }
+
+    #[test]
+    fn forge_highlights_split_ranges_across_lines() {
+        let source = "fn α() {\n  value\n}";
+        let spans = vec![forge_syntax::HighlightSpan {
+            range: 0..source.len(),
+            style: forge_syntax::HighlightStyle {
+                class: forge_syntax::HighlightClass::Default,
+            },
+        }];
+
+        let highlights =
+            forge_highlights_to_edtui(source, &spans, &forge_syntax::HighlightTheme::default());
+
+        assert_eq!(highlights.len(), 3);
+        assert_eq!(highlights[0].start, Index2::new(0, 0));
+        assert_eq!(highlights[0].end, Index2::new(0, 7));
+        assert_eq!(highlights[1].start, Index2::new(1, 0));
+        assert_eq!(highlights[1].end, Index2::new(1, 6));
     }
 }
