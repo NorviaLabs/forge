@@ -92,6 +92,47 @@ async fn save_editor_writes_atomically_and_clears_dirty_state() {
 }
 
 #[tokio::test]
+async fn vim_substitute_replaces_current_line_or_entire_buffer() {
+    let (dir, mut app) = focus_test_app().await;
+    let path = dir.path().join("replace.txt");
+    fs::write(&path, "old old\nold\nkeep\n").unwrap();
+    app.open_file_in_editor(&path);
+
+    app.handle_key(press(KeyCode::Char(':'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    for ch in "s/old/new/g".chars() {
+        app.handle_key(press(KeyCode::Char(ch), KeyModifiers::NONE))
+            .await
+            .unwrap();
+    }
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(
+        app.editor_session.as_ref().unwrap().text(),
+        "new new\nold\nkeep\n"
+    );
+
+    app.handle_key(press(KeyCode::Char(':'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    for ch in "%s/old/done/".chars() {
+        app.handle_key(press(KeyCode::Char(ch), KeyModifiers::NONE))
+            .await
+            .unwrap();
+    }
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(
+        app.editor_session.as_ref().unwrap().text(),
+        "new new\ndone\nkeep\n"
+    );
+    assert!(app.editor_session.as_ref().unwrap().is_dirty());
+}
+
+#[tokio::test]
 async fn dirty_editor_exit_requires_an_explicit_discard_or_save_choice() {
     let (dir, mut app) = focus_test_app().await;
     let path = dir.path().join("dirty.txt");

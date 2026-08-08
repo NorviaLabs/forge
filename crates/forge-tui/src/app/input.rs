@@ -71,6 +71,36 @@ impl TuiApp {
                             ),
                         }
                     }
+                    command if command.starts_with('s') || command.starts_with('%') => {
+                        match parse_editor_substitute(command) {
+                            Some((all_lines, pattern, replacement, replace_all)) => {
+                                let count = self
+                                    .editor_session
+                                    .as_mut()
+                                    .map(|editor| {
+                                        editor.substitute(
+                                            &pattern,
+                                            &replacement,
+                                            all_lines,
+                                            replace_all,
+                                        )
+                                    })
+                                    .unwrap_or(0);
+                                self.set_feedback(
+                                    if count > 0 {
+                                        FeedbackSeverity::Ok
+                                    } else {
+                                        FeedbackSeverity::Info
+                                    },
+                                    format!("{count} substitution(s)"),
+                                );
+                            }
+                            None => self.set_feedback(
+                                FeedbackSeverity::Warn,
+                                "invalid substitute; use :s/pattern/replacement/[g]",
+                            ),
+                        }
+                    }
                     _ => self.set_feedback(
                         FeedbackSeverity::Warn,
                         format!("unknown editor command: :{command}"),
@@ -989,6 +1019,26 @@ impl TuiApp {
         let _ = self.type_to_compose(key).await?;
         Ok(())
     }
+}
+
+fn parse_editor_substitute(command: &str) -> Option<(bool, String, String, bool)> {
+    let (all_lines, body) = command
+        .strip_prefix("%s")
+        .map(|body| (true, body))
+        .or_else(|| command.strip_prefix('s').map(|body| (false, body)))?;
+    let delimiter = body.chars().next()?;
+    let body = &body[delimiter.len_utf8()..];
+    let (pattern, body) = body.split_once(delimiter)?;
+    let (replacement, flags) = body.split_once(delimiter)?;
+    if flags.chars().any(|flag| flag != 'g') {
+        return None;
+    }
+    Some((
+        all_lines,
+        pattern.to_owned(),
+        replacement.to_owned(),
+        flags == "g",
+    ))
 }
 
 fn terminal_key_bytes(key: event::KeyEvent) -> Option<Vec<u8>> {

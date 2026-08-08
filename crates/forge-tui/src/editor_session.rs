@@ -145,6 +145,64 @@ impl EditorSession {
         self.text() != self.accepted_text
     }
 
+    /// Apply a Vim-style substitution while preserving the current mode and
+    /// cursor position. Returns the number of replacements made.
+    pub(crate) fn substitute(
+        &mut self,
+        pattern: &str,
+        replacement: &str,
+        all_lines: bool,
+        replace_all: bool,
+    ) -> usize {
+        if pattern.is_empty() {
+            return 0;
+        }
+
+        let mut lines: Vec<String> = self.text().split('\n').map(str::to_owned).collect();
+        let start = if all_lines { 0 } else { self.cursor_row() };
+        let end = if all_lines {
+            lines.len()
+        } else {
+            start.saturating_add(1)
+        };
+        let mut replacements = 0;
+
+        let line_count = lines.len();
+        for line in &mut lines[start.min(line_count)..end.min(line_count)] {
+            if replace_all {
+                let count = line.matches(pattern).count();
+                if count > 0 {
+                    *line = line.replace(pattern, replacement);
+                    replacements += count;
+                }
+            } else if let Some(index) = line.find(pattern) {
+                line.replace_range(index..index + pattern.len(), replacement);
+                replacements += 1;
+            }
+        }
+
+        if replacements > 0 {
+            let text = lines.join("\n");
+            self.state.lines = Lines::from(&text);
+            self.state.cursor.row = self
+                .state
+                .cursor
+                .row
+                .min(self.state.lines.len().saturating_sub(1));
+            let line_len = self
+                .state
+                .lines
+                .get(edtui::RowIndex::new(self.state.cursor.row))
+                .map(|line| line.len())
+                .unwrap_or_default();
+            self.state.cursor.col = self.state.cursor.col.min(line_len.saturating_sub(1));
+            self.revision = self.revision.wrapping_add(1);
+            self.refresh_syntax_highlights();
+        }
+
+        replacements
+    }
+
     pub(crate) fn revision(&self) -> u64 {
         self.revision
     }
