@@ -130,9 +130,6 @@ impl TuiApp {
             KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(SemanticCommand::ToggleFiles)
             }
-            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                Some(SemanticCommand::OpenQuickOpen)
-            }
             KeyCode::Char('`') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(SemanticCommand::ToggleBottomPanel)
             }
@@ -175,7 +172,6 @@ impl TuiApp {
                 Some(SemanticCommand::CollapseSelectedDirectory)
             }
             KeyCode::Enter if key.modifiers.is_empty() => Some(SemanticCommand::OpenSelectedEntry),
-            KeyCode::Char('r') if key.modifiers.is_empty() => Some(SemanticCommand::RefreshFiles),
             KeyCode::Char('n') if key.modifiers.is_empty() => {
                 Some(SemanticCommand::BeginCreateFile)
             }
@@ -507,7 +503,6 @@ impl TuiApp {
             }
             SemanticCommand::CycleFocus { forward } => self.cycle_focus_block(forward),
             SemanticCommand::ToggleBottomPanel => self.toggle_bottom_panel(),
-            SemanticCommand::OpenQuickOpen => self.open_quick_open(),
             SemanticCommand::QuickSwitchModel => self.quick_switch_model(),
             SemanticCommand::OpenModelControl(focus) => self.open_connect_picker_compact(focus),
             SemanticCommand::OpenBottomPanel => self.open_bottom_panel(),
@@ -1124,10 +1119,6 @@ mod tests {
             ),
             (key(KeyCode::Char('e'), CTRL), SemanticCommand::ToggleFiles),
             (
-                key(KeyCode::Char('p'), CTRL),
-                SemanticCommand::OpenQuickOpen,
-            ),
-            (
                 key(KeyCode::Char('`'), CTRL),
                 SemanticCommand::ToggleBottomPanel,
             ),
@@ -1260,7 +1251,6 @@ mod tests {
                 key(KeyCode::Enter, NONE),
                 SemanticCommand::OpenSelectedEntry,
             ),
-            (key(KeyCode::Char('r'), NONE), SemanticCommand::RefreshFiles),
             (
                 key(KeyCode::Char('n'), NONE),
                 SemanticCommand::BeginCreateFile,

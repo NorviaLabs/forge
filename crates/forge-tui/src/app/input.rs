@@ -697,6 +697,33 @@ impl TuiApp {
     }
 
     async fn handle_file_explorer_key(&mut self, key: event::KeyEvent) -> Result<bool, TuiError> {
+        if self.workspace_files.explorer.search_focused {
+            if key.modifiers.contains(KeyModifiers::CONTROL)
+                && matches!(key.code, KeyCode::Char('u') | KeyCode::Char('U'))
+            {
+                self.workspace_files.explorer.clear_search();
+                return Ok(true);
+            }
+            if key.modifiers.is_empty() && matches!(key.code, KeyCode::Backspace) {
+                let mut query = self.workspace_files.explorer.search_query.clone();
+                query.pop();
+                self.workspace_files.explorer.set_search_query(query);
+                return Ok(true);
+            }
+            if !key
+                .modifiers
+                .intersects(KeyModifiers::ALT | KeyModifiers::CONTROL)
+            {
+                if let KeyCode::Char(c) = key.code {
+                    if !c.is_control() {
+                        let mut query = self.workspace_files.explorer.search_query.clone();
+                        query.push(c);
+                        self.workspace_files.explorer.set_search_query(query);
+                        return Ok(true);
+                    }
+                }
+            }
+        }
         let Some(command) = self.semantic_command_for_file_key(key) else {
             return Ok(false);
         };
@@ -1024,11 +1051,7 @@ impl TuiApp {
         if let Some(ref mut ov) = self.overlay {
             let ok = map_key(key);
             let action = handle_overlay_key(ov, ok);
-            let refresh_quick_open = matches!(self.overlay, Some(Overlay::QuickOpen { .. }));
             self.apply_overlay_action(action).await?;
-            if refresh_quick_open {
-                self.refresh_quick_open_results();
-            }
             return Ok(());
         }
 
@@ -1059,6 +1082,20 @@ impl TuiApp {
                 }
             }
             FocusMode::Navigation => {
+                if self.focus.block == FocusBlock::Files
+                    && matches!(key.code, KeyCode::Tab | KeyCode::BackTab)
+                {
+                    let backward = matches!(key.code, KeyCode::BackTab)
+                        || key.modifiers.contains(KeyModifiers::SHIFT);
+                    if self.workspace_files.explorer.search_focused && !backward {
+                        self.workspace_files.explorer.search_focused = false;
+                        return Ok(());
+                    }
+                    if !self.workspace_files.explorer.search_focused && backward {
+                        self.workspace_files.explorer.search_focused = true;
+                        return Ok(());
+                    }
+                }
                 if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
                     self.execute_semantic_command(SemanticCommand::CycleFocus {
                         forward: !matches!(key.code, KeyCode::BackTab),
