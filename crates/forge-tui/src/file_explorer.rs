@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -91,9 +92,12 @@ pub struct FileExplorer {
     pub selected_path: Option<PathBuf>,
     pub scroll: usize,
     pub focused: bool,
+    pub search_focused: bool,
+    pub search_query: String,
     pub icon_mode: FileIconMode,
     root_path: Option<PathBuf>,
     pub git_status: GitStatusCache,
+    search_expanded: Option<HashSet<PathBuf>>,
 }
 
 impl FileExplorer {
@@ -104,9 +108,12 @@ impl FileExplorer {
             selected_path: root_path.clone(),
             scroll: 0,
             focused: false,
+            search_focused: true,
+            search_query: String::new(),
             icon_mode,
             root_path: root_path.clone(),
             git_status: GitStatusCache::new(),
+            search_expanded: None,
         };
         explorer.load_root();
         if let Some(root) = root_path {
@@ -194,9 +201,47 @@ impl FileExplorer {
     pub fn visible_nodes(&self) -> Vec<VisibleNode> {
         let mut out = Vec::new();
         if let Some(root) = &self.root {
-            flatten(root, 0, &mut out);
+            flatten_filtered(root, 0, &self.search_query, self.root_path(), &mut out);
         }
         out
+    }
+
+    pub fn set_search_query(&mut self, query: impl Into<String>) {
+        let previous = self.visible_nodes();
+        let previous_index = self
+            .selected_path
+            .as_ref()
+            .and_then(|path| previous.iter().position(|node| &node.path == path))
+            .unwrap_or(0);
+        let was_empty = self.search_query.trim().is_empty();
+        let query = query.into();
+
+        if was_empty && !query.trim().is_empty() {
+            let mut expanded = HashSet::new();
+            if let Some(root) = self.root.as_ref() {
+                collect_expanded_paths(root, &mut expanded);
+            }
+            self.search_expanded = Some(expanded);
+        }
+        if !query.trim().is_empty() {
+            self.load_all_directories();
+        }
+        self.search_query = query;
+        if self.search_query.trim().is_empty() {
+            if let Some(expanded) = self.search_expanded.take() {
+                if let Some(root) = self.root.as_mut() {
+                    restore_expanded_paths(root, &expanded);
+                }
+            }
+        } else if let Some(root) = self.root.as_mut() {
+            expand_matching_paths(root, &self.search_query, self.root_path.as_deref());
+        }
+        self.repair_selection(previous_index);
+        self.scroll = 0;
+    }
+
+    pub fn clear_search(&mut self) {
+        self.set_search_query(String::new());
     }
 
     pub fn selected_relative_path(&self) -> Option<String> {
@@ -285,9 +330,15 @@ impl FileExplorer {
         let Some(path) = self.selected_path.clone() else {
             return;
         };
+        let previous = self.visible_nodes();
+        let previous_index = previous
+            .iter()
+            .position(|node| node.path == path)
+            .unwrap_or(0);
         if let Some(node) = self.find_mut(&path) {
             if node.kind == FileKind::Directory && node.expanded {
                 node.expanded = false;
+                self.repair_selection(previous_index);
                 return;
             }
         }
@@ -296,6 +347,26 @@ impl FileExplorer {
                 self.selected_path = Some(parent.to_path_buf());
             }
         }
+    }
+
+    fn load_all_directories(&mut self) {
+        let root_path = self.root_path.clone();
+        if let Some(root) = self.root.as_mut() {
+            load_all_directories(root_path.as_deref(), root);
+        }
+    }
+
+    fn repair_selection(&mut self, previous_index: usize) {
+        let visible = self.visible_nodes();
+        if visible.is_empty()
+            || visible
+                .iter()
+                .any(|node| Some(&node.path) == self.selected_path.as_ref())
+        {
+            return;
+        }
+        let index = previous_index.min(visible.len() - 1);
+        self.selected_path = Some(visible[index].path.clone());
     }
 
     /// Returns the selected path if it points to a regular file.
@@ -341,7 +412,37 @@ impl FileExplorer {
     }
 }
 
-fn flatten(node: &FileNode, depth: usize, out: &mut Vec<VisibleNode>) {
+fn flatten_filtered(
+    node: &FileNode,
+    depth: usize,
+    query: &str,
+    root: Option<&Path>,
+    out: &mut Vec<VisibleNode>,
+) -> bool {
+    let relative = root
+        .and_then(|root| node.path.strip_prefix(root).ok())
+        .map(|path| {
+            let text = path.to_string_lossy();
+            if text.is_empty() {
+                ".".to_string()
+            } else {
+                text.into_owned()
+            }
+        })
+        .unwrap_or_else(|| node.path.to_string_lossy().into_owned());
+    let self_matches = path_matches_query(&relative, query);
+    let mut matching_children = Vec::new();
+    if node.kind == FileKind::Directory && node.expanded {
+        for child in &node.children {
+            let start = matching_children.len();
+            if flatten_filtered(child, depth + 1, query, root, &mut matching_children) {
+                debug_assert!(matching_children.len() > start);
+            }
+        }
+    }
+    if !self_matches && matching_children.is_empty() {
+        return false;
+    }
     out.push(VisibleNode {
         path: node.path.clone(),
         display_name: node.display_name.clone(),
@@ -353,11 +454,73 @@ fn flatten(node: &FileNode, depth: usize, out: &mut Vec<VisibleNode>) {
         child_count: node.children.len(),
         depth,
     });
-    if node.kind == FileKind::Directory && node.expanded {
-        for child in &node.children {
-            flatten(child, depth + 1, out);
+    out.extend(matching_children);
+    true
+}
+
+fn fuzzy_subsequence(path: &str, query: &str) -> bool {
+    let mut path_chars = path.chars().flat_map(char::to_lowercase);
+    for query_char in query.chars().flat_map(char::to_lowercase) {
+        if path_chars
+            .position(|path_char| path_char == query_char)
+            .is_none()
+        {
+            return false;
         }
     }
+    true
+}
+
+fn load_all_directories(root: Option<&Path>, node: &mut FileNode) {
+    if node.kind != FileKind::Directory {
+        return;
+    }
+    if !node.loaded {
+        load_children(root, node);
+    }
+    for child in &mut node.children {
+        load_all_directories(root, child);
+    }
+}
+
+fn collect_expanded_paths(node: &FileNode, expanded: &mut HashSet<PathBuf>) {
+    if node.expanded {
+        expanded.insert(node.path.clone());
+    }
+    for child in &node.children {
+        collect_expanded_paths(child, expanded);
+    }
+}
+
+fn restore_expanded_paths(node: &mut FileNode, expanded: &HashSet<PathBuf>) {
+    node.expanded = expanded.contains(&node.path);
+    for child in &mut node.children {
+        restore_expanded_paths(child, expanded);
+    }
+}
+
+fn expand_matching_paths(node: &mut FileNode, query: &str, root: Option<&Path>) -> bool {
+    let relative = root
+        .and_then(|root| node.path.strip_prefix(root).ok())
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|| node.path.to_string_lossy().into_owned());
+    let self_matches = path_matches_query(&relative, query);
+    let mut child_matches = false;
+    if node.kind == FileKind::Directory {
+        for child in &mut node.children {
+            child_matches |= expand_matching_paths(child, query, root);
+        }
+        if child_matches {
+            node.expanded = true;
+        }
+    }
+    self_matches || child_matches
+}
+
+fn path_matches_query(path: &str, query: &str) -> bool {
+    query
+        .split_whitespace()
+        .all(|token| fuzzy_subsequence(path, token))
 }
 
 fn find_node<'a>(node: &'a FileNode, path: &Path) -> Option<&'a FileNode> {
@@ -555,7 +718,7 @@ impl Widget for FileExplorerWidget<'_> {
             .style(theme::panel());
         let inner = block.inner(area);
         block.render(area, buf);
-        let height = inner.height.saturating_sub(1) as usize;
+        let height = inner.height.saturating_sub(2) as usize;
         let visible = self.explorer.ensure_selection_visible(height);
         let mut lines = Vec::new();
         if self.explorer.root.is_none() {
@@ -624,6 +787,29 @@ impl Widget for FileExplorerWidget<'_> {
                 }
             }
         }
+        if inner.height > 1 {
+            let search = if self.explorer.search_query.is_empty() {
+                "Search files…".to_string()
+            } else {
+                format!("Search: {}", self.explorer.search_query)
+            };
+            Paragraph::new(Line::styled(
+                format!(
+                    "{search}{}",
+                    if self.focused && self.explorer.search_focused {
+                        "█"
+                    } else {
+                        ""
+                    }
+                ),
+                if self.focused && self.explorer.search_focused {
+                    theme::text()
+                } else {
+                    theme::muted()
+                },
+            ))
+            .render(Rect::new(inner.x, inner.y, inner.width, 1), buf);
+        }
         if inner.height > 0 {
             let selected = self
                 .explorer
@@ -636,9 +822,9 @@ impl Widget for FileExplorerWidget<'_> {
         Paragraph::new(lines).render(
             Rect::new(
                 inner.x,
-                inner.y,
+                inner.y + 1,
                 inner.width,
-                inner.height.saturating_sub(1),
+                inner.height.saturating_sub(2),
             ),
             buf,
         );
@@ -919,6 +1105,126 @@ mod tests {
     }
 
     #[test]
+    fn fuzzy_search_matches_relative_paths_and_keeps_ancestors() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("src")).unwrap();
+        fs::create_dir(root.path().join("src/components")).unwrap();
+        fs::write(root.path().join("src/components/button.rs"), "").unwrap();
+        fs::write(root.path().join("README.md"), "").unwrap();
+        let mut explorer = FileExplorer::new(
+            Some(root.path().to_path_buf()),
+            forge_config::FileIconMode::Unicode,
+        );
+        explorer.selected_path = Some(root.path().join("src").canonicalize().unwrap());
+        explorer.expand_selected();
+        explorer.selected_path = Some(root.path().join("src/components").canonicalize().unwrap());
+        explorer.expand_selected();
+
+        explorer.set_search_query("src cmp btn".replace(' ', ""));
+        let names: Vec<_> = explorer
+            .visible_nodes()
+            .into_iter()
+            .map(|node| node.display_name)
+            .collect();
+        assert!(names[0] != "src");
+        assert_eq!(&names[1..], ["src", "components", "button.rs"]);
+    }
+
+    #[test]
+    fn clearing_fuzzy_search_restores_full_tree_and_selection() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("alpha.txt"), "").unwrap();
+        fs::write(root.path().join("beta.txt"), "").unwrap();
+        let mut explorer = FileExplorer::new(
+            Some(root.path().to_path_buf()),
+            forge_config::FileIconMode::Unicode,
+        );
+        let full_count = explorer.visible_nodes().len();
+        explorer.set_search_query("alpha");
+        assert_eq!(explorer.visible_nodes().len(), 2);
+        explorer.clear_search();
+        assert_eq!(explorer.visible_nodes().len(), full_count);
+        assert!(explorer.selected_path.is_some());
+    }
+
+    #[test]
+    fn fuzzy_search_recurses_into_collapsed_directories_and_tokenizes_terms() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("src/api")).unwrap();
+        fs::write(root.path().join("src/api/client.rs"), "").unwrap();
+        let root_path = root.path().canonicalize().unwrap();
+        let mut explorer =
+            FileExplorer::new(Some(root_path.clone()), forge_config::FileIconMode::Unicode);
+
+        explorer.set_search_query("api cli");
+
+        let visible: Vec<_> = explorer
+            .visible_nodes()
+            .into_iter()
+            .map(|node| {
+                let relative = node.path.strip_prefix(&root_path).unwrap();
+                if relative.as_os_str().is_empty() {
+                    PathBuf::from(".")
+                } else {
+                    relative.to_path_buf()
+                }
+            })
+            .collect();
+        assert_eq!(
+            visible,
+            vec![
+                PathBuf::from("."),
+                PathBuf::from("src"),
+                PathBuf::from("src/api"),
+                PathBuf::from("src/api/client.rs"),
+            ]
+        );
+    }
+
+    #[test]
+    fn narrowing_search_moves_selection_to_the_nearest_visible_match() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("src/api")).unwrap();
+        fs::create_dir_all(root.path().join("src/config")).unwrap();
+        fs::write(root.path().join("src/api/client.rs"), "").unwrap();
+        fs::write(root.path().join("src/config/client_config.rs"), "").unwrap();
+        let root_path = root.path().canonicalize().unwrap();
+        let mut explorer =
+            FileExplorer::new(Some(root_path.clone()), forge_config::FileIconMode::Unicode);
+
+        explorer.set_search_query("client");
+        explorer.selected_path = Some(root_path.join("src/api/client.rs"));
+        explorer.set_search_query("config");
+
+        assert_eq!(
+            explorer.selected_relative_path().as_deref(),
+            Some("src/config/client_config.rs")
+        );
+    }
+
+    #[test]
+    fn collapsing_a_filtered_directory_keeps_selection_on_a_visible_row() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("tests/api")).unwrap();
+        fs::create_dir_all(root.path().join("src/api")).unwrap();
+        fs::write(root.path().join("tests/api/client.rs"), "").unwrap();
+        fs::write(root.path().join("src/api/client.rs"), "").unwrap();
+        let root_path = root.path().canonicalize().unwrap();
+        let mut explorer =
+            FileExplorer::new(Some(root_path.clone()), forge_config::FileIconMode::Unicode);
+
+        explorer.set_search_query("client");
+        explorer.selected_path = Some(root_path.join("tests/api"));
+        explorer.activate_selected();
+
+        let visible = explorer.visible_nodes();
+        assert!(visible
+            .iter()
+            .any(|node| Some(&node.path) == explorer.selected_path.as_ref()));
+        assert_ne!(explorer.selected_relative_path().as_deref(), Some("."));
+    }
+
+    #[test]
     fn git_status_refresh_does_not_clear_tree() {
         let root = tempfile::tempdir().unwrap();
         fs::write(root.path().join("a.txt"), "").unwrap();
@@ -1031,9 +1337,12 @@ mod tests {
             selected_path: Some(PathBuf::from("/tmp/forge-test-root")),
             scroll: 0,
             focused: false,
+            search_focused: true,
+            search_query: String::new(),
             icon_mode: FileIconMode::Unicode,
             root_path: Some(PathBuf::from("/tmp/forge-test-root")),
             git_status: GitStatusCache::new(),
+            search_expanded: None,
         };
         let root_node = explorer.root.as_ref().unwrap();
         assert!(!root_node.loaded);
