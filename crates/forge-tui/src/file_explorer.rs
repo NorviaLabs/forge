@@ -17,6 +17,7 @@ use forge_config::FileIconMode;
 use crate::git_status::{GitStatusCache, GitStatusKind};
 use crate::status_glyph::{status_glyph, Status};
 use crate::theme;
+use crate::widgets::input::TEXT_INSET;
 
 const HIDDEN_DIRS: &[&str] = &[".git", "target"];
 const TREE_INDENT: &str = "  ";
@@ -908,27 +909,27 @@ impl Widget for FileExplorerWidget<'_> {
             let search_box_inner = search_box.inner(search_box_area);
             search_box.render(search_box_area, buf);
 
-            let search = if self.explorer.search_query.is_empty() {
-                "Search files…".to_string()
+            let text_focused = self.focused && self.explorer.search_focused;
+            let (search, search_style) = if self.explorer.search_query.is_empty() {
+                let text = if text_focused {
+                    "▏Search files…".to_string()
+                } else {
+                    "Search files…".to_string()
+                };
+                (text, theme::composer_placeholder())
             } else {
-                format!("Search: {}", self.explorer.search_query)
+                let text = if text_focused {
+                    format!("▏{}", self.explorer.search_query)
+                } else {
+                    self.explorer.search_query.clone()
+                };
+                (text, theme::composer_text())
             };
-            let cursor = if self.focused && self.explorer.search_focused {
-                "█"
-            } else {
-                ""
-            };
-            let search_style = if self.focused && self.explorer.search_focused {
-                theme::text()
-            } else {
-                theme::muted()
-            };
-            let mut search_spans = Vec::new();
-            if self.explorer.icon_mode != FileIconMode::Off {
-                search_spans.push(Span::styled("⌕ ", theme::muted()));
-            }
-            search_spans.push(Span::styled(format!("{search}{cursor}"), search_style));
-            Paragraph::new(Line::from(search_spans)).render(search_box_inner, buf);
+            Paragraph::new(Line::from(vec![
+                Span::raw(" ".repeat(TEXT_INSET as usize)),
+                Span::styled(search, search_style),
+            ]))
+            .render(search_box_inner, buf);
 
             let rule_y = inner.y + SEARCH_BOX_HEIGHT;
             let width = inner.width as usize;
@@ -1599,21 +1600,14 @@ mod tests {
     }
 
     #[test]
-    fn search_icon_shown_when_icon_mode_unicode() {
+    fn search_box_shows_placeholder_without_icon() {
         let mut explorer = FileExplorer::new(None, FileIconMode::Unicode);
         let area = Rect::new(0, 0, 24, 14);
         let buf = render_widget(&mut explorer, area, true);
         let content_row = area.y + 2;
-        assert!(row_text(&buf, area, content_row).contains('⌕'));
-    }
-
-    #[test]
-    fn search_icon_hidden_when_icon_mode_off() {
-        let mut explorer = FileExplorer::new(None, FileIconMode::Off);
-        let area = Rect::new(0, 0, 24, 14);
-        let buf = render_widget(&mut explorer, area, true);
-        let content_row = area.y + 2;
-        assert!(!row_text(&buf, area, content_row).contains('⌕'));
+        let row = row_text(&buf, area, content_row);
+        assert!(row.contains("▏Search files…"));
+        assert!(!row.contains('⌕'));
     }
 
     #[test]
