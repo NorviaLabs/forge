@@ -586,6 +586,8 @@ mod tests {
                     viewer: &mut app.source_viewer,
                     focused: false,
                     editor: None,
+                    editor_command: None,
+                    editor_message: None,
                 },
                 f.area(),
             );
