@@ -963,6 +963,10 @@ pub struct SourceViewerWidget<'a> {
     /// Optional editable surface. The surrounding Forge chrome remains owned
     /// by this widget; the edtui session only paints the content area.
     pub editor: Option<&'a mut EditorSession>,
+    /// Active Vim command without the leading `:`.
+    pub editor_command: Option<&'a str>,
+    /// Last editor result, shown until the next keypress.
+    pub editor_message: Option<&'a str>,
 }
 
 impl Widget for SourceViewerWidget<'_> {
@@ -1187,7 +1191,11 @@ impl SourceViewerWidget<'_> {
     fn render_editor_content(&mut self, area: Rect, buf: &mut Buffer) {
         let rows = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Min(0)])
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Min(1),
+                Constraint::Length(1),
+            ])
             .split(area);
 
         let (mode, current_line, total, modified) = self
@@ -1227,6 +1235,31 @@ impl SourceViewerWidget<'_> {
 
         if let Some(editor) = self.editor.as_deref_mut() {
             editor.render(rows[1], buf);
+        }
+
+        let status_style = if self.focused {
+            theme::text()
+        } else {
+            theme::muted()
+        };
+        let status = if let Some(command) = self.editor_command {
+            format!(":{command}")
+        } else if let Some(message) = self.editor_message {
+            message.to_string()
+        } else if mode == "INSERT" {
+            "-- INSERT --".to_string()
+        } else if mode == "NORMAL" {
+            "NORMAL".to_string()
+        } else {
+            mode
+        };
+        Paragraph::new(Line::styled(status, status_style)).render(rows[2], buf);
+        if self.editor_command.is_some() {
+            let cursor_x =
+                rows[2].x + 1 + self.editor_command.unwrap_or_default().chars().count() as u16;
+            if cursor_x < rows[2].x + rows[2].width {
+                buf[(cursor_x, rows[2].y)].set_style(theme::caret());
+            }
         }
     }
 
@@ -1272,6 +1305,8 @@ mod tests {
             viewer,
             focused: true,
             editor: None,
+            editor_command: None,
+            editor_message: None,
         }
         .render(area, &mut buf);
         let mut text = String::new();
@@ -1913,6 +1948,8 @@ mod tests {
             viewer: &mut viewer,
             focused: true,
             editor: Some(&mut editor),
+            editor_command: None,
+            editor_message: None,
         }
         .render(area, &mut buf);
 
@@ -1951,6 +1988,8 @@ mod tests {
             viewer: &mut viewer,
             focused: true,
             editor: Some(&mut editor),
+            editor_command: None,
+            editor_message: None,
         }
         .render(area, &mut buf);
 
@@ -1961,6 +2000,83 @@ mod tests {
             }
         }
         assert!(rendered.contains("modified"));
+    }
+
+    #[test]
+    fn editor_status_row_shows_mode_command_and_result_states() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("notes.txt");
+        fs::write(&path, "old text\n").unwrap();
+
+        let mut viewer = SourceViewer::new();
+        viewer.open(root.path(), &path);
+        let mut editor = EditorSession::new("old text\n");
+        let area = Rect::new(0, 0, 60, 8);
+
+        let mut normal = Buffer::empty(area);
+        SourceViewerWidget {
+            viewer: &mut viewer,
+            focused: true,
+            editor: Some(&mut editor),
+            editor_command: None,
+            editor_message: None,
+        }
+        .render(area, &mut normal);
+        assert!(buffer_text(&normal, area).contains("NORMAL"));
+
+        editor.handle_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('i'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        let mut insert = Buffer::empty(area);
+        SourceViewerWidget {
+            viewer: &mut viewer,
+            focused: true,
+            editor: Some(&mut editor),
+            editor_command: None,
+            editor_message: None,
+        }
+        .render(area, &mut insert);
+        assert!(buffer_text(&insert, area).contains("-- INSERT --"));
+
+        let mut command = Buffer::empty(area);
+        SourceViewerWidget {
+            viewer: &mut viewer,
+            focused: true,
+            editor: Some(&mut editor),
+            editor_command: Some("w"),
+            editor_message: None,
+        }
+        .render(area, &mut command);
+        assert!(buffer_text(&command, area).contains(":w"));
+        let cursor_style = command[(4, area.bottom() - 2)].style();
+        let caret_style = theme::caret();
+        assert_eq!(cursor_style.fg, caret_style.fg);
+        assert_eq!(cursor_style.bg, caret_style.bg);
+        assert!(cursor_style.add_modifier.contains(caret_style.add_modifier));
+
+        let mut result = Buffer::empty(area);
+        SourceViewerWidget {
+            viewer: &mut viewer,
+            focused: false,
+            editor: Some(&mut editor),
+            editor_command: None,
+            editor_message: Some("written notes.txt"),
+        }
+        .render(area, &mut result);
+        assert!(buffer_text(&result, area).contains("written notes.txt"));
+        assert_eq!(result[(2, area.bottom() - 2)].style().fg, theme::muted().fg);
+    }
+
+    fn buffer_text(buffer: &Buffer, area: Rect) -> String {
+        let mut text = String::new();
+        for y in area.y..area.bottom() {
+            for x in area.x..area.right() {
+                text.push_str(buffer[(x, y)].symbol());
+            }
+            text.push('\n');
+        }
+        text
     }
 
     #[test]
