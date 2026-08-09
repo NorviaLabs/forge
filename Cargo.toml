@@ -52,7 +52,10 @@ futures = "0.3"
 bytes = "1"
 jsonschema = "0.49"
 crossterm = "0.29"
-ratatui = { version = "=0.30.2", default-features = false, features = ["crossterm", "underline-color", "unstable-rendered-line-info"] }
+# `layout-cache` is one of ratatui's default features, so turning defaults off
+# silently dropped it and every layout solve ran the constraint solver from
+# scratch — the single largest source of per-frame allocations.
+ratatui = { version = "=0.30.2", default-features = false, features = ["crossterm", "layout-cache", "underline-color", "unstable-rendered-line-info"] }
 regex = "1"
 pulldown-cmark = "0.13"
 notify = "8"

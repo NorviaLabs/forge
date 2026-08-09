@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -73,14 +74,40 @@ struct CredentialsFile {
     previous_effort: Option<String>,
 }
 
+/// Identity of the on-disk file a cached parse came from.
+///
+/// Modification time *and* length together: either alone is too easy to repeat
+/// across a rewrite. See [`CredentialStore::with_file`] for why a same-tick
+/// same-length external rewrite is not a practical risk.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum FileStamp {
+    Missing,
+    Present {
+        modified: Option<std::time::SystemTime>,
+        len: u64,
+    },
+}
+
 /// File-backed credential store. Secrets are never returned in status Display APIs.
 pub struct CredentialStore {
     path: PathBuf,
+    /// Last successful parse, with the file identity it came from.
+    ///
+    /// Reading credentials sits on the TUI render path (the header's
+    /// "connected" state), where it ran several times per frame — each one a
+    /// stat, a read, and a full TOML parse of the secrets file. Caching the
+    /// parse keeps that to a single stat per call. Only successful loads are
+    /// cached, so a permissions or schema error is re-reported every time
+    /// rather than latched.
+    cache: Mutex<Option<(FileStamp, CredentialsFile)>>,
 }
 
 impl CredentialStore {
     pub fn new(path: PathBuf) -> Self {
-        Self { path }
+        Self {
+            path,
+            cache: Mutex::new(None),
+        }
     }
 
     pub fn user_default() -> Self {
@@ -96,8 +123,7 @@ impl CredentialStore {
     }
 
     pub fn get_api_key(&self, profile_id: &str) -> Result<Option<String>, StoreError> {
-        let file = self.load()?;
-        Ok(file.keys.get(profile_id).cloned())
+        self.with_file(|file| file.keys.get(profile_id).cloned())
     }
 
     pub fn set_api_key(&self, profile_id: &str, key: &str) -> Result<(), StoreError> {
@@ -110,8 +136,7 @@ impl CredentialStore {
     }
 
     pub fn get_oauth(&self, profile_id: &str) -> Result<Option<OauthTokens>, StoreError> {
-        let file = self.load()?;
-        Ok(file.oauth.get(profile_id).cloned())
+        self.with_file(|file| file.oauth.get(profile_id).cloned())
     }
 
     pub fn set_oauth(&self, profile_id: &str, tokens: OauthTokens) -> Result<(), StoreError> {
@@ -158,33 +183,36 @@ impl CredentialStore {
     }
 
     pub fn is_connected(&self, profile_id: &str) -> Result<bool, StoreError> {
-        let file = self.load()?;
-        Ok(file.keys.contains_key(profile_id) || file.oauth.contains_key(profile_id))
+        self.with_file(|file| {
+            file.keys.contains_key(profile_id) || file.oauth.contains_key(profile_id)
+        })
     }
 
     pub fn list_profile_ids(&self) -> Result<Vec<String>, StoreError> {
-        let file = self.load()?;
-        let mut ids: Vec<String> = file.keys.keys().cloned().collect();
-        for k in file.oauth.keys() {
-            if !ids.iter().any(|i| i == k) {
-                ids.push(k.clone());
+        self.with_file(|file| {
+            let mut ids: Vec<String> = file.keys.keys().cloned().collect();
+            for k in file.oauth.keys() {
+                if !ids.iter().any(|i| i == k) {
+                    ids.push(k.clone());
+                }
             }
-        }
-        ids.sort();
-        Ok(ids)
+            ids.sort();
+            ids
+        })
     }
 
     /// Return the last provider/model selection, if one was recorded.
     pub fn last_selection(&self) -> Result<Option<(String, String)>, StoreError> {
-        let file = self.load()?;
-        Ok(match (file.last_profile_id, file.last_model) {
-            (Some(profile_id), Some(model))
-                if !profile_id.trim().is_empty() && !model.trim().is_empty() =>
-            {
-                Some((profile_id, model))
-            }
-            _ => None,
-        })
+        self.with_file(
+            |file| match (file.last_profile_id.as_deref(), file.last_model.as_deref()) {
+                (Some(profile_id), Some(model))
+                    if !profile_id.trim().is_empty() && !model.trim().is_empty() =>
+                {
+                    Some((profile_id.to_string(), model.to_string()))
+                }
+                _ => None,
+            },
+        )
     }
 
     /// Persist the last provider/model selection. This contains no credentials.
@@ -215,8 +243,12 @@ impl CredentialStore {
 
     /// Return the last reasoning effort selected by the interactive client.
     pub fn last_effort(&self) -> Result<Option<String>, StoreError> {
-        let file = self.load()?;
-        Ok(file.last_effort.filter(|effort| !effort.trim().is_empty()))
+        self.with_file(|file| {
+            file.last_effort
+                .as_deref()
+                .filter(|effort| !effort.trim().is_empty())
+                .map(str::to_string)
+        })
     }
 
     /// Persist the last reasoning effort. This contains no credentials.
@@ -240,23 +272,29 @@ impl CredentialStore {
     /// Return the selection active immediately before the current `last_*`
     /// (Quick Switch's toggle target), if one was recorded.
     pub fn previous_selection(&self) -> Result<Option<(String, String)>, StoreError> {
-        let file = self.load()?;
-        Ok(match (file.previous_profile_id, file.previous_model) {
-            (Some(profile_id), Some(model))
-                if !profile_id.trim().is_empty() && !model.trim().is_empty() =>
-            {
-                Some((profile_id, model))
+        self.with_file(|file| {
+            match (
+                file.previous_profile_id.as_deref(),
+                file.previous_model.as_deref(),
+            ) {
+                (Some(profile_id), Some(model))
+                    if !profile_id.trim().is_empty() && !model.trim().is_empty() =>
+                {
+                    Some((profile_id.to_string(), model.to_string()))
+                }
+                _ => None,
             }
-            _ => None,
         })
     }
 
     /// Return the effort paired with `previous_selection`, if any.
     pub fn previous_effort(&self) -> Result<Option<String>, StoreError> {
-        let file = self.load()?;
-        Ok(file
-            .previous_effort
-            .filter(|effort| !effort.trim().is_empty()))
+        self.with_file(|file| {
+            file.previous_effort
+                .as_deref()
+                .filter(|effort| !effort.trim().is_empty())
+                .map(str::to_string)
+        })
     }
 
     /// Record a deliberate provider/model/effort switch, for Quick Switch.
@@ -328,20 +366,63 @@ impl CredentialStore {
         Ok(Some((profile_id, model, effort)))
     }
 
-    fn load(&self) -> Result<CredentialsFile, StoreError> {
-        if !self.path.exists() {
-            return Ok(CredentialsFile::default());
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if let Ok(meta) = fs::metadata(&self.path) {
-                let mode = meta.permissions().mode() & 0o777;
-                if mode & 0o077 != 0 {
-                    return Err(StoreError::InsecurePermissions);
+    /// Read the parsed credentials file, reusing the cached parse when the file
+    /// on disk is unchanged.
+    ///
+    /// The closure runs while the cache lock is held, so it must not call back
+    /// into this store — every caller here is a map lookup or a field read.
+    ///
+    /// Freshness is decided by modification time plus length. An external
+    /// rewrite that lands in the same filesystem timestamp tick *and* keeps the
+    /// byte length identical would be missed; writes made through this store
+    /// refresh the cache directly, so that needs a second process racing inside
+    /// one tick, which no credential flow does.
+    fn with_file<T>(&self, read: impl FnOnce(&CredentialsFile) -> T) -> Result<T, StoreError> {
+        let stamp = match fs::metadata(&self.path) {
+            Ok(meta) => {
+                // The permissions gate runs on every read, never from cache: a
+                // chmod changes ctime only, so a file that just became
+                // world-readable is byte-identical and would otherwise sail
+                // through as a cache hit. It reuses the metadata already read
+                // here, so enforcing it every time costs no extra syscall.
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if meta.permissions().mode() & 0o077 != 0 {
+                        return Err(StoreError::InsecurePermissions);
+                    }
+                }
+                FileStamp::Present {
+                    modified: meta.modified().ok(),
+                    len: meta.len(),
                 }
             }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => FileStamp::Missing,
+            Err(error) => return Err(error.into()),
+        };
+
+        let mut cache = self
+            .cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((cached_stamp, file)) = cache.as_ref() {
+            if *cached_stamp == stamp {
+                return Ok(read(file));
+            }
         }
+
+        let file = self.read_uncached(stamp)?;
+        let value = read(&file);
+        *cache = Some((stamp, file));
+        Ok(value)
+    }
+
+    /// Parse the file from disk, bypassing the cache.
+    fn read_uncached(&self, stamp: FileStamp) -> Result<CredentialsFile, StoreError> {
+        if stamp == FileStamp::Missing {
+            return Ok(CredentialsFile::default());
+        }
+        // Permissions are already verified by `with_file`, the sole caller.
         let text = fs::read_to_string(&self.path)?;
         let file: CredentialsFile = toml::from_str(&text)?;
         // A file with no `version` predates versioning and is read as v1.
@@ -354,6 +435,11 @@ impl CredentialStore {
             }
         }
         Ok(file)
+    }
+
+    /// An owned copy of the parsed file, for the read-modify-write paths.
+    fn load(&self) -> Result<CredentialsFile, StoreError> {
+        self.with_file(Clone::clone)
     }
 
     fn save(&self, file: &CredentialsFile) -> Result<(), StoreError> {
@@ -373,6 +459,25 @@ impl CredentialStore {
             let perms = fs::Permissions::from_mode(0o600);
             fs::set_permissions(&self.path, perms)?;
         }
+        // Re-stamp from the file just written. Dropping the entry instead would
+        // also be correct, but this keeps the next read a cache hit, and it
+        // closes the window where a write landing in the same timestamp tick as
+        // the cached parse would leave the stale copy looking fresh.
+        let stamp = match fs::metadata(&self.path) {
+            Ok(meta) => FileStamp::Present {
+                modified: meta.modified().ok(),
+                len: meta.len(),
+            },
+            Err(_) => FileStamp::Missing,
+        };
+        let mut cache = self
+            .cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *cache = match stamp {
+            FileStamp::Missing => None,
+            stamp => Some((stamp, file.clone())),
+        };
         Ok(())
     }
 }
@@ -404,8 +509,15 @@ pub fn resolve_connected(
     profile_id: &str,
     store: &CredentialStore,
 ) -> Result<Option<KeySource>, StoreError> {
-    let file = store.load()?;
-    if file.oauth.contains_key(profile_id) {
+    let (has_oauth, has_key) = store.with_file(|file| {
+        (
+            file.oauth.contains_key(profile_id),
+            file.keys
+                .get(profile_id)
+                .is_some_and(|key| !key.trim().is_empty()),
+        )
+    })?;
+    if has_oauth {
         return Ok(Some(KeySource::Oauth));
     }
     for name in profile_env_names {
@@ -415,11 +527,7 @@ pub fn resolve_connected(
             }
         }
     }
-    Ok(file
-        .keys
-        .get(profile_id)
-        .filter(|key| !key.trim().is_empty())
-        .map(|_| KeySource::File))
+    Ok(has_key.then_some(KeySource::File))
 }
 
 #[cfg(test)]
@@ -909,5 +1017,78 @@ mod tests {
             "expected InsecurePermissions, got {err:?}"
         );
         assert!(!err.to_string().contains("secret"));
+    }
+
+    /// A rewrite by another process must be observed by the next read.
+    ///
+    /// Reads are served from a cached parse keyed on the file's modification
+    /// time and length, so the risk this caching introduces is a stale answer.
+    /// A credential edited or revoked out-of-band has to take effect.
+    #[test]
+    fn an_external_rewrite_invalidates_the_cached_parse() {
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+        store.set_api_key("xai", "first").unwrap();
+        assert_eq!(store.get_api_key("xai").unwrap().as_deref(), Some("first"));
+
+        // Rewrite behind the store's back, the way a second process would.
+        let replacement = CredentialStore::new(store.path().to_path_buf());
+        replacement.set_api_key("xai", "second-value").unwrap();
+
+        assert_eq!(
+            store.get_api_key("xai").unwrap().as_deref(),
+            Some("second-value"),
+            "a cached parse must not outlive the file it came from"
+        );
+    }
+
+    /// Clearing a credential elsewhere must not leave the old one readable.
+    #[test]
+    fn an_external_clear_invalidates_the_cached_parse() {
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+        store.set_api_key("xai", "secret").unwrap();
+        assert!(store.is_connected("xai").unwrap());
+
+        CredentialStore::new(store.path().to_path_buf())
+            .clear("xai")
+            .unwrap();
+
+        assert!(
+            !store.is_connected("xai").unwrap(),
+            "a revoked credential must not stay live in the cache"
+        );
+    }
+
+    /// Repeated reads of an unchanged file agree with each other.
+    #[test]
+    fn repeated_reads_of_an_unchanged_file_are_stable() {
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+        store.set_api_key("xai", "secret").unwrap();
+        store.set_last_selection("xai", "grok-4").unwrap();
+
+        for _ in 0..3 {
+            assert_eq!(store.get_api_key("xai").unwrap().as_deref(), Some("secret"));
+            assert_eq!(
+                store.last_selection().unwrap(),
+                Some(("xai".to_string(), "grok-4".to_string()))
+            );
+        }
+    }
+
+    /// A store pointed at a path that does not exist reads as empty, and starts
+    /// serving real values once the file appears.
+    #[test]
+    fn a_missing_file_reads_empty_and_notices_when_it_appears() {
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+        assert_eq!(store.get_api_key("xai").unwrap(), None);
+
+        CredentialStore::new(store.path().to_path_buf())
+            .set_api_key("xai", "secret")
+            .unwrap();
+
+        assert_eq!(store.get_api_key("xai").unwrap().as_deref(), Some("secret"));
     }
 }

@@ -12,7 +12,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Padding, Paragraph, Widget};
+use ratatui::widgets::{Block, Borders, Padding, Widget};
 
 const DIFF_BLOCK_MARKER: &str = "\u{200b}";
 const DIFF_BLOCK_END_MARKER: &str = "\u{200c}";
@@ -2685,21 +2685,25 @@ fn render_conversation_lines(
         max_scroll.saturating_sub((scroll_from_bottom as usize).min(max_scroll))
     };
     let end = scroll.saturating_add(area.height as usize).min(total);
+    // Borrowed, not cloned: these lines come from the render cache and are
+    // reused every frame. Deep-copying each visible one (and every owned string
+    // inside its spans) was pure per-frame waste.
+    let blank = Line::from("");
     let visible = (scroll..end)
         .map(|index| {
             if index < lines.len() {
-                lines[index].clone()
+                &lines[index]
             } else if index < content_len {
-                tail_lines[index - lines.len()].clone()
+                &tail_lines[index - lines.len()]
             } else {
-                Line::from("")
+                &blank
             }
         })
         .collect::<Vec<_>>();
     render_visible_conversation_lines(&visible, area, buf);
 }
 
-fn render_visible_conversation_lines(lines: &[Line<'static>], area: Rect, buf: &mut Buffer) {
+fn render_visible_conversation_lines(lines: &[&Line<'static>], area: Rect, buf: &mut Buffer) {
     let mut index = 0;
     let mut y = area.y;
     while index < lines.len() && y < area.bottom() {
@@ -2728,11 +2732,19 @@ fn render_visible_conversation_lines(lines: &[Line<'static>], area: Rect, buf: &
                 .style(theme::panel());
             let inner = block.inner(block_area);
             block.render(block_area, buf);
-            Paragraph::new(lines[index + 1..end].to_vec()).render(inner, buf);
+            // One row per line, same as an unwrapped `Paragraph` over the same
+            // slice, but without cloning the lines to build one.
+            for (offset, line) in lines[index + 1..end].iter().enumerate() {
+                let row = inner.y.saturating_add(offset as u16);
+                if row >= inner.bottom() {
+                    break;
+                }
+                (*line).render(Rect::new(inner.x, row, inner.width, 1), buf);
+            }
             y = y.saturating_add(block_height);
             index = end.saturating_add(1);
         } else {
-            Paragraph::new(lines[index].clone()).render(Rect::new(area.x, y, area.width, 1), buf);
+            lines[index].render(Rect::new(area.x, y, area.width, 1), buf);
             y = y.saturating_add(1);
             index += 1;
         }
@@ -4659,6 +4671,7 @@ mod tests {
         let area = Rect::new(0, 0, 40, 12);
         let mut buf = Buffer::empty(area);
 
+        let lines = lines.iter().collect::<Vec<_>>();
         render_visible_conversation_lines(&lines, area, &mut buf);
 
         assert_eq!(buf[(0, 0)].symbol(), "┌");

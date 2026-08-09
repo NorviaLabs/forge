@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use forge_types::{ToolDescriptor, ToolOutput, ToolValidationError};
+use forge_types::{SideEffectClass, ToolDescriptor, ToolOutput, ToolValidationError};
 use jsonschema::Validator;
 use serde_json::Value;
 
@@ -168,6 +168,27 @@ impl ToolRegistry {
         let mut n: Vec<_> = self.tools.keys().cloned().collect();
         n.sort();
         n
+    }
+
+    /// Number of registered tools.
+    pub fn len(&self) -> usize {
+        self.tools.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.tools.is_empty()
+    }
+
+    /// Each tool's name and side-effect class, borrowed.
+    ///
+    /// This is what an ACL check needs. [`list_descriptors`](Self::list_descriptors)
+    /// answers the same question but clones every name, description and input
+    /// schema to do it — far too much for a caller that only wants to count
+    /// what a principal may see, which the status bar does on every frame.
+    pub fn name_classes(&self) -> impl Iterator<Item = (&str, SideEffectClass)> + '_ {
+        self.tools
+            .values()
+            .map(|tool| (tool.name(), tool.side_effect_class()))
     }
 
     /// Validate then execute. Never calls handler on validation failure.

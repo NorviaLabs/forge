@@ -168,7 +168,7 @@ impl TuiApp {
             vendor_label,
             route_label,
             web_search_label: self.search_status.label.clone(),
-            tools_visible: self.session.list_tools().len(),
+            tools_visible: self.session.tool_count(),
             prompt_cache_hits: self.session.token_usage.prompt_cache_hits,
             prompt_cache_writes: self.session.token_usage.prompt_cache_writes,
             repo_name: repo.repo_name.clone(),
