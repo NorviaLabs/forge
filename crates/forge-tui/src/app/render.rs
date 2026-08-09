@@ -411,6 +411,8 @@ impl TuiApp {
                             viewer: &mut self.source_viewer,
                             focused: self.focus.block == FocusBlock::Workspace,
                             editor: self.editor_session.as_mut(),
+                            editor_command: self.editor_command.as_deref(),
+                            editor_message: self.editor_message.as_deref(),
                         },
                         chat_area,
                     );
