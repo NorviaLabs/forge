@@ -6,10 +6,103 @@
 //! verbatim.
 
 use super::*;
+use std::io::Write;
 
 use super::util::{rebase_path, relative_display};
+use crate::source_viewer::ViewerStatus;
 
 impl TuiApp {
+    pub(super) fn save_active_editor(&mut self) {
+        self.save_active_editor_with_force(false);
+    }
+
+    pub(super) fn save_active_editor_with_force(&mut self, force: bool) {
+        let Some(path) = self.source_viewer.path.clone() else {
+            self.set_feedback(FeedbackSeverity::Warn, "No file open to save");
+            return;
+        };
+        let Some(editor) = self.editor_session.as_ref() else {
+            self.set_feedback(FeedbackSeverity::Warn, "The active file is read-only");
+            return;
+        };
+        if !force {
+            let baseline = editor.accepted_serialized_text();
+            match self
+                .source_viewer
+                .disk_conflicts_with(&path, baseline.as_bytes())
+            {
+                Ok(true) => {
+                    self.explorer_dialog.current = Some(ExplorerDialog::SaveConflict);
+                    return;
+                }
+                Err(error) => {
+                    self.set_feedback(
+                        FeedbackSeverity::Warn,
+                        format!("could not check disk before save: {error}"),
+                    );
+                    return;
+                }
+                Ok(false) => {}
+            }
+        }
+        let serialized = editor.serialized_text();
+        let permissions = fs::metadata(&path).ok().map(|meta| meta.permissions());
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+
+        let result = (|| -> Result<(), String> {
+            let mut temporary = tempfile::NamedTempFile::new_in(parent)
+                .map_err(|error| format!("could not create temporary save file: {error}"))?;
+            temporary
+                .write_all(serialized.as_bytes())
+                .map_err(|error| format!("could not write file: {error}"))?;
+            temporary
+                .as_file()
+                .sync_all()
+                .map_err(|error| format!("could not flush file: {error}"))?;
+            if let Some(permissions) = permissions {
+                fs::set_permissions(temporary.path(), permissions)
+                    .map_err(|error| format!("could not preserve permissions: {error}"))?;
+            }
+            temporary
+                .persist(&path)
+                .map_err(|error| format!("could not replace file: {}", error.error))?;
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => {
+                if let Some(editor) = self.editor_session.as_mut() {
+                    editor.accept_current_text();
+                }
+                self.source_viewer.refresh(self.session.workspace_root());
+                self.workspace_files.explorer.refresh_git_status();
+                self.set_feedback(FeedbackSeverity::Ok, format!("saved {}", path.display()));
+            }
+            Err(error) => {
+                self.set_feedback(FeedbackSeverity::Warn, error);
+            }
+        }
+    }
+
+    pub(super) fn reload_active_editor_from_disk(&mut self) {
+        let Some(path) = self.source_viewer.path.clone() else {
+            return;
+        };
+        let Ok(bytes) = fs::read(&path) else {
+            self.set_feedback(FeedbackSeverity::Warn, "could not reload file from disk");
+            return;
+        };
+        let Ok(text) = String::from_utf8(bytes) else {
+            self.set_feedback(FeedbackSeverity::Warn, "file is no longer valid UTF-8");
+            return;
+        };
+        if let Some(editor) = self.editor_session.as_mut() {
+            editor.replace_text(&text);
+        }
+        self.source_viewer.refresh(self.session.workspace_root());
+        self.set_feedback(FeedbackSeverity::Info, "reloaded file from disk");
+    }
+
     pub(super) fn reconcile_open_file_external_rename(&mut self) -> bool {
         let Some(open_path) = self.source_viewer.path.clone() else {
             return false;
@@ -163,15 +256,75 @@ impl TuiApp {
     pub(super) fn show_file_in_editor(&mut self, path: &Path) {
         let root = self.session.workspace_root().to_path_buf();
         self.source_viewer.open(&root, path);
+        self.editor_session = self
+            .source_viewer
+            .document_text
+            .as_deref()
+            .filter(|_| self.source_viewer.status == ViewerStatus::Ok)
+            .map(EditorSession::new);
+        if let Some(editor) = self.editor_session.as_mut() {
+            editor.set_syntax_language(self.source_viewer.language_label.as_deref());
+            editor.set_syntax_theme(crate::theme::syntax_theme());
+        }
         self.focus_block(FocusBlock::Workspace);
-        self.status_state.message = "Viewing file (readonly)".into();
+        self.status_state.message = if self.editor_session.is_some() {
+            "Editing file · NORMAL mode".into()
+        } else {
+            "Viewing file (readonly)".into()
+        };
         // Keep the file explorer in sync with the active file.
         self.workspace_files.explorer.selected_path = Some(path.to_path_buf());
     }
 
     pub(super) fn open_file_in_editor(&mut self, path: &Path) {
+        let same_path = self.source_viewer.path.as_deref() == Some(path)
+            || self
+                .source_viewer
+                .path
+                .as_ref()
+                .and_then(|current| current.canonicalize().ok())
+                .zip(path.canonicalize().ok())
+                .is_some_and(|(current, requested)| current == requested);
+        if same_path
+            && self
+                .editor_session
+                .as_ref()
+                .is_some_and(|editor| editor.is_dirty())
+        {
+            self.focus_block(FocusBlock::Workspace);
+            self.set_feedback(
+                FeedbackSeverity::Info,
+                "Unsaved editor changes kept; use :e to reload explicitly",
+            );
+            return;
+        }
+        if !same_path
+            && self
+                .editor_session
+                .as_ref()
+                .is_some_and(|editor| editor.is_dirty())
+        {
+            self.pending_editor_path = Some(path.to_path_buf());
+            self.explorer_dialog.current = Some(ExplorerDialog::DirtySwitch {
+                path: path.to_path_buf(),
+            });
+            return;
+        }
         self.navigate_to_workspace_view(WorkspaceView::File(path.to_path_buf()));
         self.note_workspace_file_opened(path);
+    }
+
+    pub(super) fn complete_pending_editor_switch(&mut self, discard: bool) {
+        let Some(path) = self.pending_editor_path.take() else {
+            return;
+        };
+        if discard {
+            if let Some(editor) = self.editor_session.as_mut() {
+                editor.accept_current_text();
+            }
+        }
+        self.navigate_to_workspace_view(WorkspaceView::File(path.clone()));
+        self.note_workspace_file_opened(&path);
     }
 
     #[cfg(test)]
@@ -357,6 +510,9 @@ impl TuiApp {
                     FeedbackSeverity::Ok,
                     format!("Created {}", relative_display(&root, &result.path)),
                 );
+                if result.kind == FileOperationKind::CreateFile {
+                    self.open_file_in_editor(&result.path);
+                }
             }
             FileOperationKind::RenameEntry => {
                 if let Some(new_path) = result.new_path.as_ref() {
@@ -514,6 +670,9 @@ impl TuiApp {
             ExplorerDialog::ConfirmDelete { .. } => (" Delete ", theme::warn()),
             ExplorerDialog::ConfirmCreate { .. } => (" Confirm Create ", theme::warn()),
             ExplorerDialog::ConfirmRename { .. } => (" Confirm Rename ", theme::warn()),
+            ExplorerDialog::DirtyExit => (" Unsaved Changes ", theme::warn()),
+            ExplorerDialog::DirtySwitch { .. } => (" Unsaved Changes ", theme::warn()),
+            ExplorerDialog::SaveConflict => (" File Changed on Disk ", theme::warn()),
         };
         match dialog {
             ExplorerDialog::Name {
@@ -629,6 +788,46 @@ impl TuiApp {
                         lines.push(Line::styled("Enter/y confirm · Esc cancel", theme::muted()));
                     }
                 }
+            }
+            ExplorerDialog::DirtyExit => {
+                lines.push(Line::styled(
+                    "The current file has unsaved changes.",
+                    theme::text(),
+                ));
+                lines.push(Line::from(""));
+                lines.push(Line::styled(
+                    "Save and leave?  Enter/s save · d discard · Esc cancel",
+                    theme::muted(),
+                ));
+            }
+            ExplorerDialog::DirtySwitch { path } => {
+                lines.push(Line::styled(
+                    "The current file has unsaved changes.",
+                    theme::text(),
+                ));
+                lines.push(Line::styled(
+                    format!(
+                        "Open {} after resolving them?",
+                        relative_display(self.session.workspace_root(), path)
+                    ),
+                    theme::muted(),
+                ));
+                lines.push(Line::from(""));
+                lines.push(Line::styled(
+                    "Save and switch?  Enter/s save · d discard · Esc cancel",
+                    theme::muted(),
+                ));
+            }
+            ExplorerDialog::SaveConflict => {
+                lines.push(Line::styled(
+                    "The file changed outside Forge while you were editing.",
+                    theme::text(),
+                ));
+                lines.push(Line::from(""));
+                lines.push(Line::styled(
+                    "Reload disk?  r reload · f force save · Esc cancel",
+                    theme::muted(),
+                ));
             }
         }
         Paragraph::new(lines)

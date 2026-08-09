@@ -120,13 +120,23 @@ impl TuiApp {
         }
         let text = match self.selection.pane {
             Some(CopyPane::Editor) => match self.editor_area {
-                Some(area) => selection::editor_selection_text(
-                    &self.source_viewer.lines,
-                    self.source_viewer.top_line,
-                    self.source_viewer.h_scroll,
-                    area,
-                    &self.selection,
-                ),
+                Some(area) => {
+                    let live_lines = self.editor_session.as_ref().map(|editor| {
+                        editor
+                            .text()
+                            .split('\n')
+                            .map(str::to_owned)
+                            .collect::<Vec<_>>()
+                    });
+                    let lines = live_lines.as_deref().unwrap_or(&self.source_viewer.lines);
+                    selection::editor_selection_text(
+                        lines,
+                        self.source_viewer.top_line,
+                        self.source_viewer.h_scroll,
+                        area,
+                        &self.selection,
+                    )
+                }
                 None => String::new(),
             },
             Some(CopyPane::Conversation) => match self.conversation_area {
@@ -337,6 +347,25 @@ impl TuiApp {
         } else {
             direction
         };
+        if let Some(editor) = self.editor_session.as_mut() {
+            let key = if shift {
+                if delta < 0 {
+                    crossterm::event::KeyCode::PageUp
+                } else {
+                    crossterm::event::KeyCode::PageDown
+                }
+            } else if delta < 0 {
+                crossterm::event::KeyCode::Up
+            } else {
+                crossterm::event::KeyCode::Down
+            };
+            editor.handle_key(crossterm::event::KeyEvent::new(
+                key,
+                crossterm::event::KeyModifiers::NONE,
+            ));
+            self.source_viewer.current_line = editor.cursor_row();
+            return;
+        }
         self.source_viewer
             .move_cursor_vertical(delta, page.max(1) as usize);
     }

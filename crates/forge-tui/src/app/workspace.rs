@@ -67,11 +67,56 @@ impl TuiApp {
     }
 
     pub(super) fn go_home_workspace(&mut self) {
+        if self
+            .editor_session
+            .as_ref()
+            .is_some_and(|editor| editor.is_dirty())
+        {
+            self.pending_editor_home = true;
+            self.pending_editor_diff = false;
+            self.explorer_dialog.current = Some(ExplorerDialog::DirtyExit);
+            return;
+        }
+        self.pending_editor_home = false;
         self.workspace_navigation.home();
         self.normalize_focus();
     }
 
+    pub(super) fn complete_dirty_editor_exit(&mut self) {
+        if self.pending_editor_home {
+            self.pending_editor_home = false;
+            self.go_home_workspace();
+        } else if self.pending_editor_diff {
+            self.pending_editor_diff = false;
+            self.navigate_to_workspace_view(WorkspaceView::Diff(DiffCommandContext::Current));
+        } else {
+            self.go_back_workspace();
+        }
+    }
+
+    pub(super) fn review_changes_workspace(&mut self) {
+        if self
+            .editor_session
+            .as_ref()
+            .is_some_and(|editor| editor.is_dirty())
+        {
+            self.pending_editor_home = false;
+            self.pending_editor_diff = true;
+            self.explorer_dialog.current = Some(ExplorerDialog::DirtyExit);
+            return;
+        }
+        self.navigate_to_workspace_view(WorkspaceView::Diff(DiffCommandContext::Current));
+    }
+
     pub(super) fn go_back_workspace(&mut self) {
+        if self
+            .editor_session
+            .as_ref()
+            .is_some_and(|editor| editor.is_dirty())
+        {
+            self.explorer_dialog.current = Some(ExplorerDialog::DirtyExit);
+            return;
+        }
         let mut next = None;
         while let Some(candidate) = self.workspace_navigation.history.pop() {
             if self.workspace_view_is_valid(&candidate) {

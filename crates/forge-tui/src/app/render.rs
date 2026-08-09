@@ -410,6 +410,7 @@ impl TuiApp {
                         SourceViewerWidget {
                             viewer: &mut self.source_viewer,
                             focused: self.focus.block == FocusBlock::Workspace,
+                            editor: self.editor_session.as_mut(),
                         },
                         chat_area,
                     );
@@ -429,11 +430,16 @@ impl TuiApp {
         // Highlight a live drag-selection over the editor (sorted after the
         // source viewer so reverse-video is applied on top of its spans).
         if self.selection.active && self.current_workspace_is_file() {
+            let line_count = self
+                .editor_session
+                .as_ref()
+                .map(EditorSession::line_count)
+                .unwrap_or(self.source_viewer.lines.len());
             paint_editor_selection(
                 frame.buffer_mut(),
                 &self.selection,
                 regions.chat,
-                self.source_viewer.lines.len(),
+                line_count,
             );
         }
         if self.selection.active
