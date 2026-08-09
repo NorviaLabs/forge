@@ -549,8 +549,10 @@ impl TuiApp {
 
     fn reconcile_path_rename(&mut self, old_path: &Path, new_path: &Path) {
         let root = self.session.workspace_root().to_path_buf();
+        let mut renamed_open_file = false;
         if let Some(open_path) = self.source_viewer.path.clone() {
             if let Some(rebased) = rebase_path(&open_path, old_path, new_path) {
+                renamed_open_file = true;
                 self.source_viewer
                     .reconcile_renamed_path(&root, &open_path, &rebased);
             }
@@ -560,6 +562,9 @@ impl TuiApp {
             if let Some(rebased) = rebase_path(&abs, old_path, new_path) {
                 att.rel_path = relative_display(&root, &rebased);
             }
+        }
+        if renamed_open_file {
+            self.focus_block(FocusBlock::Workspace);
         }
         self.workspace_files.explorer.refresh_git_status();
     }

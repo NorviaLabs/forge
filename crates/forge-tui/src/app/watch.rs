@@ -49,7 +49,7 @@ impl TuiApp {
         while let Ok(change) = self.file_watch.change_rx.try_recv() {
             workspace_changed = true;
             if let Some(path) = &self.source_viewer.path {
-                if change.path == *path {
+                if same_file_identity(&change.path, path) {
                     active_file_changed = true;
                 }
             }
@@ -180,4 +180,13 @@ impl TuiApp {
         self.input.history_browse = self.history.browsing();
         self.clamp_slash_suggest();
     }
+}
+
+fn same_file_identity(left: &Path, right: &Path) -> bool {
+    left == right
+        || left
+            .canonicalize()
+            .ok()
+            .zip(right.canonicalize().ok())
+            .is_some_and(|(left, right)| left == right)
 }
