@@ -791,9 +791,18 @@ fn explorer_row_line(
     Line::from(spans)
 }
 
+/// Fixed chrome above the tree: the nested search box (3 rows: top border,
+/// content, bottom border) plus the focus-dot rule below it (1 row).
+const SEARCH_BOX_HEIGHT: u16 = 3;
+const TREE_TOP_OFFSET: u16 = SEARCH_BOX_HEIGHT + 1;
+
 pub struct FileExplorerWidget<'a> {
     pub explorer: &'a mut FileExplorer,
     pub focused: bool,
+    /// Whether `FocusBlock::Search` (not just `Files`) is the active block —
+    /// finer-grained than `focused`, which is true for either. Drives the
+    /// solid/hollow state of the focus-indicator dot on the rule.
+    pub search_active: bool,
 }
 
 impl Widget for FileExplorerWidget<'_> {
@@ -819,7 +828,9 @@ impl Widget for FileExplorerWidget<'_> {
             .style(theme::panel());
         let inner = block.inner(area);
         block.render(area, buf);
-        let height = inner.height.saturating_sub(2) as usize;
+        // The footer row (selected relative path) always reserves 1 row;
+        // the tree's own budget sits below the search box + rule.
+        let height = inner.height.saturating_sub(TREE_TOP_OFFSET + 1) as usize;
         self.explorer.ensure_selection_visible(height);
         let visible = &self.explorer.visible;
         let mut lines = Vec::new();
@@ -889,28 +900,65 @@ impl Widget for FileExplorerWidget<'_> {
                 }
             }
         }
-        if inner.height > 0 {
+        if inner.height >= TREE_TOP_OFFSET {
+            let search_box_area = Rect::new(inner.x, inner.y, inner.width, SEARCH_BOX_HEIGHT);
+            let search_box = Block::default()
+                .borders(Borders::ALL)
+                .border_style(theme::muted());
+            let search_box_inner = search_box.inner(search_box_area);
+            search_box.render(search_box_area, buf);
+
             let search = if self.explorer.search_query.is_empty() {
                 "Search files…".to_string()
             } else {
                 format!("Search: {}", self.explorer.search_query)
             };
-            Paragraph::new(Line::styled(
-                format!(
-                    "{search}{}",
-                    if self.focused && self.explorer.search_focused {
-                        "█"
-                    } else {
-                        ""
-                    }
+            let cursor = if self.focused && self.explorer.search_focused {
+                "█"
+            } else {
+                ""
+            };
+            let search_style = if self.focused && self.explorer.search_focused {
+                theme::text()
+            } else {
+                theme::muted()
+            };
+            let mut search_spans = Vec::new();
+            if self.explorer.icon_mode != FileIconMode::Off {
+                search_spans.push(Span::styled("⌕ ", theme::muted()));
+            }
+            search_spans.push(Span::styled(format!("{search}{cursor}"), search_style));
+            Paragraph::new(Line::from(search_spans)).render(search_box_inner, buf);
+
+            let rule_y = inner.y + SEARCH_BOX_HEIGHT;
+            let width = inner.width as usize;
+            let center = width / 2;
+            let mut rule_spans = Vec::new();
+            if center > 0 {
+                rule_spans.push(Span::styled("─".repeat(center), theme::muted()));
+            }
+            let (dot, dot_style) = if self.search_active {
+                ("●", theme::active_panel_border())
+            } else {
+                ("○", theme::muted())
+            };
+            rule_spans.push(Span::styled(dot, dot_style));
+            let right_len = width.saturating_sub(center + 1);
+            if right_len > 0 {
+                rule_spans.push(Span::styled("─".repeat(right_len), theme::muted()));
+            }
+            Paragraph::new(Line::from(rule_spans))
+                .render(Rect::new(inner.x, rule_y, inner.width, 1), buf);
+
+            Paragraph::new(lines).render(
+                Rect::new(
+                    inner.x,
+                    inner.y + TREE_TOP_OFFSET,
+                    inner.width,
+                    inner.height.saturating_sub(TREE_TOP_OFFSET + 1),
                 ),
-                if self.focused && self.explorer.search_focused {
-                    theme::text()
-                } else {
-                    theme::muted()
-                },
-            ))
-            .render(Rect::new(inner.x, inner.y, inner.width, 1), buf);
+                buf,
+            );
         }
         if inner.height > 0 {
             let selected = self
@@ -921,15 +969,6 @@ impl Widget for FileExplorerWidget<'_> {
             Paragraph::new(Line::styled(selected, theme::muted()))
                 .render(Rect::new(inner.x, footer_y, inner.width, 1), buf);
         }
-        Paragraph::new(lines).render(
-            Rect::new(
-                inner.x,
-                inner.y + 1,
-                inner.width,
-                inner.height.saturating_sub(2),
-            ),
-            buf,
-        );
     }
 }
 
@@ -1504,5 +1543,85 @@ mod tests {
         assert!(root_node.loading);
         assert!(!root_node.children.is_empty() || true); // children may be empty while loading
         assert_eq!(explorer.visible_nodes().len(), 1);
+    }
+
+    fn render_widget(explorer: &mut FileExplorer, area: Rect, search_active: bool) -> Buffer {
+        let mut buf = Buffer::empty(area);
+        FileExplorerWidget {
+            explorer,
+            focused: true,
+            search_active,
+        }
+        .render(area, &mut buf);
+        buf
+    }
+
+    fn row_text(buf: &Buffer, area: Rect, y: u16) -> String {
+        (0..area.width)
+            .map(|x| buf[(x, y)].symbol().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn search_box_has_top_and_bottom_border_rows() {
+        let mut explorer = FileExplorer::new(None, FileIconMode::Unicode);
+        let area = Rect::new(0, 0, 24, 14);
+        let buf = render_widget(&mut explorer, area, true);
+        // Outer FILES block reserves 1 border row + 1 padding column on
+        // each side, so the nested search box starts at (area.x + 2, area.y + 1).
+        let inner_y = area.y + 1;
+        let top_row = row_text(&buf, area, inner_y);
+        let bottom_row = row_text(&buf, area, inner_y + 2);
+        assert!(top_row.contains('┌') && top_row.contains('┐'));
+        assert!(bottom_row.contains('└') && bottom_row.contains('┘'));
+    }
+
+    #[test]
+    fn search_rule_shows_solid_dot_when_search_active() {
+        let mut explorer = FileExplorer::new(None, FileIconMode::Unicode);
+        let area = Rect::new(0, 0, 24, 14);
+        let buf = render_widget(&mut explorer, area, true);
+        let rule_y = area.y + 1 + SEARCH_BOX_HEIGHT;
+        let row = row_text(&buf, area, rule_y);
+        assert!(row.contains('●'));
+        assert!(!row.contains('○'));
+    }
+
+    #[test]
+    fn search_rule_shows_hollow_dot_when_search_not_active() {
+        let mut explorer = FileExplorer::new(None, FileIconMode::Unicode);
+        let area = Rect::new(0, 0, 24, 14);
+        let buf = render_widget(&mut explorer, area, false);
+        let rule_y = area.y + 1 + SEARCH_BOX_HEIGHT;
+        let row = row_text(&buf, area, rule_y);
+        assert!(row.contains('○'));
+        assert!(!row.contains('●'));
+    }
+
+    #[test]
+    fn search_icon_shown_when_icon_mode_unicode() {
+        let mut explorer = FileExplorer::new(None, FileIconMode::Unicode);
+        let area = Rect::new(0, 0, 24, 14);
+        let buf = render_widget(&mut explorer, area, true);
+        let content_row = area.y + 2;
+        assert!(row_text(&buf, area, content_row).contains('⌕'));
+    }
+
+    #[test]
+    fn search_icon_hidden_when_icon_mode_off() {
+        let mut explorer = FileExplorer::new(None, FileIconMode::Off);
+        let area = Rect::new(0, 0, 24, 14);
+        let buf = render_widget(&mut explorer, area, true);
+        let content_row = area.y + 2;
+        assert!(!row_text(&buf, area, content_row).contains('⌕'));
+    }
+
+    #[test]
+    fn no_panic_across_small_pane_heights() {
+        for height in 0..=8u16 {
+            let mut explorer = FileExplorer::new(None, FileIconMode::Unicode);
+            let area = Rect::new(0, 0, 20, height);
+            render_widget(&mut explorer, area, false);
+        }
     }
 }

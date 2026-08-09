@@ -143,6 +143,7 @@ impl TuiApp {
                 FileExplorerWidget {
                     explorer: &mut self.workspace_files.explorer,
                     focused: matches!(self.focus.block, FocusBlock::Files | FocusBlock::Search),
+                    search_active: self.focus.block == FocusBlock::Search,
                 },
                 files,
             );
