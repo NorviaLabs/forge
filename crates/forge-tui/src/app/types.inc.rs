@@ -681,6 +681,8 @@ pub struct TuiApp {
     pub(crate) editor_session: Option<EditorSession>,
     /// Active Vim-style command line, without the leading `:`.
     pub(crate) editor_command: Option<String>,
+    /// Last Vim-style editor result, cleared by the next keypress.
+    pub(crate) editor_message: Option<String>,
     pub(crate) pending_editor_path: Option<PathBuf>,
     pub(crate) pending_editor_home: bool,
     pub(crate) pending_editor_diff: bool,
