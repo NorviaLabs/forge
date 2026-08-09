@@ -9,6 +9,7 @@ use super::*;
 impl TuiApp {
     pub(super) fn focus_availability(&self) -> FocusAvailability {
         FocusAvailability {
+            search: self.workspace_files.visible,
             files: self.workspace_files.visible,
             // No standalone preference flag — the sidebar only ever hides
             // via the layout's own narrow-width defensive floor, which this
@@ -34,7 +35,11 @@ impl TuiApp {
             self.focus.block = FocusBlock::Workspace;
             self.focus.mode = FocusMode::Transient(TransientOwner::JumpToLine);
         }
-        self.workspace_files.explorer.focused = self.focus.block == FocusBlock::Files
+        self.workspace_files.explorer.focused =
+            matches!(self.focus.block, FocusBlock::Files | FocusBlock::Search)
+                && self.focus.mode == FocusMode::Navigation
+                && self.workspace_files.visible;
+        self.workspace_files.explorer.search_focused = self.focus.block == FocusBlock::Search
             && self.focus.mode == FocusMode::Navigation
             && self.workspace_files.visible;
         self.bottom_panel.focused = self.focus.block == FocusBlock::BottomPanel
@@ -59,12 +64,8 @@ impl TuiApp {
     }
 
     pub(crate) fn focus_block(&mut self, block: FocusBlock) {
-        let entering_files = block == FocusBlock::Files && self.focus.block != FocusBlock::Files;
         if self.focus.block != block {
             self.focus.previous_block = Some(self.focus.block);
-        }
-        if entering_files {
-            self.workspace_files.explorer.search_focused = true;
         }
         self.focus.block = block;
         self.focus.mode = FocusMode::Navigation;

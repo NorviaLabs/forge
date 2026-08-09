@@ -25,7 +25,7 @@ impl TuiApp {
         self.workspace_files.visible = !self.workspace_files.visible;
         self.save_ui_state();
         if self.workspace_files.visible {
-            self.focus_block(FocusBlock::Files);
+            self.focus_block(FocusBlock::Search);
         } else {
             self.restore_focus_after_closing(FocusBlock::Files);
         }

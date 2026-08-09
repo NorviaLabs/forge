@@ -748,7 +748,7 @@ impl TuiApp {
 
     async fn handle_active_block_key(&mut self, key: event::KeyEvent) -> Result<bool, TuiError> {
         match self.focus.block {
-            FocusBlock::Files => self.handle_file_explorer_key(key).await,
+            FocusBlock::Search | FocusBlock::Files => self.handle_file_explorer_key(key).await,
             FocusBlock::Workspace => self.handle_workspace_navigation_key(key).await,
             FocusBlock::Sidebar => self.handle_sidebar_key(key).await,
             FocusBlock::Composer => Ok(false),
@@ -1082,20 +1082,6 @@ impl TuiApp {
                 }
             }
             FocusMode::Navigation => {
-                if self.focus.block == FocusBlock::Files
-                    && matches!(key.code, KeyCode::Tab | KeyCode::BackTab)
-                {
-                    let backward = matches!(key.code, KeyCode::BackTab)
-                        || key.modifiers.contains(KeyModifiers::SHIFT);
-                    if self.workspace_files.explorer.search_focused && !backward {
-                        self.workspace_files.explorer.search_focused = false;
-                        return Ok(());
-                    }
-                    if !self.workspace_files.explorer.search_focused && backward {
-                        self.workspace_files.explorer.search_focused = true;
-                        return Ok(());
-                    }
-                }
                 if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
                     self.execute_semantic_command(SemanticCommand::CycleFocus {
                         forward: !matches!(key.code, KeyCode::BackTab),

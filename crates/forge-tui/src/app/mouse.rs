@@ -313,7 +313,7 @@ impl TuiApp {
                 self.mouse_scroll_source_viewer(direction, shift);
             }
             FocusBlock::Workspace => self.mouse_scroll_conversation(direction, shift),
-            FocusBlock::Files => {
+            FocusBlock::Files | FocusBlock::Search => {
                 let step = if shift { WHEEL_PAGE } else { WHEEL_NOTCH };
                 self.workspace_files
                     .explorer

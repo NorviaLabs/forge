@@ -165,7 +165,9 @@ impl TuiApp {
         } else if renamed_open_file {
             self.notice_state.items.clear();
         }
-        if self.focus.block == FocusBlock::Files && self.focus.mode == FocusMode::Navigation {
+        if matches!(self.focus.block, FocusBlock::Files | FocusBlock::Search)
+            && self.focus.mode == FocusMode::Navigation
+        {
             self.workspace_files.explorer.refresh_git_status();
         } else {
             self.note_workspace_changed();

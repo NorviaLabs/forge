@@ -889,7 +889,7 @@ impl Widget for FileExplorerWidget<'_> {
                 }
             }
         }
-        if inner.height > 1 {
+        if inner.height > 0 {
             let search = if self.explorer.search_query.is_empty() {
                 "Search files…".to_string()
             } else {

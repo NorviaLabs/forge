@@ -68,15 +68,20 @@ impl TuiApp {
                 text.push_str("• :s/.../.../  Replace; :%s/.../.../  Replace all\n");
                 text.push_str("• Alt+E  Open the external editor\n");
             }
-            FocusBlock::Files => {
-                text.push_str("• ↑/↓  Move selection\n");
+            FocusBlock::Search => {
                 text.push_str("• Type  Fuzzy-filter files by workspace path\n");
                 text.push_str("• Ctrl+U  Clear file search\n");
-                text.push_str("• Tab / Shift+Tab  Search / tree focus\n");
+                text.push_str("• ↑/↓  Move tree selection without leaving search\n");
+                text.push_str("• Enter  Open the selected file\n");
+                text.push_str("• Tab / Shift+Tab  Next / previous block\n");
+                text.push_str("• Esc  Return to previous block\n");
+            }
+            FocusBlock::Files => {
+                text.push_str("• ↑/↓  Move selection\n");
                 text.push_str("• ←/→  Collapse / expand directory\n");
                 text.push_str("• Enter  Open file or expand directory\n");
-                text.push_str("• n / N  New file / folder (tree focus)\n");
-                text.push_str("• R  Rename · d  Delete (tree focus)\n");
+                text.push_str("• n / N  New file / folder\n");
+                text.push_str("• R  Rename · d  Delete\n");
                 text.push_str("• Esc  Return to previous block\n");
             }
             FocusBlock::Sidebar => {
