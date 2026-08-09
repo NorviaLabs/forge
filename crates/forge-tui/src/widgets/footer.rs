@@ -119,6 +119,12 @@ fn shimmer_label(label: &'static str, base: Style) -> Vec<Span<'static>> {
         .collect()
 }
 
+/// Horizontal inset applied to the content row so the footer's text aligns
+/// with the composer's left/right edges above it, rather than running flush
+/// to the terminal border. Kept to 1 cell — the 76-col MIN_WIDTH floor must
+/// still fit the full model label plus every chip.
+const PAD: u16 = 1;
+
 impl Widget for FooterBar<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         if area.height == 0 || area.width == 0 {
@@ -126,6 +132,39 @@ impl Widget for FooterBar<'_> {
         }
         theme::fill(area, buf, theme::canvas());
         let m = self.model;
+
+        // A divider rule separates the footer from the composer above it.
+        // On a pathologically short area (height 1) there's no room for
+        // both the rule and the content — skip the rule and use the whole
+        // area as content, same as the pre-two-row behavior.
+        let (rule_area, content_area) = if area.height >= 2 {
+            (
+                Some(Rect::new(area.x, area.y, area.width, 1)),
+                Rect::new(area.x, area.y + 1, area.width, area.height - 1),
+            )
+        } else {
+            (None, area)
+        };
+        if let Some(rule_area) = rule_area {
+            buf.set_stringn(
+                rule_area.x,
+                rule_area.y,
+                "─".repeat(rule_area.width as usize),
+                rule_area.width as usize,
+                theme::border_muted(),
+            );
+        }
+        // Inset the content row so text aligns with the composer's edges
+        // instead of running flush to the terminal border.
+        let area = Rect::new(
+            content_area.x + PAD.min(content_area.width),
+            content_area.y,
+            content_area.width.saturating_sub(2 * PAD),
+            content_area.height,
+        );
+        if area.width == 0 {
+            return;
+        }
 
         // A blocking hint (HITL/dialog) takes over the whole row for this
         // frame — the chips are dimmed and irrelevant then. The focused
@@ -159,9 +198,9 @@ impl Widget for FooterBar<'_> {
         // ---- left: configuration chips (which-LLM, effort, mode) ----
         let dim = m.dimmed;
         let mode_display = m.mode_label.clone();
-        let config_chrome = 1 // " " after the model label
-            + 2 + 1 + 2 // "  ·  " separator
-            + 2 + 1 + 2 // "  ·  " before the mode chip
+        let config_chrome = 2 // dot + " " before the model label
+            + 1 + 1 + 1 // " │ " separator
+            + 1 + 1 + 1 // " │ " before the mode chip
             + mode_display.chars().count();
         let effort_chars = m.effort_label.chars().count() as u16;
         let left_budget = area.width.saturating_sub(right_w).saturating_sub(1);
@@ -171,28 +210,37 @@ impl Widget for FooterBar<'_> {
         let llm_label = truncate_middle(&m.llm_label, model_max as usize);
 
         let mut left: Vec<Span<'static>> = Vec::new();
+        let dot_style = if dim {
+            theme::dim()
+        } else if !m.llm_connected {
+            theme::warn()
+        } else {
+            theme::accent_style()
+        };
+        // Which model is configured stays visible even while disconnected
+        // (warn-colored) — connection state is a color signal, not a reason
+        // to hide which model you'd be talking to.
         let llm_style = if dim {
             theme::dim()
         } else if !m.llm_connected {
             theme::warn().add_modifier(Modifier::BOLD)
         } else {
-            theme::agent().add_modifier(Modifier::BOLD)
+            theme::text_secondary()
         };
         let llm_focused = m.focus == Some(FooterFocus::Llm);
-        // Which model is configured stays visible even while disconnected
-        // (warn-colored) — connection state is a color signal, not a reason
-        // to hide which model you'd be talking to.
+        left.push(Span::styled("●", dot_style));
+        left.push(Span::raw(" "));
         left.push(Span::styled(
             llm_label,
             if llm_focused && !dim {
-                theme::focused_selection_style()
+                llm_style.add_modifier(Modifier::UNDERLINED)
             } else {
                 llm_style
             },
         ));
-        left.push(Span::raw("  "));
-        left.push(Span::styled("·", theme::dim()));
-        left.push(Span::raw("  "));
+        left.push(Span::raw(" "));
+        left.push(Span::styled("│", theme::border_muted()));
+        left.push(Span::raw(" "));
         let effort_style = if dim {
             theme::dim()
         } else {
@@ -202,14 +250,14 @@ impl Widget for FooterBar<'_> {
         left.push(Span::styled(
             m.effort_label.clone(),
             if effort_focused && !dim {
-                theme::focused_selection_style()
+                effort_style.add_modifier(Modifier::UNDERLINED)
             } else {
                 effort_style
             },
         ));
-        left.push(Span::raw("  "));
-        left.push(Span::styled("·", theme::dim()));
-        left.push(Span::raw("  "));
+        left.push(Span::raw(" "));
+        left.push(Span::styled("│", theme::border_muted()));
+        left.push(Span::raw(" "));
         let mode_style = if dim {
             theme::dim()
         } else {
@@ -219,7 +267,7 @@ impl Widget for FooterBar<'_> {
         left.push(Span::styled(
             mode_display,
             if mode_focused && !dim {
-                theme::focused_selection_style()
+                mode_style.add_modifier(Modifier::UNDERLINED)
             } else {
                 mode_style
             },
@@ -332,11 +380,13 @@ mod tests {
         }
     }
 
+    /// Renders at the standard two-row height (rule + content) and returns
+    /// the content row's text.
     fn rendered(m: &FooterModel, width: u16) -> String {
-        let area = Rect::new(0, 0, width, 1);
+        let area = Rect::new(0, 0, width, 2);
         let mut buf = Buffer::empty(area);
         FooterBar { model: m }.render(area, &mut buf);
-        (0..area.width).map(|x| buf[(x, 0)].symbol()).collect()
+        (0..area.width).map(|x| buf[(x, 1)].symbol()).collect()
     }
 
     #[test]
@@ -352,7 +402,54 @@ mod tests {
             !out.contains('▴') && !out.contains('⏎') && !out.contains(">>"),
             "{out:?}"
         );
-        assert!(out.trim_start().starts_with("openai"), "{out:?}");
+        assert!(out.trim_start().starts_with('●'), "{out:?}");
+    }
+
+    #[test]
+    fn renders_a_divider_rule_above_the_content_row() {
+        let m = model(TurnLifecycle::Ready, 0.34);
+        let area = Rect::new(0, 0, 90, 2);
+        let mut buf = Buffer::empty(area);
+        FooterBar { model: &m }.render(area, &mut buf);
+        for x in 0..area.width {
+            assert_eq!(buf[(x, 0)].symbol(), "─", "rule row should be solid");
+        }
+    }
+
+    #[test]
+    fn content_row_is_inset_from_both_edges() {
+        let m = model(TurnLifecycle::Ready, 0.34);
+        let out = rendered(&m, 90);
+        assert_eq!(&out[..PAD as usize], " ", "left inset: {out:?}");
+        let trailing: String = out.chars().rev().take(PAD as usize).collect();
+        assert_eq!(trailing, " ", "right inset: {out:?}");
+    }
+
+    #[test]
+    fn config_chips_use_pipe_separators() {
+        // Only the left-side config chips switch to `│`; the right-side
+        // activity line keeps its own `·` separators unchanged.
+        let m = model(TurnLifecycle::Ready, 0.34);
+        let out = rendered(&m, 90);
+        assert!(out.contains('│'), "{out:?}");
+        let mode_end = out.find("Auto").expect("mode chip renders") + "Auto".len();
+        assert!(
+            !out[..mode_end].contains('·'),
+            "chip cluster should use │, not ·: {out:?}"
+        );
+    }
+
+    #[test]
+    fn height_one_degrades_to_single_row_without_a_rule() {
+        // A pathologically short area (no room for rule + content) falls
+        // back to rendering content directly in the one row available,
+        // matching the pre-two-row behavior rather than panicking.
+        let m = model(TurnLifecycle::Ready, 0.34);
+        let area = Rect::new(0, 0, 90, 1);
+        let mut buf = Buffer::empty(area);
+        FooterBar { model: &m }.render(area, &mut buf);
+        let out: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
+        assert!(out.contains("openai/gpt-5.6-luna"), "{out:?}");
     }
 
     #[test]
@@ -381,10 +478,10 @@ mod tests {
         m.llm_connected = false;
         let out = rendered(&m, 90);
         assert!(out.contains("openai/gpt-5.6-luna"), "{out:?}");
-        let area = Rect::new(0, 0, 90, 1);
+        let area = Rect::new(0, 0, 90, 2);
         let mut buf = Buffer::empty(area);
         FooterBar { model: &m }.render(area, &mut buf);
-        assert_eq!(buf[(0, 0)].style().fg, theme::warn().fg);
+        assert_eq!(buf[(PAD, 1)].style().fg, theme::warn().fg);
     }
 
     #[test]
@@ -416,13 +513,13 @@ mod tests {
             !out.contains("Working"),
             "activity yields to the hint: {out:?}"
         );
-        let area = Rect::new(0, 0, 90, 1);
+        let area = Rect::new(0, 0, 90, 2);
         let mut buf = Buffer::empty(area);
         FooterBar { model: &m }.render(area, &mut buf);
         let hint_cell = (0..area.width)
-            .find(|&x| buf[(x, 0)].symbol() == "⏎")
+            .find(|&x| buf[(x, 1)].symbol() == "⏎")
             .expect("hint glyph should render");
-        let style = buf[(hint_cell, 0)].style();
+        let style = buf[(hint_cell, 1)].style();
         assert!(
             style.add_modifier.contains(Modifier::ITALIC),
             "hint should be italic: {style:?}"
