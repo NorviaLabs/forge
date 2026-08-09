@@ -66,10 +66,11 @@ impl TuiApp {
             .map(|id| self.vendor_route_labels(id))
             .unwrap_or((None, None));
         // Model/vendor/effort live on the footer chip row; the composer band
-        // is text-only and the footer always reserves one row. The focused
-        // footer's hint shares that row (replacing the right-side activity
-        // while focused), never adds a second row.
-        let hint_h: u16 = 1;
+        // is text-only and the footer always reserves two rows — a thin
+        // divider rule plus the chip/activity content row. The focused
+        // footer's hint shares the content row (replacing the right-side
+        // activity while focused), never adds a third row.
+        let hint_h: u16 = 2;
         let expand_conversation = !matches!(
             self.workspace_navigation.current,
             Some(WorkspaceView::File(_))

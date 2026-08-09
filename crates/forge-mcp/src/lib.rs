@@ -98,6 +98,35 @@ pub struct McpStdioClient {
     server_id: String,
 }
 
+/// `fork()` in a multi-threaded process can race another thread's
+/// close-after-write of the very executable being exec'd, so a
+/// freshly-written script can transiently report ETXTBSY even though
+/// nothing still holds it open for writing. This is a known kernel/libc
+/// race (not a real conflict), so retry briefly before giving up.
+async fn spawn_retrying_text_file_busy(
+    command: &str,
+    args: &[String],
+) -> Result<Child, std::io::Error> {
+    const ETXTBSY: i32 = 26;
+    const MAX_ATTEMPTS: u32 = 5;
+    for attempt in 1..=MAX_ATTEMPTS {
+        match Command::new(command)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            Ok(child) => return Ok(child),
+            Err(err) if err.raw_os_error() == Some(ETXTBSY) && attempt < MAX_ATTEMPTS => {
+                tokio::time::sleep(Duration::from_millis(10 * attempt as u64)).await;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    unreachable!("loop always returns by the final attempt")
+}
+
 impl McpStdioClient {
     pub async fn spawn(cfg: &McpServerConfig) -> Result<Self, McpError> {
         if cfg.transport != "stdio" {
@@ -106,12 +135,7 @@ impl McpStdioClient {
                 cfg.transport
             )));
         }
-        let mut child = Command::new(&cfg.command)
-            .args(&cfg.args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()?;
+        let mut child = spawn_retrying_text_file_busy(&cfg.command, &cfg.args).await?;
         let stdin = child
             .stdin
             .take()
