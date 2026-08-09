@@ -659,7 +659,6 @@ impl TuiApp {
                     not_connected: !connected,
                     focused: composer_focused,
                     waiting: self.session.pending_hitl().is_some(),
-                    show_send_hint: true,
                     permission_mode: self.permission_mode,
                 },
                 regions.input,
