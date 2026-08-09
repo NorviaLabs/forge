@@ -38,7 +38,8 @@ async fn tab_cycles_visible_blocks_and_skips_hidden_ones() {
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.focus.block, FocusBlock::Files);
+    assert_eq!(app.focus.block, FocusBlock::Search);
+    assert!(app.workspace_files.explorer.search_focused);
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await
         .unwrap();
@@ -54,6 +55,11 @@ async fn tab_cycles_visible_blocks_and_skips_hidden_ones() {
         .await
         .unwrap();
     assert_eq!(app.focus.block, FocusBlock::Files);
+    assert!(!app.workspace_files.explorer.search_focused);
+    app.handle_key(press(KeyCode::BackTab, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.focus.block, FocusBlock::Search);
     assert!(app.workspace_files.explorer.search_focused);
 }
 
@@ -363,7 +369,7 @@ async fn ctrl_e_then_enter_opens_file_from_explorer() {
         .await
         .unwrap();
     assert!(app.workspace_files.visible);
-    assert_eq!(app.focus.block, FocusBlock::Files);
+    assert_eq!(app.focus.block, FocusBlock::Search);
 
     app.workspace_files.explorer.selected_path = Some(path.clone());
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
@@ -386,7 +392,7 @@ async fn semantic_commands_dispatch_without_rendering_a_frame() {
         .await
         .unwrap();
     assert!(app.workspace_files.visible);
-    assert_eq!(app.focus.block, FocusBlock::Files);
+    assert_eq!(app.focus.block, FocusBlock::Search);
 
     app.execute_semantic_command(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
         .await
@@ -574,6 +580,19 @@ async fn resize_drops_focus_from_a_zero_width_files_block() {
     let (_dir, mut app) = focus_test_app().await;
     app.workspace_files.visible = true;
     app.focus_block(FocusBlock::Files);
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal.draw(|frame| app.draw(frame)).unwrap();
+    assert_eq!(app.focus.block, FocusBlock::Sidebar);
+    assert_eq!(app.focus.mode, FocusMode::Navigation);
+}
+
+#[tokio::test]
+async fn resize_drops_focus_from_a_zero_width_search_block() {
+    use ratatui::backend::TestBackend;
+
+    let (_dir, mut app) = focus_test_app().await;
+    app.workspace_files.visible = true;
+    app.focus_block(FocusBlock::Search);
     let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
     terminal.draw(|frame| app.draw(frame)).unwrap();
     assert_eq!(app.focus.block, FocusBlock::Sidebar);

@@ -115,6 +115,7 @@ impl TuiApp {
         // Layout can hide a requested side/bottom panel. Focus must follow the
         // rendered geometry rather than leaving an invisible key owner behind.
         let available = FocusAvailability {
+            search: regions.files.is_some(),
             files: regions.files.is_some(),
             sidebar: regions.sidebar.is_some(),
             bottom_panel: self.bottom_panel.open && regions.bottom_panel.height > 0,
@@ -141,7 +142,7 @@ impl TuiApp {
             frame.render_widget(
                 FileExplorerWidget {
                     explorer: &mut self.workspace_files.explorer,
-                    focused: self.focus.block == FocusBlock::Files,
+                    focused: matches!(self.focus.block, FocusBlock::Files | FocusBlock::Search),
                 },
                 files,
             );

@@ -47,9 +47,6 @@ async fn characterization_files_selection_and_expansion_survive_focus_roundtrip(
     app.workspace_files.explorer.selected_path = Some(src.clone());
     app.workspace_files.explorer.expand_selected();
 
-    app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
-        .await
-        .unwrap();
     assert_eq!(app.focus.block, FocusBlock::Files);
     assert!(!app.workspace_files.explorer.search_focused);
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))

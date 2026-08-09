@@ -787,7 +787,7 @@ impl Widget for FileExplorerWidget<'_> {
                 }
             }
         }
-        if inner.height > 1 {
+        if inner.height > 0 {
             let search = if self.explorer.search_query.is_empty() {
                 "Search files…".to_string()
             } else {
@@ -810,6 +810,13 @@ impl Widget for FileExplorerWidget<'_> {
             ))
             .render(Rect::new(inner.x, inner.y, inner.width, 1), buf);
         }
+        if inner.height > 1 {
+            Paragraph::new(Line::styled(
+                "─".repeat(inner.width as usize),
+                theme::muted(),
+            ))
+            .render(Rect::new(inner.x, inner.y + 1, inner.width, 1), buf);
+        }
         if inner.height > 0 {
             let selected = self
                 .explorer
@@ -822,9 +829,9 @@ impl Widget for FileExplorerWidget<'_> {
         Paragraph::new(lines).render(
             Rect::new(
                 inner.x,
-                inner.y + 1,
+                inner.y + 2,
                 inner.width,
-                inner.height.saturating_sub(2),
+                inner.height.saturating_sub(3),
             ),
             buf,
         );
@@ -834,6 +841,24 @@ impl Widget for FileExplorerWidget<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_row_renders_even_when_the_pane_is_a_single_content_row_tall() {
+        let mut explorer = FileExplorer::new(None, FileIconMode::Unicode);
+        explorer.set_search_query("abc");
+        // area height 3 == 1 top border + 1 content row + 1 bottom border,
+        // so `inner.height == 1`: previously the search row's `> 1` guard
+        // suppressed it entirely here.
+        let area = Rect::new(0, 0, 20, 3);
+        let mut buf = Buffer::empty(area);
+        FileExplorerWidget {
+            explorer: &mut explorer,
+            focused: true,
+        }
+        .render(area, &mut buf);
+        let row: String = (0..area.width).map(|x| buf[(x, 1)].symbol()).collect();
+        assert!(row.contains("Search: abc"));
+    }
 
     #[test]
     fn row_style_precedence_keeps_selection_strongest() {

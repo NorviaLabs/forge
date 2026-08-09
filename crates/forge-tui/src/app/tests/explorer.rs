@@ -8,7 +8,7 @@ use super::prelude::*;
 async fn explorer_search_accepts_shortcut_initials_without_opening_dialogs() {
     let (_dir, mut app) = focus_test_app().await;
     app.workspace_files.visible = true;
-    app.focus_block(FocusBlock::Files);
+    app.focus_block(FocusBlock::Search);
 
     for ch in "docs".chars() {
         app.handle_key(press(KeyCode::Char(ch), KeyModifiers::NONE))
@@ -27,23 +27,47 @@ async fn explorer_search_accepts_shortcut_initials_without_opening_dialogs() {
 }
 
 #[tokio::test]
-async fn explorer_tab_enters_tree_focus_and_n_opens_new_folder_dialog() {
+async fn explorer_arrow_keys_move_tree_selection_without_leaving_search() {
+    let (dir, mut app) = focus_test_app().await;
+    fs::write(dir.path().join("alpha.rs"), "").unwrap();
+    fs::write(dir.path().join("beta.rs"), "").unwrap();
+    app.workspace_files.explorer.refresh_workspace();
+    app.workspace_files.visible = true;
+    app.focus_block(FocusBlock::Search);
+
+    let before = app.workspace_files.explorer.selected_path.clone();
+    app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    assert_eq!(app.focus.block, FocusBlock::Search);
+    assert!(app.workspace_files.explorer.search_focused);
+    assert_ne!(app.workspace_files.explorer.selected_path, before);
+}
+
+#[tokio::test]
+async fn explorer_tab_moves_from_search_to_files_and_n_opens_new_folder_dialog() {
     let (_dir, mut app) = focus_test_app().await;
     app.workspace_files.visible = true;
-    app.focus_block(FocusBlock::Files);
+    app.focus_block(FocusBlock::Search);
+    assert!(app.workspace_files.explorer.search_focused);
 
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await
         .unwrap();
     assert_eq!(app.focus.block, FocusBlock::Files);
     assert!(!app.workspace_files.explorer.search_focused);
+
     app.handle_key(press(KeyCode::BackTab, KeyModifiers::SHIFT))
         .await
         .unwrap();
+    assert_eq!(app.focus.block, FocusBlock::Search);
     assert!(app.workspace_files.explorer.search_focused);
+
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await
         .unwrap();
+    assert_eq!(app.focus.block, FocusBlock::Files);
 
     app.handle_key(press(KeyCode::Char('N'), KeyModifiers::SHIFT))
         .await
@@ -65,9 +89,6 @@ async fn explorer_new_file_dialog_owns_printable_input_and_selects_created_file(
     app.focus_block(FocusBlock::Files);
     app.input.set_text("");
 
-    app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
-        .await
-        .unwrap();
     app.handle_key(press(KeyCode::Char('n'), KeyModifiers::NONE))
         .await
         .unwrap();
@@ -113,9 +134,6 @@ async fn explorer_name_escape_cancels_without_focus_change_or_composer_input() {
     app.workspace_files.visible = true;
     app.focus_block(FocusBlock::Files);
 
-    app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
-        .await
-        .unwrap();
     app.handle_key(press(KeyCode::Char('n'), KeyModifiers::NONE))
         .await
         .unwrap();
@@ -146,9 +164,6 @@ async fn explorer_rename_prepopulates_and_updates_open_child_file() {
     app.focus_block(FocusBlock::Files);
     app.workspace_files.explorer.selected_path = Some(src.clone());
 
-    app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
-        .await
-        .unwrap();
     app.handle_key(press(KeyCode::Char('R'), KeyModifiers::SHIFT))
         .await
         .unwrap();
@@ -225,9 +240,6 @@ async fn explorer_delete_non_empty_folder_requires_stronger_confirmation() {
     app.workspace_files.visible = true;
     app.focus_block(FocusBlock::Files);
 
-    app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
-        .await
-        .unwrap();
     app.handle_key(press(KeyCode::Char('d'), KeyModifiers::NONE))
         .await
         .unwrap();
