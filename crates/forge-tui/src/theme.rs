@@ -13,6 +13,23 @@ thread_local! {
     static ACTIVE_THEME_ID: RefCell<String> = RefCell::new(DEFAULT_THEME_ID.to_string());
     static LAST_SYSTEM_THEME: RefCell<Option<(&'static str, Instant)>> = const { RefCell::new(None) };
     static RESOLVED_SYSTEM_THEME: RefCell<Option<&'static str>> = const { RefCell::new(None) };
+    /// Memoized [`Palette`] for the active theme, keyed by the theme id it was
+    /// resolved from (already system-resolved, so an OS light/dark flip changes
+    /// the key and recomputes).
+    ///
+    /// Every styling token — and there are dozens per frame — funnels through
+    /// [`active_palette`], and each call was cloning the whole theme registry
+    /// (up to three times) to look one palette up. Only the *active* palette is
+    /// memoized: [`palette`] with an explicit id stays uncached so the theme
+    /// picker, which asks for many different themes in a single frame, cannot
+    /// thrash a one-entry cache.
+    static ACTIVE_PALETTE_CACHE: RefCell<Option<(String, Palette)>> = const { RefCell::new(None) };
+}
+
+/// Drop the memoized active palette. Call whenever the palette behind an
+/// unchanged theme id may have changed.
+fn invalidate_active_palette() {
+    ACTIVE_PALETTE_CACHE.with(|cache| *cache.borrow_mut() = None);
 }
 
 /// Install discovered themes and the active theme id (call once at startup).
@@ -20,6 +37,9 @@ pub fn install(registry: ThemeRegistry, theme_id: impl Into<String>) {
     THEME_REGISTRY.with(|registry_slot| *registry_slot.borrow_mut() = registry);
     RESOLVED_SYSTEM_THEME.with(|resolved| *resolved.borrow_mut() = None);
     LAST_SYSTEM_THEME.with(|last| *last.borrow_mut() = None);
+    // A new registry can redefine the palette behind an id the cache already
+    // holds, so the id alone is not enough to tell the entry is still good.
+    invalidate_active_palette();
     set_active(theme_id);
 }
 
@@ -43,22 +63,45 @@ pub fn registry() -> ThemeRegistry {
 }
 
 fn active_palette() -> Palette {
-    palette(&active())
+    ACTIVE_THEME_ID.with(|active| {
+        let active = active.borrow();
+        // Resolve `system` first so the cache key is the theme actually in
+        // effect, not the literal string "system".
+        let effective: &str = if forge_config::is_system_theme(&active) {
+            system_theme_id()
+        } else {
+            &active
+        };
+        ACTIVE_PALETTE_CACHE.with(|cache| {
+            if let Some((id, palette)) = cache.borrow().as_ref() {
+                if id == effective {
+                    return *palette;
+                }
+            }
+            let palette = palette_from_source(&resolved_palette(effective));
+            *cache.borrow_mut() = Some((effective.to_string(), palette));
+            palette
+        })
+    })
 }
 
 fn resolved_palette(theme_id: &str) -> ThemePalette {
-    if forge_config::is_system_theme(theme_id) {
-        let theme_id = system_theme_id();
-        return registry()
-            .get(theme_id)
-            .map(|theme| theme.palette)
-            .expect("built-in system theme");
-    }
-    registry()
-        .get(theme_id)
-        .map(|theme| theme.palette)
-        .or_else(|| registry().get(DEFAULT_THEME_ID).map(|theme| theme.palette))
-        .expect("built-in solarized-dark theme")
+    // Borrow the registry rather than `registry()`, which hands back a full
+    // clone of every loaded theme just to read one palette out of it.
+    THEME_REGISTRY.with(|registry_slot| {
+        let registry = registry_slot.borrow();
+        if forge_config::is_system_theme(theme_id) {
+            return registry
+                .palette(system_theme_id())
+                .copied()
+                .expect("built-in system theme");
+        }
+        registry
+            .palette(theme_id)
+            .or_else(|| registry.palette(DEFAULT_THEME_ID))
+            .copied()
+            .expect("built-in solarized-dark theme")
+    })
 }
 
 fn system_theme_id() -> &'static str {
@@ -1006,6 +1049,36 @@ mod tests {
         std::fs::write(themes.join("solarized-dark.toml"), content).unwrap();
         install(ThemeRegistry::load(Some(dir.path())), THEME_SOLARIZED_DARK);
         assert_eq!(palette(THEME_SOLARIZED_DARK).accent, Color::Rgb(255, 0, 0));
+        install_defaults();
+    }
+
+    /// Installing a registry that redefines the *active* theme takes effect.
+    ///
+    /// The active palette is memoized under its theme id, and this swaps the
+    /// palette while the id stays `solarized-dark` — so the id alone cannot
+    /// tell the cached entry is stale. Reading the accent first is what makes
+    /// this a real test: it populates the cache before the second install.
+    #[test]
+    fn installing_a_registry_refreshes_the_memoized_active_palette() {
+        install_defaults();
+        set_active(THEME_SOLARIZED_DARK);
+        let before = accent_color();
+        assert_ne!(before, Color::Rgb(255, 0, 0));
+
+        let dir = tempfile::tempdir().unwrap();
+        let themes = dir.path().join(".forge").join("themes");
+        std::fs::create_dir_all(&themes).unwrap();
+        let content = include_str!("../themes/solarized-dark.toml")
+            .to_string()
+            .replace("accent = \"#268BD2\"", "accent = \"#FF0000\"");
+        std::fs::write(themes.join("solarized-dark.toml"), content).unwrap();
+        install(ThemeRegistry::load(Some(dir.path())), THEME_SOLARIZED_DARK);
+
+        assert_eq!(
+            accent_color(),
+            Color::Rgb(255, 0, 0),
+            "the memoized palette outlived the registry it came from"
+        );
         install_defaults();
     }
 

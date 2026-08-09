@@ -1083,6 +1083,27 @@ impl AgentSession {
         }
     }
 
+    /// How many tools this session would expose to the model.
+    ///
+    /// Equivalent to `list_tools().len()`, without building the list. The
+    /// status bar asks for this every frame, where materialising every
+    /// descriptor — name, description and a cloned input schema apiece — was
+    /// one of the larger per-frame allocation sources.
+    pub fn tool_count(&self) -> usize {
+        if self.enable_gov {
+            self.tools
+                .name_classes()
+                .filter(|(name, class)| {
+                    self.governance
+                        .acl
+                        .is_allowed(&self.governance.principal, name, *class)
+                })
+                .count()
+        } else {
+            self.tools.len()
+        }
+    }
+
     pub fn context_usage_ratio(&self) -> f64 {
         self.context_tokens_estimate() as f64 / self.context.config.capacity_tokens.max(1) as f64
     }
@@ -2526,6 +2547,34 @@ mod tests {
             enable_context_lifecycle: true,
             enable_governance: true,
             ..Default::default()
+        }
+    }
+
+    /// `tool_count` is the cheap form of `list_tools().len()` and must stay
+    /// exactly equivalent to it, including the governance filter — the status
+    /// bar reports it as the number of tools the model can see.
+    #[tokio::test]
+    async fn tool_count_matches_the_length_of_the_listed_tools() {
+        for enable_governance in [true, false] {
+            let dir = tempdir().unwrap();
+            let model = Arc::new(MockModelClient::script(vec![ModelResponse {
+                text: "ok".into(),
+                tool_calls: vec![],
+                usage: None,
+                thinking: None,
+            }]));
+            let cfg = LoopConfig {
+                enable_governance,
+                ..base_cfg(dir.path())
+            };
+            let s = AgentSession::create(cfg, model, ToolRegistry::new())
+                .await
+                .unwrap();
+            assert_eq!(
+                s.tool_count(),
+                s.list_tools().len(),
+                "tool_count diverged from list_tools with enable_governance={enable_governance}"
+            );
         }
     }
 
