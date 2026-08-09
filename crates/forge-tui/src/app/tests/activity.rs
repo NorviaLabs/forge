@@ -48,8 +48,7 @@ async fn agent_thinking_keeps_composer_usable() {
 
     assert_eq!(app.input.text, "x");
     assert_eq!(app.workspace_navigation.current, None);
-    let summary = app.activity_summary().expect("thinking summary");
-    assert_eq!(summary.label, "Forge is thinking");
+    assert!(app.activity_summary().is_none());
 }
 
 #[tokio::test]
