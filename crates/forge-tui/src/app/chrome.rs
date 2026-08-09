@@ -306,15 +306,6 @@ impl TuiApp {
             });
         }
 
-        if self.busy_state.active && matches!(self.busy_state.phase, BusyPhase::Model) {
-            return Some(ActivitySummaryModel {
-                label: "Forge is thinking".into(),
-                action_label: None,
-                action: None,
-                kind: BannerKind::Info,
-            });
-        }
-
         None
     }
 

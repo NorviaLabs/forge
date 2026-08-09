@@ -125,7 +125,7 @@ async fn final_shell_rendering_matrix_covers_v31_states_without_obsolete_chrome(
     app.busy_state.active = true;
     app.busy_state.phase = BusyPhase::Model;
     app.timing.started = Some(Instant::now());
-    scenarios.push(("agent thinking", dir, app, vec!["thinking"]));
+    scenarios.push(("agent thinking", dir, app, vec!["Describe a task"]));
 
     let (dir, mut app) = focus_test_app().await;
     app.workspace_files.visible = true;
