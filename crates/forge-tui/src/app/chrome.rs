@@ -335,7 +335,7 @@ impl TuiApp {
                 // nothing has changed since. Snapshot on entry here too so
                 // both paths start from the same fresh baseline.
                 self.capture_diff_snapshot();
-                self.navigate_to_workspace_view(WorkspaceView::Diff(DiffCommandContext::Current));
+                self.review_changes_workspace();
             }
             None => {}
         }

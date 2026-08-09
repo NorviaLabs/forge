@@ -61,6 +61,70 @@ async fn edtui_editor_keeps_plain_e_and_uses_alt_e_for_external_editor() {
 }
 
 #[tokio::test]
+async fn readonly_file_consumes_editor_keys_instead_of_leaking_to_composer() {
+    let (dir, mut app) = focus_test_app().await;
+    let path = dir.path().join("binary.bin");
+    fs::write(&path, [0, 1, 2, 3, 255]).unwrap();
+    app.open_file_in_editor(&path);
+    assert!(app.editor_session.is_none());
+
+    app.input.set_text("");
+    for key in [
+        press(KeyCode::Char(':'), KeyModifiers::NONE),
+        press(KeyCode::Char('e'), KeyModifiers::NONE),
+        press(KeyCode::Char(' '), KeyModifiers::NONE),
+        press(KeyCode::Char('x'), KeyModifiers::NONE),
+    ] {
+        app.handle_key(key).await.unwrap();
+    }
+
+    assert!(app.input.text.is_empty());
+    assert!(app.editor_command.is_none());
+    assert_eq!(
+        app.source_viewer.status,
+        crate::source_viewer::ViewerStatus::Binary
+    );
+}
+
+#[tokio::test]
+async fn editor_search_status_row_shows_query() {
+    let (dir, mut app) = focus_test_app().await;
+    let path = dir.path().join("search.txt");
+    fs::write(&path, "unicode value\n").unwrap();
+    app.open_file_in_editor(&path);
+
+    app.handle_key(press(KeyCode::Char('/'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    for ch in "unicode".chars() {
+        app.handle_key(press(KeyCode::Char(ch), KeyModifiers::NONE))
+            .await
+            .unwrap();
+    }
+
+    let area = ratatui::layout::Rect::new(0, 0, 60, 8);
+    let mut buffer = ratatui::buffer::Buffer::empty(area);
+    crate::source_viewer::SourceViewerWidget {
+        viewer: &mut app.source_viewer,
+        focused: true,
+        editor: app.editor_session.as_mut(),
+        editor_command: None,
+        editor_message: None,
+    }
+    .render(area, &mut buffer);
+    let mut rendered = String::new();
+    for y in area.y..area.bottom() {
+        for x in area.x..area.right() {
+            rendered.push_str(buffer[(x, y)].symbol());
+        }
+    }
+    assert!(
+        rendered.contains("SEARCH /unicode"),
+        "rendered: {rendered:?}"
+    );
+}
+
+#[tokio::test]
 async fn embedded_editor_uses_forge_language_and_theme() {
     let (dir, mut app) = focus_test_app().await;
     let path = dir.path().join("main.rs");

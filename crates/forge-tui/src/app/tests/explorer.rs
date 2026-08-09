@@ -114,6 +114,8 @@ async fn explorer_rename_prepopulates_and_updates_open_child_file() {
         app.workspace_files.explorer.selected_path.as_deref(),
         Some(renamed_dir.as_path())
     );
+    assert_eq!(app.focus.block, FocusBlock::Workspace);
+    assert!(app.input.text.is_empty());
 }
 
 #[tokio::test]

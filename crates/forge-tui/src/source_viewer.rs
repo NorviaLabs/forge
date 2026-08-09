@@ -1246,6 +1246,14 @@ impl SourceViewerWidget<'_> {
             format!(":{command}")
         } else if let Some(message) = self.editor_message {
             message.to_string()
+        } else if mode == "SEARCH" {
+            format!(
+                "SEARCH /{}",
+                self.editor
+                    .as_deref()
+                    .map(EditorSession::search_pattern)
+                    .unwrap_or_default()
+            )
         } else if mode == "INSERT" {
             "-- INSERT --".to_string()
         } else if mode == "NORMAL" {
