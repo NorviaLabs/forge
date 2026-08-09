@@ -225,11 +225,6 @@ impl TuiApp {
                 .map(|payload| payload.call_id.clone()),
             approval_menu_selected: self.hitl_session.menu.selected,
             approval_focused: self.focus.block == FocusBlock::Approval,
-            pattern_nudge: self
-                .hitl_session
-                .pattern_nudge
-                .as_ref()
-                .map(|n| (n.pattern.clone(), n.selected)),
         };
         if self
             .render_cache
@@ -281,9 +276,6 @@ impl TuiApp {
                 let approval_focused = self.focus.block == FocusBlock::Approval;
                 let cwd = self.session.workspace_root().display().to_string();
                 conv = conv.with_pending_approval(&payload, cwd, rows, selected, approval_focused);
-            }
-            if let Some(nudge) = self.hitl_session.pattern_nudge.as_ref() {
-                conv = conv.with_pattern_nudge(nudge.pattern.clone(), nudge.selected);
             }
             let width = sidebar_width.saturating_sub(2) as usize;
             self.render_cache.conversation = Some(ConversationRenderCache {

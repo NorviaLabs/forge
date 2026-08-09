@@ -155,9 +155,6 @@ impl TuiApp {
         if self.explorer_dialog.current.is_some() {
             return Some("Enter confirm · Esc cancel".into());
         }
-        if self.hitl_session.pattern_nudge.is_some() {
-            return Some("? pattern · ↑↓ select · Enter confirm · Esc skip".into());
-        }
         if self.session.pending_hitl().is_some() {
             return Some("⏸ approval · ↑↓ select · Enter confirm · Esc cancel".into());
         }

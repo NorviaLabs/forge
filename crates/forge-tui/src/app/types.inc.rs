@@ -452,7 +452,6 @@ struct ConversationRenderKey {
     pending_hitl: Option<String>,
     approval_menu_selected: usize,
     approval_focused: bool,
-    pattern_nudge: Option<(String, usize)>,
 }
 
 struct ConversationRenderCache {
@@ -581,14 +580,7 @@ struct ApprovalMenuState {
     selected: usize,
 }
 
-/// After "Allow once" on a pattern-eligible call: offer to persist the pattern.
 #[derive(Debug, Clone)]
-struct PatternNudgeState {
-    pattern: String,
-    /// 0 = Yes, allow pattern · 1 = No thanks
-    selected: usize,
-}
-
 struct HitlSessionState {
     allowed: HashSet<ApprovalIdentity>,
     /// Pattern rules added via "allow this pattern going forward" this
@@ -596,7 +588,6 @@ struct HitlSessionState {
     /// write to the persisted permissions file succeeded.
     pattern_allow: Vec<forge_governance::PatternRule>,
     menu: ApprovalMenuState,
-    pattern_nudge: Option<PatternNudgeState>,
 }
 
 struct ToastState {
