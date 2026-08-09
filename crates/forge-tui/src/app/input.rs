@@ -1018,10 +1018,6 @@ impl TuiApp {
             return Ok(());
         }
 
-        if self.hitl_session.pattern_nudge.is_some() && self.handle_pattern_nudge_key(key) {
-            return Ok(());
-        }
-
         if self.session.pending_hitl().is_some() && self.handle_approval_menu_key(key).await? {
             return Ok(());
         }

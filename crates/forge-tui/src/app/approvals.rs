@@ -192,61 +192,7 @@ impl TuiApp {
         }
     }
 
-    /// If Allow once should offer a follow-up pattern persist nudge, return
-    /// the suggested pattern. Skips when not eligible or already covered.
-    fn pattern_nudge_after_allow_once(&self) -> Option<String> {
-        let payload = self.session.pending_hitl()?;
-        let approval = self.approval_state_for_payload(payload);
-        if !approval.pattern_allow_eligible {
-            return None;
-        }
-        let call = tool_call_for_payload(payload);
-        if self
-            .hitl_session
-            .pattern_allow
-            .iter()
-            .any(|rule| rule.matches(&call))
-        {
-            return None;
-        }
-        let pattern = approval.suggested_pattern;
-        if pattern.trim().is_empty() {
-            return None;
-        }
-        Some(pattern)
-    }
-
-    /// Handle keys for the post-allow-once pattern nudge. Returns true if consumed.
-    pub(super) fn handle_pattern_nudge_key(&mut self, key: event::KeyEvent) -> bool {
-        let Some(nudge) = self.hitl_session.pattern_nudge.as_mut() else {
-            return false;
-        };
-        match key.code {
-            KeyCode::Up | KeyCode::Down if key.modifiers.is_empty() => {
-                nudge.selected = 1 - nudge.selected.min(1);
-                true
-            }
-            KeyCode::Esc if key.modifiers.is_empty() => {
-                self.hitl_session.pattern_nudge = None;
-                self.push_toast("pattern not saved");
-                true
-            }
-            KeyCode::Enter if key.modifiers.is_empty() => {
-                let selected = nudge.selected.min(1);
-                let pattern = nudge.pattern.clone();
-                self.hitl_session.pattern_nudge = None;
-                if selected == 0 {
-                    self.persist_pattern_allow(pattern);
-                } else {
-                    self.push_toast("pattern not saved");
-                }
-                true
-            }
-            _ => false,
-        }
-    }
-
-    /// Persist an allow pattern without re-approving a tool call (nudge path).
+    /// Persist an allow pattern without re-approving a tool call.
     fn persist_pattern_allow(&mut self, pattern: String) {
         let Some(rule) = forge_governance::PatternRule::parse(&pattern) else {
             self.set_feedback(FeedbackSeverity::Warn, "could not parse the pattern rule");
@@ -311,16 +257,8 @@ impl TuiApp {
     ) -> Result<(), TuiError> {
         match action {
             ApprovalMenuKind::AllowOnce => {
-                let nudge_pattern = self.pattern_nudge_after_allow_once();
                 self.resolve_hitl_overlay(HitlDecision::Approve, false)
-                    .await?;
-                if let Some(pattern) = nudge_pattern {
-                    self.hitl_session.pattern_nudge = Some(PatternNudgeState {
-                        pattern,
-                        selected: 0,
-                    });
-                }
-                Ok(())
+                    .await
             }
             ApprovalMenuKind::Remember => {
                 self.resolve_hitl_overlay(HitlDecision::Approve, true).await
@@ -474,7 +412,6 @@ impl TuiApp {
         if self.session.pending_hitl().is_none() {
             return Ok(());
         }
-        self.hitl_session.pattern_nudge = None;
         self.persist_pattern_allow(pattern);
         // persist_pattern_allow toasts; still need to approve the pending call.
         if self.session.pending_hitl().is_none() {
