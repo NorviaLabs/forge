@@ -438,7 +438,10 @@ mod tests {
         let text = buffer_text(&term);
         assert!(text.contains("main.rs"), "missing path:\n{text}");
         assert!(text.contains("fn main()"), "missing content:\n{text}");
-        assert!(text.contains("1 │"), "missing line numbers:\n{text}");
+        assert!(
+            text.contains("│ 1 fn main()"),
+            "missing line numbers:\n{text}"
+        );
     }
 
     #[tokio::test]
