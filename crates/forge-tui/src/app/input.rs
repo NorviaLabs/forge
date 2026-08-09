@@ -8,6 +8,128 @@
 use super::*;
 
 impl TuiApp {
+    async fn handle_editor_command_key(&mut self, key: event::KeyEvent) -> Result<bool, TuiError> {
+        let Some(command) = self.editor_command.as_mut() else {
+            return Ok(false);
+        };
+        match key.code {
+            KeyCode::Esc if key.modifiers.is_empty() => {
+                self.editor_command = None;
+                self.status_state.message = "Editor command cancelled".into();
+            }
+            KeyCode::Backspace if key.modifiers.is_empty() => {
+                command.pop();
+                self.status_state.message = format!(":{command}");
+            }
+            KeyCode::Enter if key.modifiers.is_empty() => {
+                let command = std::mem::take(command);
+                self.editor_command = None;
+                match command.as_str() {
+                    "w" | "write" => self.save_active_editor(),
+                    "q" | "quit" => self.go_back_workspace(),
+                    "q!" | "quit!" => {
+                        if let Some(editor) = self.editor_session.as_mut() {
+                            editor.accept_current_text();
+                        }
+                        self.go_back_workspace();
+                    }
+                    "wq" | "x" => {
+                        self.save_active_editor();
+                        if self
+                            .editor_session
+                            .as_ref()
+                            .is_some_and(|editor| !editor.is_dirty())
+                        {
+                            self.go_back_workspace();
+                        }
+                    }
+                    command if command == "e" || command == "edit" => {
+                        if self
+                            .editor_session
+                            .as_ref()
+                            .is_some_and(|editor| editor.is_dirty())
+                        {
+                            self.explorer_dialog.current = Some(ExplorerDialog::SaveConflict);
+                        } else {
+                            self.reload_active_editor_from_disk();
+                        }
+                    }
+                    command if command.starts_with("e ") || command.starts_with("edit ") => {
+                        let path = command
+                            .split_once(' ')
+                            .map(|(_, path)| path.trim())
+                            .unwrap_or_default();
+                        match self.resolve_workspace_path(path) {
+                            Ok(path) if path.is_file() => {
+                                if self.source_viewer.path.as_deref() == Some(path.as_path())
+                                    && self
+                                        .editor_session
+                                        .as_ref()
+                                        .is_some_and(|editor| editor.is_dirty())
+                                {
+                                    self.explorer_dialog.current =
+                                        Some(ExplorerDialog::SaveConflict);
+                                } else {
+                                    self.open_file_in_editor(&path);
+                                }
+                            }
+                            Ok(_) => self.set_feedback(
+                                FeedbackSeverity::Warn,
+                                "editor target is not a file",
+                            ),
+                            Err(error) => self.set_feedback(
+                                FeedbackSeverity::Warn,
+                                format!("cannot open editor target: {error}"),
+                            ),
+                        }
+                    }
+                    command if command.starts_with('s') || command.starts_with('%') => {
+                        match parse_editor_substitute(command) {
+                            Some((all_lines, pattern, replacement, replace_all)) => {
+                                let count = self
+                                    .editor_session
+                                    .as_mut()
+                                    .map(|editor| {
+                                        editor.substitute(
+                                            &pattern,
+                                            &replacement,
+                                            all_lines,
+                                            replace_all,
+                                        )
+                                    })
+                                    .unwrap_or(0);
+                                self.set_feedback(
+                                    if count > 0 {
+                                        FeedbackSeverity::Ok
+                                    } else {
+                                        FeedbackSeverity::Info
+                                    },
+                                    format!("{count} substitution(s)"),
+                                );
+                            }
+                            None => self.set_feedback(
+                                FeedbackSeverity::Warn,
+                                "invalid substitute; use :s/pattern/replacement/[g]",
+                            ),
+                        }
+                    }
+                    _ => self.set_feedback(
+                        FeedbackSeverity::Warn,
+                        format!("unknown editor command: :{command}"),
+                    ),
+                }
+            }
+            KeyCode::Char(ch)
+                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+            {
+                command.push(ch);
+                self.status_state.message = format!(":{command}");
+            }
+            _ => {}
+        }
+        Ok(true)
+    }
+
     fn handle_explorer_dialog_key(&mut self, key: event::KeyEvent) -> bool {
         let Some(dialog) = self.explorer_dialog.current.take() else {
             return false;
@@ -139,6 +261,122 @@ impl TuiApp {
                     permanent,
                     error,
                 }),
+            },
+            ExplorerDialog::DirtyExit => match key.code {
+                KeyCode::Esc if key.modifiers.is_empty() => {
+                    self.pending_editor_home = false;
+                    self.pending_editor_diff = false;
+                    None
+                }
+                KeyCode::Char('c') | KeyCode::Char('C') => {
+                    self.pending_editor_home = false;
+                    self.pending_editor_diff = false;
+                    None
+                }
+                KeyCode::Char('d') | KeyCode::Char('D') => {
+                    if let Some(editor) = self.editor_session.as_mut() {
+                        editor.accept_current_text();
+                    }
+                    self.complete_dirty_editor_exit();
+                    None
+                }
+                KeyCode::Char('s') | KeyCode::Char('S') | KeyCode::Enter => {
+                    self.save_active_editor();
+                    if matches!(
+                        self.explorer_dialog.current,
+                        Some(ExplorerDialog::SaveConflict)
+                    ) {
+                        Some(ExplorerDialog::SaveConflict)
+                    } else if self
+                        .editor_session
+                        .as_ref()
+                        .is_some_and(|editor| !editor.is_dirty())
+                    {
+                        self.complete_dirty_editor_exit();
+                        None
+                    } else {
+                        Some(ExplorerDialog::DirtyExit)
+                    }
+                }
+                _ => Some(ExplorerDialog::DirtyExit),
+            },
+            ExplorerDialog::DirtySwitch { path } => match key.code {
+                KeyCode::Esc if key.modifiers.is_empty() => {
+                    self.pending_editor_path = None;
+                    None
+                }
+                KeyCode::Char('c') | KeyCode::Char('C') => {
+                    self.pending_editor_path = None;
+                    None
+                }
+                KeyCode::Char('d') | KeyCode::Char('D') => {
+                    self.complete_pending_editor_switch(true);
+                    None
+                }
+                KeyCode::Char('s') | KeyCode::Char('S') | KeyCode::Enter => {
+                    self.save_active_editor();
+                    if matches!(
+                        self.explorer_dialog.current,
+                        Some(ExplorerDialog::SaveConflict)
+                    ) {
+                        Some(ExplorerDialog::SaveConflict)
+                    } else if self
+                        .editor_session
+                        .as_ref()
+                        .is_some_and(|editor| !editor.is_dirty())
+                    {
+                        self.complete_pending_editor_switch(false);
+                        None
+                    } else {
+                        Some(ExplorerDialog::DirtySwitch { path })
+                    }
+                }
+                _ => Some(ExplorerDialog::DirtySwitch { path }),
+            },
+            ExplorerDialog::SaveConflict => match key.code {
+                KeyCode::Esc if key.modifiers.is_empty() => {
+                    self.pending_editor_path = None;
+                    self.pending_editor_home = false;
+                    self.pending_editor_diff = false;
+                    None
+                }
+                KeyCode::Char('r') | KeyCode::Char('R') => {
+                    self.reload_active_editor_from_disk();
+                    if self.pending_editor_path.is_some()
+                        && self
+                            .editor_session
+                            .as_ref()
+                            .is_some_and(|editor| !editor.is_dirty())
+                    {
+                        self.complete_pending_editor_switch(false);
+                    } else if self
+                        .editor_session
+                        .as_ref()
+                        .is_some_and(|editor| !editor.is_dirty())
+                        && (self.pending_editor_home || self.pending_editor_diff)
+                    {
+                        self.complete_dirty_editor_exit();
+                    }
+                    None
+                }
+                KeyCode::Char('f') | KeyCode::Char('F') => {
+                    self.save_active_editor_with_force(true);
+                    if self
+                        .editor_session
+                        .as_ref()
+                        .is_some_and(|editor| !editor.is_dirty())
+                    {
+                        if self.pending_editor_path.is_some() {
+                            self.complete_pending_editor_switch(false);
+                        } else if self.pending_editor_home || self.pending_editor_diff {
+                            self.complete_dirty_editor_exit();
+                        }
+                        None
+                    } else {
+                        Some(ExplorerDialog::SaveConflict)
+                    }
+                }
+                _ => Some(ExplorerDialog::SaveConflict),
             },
         };
         self.explorer_dialog.current = next;
@@ -287,6 +525,20 @@ impl TuiApp {
     fn handle_editor_key(&mut self, key: event::KeyEvent) -> bool {
         if !self.current_workspace_is_file() {
             return false;
+        }
+
+        if let Some(editor) = self.editor_session.as_mut() {
+            if key.code == KeyCode::Char(':')
+                && key.modifiers.is_empty()
+                && editor.mode() == edtui::EditorMode::Normal
+            {
+                self.editor_command = Some(String::new());
+                self.status_state.message = ":".into();
+                return true;
+            }
+            let _ = editor.handle_key(key);
+            self.source_viewer.current_line = editor.cursor_row();
+            return true;
         }
 
         let height = self.editor_viewport.height.saturating_sub(2) as usize;
@@ -772,6 +1024,10 @@ impl TuiApp {
         }
 
         self.normalize_focus();
+        if self.editor_command.is_some() {
+            self.handle_editor_command_key(key).await?;
+            return Ok(());
+        }
         match self.focus.mode {
             FocusMode::Transient(TransientOwner::SourceSearch) => {
                 self.handle_search_key(key);
@@ -819,6 +1075,26 @@ impl TuiApp {
         let _ = self.type_to_compose(key).await?;
         Ok(())
     }
+}
+
+fn parse_editor_substitute(command: &str) -> Option<(bool, String, String, bool)> {
+    let (all_lines, body) = command
+        .strip_prefix("%s")
+        .map(|body| (true, body))
+        .or_else(|| command.strip_prefix('s').map(|body| (false, body)))?;
+    let delimiter = body.chars().next()?;
+    let body = &body[delimiter.len_utf8()..];
+    let (pattern, body) = body.split_once(delimiter)?;
+    let (replacement, flags) = body.split_once(delimiter)?;
+    if flags.chars().any(|flag| flag != 'g') {
+        return None;
+    }
+    Some((
+        all_lines,
+        pattern.to_owned(),
+        replacement.to_owned(),
+        flags == "g",
+    ))
 }
 
 fn terminal_key_bytes(key: event::KeyEvent) -> Option<Vec<u8>> {

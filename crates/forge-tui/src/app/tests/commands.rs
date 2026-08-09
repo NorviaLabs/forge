@@ -5,46 +5,47 @@
 use super::prelude::*;
 
 #[tokio::test]
-async fn source_search_is_transient_and_esc_restores_workspace_navigation() {
+async fn edtui_search_is_active_and_esc_returns_to_normal_mode() {
     let (dir, mut app) = focus_test_app().await;
     let path = dir.path().join("source.txt");
     fs::write(&path, "line\n").unwrap();
     app.open_file_in_editor(&path);
-    app.handle_key(press(KeyCode::Char('f'), KeyModifiers::CONTROL))
+    app.handle_key(press(KeyCode::Char('/'), KeyModifiers::NONE))
         .await
         .unwrap();
     assert_eq!(
-        app.focus.mode,
-        FocusMode::Transient(TransientOwner::SourceSearch)
+        app.editor_session.as_ref().unwrap().mode(),
+        edtui::EditorMode::Search
     );
     app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert!(!app.source_viewer.search.open);
-    assert_eq!(app.focus.mode, FocusMode::Navigation);
+    assert_eq!(
+        app.editor_session.as_ref().unwrap().mode(),
+        edtui::EditorMode::Normal
+    );
 }
 
 #[tokio::test]
-async fn source_search_keeps_shift_arrows_inside_the_search_field() {
+async fn edtui_search_keeps_shift_arrows_inside_the_search_field() {
     let (dir, mut app) = focus_test_app().await;
     let path = dir.path().join("source.txt");
     fs::write(&path, "line\n").unwrap();
     app.open_file_in_editor(&path);
-    app.handle_key(press(KeyCode::Char('f'), KeyModifiers::CONTROL))
+    app.handle_key(press(KeyCode::Char('/'), KeyModifiers::NONE))
         .await
         .unwrap();
     app.handle_key(press(KeyCode::Right, KeyModifiers::SHIFT))
         .await
         .unwrap();
-    assert!(app.source_viewer.search.open);
     assert_eq!(
-        app.focus.mode,
-        FocusMode::Transient(TransientOwner::SourceSearch)
+        app.editor_session.as_ref().unwrap().mode(),
+        edtui::EditorMode::Search
     );
 }
 
 #[tokio::test]
-async fn jump_to_line_keeps_shift_arrows_inside_the_jump_field() {
+async fn ctrl_g_remains_editor_owned_with_edtui_active() {
     let (dir, mut app) = focus_test_app().await;
     let path = dir.path().join("source.txt");
     fs::write(&path, "line\n").unwrap();
@@ -55,10 +56,10 @@ async fn jump_to_line_keeps_shift_arrows_inside_the_jump_field() {
     app.handle_key(press(KeyCode::Right, KeyModifiers::SHIFT))
         .await
         .unwrap();
-    assert!(app.source_viewer.jump.open);
+    assert!(app.source_viewer.jump.input.is_empty());
     assert_eq!(
-        app.focus.mode,
-        FocusMode::Transient(TransientOwner::JumpToLine)
+        app.editor_session.as_ref().unwrap().mode(),
+        edtui::EditorMode::Normal
     );
 }
 
@@ -74,7 +75,7 @@ async fn editor_reload_does_not_reach_chat_input() {
         .await
         .unwrap();
     assert_eq!(app.input.text, "draft");
-    assert_eq!(app.source_viewer.lines, vec!["after"]);
+    assert_eq!(app.editor_session.as_ref().unwrap().text(), "before\n");
 }
 
 #[tokio::test]
@@ -488,7 +489,7 @@ async fn editor_uppercase_g_does_not_reach_chat_input() {
     app.handle_key(press(KeyCode::Char('G'), KeyModifiers::SHIFT))
         .await
         .unwrap();
-    assert_eq!(app.source_viewer.current_line, 2);
+    assert_eq!(app.editor_session.as_ref().unwrap().cursor_row(), 3);
     assert_eq!(app.input.text, "draft");
 }
 

@@ -39,6 +39,9 @@ async fn edge_network_stream_interruption_preserves_partial_response() {
 
     assert_eq!(app.workspace_navigation, before);
     assert!(!app.busy_state.active);
+    // Opening a file now gives the workspace an active Vim editor. Move back
+    // to the composer before testing retry input routing.
+    app.focus_block(FocusBlock::Composer);
     app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
         .await
         .unwrap();

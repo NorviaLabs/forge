@@ -438,7 +438,10 @@ mod tests {
         let text = buffer_text(&term);
         assert!(text.contains("main.rs"), "missing path:\n{text}");
         assert!(text.contains("fn main()"), "missing content:\n{text}");
-        assert!(text.contains("1 │"), "missing line numbers:\n{text}");
+        assert!(
+            text.contains("│ 1 fn main()"),
+            "missing line numbers:\n{text}"
+        );
     }
 
     #[tokio::test]
@@ -482,14 +485,16 @@ mod tests {
         app.open_file_view_for_test(&workspace.join("x.txt"));
 
         app.handle_key(press(KeyCode::Down)).await.unwrap();
+        assert_eq!(app.editor_session.as_ref().unwrap().cursor_row(), 1);
         assert_eq!(app.source_viewer.current_line, 1);
         app.handle_key(press(KeyCode::Down)).await.unwrap();
         app.handle_key(press(KeyCode::Down)).await.unwrap();
-        assert_eq!(app.source_viewer.current_line, 2); // clamped
+        assert_eq!(app.editor_session.as_ref().unwrap().cursor_row(), 3); // final empty line
+        assert_eq!(app.source_viewer.current_line, 3);
         app.handle_key(press(KeyCode::End)).await.unwrap();
-        assert_eq!(app.source_viewer.h_scroll, 5); // "line3" width
+        assert_eq!(app.editor_session.as_ref().unwrap().cursor_col(), 0);
         app.handle_key(press(KeyCode::Home)).await.unwrap();
-        assert_eq!(app.source_viewer.h_scroll, 0);
+        assert_eq!(app.editor_session.as_ref().unwrap().cursor_col(), 0);
     }
 
     #[tokio::test]
@@ -502,23 +507,24 @@ mod tests {
         app.runtime.cwd = workspace.clone();
         app.open_file_view_for_test(&workspace.join("x.txt"));
 
-        app.handle_key(press_with(KeyCode::Char('f'), KeyModifiers::CONTROL))
-            .await
-            .unwrap();
-        assert!(app.source_viewer.search.open);
+        app.handle_key(press(KeyCode::Char('/'))).await.unwrap();
         for c in "foo".chars() {
             app.handle_key(press(KeyCode::Char(c))).await.unwrap();
         }
-        assert_eq!(app.source_viewer.search.matches.len(), 2);
-        assert_eq!(app.source_viewer.current_line, 0);
+        assert_eq!(app.editor_session.as_ref().unwrap().search_pattern(), "foo");
         app.handle_key(press(KeyCode::Enter)).await.unwrap();
-        assert_eq!(app.source_viewer.current_line, 1);
-        app.handle_key(press_with(KeyCode::Enter, KeyModifiers::SHIFT))
+        assert_eq!(app.editor_session.as_ref().unwrap().cursor_row(), 0);
+        app.handle_key(press(KeyCode::Char('n'))).await.unwrap();
+        assert_eq!(app.editor_session.as_ref().unwrap().cursor_row(), 1);
+        app.handle_key(press_with(KeyCode::Char('N'), KeyModifiers::SHIFT))
             .await
             .unwrap();
-        assert_eq!(app.source_viewer.current_line, 0);
+        assert_eq!(app.editor_session.as_ref().unwrap().cursor_row(), 0);
         app.handle_key(press(KeyCode::Esc)).await.unwrap();
-        assert!(!app.source_viewer.search.open);
+        assert_eq!(
+            app.editor_session.as_ref().unwrap().mode(),
+            edtui::EditorMode::Normal
+        );
     }
 
     #[tokio::test]
@@ -531,16 +537,10 @@ mod tests {
         app.runtime.cwd = workspace.clone();
         app.open_file_view_for_test(&workspace.join("x.txt"));
 
-        app.handle_key(press_with(KeyCode::Char('g'), KeyModifiers::CONTROL))
+        app.handle_key(press_with(KeyCode::Char('G'), KeyModifiers::SHIFT))
             .await
             .unwrap();
-        assert!(app.source_viewer.jump.open);
-        for c in "3".chars() {
-            app.handle_key(press(KeyCode::Char(c))).await.unwrap();
-        }
-        app.handle_key(press(KeyCode::Enter)).await.unwrap();
-        assert!(!app.source_viewer.jump.open);
-        assert_eq!(app.source_viewer.current_line, 2);
+        assert_eq!(app.editor_session.as_ref().unwrap().cursor_row(), 4);
     }
 
     #[tokio::test]
@@ -553,27 +553,15 @@ mod tests {
         app.runtime.cwd = workspace.clone();
         app.open_file_view_for_test(&workspace.join("x.txt"));
         app.source_viewer.focused = true;
-        app.source_viewer.current_line = 1;
+        app.editor_session.as_mut().unwrap().set_cursor(1, 0);
 
         let backend = TestBackend::new(80, 24);
         let mut term = Terminal::new(backend).unwrap();
         term.draw(|f| app.draw(f)).unwrap();
-        let buf = term.backend().buffer();
         let text = buffer_text(&term);
         assert!(
-            text.contains("2 │ second"),
+            text.contains("2 second"),
             "current line not rendered:\n{text}"
-        );
-
-        // The current line uses the theme's subtle accent background.
-        let accent = crate::theme::accent_soft_bg();
-        let line_y = text.lines().position(|l| l.contains("2 │ second")).unwrap();
-        let content_start_x = text.lines().nth(line_y).unwrap().find('│').unwrap() + 1;
-        let has_themed_bg = (content_start_x..buf.area().width as usize)
-            .any(|x| buf[(x as u16, line_y as u16)].style().bg == Some(accent));
-        assert!(
-            has_themed_bg,
-            "current line content is missing the themed background:\n{text}"
         );
     }
 
@@ -597,6 +585,7 @@ mod tests {
                 SourceViewerWidget {
                     viewer: &mut app.source_viewer,
                     focused: false,
+                    editor: None,
                 },
                 f.area(),
             );

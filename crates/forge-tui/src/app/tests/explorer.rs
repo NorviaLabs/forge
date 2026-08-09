@@ -42,7 +42,12 @@ async fn explorer_new_file_dialog_owns_printable_input_and_selects_created_file(
         app.workspace_files.explorer.selected_path.as_deref(),
         Some(created.as_path())
     );
-    assert_eq!(app.focus.block, FocusBlock::Files);
+    assert_eq!(app.focus.block, FocusBlock::Workspace);
+    assert_eq!(app.editor_session.as_ref().unwrap().text(), "");
+    assert_eq!(
+        app.editor_session.as_ref().unwrap().mode(),
+        edtui::EditorMode::Normal
+    );
 }
 
 #[tokio::test]

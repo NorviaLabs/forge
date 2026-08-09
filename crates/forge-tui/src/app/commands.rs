@@ -202,14 +202,28 @@ impl TuiApp {
             KeyCode::Esc if key.modifiers.is_empty() => {
                 Some(SemanticCommand::CancelCurrentInteraction)
             }
-            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Char('f')
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && self.editor_session.is_none() =>
+            {
                 Some(SemanticCommand::StartSourceSearch)
             }
-            KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Char('g')
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && self.editor_session.is_none() =>
+            {
                 Some(SemanticCommand::StartJumpToLine)
             }
-            KeyCode::Char('r') if key.modifiers.is_empty() => Some(SemanticCommand::RefreshEditor),
-            KeyCode::Char('e') if key.modifiers.is_empty() => {
+            KeyCode::Char('r') if key.modifiers.is_empty() && self.editor_session.is_none() => {
+                Some(SemanticCommand::RefreshEditor)
+            }
+            KeyCode::Char('s') if key.modifiers == KeyModifiers::CONTROL => {
+                Some(SemanticCommand::SaveEditor)
+            }
+            KeyCode::Char('e') if key.modifiers.is_empty() && self.editor_session.is_none() => {
+                Some(SemanticCommand::OpenExternalEditor)
+            }
+            KeyCode::Char('e') if key.modifiers == KeyModifiers::ALT => {
                 Some(SemanticCommand::OpenExternalEditor)
             }
             KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -247,7 +261,7 @@ impl TuiApp {
             KeyCode::Esc
                 if key.modifiers.is_empty()
                     && self.current_workspace_is_file()
-                    && self.source_viewer.mode == crate::source_viewer::ViewerMode::Insert =>
+                    && self.editor_handles_escape() =>
             {
                 // Let `handle_editor_key` consume this Esc to drop back to
                 // NORMAL mode instead of navigating away; a second Esc (now
@@ -258,6 +272,18 @@ impl TuiApp {
             _ if self.current_workspace_is_file() => self.semantic_command_for_editor_key(key),
             _ => None,
         }
+    }
+
+    fn editor_handles_escape(&self) -> bool {
+        self.editor_session.as_ref().map_or(
+            self.source_viewer.mode == crate::source_viewer::ViewerMode::Insert,
+            |editor| {
+                matches!(
+                    editor.mode(),
+                    edtui::EditorMode::Insert | edtui::EditorMode::Search
+                )
+            },
+        )
     }
 
     pub(super) fn semantic_command_for_bottom_panel_key(
@@ -396,7 +422,7 @@ impl TuiApp {
             }
             SemanticCommand::ReviewChanges(DiffCommandContext::Current) => {
                 self.capture_diff_snapshot();
-                self.navigate_to_workspace_view(WorkspaceView::Diff(DiffCommandContext::Current))
+                self.review_changes_workspace()
             }
             SemanticCommand::ToggleFiles => self.toggle_files_panel(),
             SemanticCommand::CloseOverlay => {
@@ -493,6 +519,7 @@ impl TuiApp {
                     self.refresh_diff_review();
                 }
             }
+            SemanticCommand::SaveEditor => self.save_active_editor(),
             SemanticCommand::RefreshDiff => self.refresh_diff_review(),
             SemanticCommand::BeginCreateFile => {
                 self.open_explorer_name_dialog(ExplorerNameAction::CreateFile)

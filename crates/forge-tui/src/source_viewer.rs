@@ -1,4 +1,4 @@
-//! Read-only source viewer for the workspace Editor tab.
+//! Source viewer and Forge-owned chrome for the workspace Editor tab.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -10,24 +10,17 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Padding, Paragraph, Widget};
 
+use crate::editor_session::EditorSession;
 use crate::file_explorer::safe_path;
 use crate::theme;
 
-/// Files at most this large are loaded fully.
-const MAX_FULL_BYTES: u64 = 1_048_576; // 1 MiB
-/// Files larger than `MAX_FULL_BYTES` are previewed up to this many bytes.
-const MAX_PREVIEW_BYTES: u64 = 65_536; // 64 KiB
-/// Files larger than this are refused outright.
-const MAX_REFUSE_BYTES: u64 = 10_485_760; // 10 MiB
 /// How many bytes to inspect for binary detection.
 const BINARY_PROBE_BYTES: usize = 8_192;
 /// Tab stops are every N columns.
 const TAB_WIDTH: usize = 4;
-/// Files larger than this are displayed as plain text without syntax highlighting.
-const HIGHLIGHT_DISABLE_BYTES: u64 = 262_144; // 256 KiB
 
-/// Cosmetic vim-style mode tag shown in the editor header. Doesn't change
-/// how any key behaves — `SourceViewer` stays read-only in both modes.
+/// Legacy mode tag used by the non-editable fallback viewer. Editable text
+/// files derive their mode from [`EditorSession`] instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ViewerMode {
     #[default]
@@ -50,8 +43,7 @@ pub enum ViewerStatus {
     Loading,
     Ok,
     Binary,
-    LargeFile { preview: bool },
-    TooLarge,
+    InvalidUtf8,
     NotFound,
     Error(String),
 }
@@ -122,6 +114,8 @@ pub struct SourceViewer {
     pub rel_path: String,
     /// Decoded text lines (possibly a limited preview).
     pub lines: Vec<String>,
+    /// Exact validated UTF-8 document text for the editable session.
+    pub(crate) document_text: Option<String>,
     /// First visible line index (0-based).
     pub top_line: usize,
     /// Current/cursor line index (0-based).
@@ -130,7 +124,7 @@ pub struct SourceViewer {
     pub h_scroll: usize,
     /// Whether the editor panel currently has focus. Affects current-line emphasis.
     pub focused: bool,
-    /// Cosmetic vim-style mode tag. See [`ViewerMode`].
+    /// Fallback-viewer mode tag. Editable text files use [`EditorSession`].
     pub mode: ViewerMode,
     pub status: ViewerStatus,
     /// Raw size on disk when the file was loaded.
@@ -161,7 +155,7 @@ pub struct SourceViewer {
 impl ViewerStatus {
     /// Whether the viewer has a text file that can be sent to an external editor.
     pub fn is_openable(&self) -> bool {
-        matches!(self, Self::Ok | Self::LargeFile { .. })
+        matches!(self, Self::Ok)
     }
 }
 
@@ -171,6 +165,7 @@ impl Default for SourceViewer {
             path: None,
             rel_path: String::new(),
             lines: Vec::new(),
+            document_text: None,
             top_line: 0,
             current_line: 0,
             h_scroll: 0,
@@ -197,12 +192,31 @@ impl SourceViewer {
         Self::default()
     }
 
+    /// Check whether the on-disk file differs from the last observed version.
+    /// Size and mtime are the cheap fast path; content is read only when either
+    /// metadata value changed, so a metadata-only touch is not a conflict.
+    pub(crate) fn disk_conflicts_with(
+        &self,
+        path: &Path,
+        expected_disk_text: &[u8],
+    ) -> Result<bool, String> {
+        let metadata = fs::metadata(path).map_err(|error| error.to_string())?;
+        let metadata_same =
+            metadata.len() == self.size_bytes && metadata.modified().ok() == self.modified;
+        if metadata_same {
+            return Ok(false);
+        }
+        let bytes = fs::read(path).map_err(|error| error.to_string())?;
+        Ok(bytes != expected_disk_text)
+    }
+
     /// Open a workspace file. `root` is the workspace root; `path` may be
     /// absolute or relative and is validated to stay inside `root`.
     pub fn open(&mut self, root: &Path, path: &Path) {
         self.path = None;
         self.rel_path = String::new();
         self.lines.clear();
+        self.document_text = None;
         self.top_line = 0;
         self.current_line = 0;
         self.h_scroll = 0;
@@ -253,19 +267,7 @@ impl SourceViewer {
             return;
         }
 
-        if self.size_bytes > MAX_REFUSE_BYTES {
-            self.status = ViewerStatus::TooLarge;
-            return;
-        }
-
-        let limit = if self.size_bytes > MAX_FULL_BYTES {
-            MAX_PREVIEW_BYTES
-        } else {
-            self.size_bytes
-        };
-        self.preview = limit < self.size_bytes;
-
-        let bytes = match read_limited(&resolved, limit as usize) {
+        let bytes = match fs::read(&resolved) {
             Ok(b) => b,
             Err(err) => {
                 self.status = ViewerStatus::Error(format!("{err}"));
@@ -279,13 +281,17 @@ impl SourceViewer {
             return;
         }
 
-        let text = String::from_utf8_lossy(&bytes).into_owned();
-        self.lines = split_lines(&text);
-        self.status = if self.preview {
-            ViewerStatus::LargeFile { preview: true }
-        } else {
-            ViewerStatus::Ok
+        let text = match String::from_utf8(bytes) {
+            Ok(text) => text,
+            Err(_) => {
+                self.status = ViewerStatus::InvalidUtf8;
+                self.lines.clear();
+                return;
+            }
         };
+        self.document_text = Some(text.clone());
+        self.lines = split_lines(&text);
+        self.status = ViewerStatus::Ok;
         self.rebuild_highlight(&text);
         self.clamp_viewport();
     }
@@ -296,11 +302,6 @@ impl SourceViewer {
         self.highlighted_lines.clear();
         let (label, lang) = detect_highlight_language(&self.rel_path, expanded_text);
         self.language_label = label;
-
-        if self.size_bytes > HIGHLIGHT_DISABLE_BYTES {
-            self.highlight_disabled = true;
-            return;
-        }
 
         let Some(lang) = lang else {
             return;
@@ -377,10 +378,7 @@ impl SourceViewer {
         self.open(root, &path);
 
         // Restore viewport if the file is still readable.
-        if matches!(
-            self.status,
-            ViewerStatus::Ok | ViewerStatus::LargeFile { .. }
-        ) {
+        if matches!(self.status, ViewerStatus::Ok) {
             self.top_line = old_top.min(self.lines.len().saturating_sub(1));
             self.current_line = old_current.min(self.lines.len().saturating_sub(1));
             self.h_scroll = old_h;
@@ -619,10 +617,7 @@ impl SourceViewer {
     }
 
     fn can_search(&self) -> bool {
-        matches!(
-            self.status,
-            ViewerStatus::Ok | ViewerStatus::LargeFile { .. }
-        ) && !self.lines.is_empty()
+        matches!(self.status, ViewerStatus::Ok) && !self.lines.is_empty()
     }
 
     pub fn update_search_query(&mut self, query: &str) {
@@ -710,15 +705,6 @@ impl SourceViewer {
     pub fn backspace_jump(&mut self) {
         self.jump.input.pop();
     }
-}
-
-fn read_limited(path: &Path, limit: usize) -> Result<Vec<u8>, std::io::Error> {
-    use std::io::Read;
-    let file = fs::File::open(path)?;
-    let mut reader = file.take(limit as u64);
-    let mut buf = Vec::with_capacity(limit.min(65_536));
-    reader.read_to_end(&mut buf)?;
-    Ok(buf)
 }
 
 fn split_lines(text: &str) -> Vec<String> {
@@ -974,6 +960,9 @@ fn detect_highlight_language(rel_path: &str, content: &str) -> (Option<String>, 
 pub struct SourceViewerWidget<'a> {
     pub viewer: &'a mut SourceViewer,
     pub focused: bool,
+    /// Optional editable surface. The surrounding Forge chrome remains owned
+    /// by this widget; the edtui session only paints the content area.
+    pub editor: Option<&'a mut EditorSession>,
 }
 
 impl Widget for SourceViewerWidget<'_> {
@@ -1015,24 +1004,12 @@ impl Widget for SourceViewerWidget<'_> {
                     &format!("Forge cannot display this file as text.\n{path}{size}"),
                 );
             }
-            ViewerStatus::LargeFile { .. } => {
-                let size = format_size(self.viewer.size_bytes);
-                self.render_message(
-                    inner,
-                    buf,
-                    "Large file",
-                    &format!("This file is {size}.\nShowing a limited preview."),
-                );
-            }
-            ViewerStatus::TooLarge => {
-                let size = format_size(self.viewer.size_bytes);
-                self.render_message(
-                    inner,
-                    buf,
-                    "Large file",
-                    &format!("This file is {size}.\nForge cannot preview files this large."),
-                );
-            }
+            ViewerStatus::InvalidUtf8 => self.render_message(
+                inner,
+                buf,
+                "Invalid UTF-8",
+                "This file is read-only in Forge because it is not valid UTF-8.",
+            ),
             ViewerStatus::NotFound => {
                 self.render_message(
                     inner,
@@ -1061,6 +1038,11 @@ impl SourceViewerWidget<'_> {
 
     fn render_content(&mut self, area: Rect, buf: &mut Buffer) {
         if area.height < 3 || area.width < 10 {
+            return;
+        }
+
+        if self.editor.is_some() {
+            self.render_editor_content(area, buf);
             return;
         }
 
@@ -1202,6 +1184,52 @@ impl SourceViewerWidget<'_> {
         }
     }
 
+    fn render_editor_content(&mut self, area: Rect, buf: &mut Buffer) {
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(0)])
+            .split(area);
+
+        let (mode, current_line, total, modified) = self
+            .editor
+            .as_deref()
+            .map(|editor| {
+                (
+                    editor.mode().name().to_uppercase(),
+                    editor.cursor_row(),
+                    editor.line_count(),
+                    editor.is_dirty(),
+                )
+            })
+            .map(|(mode, line, total, modified)| (mode, line, total.max(1), modified))
+            .unwrap_or_else(|| {
+                (
+                    self.viewer.mode.label().to_string(),
+                    self.viewer.current_line,
+                    self.viewer.lines.len().max(1),
+                    false,
+                )
+            });
+        let mut header = format!(
+            "{} · {} · line {} of {}",
+            mode,
+            self.viewer.rel_path,
+            current_line + 1,
+            total
+        );
+        if let Some(label) = &self.viewer.language_label {
+            header.push_str(&format!(" · {label}"));
+        }
+        if modified {
+            header.push_str(" · modified");
+        }
+        Paragraph::new(Line::styled(header, theme::muted())).render(rows[0], buf);
+
+        if let Some(editor) = self.editor.as_deref_mut() {
+            editor.render(rows[1], buf);
+        }
+    }
+
     fn render_input(&self, area: Rect, buf: &mut Buffer) {
         if self.viewer.search.open {
             let count = self.viewer.search.matches.len();
@@ -1243,6 +1271,7 @@ mod tests {
         SourceViewerWidget {
             viewer,
             focused: true,
+            editor: None,
         }
         .render(area, &mut buf);
         let mut text = String::new();
@@ -1273,9 +1302,8 @@ mod tests {
         assert!(!ViewerStatus::Empty.is_openable());
         assert!(!ViewerStatus::Loading.is_openable());
         assert!(ViewerStatus::Ok.is_openable());
-        assert!(ViewerStatus::LargeFile { preview: true }.is_openable());
         assert!(!ViewerStatus::Binary.is_openable());
-        assert!(!ViewerStatus::TooLarge.is_openable());
+        assert!(!ViewerStatus::InvalidUtf8.is_openable());
         assert!(!ViewerStatus::NotFound.is_openable());
         assert!(!ViewerStatus::Error("x".into()).is_openable());
     }
@@ -1387,7 +1415,7 @@ mod tests {
     }
 
     #[test]
-    fn open_shows_preview_for_large_file() {
+    fn open_loads_large_file_without_previewing() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("big.txt");
         fs::write(&path, "x\n".repeat(2_000_000)).unwrap();
@@ -1395,9 +1423,9 @@ mod tests {
         let mut viewer = SourceViewer::new();
         viewer.open(root.path(), &path);
 
-        assert!(matches!(viewer.status, ViewerStatus::LargeFile { .. }));
-        assert!(!viewer.lines.is_empty());
-        assert!(viewer.preview);
+        assert_eq!(viewer.status, ViewerStatus::Ok);
+        assert_eq!(viewer.lines.len(), 2_000_000);
+        assert!(!viewer.preview);
     }
 
     #[test]
@@ -1483,7 +1511,7 @@ mod tests {
     }
 
     #[test]
-    fn large_file_refused_over_threshold() {
+    fn large_file_is_openable_without_an_arbitrary_refusal_threshold() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("huge.txt");
         fs::write(&path, "x".repeat(11 * 1024 * 1024)).unwrap();
@@ -1491,7 +1519,7 @@ mod tests {
         let mut viewer = SourceViewer::new();
         viewer.open(root.path(), &path);
 
-        assert_eq!(viewer.status, ViewerStatus::TooLarge);
+        assert_eq!(viewer.status, ViewerStatus::Ok);
     }
 
     #[test]
@@ -1552,7 +1580,7 @@ mod tests {
     }
 
     #[test]
-    fn large_file_disables_highlighting() {
+    fn large_file_keeps_syntax_highlighting_enabled() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("big.rs");
         fs::write(&path, "let x = 1;\n".repeat(30_000)).unwrap();
@@ -1560,8 +1588,22 @@ mod tests {
         let mut viewer = SourceViewer::new();
         viewer.open(root.path(), &path);
 
-        assert!(viewer.highlight_disabled);
-        assert!(viewer.highlighted_lines.is_empty());
+        assert!(!viewer.highlight_disabled);
+        assert!(!viewer.highlighted_lines.is_empty());
+    }
+
+    #[test]
+    fn invalid_utf8_is_explicitly_read_only() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("bytes.bin");
+        fs::write(&path, [b'a', 0x80]).unwrap();
+
+        let mut viewer = SourceViewer::new();
+        viewer.open(root.path(), &path);
+
+        assert_eq!(viewer.status, ViewerStatus::InvalidUtf8);
+        assert!(viewer.lines.is_empty());
+        assert!(!viewer.status.is_openable());
     }
 
     #[test]
@@ -1825,16 +1867,6 @@ mod tests {
         assert!(binary_text.contains("Binary file"));
         assert!(binary_text.contains("2.0 KB"));
 
-        let mut large = SourceViewer::new();
-        large.status = ViewerStatus::LargeFile { preview: true };
-        large.size_bytes = 2 * 1024 * 1024;
-        assert!(render_viewer(&mut large).contains("Showing a limited preview"));
-
-        let mut too_large = SourceViewer::new();
-        too_large.status = ViewerStatus::TooLarge;
-        too_large.size_bytes = 11 * 1024 * 1024;
-        assert!(render_viewer(&mut too_large).contains("cannot preview"));
-
         let mut missing = SourceViewer::new();
         missing.status = ViewerStatus::NotFound;
         missing.rel_path = "gone.rs".into();
@@ -1863,6 +1895,72 @@ mod tests {
         ok.start_jump();
         ok.jump.input = "12".into();
         assert!(render_viewer(&mut ok).contains("Go to line: 12"));
+    }
+
+    #[test]
+    fn source_viewer_widget_keeps_forge_chrome_around_editor_surface() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("notes.txt");
+        fs::write(&path, "old text\n").unwrap();
+
+        let mut viewer = SourceViewer::new();
+        viewer.open(root.path(), &path);
+        let mut editor = EditorSession::new("new text");
+        let area = Rect::new(0, 0, 40, 8);
+        let mut buf = Buffer::empty(area);
+
+        SourceViewerWidget {
+            viewer: &mut viewer,
+            focused: true,
+            editor: Some(&mut editor),
+        }
+        .render(area, &mut buf);
+
+        let mut rendered = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                rendered.push_str(buf[(x, y)].symbol());
+            }
+        }
+        assert!(rendered.contains("notes.txt"));
+        assert!(rendered.contains("new text"));
+        assert!(!rendered.contains("old text"));
+    }
+
+    #[test]
+    fn editor_header_identifies_unsaved_changes() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("notes.txt");
+        fs::write(&path, "old text\n").unwrap();
+
+        let mut viewer = SourceViewer::new();
+        viewer.open(root.path(), &path);
+        let mut editor = EditorSession::new("old text\n");
+        editor.handle_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('i'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        editor.handle_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('x'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+
+        let area = Rect::new(0, 0, 100, 8);
+        let mut buf = Buffer::empty(area);
+        SourceViewerWidget {
+            viewer: &mut viewer,
+            focused: true,
+            editor: Some(&mut editor),
+        }
+        .render(area, &mut buf);
+
+        let mut rendered = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                rendered.push_str(buf[(x, y)].symbol());
+            }
+        }
+        assert!(rendered.contains("modified"));
     }
 
     #[test]

@@ -211,6 +211,9 @@ enum ExplorerDialog {
         permanent: bool,
         error: Option<String>,
     },
+    DirtyExit,
+    DirtySwitch { path: PathBuf },
+    SaveConflict,
 }
 
 #[allow(dead_code)]
@@ -281,6 +284,7 @@ enum SemanticCommand {
     OpenBottomPanel,
     RefreshFiles,
     RefreshEditor,
+    SaveEditor,
     RefreshDiff,
     BeginCreateFile,
     BeginCreateDirectory,
@@ -672,6 +676,14 @@ pub struct TuiApp {
     workspace_navigation: WorkspaceNavigation,
     /// Read-only source viewer state for the File workspace view.
     pub(crate) source_viewer: SourceViewer,
+    /// Editing state staged for the editable workspace editor.
+    #[allow(dead_code)] // Consumed when the editor rendering/input migration lands.
+    pub(crate) editor_session: Option<EditorSession>,
+    /// Active Vim-style command line, without the leading `:`.
+    pub(crate) editor_command: Option<String>,
+    pub(crate) pending_editor_path: Option<PathBuf>,
+    pub(crate) pending_editor_home: bool,
+    pub(crate) pending_editor_diff: bool,
     file_watch: FileWatchState,
     bottom_panel: BottomPanelState,
     pub(crate) workspace_files: WorkspaceFilesState,

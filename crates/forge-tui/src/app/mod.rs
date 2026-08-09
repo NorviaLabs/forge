@@ -43,6 +43,7 @@ use crate::conversation::{
     BannerKind, ChatItem, ConversationModel, ConversationViewOpts, StreamWaitPhase,
 };
 use crate::editor::EditorError;
+use crate::editor_session::EditorSession;
 use crate::effort::ReasoningEffort;
 use crate::file_explorer::{FileExplorer, FileExplorerWidget};
 use crate::file_ops::{

@@ -110,6 +110,18 @@ impl TuiApp {
             return Ok(());
         }
 
+        if self
+            .editor_session
+            .as_ref()
+            .is_some_and(|editor| editor.is_dirty())
+        {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                "Embedded editor has unsaved changes · save or discard them before opening the external editor",
+            );
+            return Ok(());
+        }
+
         // 3. Resolve editor.
         let (editor_cmd, _editor_args) = match crate::editor::resolve_editor() {
             Some(r) => r,
@@ -187,6 +199,15 @@ impl TuiApp {
     /// syntax highlighting, search state, and Git markers.
     pub(super) fn refresh_post_editor(&mut self) {
         self.refresh_active_source_viewer();
+        if let (Some(editor), Some(text)) = (
+            self.editor_session.as_mut(),
+            self.source_viewer.document_text.as_deref(),
+        ) {
+            if self.source_viewer.status == crate::source_viewer::ViewerStatus::Ok {
+                editor.replace_text(text);
+                self.status_state.message = "Editing file · NORMAL mode".into();
+            }
+        }
         self.note_workspace_changed();
 
         // Show a compact notice.

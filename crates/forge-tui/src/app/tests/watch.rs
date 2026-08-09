@@ -24,6 +24,34 @@ async fn file_change_event_refreshes_git_status() {
 }
 
 #[tokio::test]
+async fn watcher_does_not_reload_active_edtui_buffer() {
+    let (dir, mut app) = focus_test_app().await;
+    let path = dir.path().join("watched.txt");
+    fs::write(&path, "inside").unwrap();
+    app.open_file_in_editor(&path);
+    let editor = app.editor_session.as_mut().unwrap();
+    editor.handle_key(press(KeyCode::Char('i'), KeyModifiers::NONE));
+    editor.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE));
+    editor.handle_key(press(KeyCode::Esc, KeyModifiers::NONE));
+    let in_memory = editor.text();
+    fs::write(&path, "outside").unwrap();
+
+    app.file_watch
+        .change_tx
+        .send(FileChangeEvent { path: path.clone() })
+        .unwrap();
+    app.poll_file_changes();
+
+    assert_eq!(app.editor_session.as_ref().unwrap().text(), in_memory);
+    assert_eq!(app.source_viewer.document_text.as_deref(), Some("inside"));
+    assert!(app
+        .source_viewer
+        .notice
+        .as_deref()
+        .is_some_and(|notice| notice.contains("changed on disk")));
+}
+
+#[tokio::test]
 async fn inspector_renders_settled_change_count_without_files_pane() {
     let (dir, mut app) = focus_test_app().await;
     init_repo(dir.path());
