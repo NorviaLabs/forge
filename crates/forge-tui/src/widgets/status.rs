@@ -9,7 +9,6 @@ use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Widget;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Collapse a home-directory prefix to `~` for the top-bar identity line.
 /// No further truncation — a home-relative path is the only case the
@@ -173,21 +172,8 @@ impl TurnLifecycle {
     }
 }
 
-const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-
-fn spinner_frame() -> &'static str {
-    let ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    SPINNER[((ms / 80) as usize) % SPINNER.len()]
-}
-
-fn format_lifecycle_label(life: TurnLifecycle, detail: Option<&str>, animated: bool) -> String {
-    let glyph = match life {
-        TurnLifecycle::Working if animated => spinner_frame(),
-        other => other.symbol(),
-    };
+fn format_lifecycle_label(life: TurnLifecycle, detail: Option<&str>, _animated: bool) -> String {
+    let glyph = life.symbol();
     let state = life.label();
     let core = if glyph.is_empty() {
         state.to_string()
