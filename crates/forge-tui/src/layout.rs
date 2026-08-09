@@ -194,7 +194,7 @@ fn split_areas_with_chrome_mode(
     let input_h = input_h.clamp(3, THEME_DOCK_H);
     let qh = queue_h.min(8);
     let bg_h = background_h.min(8);
-    let footer_h = footer_h.min(1);
+    let footer_h = footer_h.min(2);
     let sidebar_width = sidebar_width(content_area.width);
     let show_sidebar =
         show_sidebar && content_area.width >= sidebar_width + SIDEBAR_MIN_CONTENT_WIDTH;
@@ -397,6 +397,14 @@ mod tests {
         let area = Rect::new(0, 0, 120, 40);
         let r = split_areas_with_chrome(area, 0, 3, false, 0, 0, 1, true, 0);
         assert_eq!(r.footer.height, 1);
+        assert_eq!(r.footer.y + r.footer.height, area.height);
+    }
+
+    #[test]
+    fn footer_can_reserve_two_rows_for_its_divider_rule() {
+        let area = Rect::new(0, 0, 120, 40);
+        let r = split_areas_with_chrome(area, 0, 3, false, 0, 0, 2, true, 0);
+        assert_eq!(r.footer.height, 2);
         assert_eq!(r.footer.y + r.footer.height, area.height);
     }
 
