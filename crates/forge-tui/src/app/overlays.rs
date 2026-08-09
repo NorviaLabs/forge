@@ -70,10 +70,13 @@ impl TuiApp {
             }
             FocusBlock::Files => {
                 text.push_str("• ↑/↓  Move selection\n");
+                text.push_str("• Type  Fuzzy-filter files by workspace path\n");
+                text.push_str("• Ctrl+U  Clear file search\n");
+                text.push_str("• Tab / Shift+Tab  Search / tree focus\n");
                 text.push_str("• ←/→  Collapse / expand directory\n");
                 text.push_str("• Enter  Open file or expand directory\n");
-                text.push_str("• n / N  New file / folder\n");
-                text.push_str("• R  Rename · d  Delete · r  Refresh\n");
+                text.push_str("• n / N  New file / folder (tree focus)\n");
+                text.push_str("• R  Rename · d  Delete (tree focus)\n");
                 text.push_str("• Esc  Return to previous block\n");
             }
             FocusBlock::Sidebar => {
@@ -227,12 +230,6 @@ impl TuiApp {
                 } else {
                     self.open_file_viewer(&path);
                 }
-            }
-            OverlayAction::QuickOpenFile { path } => {
-                self.overlay = None;
-                let abs = self.session.workspace_root().join(&path);
-                self.open_file_in_editor(&abs);
-                self.set_feedback(FeedbackSeverity::Ok, format!("opened · {path}"));
             }
         }
         Ok(())

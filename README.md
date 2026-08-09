@@ -150,7 +150,6 @@ controls are:
 | `Enter` / `i` | Interact with the focused block or control |
 | `Esc` | Leave the current interaction level |
 | `↑` / `↓` | Navigate a local list or input |
-| `Ctrl+P` | Open Quick Open for files |
 | `Ctrl+Backtick` | Toggle the bottom panel |
 | `Alt+1`–`Alt+3` | Open a bottom-panel tab |
 | `Shift+←` / `Shift+→` | Switch the active block's tab |

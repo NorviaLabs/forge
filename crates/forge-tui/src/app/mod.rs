@@ -92,7 +92,6 @@ mod persist;
 /// for a type across several modules of the same crate, so this is a file split
 /// only — `TuiApp`'s fields and every signature are unchanged.
 mod render;
-mod search;
 mod shell;
 mod turn;
 mod util;
