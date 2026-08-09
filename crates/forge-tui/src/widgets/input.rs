@@ -360,8 +360,6 @@ pub struct InputBar<'a> {
     pub focused: bool,
     /// Approval pending — show the distinct waiting border (see `InputModel.waiting`).
     pub waiting: bool,
-    /// Non-interactive send affordance on the first text row.
-    pub show_send_hint: bool,
     /// Drives the composer's border color — amber when Manual (expect more
     /// interruptions), ordinary idle otherwise. The mode itself shows on
     /// the footer's mode chip, not as a border tag.
@@ -429,26 +427,21 @@ fn visual_row_col(model: &InputModel, width: u16, offset: usize) -> (u16, u16, u
     (0, 0, total_rows)
 }
 
-const SEND_HINT: &str = "⏎";
-
 /// Left inset before composer text — simple breathing room from the border,
 /// replacing the removed prompt-glyph gutter column.
 pub(crate) const TEXT_INSET: u16 = 1;
 
-/// Composer geometry derived from `model`/`area`/`attachment`/
-/// `show_send_hint` — no styling. Shared by [`InputBar::render`] and
-/// [`composer_cursor_position`] so the two never drift apart.
+/// Composer geometry derived from `model`/`area`/`attachment` — no styling.
+/// Shared by [`InputBar::render`] and [`composer_cursor_position`] so the two
+/// never drift apart.
 struct ComposerGeometry {
-    input_area: Rect,
     text_area: Rect,
-    send_w: u16,
 }
 
 fn composer_geometry(
     model: &InputModel,
     area: Rect,
     attachment: Option<&str>,
-    show_send_hint: bool,
 ) -> Option<ComposerGeometry> {
     let block = Block::default().borders(Borders::ALL);
     let inner = block.inner(area);
@@ -462,18 +455,10 @@ fn composer_geometry(
     let text_h = remain.max(1);
     let input_area = Rect::new(inner.x, y, inner.width, text_h);
 
-    let send_w = if show_send_hint && input_area.width > TEXT_INSET + 2 {
-        SEND_HINT.chars().count() as u16
-    } else {
-        0
-    };
     let raw_text_area = Rect::new(
         input_area.x.saturating_add(TEXT_INSET),
         input_area.y,
-        input_area
-            .width
-            .saturating_sub(TEXT_INSET)
-            .saturating_sub(send_w.saturating_add(u16::from(send_w > 0))),
+        input_area.width.saturating_sub(TEXT_INSET),
         input_area.height,
     );
 
@@ -493,11 +478,7 @@ fn composer_geometry(
         raw_text_area.height.saturating_sub(top_pad),
     );
 
-    Some(ComposerGeometry {
-        input_area,
-        text_area,
-        send_w,
-    })
+    Some(ComposerGeometry { text_area })
 }
 
 /// Absolute `(x, y)` of the composer's cursor cell within `area`, for driving
@@ -510,7 +491,7 @@ pub fn composer_cursor_position(
     area: Rect,
     attachment: Option<&str>,
 ) -> Option<(u16, u16)> {
-    let geometry = composer_geometry(model, area, attachment, false)?;
+    let geometry = composer_geometry(model, area, attachment)?;
     let text_area = geometry.text_area;
     if text_area.width == 0 || text_area.height == 0 {
         return None;
@@ -544,7 +525,7 @@ pub fn composer_text_area_width(
     area: Rect,
     attachment: Option<&str>,
 ) -> Option<u16> {
-    let geometry = composer_geometry(model, area, attachment, false)?;
+    let geometry = composer_geometry(model, area, attachment)?;
     Some(geometry.text_area.width)
 }
 
@@ -612,14 +593,10 @@ impl Widget for InputBar<'_> {
         }
         block.render(area, buf);
 
-        let Some(geometry) =
-            composer_geometry(self.model, area, self.attachment, self.show_send_hint)
-        else {
+        let Some(geometry) = composer_geometry(self.model, area, self.attachment) else {
             return;
         };
-        let input_area = geometry.input_area;
         let text_area = geometry.text_area;
-        let send_w = geometry.send_w;
 
         if self.attachment.is_some() && inner.height > 1 {
             let att_text = self.attachment.unwrap_or("");
@@ -645,10 +622,6 @@ impl Widget for InputBar<'_> {
             .wrap(Wrap { trim: false })
             .scroll((scroll, 0))
             .render(text_area, buf);
-        if send_w > 0 {
-            let sx = input_area.x + input_area.width.saturating_sub(send_w);
-            buf.set_stringn(sx, input_area.y, SEND_HINT, send_w as usize, theme::dim());
-        }
         if text_focused {
             // The real terminal cursor (driven by `composer_cursor_position`
             // from the caller) renders the visible caret now — blend this
@@ -704,7 +677,6 @@ mod tests {
                     not_connected,
                     focused,
                     waiting: model.waiting,
-                    show_send_hint: false,
                     permission_mode: forge_governance::PermissionMode::default(),
                 },
                 f.area(),
@@ -1073,7 +1045,6 @@ mod tests {
                     not_connected: false,
                     focused: false,
                     waiting: false,
-                    show_send_hint: false,
                     permission_mode: mode,
                 },
                 f.area(),
