@@ -9,7 +9,9 @@ use crate::widgets::status::TurnLifecycle;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
+use ratatui::text::Span;
 use ratatui::widgets::Widget;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Which footer control (if any) is focused for keyboard/mouse activation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,12 +80,43 @@ fn ctx_bar(pct: f64) -> String {
 
 fn lifecycle_dot(life: TurnLifecycle) -> (&'static str, Style) {
     match life {
-        TurnLifecycle::Working => ("◐", theme::info()),
+        TurnLifecycle::Working => ("●", theme::info()),
         TurnLifecycle::Waiting => ("◑", theme::warn()),
         TurnLifecycle::Failed => ("●", theme::danger()),
         TurnLifecycle::Cancelled | TurnLifecycle::Interrupted => ("●", theme::dim()),
         TurnLifecycle::Ready | TurnLifecycle::Completed => ("●", theme::ok()),
     }
+}
+
+fn shimmer_phase_at(text_len: usize, millis: u128) -> usize {
+    if text_len == 0 {
+        return 0;
+    }
+    ((millis / 180) as usize) % text_len
+}
+
+fn shimmer_phase(text_len: usize) -> usize {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    shimmer_phase_at(text_len, millis)
+}
+
+fn shimmer_label(label: &'static str, base: Style) -> Vec<Span<'static>> {
+    let phase = shimmer_phase(label.chars().count());
+    label
+        .chars()
+        .enumerate()
+        .map(|(index, character)| {
+            let style = if index == phase {
+                theme::accent_style().add_modifier(Modifier::BOLD)
+            } else {
+                base
+            };
+            Span::styled(character.to_string(), style)
+        })
+        .collect()
 }
 
 impl Widget for FooterBar<'_> {
@@ -220,7 +253,13 @@ impl FooterBar<'_> {
         let mut right: Vec<Span<'static>> = vec![
             Span::styled(glyph, dot_style.add_modifier(Modifier::BOLD)),
             Span::raw(" "),
-            Span::styled(m.lifecycle.label(), theme::text_secondary()),
+        ];
+        if m.lifecycle == TurnLifecycle::Working && !dim {
+            right.extend(shimmer_label(m.lifecycle.label(), theme::text_secondary()));
+        } else {
+            right.push(Span::styled(m.lifecycle.label(), theme::text_secondary()));
+        }
+        right.extend([
             Span::raw("  "),
             Span::styled("·", theme::dim()),
             Span::raw("  "),
@@ -235,7 +274,7 @@ impl FooterBar<'_> {
             Span::raw("  "),
             // Reserved for background job/agent counts — dim/empty today.
             Span::styled("⚑", theme::dim()),
-        ];
+        ]);
         if dim {
             for span in right.iter_mut() {
                 span.style = theme::dim();
@@ -272,6 +311,14 @@ fn truncate_middle(text: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shimmer_moves_left_to_right_at_a_slow_cadence() {
+        assert_eq!(shimmer_phase_at(7, 0), 0);
+        assert_eq!(shimmer_phase_at(7, 179), 0);
+        assert_eq!(shimmer_phase_at(7, 180), 1);
+        assert_eq!(shimmer_phase_at(7, 1_260), 0);
+    }
 
     fn model(lifecycle: TurnLifecycle, ctx_pct: f64) -> FooterModel {
         FooterModel {
