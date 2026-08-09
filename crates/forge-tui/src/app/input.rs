@@ -15,17 +15,25 @@ impl TuiApp {
         match key.code {
             KeyCode::Esc if key.modifiers.is_empty() => {
                 self.editor_command = None;
-                self.status_state.message = "Editor command cancelled".into();
             }
             KeyCode::Backspace if key.modifiers.is_empty() => {
                 command.pop();
-                self.status_state.message = format!(":{command}");
             }
             KeyCode::Enter if key.modifiers.is_empty() => {
                 let command = std::mem::take(command);
                 self.editor_command = None;
                 match command.as_str() {
-                    "w" | "write" => self.save_active_editor(),
+                    "w" | "write" => {
+                        self.save_active_editor();
+                        if self
+                            .editor_session
+                            .as_ref()
+                            .is_some_and(|editor| !editor.is_dirty())
+                        {
+                            self.editor_message =
+                                Some(format!("written {}", self.source_viewer.rel_path));
+                        }
+                    }
                     "q" | "quit" => self.go_back_workspace(),
                     "q!" | "quit!" => {
                         if let Some(editor) = self.editor_session.as_mut() {
@@ -52,6 +60,8 @@ impl TuiApp {
                             self.explorer_dialog.current = Some(ExplorerDialog::SaveConflict);
                         } else {
                             self.reload_active_editor_from_disk();
+                            self.editor_message =
+                                Some(format!("reloaded {}", self.source_viewer.rel_path));
                         }
                     }
                     command if command.starts_with("e ") || command.starts_with("edit ") => {
@@ -73,14 +83,9 @@ impl TuiApp {
                                     self.open_file_in_editor(&path);
                                 }
                             }
-                            Ok(_) => self.set_feedback(
-                                FeedbackSeverity::Warn,
-                                "editor target is not a file",
-                            ),
-                            Err(error) => self.set_feedback(
-                                FeedbackSeverity::Warn,
-                                format!("cannot open editor target: {error}"),
-                            ),
+                            Ok(_) | Err(_) => {
+                                self.editor_message = Some("E32: No file or directory".to_string());
+                            }
                         }
                     }
                     command if command.starts_with('s') || command.starts_with('%') => {
@@ -98,32 +103,26 @@ impl TuiApp {
                                         )
                                     })
                                     .unwrap_or(0);
-                                self.set_feedback(
-                                    if count > 0 {
-                                        FeedbackSeverity::Ok
-                                    } else {
-                                        FeedbackSeverity::Info
-                                    },
-                                    format!("{count} substitution(s)"),
-                                );
+                                self.editor_message = Some(format!(
+                                    "{count} substitution{}",
+                                    if count == 1 { "" } else { "s" }
+                                ));
                             }
-                            None => self.set_feedback(
-                                FeedbackSeverity::Warn,
-                                "invalid substitute; use :s/pattern/replacement/[g]",
-                            ),
+                            None => {
+                                self.editor_message = Some("E488: Trailing characters".to_string());
+                            }
                         }
                     }
-                    _ => self.set_feedback(
-                        FeedbackSeverity::Warn,
-                        format!("unknown editor command: :{command}"),
-                    ),
+                    _ => {
+                        self.editor_message =
+                            Some(format!("E492: Not an editor command: {command}"));
+                    }
                 }
             }
             KeyCode::Char(ch)
                 if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
             {
                 command.push(ch);
-                self.status_state.message = format!(":{command}");
             }
             _ => {}
         }
@@ -971,6 +970,10 @@ impl TuiApp {
                 return Ok(());
             }
         }
+
+        // A Vim command result remains visible until the next keypress; that
+        // keypress also continues with its ordinary action.
+        self.editor_message = None;
 
         if self.explorer_dialog.current.is_some() {
             self.handle_explorer_dialog_key(key);
