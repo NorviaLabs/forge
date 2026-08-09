@@ -33,7 +33,12 @@ impl TuiApp {
     }
 
     pub(super) fn repository_or_workspace_id(&self) -> String {
-        self.session.workspace_root().display().to_string()
+        self.session
+            .workspace_root()
+            .canonicalize()
+            .unwrap_or_else(|_| self.session.workspace_root().to_path_buf())
+            .display()
+            .to_string()
     }
 
     pub(super) fn load_ui_state(&mut self) {

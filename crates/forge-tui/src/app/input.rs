@@ -607,7 +607,10 @@ impl TuiApp {
                 self.source_viewer.enter_normal_mode();
                 true
             }
-            _ => false,
+            // A binary or invalid-UTF-8 preview is read-only, but it still
+            // owns the workspace keyboard focus. Consume unsupported keys so
+            // they cannot fall through to the chat composer.
+            _ => self.editor_session.is_none(),
         }
     }
 
@@ -708,6 +711,9 @@ impl TuiApp {
             return self.execute_semantic_command(command).await;
         }
         if self.current_workspace_is_file() {
+            if let Some(command) = self.semantic_command_for_global_key(key) {
+                return self.execute_semantic_command(command).await;
+            }
             return Ok(self.handle_editor_key(key));
         }
         Ok(false)
