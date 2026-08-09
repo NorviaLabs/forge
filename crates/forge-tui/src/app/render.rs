@@ -908,17 +908,22 @@ fn visible_conversation_copy_rows(
     let end = scroll.saturating_add(area.height as usize).min(total);
     (scroll..end)
         .map(|index| {
+            // Borrow the line: it was previously deep-cloned (spans and all)
+            // only to concatenate the text back out and drop the copy.
             let line = if index < lines.len() {
-                lines[index].clone()
+                Some(&lines[index])
             } else if index < content_len {
-                tail_lines[index - lines.len()].clone()
+                Some(&tail_lines[index - lines.len()])
             } else {
-                Line::from("")
+                None
             };
-            line.spans
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect()
+            line.map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .unwrap_or_default()
         })
         .collect()
 }
