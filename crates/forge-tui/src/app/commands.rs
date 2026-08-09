@@ -445,13 +445,7 @@ impl TuiApp {
             }
             SemanticCommand::ActivateActivitySummary => self.activate_activity_summary(),
             SemanticCommand::SelectEntry(path) => {
-                if self
-                    .workspace_files
-                    .explorer
-                    .visible_nodes()
-                    .iter()
-                    .any(|node| node.path == path)
-                {
+                if self.workspace_files.explorer.is_visible(&path) {
                     self.workspace_files.explorer.selected_path = Some(path);
                     if self.workspace_files.visible {
                         self.focus_block(FocusBlock::Files);
@@ -468,15 +462,7 @@ impl TuiApp {
                 self.workspace_files.explorer.collapse_selected()
             }
             SemanticCommand::ToggleDirectory(path) => {
-                if self
-                    .workspace_files
-                    .explorer
-                    .visible_nodes()
-                    .iter()
-                    .any(|node| {
-                        node.path == path && node.kind == crate::file_explorer::FileKind::Directory
-                    })
-                {
+                if self.workspace_files.explorer.is_visible_directory(&path) {
                     self.workspace_files.explorer.selected_path = Some(path);
                     self.workspace_files.explorer.activate_selected();
                 }
