@@ -311,7 +311,6 @@ impl TuiApp {
             return;
         }
         self.navigate_to_workspace_view(WorkspaceView::File(path.to_path_buf()));
-        self.note_workspace_file_opened(path);
     }
 
     pub(super) fn complete_pending_editor_switch(&mut self, discard: bool) {
@@ -324,7 +323,6 @@ impl TuiApp {
             }
         }
         self.navigate_to_workspace_view(WorkspaceView::File(path.clone()));
-        self.note_workspace_file_opened(&path);
     }
 
     #[cfg(test)]

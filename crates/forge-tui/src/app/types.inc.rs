@@ -276,7 +276,6 @@ enum SemanticCommand {
         forward: bool,
     },
     ToggleBottomPanel,
-    OpenQuickOpen,
     QuickSwitchModel,
     /// Open the persistent footer control's compact picker, focused on the
     /// given column (vendor/route, model, or effort).
@@ -483,11 +482,6 @@ struct ConversationViewState {
 struct DiffViewState {
     selected: usize,
     snapshot: DiffSnapshot,
-}
-
-struct WorkspaceSearchState {
-    index: Option<Arc<forge_search::WorkspaceIndex>>,
-    error: Option<String>,
 }
 
 pub(crate) struct WorkspaceFilesState {
@@ -709,7 +703,6 @@ pub struct TuiApp {
     repo_header_state: RepoHeaderState,
     progress_state: std::cell::RefCell<ProgressState>,
     interactive_terminal: Option<InteractiveTerminal>,
-    workspace_search: WorkspaceSearchState,
     /// Editor pane's terminal rect from the most recent draw, used for mouse
     /// hit-testing (mouse events arrive between frames).
     editor_area: Option<ratatui::layout::Rect>,

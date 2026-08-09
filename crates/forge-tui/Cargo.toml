@@ -18,7 +18,6 @@ forge-governance = { workspace = true }
 forge-model = { workspace = true }
 forge-connect = { workspace = true }
 forge-storage = { workspace = true }
-forge-search = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

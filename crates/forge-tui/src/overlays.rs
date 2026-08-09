@@ -90,12 +90,6 @@ pub enum Overlay {
         lines: Vec<String>,
         scroll: usize,
     },
-    QuickOpen {
-        query: String,
-        selected: usize,
-        hits: Vec<QuickOpenItem>,
-        error: Option<String>,
-    },
 }
 
 #[derive(Debug, Clone)]
@@ -306,13 +300,6 @@ pub struct ResumeSessionItem {
     /// journal couldn't be read/replayed cheaply. Falls back to showing
     /// just `id`/`modified` in that case.
     pub title: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct QuickOpenItem {
-    pub path: String,
-    pub score: i32,
-    pub match_ranges: Vec<(u32, u32)>,
 }
 
 #[derive(Debug, Clone)]
@@ -744,15 +731,6 @@ impl Overlay {
         }
     }
 
-    pub fn quick_open() -> Self {
-        Self::QuickOpen {
-            query: String::new(),
-            selected: 0,
-            hits: Vec::new(),
-            error: None,
-        }
-    }
-
     pub fn move_sel(&mut self, delta: i32) {
         match self {
             Self::ConnectModel {
@@ -811,13 +789,6 @@ impl Overlay {
                     return;
                 }
                 let n = items.len() as i32;
-                *selected = ((*selected as i32 + delta).rem_euclid(n)) as usize;
-            }
-            Self::QuickOpen { selected, hits, .. } => {
-                if hits.is_empty() {
-                    return;
-                }
-                let n = hits.len() as i32;
                 *selected = ((*selected as i32 + delta).rem_euclid(n)) as usize;
             }
             Self::FileViewer { scroll, lines, .. } => {
@@ -923,9 +894,6 @@ pub enum OverlayAction {
     FilePick {
         path: String,
         is_dir: bool,
-    },
-    QuickOpenFile {
-        path: String,
     },
 }
 
@@ -1101,12 +1069,6 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                     OverlayAction::None
                 }
             }
-            Overlay::QuickOpen { selected, hits, .. } => hits
-                .get(*selected)
-                .map(|item| OverlayAction::QuickOpenFile {
-                    path: item.path.clone(),
-                })
-                .unwrap_or(OverlayAction::None),
             Overlay::Theme {
                 selected, items, ..
             } => items
@@ -1188,18 +1150,6 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             }
             OverlayAction::None
         }
-        Key::Char(c) if matches!(overlay, Overlay::QuickOpen { .. }) => {
-            if let Overlay::QuickOpen {
-                query, selected, ..
-            } = overlay
-            {
-                if !c.is_control() {
-                    query.push(c);
-                    *selected = 0;
-                }
-            }
-            OverlayAction::None
-        }
         Key::Paste(ref data)
             if matches!(
                 overlay,
@@ -1224,20 +1174,6 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             }
             OverlayAction::None
         }
-        Key::Paste(ref data) if matches!(overlay, Overlay::QuickOpen { .. }) => {
-            if let Overlay::QuickOpen {
-                query, selected, ..
-            } = overlay
-            {
-                for c in data.chars() {
-                    if !c.is_control() {
-                        query.push(c);
-                    }
-                }
-                *selected = 0;
-            }
-            OverlayAction::None
-        }
         Key::Backspace
             if matches!(
                 overlay,
@@ -1255,16 +1191,6 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             {
                 model_input.pop();
                 *model_selected = 0;
-            }
-            OverlayAction::None
-        }
-        Key::Backspace if matches!(overlay, Overlay::QuickOpen { .. }) => {
-            if let Overlay::QuickOpen {
-                query, selected, ..
-            } = overlay
-            {
-                query.pop();
-                *selected = 0;
             }
             OverlayAction::None
         }
@@ -1485,63 +1411,6 @@ pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
         .split(popup[1])[1]
 }
 
-/// Build styled spans for a Quick Open path, highlighting query match ranges.
-fn quick_open_path_spans(
-    path: &str,
-    match_ranges: &[(u32, u32)],
-    selected: bool,
-) -> Vec<Span<'static>> {
-    let base = if selected {
-        theme::focused_selection_style()
-    } else {
-        theme::text()
-    };
-    if match_ranges.is_empty() {
-        return vec![Span::styled(path.to_owned(), base)];
-    }
-
-    let bytes = path.as_bytes();
-    let mut ranges: Vec<(usize, usize)> = match_ranges
-        .iter()
-        .map(|&(start, end)| (start as usize, end as usize))
-        .filter(|&(start, end)| start < end && start < bytes.len())
-        .collect();
-    ranges.sort_by_key(|range| range.0);
-
-    let match_style = if selected {
-        theme::search_match().add_modifier(Modifier::BOLD)
-    } else {
-        theme::search_match()
-    };
-
-    let mut spans = Vec::new();
-    let mut cursor = 0usize;
-    for (start, end) in ranges {
-        let start = start.min(bytes.len());
-        let end = end.min(bytes.len()).max(start);
-        if start > cursor {
-            spans.push(Span::styled(
-                String::from_utf8_lossy(&bytes[cursor..start]).into_owned(),
-                base,
-            ));
-        }
-        if end > start {
-            spans.push(Span::styled(
-                String::from_utf8_lossy(&bytes[start..end]).into_owned(),
-                match_style,
-            ));
-        }
-        cursor = cursor.max(end);
-    }
-    if cursor < bytes.len() {
-        spans.push(Span::styled(
-            String::from_utf8_lossy(&bytes[cursor..]).into_owned(),
-            base,
-        ));
-    }
-    spans
-}
-
 /// Centred panel that remains usable on small terminals without becoming a
 /// nearly full-width dashboard on large ones.
 fn centered_capped_rect(area: Rect, max_width: u16, max_height: u16) -> Rect {
@@ -1688,7 +1557,7 @@ impl Widget for OverlayWidget<'_> {
             Overlay::Help => {
                 let r = centered_rect(64, 58, area);
                 Paragraph::new(
-                    "Forge is an AI coding agent for your terminal.\n\nStart typing and press Enter.\n\nShortcuts\n• /       Commands\n• /status Session status\n• Tab / Shift+Tab  Focus visible blocks\n• Ctrl+P  Quick Open files\n• Ctrl+`  Toggle bottom panel\n• Alt+M  Quick-switch model\n• Alt+, / Alt+.  Change effort\n• Footer chips: Enter opens/cycles the selected chip\n• ← / →  Switch tab in the active block\n• Enter/i Interact\n• Tab     Complete (Chat composer)\n• ↑↓      Navigate local list or input\n• Esc     Leave one interaction level\n• ?       Help\n\nEditor (when a text file is open)\n• Normal mode on open; i  Insert mode\n• :w / :q / :wq  Save / quit / save and quit\n• :e [path]  Reload or open a workspace file\n• :s/.../.../  Replace on the current line\n• :%s/.../.../  Replace across the buffer\n• Alt+E  Open the external editor\n• Esc     Return to workspace\n\nText files are editable. Binary and invalid-UTF-8 files are read-only. Forge\nasks before leaving dirty buffers and offers reload or force-save when disk\ncontent changed.\n\nForge asks before sensitive actions and automatically saves your session.\n\nPress Enter to get started.",
+                    "Forge is an AI coding agent for your terminal.\n\nStart typing and press Enter.\n\nShortcuts\n• /       Commands\n• /status Session status\n• Tab / Shift+Tab  Focus visible blocks\n• Ctrl+`  Toggle bottom panel\n• Alt+M  Quick-switch model\n• Alt+, / Alt+.  Change effort\n• Footer chips: Enter opens/cycles the selected chip\n• ← / →  Switch tab in the active block\n• Enter/i Interact\n• Tab     Complete (Chat composer)\n• ↑↓      Navigate local list or input\n• Esc     Leave one interaction level\n• ?       Help\n\nEditor (when a text file is open)\n• Normal mode on open; i  Insert mode\n• :w / :q / :wq  Save / quit / save and quit\n• :e [path]  Reload or open a workspace file\n• :s/.../.../  Replace on the current line\n• :%s/.../.../  Replace across the buffer\n• Alt+E  Open the external editor\n• Esc     Return to workspace\n\nText files are editable. Binary and invalid-UTF-8 files are read-only. Forge\nasks before leaving dirty buffers and offers reload or force-save when disk\ncontent changed.\n\nForge asks before sensitive actions and automatically saves your session.\n\nPress Enter to get started.",
                 )
                 .wrap(ratatui::widgets::Wrap { trim: true })
                 .block(
@@ -2047,81 +1916,6 @@ impl Widget for OverlayWidget<'_> {
                     )
                     .render(r, buf);
             }
-            Overlay::QuickOpen {
-                query,
-                selected,
-                hits,
-                error,
-            } => {
-                let r = centered_capped_rect(area, 88, 20);
-                let visible = r.height.saturating_sub(6).max(1) as usize;
-                let start = if *selected < visible {
-                    0
-                } else if *selected + 1 > visible {
-                    (*selected).saturating_add(1).saturating_sub(visible)
-                } else {
-                    0
-                };
-                let end = (start + visible).min(hits.len());
-                let window = &hits[start..end];
-                let list_items: Vec<ListItem> = if let Some(message) = error {
-                    vec![ListItem::new(Span::styled(message, theme::warn()))]
-                } else if window.is_empty() {
-                    vec![ListItem::new(Span::styled(
-                        if query.trim().is_empty() {
-                            "Type to search files…"
-                        } else {
-                            "No matching files"
-                        },
-                        theme::muted(),
-                    ))]
-                } else {
-                    window
-                        .iter()
-                        .enumerate()
-                        .map(|(i, hit)| {
-                            let idx = start + i;
-                            let marker = if idx == *selected { "▶ " } else { "  " };
-                            let marker_style = if idx == *selected {
-                                theme::focused_selection_style()
-                            } else {
-                                theme::text()
-                            };
-                            let mut spans = vec![Span::styled(marker.to_string(), marker_style)];
-                            spans.extend(quick_open_path_spans(
-                                &hit.path,
-                                &hit.match_ranges,
-                                idx == *selected,
-                            ));
-                            ListItem::new(Line::from(spans))
-                        })
-                        .collect()
-                };
-                let chunks = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([Constraint::Length(3), Constraint::Min(3)])
-                    .split(r);
-                Paragraph::new(format!("{query}█"))
-                    .block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .border_style(theme::border())
-                            .style(theme::panel())
-                            .title(Span::styled(
-                                " Quick Open · ↑↓ Enter · Esc cancel ",
-                                theme::brand(),
-                            )),
-                    )
-                    .render(chunks[0], buf);
-                List::new(list_items)
-                    .block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .border_style(theme::border())
-                            .style(theme::panel()),
-                    )
-                    .render(chunks[1], buf);
-            }
             Overlay::ResumePicker { selected, items } => {
                 let r = centered_rect(70, 48, area);
                 let visible = r.height.saturating_sub(2).max(1) as usize;
@@ -2286,28 +2080,6 @@ mod tests {
             text.push('\n');
         }
         text
-    }
-
-    #[test]
-    fn quick_open_path_spans_highlight_match_ranges() {
-        let spans = quick_open_path_spans("src/main.rs", &[(0, 3), (4, 8)], false);
-        assert_eq!(spans.len(), 4);
-        assert_eq!(spans[0].content, "src");
-        assert_eq!(spans[0].style, theme::search_match());
-        assert_eq!(spans[1].content, "/");
-        assert_eq!(spans[1].style, theme::text());
-        assert_eq!(spans[2].content, "main");
-        assert_eq!(spans[2].style, theme::search_match());
-        assert_eq!(spans[3].content, ".rs");
-        assert_eq!(spans[3].style, theme::text());
-    }
-
-    #[test]
-    fn quick_open_path_spans_without_ranges_use_base_style() {
-        let spans = quick_open_path_spans("README.md", &[], true);
-        assert_eq!(spans.len(), 1);
-        assert_eq!(spans[0].content, "README.md");
-        assert_eq!(spans[0].style, theme::focused_selection_style());
     }
 
     #[test]

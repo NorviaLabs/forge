@@ -59,8 +59,12 @@ impl TuiApp {
     }
 
     pub(crate) fn focus_block(&mut self, block: FocusBlock) {
+        let entering_files = block == FocusBlock::Files && self.focus.block != FocusBlock::Files;
         if self.focus.block != block {
             self.focus.previous_block = Some(self.focus.block);
+        }
+        if entering_files {
+            self.workspace_files.explorer.search_focused = true;
         }
         self.focus.block = block;
         self.focus.mode = FocusMode::Navigation;

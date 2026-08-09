@@ -156,10 +156,6 @@ impl TuiApp {
             },
             progress_state: std::cell::RefCell::new(ProgressState::default()),
             interactive_terminal: None,
-            workspace_search: WorkspaceSearchState {
-                index: None,
-                error: None,
-            },
             editor_viewport: EditorViewportState { height: 24 },
             editor_area: None,
             composer_area: None,
