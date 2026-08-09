@@ -103,6 +103,7 @@ impl TuiApp {
             source_viewer: SourceViewer::new(),
             editor_session: None,
             editor_command: None,
+            editor_message: None,
             pending_editor_path: None,
             pending_editor_home: false,
             pending_editor_diff: false,
