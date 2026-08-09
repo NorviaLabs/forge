@@ -117,6 +117,11 @@ struct FileWatchState {
 /// component-specific selection state remains with the component itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FocusBlock {
+    /// The explorer's search row. Nested visually inside the same bordered
+    /// box as `Files` (no standalone layout region), but a real Tab stop of
+    /// its own so Tab has one consistent meaning everywhere instead of
+    /// toggling a sub-mode within `Files`.
+    Search,
     Files,
     Workspace,
     Sidebar,
@@ -135,6 +140,7 @@ pub(crate) enum FocusBlock {
 impl FocusBlock {
     fn label(self) -> &'static str {
         match self {
+            Self::Search => "SEARCH",
             Self::Files => "FILES",
             Self::Workspace => "CHAT",
             Self::Sidebar => "SIDEBAR",
@@ -153,7 +159,8 @@ impl FocusBlock {
     // its own composer next. The approval card is reachable in the cycle
     // while a decision is pending. Footer follows Composer — the natural
     // next stop after typing is the row of dials right below it.
-    const ORDER: [Self; 7] = [
+    const ORDER: [Self; 8] = [
+        Self::Search,
         Self::Files,
         Self::Workspace,
         Self::Sidebar,
@@ -344,6 +351,7 @@ impl Default for FocusState {
 
 #[derive(Debug, Clone, Copy)]
 struct FocusAvailability {
+    search: bool,
     files: bool,
     sidebar: bool,
     bottom_panel: bool,
@@ -353,6 +361,7 @@ struct FocusAvailability {
 impl FocusAvailability {
     fn contains(self, block: FocusBlock) -> bool {
         match block {
+            FocusBlock::Search => self.search,
             FocusBlock::Files => self.files,
             FocusBlock::Workspace => true,
             FocusBlock::Sidebar => self.sidebar,
