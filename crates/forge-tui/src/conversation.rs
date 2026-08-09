@@ -324,11 +324,6 @@ pub enum ChatItem {
     /// Pending human-in-the-loop approval — the full redacted payload,
     /// rendered inline in the transcript until the composer resolves it.
     ApprovalPending(ApprovalPendingPresentation),
-    /// After allow-once: offer to persist a pattern for similar calls.
-    PatternNudge {
-        pattern: String,
-        selected: usize,
-    },
     /// Structured TODO checklist from the `update_plan` tool.
     PlanChecklist {
         explanation: Option<String>,
@@ -358,7 +353,6 @@ pub enum ConversationBlock {
     CodeBlock(CodeBlockPresentation),
     DiffBlock(DiffBlockPresentation),
     ApprovalPending(ApprovalPendingPresentation),
-    PatternNudge { pattern: String, selected: usize },
     PlanChecklist(PlanChecklistPresentation),
     Metadata(MetadataPresentation),
     Thinking(ThinkingPresentation),
@@ -845,12 +839,6 @@ impl ConversationModel {
     /// Append the pending HITL approval as a full inline transcript item.
     /// `working_directory` is the workspace-root fallback when the call
     /// carries no explicit cwd.
-    pub fn with_pattern_nudge(mut self, pattern: String, selected: usize) -> Self {
-        self.items
-            .push(ChatItem::PatternNudge { pattern, selected });
-        self
-    }
-
     pub fn with_pending_approval(
         mut self,
         payload: &forge_types::HitlPayload,
@@ -1196,46 +1184,6 @@ impl ConversationModel {
                         lines.extend([Line::from(""), Line::from("")]);
                     }
                 }
-                ConversationBlock::PatternNudge { pattern, selected } => {
-                    lines.push(Line::from(vec![
-                        Span::styled("?", theme::info()),
-                        Span::raw(" "),
-                        Span::styled(
-                            "also allow similar commands going forward?",
-                            theme::text().add_modifier(Modifier::BOLD),
-                        ),
-                    ]));
-                    for wrapped in wrap(pattern.as_str(), width.saturating_sub(4)) {
-                        lines.push(Line::from(Span::styled(
-                            format!("{INDENT_UNIT}{wrapped}"),
-                            theme::muted(),
-                        )));
-                    }
-                    for (idx, label) in ["Yes, allow pattern", "No thanks"].iter().enumerate() {
-                        let marker = if idx == selected { "›" } else { " " };
-                        let style = if idx == selected {
-                            theme::text().add_modifier(Modifier::BOLD)
-                        } else {
-                            theme::muted()
-                        };
-                        lines.push(Line::from(Span::styled(
-                            format!("{INDENT_UNIT}{marker} {label}"),
-                            style,
-                        )));
-                    }
-                    for wrapped in wrap(
-                        "↑↓ select · Enter confirm · Esc skip",
-                        width.saturating_sub(2),
-                    ) {
-                        lines.push(Line::from(Span::styled(
-                            format!("{INDENT_UNIT}{wrapped}"),
-                            theme::metadata_style(),
-                        )));
-                    }
-                    if gap {
-                        lines.extend([Line::from(""), Line::from("")]);
-                    }
-                }
                 ConversationBlock::Callout(p) => {
                     let st = match p.kind {
                         BannerKind::Info => theme::info(),
@@ -1523,14 +1471,6 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
                 flush_progress(&mut blocks, &mut progress);
                 flush_activity(&mut blocks, &mut activity_group);
                 blocks.push(ConversationBlock::ApprovalPending(presentation.clone()));
-            }
-            ChatItem::PatternNudge { pattern, selected } => {
-                flush_progress(&mut blocks, &mut progress);
-                flush_activity(&mut blocks, &mut activity_group);
-                blocks.push(ConversationBlock::PatternNudge {
-                    pattern: pattern.clone(),
-                    selected: *selected,
-                });
             }
             ChatItem::PlanChecklist { explanation, steps } => {
                 flush_progress(&mut blocks, &mut progress);
