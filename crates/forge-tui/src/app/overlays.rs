@@ -63,8 +63,10 @@ impl TuiApp {
                 text.push_str("• Alt+←  Back\n");
                 text.push_str("• Alt+→  Review changes / activity summary\n");
                 text.push_str("• Type  Start chat in composer\n");
-                text.push_str("• G / r  Editor navigation and refresh\n");
-                text.push_str("• Ctrl+F / Ctrl+G  Search or jump\n");
+                text.push_str("• Vim Normal/Insert/Search modes  Edit text files\n");
+                text.push_str("• :w / :q / :wq  Save / quit / save and quit\n");
+                text.push_str("• :s/.../.../  Replace; :%s/.../.../  Replace all\n");
+                text.push_str("• Alt+E  Open the external editor\n");
             }
             FocusBlock::Files => {
                 text.push_str("• ↑/↓  Move selection\n");
@@ -263,6 +265,9 @@ impl TuiApp {
     pub(super) fn set_theme_active(&mut self, theme_id: &str) {
         crate::theme::set_active(theme_id);
         self.runtime.theme_id = theme_id.to_string();
+        if let Some(editor) = self.editor_session.as_mut() {
+            editor.set_syntax_theme(crate::theme::syntax_theme());
+        }
         self.render_cache.conversation = None;
     }
 

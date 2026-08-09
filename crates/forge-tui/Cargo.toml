@@ -33,7 +33,8 @@ notify = { workspace = true }
 portable-pty = { workspace = true }
 vt100 = { workspace = true }
 pulldown-cmark = { workspace = true }
+edtui = { workspace = true }
+tempfile = { workspace = true }
 
 [dev-dependencies]
-tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

@@ -167,6 +167,16 @@ When the bottom panel is focused, it is an interactive login shell. Type or
 paste commands directly into it; standard control keys, arrows, Tab, and
 terminal resize are forwarded to the shell. `Ctrl+Backtick` closes the panel.
 
+When a text file is open, the workspace uses Vim-style editing. Files start in
+Normal mode; press `i` to insert, `Esc` to return to Normal mode, and `Alt+E`
+to hand the file to `$VISUAL`/`$EDITOR`. In Normal mode, `:` opens the editor
+command line. The beta command set includes `:w`, `:q`, `:q!`, `:wq`, `:x`,
+`:e [path]`, `:s/pattern/replacement/[g]`, and `:%s/pattern/replacement/[g]`.
+Saving is immediate. Forge asks whether to save, discard, or cancel before
+leaving or switching away from dirty buffers, and asks whether to reload or
+force-save when the file changed on disk. Binary and invalid-UTF-8 files stay
+explicitly read-only.
+
 ## Configuration
 
 Forge reads defaults, a user configuration file, a `forge.toml` in the
