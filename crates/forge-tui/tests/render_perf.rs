@@ -12,6 +12,18 @@
 //! path, cached transcript lines shared rather than deep-copied per frame, and
 //! input drained before repainting). These guards keep it.
 //!
+//! # Why there is also an absolute budget, and a cache-miss guard
+//!
+//! Scaling guards compare two transcript lengths, so they say nothing about
+//! work that is merely constant-but-large. Per-frame cost later grew 2.6x
+//! underneath them from exactly that kind of work. The budget below is
+//! therefore held close to the measured value rather than left loose.
+//!
+//! They also only measure cache *hits*. A frame that misses the conversation
+//! cache rebuilds the whole transcript, and every render-key change (busy-phase
+//! flip, banner, activity summary, resize, theme change) pays it mid-session.
+//! `cache_miss_cost_per_message_is_bounded` covers that path.
+//!
 //! # Why allocation counts, not timings
 //!
 //! Wall-clock on a shared CI runner is noisy enough to be useless as a gate: the
@@ -210,6 +222,24 @@ fn steady_frame_cost(app: &mut TuiApp, iterations: usize) -> FrameCost {
     }
 }
 
+/// Cost of the *first* frame an app ever draws, which must build the whole
+/// transcript because the conversation cache is empty.
+///
+/// This is the path taken whenever the render key changes — a busy-phase flip,
+/// a new banner, an activity summary, a resize, a theme change — so it is not a
+/// startup-only cost. Unlike a steady-state frame it is expected to scale with
+/// history; what must not regress is how much it costs *per message*.
+///
+/// The caller must hold [`lock_measurement`].
+fn cold_frame_allocs(app: &mut TuiApp) -> usize {
+    let mut terminal = Terminal::new(TestBackend::new(120, 40)).expect("test backend");
+    ALLOCS.store(0, Relaxed);
+    COUNTING.store(1, Relaxed);
+    terminal.draw(|frame| app.draw(frame)).expect("cold draw");
+    COUNTING.store(0, Relaxed);
+    ALLOCS.load(Relaxed)
+}
+
 // --------------------------------------------------------------------- guards
 //
 // Bounds are set well clear of measured values so ordinary drift does not fail
@@ -237,9 +267,9 @@ fn frame_allocations_do_not_scale_with_transcript_length() {
     let long_cost = steady_frame_cost(&mut long, 20);
     let growth = long_cost.allocs.saturating_sub(empty_cost.allocs);
 
-    // Reference: ~1,060 allocations empty, ~1,270 at 150 turns => growth ~210.
+    // Reference: ~236 allocations empty, ~452 at 150 turns => growth ~216.
     // Before the fix: ~1,080 -> ~17,040 => growth ~15,960.
-    const MAX_GROWTH: usize = 3_000;
+    const MAX_GROWTH: usize = 1_000;
     assert!(
         growth < MAX_GROWTH,
         "frame allocations must not scale with transcript length: \
@@ -269,9 +299,9 @@ fn frame_allocated_bytes_do_not_scale_with_transcript_length() {
     let long_cost = steady_frame_cost(&mut long, 20);
     let growth_kib = long_cost.bytes.saturating_sub(empty_cost.bytes) / 1024;
 
-    // Reference: ~182KiB empty, ~196KiB at 150 turns => growth ~14KiB.
+    // Reference: ~35KiB empty, ~40KiB at 150 turns => growth ~5KiB.
     // Before the fix: ~183KiB -> ~940KiB => growth ~757KiB.
-    const MAX_GROWTH_KIB: usize = 300;
+    const MAX_GROWTH_KIB: usize = 100;
     assert!(
         growth_kib < MAX_GROWTH_KIB,
         "frame allocation volume must not scale with transcript length: \
@@ -298,13 +328,62 @@ fn frame_allocation_budget_holds_at_a_long_transcript() {
     let (_dir, mut app) = runtime.block_on(app_with_turns(150));
     let cost = steady_frame_cost(&mut app, 20);
 
-    // Reference: ~1,270 allocations per frame at 150 turns.
-    const BUDGET: usize = 5_000;
+    // Reference: ~452 allocations per frame at 150 turns.
+    //
+    // Kept close to the measured value on purpose. An earlier budget of 5,000
+    // sat so far above the reference that per-frame cost grew 2.6x — a
+    // credential file re-read and re-parsed several times per frame, a tool
+    // list rebuilt to read its length, an uncached layout solve — without any
+    // guard noticing, because each of those is flat in transcript length and
+    // so invisible to the scaling tests above.
+    const BUDGET: usize = 1_500;
     assert!(
         cost.allocs < BUDGET,
         "a steady-state frame at 150 turns allocated {} times (budget {BUDGET}). \
          Something new is happening per frame.",
         cost.allocs
+    );
+}
+
+/// The marginal cost of one more message on a cache-*miss* frame is bounded.
+///
+/// The guards above only measure cache hits, where cost is correctly flat. They
+/// would all pass if rebuilding the transcript became arbitrarily expensive,
+/// which is what users feel as a stall the moment anything invalidates the
+/// cache mid-session — and the longer the session, the worse it gets.
+///
+/// Measuring the marginal cost between two lengths, rather than the total,
+/// keeps the fixed per-frame chrome out of the number.
+#[test]
+fn cache_miss_cost_per_message_is_bounded() {
+    let _guard = lock_measurement();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+
+    // One throwaway app first: the very first draw in the process also pays
+    // one-time lazy initialisation (theme registry, syntax sets) that would
+    // otherwise be charged to whichever length happened to run first.
+    let (_warm_dir, mut warm) = runtime.block_on(app_with_turns(4));
+    cold_frame_allocs(&mut warm);
+
+    let (_short_dir, mut short) = runtime.block_on(app_with_turns(40));
+    let (_long_dir, mut long) = runtime.block_on(app_with_turns(150));
+    let short_allocs = cold_frame_allocs(&mut short);
+    let long_allocs = cold_frame_allocs(&mut long);
+
+    let extra_messages = (150 - 40) * 2;
+    let per_message = long_allocs.saturating_sub(short_allocs) / extra_messages;
+
+    // Reference: ~10,200 allocs at 40 turns, ~36,800 at 150 => ~120 per message.
+    const MAX_PER_MESSAGE: usize = 300;
+    assert!(
+        per_message < MAX_PER_MESSAGE,
+        "rebuilding the transcript cost {per_message} allocations per message \
+         ({short_allocs} allocs at 40 turns vs {long_allocs} at 150, limit \
+         {MAX_PER_MESSAGE}). Every render-key change pays this, so it is what a \
+         long session feels when the cache misses."
     );
 }
 
@@ -328,21 +407,28 @@ fn perf_report_frame_cost_by_transcript_length() {
     println!("\nsteady-state frame cost by transcript length (120x40)");
     println!("timings are MICROSECONDS (p50 of 20 draws); allocs and KiB are per frame\n");
     println!(
-        "{:>6} {:>6} | {:>10} {:>10} {:>8}",
-        "turns", "msgs", "p50 us", "allocs", "KiB"
+        "{:>6} {:>6} | {:>10} {:>10} {:>8} | {:>12}",
+        "turns", "msgs", "p50 us", "allocs", "KiB", "cold allocs"
     );
-    println!("{}", "-".repeat(48));
+    println!("{}", "-".repeat(64));
+
+    // Absorb one-time lazy initialisation before the first measured cold draw.
+    let (_warm_dir, mut warm) = runtime.block_on(app_with_turns(4));
+    cold_frame_allocs(&mut warm);
 
     for turns in [0usize, 10, 40, 80, 150] {
         let (_dir, mut app) = runtime.block_on(app_with_turns(turns));
         let cost = steady_frame_cost(&mut app, 20);
+        let (_cold_dir, mut cold) = runtime.block_on(app_with_turns(turns));
+        let cold_allocs = cold_frame_allocs(&mut cold);
         println!(
-            "{:>6} {:>6} | {:>10.1} {:>10} {:>8.1}",
+            "{:>6} {:>6} | {:>10.1} {:>10} {:>8.1} | {:>12}",
             turns,
             turns * 2,
             cost.p50_micros,
             cost.allocs,
-            cost.bytes as f64 / 1024.0
+            cost.bytes as f64 / 1024.0,
+            cold_allocs
         );
     }
 
