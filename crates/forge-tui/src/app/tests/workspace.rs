@@ -189,6 +189,39 @@ async fn review_changes_requires_a_dirty_editor_decision() {
 }
 
 #[tokio::test]
+async fn alt_navigation_requires_a_dirty_editor_decision() {
+    let (dir, mut app) = focus_test_app().await;
+    let path = dir.path().join("dirty-nav.rs");
+    fs::write(&path, "fn main() {}\n").unwrap();
+    app.execute_semantic_command(SemanticCommand::OpenFile(path))
+        .await
+        .unwrap();
+    let editor = app.editor_session.as_mut().unwrap();
+    editor.handle_key(press(KeyCode::Char('i'), KeyModifiers::NONE));
+    editor.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE));
+    editor.handle_key(press(KeyCode::Esc, KeyModifiers::NONE));
+
+    app.handle_key(press(KeyCode::Left, KeyModifiers::ALT))
+        .await
+        .unwrap();
+    assert!(matches!(
+        app.explorer_dialog.current,
+        Some(ExplorerDialog::DirtyExit)
+    ));
+    assert!(app.current_workspace_is_file());
+
+    app.explorer_dialog.current = None;
+    app.handle_key(press(KeyCode::Right, KeyModifiers::ALT))
+        .await
+        .unwrap();
+    assert!(matches!(
+        app.explorer_dialog.current,
+        Some(ExplorerDialog::DirtyExit)
+    ));
+    assert!(app.current_workspace_is_file());
+}
+
+#[tokio::test]
 async fn cancelling_a_navigation_save_conflict_does_not_reuse_its_destination() {
     let (dir, mut app) = focus_test_app().await;
     let path = dir.path().join("cancel-diff.rs");

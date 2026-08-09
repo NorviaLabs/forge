@@ -88,6 +88,38 @@ async fn changes_summary_action_uses_review_changes_command() {
 }
 
 #[tokio::test]
+async fn alt_right_activity_review_requires_a_dirty_editor_decision() {
+    let (dir, mut app) = focus_test_app().await;
+    let path = dir.path().join("dirty-review.rs");
+    fs::write(&path, "fn main() {}\n").unwrap();
+    app.execute_semantic_command(SemanticCommand::OpenFile(path.clone()))
+        .await
+        .unwrap();
+
+    let editor = app.editor_session.as_mut().unwrap();
+    editor.handle_key(press(KeyCode::Char('i'), KeyModifiers::NONE));
+    editor.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE));
+    editor.handle_key(press(KeyCode::Esc, KeyModifiers::NONE));
+    app.workspace_files
+        .explorer
+        .git_status
+        .status
+        .insert(PathBuf::from("dirty-review.rs"), GitStatusKind::Modified);
+
+    app.handle_key(press(KeyCode::Right, KeyModifiers::ALT))
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        app.explorer_dialog.current,
+        Some(ExplorerDialog::DirtyExit)
+    ));
+    assert!(app.current_workspace_is_file());
+    assert!(app.editor_session.as_ref().unwrap().is_dirty());
+    assert_eq!(fs::read_to_string(path).unwrap(), "fn main() {}\n");
+}
+
+#[tokio::test]
 async fn alt_right_without_summary_still_opens_review_changes() {
     let (_dir, mut app) = focus_test_app().await;
     // No git changes, no run — summary has no action.
