@@ -1,0 +1,23 @@
+[package]
+name = "forge-session"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Frontend-independent session assembly for Forge"
+
+[dependencies]
+forge-config = { workspace = true }
+forge-connect = { workspace = true }
+forge-core = { workspace = true }
+forge-governance = { workspace = true }
+forge-mcp = { workspace = true }
+forge-model = { workspace = true }
+forge-storage = { workspace = true }
+forge-tools = { workspace = true }
+forge-types = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true }

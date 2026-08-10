@@ -12,20 +12,13 @@ path = "src/main.rs"
 
 [dependencies]
 forge-config = { workspace = true }
-forge-core = { workspace = true }
-forge-governance = { workspace = true }
-forge-model = { workspace = true }
-forge-tools = { workspace = true }
-forge-mcp = { workspace = true }
+forge-session = { workspace = true }
 forge-tui = { workspace = true }
 forge-types = { workspace = true }
-forge-connect = { workspace = true }
-forge-storage = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true }
 tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
-serde_json = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

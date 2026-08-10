@@ -1190,17 +1190,10 @@ dependencies = [
  "assert_cmd",
  "clap",
  "forge-config",
- "forge-connect",
- "forge-core",
- "forge-governance",
- "forge-mcp",
- "forge-model",
- "forge-storage",
- "forge-tools",
+ "forge-session",
  "forge-tui",
  "forge-types",
  "predicates",
- "serde_json",
  "tempfile",
  "tokio",
  "tracing-subscriber",
@@ -1339,6 +1332,25 @@ dependencies = [
  "serde",
  "tempfile",
  "thiserror 2.0.19",
+]
+
+[[package]]
+name = "forge-session"
+version = "0.1.0-beta.2"
+dependencies = [
+ "anyhow",
+ "forge-config",
+ "forge-connect",
+ "forge-core",
+ "forge-governance",
+ "forge-mcp",
+ "forge-model",
+ "forge-storage",
+ "forge-tools",
+ "forge-types",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
