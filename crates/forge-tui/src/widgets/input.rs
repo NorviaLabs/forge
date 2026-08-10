@@ -575,6 +575,11 @@ impl Widget for InputBar<'_> {
         } else {
             BorderType::Plain
         };
+        let surface = if self.dimmed {
+            theme::surface_hover()
+        } else {
+            theme::composer_surface()
+        };
         let block = Block::default()
             .borders(Borders::ALL)
             // Reserve the strong cell shape for composer attention states;
@@ -582,16 +587,16 @@ impl Widget for InputBar<'_> {
             // competes with the focused workspace surface.
             .border_type(border_type)
             .border_style(border)
-            .style(if self.dimmed {
-                theme::surface_hover()
-            } else {
-                theme::composer_surface()
-            });
+            // Keep the border cells on the same background as adjacent panel
+            // chrome. Painting the composer surface across the whole block
+            // makes the bottom border's cell look one row taller than Files.
+            .style(theme::panel());
         let inner = block.inner(area);
         if inner.width == 0 || inner.height == 0 {
             return;
         }
         block.render(area, buf);
+        theme::fill(inner, buf, surface);
 
         let Some(geometry) = composer_geometry(self.model, area, self.attachment) else {
             return;
@@ -1090,6 +1095,15 @@ mod tests {
 
         assert_eq!(idle[(0, 0)].symbol(), "┌");
         assert_eq!(focused[(0, 0)].symbol(), "┏");
+    }
+
+    #[test]
+    fn composer_surface_does_not_extend_through_bottom_border_row() {
+        let model = InputModel::default();
+        let buf = draw_input_bar(&model, 48, 5, false, false, None);
+
+        assert_eq!(buf[(0, 4)].style().bg, theme::panel().bg);
+        assert_eq!(buf[(1, 3)].style().bg, theme::composer_surface().bg);
     }
 
     #[test]
