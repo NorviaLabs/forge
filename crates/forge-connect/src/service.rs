@@ -7,6 +7,7 @@ use crate::catalog::CatalogError;
 use crate::catalog::ModelCatalogCache;
 use crate::oauth_dispatch::{OauthDispatcher, OauthError, PollResult};
 use crate::oauth_xai::try_open_browser;
+use crate::preferences::PreferenceStore;
 use crate::profile::{ConnectOutcome, ConnectProfile, ConnectStatus, KeySource};
 use crate::registry::ConnectRegistry;
 use crate::store::{resolve_connected, resolve_key, CredentialStore, StoreError};
@@ -98,6 +99,9 @@ pub fn parse_connect_args(args: &str) -> Result<ConnectAction, ConnectError> {
 pub struct ConnectService<'a> {
     pub registry: &'a ConnectRegistry,
     pub store: &'a CredentialStore,
+    /// Non-secret interactive selections. Separate from `store` because they
+    /// are not secrets and no longer share its file.
+    pub preferences: &'a PreferenceStore,
     pub active_profile_id: Option<String>,
     pub active_model: Option<String>,
 }
@@ -486,7 +490,7 @@ impl<'a> ConnectService<'a> {
             ));
         }
         let removed = self.store.clear(&id)?;
-        self.store.clear_last_selection(Some(&id))?;
+        self.preferences.clear_last_selection(Some(&id))?;
         if removed {
             Ok(format!(
                 "cleared stored credentials for `{id}` (env unchanged if set)"
@@ -668,7 +672,7 @@ impl<'a> ConnectService<'a> {
         self.active_model = Some(model.clone());
         // Selection persistence is convenience metadata; never make a successful
         // credential connection fail because it cannot be written.
-        let _ = self.store.set_last_selection(&profile.id, &model);
+        let _ = self.preferences.set_last_selection(&profile.id, &model);
         Ok(ConnectOutcome {
             profile_id: profile.id.clone(),
             model,
@@ -705,12 +709,14 @@ pub fn handle_connect_action(
     action: ConnectAction,
     registry: &ConnectRegistry,
     store: &CredentialStore,
+    preferences: &PreferenceStore,
     active_profile: &mut Option<String>,
     active_model: &mut Option<String>,
 ) -> Result<String, ConnectError> {
     let mut svc = ConnectService {
         registry,
         store,
+        preferences,
         active_profile_id: active_profile.clone(),
         active_model: active_model.clone(),
     };
@@ -848,11 +854,13 @@ mod tests {
     fn list_status_and_open_messages_reflect_connection_state() {
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
+        let preferences = PreferenceStore::new(dir.path().join("p.toml"));
         let reg = api_key_registry();
         store.set_api_key("demo", "stored-key").unwrap();
         let svc = ConnectService {
             registry: &reg,
             store: &store,
+            preferences: &preferences,
             active_profile_id: Some("demo".into()),
             active_model: Some("demo/model-1".into()),
         };
@@ -877,10 +885,12 @@ mod tests {
     fn empty_registry_lists_empty_message_and_unknown_profile_reports_known_ids() {
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
+        let preferences = PreferenceStore::new(dir.path().join("p.toml"));
         let empty = ConnectRegistry::new();
         let svc = ConnectService {
             registry: &empty,
             store: &store,
+            preferences: &preferences,
             active_profile_id: None,
             active_model: None,
         };
@@ -900,6 +910,7 @@ mod tests {
             },
             &reg,
             &store,
+            &preferences,
             &mut active_profile,
             &mut active_model,
         )
@@ -911,9 +922,12 @@ mod tests {
     fn handle_connect_open_list_status_and_disconnect_update_active_state() {
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
+        let preferences = PreferenceStore::new(dir.path().join("p.toml"));
         let reg = api_key_registry();
         store.set_api_key("demo", "stored-key").unwrap();
-        store.set_last_selection("demo", "demo/model-1").unwrap();
+        preferences
+            .set_last_selection("demo", "demo/model-1")
+            .unwrap();
         let mut active_profile = Some("demo".into());
         let mut active_model = Some("demo/model-1".into());
 
@@ -921,6 +935,7 @@ mod tests {
             ConnectAction::Open,
             &reg,
             &store,
+            &preferences,
             &mut active_profile,
             &mut active_model,
         )
@@ -932,6 +947,7 @@ mod tests {
             ConnectAction::Status,
             &reg,
             &store,
+            &preferences,
             &mut active_profile,
             &mut active_model,
         )
@@ -944,6 +960,7 @@ mod tests {
             },
             &reg,
             &store,
+            &preferences,
             &mut active_profile,
             &mut active_model,
         )
@@ -951,12 +968,13 @@ mod tests {
         assert!(msg.contains("cleared stored credentials"));
         assert_eq!(active_profile, None);
         assert_eq!(active_model, Some("demo/model-1".into()));
-        assert!(store.last_selection().unwrap().is_none());
+        assert!(preferences.last_selection().unwrap().is_none());
 
         let msg = handle_connect_action(
             ConnectAction::Disconnect { profile_id: None },
             &reg,
             &store,
+            &preferences,
             &mut active_profile,
             &mut active_model,
         )
@@ -968,6 +986,7 @@ mod tests {
     fn connect_api_key_profile() {
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
+        let preferences = PreferenceStore::new(dir.path().join("p.toml"));
         let reg = api_key_registry();
         let mut active_profile = None;
         let mut active_model = None;
@@ -979,6 +998,7 @@ mod tests {
             },
             &reg,
             &store,
+            &preferences,
             &mut active_profile,
             &mut active_model,
         )
@@ -991,10 +1011,12 @@ mod tests {
     fn api_key_connect_rejects_missing_key_and_persists_provided_key() {
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
+        let preferences = PreferenceStore::new(dir.path().join("p.toml"));
         let reg = api_key_registry();
         let mut svc = ConnectService {
             registry: &reg,
             store: &store,
+            preferences: &preferences,
             active_profile_id: None,
             active_model: None,
         };
@@ -1017,6 +1039,7 @@ mod tests {
     fn oauth_rejects_api_key() {
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
+        let preferences = PreferenceStore::new(dir.path().join("p.toml"));
         let reg = oauth_registry();
         let mut ap = None;
         let mut am = None;
@@ -1028,6 +1051,7 @@ mod tests {
             },
             &reg,
             &store,
+            &preferences,
             &mut ap,
             &mut am,
         )
@@ -1039,11 +1063,13 @@ mod tests {
     fn oauth_connect_rejects_empty_tokens_and_non_oauth_profiles() {
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
+        let preferences = PreferenceStore::new(dir.path().join("p.toml"));
         let api_reg = api_key_registry();
         let oauth_reg = oauth_registry();
         let mut api_svc = ConnectService {
             registry: &api_reg,
             store: &store,
+            preferences: &preferences,
             active_profile_id: None,
             active_model: None,
         };
@@ -1065,6 +1091,7 @@ mod tests {
         let mut oauth_svc = ConnectService {
             registry: &oauth_reg,
             store: &store,
+            preferences: &preferences,
             active_profile_id: None,
             active_model: None,
         };
@@ -1088,6 +1115,7 @@ mod tests {
     fn oauth_fixture_connects() {
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
+        let preferences = PreferenceStore::new(dir.path().join("p.toml"));
         let reg = oauth_registry();
         let mut ap = None;
         let mut am = None;
@@ -1099,6 +1127,7 @@ mod tests {
             },
             &reg,
             &store,
+            &preferences,
             &mut ap,
             &mut am,
         )
@@ -1113,6 +1142,7 @@ mod tests {
     fn oauth_stored_tokens_reactivate_without_fixture_or_api_key() {
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
+        let preferences = PreferenceStore::new(dir.path().join("p.toml"));
         let reg = oauth_registry();
         store
             .set_oauth(
@@ -1127,6 +1157,7 @@ mod tests {
         let mut svc = ConnectService {
             registry: &reg,
             store: &store,
+            preferences: &preferences,
             active_profile_id: None,
             active_model: None,
         };
@@ -1143,10 +1174,12 @@ mod tests {
         guard.set("FORGE_CONNECT_OAUTH_STUB", "1");
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
+        let preferences = PreferenceStore::new(dir.path().join("p.toml"));
         let reg = oauth_registry();
         let mut svc = ConnectService {
             registry: &reg,
             store: &store,
+            preferences: &preferences,
             active_profile_id: None,
             active_model: None,
         };
@@ -1160,10 +1193,12 @@ mod tests {
         guard.set("FORGE_CONNECT_OAUTH_STUB", "1");
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
+        let preferences = PreferenceStore::new(dir.path().join("p.toml"));
         let reg = oauth_registry();
         let mut svc = ConnectService {
             registry: &reg,
             store: &store,
+            preferences: &preferences,
             active_profile_id: None,
             active_model: None,
         };
@@ -1186,10 +1221,12 @@ mod tests {
         let guard = EnvGuard::new(OAUTH_ENV);
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
+        let preferences = PreferenceStore::new(dir.path().join("p.toml"));
         let api_reg = api_key_registry();
         let mut api_svc = ConnectService {
             registry: &api_reg,
             store: &store,
+            preferences: &preferences,
             active_profile_id: None,
             active_model: None,
         };
@@ -1212,6 +1249,7 @@ mod tests {
         let mut oauth_svc = ConnectService {
             registry: &oauth_reg,
             store: &store,
+            preferences: &preferences,
             active_profile_id: None,
             active_model: None,
         };
@@ -1231,10 +1269,12 @@ mod tests {
     fn ensure_oauth_fresh_filters_fixture_empty_and_uses_unexpired_real_token() {
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
+        let preferences = PreferenceStore::new(dir.path().join("p.toml"));
         let reg = oauth_registry();
         let svc = ConnectService {
             registry: &reg,
             store: &store,
+            preferences: &preferences,
             active_profile_id: None,
             active_model: None,
         };
@@ -1274,6 +1314,7 @@ mod tests {
     fn provider_env_exports_api_keys_base_urls_and_filters_fixture_oauth() {
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
+        let preferences = PreferenceStore::new(dir.path().join("p.toml"));
         let mut reg = ConnectRegistry::new();
         reg.register(ConnectProfile {
             id: "custom".into(),
@@ -1296,6 +1337,7 @@ mod tests {
         let svc = ConnectService {
             registry: &reg,
             store: &store,
+            preferences: &preferences,
             active_profile_id: None,
             active_model: None,
         };
@@ -1322,6 +1364,7 @@ mod tests {
         let oauth_svc = ConnectService {
             registry: &oauth_reg,
             store: &store,
+            preferences: &preferences,
             active_profile_id: None,
             active_model: None,
         };
@@ -1349,6 +1392,7 @@ mod tests {
     fn connected_profiles_include_api_keys_and_skip_fixture_oauth() {
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
+        let preferences = PreferenceStore::new(dir.path().join("p.toml"));
         let mut reg = ConnectRegistry::new();
         reg.register(api_key_registry().profiles()[0].clone());
         reg.register(oauth_registry().profiles()[0].clone());
@@ -1366,6 +1410,7 @@ mod tests {
         let svc = ConnectService {
             registry: &reg,
             store: &store,
+            preferences: &preferences,
             active_profile_id: None,
             active_model: None,
         };
@@ -1439,6 +1484,7 @@ mod tests {
 
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
+        let preferences = PreferenceStore::new(dir.path().join("p.toml"));
         let mut reg = ConnectRegistry::new();
         let mut openai = crate::openai::openai_profile();
         openai.default_base_url = Some(mock_http(vec![(200, r#"{"data":[]}"#, vec![])]));
@@ -1446,6 +1492,7 @@ mod tests {
         let mut svc = ConnectService {
             registry: &reg,
             store: &store,
+            preferences: &preferences,
             active_profile_id: None,
             active_model: None,
         };
@@ -1462,6 +1509,7 @@ mod tests {
 
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
+        let preferences = PreferenceStore::new(dir.path().join("p.toml"));
         let mut reg = ConnectRegistry::new();
         let mut anthropic = crate::anthropic::anthropic_profile();
         anthropic.default_base_url = Some(mock_http(vec![(401, "bad key", vec![])]));
@@ -1469,6 +1517,7 @@ mod tests {
         let mut svc = ConnectService {
             registry: &reg,
             store: &store,
+            preferences: &preferences,
             active_profile_id: None,
             active_model: None,
         };
@@ -1485,6 +1534,7 @@ mod tests {
 
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
+        let preferences = PreferenceStore::new(dir.path().join("p.toml"));
         let mut reg = ConnectRegistry::new();
 
         let mut go = crate::opencode_go::opencode_go_profile();
@@ -1502,6 +1552,7 @@ mod tests {
         let mut svc = ConnectService {
             registry: &reg,
             store: &store,
+            preferences: &preferences,
             active_profile_id: None,
             active_model: None,
         };
@@ -1525,6 +1576,7 @@ mod tests {
 
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
+        let preferences = PreferenceStore::new(dir.path().join("p.toml"));
         let mut reg = ConnectRegistry::new();
         let mut zen = crate::opencode_zen::opencode_zen_profile();
         zen.default_base_url = Some(mock_http(vec![(
@@ -1536,6 +1588,7 @@ mod tests {
         let mut svc = ConnectService {
             registry: &reg,
             store: &store,
+            preferences: &preferences,
             active_profile_id: None,
             active_model: None,
         };
@@ -1550,10 +1603,12 @@ mod tests {
     fn connect_rejects_api_key_for_oauth_profile() {
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
+        let preferences = PreferenceStore::new(dir.path().join("p.toml"));
         let reg = oauth_registry();
         let mut svc = ConnectService {
             registry: &reg,
             store: &store,
+            preferences: &preferences,
             active_profile_id: None,
             active_model: None,
         };
@@ -1569,10 +1624,12 @@ mod tests {
         guard.set("FORGE_XAI_OAUTH_REFRESH_TOKEN", "env-refresh");
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
+        let preferences = PreferenceStore::new(dir.path().join("p.toml"));
         let reg = oauth_registry();
         let mut svc = ConnectService {
             registry: &reg,
             store: &store,
+            preferences: &preferences,
             active_profile_id: None,
             active_model: None,
         };
@@ -1587,10 +1644,12 @@ mod tests {
     fn connect_oauth_rejects_non_oauth_profile_and_empty_token() {
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
+        let preferences = PreferenceStore::new(dir.path().join("p.toml"));
         let reg = api_key_registry();
         let mut svc = ConnectService {
             registry: &reg,
             store: &store,
+            preferences: &preferences,
             active_profile_id: None,
             active_model: None,
         };
@@ -1610,6 +1669,7 @@ mod tests {
         let mut oauth_svc = ConnectService {
             registry: &oauth_reg,
             store: &store,
+            preferences: &preferences,
             active_profile_id: None,
             active_model: None,
         };
@@ -1642,6 +1702,7 @@ mod tests {
 
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
+        let preferences = PreferenceStore::new(dir.path().join("p.toml"));
         let reg = oauth_registry();
         store
             .set_oauth(
@@ -1656,6 +1717,7 @@ mod tests {
         let svc = ConnectService {
             registry: &reg,
             store: &store,
+            preferences: &preferences,
             active_profile_id: None,
             active_model: None,
         };
@@ -1683,10 +1745,12 @@ mod tests {
 
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
+        let preferences = PreferenceStore::new(dir.path().join("p.toml"));
         let reg = oauth_registry();
         let mut svc = ConnectService {
             registry: &reg,
             store: &store,
+            preferences: &preferences,
             active_profile_id: None,
             active_model: None,
         };

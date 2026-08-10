@@ -3,6 +3,7 @@
 //! Split out of `app/tests/mod.rs` per #19. Moved verbatim.
 
 use super::prelude::*;
+use forge_connect::PreferenceStore;
 
 #[tokio::test]
 async fn edtui_search_is_active_and_esc_returns_to_normal_mode() {
@@ -631,12 +632,14 @@ async fn effort_selection_persists_across_tui_instances() {
         },
     );
     app.connect.store = CredentialStore::new(credential_path.clone());
+    app.connect.preferences =
+        PreferenceStore::new(credential_path.clone().with_file_name("preferences.toml"));
 
     app.reasoning_effort.value = ReasoningEffort::High;
     app.persist_selection();
 
     assert_eq!(
-        app.connect.store.last_effort().unwrap().as_deref(),
+        app.connect.preferences.last_effort().unwrap().as_deref(),
         Some("high")
     );
 
@@ -653,6 +656,8 @@ async fn effort_selection_persists_across_tui_instances() {
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
+    restarted.connect.preferences =
+        PreferenceStore::new(credential_path.with_file_name("preferences.toml"));
     restarted.connect.store = CredentialStore::new(credential_path);
     restarted = restarted.restore_saved_auth();
 
@@ -676,6 +681,7 @@ async fn switching_to_a_model_that_drops_the_current_effort_notifies_and_falls_b
         },
     );
     app.connect.store = CredentialStore::new(credential_dir.path().join("credentials.toml"));
+    app.connect.preferences = PreferenceStore::new(credential_dir.path().join("preferences.toml"));
 
     // claude-sonnet-4-6 does not offer XHigh (effort.rs::options_for_model).
     app.reasoning_effort.value = ReasoningEffort::XHigh;
@@ -712,6 +718,7 @@ async fn drain_pending_prompt_sends_selected_effort_on_outbound_request() {
         },
     );
     app.connect.store = CredentialStore::new(dir.path().join("credentials.toml"));
+    app.connect.preferences = PreferenceStore::new(dir.path().join("preferences.toml"));
     app.connect
         .store
         .set_api_key("anthropic", "sk-test-anthropic-credential")
@@ -752,6 +759,7 @@ async fn drain_pending_prompt_omits_effort_for_model_that_does_not_support_it() 
         },
     );
     app.connect.store = CredentialStore::new(dir.path().join("credentials.toml"));
+    app.connect.preferences = PreferenceStore::new(dir.path().join("preferences.toml"));
     // Stale effort left over from a previous model — must not leak onto a
     // model that doesn't support effort at all.
     app.reasoning_effort.value = ReasoningEffort::High;
@@ -782,6 +790,7 @@ async fn model_command_applies_provider_id_to_session() {
         },
     );
     app.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
+    app.connect.preferences = PreferenceStore::new(cred_dir.path().join("preferences.toml"));
     app.connect
         .store
         .set_api_key("openai", "sk-test-openai-credential")
@@ -812,6 +821,7 @@ async fn model_command_rejects_cross_provider_selection_without_matching_connect
         },
     );
     app.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
+    app.connect.preferences = PreferenceStore::new(cred_dir.path().join("preferences.toml"));
     app.connect.store
         .set_oauth(
             "openai_codex",

@@ -924,6 +924,7 @@ impl TuiApp {
                     let svc = ConnectService {
                         registry: &self.connect.registry,
                         store: &self.connect.store,
+                        preferences: &self.connect.preferences,
                         active_profile_id: None,
                         active_model: None,
                     };

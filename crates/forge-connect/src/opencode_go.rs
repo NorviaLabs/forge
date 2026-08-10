@@ -92,6 +92,7 @@ Check network access to {base}."
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::preferences::PreferenceStore;
     use crate::registry::ConnectRegistry;
     use crate::service::{
         handle_connect_action, needs_tui_api_key_prompt, ConnectAction, ConnectError,
@@ -124,6 +125,7 @@ mod tests {
     fn connect_requires_key() {
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
+        let preferences = PreferenceStore::new(dir.path().join("p.toml"));
         let mut reg = ConnectRegistry::new();
         reg.register(opencode_go_profile());
         let mut ap = None;
@@ -142,6 +144,7 @@ mod tests {
             },
             &reg,
             &store,
+            &preferences,
             &mut ap,
             &mut am,
         )
@@ -153,6 +156,7 @@ mod tests {
     fn connect_with_key_no_secret_in_message() {
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
+        let preferences = PreferenceStore::new(dir.path().join("p.toml"));
         let mut reg = ConnectRegistry::new();
         reg.register(opencode_go_profile());
         let mut ap = None;
@@ -175,6 +179,7 @@ mod tests {
             },
             &reg,
             &store,
+            &preferences,
             &mut ap,
             &mut am,
         )

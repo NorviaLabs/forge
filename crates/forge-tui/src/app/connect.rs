@@ -14,6 +14,8 @@ use super::*;
 pub(super) struct ConnectionModel {
     pub(super) registry: ConnectRegistry,
     pub(super) store: CredentialStore,
+    /// Non-secret interactive selections, in their own file.
+    pub(super) preferences: PreferenceStore,
     pub(super) profile: Option<String>,
     /// Manual disconnect latch: prevents auto-restore until the user signs in again.
     pub(super) auth_suspended: bool,
@@ -37,6 +39,7 @@ impl ConnectionModel {
         Self {
             registry: builtin_registry(),
             store: CredentialStore::user_default(),
+            preferences: PreferenceStore::user_default(),
             profile: None,
             auth_suspended: false,
             oauth_pending: None,
@@ -58,6 +61,7 @@ impl TuiApp {
         let svc = ConnectService {
             registry: &self.connect.registry,
             store: &self.connect.store,
+            preferences: &self.connect.preferences,
             active_profile_id: self.connect.profile.clone(),
             active_model: Some(self.runtime.model_label.clone()),
         };
@@ -194,6 +198,7 @@ impl TuiApp {
             let svc = ConnectService {
                 registry: &self.connect.registry,
                 store: &self.connect.store,
+                preferences: &self.connect.preferences,
                 active_profile_id: self.connect.profile.clone(),
                 active_model: Some(self.runtime.model_label.clone()),
             };
@@ -262,9 +267,9 @@ impl TuiApp {
                 .map_err(|e| TuiError::Other(e.to_string()))?
         };
         if let Some(id) = profile_id {
-            let _ = self.connect.store.clear_last_selection(Some(id));
+            let _ = self.connect.preferences.clear_last_selection(Some(id));
         } else {
-            let _ = self.connect.store.clear_last_selection(None);
+            let _ = self.connect.preferences.clear_last_selection(None);
         }
         self.refresh_connection_ui();
         let msg = if let Some(id) = profile_id {
@@ -289,6 +294,7 @@ impl TuiApp {
         let svc = ConnectService {
             registry: &self.connect.registry,
             store: &self.connect.store,
+            preferences: &self.connect.preferences,
             active_profile_id: None,
             active_model: None,
         };
@@ -299,10 +305,10 @@ impl TuiApp {
         // model/profile yet (e.g. before ever connecting), so this
         // deliberately doesn't gate on `last_selection_struct()`, which would
         // only return `Some` when a complete selection exists.
-        let saved_selection = self.connect.store.last_selection().ok().flatten();
+        let saved_selection = self.connect.preferences.last_selection().ok().flatten();
         if let Some(effort) = self
             .connect
-            .store
+            .preferences
             .last_effort()
             .ok()
             .flatten()
@@ -438,12 +444,12 @@ impl TuiApp {
         if let Some(profile_id) = self.connect.profile.as_deref() {
             let _ = self
                 .connect
-                .store
+                .preferences
                 .set_last_selection(profile_id, &self.runtime.model_label);
         }
         let _ = self
             .connect
-            .store
+            .preferences
             .set_last_effort(&self.reasoning_effort.value.to_string());
     }
 
@@ -460,7 +466,7 @@ impl TuiApp {
         if profile_id.trim().is_empty() || self.runtime.model_label.trim().is_empty() {
             return;
         }
-        let _ = self.connect.store.record_switch((
+        let _ = self.connect.preferences.record_switch((
             &profile_id,
             &self.runtime.model_label,
             &self.reasoning_effort.value.to_string(),
@@ -470,7 +476,7 @@ impl TuiApp {
     /// Toggle to the previously, deliberately selected model/route/effort
     /// combo — no picker, applies immediately at session scope.
     pub(super) fn quick_switch_model(&mut self) {
-        match self.connect.store.quick_switch() {
+        match self.connect.preferences.quick_switch() {
             Ok(Some((profile_id, model, effort))) => {
                 self.connect.auth_suspended = false;
                 self.apply_selection(&ModelSelection {
@@ -514,6 +520,7 @@ impl TuiApp {
             let svc = ConnectService {
                 registry: &self.connect.registry,
                 store: &self.connect.store,
+                preferences: &self.connect.preferences,
                 active_profile_id: self.connect.profile.clone(),
                 active_model: Some(self.runtime.model_label.clone()),
             };
@@ -611,6 +618,7 @@ impl TuiApp {
         let svc = ConnectService {
             registry: &self.connect.registry,
             store: &self.connect.store,
+            preferences: &self.connect.preferences,
             active_profile_id: self.connect.profile.clone(),
             active_model: Some(self.runtime.model_label.clone()),
         };
@@ -693,6 +701,7 @@ impl TuiApp {
                     ConnectAction::List,
                     &self.connect.registry,
                     &self.connect.store,
+                    &self.connect.preferences,
                     &mut self.connect.profile,
                     &mut model,
                 ) {
@@ -734,6 +743,7 @@ impl TuiApp {
             action,
             &self.connect.registry,
             &self.connect.store,
+            &self.connect.preferences,
             &mut self.connect.profile,
             &mut model,
         ) {
@@ -786,6 +796,7 @@ impl TuiApp {
         let mut svc = ConnectService {
             registry: &self.connect.registry,
             store: &self.connect.store,
+            preferences: &self.connect.preferences,
             active_profile_id: self.connect.profile.clone(),
             active_model: Some(self.runtime.model_label.clone()),
         };
@@ -821,6 +832,7 @@ impl TuiApp {
         let svc = ConnectService {
             registry: &self.connect.registry,
             store: &self.connect.store,
+            preferences: &self.connect.preferences,
             active_profile_id: self.connect.profile.clone(),
             active_model: Some(self.runtime.model_label.clone()),
         };
@@ -877,6 +889,7 @@ impl TuiApp {
         let mut svc = ConnectService {
             registry: &self.connect.registry,
             store: &self.connect.store,
+            preferences: &self.connect.preferences,
             active_profile_id: self.connect.profile.clone(),
             active_model: Some(self.runtime.model_label.clone()),
         };
@@ -924,6 +937,7 @@ impl TuiApp {
             action,
             &self.connect.registry,
             &self.connect.store,
+            &self.connect.preferences,
             &mut self.connect.profile,
             &mut model,
         ) {
@@ -984,6 +998,7 @@ impl TuiApp {
                 let svc = ConnectService {
                     registry: &self.connect.registry,
                     store: &self.connect.store,
+                    preferences: &self.connect.preferences,
                     active_profile_id: None,
                     active_model: None,
                 };
@@ -1035,6 +1050,7 @@ impl TuiApp {
         let svc = ConnectService {
             registry: &self.connect.registry,
             store: &self.connect.store,
+            preferences: &self.connect.preferences,
             active_profile_id: self.connect.profile.clone(),
             active_model: Some(self.runtime.model_label.clone()),
         };
@@ -1067,6 +1083,7 @@ impl TuiApp {
         let svc = ConnectService {
             registry: &self.connect.registry,
             store: &self.connect.store,
+            preferences: &self.connect.preferences,
             active_profile_id: self.connect.profile.clone(),
             active_model: Some(self.runtime.model_label.clone()),
         };

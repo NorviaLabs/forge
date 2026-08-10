@@ -103,9 +103,11 @@ pub fn resolve_journal_dir(cfg: &Config) -> (std::path::PathBuf, Vec<String>) {
 pub fn connect_credentials() -> Vec<(String, String)> {
     let reg = forge_connect::builtin_registry();
     let store = forge_connect::CredentialStore::user_default();
+    let preferences = forge_connect::PreferenceStore::user_default();
     let svc = forge_connect::ConnectService {
         registry: &reg,
         store: &store,
+        preferences: &preferences,
         active_profile_id: None,
         active_model: None,
     };

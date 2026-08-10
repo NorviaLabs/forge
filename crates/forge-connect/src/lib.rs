@@ -12,6 +12,7 @@ mod openai;
 mod openai_codex;
 mod opencode_go;
 mod opencode_zen;
+mod preferences;
 mod profile;
 mod registry;
 mod selection;
@@ -55,6 +56,7 @@ pub use opencode_zen::{
     opencode_zen_profile, API_BASE_ENV as OPENCODE_ZEN_API_BASE_ENV,
     DEFAULT_BASE_URL as OPENCODE_ZEN_DEFAULT_BASE_URL, PROFILE_ID as OPENCODE_ZEN_PROFILE_ID,
 };
+pub use preferences::PreferenceStore;
 pub use profile::{ConnectOutcome, ConnectProfile, ConnectStatus, KeySource};
 pub use registry::{builtin_registry, ConnectRegistry};
 pub use selection::ModelSelection;
