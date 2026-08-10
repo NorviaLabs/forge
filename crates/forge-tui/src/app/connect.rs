@@ -21,6 +21,15 @@ pub(super) struct ConnectionModel {
     pub(super) oauth_pending: Option<OauthPending>,
     /// Last time we polled the token endpoint (respect server `interval`).
     pub(super) oauth_last_poll: Option<std::time::Instant>,
+    /// Cached answer to "are credentials live for the active profile", with
+    /// the moment it was taken.
+    ///
+    /// Deciding this walks every registered profile and reads the credential
+    /// file for each, and every read stats that file. Asking per frame put
+    /// seven syscalls on the render path. The value only changes when the user
+    /// connects or disconnects — which invalidates it explicitly — or when the
+    /// file is edited outside Forge, which the TTL catches.
+    pub(super) connected: Option<(std::time::Instant, bool)>,
 }
 
 impl ConnectionModel {
@@ -32,6 +41,7 @@ impl ConnectionModel {
             auth_suspended: false,
             oauth_pending: None,
             oauth_last_poll: None,
+            connected: None,
         }
     }
 }
@@ -57,7 +67,15 @@ impl TuiApp {
             .unwrap_or(false)
     }
 
+    /// How long a cached connection answer is trusted before it is taken
+    /// again. Bounds how stale the header chip can be when the credential file
+    /// is edited outside Forge; every in-app change invalidates it directly.
+    const CONNECTED_TTL: std::time::Duration = std::time::Duration::from_secs(2);
+
     /// True when chat may call an LLM (mock, or a live `/connect` profile).
+    ///
+    /// Reads the credential file, so it is not for the render path — use
+    /// [`Self::poll_connected`] and the cached value there.
     pub fn is_provider_connected(&self) -> bool {
         if self.is_mock_provider() {
             return true;
@@ -66,6 +84,34 @@ impl TuiApp {
             Some(id) => self.credentials_live_for(id),
             None => false,
         }
+    }
+
+    /// The render path's answer to "is the provider connected".
+    ///
+    /// Only the credential lookup is cached — the mock and no-profile checks
+    /// are cheap, and they depend on `runtime.provider`, which can change
+    /// without touching credentials. Caching those too meant a provider switch
+    /// kept reading as connected until the TTL lapsed.
+    pub(super) fn connected_cached(&mut self) -> bool {
+        if self.is_mock_provider() {
+            return true;
+        }
+        let Some(id) = self.connect.profile.clone() else {
+            return false;
+        };
+        if let Some((at, live)) = self.connect.connected {
+            if at.elapsed() < Self::CONNECTED_TTL {
+                return live;
+            }
+        }
+        let live = self.credentials_live_for(&id);
+        self.connect.connected = Some((std::time::Instant::now(), live));
+        live
+    }
+
+    /// Drop the cached answer after anything that could change it.
+    pub(super) fn invalidate_connected(&mut self) {
+        self.connect.connected = None;
     }
 
     /// Vendor label for `profile_id`, and its route label when the vendor
@@ -109,6 +155,9 @@ impl TuiApp {
 
     pub(super) fn refresh_connection_ui(&mut self) {
         self.sync_provider_connection();
+        // This runs after sign-in, sign-out, and profile switches, so whatever
+        // was cached describes the state before the change.
+        self.invalidate_connected();
         let connected = self.is_provider_connected();
         self.input.not_connected = !connected;
         if connected {

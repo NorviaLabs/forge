@@ -63,7 +63,9 @@ impl TuiApp {
         };
         let panel_h = if self.bottom_panel.open { 16 } else { 0 };
         let contextual_hint = self.contextual_hint();
-        let connected = self.is_provider_connected();
+        // Cached: deciding this reads the credential file once per registered
+        // profile, which is not work for a frame.
+        let connected = self.connected_cached();
         let (vendor_label, _route_label) = self
             .connect
             .profile
