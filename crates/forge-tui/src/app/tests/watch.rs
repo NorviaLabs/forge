@@ -9,7 +9,7 @@ use super::super::watch::path_is_ignored_by_file_watcher;
 #[tokio::test]
 async fn file_change_event_refreshes_git_status() {
     let (_dir, mut app) = focus_test_app().await;
-    app.workspace_files.explorer.git_status = crate::git_status::GitStatusCache::new();
+    app.workspace_files.explorer.git_status = forge_workspace::git_status::GitStatusCache::new();
     assert!(!app.workspace_files.explorer.git_status.loading);
 
     app.file_watch
@@ -73,7 +73,7 @@ async fn inspector_renders_settled_change_count_without_files_pane() {
     assert!(status.success());
     fs::write(dir.path().join("changed.txt"), "changed\n").unwrap();
     app.workspace_files.visible = false;
-    app.workspace_files.explorer.git_status = crate::git_status::GitStatusCache::new();
+    app.workspace_files.explorer.git_status = forge_workspace::git_status::GitStatusCache::new();
     app.workspace_files.explorer.refresh_git_status();
 
     for _ in 0..20 {
@@ -109,7 +109,7 @@ async fn inspector_change_count_stays_stable_across_draws() {
     assert!(status.success());
     fs::write(dir.path().join("changed.txt"), "changed\n").unwrap();
     app.workspace_files.visible = false;
-    app.workspace_files.explorer.git_status = crate::git_status::GitStatusCache::new();
+    app.workspace_files.explorer.git_status = forge_workspace::git_status::GitStatusCache::new();
     app.workspace_files.explorer.refresh_git_status();
 
     for _ in 0..20 {
@@ -142,7 +142,7 @@ async fn file_change_does_not_reload_tree_while_files_sidebar_is_focused() {
     app.workspace_files.explorer.expand_selected();
     app.workspace_files.visible = true;
     app.focus_block(FocusBlock::Files);
-    app.workspace_files.explorer.git_status = crate::git_status::GitStatusCache::new();
+    app.workspace_files.explorer.git_status = forge_workspace::git_status::GitStatusCache::new();
 
     app.file_watch
         .change_tx

@@ -494,7 +494,8 @@ impl TuiApp {
             SemanticCommand::OpenBottomPanel => self.open_bottom_panel(),
             SemanticCommand::RefreshFiles => self.workspace_files.explorer.refresh_selected(),
             SemanticCommand::RefreshEditor => {
-                self.source_viewer.refresh(self.session.workspace_root());
+                self.source_viewer
+                    .refresh(self.session_view.workspace_root());
                 self.workspace_files.explorer.refresh_git_status();
                 if self.current_workspace_is_diff() {
                     self.refresh_diff_review();
@@ -898,7 +899,7 @@ impl TuiApp {
         let attachment = self.attachment.pending.take();
         if let Some(ref att) = attachment {
             if let Some(p) = self.source_viewer.path.as_ref() {
-                match crate::file_context::build_attachment_text(
+                match forge_workspace::file_context::build_attachment_text(
                     p,
                     att.cursor_line,
                     &att.rel_path,

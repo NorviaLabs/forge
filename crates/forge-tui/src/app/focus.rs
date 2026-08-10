@@ -137,7 +137,7 @@ impl TuiApp {
         self.bottom_panel.open = true;
         if self.interactive_terminal.is_none() {
             match crate::interactive_terminal::InteractiveTerminal::spawn(
-                self.session.workspace_root(),
+                self.session_view.workspace_root(),
                 80,
                 8,
             ) {

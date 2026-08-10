@@ -48,10 +48,6 @@ use crate::editor::EditorError;
 use crate::editor_session::EditorSession;
 use crate::effort::ReasoningEffort;
 use crate::file_explorer::{FileExplorer, FileExplorerWidget};
-use crate::file_ops::{
-    DeleteMode, EntryKind, FileOperationError, FileOperationKind, WorkspaceFileOps,
-};
-use crate::git_status::GitStatusKind;
 use crate::history::InputHistory;
 use crate::interactive_terminal::InteractiveTerminal;
 use crate::layout::is_too_small;
@@ -71,6 +67,10 @@ use crate::widgets::{
     StatusBar, StatusModel,
 };
 use forge_config::FileIconMode;
+use forge_workspace::file_ops::{
+    DeleteMode, EntryKind, FileOperationError, FileOperationKind, WorkspaceFileOps,
+};
+use forge_workspace::git_status::GitStatusKind;
 
 use crate::ExitCode;
 

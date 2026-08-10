@@ -13,7 +13,7 @@ impl TuiApp {
     /// touched. Used for reads (`load_*`, called on every `TuiApp::new`)
     /// so simply opening Forge never triggers lazy initialization.
     fn ui_state_storage_dir_for_read(&self) -> PathBuf {
-        let workspace = self.session.workspace_root();
+        let workspace = self.session_view.workspace_root();
         LocalRuntimeStorage::new(workspace)
             .path_for_read(RuntimeDataKind::UiState)
             .unwrap_or_else(|| workspace.join(".forge"))
@@ -22,7 +22,7 @@ impl TuiApp {
     /// Establishes Git exclusion / the application-data fallback as a side
     /// effect — used only by `save_*`, right before an actual write.
     fn ui_state_storage_dir_for_write(&self) -> PathBuf {
-        let workspace = self.session.workspace_root();
+        let workspace = self.session_view.workspace_root();
         LocalRuntimeStorage::new(workspace)
             .path_for(RuntimeDataKind::UiState)
             .unwrap_or_else(|_| workspace.join(".forge"))
@@ -36,7 +36,7 @@ impl TuiApp {
         self.session
             .workspace_root()
             .canonicalize()
-            .unwrap_or_else(|_| self.session.workspace_root().to_path_buf())
+            .unwrap_or_else(|_| self.session_view.workspace_root().to_path_buf())
             .display()
             .to_string()
     }

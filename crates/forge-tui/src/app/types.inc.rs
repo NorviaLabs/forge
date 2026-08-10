@@ -528,7 +528,7 @@ struct PendingInteractionState {
 }
 
 struct AttachmentState {
-    pending: Option<crate::file_context::FileAttachment>,
+    pending: Option<forge_workspace::file_context::FileAttachment>,
 }
 
 #[derive(Default)]

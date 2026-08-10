@@ -51,7 +51,7 @@ impl TuiApp {
     fn approval_state_for_payload(&self, payload: &HitlPayload) -> ApprovalOverlayState {
         ApprovalOverlayState::for_payload(
             payload,
-            self.session.workspace_root().display().to_string(),
+            self.session_view.workspace_root().display().to_string(),
         )
     }
 

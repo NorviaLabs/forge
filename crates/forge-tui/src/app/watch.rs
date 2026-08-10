@@ -39,7 +39,7 @@ impl TuiApp {
             Ok(watcher) => watcher,
             Err(_) => return,
         };
-        let _ = watcher.watch(self.session.workspace_root(), RecursiveMode::Recursive);
+        let _ = watcher.watch(self.session_view.workspace_root(), RecursiveMode::Recursive);
         self.file_watch.watcher = Some(watcher);
     }
 
