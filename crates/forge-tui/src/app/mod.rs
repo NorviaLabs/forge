@@ -8,6 +8,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
+use crate::conversation::ConversationRender;
 use crossterm::event::{
     self, EnableBracketedPaste, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
     KeyboardEnhancementFlags, PushKeyboardEnhancementFlags,

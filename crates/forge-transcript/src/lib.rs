@@ -1,13 +1,13 @@
-//! Conversation view model (TUI-02) — polished chat, thinking, tools, diffs.
+//! Projecting a session into a conversation transcript.
+//!
+//! What the transcript *shows* — messages and events reduced to
+//! [`ChatItem`]s, grouped into [`ConversationBlock`]s, and shaped into the
+//! `*Presentation` types. How it is *drawn* is not here and cannot be: this
+//! crate has no terminal dependency, which is what lets a headless caller
+//! project a transcript without linking a UI.
 
 use forge_core::{AgentSession, TurnEvent, TURN_FAILED_MARKER};
 use forge_types::{ExecutionOutcome, Message, MessageRole, TaskLifecycle, ToolCall};
-
-mod render;
-
-pub use render::ConversationLinesWidget;
-#[cfg(test)]
-pub use render::ConversationWidget;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolCardState {
@@ -1424,7 +1424,10 @@ fn result_count_label(count: usize, singular: &str, plural: &str) -> String {
     }
 }
 
-fn group_routine_activity(items: Vec<ChatItem>) -> Vec<ChatItem> {
+/// Collapse consecutive routine tool activity into `ChatItem::ActivityGroup`
+/// entries, so a long run of reads and edits reads as one line rather than
+/// one line each. Non-routine items pass through untouched.
+pub fn group_routine_activity(items: Vec<ChatItem>) -> Vec<ChatItem> {
     let mut grouped = Vec::new();
     let mut pending: Vec<ChatItem> = Vec::new();
 
@@ -1867,7 +1870,7 @@ fn redact_tool_output(content: &str) -> String {
     }
 }
 
-pub(crate) fn wrap(s: &str, width: usize) -> Vec<String> {
+pub fn wrap(s: &str, width: usize) -> Vec<String> {
     if s.is_empty() {
         return vec![String::new()];
     }

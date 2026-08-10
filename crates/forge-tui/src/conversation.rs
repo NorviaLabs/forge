@@ -1,15 +1,11 @@
-//! Turning a `ConversationModel` into ratatui lines.
+//! Drawing a transcript: turning `forge_transcript`'s projection into
+//! ratatui lines.
 //!
-//! Split out of the transcript's domain code: everything here produces
-//! `Line<'static>`, and nothing here decides *what* the transcript shows —
-//! that is the parent module's job. Keeping the boundary sharp is what lets
-//! the projection move to a crate of its own without dragging ratatui along.
-//!
-//! A child module rather than a sibling on purpose: children can see their
-//! ancestors' private items, so the domain helpers used below stay private
-//! instead of being widened just to cross a file boundary.
+//! Everything here produces `Line<'static>`; nothing here decides *what*
+//! the transcript shows. That half is `forge-transcript`, which this module
+//! re-exports so `crate::conversation::` keeps naming both.
 
-use super::*;
+pub use forge_transcript::*;
 
 use crate::markdown::render_markdown;
 use crate::status_glyph::{status_glyph, Status};
@@ -301,14 +297,26 @@ pub(super) fn render_plan_checklist(
     lines
 }
 
-impl ConversationModel {
-    pub fn lines(&self) -> Vec<Line<'static>> {
+/// Drawing a [`ConversationModel`].
+///
+/// An extension trait rather than an inherent impl, because Rust requires
+/// inherent impls to live with their type and the model now lives in
+/// `forge-transcript`. Callers need this trait in scope.
+pub trait ConversationRender {
+    /// Render at the transcript's default width.
+    fn lines(&self) -> Vec<Line<'static>>;
+    /// Render wrapped to `available_width` columns.
+    fn lines_for_width(&self, available_width: usize) -> Vec<Line<'static>>;
+}
+
+impl ConversationRender for ConversationModel {
+    fn lines(&self) -> Vec<Line<'static>> {
         self.lines_for_width(if self.opts.compact { 88 } else { 100 })
     }
 
     /// Build display lines for the actual conversation viewport. Prose gets a
     /// readable cap; code and structured blocks keep the full pane width.
-    pub(crate) fn lines_for_width(&self, available_width: usize) -> Vec<Line<'static>> {
+    fn lines_for_width(&self, available_width: usize) -> Vec<Line<'static>> {
         let width = available_width.max(4);
         let prose_width = width
             .saturating_sub(MESSAGE_PADDING * 2)
@@ -972,6 +980,7 @@ fn first_command_segment(command: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use forge_types::{ExecutionOutcome, Message, MessageRole, TaskLifecycle, ToolCall};
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
