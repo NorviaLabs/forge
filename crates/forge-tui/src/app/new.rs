@@ -38,6 +38,7 @@ impl TuiApp {
             // Captured before the first `draw` so the first frame reads a real
             // snapshot rather than the empty default.
             session_view: SessionSnapshot::capture(&session),
+            transcript_view: TranscriptSnapshot::capture(&session),
             session,
             input,
             overlay: startup_items.clone().map(Overlay::resume_picker),

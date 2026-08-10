@@ -142,6 +142,7 @@ impl TuiApp {
     pub fn refresh_status_model(&self) -> StatusModel {
         self.status_model_from(
             &SessionSnapshot::capture(&self.session),
+            &TranscriptSnapshot::capture(&self.session),
             self.is_provider_connected(),
         )
     }
@@ -151,12 +152,17 @@ impl TuiApp {
         &self,
         provider_connected: bool,
     ) -> StatusModel {
-        self.status_model_from(&self.session_view, provider_connected)
+        self.status_model_from(
+            &self.session_view,
+            &self.transcript_view,
+            provider_connected,
+        )
     }
 
     fn status_model_from(
         &self,
         session_view: &SessionSnapshot,
+        transcript: &TranscriptSnapshot,
         provider_connected: bool,
     ) -> StatusModel {
         let repo = self.repo_header();
@@ -197,7 +203,7 @@ impl TuiApp {
             // Workspace secondary metadata only — never overall task lifecycle.
             activity: self.workspace_activity_label(),
             progress_description: self.header_progress_description(),
-            failure_category: self.header_failure_category(),
+            failure_category: self.header_failure_category(transcript),
             waiting_detail: self.header_waiting_detail(),
         }
     }
@@ -249,19 +255,19 @@ impl TuiApp {
     /// survives a resume. Removing it is tracked as a follow-up for the
     /// persistence phase (extending the durable status event to carry the
     /// failure category), not dropped silently.
-    fn header_failure_category(&self) -> Option<String> {
+    fn header_failure_category(&self, transcript: &TranscriptSnapshot) -> Option<String> {
         if self.session_view.lifecycle != forge_types::TaskLifecycle::Failed {
             return None;
         }
         // Prefer the latest structured turn_failed event category.
-        for event in self.session.events.iter().rev() {
+        for event in transcript.events().iter().rev() {
             if event.kind == "turn_failed" || event.kind == "validation_exhausted" {
                 let detail = event.detail.as_str();
                 let category = detail.split(':').next().unwrap_or(detail).trim();
                 return Some(failure_category_label(category));
             }
         }
-        for message in self.session.messages.iter().rev() {
+        for message in transcript.messages().iter().rev() {
             if message.role != MessageRole::Assistant {
                 continue;
             }

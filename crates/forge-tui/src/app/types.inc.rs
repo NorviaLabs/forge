@@ -630,6 +630,10 @@ pub struct TuiApp {
     /// paths read this instead of the live session, so what they need stops
     /// depending on who owns it.
     pub(crate) session_view: SessionSnapshot,
+    /// The transcript behind an `Arc`, re-copied only when it actually
+    /// changes. Separate from `session_view` because it is the expensive
+    /// half and not every caller of that one wants it.
+    pub(crate) transcript_view: TranscriptSnapshot,
     input: InputModel,
     pub(crate) overlay: Option<Overlay>,
     exit: ExitState,
