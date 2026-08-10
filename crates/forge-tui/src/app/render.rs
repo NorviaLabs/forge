@@ -352,15 +352,7 @@ impl TuiApp {
                 } else {
                     theme::inactive_panel_border()
                 })
-                .style(theme::panel())
-                .title(Span::styled(
-                    " Chat ",
-                    if sidebar_focused {
-                        theme::active_panel_title()
-                    } else {
-                        theme::inactive_panel_title()
-                    },
-                ));
+                .style(theme::panel());
             let conversation_area = sidebar_block.inner(sidebar);
             self.conversation_area = Some(conversation_area);
             let bottom_padding = if self.session.pending_hitl().is_some() {

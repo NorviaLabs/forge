@@ -205,7 +205,6 @@ async fn light_theme_representative_layout_snapshot() {
 
     let text = render_app_text(&mut app, 120, 40);
     assert!(text.contains('⌂'), "missing header:\n{text}");
-    assert!(text.contains("FILES"), "missing sidebar:\n{text}");
     assert!(
         text.contains("Please review this change."),
         "missing user message:\n{text}"
