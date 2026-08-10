@@ -19,7 +19,7 @@ use forge_connect::{
     builtin_registry, handle_connect_action, models_for_picker, needs_tui_api_key_prompt,
     needs_tui_oauth, normalize_model_id, ConnectAction, ConnectError, ConnectRegistry,
     ConnectService, CredentialStore, ModelCatalogCache, ModelSelection, OauthPending,
-    OPENAI_CODEX_PROFILE_ID,
+    PreferenceStore, OPENAI_CODEX_PROFILE_ID,
 };
 use forge_core::{
     merge_streamed_response, observe_stream_event, AgentSession, ApplyOutcome, LoopError,
