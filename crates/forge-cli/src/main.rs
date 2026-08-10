@@ -1,54 +1,16 @@
 //! Forge CLI — launches the full-screen TUI by default.
 
-use std::sync::Arc;
+use std::io::{self, Write};
 
 use clap::Parser;
 use forge_config::{Config, ConfigOverrides};
-use forge_core::{AgentSession, LoopConfig};
-use forge_governance::{parse_pattern_rules, Governance};
-use forge_mcp::{register_static_mcp, McpManager, StaticMcpTool};
-use forge_model::{client_from_config, ModelClient};
-use forge_storage::{LocalRuntimeStorage, RuntimeDataKind, RuntimeStorage};
-use forge_tools::ToolRegistry;
+use forge_core::AgentSession;
+use forge_session::{
+    open_session, resolve_journal_dir, ApprovalPolicy, SessionCommand, SessionEvent, SessionTarget,
+};
 use forge_tui::{resume_session_items, run_tui, ExitCode, TuiRuntimeConfig};
 use forge_types::SessionId;
-use serde_json::json;
 use tracing_subscriber::EnvFilter;
-
-/// Resolve where the session journal lives, and any startup notices the
-/// resolution itself produced. An explicit `journal.path` override (via
-/// `forge.toml`/env/CLI) is respected as-is — advanced use, not managed by
-/// the storage resolver. Otherwise, route through the centralized
-/// runtime-storage resolver: `.forge/local/sessions` inside a Git
-/// repository (natively excluded from `git status`), or the platform
-/// application-data directory outside one — surfacing a notice if
-/// repository-local storage fell back, or if legacy runtime files were
-/// found already tracked by Git (never silently migrated or altered).
-fn resolve_journal_dir(cfg: &Config) -> (std::path::PathBuf, Vec<String>) {
-    if cfg.journal.path == forge_config::default_journal_path() {
-        let storage = LocalRuntimeStorage::new(cfg.workspace_root());
-        if let Ok(dir) = storage.path_for(RuntimeDataKind::Session) {
-            let mut notices = Vec::new();
-            if let Some(reason) = storage.fallback_reason() {
-                notices.push(reason);
-            }
-            let tracked = storage.tracked_migration_conflicts();
-            if !tracked.is_empty() {
-                let paths = tracked
-                    .iter()
-                    .map(|p| p.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                notices.push(format!(
-                    "Some Forge runtime files are already tracked by Git ({paths}). \
-                     Forge did not modify the Git index; review the tracked files before migration."
-                ));
-            }
-            return (dir, notices);
-        }
-    }
-    (cfg.journal_dir(), Vec::new())
-}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -60,6 +22,37 @@ fn resolve_journal_dir(cfg: &Config) -> (std::path::PathBuf, Vec<String>) {
 struct Cli {
     #[arg(long = "resume", value_name = "SESSION_ID", num_args = 0..=1)]
     resume: Option<Option<SessionId>>,
+
+    /// Run one prompt without the TUI, stream the answer to stdout, and exit.
+    #[arg(short = 'p', long = "print", value_name = "PROMPT")]
+    print: Option<String>,
+
+    /// What to do when a tool call needs approval in `--print` mode.
+    #[arg(long, value_enum, default_value_t = Approvals::Ask)]
+    approvals: Approvals,
+}
+
+/// Mirrors `forge_session::ApprovalPolicy` as a CLI-facing enum, so the flag
+/// vocabulary can differ from the library's without either constraining the
+/// other.
+#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+enum Approvals {
+    /// Stop and report the request. Nothing runs without a human.
+    Ask,
+    /// Deny every request; the agent continues and may adapt.
+    Deny,
+    /// Approve every request. Runs model-authored commands unattended.
+    Approve,
+}
+
+impl From<Approvals> for ApprovalPolicy {
+    fn from(value: Approvals) -> Self {
+        match value {
+            Approvals::Ask => ApprovalPolicy::Ask,
+            Approvals::Deny => ApprovalPolicy::DenyAll,
+            Approvals::Approve => ApprovalPolicy::ApproveAll,
+        }
+    }
 }
 
 #[tokio::main]
@@ -85,6 +78,38 @@ async fn main() {
     std::process::exit(code.code());
 }
 
+/// Turn `--resume` into a concrete target. A bare `--resume` means "the most
+/// recent session", which requires looking one up; if there is none, fall back
+/// to a new session and say so.
+async fn resolve_target(
+    cfg: &Config,
+    resume: Option<Option<SessionId>>,
+) -> anyhow::Result<(SessionTarget, Option<String>)> {
+    match resume {
+        Some(Some(session_id)) => Ok((SessionTarget::Resume(session_id), None)),
+        Some(None) => {
+            let (journal_dir, _) = resolve_journal_dir(cfg);
+            let items = resume_session_items(&journal_dir, 10)
+                .await
+                .map_err(|e| anyhow::anyhow!(e))?;
+            match items.first() {
+                Some(item) => {
+                    let session_id = item
+                        .id
+                        .parse::<SessionId>()
+                        .map_err(|e| anyhow::anyhow!(e))?;
+                    Ok((SessionTarget::Resume(session_id), None))
+                }
+                None => Ok((
+                    SessionTarget::New,
+                    Some("No previous session found; creating a new session.".to_string()),
+                )),
+            }
+        }
+        None => Ok((SessionTarget::New, None)),
+    }
+}
+
 async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     let overrides = ConfigOverrides {
         config_path: None,
@@ -96,30 +121,20 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     };
     let cfg = Config::load(overrides).map_err(|e| anyhow::anyhow!(e))?;
 
-    let (resume, create_notice) = if cli.resume == Some(None) {
-        let (journal_dir, _) = resolve_journal_dir(&cfg);
-        let items = resume_session_items(&journal_dir, 10)
-            .await
-            .map_err(|e| anyhow::anyhow!(e))?;
-        if let Some(item) = items.first() {
-            let session_id = item
-                .id
-                .parse::<SessionId>()
-                .map_err(|e| anyhow::anyhow!(e))?;
-            (Some(Some(session_id)), None)
-        } else {
-            (
-                Some(None),
-                Some("No previous session found; creating a new session.".to_string()),
-            )
-        }
-    } else {
-        (cli.resume, None)
-    };
-    let (session, mut startup_notices) = open_session(&cfg, resume).await?;
+    let (target, create_notice) = resolve_target(&cfg, cli.resume).await?;
+    let opened = open_session(&cfg, target).await?;
+    let mut startup_notices = opened.notices;
     if let Some(notice) = create_notice {
         startup_notices.push(notice);
     }
+
+    if let Some(prompt) = cli.print {
+        for notice in &startup_notices {
+            eprintln!("note: {notice}");
+        }
+        return run_headless(opened.session, prompt, cli.approvals.into()).await;
+    }
+
     let runtime = TuiRuntimeConfig {
         model_label: cfg.model.model.clone(),
         provider: cfg.model.provider.as_str().into(),
@@ -129,7 +144,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         file_icons: cfg.tui.file_icons,
         theme_id: cfg.tui.theme.clone(),
     };
-    let summary = run_tui(session, runtime)
+    let summary = run_tui(opened.session, runtime)
         .await
         .map_err(|e| anyhow::anyhow!(e))?;
     if let Some(token_usage) = summary.token_usage {
@@ -142,130 +157,59 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     Ok(summary.exit_code)
 }
 
-/// Collect stored OAuth / API-key material for the native model client.
+/// Drive one prompt to completion with no terminal attached.
 ///
-/// Returns the pairs instead of exporting them. `NativeModelClient` reads its
-/// injected map ahead of the process environment, so the client never needed
-/// them in `std::env` — and putting them there handed a copy to every child
-/// process Forge starts, including MCP servers and shell commands.
-///
-/// An explicitly exported variable still wins, which is the precedence
-/// `forge_connect::resolve_key` already uses.
-fn connect_credentials() -> Vec<(String, String)> {
-    let reg = forge_connect::builtin_registry();
-    let store = forge_connect::CredentialStore::user_default();
-    let svc = forge_connect::ConnectService {
-        registry: &reg,
-        store: &store,
-        active_profile_id: None,
-        active_model: None,
-    };
-    let mut pairs = Vec::new();
-    for profile in reg.profiles() {
-        let Ok(profile_pairs) = svc.provider_env_for_profile(&profile.id) else {
-            continue;
+/// Assistant text goes to stdout as it streams; everything else (notices,
+/// approval requests, errors) goes to stderr, so the stdout of a `--print`
+/// run is just the answer and can be piped.
+async fn run_headless(
+    session: AgentSession,
+    prompt: String,
+    policy: ApprovalPolicy,
+) -> anyhow::Result<ExitCode> {
+    let mut handle = forge_session::spawn(session, policy);
+    handle.send(SessionCommand::Prompt(prompt)).await?;
+
+    let mut stdout = io::stdout();
+    let exit = loop {
+        let Some(event) = handle.next_event().await else {
+            // The runner stopped without reporting an outcome.
+            break ExitCode::Failed;
         };
-        for (name, value) in profile_pairs {
-            let already_exported = std::env::var(&name)
-                .ok()
-                .is_some_and(|existing| !existing.trim().is_empty());
-            if !already_exported {
-                pairs.push((name, value));
+        match event {
+            SessionEvent::TextDelta(text) => {
+                write!(stdout, "{text}")?;
+                stdout.flush()?;
+            }
+            // Reasoning and tool activity are progress, not output.
+            SessionEvent::ThinkingDelta(_) => {}
+            SessionEvent::ToolCall { name, .. } => eprintln!("tool: {name}"),
+            SessionEvent::TurnComplete { .. } => {
+                writeln!(stdout)?;
+                break ExitCode::Success;
+            }
+            SessionEvent::AwaitingApproval(payload) => {
+                eprintln!(
+                    "awaiting approval: {} — {}\n\
+                     re-run with --approvals approve to allow, or --approvals deny to refuse",
+                    payload.tool, payload.reason
+                );
+                break ExitCode::AwaitingHitl;
+            }
+            SessionEvent::Error(message) => {
+                eprintln!("error: {message}");
+                break ExitCode::Failed;
             }
         }
-    }
-    pairs
-}
-
-async fn open_session(
-    cfg: &Config,
-    resume: Option<Option<SessionId>>,
-) -> anyhow::Result<(AgentSession, Vec<String>)> {
-    let model: Arc<dyn ModelClient> =
-        Arc::from(client_from_config(cfg).map_err(|e| anyhow::anyhow!(e))?);
-    // After construction, because credentials are resolved per request rather
-    // than at build time.
-    model.apply_provider_env(&connect_credentials());
-
-    let mut tools = ToolRegistry::new();
-    register_static_mcp(
-        &mut tools,
-        "demo",
-        vec![StaticMcpTool {
-            server_id: "demo".into(),
-            tool_name: "echo".into(),
-            description: "Echo text (static MCP demo)".into(),
-            schema: json!({
-                "type": "object",
-                "properties": { "text": { "type": "string" } },
-                "required": ["text"]
-            }),
-            handler: Box::new(|args| forge_types::ToolOutput {
-                outcome: Default::default(),
-                content: args
-                    .get("text")
-                    .and_then(|t| t.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-                is_error: false,
-                exit_code: None,
-            }),
-        }],
-    );
-
-    let mut startup_notices = cfg.refused_key_notices();
-    if !cfg.mcp.servers.is_empty() {
-        let mut mgr = McpManager::new();
-        let errors = mgr.connect_all(&cfg.mcp.servers).await;
-        for e in errors {
-            startup_notices.push(format!("mcp: {e}"));
-        }
-        let _ = mgr.register_into(&mut tools).await;
-    }
-
-    let (journal_dir, storage_notices) = resolve_journal_dir(cfg);
-    startup_notices.extend(storage_notices);
-    let resume_id = match resume {
-        Some(Some(session_id)) => Some(session_id),
-        Some(None) => None,
-        None => None,
-    };
-    let loop_cfg = LoopConfig {
-        max_turns: 128,
-        workspace: cfg.workspace_root().to_path_buf(),
-        journal_dir,
-        enable_context_lifecycle: true,
-        enable_governance: true,
-        web_search: cfg.tools.web_search.clone(),
     };
 
-    let mut session = if let Some(session_id) = resume_id {
-        AgentSession::resume(loop_cfg, model, tools, session_id)
-            .await
-            .map_err(|e| anyhow::anyhow!(e))?
-    } else {
-        AgentSession::create(loop_cfg, model, tools)
-            .await
-            .map_err(|e| anyhow::anyhow!(e))?
-    };
-    if !cfg.model.model.is_empty() {
-        session.set_active_model(cfg.model.model.clone());
-    }
-
-    let (permissions, permission_notices) = forge_config::load_permissions(cfg.workspace_root());
-    startup_notices.extend(permission_notices);
-    session.set_governance(Governance::default().with_pattern_rules(
-        parse_pattern_rules(&permissions.allow),
-        parse_pattern_rules(&permissions.deny),
-    ));
-
-    Ok((session, startup_notices))
+    let _ = handle.send(SessionCommand::Shutdown).await;
+    Ok(exit)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
 
     #[test]
     fn cli_resume_parses_session_id() {
@@ -280,174 +224,52 @@ mod tests {
         assert_eq!(cli.resume, Some(None));
     }
 
-    /// Exercises the exact composition `build_session` wires at startup —
-    /// `load_permissions` output feeding `Governance::with_pattern_rules` —
-    /// without needing a real model client. A workspace-scope `deny` rule
-    /// must actually affect `authorize()`, proving the plumbing is live, not
-    /// just parsed and discarded.
+    /// An explicit session id needs no journal lookup, so this maps straight
+    /// through without touching the filesystem.
+    #[tokio::test]
+    async fn explicit_resume_id_maps_to_a_resume_target() {
+        let session_id = SessionId::new_v4();
+        let cfg = Config::default();
+        let (target, notice) = resolve_target(&cfg, Some(Some(session_id))).await.unwrap();
+        assert_eq!(target, SessionTarget::Resume(session_id));
+        assert!(notice.is_none());
+    }
+
+    /// Approval is the one flag where a wrong default is dangerous, so pin
+    /// both the default and every mapping.
     #[test]
-    fn workspace_deny_rule_reaches_governance_authorize() {
-        let dir = TempDir::new().unwrap();
-        let forge_dir = dir.path().join(".forge");
-        std::fs::create_dir_all(&forge_dir).unwrap();
-        std::fs::write(
-            forge_dir.join("permissions.toml"),
-            "allow = [\"bash(*)\"]\ndeny = [\"bash(rm -rf*)\"]\n",
-        )
-        .unwrap();
+    fn approvals_defaults_to_ask_and_maps_to_the_library_policy() {
+        let cli = Cli::try_parse_from(["forge", "-p", "hi"]).unwrap();
+        assert_eq!(cli.approvals, Approvals::Ask);
+        assert_eq!(ApprovalPolicy::from(cli.approvals), ApprovalPolicy::Ask);
 
-        let (permissions, _notices) = forge_config::load_permissions(dir.path());
-        let governance = Governance::default().with_pattern_rules(
-            parse_pattern_rules(&permissions.allow),
-            parse_pattern_rules(&permissions.deny),
-        );
+        for (flag, expected) in [
+            ("ask", ApprovalPolicy::Ask),
+            ("deny", ApprovalPolicy::DenyAll),
+            ("approve", ApprovalPolicy::ApproveAll),
+        ] {
+            let cli = Cli::try_parse_from(["forge", "-p", "hi", "--approvals", flag]).unwrap();
+            assert_eq!(ApprovalPolicy::from(cli.approvals), expected, "flag {flag}");
+        }
+    }
 
-        let call = forge_types::ToolCall {
-            id: "1".into(),
-            name: "bash".into(),
-            arguments: json!({"command": "rm -rf /"}),
-        };
+    #[test]
+    fn print_is_absent_unless_asked_for() {
+        assert!(Cli::try_parse_from(["forge"]).unwrap().print.is_none());
         assert_eq!(
-            governance.authorize(&call, forge_types::SideEffectClass::Exec),
-            forge_types::PolicyDecision::Hitl,
-            "repo-scope allow rules must never be honored, and deny always wins anyway"
+            Cli::try_parse_from(["forge", "-p", "do a thing"])
+                .unwrap()
+                .print
+                .as_deref(),
+            Some("do a thing")
         );
-    }
-
-    /// `forge-tools` cannot see `forge-connect`, so the list of credential
-    /// variables the shell tool strips is maintained by hand. This crate depends
-    /// on both, so it is where the two can be checked against each other: a new
-    /// provider whose key is not on that list would otherwise be readable by any
-    /// model-authored command, silently.
-    #[test]
-    fn credential_env_names_cover_every_connect_profile() {
-        let registry = forge_connect::builtin_registry();
-        let stripped = forge_tools::PROVIDER_CREDENTIAL_ENV;
-
-        for profile in registry.profiles() {
-            for name in &profile.api_key_env {
-                assert!(
-                    stripped.contains(&name.as_str()),
-                    "`{name}` (profile `{}`) is a provider credential that the shell tool would \
-                     not strip — add it to forge_tools::PROVIDER_CREDENTIAL_ENV",
-                    profile.id
-                );
-            }
-        }
-
-        // Tokens exported for OAuth providers do not appear in `api_key_env`.
-        for name in [
-            "XAI_API_KEY",
-            forge_connect::OPENAI_CODEX_ACCESS_TOKEN_ENV,
-            forge_connect::OPENAI_CODEX_ACCOUNT_ID_ENV,
-        ] {
-            assert!(
-                stripped.contains(&name),
-                "`{name}` is exported for an OAuth provider but would not be stripped"
-            );
-        }
-    }
-
-    /// Git-initializes `dir` so the journal-dir resolver exercises
-    /// repository-local storage hermetically, inside the tempdir — without
-    /// this, an unconfigured journal path falls back to the platform
-    /// application-data directory (correct real-world behavior outside a
-    /// repository, but not what a test should touch on the host machine).
-    fn init_repo(dir: &std::path::Path) {
-        for args in [
-            vec!["init", "--initial-branch=main", "-q"],
-            vec!["config", "user.email", "test@example.com"],
-            vec!["config", "user.name", "Test"],
-        ] {
-            let status = std::process::Command::new("git")
-                .arg("-C")
-                .arg(dir)
-                .args(&args)
-                .status()
-                .unwrap();
-            assert!(status.success());
-        }
     }
 
     #[tokio::test]
-    async fn open_session_with_mock_model_builds_a_session_without_notices() {
-        let temp = TempDir::new().unwrap();
-        init_repo(temp.path());
-        let mut cfg = Config::default();
-        cfg.model.provider = forge_config::ModelProviderKind::Mock;
-        cfg.model.model = "mock".into();
-        cfg.resolved_workspace = temp.path().to_path_buf();
-        cfg.workspace_root = Some(temp.path().display().to_string());
-
-        let (session, notices) = open_session(&cfg, None).await.unwrap();
-        assert!(notices.is_empty());
-        assert_eq!(session.session_id.to_string().len(), 36);
-    }
-
-    #[test]
-    fn resolve_journal_dir_uses_the_storage_resolver_for_the_unconfigured_default() {
-        let temp = TempDir::new().unwrap();
-        init_repo(temp.path());
-        let cfg = Config {
-            resolved_workspace: temp.path().to_path_buf(),
-            workspace_root: Some(temp.path().display().to_string()),
-            ..Default::default()
-        };
-
-        let (dir, notices) = resolve_journal_dir(&cfg);
-        assert_eq!(
-            dir.canonicalize().unwrap(),
-            temp.path()
-                .join(".forge")
-                .join("local")
-                .join("sessions")
-                .canonicalize()
-                .unwrap()
-        );
-        assert!(notices.is_empty());
-    }
-
-    #[test]
-    fn resolve_journal_dir_respects_an_explicit_override() {
-        let temp = TempDir::new().unwrap();
-        init_repo(temp.path());
-        let cfg = Config {
-            resolved_workspace: temp.path().to_path_buf(),
-            workspace_root: Some(temp.path().display().to_string()),
-            journal: forge_config::JournalConfig {
-                path: "custom/journal".into(),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-
-        let (dir, notices) = resolve_journal_dir(&cfg);
-        assert_eq!(dir, temp.path().join("custom/journal"));
-        assert!(notices.is_empty());
-    }
-
-    #[test]
-    fn resolve_journal_dir_reports_tracked_legacy_files_as_a_notice() {
-        let temp = TempDir::new().unwrap();
-        init_repo(temp.path());
-        std::fs::create_dir_all(temp.path().join(".forge")).unwrap();
-        std::fs::write(temp.path().join(".forge/ui-state.json"), "{}").unwrap();
-        let status = std::process::Command::new("git")
-            .arg("-C")
-            .arg(temp.path())
-            .args(["add", ".forge/ui-state.json"])
-            .status()
-            .unwrap();
-        assert!(status.success());
-
-        let cfg = Config {
-            resolved_workspace: temp.path().to_path_buf(),
-            workspace_root: Some(temp.path().display().to_string()),
-            ..Default::default()
-        };
-
-        let (_dir, notices) = resolve_journal_dir(&cfg);
-        assert_eq!(notices.len(), 1);
-        assert!(notices[0].contains("already tracked by Git"));
+    async fn no_resume_flag_maps_to_a_new_session() {
+        let cfg = Config::default();
+        let (target, notice) = resolve_target(&cfg, None).await.unwrap();
+        assert_eq!(target, SessionTarget::New);
+        assert!(notice.is_none());
     }
 }

@@ -911,3 +911,51 @@ fn footer_limits_use_connected_profile_instead_of_native_transport() {
     );
     assert_eq!(footer_provider_id("mock", None), "mock");
 }
+
+/// The per-frame snapshot is the contract 1c rests on: render paths read
+/// `session_view`, so `draw` must refresh it or the screen shows the previous
+/// frame's session state.
+#[tokio::test]
+async fn draw_refreshes_the_session_snapshot() {
+    let (_dir, mut app) = focus_test_app().await;
+    draw_app(&mut app, 100, 30);
+    assert_eq!(
+        app.session_view.lifecycle,
+        forge_types::TaskLifecycle::Ready
+    );
+    assert!(!app.session_view.is_awaiting_approval());
+
+    // `set_pending_hitl` also moves the lifecycle to Waiting, which is the
+    // pair of changes a real approval produces.
+    set_pending_hitl(&mut app, direct_hitl_payload("c1", "src/main.rs"));
+
+    // Still the previous frame's values until something draws.
+    assert_eq!(
+        app.session_view.lifecycle,
+        forge_types::TaskLifecycle::Ready
+    );
+    assert!(!app.session_view.is_awaiting_approval());
+
+    draw_app(&mut app, 100, 30);
+    assert_eq!(
+        app.session_view.lifecycle,
+        forge_types::TaskLifecycle::Waiting
+    );
+    assert!(app.session_view.is_awaiting_approval());
+}
+
+/// `/status` runs between frames, so it must not report whatever was true when
+/// the screen was last painted.
+#[tokio::test]
+async fn status_model_does_not_serve_a_stale_snapshot_between_frames() {
+    let (_dir, mut app) = focus_test_app().await;
+    draw_app(&mut app, 100, 30);
+
+    app.session.active_task.lifecycle = forge_types::TaskLifecycle::Failed;
+
+    assert_eq!(
+        app.refresh_status_model().status,
+        forge_types::TaskLifecycle::Failed,
+        "refresh_status_model must capture rather than reuse the last frame's snapshot"
+    );
+}

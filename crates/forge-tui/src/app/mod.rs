@@ -24,6 +24,7 @@ use forge_core::{
     merge_streamed_response, observe_stream_event, AgentSession, ApplyOutcome, LoopError,
     ModelStepAccumulator,
 };
+use forge_session::SessionSnapshot;
 use forge_types::{
     HitlDecision, HitlPayload, Message, MessageRole, ModelStreamEvent, ProgressDocument,
 };
