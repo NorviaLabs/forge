@@ -809,16 +809,7 @@ pub struct FileExplorerWidget<'a> {
 impl Widget for FileExplorerWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         self.explorer.poll_search_load();
-        let title = " FILES ";
         let block = Block::default()
-            .title(Span::styled(
-                title,
-                if self.focused {
-                    theme::active_panel_title()
-                } else {
-                    theme::inactive_panel_title()
-                },
-            ))
             .borders(Borders::ALL)
             .padding(Padding::horizontal(1))
             .border_style(if self.focused {

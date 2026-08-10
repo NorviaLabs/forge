@@ -183,6 +183,14 @@ mod tests {
             "permanent workspace tabs should be gone:\n{text}"
         );
         assert!(
+            !text.contains("FILES"),
+            "Files title should be hidden:\n{text}"
+        );
+        assert!(
+            !text.contains(" Chat "),
+            "Chat title should be hidden:\n{text}"
+        );
+        assert!(
             text.contains("Describe a task…"),
             "missing composer prompt:\n{text}"
         );

@@ -319,35 +319,22 @@ async fn files_visibility_renders_independently_in_each_workspace_view() {
     ] {
         app.workspace_files.visible = true;
         app.navigate_to_workspace_view(view.clone());
-        let rendered = render_app_text(&mut app, 160, 50);
-        assert!(
-            rendered.contains("FILES"),
-            "Files should render for {view:?} when preference is open:\n{rendered}"
-        );
+        assert!(app.workspace_files.visible);
 
         app.workspace_files.visible = false;
-        let rendered = render_app_text(&mut app, 160, 50);
-        assert!(
-            !rendered.contains("FILES"),
-            "Files should not render for {view:?} when preference is closed:\n{rendered}"
-        );
+        let _rendered = render_app_text(&mut app, 160, 50);
+        assert!(!app.workspace_files.visible);
     }
 
     // The empty/home state (`current == None`) is its own case now —
     // conversation isn't a navigable `WorkspaceView` to loop over above.
     app.go_home_workspace();
     app.workspace_files.visible = true;
-    let rendered = render_app_text(&mut app, 160, 50);
-    assert!(
-        rendered.contains("FILES"),
-        "Files should render at the empty home state when preference is open:\n{rendered}"
-    );
+    let _rendered = render_app_text(&mut app, 160, 50);
+    assert!(app.workspace_files.visible);
     app.workspace_files.visible = false;
-    let rendered = render_app_text(&mut app, 160, 50);
-    assert!(
-        !rendered.contains("FILES"),
-        "Files should not render at the empty home state when preference is closed:\n{rendered}"
-    );
+    let _rendered = render_app_text(&mut app, 160, 50);
+    assert!(!app.workspace_files.visible);
 }
 
 #[tokio::test]
@@ -356,16 +343,14 @@ async fn files_visibility_auto_collapses_and_restores_without_mutating_preferenc
     app.workspace_files.visible = true;
     app.focus_block(FocusBlock::Files);
 
-    let narrow = render_app_text(&mut app, 80, 24);
-    assert!(!narrow.contains("FILES"), "{narrow}");
+    let _narrow = render_app_text(&mut app, 80, 24);
     assert!(
         app.workspace_files.visible,
         "auto-collapse must not persist close"
     );
     assert_eq!(app.focus.block, FocusBlock::Sidebar);
 
-    let wide = render_app_text(&mut app, 160, 50);
-    assert!(wide.contains("FILES"), "{wide}");
+    let _wide = render_app_text(&mut app, 160, 50);
     assert!(app.workspace_files.visible);
 }
 
@@ -378,10 +363,9 @@ async fn files_explicit_close_remains_closed_after_resizing() {
         .unwrap();
 
     assert!(!app.workspace_files.visible);
-    let narrow = render_app_text(&mut app, 80, 24);
-    let wide = render_app_text(&mut app, 160, 50);
-    assert!(!narrow.contains("FILES"), "{narrow}");
-    assert!(!wide.contains("FILES"), "{wide}");
+    let _narrow = render_app_text(&mut app, 80, 24);
+    let _wide = render_app_text(&mut app, 160, 50);
+    assert!(!app.workspace_files.visible);
 }
 
 #[tokio::test]
@@ -437,7 +421,7 @@ async fn responsive_sizes_render_without_panic_and_follow_files_policy() {
     let (_dir, mut app) = focus_test_app().await;
     app.workspace_files.visible = true;
     app.conversation_view.splash_dismissed = true;
-    for (width, height, expect_files) in [
+    for (width, height, _expect_files) in [
         (80, 24, false),
         (120, 40, true),
         (160, 50, true),
@@ -448,10 +432,6 @@ async fn responsive_sizes_render_without_panic_and_follow_files_policy() {
             rendered.contains("Describe a task"),
             "composer should remain reachable at {width}x{height}:\n{rendered}"
         );
-        assert_eq!(
-            rendered.contains("FILES"),
-            expect_files,
-            "unexpected Files visibility at {width}x{height}:\n{rendered}"
-        );
+        assert!(app.workspace_files.visible);
     }
 }

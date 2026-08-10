@@ -624,16 +624,6 @@ pub fn approval_accent() -> Style {
     Style::default().fg(active_palette().approval_accent)
 }
 
-/// Active panel title: primary text, bold.
-pub fn active_panel_title() -> Style {
-    text().add_modifier(Modifier::BOLD)
-}
-
-/// Inactive panel title: secondary text.
-pub fn inactive_panel_title() -> Style {
-    muted()
-}
-
 /// Status bar surface.
 pub fn status_bar() -> Style {
     panel_alt()
