@@ -499,7 +499,7 @@ impl TuiApp {
         }
     }
 
-    fn reconcile_file_operation(&mut self, result: crate::file_ops::FileOperationResult) {
+    fn reconcile_file_operation(&mut self, result: forge_workspace::file_ops::FileOperationResult) {
         let root = self.session_view.workspace_root().to_path_buf();
         match result.kind {
             FileOperationKind::CreateFile | FileOperationKind::CreateDirectory => {
@@ -614,7 +614,7 @@ impl TuiApp {
         };
 
         let cursor_line = self.source_viewer.current_line;
-        self.attachment.pending = Some(crate::file_context::FileAttachment::new(
+        self.attachment.pending = Some(forge_workspace::file_context::FileAttachment::new(
             rel_path,
             cursor_line,
         ));

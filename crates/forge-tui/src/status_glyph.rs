@@ -1,9 +1,9 @@
 use ratatui::style::Modifier;
 use ratatui::text::Span;
 
-use crate::git_status::GitStatusKind;
 use crate::theme;
 use crate::widgets::FeedbackSeverity;
+use forge_workspace::git_status::GitStatusKind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
@@ -85,5 +85,44 @@ mod tests {
         assert_eq!(Status::from(FeedbackSeverity::Warn), Status::Warning);
         assert_eq!(Status::from(FeedbackSeverity::Error), Status::Error);
         assert_eq!(Status::from(FeedbackSeverity::Info), Status::Info);
+    }
+}
+
+#[cfg(test)]
+mod git_theme_tests {
+    use super::*;
+
+    // Moved here from `git_status` when that module became
+    // `forge-workspace`: it asserts how a status is *drawn*, which is
+    // this module's job, not the workspace crate's.
+    #[test]
+    fn status_glyph_follows_theme_semantics() {
+        use ratatui::style::Modifier;
+        use GitStatusKind::*;
+
+        assert_eq!(
+            status_glyph(Modified.into()).style,
+            crate::theme::git_modified().add_modifier(Modifier::BOLD)
+        );
+        assert_eq!(
+            status_glyph(Added.into()).style,
+            crate::theme::git_added().add_modifier(Modifier::BOLD)
+        );
+        assert_eq!(
+            status_glyph(Deleted.into()).style,
+            crate::theme::git_deleted().add_modifier(Modifier::BOLD)
+        );
+        assert_eq!(
+            status_glyph(Untracked.into()).style,
+            crate::theme::git_untracked().add_modifier(Modifier::BOLD)
+        );
+        assert_eq!(
+            status_glyph(Ignored.into()).style,
+            crate::theme::git_ignored().add_modifier(Modifier::BOLD)
+        );
+        assert_eq!(
+            status_glyph(Conflicted.into()).style,
+            crate::theme::git_deleted().add_modifier(Modifier::BOLD)
+        );
     }
 }

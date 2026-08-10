@@ -899,7 +899,7 @@ impl TuiApp {
         let attachment = self.attachment.pending.take();
         if let Some(ref att) = attachment {
             if let Some(p) = self.source_viewer.path.as_ref() {
-                match crate::file_context::build_attachment_text(
+                match forge_workspace::file_context::build_attachment_text(
                     p,
                     att.cursor_line,
                     &att.rel_path,
