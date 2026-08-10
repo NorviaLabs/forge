@@ -8,6 +8,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
+use crate::conversation::ConversationRender;
 use crossterm::event::{
     self, EnableBracketedPaste, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
     KeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
@@ -24,7 +25,7 @@ use forge_core::{
     merge_streamed_response, observe_stream_event, AgentSession, ApplyOutcome, LoopError,
     ModelStepAccumulator,
 };
-use forge_session::SessionSnapshot;
+use forge_session::{SessionSnapshot, TranscriptSnapshot};
 use forge_types::{
     HitlDecision, HitlPayload, Message, MessageRole, ModelStreamEvent, ProgressDocument,
 };

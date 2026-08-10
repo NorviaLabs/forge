@@ -36,7 +36,8 @@ pub use app::{
 };
 pub use commands::{parse_slash, CommandError, SlashCommand};
 pub use conversation::{
-    BannerKind, ChatItem, ConversationModel, ConversationViewOpts, StreamWaitPhase, ToolCardState,
+    BannerKind, ChatItem, ConversationModel, ConversationRender, ConversationViewOpts,
+    StreamWaitPhase, ToolCardState,
 };
 pub use effort::ReasoningEffort;
 pub use file_explorer::{FileExplorer, FileExplorerWidget};

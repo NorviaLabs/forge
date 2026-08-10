@@ -22,9 +22,10 @@
 //!   it every frame would be strictly worse than the direct read.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use forge_core::AgentSession;
-use forge_types::{HitlPayload, SessionId, TaskLifecycle};
+use forge_core::{AgentSession, TurnEvent};
+use forge_types::{HitlPayload, Message, SessionId, TaskLifecycle};
 
 /// What a frontend needs to draw one frame, minus the transcript.
 #[derive(Debug, Clone, PartialEq)]
@@ -95,6 +96,88 @@ impl Default for SessionSnapshot {
     }
 }
 
+/// The transcript, shared rather than copied.
+///
+/// A frame needs the messages and events themselves to rebuild its projection
+/// when they change — a length or a hash is not enough. But copying the whole
+/// transcript every frame would cost more than the projection it feeds. So it
+/// is held behind `Arc` and re-cloned only when a cheap fingerprint says the
+/// transcript actually moved.
+///
+/// Kept separate from [`SessionSnapshot`] because the two have different
+/// costs and different callers: the cheap snapshot is also built on demand by
+/// paths like `/status`, which have no use for the transcript and should not
+/// pay to copy it.
+#[derive(Debug, Clone, Default)]
+pub struct TranscriptSnapshot {
+    messages: Arc<[Message]>,
+    events: Arc<[TurnEvent]>,
+    fingerprint: Option<TranscriptFingerprint>,
+}
+
+/// What the transcript looked like last time it was copied.
+///
+/// Messages only ever append or get replaced wholesale, so lengths plus the
+/// size of the tail catch every change that matters — including the growing
+/// last message during streaming. This mirrors the assumption the TUI's own
+/// conversation render cache has always keyed on; it is the same trade, not a
+/// new one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct TranscriptFingerprint {
+    messages: usize,
+    events: usize,
+    last_message_content: usize,
+    last_message_thinking: usize,
+    last_event_detail: usize,
+}
+
+impl TranscriptFingerprint {
+    fn of(session: &AgentSession) -> Self {
+        Self {
+            messages: session.messages.len(),
+            events: session.events.len(),
+            last_message_content: session.messages.last().map_or(0, |m| m.content.len()),
+            last_message_thinking: session
+                .messages
+                .last()
+                .and_then(|m| m.thinking.as_ref())
+                .map_or(0, String::len),
+            last_event_detail: session.events.last().map_or(0, |e| e.detail.len()),
+        }
+    }
+}
+
+impl TranscriptSnapshot {
+    /// Bring the snapshot up to date, copying only if the transcript moved.
+    pub fn refresh(&mut self, session: &AgentSession) {
+        let fingerprint = TranscriptFingerprint::of(session);
+        // `Option` rather than comparing against a default fingerprint: an
+        // empty transcript has the default one, so a bare equality check would
+        // re-copy on every frame until the first message arrived.
+        if self.fingerprint == Some(fingerprint) {
+            return;
+        }
+        self.messages = Arc::from(session.messages.as_slice());
+        self.events = Arc::from(session.events.as_slice());
+        self.fingerprint = Some(fingerprint);
+    }
+
+    /// A snapshot taken now, for callers outside a frame.
+    pub fn capture(session: &AgentSession) -> Self {
+        let mut snapshot = Self::default();
+        snapshot.refresh(session);
+        snapshot
+    }
+
+    pub fn messages(&self) -> &[Message] {
+        &self.messages
+    }
+
+    pub fn events(&self) -> &[TurnEvent] {
+        &self.events
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -105,6 +188,15 @@ mod tests {
     use serde_json::json;
     use std::sync::Arc;
     use tempfile::tempdir;
+
+    fn text(body: &str) -> ModelResponse {
+        ModelResponse {
+            text: body.into(),
+            tool_calls: vec![],
+            usage: None,
+            thinking: None,
+        }
+    }
 
     async fn session_with(script: Vec<ModelResponse>, dir: &Path) -> AgentSession {
         let cfg = LoopConfig {
@@ -162,6 +254,77 @@ mod tests {
         assert!(snapshot.is_awaiting_approval());
         assert_eq!(snapshot.pending_hitl.as_ref().unwrap().tool, "bash");
         assert_eq!(snapshot.lifecycle, TaskLifecycle::Waiting);
+    }
+
+    /// The point of the fingerprint: an unchanged transcript must not be
+    /// re-copied, or every frame pays for the whole history.
+    #[tokio::test]
+    async fn refreshing_an_unchanged_transcript_reuses_the_same_allocation() {
+        let dir = tempdir().unwrap();
+        let mut session = session_with(vec![text("hi")], dir.path()).await;
+        session.run_user_message("hello").await.unwrap();
+
+        let mut snapshot = TranscriptSnapshot::capture(&session);
+        let first = snapshot.messages().as_ptr();
+        snapshot.refresh(&session);
+        assert_eq!(
+            first,
+            snapshot.messages().as_ptr(),
+            "an unchanged transcript must not be copied again"
+        );
+    }
+
+    /// ...and a changed one must be picked up, including the last message
+    /// growing, which is what streaming looks like.
+    #[tokio::test]
+    async fn refreshing_picks_up_new_and_growing_messages() {
+        let dir = tempdir().unwrap();
+        let mut session = session_with(vec![text("one"), text("two")], dir.path()).await;
+        session.run_user_message("first").await.unwrap();
+
+        let mut snapshot = TranscriptSnapshot::capture(&session);
+        let before = snapshot.messages().len();
+
+        session.run_user_message("second").await.unwrap();
+        snapshot.refresh(&session);
+        assert!(
+            snapshot.messages().len() > before,
+            "a longer transcript must be picked up"
+        );
+
+        // Streaming appends to the last message rather than adding one.
+        let grown = snapshot.messages().len();
+        session
+            .messages
+            .last_mut()
+            .unwrap()
+            .content
+            .push_str(" more");
+        snapshot.refresh(&session);
+        assert_eq!(snapshot.messages().len(), grown);
+        assert!(
+            snapshot
+                .messages()
+                .last()
+                .unwrap()
+                .content
+                .ends_with(" more"),
+            "a growing last message must be picked up"
+        );
+    }
+
+    /// An empty transcript has the default fingerprint, so a naive equality
+    /// check re-copies on every frame until the first message lands — which
+    /// is exactly the idle case a frame budget cares about.
+    #[tokio::test]
+    async fn refreshing_an_empty_transcript_settles_after_the_first_call() {
+        let dir = tempdir().unwrap();
+        let session = session_with(vec![], dir.path()).await;
+        let mut snapshot = TranscriptSnapshot::capture(&session);
+        let first = snapshot.messages().as_ptr();
+        snapshot.refresh(&session);
+        snapshot.refresh(&session);
+        assert_eq!(first, snapshot.messages().as_ptr());
     }
 
     /// A snapshot is a value: capturing the same unchanged session twice must
