@@ -9,18 +9,6 @@ pub use render::ConversationLinesWidget;
 #[cfg(test)]
 pub use render::ConversationWidget;
 
-const DIFF_BLOCK_MARKER: &str = "\u{200b}";
-const DIFF_BLOCK_END_MARKER: &str = "\u{200c}";
-const INDENT_UNIT: &str = "  ";
-const MESSAGE_PADDING: usize = 2;
-const PROSE_MAX_WIDTH: usize = 72;
-/// Subtle left rail grouping tool calls and progress under the current turn.
-const RAIL_GLYPH: &str = "│";
-/// Pane widths below this drop the rail and indent (flat mode).
-const RAIL_MIN_WIDTH: usize = 50;
-/// Columns the rail unit (`│ `) consumes from wrapped content.
-const RAIL_EXTRA: usize = 2;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolCardState {
     Running,
@@ -1394,134 +1382,6 @@ fn split_diff_sections(name: &str, content: &str) -> Vec<(String, Vec<String>)> 
     sections
 }
 
-#[derive(Debug, PartialEq, Eq)]
-struct NumberedDiffLine {
-    old: Option<usize>,
-    new: Option<usize>,
-    marker: char,
-    content: String,
-    header: bool,
-}
-
-fn parse_hunk_start(value: &str, marker: char) -> Option<usize> {
-    value.strip_prefix(marker)?.split(',').next()?.parse().ok()
-}
-
-fn number_diff_lines(lines: &[String]) -> Vec<NumberedDiffLine> {
-    let mut numbered = Vec::new();
-    let mut old_line = None;
-    let mut new_line = None;
-
-    for line in lines {
-        if line.starts_with("diff --git ") || line.starts_with("--- ") || line.starts_with("+++ ") {
-            continue;
-        }
-        if line.starts_with("@@") {
-            let mut fields = line.split_whitespace();
-            let _ = fields.next();
-            old_line = fields.next().and_then(|field| parse_hunk_start(field, '-'));
-            new_line = fields.next().and_then(|field| parse_hunk_start(field, '+'));
-            numbered.push(NumberedDiffLine {
-                old: None,
-                new: None,
-                marker: ' ',
-                content: line.clone(),
-                header: true,
-            });
-            continue;
-        }
-        if line.starts_with("\\ No newline") {
-            numbered.push(NumberedDiffLine {
-                old: None,
-                new: None,
-                marker: ' ',
-                content: line.clone(),
-                header: true,
-            });
-            continue;
-        }
-
-        let (marker, content) = match line.chars().next() {
-            Some(marker @ ('+' | '-' | ' ')) => (marker, line[marker.len_utf8()..].to_string()),
-            _ => (' ', line.clone()),
-        };
-        let (old, new) = match marker {
-            '-' => {
-                let old = old_line;
-                old_line = old_line.map(|line| line + 1);
-                (old, None)
-            }
-            '+' => {
-                let new = new_line;
-                new_line = new_line.map(|line| line + 1);
-                (None, new)
-            }
-            _ => {
-                let old = old_line;
-                let new = new_line;
-                old_line = old_line.map(|line| line + 1);
-                new_line = new_line.map(|line| line + 1);
-                (old, new)
-            }
-        };
-        numbered.push(NumberedDiffLine {
-            old,
-            new,
-            marker,
-            content,
-            header: false,
-        });
-    }
-    numbered
-}
-
-fn activity_detail_label(expanded: bool) -> &'static str {
-    if expanded {
-        "  [Ctrl + o] collapse"
-    } else {
-        "  [Ctrl + o]"
-    }
-}
-
-/// Matches the truncation length already used for long single-line summaries
-/// elsewhere in this file (see the `wrote ·` write/edit summary above).
-const COMMAND_LINE_MAX_CHARS: usize = 80;
-
-/// Collapsed-line rendering for command-execution activity groups (see
-/// [`activity_entry_from_tool`] and the `ChatItem::ActivityGroup` case in
-/// [`semantic_blocks_from_items`], both of which set `count_label` to the
-/// raw `"$ command"` text for validation/command entries).
-///
-/// Returns `Some((truncated_command, output_line_count))` when `count_label`
-/// is a command line that exceeds [`COMMAND_LINE_MAX_CHARS`]; `None` leaves
-/// short commands and non-command summaries (file counts, etc.) untouched so
-/// the caller falls back to rendering `count_label` as-is.
-fn collapsed_command_summary(count_label: &str, items: &[String]) -> Option<(String, usize)> {
-    if count_label.chars().count() <= COMMAND_LINE_MAX_CHARS {
-        return None;
-    }
-    let command = count_label.strip_prefix("$ ")?;
-    let segment = first_command_segment(command);
-    let mut truncated: String = segment.chars().take(COMMAND_LINE_MAX_CHARS).collect();
-    if segment.chars().count() > COMMAND_LINE_MAX_CHARS {
-        truncated.push('…');
-    }
-    let output_lines: usize = items.iter().map(|item| item.lines().count()).sum();
-    Some((format!("$ {truncated}"), output_lines))
-}
-
-/// First command/pipe segment of a (possibly chained) shell command line,
-/// splitting at the earliest `;`, `&&`, or `|`.
-fn first_command_segment(command: &str) -> &str {
-    let mut end = command.len();
-    for sep in [";", "&&", "|"] {
-        if let Some(idx) = command.find(sep) {
-            end = end.min(idx);
-        }
-    }
-    command[..end].trim_end()
-}
-
 #[allow(dead_code)]
 fn diff_preview_lines(content: &str, max: usize) -> Vec<String> {
     content
@@ -2669,39 +2529,6 @@ mod tests {
     }
 
     #[test]
-    fn collapsed_command_summary_splits_at_first_pipe_or_semicolon() {
-        let items = vec!["a\nb\nc".to_string()];
-        let (command, output_lines) = collapsed_command_summary(
-            "$ cargo test --workspace; git diff --check; git status --short --pad-past-eighty-chars-total-length-of-this-line",
-            &items,
-        )
-        .expect("long command should collapse");
-        assert_eq!(command, "$ cargo test --workspace");
-        assert_eq!(output_lines, 3);
-    }
-
-    #[test]
-    fn collapsed_command_summary_ellipsizes_an_overlong_single_segment() {
-        let items: Vec<String> = vec![];
-        let long_single_segment = "cargo test --workspace --all-features --lib --bins --tests --examples --benches --no-fail-fast";
-        let (command, _) =
-            collapsed_command_summary(&format!("$ {long_single_segment}"), &items).expect("long");
-        assert!(command.ends_with('…'), "{command}");
-        assert!(command.chars().count() <= COMMAND_LINE_MAX_CHARS + "$ …".chars().count());
-    }
-
-    #[test]
-    fn collapsed_command_summary_ignores_short_commands() {
-        let items: Vec<String> = vec![];
-        assert_eq!(
-            collapsed_command_summary("$ cargo test -p forge-tui", &items),
-            None
-        );
-        // Non-command summaries (file counts, etc.) are never affected.
-        assert_eq!(collapsed_command_summary("3 files inspected", &items), None);
-    }
-
-    #[test]
     fn validation_failure_is_deduplicated_and_labels_retry() {
         let error = "Tool validation error: tool `read_file` validation failed at /path: 1 is not of type string. Please correct arguments.";
         let msgs = vec![
@@ -2838,36 +2665,6 @@ mod tests {
             &model.items[1],
             ChatItem::DiffCard { path, .. } if path == "src/b.rs"
         ));
-    }
-
-    #[test]
-    fn diff_line_numbers_track_additions_removals_and_context() {
-        let diff = [
-            "@@ -10,3 +20,4 @@",
-            " context",
-            "-removed",
-            "+added",
-            "+extra",
-            " tail",
-        ]
-        .map(str::to_string);
-
-        let numbered = number_diff_lines(&diff);
-
-        assert_eq!(
-            numbered
-                .iter()
-                .map(|line| (line.old, line.new, line.marker))
-                .collect::<Vec<_>>(),
-            vec![
-                (None, None, ' '),
-                (Some(10), Some(20), ' '),
-                (Some(11), None, '-'),
-                (None, Some(21), '+'),
-                (None, Some(22), '+'),
-                (Some(12), Some(23), ' '),
-            ]
-        );
     }
 
     #[test]
