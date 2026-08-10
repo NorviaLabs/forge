@@ -74,7 +74,8 @@ impl TuiApp {
                 if let Some(editor) = self.editor_session.as_mut() {
                     editor.accept_current_text();
                 }
-                self.source_viewer.refresh(self.session.workspace_root());
+                self.source_viewer
+                    .refresh(self.session_view.workspace_root());
                 self.workspace_files.explorer.refresh_git_status();
                 self.set_feedback(FeedbackSeverity::Ok, format!("saved {}", path.display()));
             }
@@ -99,7 +100,8 @@ impl TuiApp {
         if let Some(editor) = self.editor_session.as_mut() {
             editor.replace_text(&text);
         }
-        self.source_viewer.refresh(self.session.workspace_root());
+        self.source_viewer
+            .refresh(self.session_view.workspace_root());
         self.set_feedback(FeedbackSeverity::Info, "reloaded file from disk");
     }
 
@@ -116,7 +118,7 @@ impl TuiApp {
         let Ok(entries) = fs::read_dir(parent) else {
             return false;
         };
-        let root = self.session.workspace_root().to_path_buf();
+        let root = self.session_view.workspace_root().to_path_buf();
         let old_line = self.source_viewer.current_line;
         let old_top = self.source_viewer.top_line;
         for entry in entries.flatten() {
@@ -254,7 +256,7 @@ impl TuiApp {
     }
 
     pub(super) fn show_file_in_editor(&mut self, path: &Path) {
-        let root = self.session.workspace_root().to_path_buf();
+        let root = self.session_view.workspace_root().to_path_buf();
         self.source_viewer.open(&root, path);
         self.editor_session = self
             .source_viewer
@@ -336,7 +338,7 @@ impl TuiApp {
     }
 
     fn file_ops(&self) -> Result<WorkspaceFileOps, FileOperationError> {
-        WorkspaceFileOps::new(self.session.workspace_root())
+        WorkspaceFileOps::new(self.session_view.workspace_root())
     }
 
     pub(super) fn open_explorer_name_dialog(&mut self, action: ExplorerNameAction) {
@@ -498,7 +500,7 @@ impl TuiApp {
     }
 
     fn reconcile_file_operation(&mut self, result: crate::file_ops::FileOperationResult) {
-        let root = self.session.workspace_root().to_path_buf();
+        let root = self.session_view.workspace_root().to_path_buf();
         match result.kind {
             FileOperationKind::CreateFile | FileOperationKind::CreateDirectory => {
                 self.workspace_files
@@ -546,7 +548,7 @@ impl TuiApp {
     }
 
     fn reconcile_path_rename(&mut self, old_path: &Path, new_path: &Path) {
-        let root = self.session.workspace_root().to_path_buf();
+        let root = self.session_view.workspace_root().to_path_buf();
         let mut renamed_open_file = false;
         if let Some(open_path) = self.source_viewer.path.clone() {
             if let Some(rebased) = rebase_path(&open_path, old_path, new_path) {
@@ -568,7 +570,7 @@ impl TuiApp {
     }
 
     fn reconcile_path_delete(&mut self, deleted_path: &Path) {
-        let root = self.session.workspace_root().to_path_buf();
+        let root = self.session_view.workspace_root().to_path_buf();
         if let Some(open_path) = self.source_viewer.path.clone() {
             if open_path == deleted_path || open_path.starts_with(deleted_path) {
                 self.source_viewer.reconcile_deleted_path(&open_path);
@@ -599,7 +601,7 @@ impl TuiApp {
             }
         };
 
-        let root = self.session.workspace_root();
+        let root = self.session_view.workspace_root();
         let rel_path = match path.strip_prefix(root) {
             Ok(rel) => rel.display().to_string(),
             Err(_) => {
@@ -625,7 +627,7 @@ impl TuiApp {
     }
 
     pub(super) fn refresh_active_source_viewer(&mut self) {
-        let root = self.session.workspace_root().to_path_buf();
+        let root = self.session_view.workspace_root().to_path_buf();
         let path = self.source_viewer.path.clone();
         let old_line = self.source_viewer.current_line;
         let old_top = self.source_viewer.top_line;
@@ -694,7 +696,7 @@ impl TuiApp {
                 lines.push(Line::styled(
                     format!(
                         "Parent: {}",
-                        relative_display(self.session.workspace_root(), parent)
+                        relative_display(self.session_view.workspace_root(), parent)
                     ),
                     theme::muted(),
                 ));
@@ -716,7 +718,7 @@ impl TuiApp {
                 lines.push(Line::styled(
                     format!(
                         "Create {what} \"{}\"?",
-                        relative_display(self.session.workspace_root(), path)
+                        relative_display(self.session_view.workspace_root(), path)
                     ),
                     theme::text(),
                 ));
@@ -727,14 +729,14 @@ impl TuiApp {
                 lines.push(Line::styled(
                     format!(
                         "Rename \"{}\"?",
-                        relative_display(self.session.workspace_root(), source)
+                        relative_display(self.session_view.workspace_root(), source)
                     ),
                     theme::text(),
                 ));
                 lines.push(Line::styled(
                     format!(
                         "To \"{}\"",
-                        relative_display(self.session.workspace_root(), path)
+                        relative_display(self.session_view.workspace_root(), path)
                     ),
                     theme::text(),
                 ));
@@ -811,7 +813,7 @@ impl TuiApp {
                 lines.push(Line::styled(
                     format!(
                         "Open {} after resolving them?",
-                        relative_display(self.session.workspace_root(), path)
+                        relative_display(self.session_view.workspace_root(), path)
                     ),
                     theme::muted(),
                 ));
