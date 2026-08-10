@@ -959,3 +959,77 @@ async fn status_model_does_not_serve_a_stale_snapshot_between_frames() {
         "refresh_status_model must capture rather than reuse the last frame's snapshot"
     );
 }
+
+/// A frame must not read the credential file. Every read stats it on disk, and
+/// `connected_profiles()` walks all seven builtin profiles, so routing the
+/// header's "connected" chip through the live store makes a redraw cost a
+/// handful of syscalls — on the render path the project otherwise keeps free
+/// of filesystem work.
+#[tokio::test]
+async fn drawing_does_not_read_the_credential_store() {
+    let (_dir, mut app) = focus_test_app().await;
+    // The fixture runs the mock provider, and `is_provider_connected` short
+    // circuits on that before it ever reaches the store. Name a real provider,
+    // which is the case that actually draws in anger.
+    app.runtime.provider = "anthropic".into();
+    app.runtime.model_label = "claude-sonnet-4-5".into();
+    app.connect.profile = Some("anthropic".into());
+    draw_app(&mut app, 100, 30);
+
+    let before = app.connect.store.read_count();
+    for _ in 0..5 {
+        draw_app(&mut app, 100, 30);
+    }
+    let after = app.connect.store.read_count();
+
+    assert_eq!(
+        after - before,
+        0,
+        "five draws performed {} credential-store reads",
+        after - before
+    );
+}
+
+/// Caching must not change the answer: the cheap path a frame uses has to
+/// agree with the live one, or the header chip lies.
+#[tokio::test]
+async fn the_cached_connection_answer_matches_the_live_one() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.runtime.provider = "anthropic".into();
+    app.runtime.model_label = "claude-sonnet-4-5".into();
+
+    // No profile selected: not connected, both ways.
+    assert_eq!(app.connected_cached(), app.is_provider_connected());
+    assert!(!app.connected_cached());
+
+    // A profile with no stored credentials is still not connected.
+    app.connect.profile = Some("anthropic".into());
+    app.invalidate_connected();
+    assert_eq!(app.connected_cached(), app.is_provider_connected());
+}
+
+/// The cache is keyed on time, so an in-app connect change has to invalidate
+/// it explicitly or the chip stays wrong until the TTL lapses.
+#[tokio::test]
+async fn invalidating_forces_the_next_read_to_recompute() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.runtime.provider = "anthropic".into();
+    app.runtime.model_label = "claude-sonnet-4-5".into();
+    app.connect.profile = Some("anthropic".into());
+
+    app.connected_cached();
+    let before = app.connect.store.read_count();
+    app.connected_cached();
+    assert_eq!(
+        app.connect.store.read_count(),
+        before,
+        "a fresh cache must not re-read"
+    );
+
+    app.invalidate_connected();
+    app.connected_cached();
+    assert!(
+        app.connect.store.read_count() > before,
+        "invalidating must force a recompute"
+    );
+}
