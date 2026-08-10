@@ -133,16 +133,34 @@ impl TuiApp {
         self.activity.push(kind, severity, summary);
     }
 
+    /// Build a status model outside a frame — `/status`, and tests.
+    ///
+    /// This captures its own snapshot rather than reusing `session_view`,
+    /// which is only refreshed by `draw`. Trusting the last frame's copy here
+    /// would report whatever was true when the screen was last painted, which
+    /// for a command that runs between frames is not the same thing.
     pub fn refresh_status_model(&self) -> StatusModel {
-        self.refresh_status_model_with_connected(self.is_provider_connected())
+        self.status_model_from(
+            &SessionSnapshot::capture(&self.session),
+            self.is_provider_connected(),
+        )
     }
 
+    /// The per-frame form: renders from the snapshot `draw` already captured.
     pub(super) fn refresh_status_model_with_connected(
         &self,
         provider_connected: bool,
     ) -> StatusModel {
+        self.status_model_from(&self.session_view, provider_connected)
+    }
+
+    fn status_model_from(
+        &self,
+        session_view: &SessionSnapshot,
+        provider_connected: bool,
+    ) -> StatusModel {
         let repo = self.repo_header();
-        let id = self.session.session_id.to_string();
+        let id = session_view.session_id.to_string();
         let short = if id.len() > 8 {
             id[..8].to_string()
         } else {
@@ -155,12 +173,12 @@ impl TuiApp {
             .map(|pid| self.vendor_route_labels(pid))
             .unwrap_or((None, None));
         StatusModel {
-            status: self.session.active_task.lifecycle,
+            status: session_view.lifecycle,
             session_short: short,
             model: self.runtime.model_label.clone(),
             provider: self.runtime.provider.clone(),
             effort: self.reasoning_effort.value.to_string(),
-            ctx_pct: self.session.context_usage_ratio(),
+            ctx_pct: session_view.context_usage_ratio,
             busy: self.busy_state.active,
             busy_phase: self.busy_state.phase.clone(),
             connect_profile: self.connect.profile.clone(),
@@ -168,9 +186,9 @@ impl TuiApp {
             vendor_label,
             route_label,
             web_search_label: self.search_status.label.clone(),
-            tools_visible: self.session.tool_count(),
-            prompt_cache_hits: self.session.token_usage.prompt_cache_hits,
-            prompt_cache_writes: self.session.token_usage.prompt_cache_writes,
+            tools_visible: session_view.tool_count,
+            prompt_cache_hits: session_view.prompt_cache_hits,
+            prompt_cache_writes: session_view.prompt_cache_writes,
             repo_name: repo.repo_name.clone(),
             branch: repo.branch.clone(),
             dirty: repo.dirty,
@@ -211,8 +229,8 @@ impl TuiApp {
     }
 
     fn header_waiting_detail(&self) -> Option<String> {
-        if self.session.pending_hitl().is_some()
-            || self.session.active_task.lifecycle == forge_types::TaskLifecycle::Waiting
+        if self.session_view.is_awaiting_approval()
+            || self.session_view.lifecycle == forge_types::TaskLifecycle::Waiting
         {
             return Some("Approval required".into());
         }
@@ -232,7 +250,7 @@ impl TuiApp {
     /// persistence phase (extending the durable status event to carry the
     /// failure category), not dropped silently.
     fn header_failure_category(&self) -> Option<String> {
-        if self.session.active_task.lifecycle != forge_types::TaskLifecycle::Failed {
+        if self.session_view.lifecycle != forge_types::TaskLifecycle::Failed {
             return None;
         }
         // Prefer the latest structured turn_failed event category.
@@ -265,7 +283,7 @@ impl TuiApp {
         match &self.workspace_navigation.current {
             None => None,
             Some(WorkspaceView::File(path)) => {
-                Some(relative_display(self.session.workspace_root(), path))
+                Some(relative_display(self.session_view.workspace_root(), path))
             }
             Some(WorkspaceView::Diff(DiffCommandContext::Current)) => Some("Review changes".into()),
         }
@@ -291,7 +309,7 @@ impl TuiApp {
 
     pub(super) fn activity_summary(&self) -> Option<ActivitySummaryModel> {
         // Approval is represented by the inline approval card, not a background summary.
-        if self.overlay.is_some() || self.session.pending_hitl().is_some() {
+        if self.overlay.is_some() || self.session_view.is_awaiting_approval() {
             return None;
         }
 
@@ -464,7 +482,7 @@ impl TuiApp {
     pub(super) fn status_report_lines(&self) -> Vec<String> {
         let m = self.refresh_status_model();
         let mut lines = session_chrome_lines(&m);
-        let id = self.session.session_id.to_string();
+        let id = self.session_view.session_id.to_string();
         let short = if id.len() > 8 { &id[..8] } else { &id };
         lines.push(format!("session_id={short}"));
         lines.push(format!("journal={}", self.session.journal_dir().display()));

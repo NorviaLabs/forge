@@ -8,23 +8,42 @@ fn help_lists_only_core_options() {
         .assert()
         .success();
     let out = String::from_utf8_lossy(&assert.get_output().stdout);
-    // The default command launches the TUI; help should not advertise subcommands.
-    assert!(!out.contains("run"));
-    assert!(!out.contains("status"));
-    assert!(!out.contains("connect"));
-    assert!(!out.contains("--worktree"));
-    assert!(out.contains("--resume"));
-    assert!(!out.contains("--model"));
-    assert!(!out.contains("--workspace"));
-    assert!(!out.contains("--config"));
-    assert!(!out.contains("--max-turns"));
-    assert!(!out.contains("repl"));
-    assert!(!out.contains("feedback"));
-    assert!(!out.contains("channel"));
-    assert!(!out.contains("fleet"));
-    assert!(!out.contains("approve"));
-    assert!(!out.contains("--provider"));
-    assert!(!out.contains("--mock"));
+
+    // The default command launches the TUI; help should not advertise
+    // subcommands. Clap collects every subcommand under a `Commands:`
+    // heading, so asserting the heading is absent covers all of them at
+    // once — and unlike the bare words this used to check for ("run",
+    // "connect", "approve"), it cannot be tripped by an option's prose.
+    assert!(
+        !out.contains("Commands:"),
+        "help must not advertise subcommands:\n{out}"
+    );
+
+    // Legacy flags that belonged to the removed subcommands.
+    for flag in [
+        "--worktree",
+        "--model",
+        "--workspace",
+        "--config",
+        "--max-turns",
+        "--provider",
+        "--mock",
+    ] {
+        assert!(
+            !out.contains(flag),
+            "`{flag}` should not be offered:\n{out}"
+        );
+    }
+
+    for flag in ["--resume", "--print", "--approvals"] {
+        assert!(out.contains(flag), "`{flag}` should be offered:\n{out}");
+    }
+
+    // Unattended approval must stay opt-in.
+    assert!(
+        out.contains("[default: ask]"),
+        "--approvals must default to `ask`:\n{out}"
+    );
 }
 
 #[test]

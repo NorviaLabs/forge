@@ -135,10 +135,19 @@ impl AgentSession {
                 }
             }
         };
-        drain_stream_rx(&mut rx, self, forward.as_ref(), &mut acc);
+        // Join the relay *before* draining. `drain_stream_rx` is `try_recv`, so
+        // draining first only sees what the relay has already forwarded — and
+        // when the model returns fast (any mock, a cached or very short
+        // response) `select!` breaks on the model handle while the relay still
+        // holds events in the std channel. Those events then arrive in `rx`
+        // with nobody left to read them, silently losing streamed deltas plus
+        // the accumulated thinking and usage merged in below. The model task
+        // has finished by this point, so its sender is dropped and the relay is
+        // already terminating; awaiting it cannot deadlock.
         relay
             .await
             .map_err(|error| LoopError::Other(format!("stream relay join: {error}")))?;
+        drain_stream_rx(&mut rx, self, forward.as_ref(), &mut acc);
         Ok(merge_streamed_response(response, &acc))
     }
 }
