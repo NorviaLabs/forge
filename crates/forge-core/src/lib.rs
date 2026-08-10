@@ -2648,6 +2648,49 @@ mod tests {
         assert_eq!(s.build_model_request().reasoning_effort, None);
     }
 
+    /// A streaming step must forward every event to `forward`, including when
+    /// the model returns immediately and `select!` breaks on the model handle
+    /// with events still in the relay.
+    ///
+    /// This is a property test, not a reproducer: the loss it guards against
+    /// is a timing race between the relay thread and the select loop, and it
+    /// does not reproduce on demand. It was observed once as a streaming turn
+    /// that emitted no deltas at all, which is what prompted joining the relay
+    /// before draining in `stream.rs`.
+    #[tokio::test]
+    async fn a_streaming_step_forwards_its_deltas() {
+        let dir = tempdir().unwrap();
+        let model = Arc::new(MockModelClient::script(vec![ModelResponse {
+            text: "streamed answer".into(),
+            tool_calls: vec![],
+            usage: None,
+            thinking: None,
+        }]));
+        let mut session = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
+            .await
+            .unwrap();
+        session
+            .messages
+            .push(Message::new(MessageRole::User, "hello"));
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let response = session
+            .run_model_step_with_stream(0, Some(tx))
+            .await
+            .unwrap();
+        assert_eq!(response.text, "streamed answer");
+
+        let forwarded: Vec<_> = rx.into_iter().collect();
+        assert!(
+            forwarded.iter().any(|event| matches!(
+                event,
+                forge_types::ModelStreamEvent::TextDelta { text }
+                    if text == "streamed answer"
+            )),
+            "the text delta was dropped; forwarded: {forwarded:?}"
+        );
+    }
+
     #[tokio::test]
     async fn run_model_step_with_stream_merges_stream_usage() {
         let dir = tempdir().unwrap();

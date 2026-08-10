@@ -1190,6 +1190,7 @@ dependencies = [
  "assert_cmd",
  "clap",
  "forge-config",
+ "forge-core",
  "forge-session",
  "forge-tui",
  "forge-types",

@@ -1,8 +1,13 @@
 //! Forge CLI — launches the full-screen TUI by default.
 
+use std::io::{self, Write};
+
 use clap::Parser;
 use forge_config::{Config, ConfigOverrides};
-use forge_session::{open_session, resolve_journal_dir, SessionTarget};
+use forge_core::AgentSession;
+use forge_session::{
+    open_session, resolve_journal_dir, ApprovalPolicy, SessionCommand, SessionEvent, SessionTarget,
+};
 use forge_tui::{resume_session_items, run_tui, ExitCode, TuiRuntimeConfig};
 use forge_types::SessionId;
 use tracing_subscriber::EnvFilter;
@@ -17,6 +22,37 @@ use tracing_subscriber::EnvFilter;
 struct Cli {
     #[arg(long = "resume", value_name = "SESSION_ID", num_args = 0..=1)]
     resume: Option<Option<SessionId>>,
+
+    /// Run one prompt without the TUI, stream the answer to stdout, and exit.
+    #[arg(short = 'p', long = "print", value_name = "PROMPT")]
+    print: Option<String>,
+
+    /// What to do when a tool call needs approval in `--print` mode.
+    #[arg(long, value_enum, default_value_t = Approvals::Ask)]
+    approvals: Approvals,
+}
+
+/// Mirrors `forge_session::ApprovalPolicy` as a CLI-facing enum, so the flag
+/// vocabulary can differ from the library's without either constraining the
+/// other.
+#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+enum Approvals {
+    /// Stop and report the request. Nothing runs without a human.
+    Ask,
+    /// Deny every request; the agent continues and may adapt.
+    Deny,
+    /// Approve every request. Runs model-authored commands unattended.
+    Approve,
+}
+
+impl From<Approvals> for ApprovalPolicy {
+    fn from(value: Approvals) -> Self {
+        match value {
+            Approvals::Ask => ApprovalPolicy::Ask,
+            Approvals::Deny => ApprovalPolicy::DenyAll,
+            Approvals::Approve => ApprovalPolicy::ApproveAll,
+        }
+    }
 }
 
 #[tokio::main]
@@ -92,6 +128,13 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         startup_notices.push(notice);
     }
 
+    if let Some(prompt) = cli.print {
+        for notice in &startup_notices {
+            eprintln!("note: {notice}");
+        }
+        return run_headless(opened.session, prompt, cli.approvals.into()).await;
+    }
+
     let runtime = TuiRuntimeConfig {
         model_label: cfg.model.model.clone(),
         provider: cfg.model.provider.as_str().into(),
@@ -112,6 +155,56 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         );
     }
     Ok(summary.exit_code)
+}
+
+/// Drive one prompt to completion with no terminal attached.
+///
+/// Assistant text goes to stdout as it streams; everything else (notices,
+/// approval requests, errors) goes to stderr, so the stdout of a `--print`
+/// run is just the answer and can be piped.
+async fn run_headless(
+    session: AgentSession,
+    prompt: String,
+    policy: ApprovalPolicy,
+) -> anyhow::Result<ExitCode> {
+    let mut handle = forge_session::spawn(session, policy);
+    handle.send(SessionCommand::Prompt(prompt)).await?;
+
+    let mut stdout = io::stdout();
+    let exit = loop {
+        let Some(event) = handle.next_event().await else {
+            // The runner stopped without reporting an outcome.
+            break ExitCode::Failed;
+        };
+        match event {
+            SessionEvent::TextDelta(text) => {
+                write!(stdout, "{text}")?;
+                stdout.flush()?;
+            }
+            // Reasoning and tool activity are progress, not output.
+            SessionEvent::ThinkingDelta(_) => {}
+            SessionEvent::ToolCall { name, .. } => eprintln!("tool: {name}"),
+            SessionEvent::TurnComplete { .. } => {
+                writeln!(stdout)?;
+                break ExitCode::Success;
+            }
+            SessionEvent::AwaitingApproval(payload) => {
+                eprintln!(
+                    "awaiting approval: {} — {}\n\
+                     re-run with --approvals approve to allow, or --approvals deny to refuse",
+                    payload.tool, payload.reason
+                );
+                break ExitCode::AwaitingHitl;
+            }
+            SessionEvent::Error(message) => {
+                eprintln!("error: {message}");
+                break ExitCode::Failed;
+            }
+        }
+    };
+
+    let _ = handle.send(SessionCommand::Shutdown).await;
+    Ok(exit)
 }
 
 #[cfg(test)]
@@ -140,6 +233,36 @@ mod tests {
         let (target, notice) = resolve_target(&cfg, Some(Some(session_id))).await.unwrap();
         assert_eq!(target, SessionTarget::Resume(session_id));
         assert!(notice.is_none());
+    }
+
+    /// Approval is the one flag where a wrong default is dangerous, so pin
+    /// both the default and every mapping.
+    #[test]
+    fn approvals_defaults_to_ask_and_maps_to_the_library_policy() {
+        let cli = Cli::try_parse_from(["forge", "-p", "hi"]).unwrap();
+        assert_eq!(cli.approvals, Approvals::Ask);
+        assert_eq!(ApprovalPolicy::from(cli.approvals), ApprovalPolicy::Ask);
+
+        for (flag, expected) in [
+            ("ask", ApprovalPolicy::Ask),
+            ("deny", ApprovalPolicy::DenyAll),
+            ("approve", ApprovalPolicy::ApproveAll),
+        ] {
+            let cli = Cli::try_parse_from(["forge", "-p", "hi", "--approvals", flag]).unwrap();
+            assert_eq!(ApprovalPolicy::from(cli.approvals), expected, "flag {flag}");
+        }
+    }
+
+    #[test]
+    fn print_is_absent_unless_asked_for() {
+        assert!(Cli::try_parse_from(["forge"]).unwrap().print.is_none());
+        assert_eq!(
+            Cli::try_parse_from(["forge", "-p", "do a thing"])
+                .unwrap()
+                .print
+                .as_deref(),
+            Some("do a thing")
+        );
     }
 
     #[tokio::test]

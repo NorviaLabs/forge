@@ -11,6 +11,10 @@
 //! `forge-connect`, neither of which `forge-core` depends on and neither of
 //! which belongs in it.
 
+mod runner;
+
+pub use runner::{spawn, ApprovalPolicy, RunnerGone, SessionCommand, SessionEvent, SessionHandle};
+
 use std::sync::Arc;
 
 use forge_config::Config;
