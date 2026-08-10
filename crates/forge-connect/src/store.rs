@@ -100,13 +100,27 @@ pub struct CredentialStore {
     /// cached, so a permissions or schema error is re-reported every time
     /// rather than latched.
     cache: Mutex<Option<(FileStamp, CredentialsFile)>>,
+    /// Reads performed through *this* store, each of which stats the file.
+    ///
+    /// Per instance rather than process-wide: cargo runs tests in parallel
+    /// threads inside one process, so a global counter measures whatever else
+    /// happens to be running and cannot be asserted on. Diagnostic only.
+    reads: std::sync::atomic::AtomicU64,
 }
 
 impl CredentialStore {
+    /// Reads performed through this store so far. Each one stats the
+    /// credential file, so a caller on a hot path can assert it is not
+    /// doing that. Diagnostic only — never a correctness signal.
+    pub fn read_count(&self) -> u64 {
+        self.reads.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     pub fn new(path: PathBuf) -> Self {
         Self {
             path,
             cache: Mutex::new(None),
+            reads: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -378,6 +392,10 @@ impl CredentialStore {
     /// refresh the cache directly, so that needs a second process racing inside
     /// one tick, which no credential flow does.
     fn with_file<T>(&self, read: impl FnOnce(&CredentialsFile) -> T) -> Result<T, StoreError> {
+        // Every call stats the file (see the permissions gate below), so this
+        // counter is how a caller can assert it is not doing that per frame.
+        self.reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let stamp = match fs::metadata(&self.path) {
             Ok(meta) => {
                 // The permissions gate runs on every read, never from cache: a
