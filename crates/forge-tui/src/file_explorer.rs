@@ -14,10 +14,10 @@ use ratatui::widgets::{Block, Borders, Padding, Paragraph, Widget};
 
 use forge_config::FileIconMode;
 
-use crate::git_status::{GitStatusCache, GitStatusKind};
 use crate::status_glyph::{status_glyph, Status};
 use crate::theme;
 use crate::widgets::input::TEXT_INSET;
+use forge_workspace::git_status::{GitStatusCache, GitStatusKind};
 
 const HIDDEN_DIRS: &[&str] = &[".git", "target"];
 const TREE_INDENT: &str = "  ";

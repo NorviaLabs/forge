@@ -59,6 +59,12 @@ pub struct GitStatusCache {
     diff_cache: RefCell<HashMap<(u64, PathBuf), Result<String, String>>>,
 }
 
+impl Default for GitStatusCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GitStatusCache {
     pub fn new() -> Self {
         Self {
@@ -470,37 +476,6 @@ mod tests {
         let distinct: std::collections::HashSet<&str> =
             pairs.iter().map(|(kind, _)| kind.marker()).collect();
         assert_eq!(distinct.len(), pairs.len(), "markers must be unambiguous");
-    }
-
-    #[test]
-    fn status_glyph_follows_theme_semantics() {
-        use ratatui::style::Modifier;
-        use GitStatusKind::*;
-
-        assert_eq!(
-            crate::status_glyph::status_glyph(Modified.into()).style,
-            crate::theme::git_modified().add_modifier(Modifier::BOLD)
-        );
-        assert_eq!(
-            crate::status_glyph::status_glyph(Added.into()).style,
-            crate::theme::git_added().add_modifier(Modifier::BOLD)
-        );
-        assert_eq!(
-            crate::status_glyph::status_glyph(Deleted.into()).style,
-            crate::theme::git_deleted().add_modifier(Modifier::BOLD)
-        );
-        assert_eq!(
-            crate::status_glyph::status_glyph(Untracked.into()).style,
-            crate::theme::git_untracked().add_modifier(Modifier::BOLD)
-        );
-        assert_eq!(
-            crate::status_glyph::status_glyph(Ignored.into()).style,
-            crate::theme::git_ignored().add_modifier(Modifier::BOLD)
-        );
-        assert_eq!(
-            crate::status_glyph::status_glyph(Conflicted.into()).style,
-            crate::theme::git_deleted().add_modifier(Modifier::BOLD)
-        );
     }
 
     #[test]

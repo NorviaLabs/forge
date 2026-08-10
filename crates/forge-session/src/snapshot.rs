@@ -327,6 +327,22 @@ mod tests {
         assert_eq!(first, snapshot.messages().as_ptr());
     }
 
+    /// `workspace_root` is fixed at construction and never reassigned, which
+    /// is what makes it safe for callers to read from a snapshot taken at an
+    /// arbitrary earlier moment — unlike the mutable fields, where a snapshot
+    /// read after a mutation in the same tick would be stale.
+    #[tokio::test]
+    async fn workspace_root_is_stable_across_a_turn() {
+        let dir = tempdir().unwrap();
+        let mut session = session_with(vec![text("hi")], dir.path()).await;
+        let before = SessionSnapshot::capture(&session);
+        session.run_user_message("hello").await.unwrap();
+        let after = SessionSnapshot::capture(&session);
+
+        assert_eq!(before.workspace_root(), after.workspace_root());
+        assert_eq!(before.workspace_root(), session.workspace_root());
+    }
+
     /// A snapshot is a value: capturing the same unchanged session twice must
     /// produce equal snapshots, so a frontend can diff them to decide whether
     /// anything needs redrawing.
