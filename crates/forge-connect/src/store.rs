@@ -10,7 +10,6 @@ use thiserror::Error;
 
 use crate::auth::OauthTokens;
 use crate::profile::KeySource;
-use crate::selection::ModelSelection;
 
 /// A credential-store operation failed.
 ///
@@ -57,21 +56,10 @@ struct CredentialsFile {
     /// profile_id → oauth tokens
     #[serde(default)]
     oauth: BTreeMap<String, OauthTokens>,
-    /// Last non-secret provider/model/effort selection used by the interactive client.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    last_profile_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    last_model: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    last_effort: Option<String>,
-    /// The selection active immediately before `last_*`, for Quick Switch —
-    /// toggling between the two most recently, deliberately chosen combos.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    previous_profile_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    previous_model: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    previous_effort: Option<String>,
+    // Interactive selections used to live here too. They are not secrets and
+    // they moved to `preferences.rs`; see that module for why. Old files that
+    // still carry those keys parse fine — serde ignores them — and shed them
+    // on the next write.
 }
 
 /// Identity of the on-disk file a cached parse came from.
@@ -174,23 +162,10 @@ impl CredentialStore {
 
     pub fn clear_all(&self) -> Result<bool, StoreError> {
         let mut file = self.load()?;
-        let removed = !file.keys.is_empty()
-            || !file.oauth.is_empty()
-            || file.last_profile_id.is_some()
-            || file.last_model.is_some()
-            || file.last_effort.is_some()
-            || file.previous_profile_id.is_some()
-            || file.previous_model.is_some()
-            || file.previous_effort.is_some();
+        let removed = !file.keys.is_empty() || !file.oauth.is_empty();
         if removed {
             file.keys.clear();
             file.oauth.clear();
-            file.last_profile_id = None;
-            file.last_model = None;
-            file.last_effort = None;
-            file.previous_profile_id = None;
-            file.previous_model = None;
-            file.previous_effort = None;
             self.save(&file)?;
         }
         Ok(removed)
@@ -213,171 +188,6 @@ impl CredentialStore {
             ids.sort();
             ids
         })
-    }
-
-    /// Return the last provider/model selection, if one was recorded.
-    pub fn last_selection(&self) -> Result<Option<(String, String)>, StoreError> {
-        self.with_file(
-            |file| match (file.last_profile_id.as_deref(), file.last_model.as_deref()) {
-                (Some(profile_id), Some(model))
-                    if !profile_id.trim().is_empty() && !model.trim().is_empty() =>
-                {
-                    Some((profile_id.to_string(), model.to_string()))
-                }
-                _ => None,
-            },
-        )
-    }
-
-    /// Persist the last provider/model selection. This contains no credentials.
-    pub fn set_last_selection(&self, profile_id: &str, model: &str) -> Result<(), StoreError> {
-        let mut file = self.load()?;
-        file.last_profile_id = Some(profile_id.trim().to_string());
-        file.last_model = Some(model.trim().to_string());
-        self.save(&file)
-    }
-
-    /// Compose the last provider/model/effort selection into one
-    /// `ModelSelection`, when a complete selection was recorded. Doesn't
-    /// change the on-disk format — just a single-call convenience over
-    /// `last_selection`/`last_effort` for callers that want the structured
-    /// value instead of reading the two independently.
-    pub fn last_selection_struct(&self) -> Result<Option<ModelSelection>, StoreError> {
-        let Some((profile_id, model)) = self.last_selection()? else {
-            return Ok(None);
-        };
-        let effort = self.last_effort()?.unwrap_or_default();
-        Ok(Some(ModelSelection {
-            provider: "native".into(),
-            model,
-            profile_id: Some(profile_id),
-            effort,
-        }))
-    }
-
-    /// Return the last reasoning effort selected by the interactive client.
-    pub fn last_effort(&self) -> Result<Option<String>, StoreError> {
-        self.with_file(|file| {
-            file.last_effort
-                .as_deref()
-                .filter(|effort| !effort.trim().is_empty())
-                .map(str::to_string)
-        })
-    }
-
-    /// Persist the last reasoning effort. This contains no credentials.
-    pub fn set_last_effort(&self, effort: &str) -> Result<(), StoreError> {
-        let mut file = self.load()?;
-        file.last_effort = Some(effort.trim().to_string());
-        self.save(&file)
-    }
-
-    pub fn clear_last_selection(&self, profile_id: Option<&str>) -> Result<(), StoreError> {
-        let mut file = self.load()?;
-        if profile_id.is_none() || file.last_profile_id.as_deref() == profile_id {
-            file.last_profile_id = None;
-            file.last_model = None;
-            file.last_effort = None;
-            self.save(&file)?;
-        }
-        Ok(())
-    }
-
-    /// Return the selection active immediately before the current `last_*`
-    /// (Quick Switch's toggle target), if one was recorded.
-    pub fn previous_selection(&self) -> Result<Option<(String, String)>, StoreError> {
-        self.with_file(|file| {
-            match (
-                file.previous_profile_id.as_deref(),
-                file.previous_model.as_deref(),
-            ) {
-                (Some(profile_id), Some(model))
-                    if !profile_id.trim().is_empty() && !model.trim().is_empty() =>
-                {
-                    Some((profile_id.to_string(), model.to_string()))
-                }
-                _ => None,
-            }
-        })
-    }
-
-    /// Return the effort paired with `previous_selection`, if any.
-    pub fn previous_effort(&self) -> Result<Option<String>, StoreError> {
-        self.with_file(|file| {
-            file.previous_effort
-                .as_deref()
-                .filter(|effort| !effort.trim().is_empty())
-                .map(str::to_string)
-        })
-    }
-
-    /// Record a deliberate provider/model/effort switch, for Quick Switch.
-    ///
-    /// If `new` differs from the current `last_*`, the current `last_*` is
-    /// rotated into `previous_*` before `new` becomes the new `last_*`. A
-    /// no-op when `new` already matches `last_*` (e.g. reselecting the
-    /// active model), so an accidental reselect can't clobber real history.
-    /// Callers must only invoke this for user-driven selections, never for
-    /// automatic fallbacks — see `set_last_selection`/`set_last_effort` for
-    /// the non-rotating equivalent used elsewhere (e.g. on shell exit).
-    pub fn record_switch(&self, new: (&str, &str, &str)) -> Result<(), StoreError> {
-        let mut file = self.load()?;
-        let new_profile_id = new.0.trim().to_string();
-        let new_model = new.1.trim().to_string();
-        let new_effort = new.2.trim().to_string();
-        let unchanged = file.last_profile_id.as_deref() == Some(new_profile_id.as_str())
-            && file.last_model.as_deref() == Some(new_model.as_str())
-            && file.last_effort.as_deref() == Some(new_effort.as_str());
-        if unchanged {
-            return Ok(());
-        }
-        let had_complete_last = file
-            .last_profile_id
-            .as_deref()
-            .is_some_and(|p| !p.trim().is_empty())
-            && file
-                .last_model
-                .as_deref()
-                .is_some_and(|m| !m.trim().is_empty());
-        if had_complete_last {
-            file.previous_profile_id = file.last_profile_id.take();
-            file.previous_model = file.last_model.take();
-            file.previous_effort = file.last_effort.take();
-        }
-        file.last_profile_id = Some(new_profile_id);
-        file.last_model = Some(new_model);
-        file.last_effort = Some(new_effort);
-        self.save(&file)
-    }
-
-    /// Apply Quick Switch: swap `last_*` and `previous_*` in place, so a
-    /// second call toggles back. Returns the combo to apply now (the new
-    /// `last_*`), or `None` if there is nothing to switch to.
-    pub fn quick_switch(&self) -> Result<Option<(String, String, String)>, StoreError> {
-        let mut file = self.load()?;
-        let (Some(profile_id), Some(model)) = (
-            file.previous_profile_id.clone(),
-            file.previous_model.clone(),
-        ) else {
-            return Ok(None);
-        };
-        if profile_id.trim().is_empty() || model.trim().is_empty() {
-            return Ok(None);
-        }
-        let effort = file.previous_effort.clone().unwrap_or_default();
-        let old_last = (
-            file.last_profile_id.take(),
-            file.last_model.take(),
-            file.last_effort.take(),
-        );
-        file.last_profile_id = Some(profile_id.clone());
-        file.last_model = Some(model.clone());
-        file.last_effort = Some(effort.clone());
-        file.previous_profile_id = old_last.0;
-        file.previous_model = old_last.1;
-        file.previous_effort = old_last.2;
-        self.save(&file)?;
-        Ok(Some((profile_id, model, effort)))
     }
 
     /// Read the parsed credentials file, reusing the cached parse when the file
@@ -592,157 +402,6 @@ mod tests {
     }
 
     #[test]
-    fn last_selection_roundtrip() {
-        let dir = tempdir().unwrap();
-        let store = CredentialStore::new(dir.path().join("c.toml"));
-        assert_eq!(store.last_selection().unwrap(), None);
-        store
-            .set_last_selection("anthropic", "anthropic/claude-sonnet-4-5")
-            .unwrap();
-        store.set_last_effort("high").unwrap();
-        assert_eq!(
-            store.last_selection().unwrap(),
-            Some(("anthropic".into(), "anthropic/claude-sonnet-4-5".into()))
-        );
-        assert_eq!(store.last_effort().unwrap().as_deref(), Some("high"));
-        store.clear_last_selection(Some("openai")).unwrap();
-        assert!(store.last_selection().unwrap().is_some());
-        store.clear_last_selection(Some("anthropic")).unwrap();
-        assert_eq!(store.last_selection().unwrap(), None);
-        assert_eq!(store.last_effort().unwrap(), None);
-    }
-
-    #[test]
-    fn last_selection_struct_composes_profile_model_and_effort() {
-        let dir = tempdir().unwrap();
-        let store = CredentialStore::new(dir.path().join("c.toml"));
-        assert_eq!(store.last_selection_struct().unwrap(), None);
-
-        store
-            .set_last_selection("openai_codex", "openai-codex/gpt-5.6-luna")
-            .unwrap();
-        store.set_last_effort("high").unwrap();
-
-        assert_eq!(
-            store.last_selection_struct().unwrap(),
-            Some(ModelSelection {
-                provider: "native".into(),
-                model: "openai-codex/gpt-5.6-luna".into(),
-                profile_id: Some("openai_codex".into()),
-                effort: "high".into(),
-            })
-        );
-    }
-
-    #[test]
-    fn record_switch_rotates_last_into_previous_when_the_combo_changes() {
-        let dir = tempdir().unwrap();
-        let store = CredentialStore::new(dir.path().join("c.toml"));
-        assert_eq!(store.previous_selection().unwrap(), None);
-
-        store
-            .record_switch(("openai", "openai/gpt-5.6", "medium"))
-            .unwrap();
-        assert_eq!(
-            store.last_selection().unwrap(),
-            Some(("openai".into(), "openai/gpt-5.6".into()))
-        );
-        // First switch ever: nothing to rotate into previous yet.
-        assert_eq!(store.previous_selection().unwrap(), None);
-
-        store
-            .record_switch(("anthropic", "anthropic/claude-sonnet", "high"))
-            .unwrap();
-        assert_eq!(
-            store.last_selection().unwrap(),
-            Some(("anthropic".into(), "anthropic/claude-sonnet".into()))
-        );
-        assert_eq!(store.last_effort().unwrap().as_deref(), Some("high"));
-        assert_eq!(
-            store.previous_selection().unwrap(),
-            Some(("openai".into(), "openai/gpt-5.6".into()))
-        );
-        assert_eq!(store.previous_effort().unwrap().as_deref(), Some("medium"));
-    }
-
-    #[test]
-    fn record_switch_reselecting_the_active_combo_does_not_rotate() {
-        let dir = tempdir().unwrap();
-        let store = CredentialStore::new(dir.path().join("c.toml"));
-        store
-            .record_switch(("openai", "openai/gpt-5.6", "medium"))
-            .unwrap();
-        store
-            .record_switch(("anthropic", "anthropic/claude-sonnet", "high"))
-            .unwrap();
-        // Reselecting the same model+effort that's already active must not
-        // clobber the real previous combo with a duplicate of itself.
-        store
-            .record_switch(("anthropic", "anthropic/claude-sonnet", "high"))
-            .unwrap();
-        assert_eq!(
-            store.previous_selection().unwrap(),
-            Some(("openai".into(), "openai/gpt-5.6".into()))
-        );
-    }
-
-    #[test]
-    fn quick_switch_swaps_last_and_previous_and_toggles_back() {
-        let dir = tempdir().unwrap();
-        let store = CredentialStore::new(dir.path().join("c.toml"));
-
-        // Nothing to switch to yet.
-        assert_eq!(store.quick_switch().unwrap(), None);
-
-        store
-            .record_switch(("openai", "openai/gpt-5.6", "medium"))
-            .unwrap();
-        store
-            .record_switch(("anthropic", "anthropic/claude-sonnet", "high"))
-            .unwrap();
-
-        let switched = store.quick_switch().unwrap();
-        assert_eq!(
-            switched,
-            Some(("openai".into(), "openai/gpt-5.6".into(), "medium".into()))
-        );
-        assert_eq!(
-            store.last_selection().unwrap(),
-            Some(("openai".into(), "openai/gpt-5.6".into()))
-        );
-        assert_eq!(
-            store.previous_selection().unwrap(),
-            Some(("anthropic".into(), "anthropic/claude-sonnet".into()))
-        );
-
-        // A second Quick Switch toggles back to where we started.
-        let switched_back = store.quick_switch().unwrap();
-        assert_eq!(
-            switched_back,
-            Some((
-                "anthropic".into(),
-                "anthropic/claude-sonnet".into(),
-                "high".into()
-            ))
-        );
-    }
-
-    #[test]
-    fn clear_all_removes_previous_selection_too() {
-        let dir = tempdir().unwrap();
-        let store = CredentialStore::new(dir.path().join("c.toml"));
-        store
-            .record_switch(("openai", "openai/gpt-5.6", "medium"))
-            .unwrap();
-        store
-            .record_switch(("anthropic", "anthropic/claude-sonnet", "high"))
-            .unwrap();
-        assert!(store.clear_all().unwrap());
-        assert_eq!(store.previous_selection().unwrap(), None);
-        assert_eq!(store.quick_switch().unwrap(), None);
-    }
-
-    #[test]
     fn clear_all_roundtrip() {
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
@@ -757,15 +416,9 @@ mod tests {
                 },
             )
             .unwrap();
-        store
-            .set_last_selection("openai", "openai/gpt-4.1-mini")
-            .unwrap();
-        store.set_last_effort("medium").unwrap();
         assert!(store.clear_all().unwrap());
         assert!(store.get_api_key("xai").unwrap().is_none());
         assert!(store.get_oauth("openai_codex").unwrap().is_none());
-        assert_eq!(store.last_selection().unwrap(), None);
-        assert_eq!(store.last_effort().unwrap(), None);
     }
 
     #[test]
@@ -917,28 +570,14 @@ mod tests {
                 },
             )
             .unwrap();
-        store.set_last_selection("xai", "xai/grok").unwrap();
-        store.set_last_effort("high").unwrap();
 
         assert!(store.clear_all().unwrap());
 
         assert!(store.get_api_key("xai").unwrap().is_none());
         assert!(store.get_oauth("openai").unwrap().is_none());
-        assert_eq!(store.last_selection().unwrap(), None);
-        assert_eq!(store.last_effort().unwrap(), None);
         assert!(store.list_profile_ids().unwrap().is_empty());
         // Idempotent: a second call has nothing left to do.
         assert!(!store.clear_all().unwrap());
-    }
-
-    #[test]
-    fn clear_all_reports_true_for_a_selection_with_no_credentials() {
-        let dir = tempdir().unwrap();
-        let store = CredentialStore::new(dir.path().join("c.toml"));
-        // Each of the five fields independently counts as state worth clearing;
-        // a recorded effort alone must still be reported as removed.
-        store.set_last_effort("low").unwrap();
-        assert!(store.clear_all().unwrap());
     }
 
     #[test]
@@ -1084,14 +723,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
         store.set_api_key("xai", "secret").unwrap();
-        store.set_last_selection("xai", "grok-4").unwrap();
 
         for _ in 0..3 {
             assert_eq!(store.get_api_key("xai").unwrap().as_deref(), Some("secret"));
-            assert_eq!(
-                store.last_selection().unwrap(),
-                Some(("xai".to_string(), "grok-4".to_string()))
-            );
         }
     }
 

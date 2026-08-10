@@ -4,6 +4,7 @@
 
 use super::prelude::*;
 use crate::overlays::{handle_overlay_key, Key as OverlayKey, ModelItem, OverlayAction};
+use forge_connect::PreferenceStore;
 
 #[tokio::test]
 async fn connect_opencode_go_opens_api_key_overlay() {
@@ -44,6 +45,7 @@ async fn connect_opencode_go_opens_api_key_overlay() {
     );
     let _store_dir = tempfile::TempDir::new().unwrap();
     app.connect.store = CredentialStore::new(_store_dir.path().join("empty-creds.toml"));
+    app.connect.preferences = PreferenceStore::new(_store_dir.path().join("preferences.toml"));
     app.dispatch_line("/connect opencode_go").await.unwrap();
     match &app.overlay {
         Some(Overlay::ConnectApiKey {
@@ -73,6 +75,7 @@ async fn disconnect_clears_credentials_and_prompts_reauth() {
         },
     );
     app.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
+    app.connect.preferences = PreferenceStore::new(cred_dir.path().join("preferences.toml"));
     app.connect
         .store
         .set_api_key("openai", "sk-test-saved-credential")
@@ -114,6 +117,7 @@ async fn connect_picker_marks_saved_credentials_as_connected() {
         },
     );
     app.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
+    app.connect.preferences = PreferenceStore::new(cred_dir.path().join("preferences.toml"));
     app.connect
         .store
         .set_api_key("openai", "sk-test-saved-credential")
@@ -149,6 +153,7 @@ async fn successful_connect_hands_off_to_model_picker() {
         },
     );
     app.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
+    app.connect.preferences = PreferenceStore::new(cred_dir.path().join("preferences.toml"));
     app.connect
         .store
         .set_api_key("openai", "sk-test-saved-credential")
@@ -188,6 +193,7 @@ async fn model_selection_switches_to_the_matching_connected_provider() {
         },
     );
     app.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
+    app.connect.preferences = PreferenceStore::new(cred_dir.path().join("preferences.toml"));
     app.connect
         .store
         .set_api_key("openai", "sk-test-openai-credential")
@@ -225,6 +231,7 @@ async fn model_selection_with_explicit_route_never_crosses_wires_between_openai_
         },
     );
     app.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
+    app.connect.preferences = PreferenceStore::new(cred_dir.path().join("preferences.toml"));
     app.connect
         .store
         .set_api_key("openai", "sk-test-openai-credential")
@@ -286,6 +293,7 @@ async fn model_switch_test_app(cred_dir: &tempfile::TempDir) -> TuiApp {
         },
     );
     app.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
+    app.connect.preferences = PreferenceStore::new(cred_dir.path().join("preferences.toml"));
     app.connect
         .store
         .set_api_key("openai", "sk-test-openai-credential")
@@ -362,7 +370,7 @@ async fn changing_effort_after_a_model_switch_persists_the_new_value() {
     assert_eq!(app.reasoning_effort.value, ReasoningEffort::High);
     app.persist_selection();
     assert_eq!(
-        app.connect.store.last_effort().unwrap().as_deref(),
+        app.connect.preferences.last_effort().unwrap().as_deref(),
         Some("high")
     );
 }
@@ -437,6 +445,7 @@ async fn restart_restores_the_persisted_selection_via_restore_saved_auth() {
     );
     let mut restarted = restarted;
     restarted.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
+    restarted.connect.preferences = PreferenceStore::new(cred_dir.path().join("preferences.toml"));
     restarted
         .connect
         .store
@@ -480,6 +489,7 @@ async fn quick_switch_toggles_between_the_two_most_recent_deliberate_selections(
         },
     );
     app.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
+    app.connect.preferences = PreferenceStore::new(cred_dir.path().join("preferences.toml"));
     app.connect
         .store
         .set_api_key("openai", "sk-test-openai-credential")
@@ -526,6 +536,7 @@ async fn invalid_api_key_error_stays_inside_key_modal() {
         },
     );
     app.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
+    app.connect.preferences = PreferenceStore::new(cred_dir.path().join("preferences.toml"));
     let mut overlay = Overlay::connect_api_key("openai", "OpenAI", None, None);
     if let Overlay::ConnectApiKey { key_input, .. } = &mut overlay {
         *key_input = "bad".into();
@@ -571,6 +582,7 @@ async fn first_connection_auto_selects_a_default_model_and_lands_in_steady_state
         },
     );
     app.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
+    app.connect.preferences = PreferenceStore::new(cred_dir.path().join("preferences.toml"));
     assert_eq!(
         app.connect.profile, None,
         "must start from a genuinely zero-state, not a leaked real profile"
@@ -616,6 +628,7 @@ async fn second_connection_still_opens_the_model_picker() {
         },
     );
     app.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
+    app.connect.preferences = PreferenceStore::new(cred_dir.path().join("preferences.toml"));
     app.connect
         .store
         .set_api_key("openai", "sk-test-saved-credential")
@@ -670,6 +683,7 @@ async fn connect_xai_opens_oauth_overlay() {
         },
     );
     app.connect.store = CredentialStore::new(cred_dir.path().join("c.toml"));
+    app.connect.preferences = PreferenceStore::new(cred_dir.path().join("preferences.toml"));
     app.dispatch_line("/connect xai").await.unwrap();
     std::env::remove_var("FORGE_CONNECT_OAUTH_STUB");
     match &app.overlay {
@@ -706,6 +720,7 @@ async fn oauth_cancel_via_escape_stops_the_background_poll() {
         },
     );
     app.connect.store = CredentialStore::new(cred_dir.path().join("c.toml"));
+    app.connect.preferences = PreferenceStore::new(cred_dir.path().join("preferences.toml"));
     app.dispatch_line("/connect xai").await.unwrap();
     std::env::remove_var("FORGE_CONNECT_OAUTH_STUB");
     assert!(
@@ -805,6 +820,7 @@ async fn blocks_chat_when_not_connected() {
     // Override credential store with empty temp file so connection check fails.
     let _store_dir = tempfile::TempDir::new().unwrap();
     app.connect.store = CredentialStore::new(_store_dir.path().join("empty-creds.toml"));
+    app.connect.preferences = PreferenceStore::new(_store_dir.path().join("preferences.toml"));
     app.connect.profile = None;
     app.refresh_connection_ui();
     assert!(!app.is_provider_connected());
@@ -877,6 +893,7 @@ async fn open_connect_picker_opens_immediately_and_starts_background_refresh() {
     );
     let store_dir = tempfile::TempDir::new().unwrap();
     app.connect.store = CredentialStore::new(store_dir.path().join("empty-creds.toml"));
+    app.connect.preferences = PreferenceStore::new(store_dir.path().join("preferences.toml"));
 
     // Opening must not block on network I/O: the overlay is populated
     // synchronously from cache, and a refresh is kicked off in the
@@ -957,6 +974,7 @@ async fn warm_catalog_once_connected_starts_exactly_one_background_refresh() {
     );
     let store_dir = tempfile::TempDir::new().unwrap();
     app.connect.store = CredentialStore::new(store_dir.path().join("empty-creds.toml"));
+    app.connect.preferences = PreferenceStore::new(store_dir.path().join("preferences.toml"));
     app.connect
         .store
         .set_api_key("anthropic", "sk-test-anthropic-credential")
@@ -1003,6 +1021,7 @@ async fn background_catalog_refresh_updates_open_picker_rows_once_complete() {
     );
     let store_dir = tempfile::TempDir::new().unwrap();
     app.connect.store = CredentialStore::new(store_dir.path().join("empty-creds.toml"));
+    app.connect.preferences = PreferenceStore::new(store_dir.path().join("preferences.toml"));
 
     app.open_connect_picker();
     assert!(app.catalog_fetch.refresh_rx.is_some());
@@ -1041,6 +1060,7 @@ async fn f4_opens_compact_model_control() {
     );
     let store_dir = tempfile::TempDir::new().unwrap();
     app.connect.store = CredentialStore::new(store_dir.path().join("empty-creds.toml"));
+    app.connect.preferences = PreferenceStore::new(store_dir.path().join("preferences.toml"));
     app.connect
         .store
         .set_api_key("anthropic", "sk-test-anthropic-credential")
@@ -1081,6 +1101,7 @@ async fn footer_shows_na_effort_for_a_model_that_does_not_support_it() {
     );
     let store_dir = tempfile::TempDir::new().unwrap();
     app.connect.store = CredentialStore::new(store_dir.path().join("empty-creds.toml"));
+    app.connect.preferences = PreferenceStore::new(store_dir.path().join("preferences.toml"));
     app.connect
         .store
         .set_api_key("openai", "sk-test-openai-credential")
@@ -1118,6 +1139,7 @@ async fn compact_control_escape_cancels_without_state_change() {
     );
     let store_dir = tempfile::TempDir::new().unwrap();
     app.connect.store = CredentialStore::new(store_dir.path().join("empty-creds.toml"));
+    app.connect.preferences = PreferenceStore::new(store_dir.path().join("preferences.toml"));
     app.connect
         .store
         .set_api_key("anthropic", "sk-test-anthropic-credential")
