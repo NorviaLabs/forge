@@ -62,9 +62,7 @@ pub use service::{
     format_connected, handle_connect_action, needs_tui_api_key_prompt, needs_tui_oauth,
     parse_connect_args, ConnectAction, ConnectError, ConnectService,
 };
-pub use store::{
-    credential_store_reads, resolve_connected, resolve_key, CredentialStore, StoreError,
-};
+pub use store::{resolve_connected, resolve_key, CredentialStore, StoreError};
 pub use verify::VerifyError;
 pub use xai::{xai_grok_profile, PROFILE_ID as XAI_PROFILE_ID};
 
