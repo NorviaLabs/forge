@@ -15,7 +15,7 @@ mod runner;
 mod snapshot;
 
 pub use runner::{spawn, ApprovalPolicy, RunnerGone, SessionCommand, SessionEvent, SessionHandle};
-pub use snapshot::SessionSnapshot;
+pub use snapshot::{SessionSnapshot, TranscriptSnapshot};
 
 use std::sync::Arc;
 

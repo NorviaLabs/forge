@@ -31,6 +31,7 @@ pub fn render_user_message_lines(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::conversation::ConversationRender;
     use forge_config::{THEME_SOLARIZED_DARK, THEME_SOLARIZED_LIGHT};
     use forge_types::{Message, MessageRole, TaskLifecycle};
     use ratatui::backend::TestBackend;

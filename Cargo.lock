@@ -1408,6 +1408,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "forge-transcript"
+version = "0.1.0-beta.2"
+dependencies = [
+ "forge-core",
+ "forge-tools",
+ "forge-types",
+ "serde_json",
+]
+
+[[package]]
 name = "forge-tui"
 version = "0.1.0-beta.2"
 dependencies = [
@@ -1425,6 +1435,7 @@ dependencies = [
  "forge-storage",
  "forge-syntax",
  "forge-tools",
+ "forge-transcript",
  "forge-types",
  "notify 8.2.0",
  "pathdiff",
