@@ -27,6 +27,7 @@ pub fn xai_grok_profile() -> ConnectProfile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::preferences::PreferenceStore;
     use crate::registry::ConnectRegistry;
     use crate::service::{handle_connect_action, ConnectAction, ConnectError};
     use crate::store::CredentialStore;
@@ -47,6 +48,7 @@ mod tests {
     fn connect_rejects_api_key() {
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
+        let preferences = PreferenceStore::new(dir.path().join("p.toml"));
         let mut reg = ConnectRegistry::new();
         reg.register(xai_grok_profile());
         let mut ap = None;
@@ -59,6 +61,7 @@ mod tests {
             },
             &reg,
             &store,
+            &preferences,
             &mut ap,
             &mut am,
         )
@@ -71,6 +74,7 @@ mod tests {
     fn connect_oauth_fixture_sets_model() {
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
+        let preferences = PreferenceStore::new(dir.path().join("p.toml"));
         let mut reg = ConnectRegistry::new();
         reg.register(xai_grok_profile());
         let mut ap = None;
@@ -83,6 +87,7 @@ mod tests {
             },
             &reg,
             &store,
+            &preferences,
             &mut ap,
             &mut am,
         )
@@ -99,12 +104,14 @@ mod tests {
     fn provider_env_exports_bearer_from_oauth() {
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
+        let preferences = PreferenceStore::new(dir.path().join("p.toml"));
         let mut reg = ConnectRegistry::new();
         reg.register(xai_grok_profile());
         // Fixture tokens must NOT be exported to the live worker.
         let mut svc = crate::service::ConnectService {
             registry: &reg,
             store: &store,
+            preferences: &preferences,
             active_profile_id: None,
             active_model: None,
         };
