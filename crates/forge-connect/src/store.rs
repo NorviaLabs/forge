@@ -102,6 +102,18 @@ pub struct CredentialStore {
     cache: Mutex<Option<(FileStamp, CredentialsFile)>>,
 }
 
+/// Count of credential-file reads performed process-wide.
+///
+/// Each one stats the file on disk, so this exists to let callers assert they
+/// are not doing it on a hot path. Diagnostic only — never a correctness
+/// signal.
+static STORE_READS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Credential-file reads so far. See [`STORE_READS`].
+pub fn credential_store_reads() -> u64 {
+    STORE_READS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 impl CredentialStore {
     pub fn new(path: PathBuf) -> Self {
         Self {
@@ -378,6 +390,9 @@ impl CredentialStore {
     /// refresh the cache directly, so that needs a second process racing inside
     /// one tick, which no credential flow does.
     fn with_file<T>(&self, read: impl FnOnce(&CredentialsFile) -> T) -> Result<T, StoreError> {
+        // Every call stats the file (see the permissions gate below), so this
+        // counter is how a caller can assert it is not doing that per frame.
+        STORE_READS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let stamp = match fs::metadata(&self.path) {
             Ok(meta) => {
                 // The permissions gate runs on every read, never from cache: a
