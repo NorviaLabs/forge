@@ -1,0 +1,568 @@
+//! Executing a tool call and recording the evidence it produced.
+//!
+//! Split out of `lib.rs`; methods are moved verbatim.
+
+use crate::*;
+
+impl AgentSession {
+    async fn hash_workspace_path(&self, relative: &str) -> Option<u64> {
+        hash_file(&self.tool_ctx.workspace_root.join(relative)).await
+    }
+
+    /// Read-only `git` invocation used only to capture before/after state for
+    /// effect verification — never one of the mutating tool-facing commands.
+    async fn run_git_readonly(&self, args: &[&str]) -> Option<String> {
+        let out = tokio::process::Command::new("git")
+            .args(args)
+            .current_dir(&self.tool_ctx.workspace_root)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .await
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    }
+
+    /// Pre-call content hashes for the path(s) a `write_file`/`apply_patch`
+    /// call is about to touch. `None` for any other tool.
+    async fn pre_edit_snapshot(&self, call: &ToolCall) -> Option<Vec<(String, Option<u64>)>> {
+        match call.name.as_str() {
+            "write_file" => {
+                let path = call.arguments.get("path")?.as_str()?.to_string();
+                let hash = self.hash_workspace_path(&path).await;
+                Some(vec![(path, hash)])
+            }
+            "apply_patch" => {
+                let patch = call.arguments.get("patch")?.as_str()?;
+                let mut out = Vec::new();
+                for (path, _kind) in parse_patch_paths(patch) {
+                    let hash = self.hash_workspace_path(&path).await;
+                    out.push((path, hash));
+                }
+                Some(out)
+            }
+            _ => None,
+        }
+    }
+
+    /// Pre-call git state needed to verify the requested effect afterward.
+    /// `None` for any non-`git` tool.
+    async fn git_pre_state(&self, call: &ToolCall) -> Option<GitPre> {
+        if call.name != "git" {
+            return None;
+        }
+        let a: GitCallArgsLite = serde_json::from_value(call.arguments.clone()).ok()?;
+        let sub = a.subcommand.trim().to_ascii_lowercase();
+        Some(match sub.as_str() {
+            "commit" => GitPre::Head(self.run_git_readonly(&["rev-parse", "HEAD"]).await),
+            "checkout" | "switch" => GitPre::Branch(
+                self.run_git_readonly(&["rev-parse", "--abbrev-ref", "HEAD"])
+                    .await,
+            ),
+            "restore" => {
+                GitPre::RestorePath(a.args.iter().rev().find(|s| !s.starts_with('-')).cloned())
+            }
+            "add" => GitPre::NotVerified, // verified post-hoc from staged state, no pre-check needed
+            _ => GitPre::NotVerified,
+        })
+    }
+
+    pub(crate) async fn pre_tool_state(
+        &self,
+        call: &ToolCall,
+    ) -> (Option<Vec<(String, Option<u64>)>>, Option<GitPre>) {
+        (
+            self.pre_edit_snapshot(call).await,
+            self.git_pre_state(call).await,
+        )
+    }
+
+    /// Build evidence for a `write_file`/`apply_patch` call from its
+    /// pre-call content hashes and the tool's own success/failure report.
+    /// Post-call state is re-read from the filesystem — never trusted from
+    /// the tool's text output alone.
+    async fn push_file_edit_evidence(
+        &mut self,
+        call: &ToolCall,
+        pre: Vec<(String, Option<u64>)>,
+        output: &ToolOutput,
+    ) {
+        match call.name.as_str() {
+            "write_file" => {
+                let Some((path, pre_hash)) = pre.into_iter().next() else {
+                    return;
+                };
+                let post_hash = self.hash_workspace_path(&path).await;
+                let event = if output.is_error {
+                    ExecutionEvent::ToolFailed
+                } else if pre_hash.is_none() {
+                    ExecutionEvent::FileCreated
+                } else {
+                    ExecutionEvent::FileWritten
+                };
+                let mut entry = EvidenceEntry::new(event)
+                    .operation_id(call.id.clone())
+                    .tool_name("write_file")
+                    .path(path)
+                    .checksum_before(pre_hash)
+                    .checksum_after(post_hash);
+                if output.is_error {
+                    entry = entry.error(truncate(&output.content, 200));
+                }
+                self.turn.push_evidence(entry);
+            }
+            "apply_patch" => {
+                for (path, pre_hash) in pre {
+                    let post_hash = self.hash_workspace_path(&path).await;
+                    let event = if output.is_error {
+                        ExecutionEvent::PatchRejected
+                    } else {
+                        ExecutionEvent::PatchApplied
+                    };
+                    let mut entry = EvidenceEntry::new(event)
+                        .operation_id(call.id.clone())
+                        .tool_name("apply_patch")
+                        .path(path)
+                        .checksum_before(pre_hash)
+                        .checksum_after(post_hash);
+                    if output.is_error {
+                        entry = entry.error(truncate(&output.content, 200));
+                    }
+                    self.turn.push_evidence(entry);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Build evidence for a `git` call, verifying the subcommand's expected
+    /// repository effect where practical (see `GitPre`).
+    async fn push_git_evidence(
+        &mut self,
+        call: &ToolCall,
+        pre: Option<GitPre>,
+        output: &ToolOutput,
+    ) {
+        let Ok(a) = serde_json::from_value::<GitCallArgsLite>(call.arguments.clone()) else {
+            return;
+        };
+        let sub = a.subcommand.trim().to_ascii_lowercase();
+        let mut entry = EvidenceEntry::new(if output.is_error {
+            ExecutionEvent::GitCommandFailed
+        } else {
+            ExecutionEvent::GitCommandSucceeded
+        })
+        .operation_id(call.id.clone())
+        .tool_name("git")
+        .git_command(sub.clone());
+
+        if output.is_error {
+            entry = entry.error(truncate(&output.content, 200));
+            self.turn.push_evidence(entry);
+            return;
+        }
+
+        let verified = match pre {
+            Some(GitPre::Head(pre_head)) => {
+                let post_head = self.run_git_readonly(&["rev-parse", "HEAD"]).await;
+                Some(pre_head != post_head)
+            }
+            Some(GitPre::Branch(pre_branch)) => {
+                let post_branch = self
+                    .run_git_readonly(&["rev-parse", "--abbrev-ref", "HEAD"])
+                    .await;
+                Some(pre_branch != post_branch)
+            }
+            Some(GitPre::RestorePath(Some(path))) => {
+                let still_dirty = self
+                    .run_git_readonly(&["diff", "--name-only", "--", &path])
+                    .await
+                    .map(|s| !s.trim().is_empty())
+                    .unwrap_or(true);
+                Some(!still_dirty)
+            }
+            _ if sub == "add" => {
+                let staged = self
+                    .run_git_readonly(&["diff", "--cached", "--name-only"])
+                    .await;
+                Some(staged.map(|s| !s.trim().is_empty()).unwrap_or(false))
+            }
+            _ => None,
+        };
+        entry = entry.git_effect_verified(verified);
+        self.turn.push_evidence(entry);
+    }
+
+    fn push_search_evidence(&mut self, call: &ToolCall, output: &ToolOutput) {
+        let event = if output.is_error {
+            ExecutionEvent::SearchFailed
+        } else {
+            ExecutionEvent::SearchFinished
+        };
+        let mut entry = EvidenceEntry::new(event)
+            .operation_id(call.id.clone())
+            .tool_name(call.name.clone());
+        if output.is_error {
+            entry = entry.error(truncate(&output.content, 200));
+        } else {
+            let count = search_result_count(&output.content);
+            entry = entry.count(count);
+        }
+        self.turn.push_evidence(entry);
+    }
+
+    /// Ensures every `ToolOutput` reaching a `Message` carries a real
+    /// `outcome`, even for `Tool` impls that don't set one explicitly — so
+    /// not every tool in `forge-tools` needs an individual update.
+    pub(crate) fn backfill_tool_outcome(output: &mut ToolOutput) {
+        if output.outcome.is_none() {
+            output.outcome = Some(if output.is_error {
+                ExecutionOutcome::Failed {
+                    exit_code: output.exit_code,
+                }
+            } else {
+                ExecutionOutcome::Success
+            });
+        }
+    }
+
+    fn push_bash_evidence(&mut self, call: &ToolCall, output: &ToolOutput) {
+        let event = if output.is_error {
+            ExecutionEvent::ToolFailed
+        } else {
+            ExecutionEvent::ToolFinished
+        };
+        let mut entry = EvidenceEntry::new(event)
+            .operation_id(call.id.clone())
+            .tool_name(bash_label(&call.arguments));
+        if let Some(code) = output.exit_code {
+            entry = entry.exit_code(code);
+        }
+        if output.is_error {
+            entry = entry.error(truncate(&output.content, 200));
+        }
+        self.turn.push_evidence(entry);
+    }
+
+    /// Dispatches to the right evidence builder for a successfully-dispatched
+    /// tool call (the tool itself may still report `is_error`). No-op for
+    /// tools with no completion-relevant side effect (e.g. `read_file`).
+    pub(crate) async fn push_success_evidence(
+        &mut self,
+        call: &ToolCall,
+        pre_edit: Option<Vec<(String, Option<u64>)>>,
+        pre_git: Option<GitPre>,
+        output: &ToolOutput,
+    ) {
+        match call.name.as_str() {
+            "write_file" | "apply_patch" => {
+                if let Some(pre) = pre_edit {
+                    self.push_file_edit_evidence(call, pre, output).await;
+                }
+            }
+            "git" => self.push_git_evidence(call, pre_git, output).await,
+            "fffind" | "ffgrep" => self.push_search_evidence(call, output),
+            "bash" => self.push_bash_evidence(call, output),
+            _ => {}
+        }
+    }
+
+    /// Evidence for a call the runtime refused to execute at all (ACL denial,
+    /// HITL denial) — no filesystem/process ever ran, so there's nothing to
+    /// verify beyond recording the refusal.
+    pub(crate) fn push_denied_evidence(&mut self, call: &ToolCall, message: &str) {
+        let event = match call.name.as_str() {
+            "git" => ExecutionEvent::GitCommandFailed,
+            "write_file" | "apply_patch" => ExecutionEvent::PatchRejected,
+            "fffind" | "ffgrep" => ExecutionEvent::SearchFailed,
+            _ => ExecutionEvent::ToolFailed,
+        };
+        let mut entry = EvidenceEntry::new(event)
+            .operation_id(call.id.clone())
+            .tool_name(call.name.clone())
+            .error(truncate(message, 200));
+        if call.name == "git" {
+            if let Ok(a) = serde_json::from_value::<GitCallArgsLite>(call.arguments.clone()) {
+                entry = entry.git_command(a.subcommand.trim().to_ascii_lowercase());
+            }
+        }
+        self.turn.push_evidence(entry);
+    }
+
+    /// Returns Some(response) if paused for HITL.
+    pub(crate) async fn run_one_tool(
+        &mut self,
+        call: &ToolCall,
+        budget: &mut ValidationBudget,
+    ) -> Result<Option<ModelResponse>, LoopError> {
+        if self.try_serve_journaled_tool(call).await? {
+            return Ok(None);
+        }
+        self.turn.record_call(call.clone());
+        let class = self
+            .tools
+            .get(&call.name)
+            .map(|t| t.side_effect_class())
+            .unwrap_or(SideEffectClass::Meta);
+
+        if self.enable_gov {
+            let decision = self.governance.authorize(call, class);
+            let redacted = self.governance.redact_args(&call.arguments);
+            self.governance.record_audit(AuditEvent {
+                session_id: self.session_id.to_string(),
+                principal: self.governance.principal.id.clone(),
+                tool: call.name.clone(),
+                args_redacted: redacted.clone(),
+                decision,
+                policy_id: "default".into(),
+                result: format!("{decision:?}"),
+                duration_ms: 0,
+                trace_id: None,
+            });
+            match decision {
+                PolicyDecision::Hitl => {
+                    let payload = HitlPayload {
+                        call_id: call.id.clone(),
+                        tool: call.name.clone(),
+                        args_redacted: redacted,
+                        reason: "policy requires human approval".into(),
+                    };
+                    self.journal
+                        .append_hitl_wait(self.session_id, &serde_json::to_value(&payload).unwrap())
+                        .await?;
+                    let request_id = payload.call_id.clone();
+                    self.enter_waiting(
+                        WaitReason::Approval {
+                            request_id,
+                            payload: payload.clone(),
+                        },
+                        TransitionReason::HitlWait,
+                    )
+                    .await?;
+                    self.events.push(TurnEvent {
+                        kind: "hitl_wait".into(),
+                        detail: payload.tool.clone(),
+                    });
+                    self.turn.push_evidence(
+                        EvidenceEntry::new(ExecutionEvent::WaitingForUser)
+                            .operation_id(call.id.clone())
+                            .tool_name(call.name.clone()),
+                    );
+                    return Ok(Some(ModelResponse {
+                        text: format!("Awaiting HITL approval for tool {}", call.name),
+                        tool_calls: vec![call.clone()],
+                        usage: None,
+                        thinking: None,
+                    }));
+                }
+                PolicyDecision::Allow => {}
+                // `PolicyDecision` is `#[non_exhaustive]`, so the denial path is the
+                // wildcard rather than a named `Deny`: this gate must fail CLOSED. An
+                // explicit deny and a decision this build does not recognise are both
+                // refused here, so neither can fall through to the execution below.
+                _ => {
+                    let output = ToolOutput::denied(format!("denied by ACL: {}", call.name));
+                    self.push_denied_evidence(call, &output.content);
+                    self.journal
+                        .append_tool_intent(self.session_id, call)
+                        .await?;
+                    self.journal
+                        .append_tool_result(self.session_id, call, &output)
+                        .await?;
+                    self.remember_tool_result(call, &output);
+                    self.messages.push(Message {
+                        outcome: output.effective_outcome(),
+                        role: MessageRole::Tool,
+                        content: output.content,
+                        tool_call_id: Some(call.id.clone()),
+                        name: Some(call.name.clone()),
+                        thinking: None,
+                        thinking_duration_secs: None,
+                        tool_calls: vec![],
+                    });
+                    return Ok(None);
+                }
+            }
+        }
+
+        self.journal
+            .append_tool_intent(self.session_id, call)
+            .await?;
+
+        // `background_run` never reaches `ToolRegistry::call` — it's
+        // intercepted here and routed to `spawn_background_shell` instead,
+        // so starting it doesn't block this turn. See `background.rs`.
+        if call.name == "background_run" {
+            return self.dispatch_background_run(call).await;
+        }
+
+        let (pre_edit, pre_git) = self.pre_tool_state(call).await;
+
+        match self
+            .tools
+            .call(&self.tool_ctx, &call.name, call.arguments.clone(), budget)
+            .await
+        {
+            Ok(mut output) => {
+                Self::backfill_tool_outcome(&mut output);
+                self.push_success_evidence(call, pre_edit, pre_git, &output)
+                    .await;
+                if self.enable_context {
+                    output.content = self.context.maybe_offload_tool_content(output.content)?;
+                }
+                self.journal
+                    .append_tool_result(self.session_id, call, &output)
+                    .await?;
+                self.remember_tool_result(call, &output);
+                self.messages.push(Message {
+                    outcome: output.effective_outcome(),
+                    role: MessageRole::Tool,
+                    content: output.content.clone(),
+                    tool_call_id: Some(call.id.clone()),
+                    name: Some(call.name.clone()),
+                    thinking: None,
+                    thinking_duration_secs: None,
+                    tool_calls: vec![],
+                });
+                self.events.push(TurnEvent {
+                    kind: "tool".into(),
+                    detail: format!("{} -> {} chars", call.name, output.content.len()),
+                });
+            }
+            Err(ToolError::Validation(ve)) => {
+                self.journal
+                    .append_validation_failed(self.session_id, &call.name, &ve.to_string())
+                    .await?;
+                // Actionable, schema-derived feedback — no guessed corrected values.
+                let msg = format!(
+                    "Tool validation error: {ve}. \
+                     Do not concatenate fields. Use separate JSON properties with native types \
+                     (for example offset: 1, limit: 100 as integers)."
+                );
+                self.messages.push(Message {
+                    outcome: ExecutionOutcome::Failed { exit_code: None },
+                    role: MessageRole::Tool,
+                    content: msg.clone(),
+                    tool_call_id: Some(call.id.clone()),
+                    name: Some(call.name.clone()),
+                    thinking: None,
+                    thinking_duration_secs: None,
+                    tool_calls: vec![],
+                });
+                self.events.push(TurnEvent {
+                    kind: "validation".into(),
+                    detail: msg,
+                });
+            }
+            Err(e) => {
+                let content = e.to_string();
+                let is_budget = content.contains("validation retry budget exceeded");
+                let outcome = e.as_outcome();
+                let output = ToolOutput {
+                    outcome: Some(outcome),
+                    content: if is_budget {
+                        format!(
+                            "{content}. Stop retrying this tool with the same invalid argument shape. \
+                             Either call it with valid structured JSON types or finish with a final answer."
+                        )
+                    } else {
+                        content
+                    },
+                    is_error: true,
+                    exit_code: None,
+                };
+                self.journal
+                    .append_tool_result(self.session_id, call, &output)
+                    .await?;
+                self.remember_tool_result(call, &output);
+                self.messages.push(Message {
+                    outcome: output.effective_outcome(),
+                    role: MessageRole::Tool,
+                    content: output.content.clone(),
+                    tool_call_id: Some(call.id.clone()),
+                    name: Some(call.name.clone()),
+                    thinking: None,
+                    thinking_duration_secs: None,
+                    tool_calls: vec![],
+                });
+                if is_budget {
+                    self.events.push(TurnEvent {
+                        kind: "validation_exhausted".into(),
+                        detail: output.content.clone(),
+                    });
+                    // Terminal failure: stop the turn instead of activity-only hang.
+                    self.finalize_turn_failure(
+                        "Forge couldn't complete this turn after repeated invalid tool calls.",
+                        "validation_exhausted",
+                    )
+                    .await?;
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    pub(crate) async fn run_one_tool_exec_only(
+        &mut self,
+        call: &ToolCall,
+        budget: &mut ValidationBudget,
+    ) -> Result<(), LoopError> {
+        if self.try_serve_journaled_tool(call).await? {
+            return Ok(());
+        }
+        self.turn.record_call(call.clone());
+        self.journal
+            .append_tool_intent(self.session_id, call)
+            .await?;
+        let (pre_edit, pre_git) = self.pre_tool_state(call).await;
+        match self
+            .tools
+            .call(&self.tool_ctx, &call.name, call.arguments.clone(), budget)
+            .await
+        {
+            Ok(mut output) => {
+                Self::backfill_tool_outcome(&mut output);
+                self.push_success_evidence(call, pre_edit, pre_git, &output)
+                    .await;
+                self.journal
+                    .append_tool_result(self.session_id, call, &output)
+                    .await?;
+                self.remember_tool_result(call, &output);
+                if call.name == "update_plan" && !output.is_error {
+                    // Stateless checklist broadcast — clients replace whatever they
+                    // were showing with this payload. Mirrors codex PlanUpdate.
+                    self.events.push(TurnEvent {
+                        kind: "plan_update".into(),
+                        detail: call.arguments.to_string(),
+                    });
+                }
+                self.messages.push(Message {
+                    outcome: output.effective_outcome(),
+                    role: MessageRole::Tool,
+                    content: output.content,
+                    tool_call_id: Some(call.id.clone()),
+                    name: Some(call.name.clone()),
+                    thinking: None,
+                    thinking_duration_secs: None,
+                    tool_calls: vec![],
+                });
+            }
+            Err(e) => {
+                let outcome = e.as_outcome();
+                let output = ToolOutput {
+                    outcome: Some(outcome),
+                    content: e.to_string(),
+                    is_error: true,
+                    exit_code: None,
+                };
+                self.journal
+                    .append_tool_result(self.session_id, call, &output)
+                    .await?;
+                self.remember_tool_result(call, &output);
+            }
+        }
+        Ok(())
+    }
+}
