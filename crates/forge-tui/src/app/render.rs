@@ -28,6 +28,7 @@ impl TuiApp {
         // this, so a frame is internally consistent and the ~40 scattered
         // `self.session.*` reads it replaces cost one capture instead.
         self.session_view = SessionSnapshot::capture(&self.session);
+        self.transcript_view.refresh(&self.session);
         if crate::theme::refresh_system() {
             self.render_cache.conversation = None;
         }
@@ -187,14 +188,12 @@ impl TuiApp {
             stream_thought_secs: self.timing.thought_secs,
         };
         // `/clear` only clears the viewport; the full session remains available to the model.
-        let visible_messages = &self.session.messages[self
-            .conversation_view
-            .message_start
-            .min(self.session.messages.len())..];
-        let visible_events = &self.session.events[self
-            .conversation_view
-            .event_start
-            .min(self.session.events.len())..];
+        let all_messages = self.transcript_view.messages();
+        let all_events = self.transcript_view.events();
+        let visible_messages =
+            &all_messages[self.conversation_view.message_start.min(all_messages.len())..];
+        let visible_events =
+            &all_events[self.conversation_view.event_start.min(all_events.len())..];
         let activity_summary = self.activity_summary();
         let activity_summary_key = self.activity_summary_cache_key();
         let sidebar_width = regions.sidebar.map(|r| r.width).unwrap_or(0);

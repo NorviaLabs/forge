@@ -1,0 +1,12 @@
+[package]
+name = "forge-transcript"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Projection of a Forge session into a renderable conversation transcript"
+
+[dependencies]
+forge-core = { workspace = true }
+forge-tools = { workspace = true }
+forge-types = { workspace = true }
+serde_json = { workspace = true }
