@@ -24,6 +24,10 @@ fn composer_input_height(input: &InputModel, area: ratatui::layout::Rect) -> u16
 
 impl TuiApp {
     pub fn draw(&mut self, frame: &mut ratatui::Frame) {
+        // One read of the session per frame. Everything below renders from
+        // this, so a frame is internally consistent and the ~40 scattered
+        // `self.session.*` reads it replaces cost one capture instead.
+        self.session_view = SessionSnapshot::capture(&self.session);
         if crate::theme::refresh_system() {
             self.render_cache.conversation = None;
         }
@@ -120,7 +124,7 @@ impl TuiApp {
             files: regions.files.is_some(),
             sidebar: regions.sidebar.is_some(),
             bottom_panel: self.bottom_panel.open && regions.bottom_panel.height > 0,
-            approval: self.session.pending_hitl().is_some(),
+            approval: self.session_view.is_awaiting_approval(),
         };
         if self.bottom_panel.open && regions.bottom_panel.height > 1 {
             self.resize_interactive_terminal(
@@ -195,7 +199,7 @@ impl TuiApp {
         let activity_summary_key = self.activity_summary_cache_key();
         let sidebar_width = regions.sidebar.map(|r| r.width).unwrap_or(0);
         let key = ConversationRenderKey {
-            session_id: self.session.session_id,
+            session_id: self.session_view.session_id,
             width: sidebar_width,
             messages: visible_messages.len(),
             last_message_content: visible_messages
@@ -208,7 +212,7 @@ impl TuiApp {
             events: visible_events.len(),
             last_event_detail: visible_events.last().map_or(0, |event| event.detail.len()),
             banners: self.banner_state.items.len(),
-            queue: self.session.queue().len(),
+            queue: self.session_view.queue_len,
             queue_selected: self.task_selection.queue,
             chat_message_start: self.conversation_view.message_start,
             chat_event_start: self.conversation_view.event_start,
@@ -218,7 +222,7 @@ impl TuiApp {
             tool_expanded: self.tool_detail.expanded,
             splash_dismissed: self.conversation_view.splash_dismissed,
             slash_mode,
-            status: self.session.active_task.lifecycle,
+            status: self.session_view.lifecycle,
             theme_id: crate::theme::active(),
             pending_hitl: self
                 .session
@@ -237,7 +241,7 @@ impl TuiApp {
             let mut conv = ConversationModel::from_messages(
                 visible_messages,
                 visible_events,
-                self.session.active_task.lifecycle,
+                self.session_view.lifecycle,
                 ConversationViewOpts {
                     busy: false,
                     stream_wait: None,
@@ -252,7 +256,7 @@ impl TuiApp {
             if !slash_mode && !self.conversation_view.splash_dismissed {
                 conv = conv.with_home(
                     self.runtime.cwd.display().to_string(),
-                    self.session.loaded_skills_count(),
+                    self.session_view.loaded_skills_count,
                 );
             }
             if let Some(summary) = activity_summary {
@@ -271,11 +275,11 @@ impl TuiApp {
                 conv = conv.with_running_tool(name.clone());
             }
             self.sync_approval_menu();
-            if let Some(payload) = self.session.pending_hitl().cloned() {
+            if let Some(payload) = self.session_view.pending_hitl.clone() {
                 let rows = self.approval_menu_rows();
                 let selected = self.hitl_session.menu.selected;
                 let approval_focused = self.focus.block == FocusBlock::Approval;
-                let cwd = self.session.workspace_root().display().to_string();
+                let cwd = self.session_view.workspace_root().display().to_string();
                 conv = conv.with_pending_approval(&payload, cwd, rows, selected, approval_focused);
             }
             let width = sidebar_width.saturating_sub(2) as usize;
@@ -317,7 +321,7 @@ impl TuiApp {
                     ConversationModel::from_messages(
                         &[],
                         &[],
-                        self.session.active_task.lifecycle,
+                        self.session_view.lifecycle,
                         ConversationViewOpts { busy: true, ..opts },
                     )
                     .with_streaming_preview(
@@ -355,7 +359,7 @@ impl TuiApp {
                 .style(theme::panel());
             let conversation_area = sidebar_block.inner(sidebar);
             self.conversation_area = Some(conversation_area);
-            let bottom_padding = if self.session.pending_hitl().is_some() {
+            let bottom_padding = if self.session_view.is_awaiting_approval() {
                 0
             } else if theme_picking {
                 1
@@ -647,10 +651,10 @@ impl TuiApp {
                     model: &self.input,
                     attachment: attachment_label.as_deref(),
                     dimmed: (self.busy_state.active && self.input.text.is_empty())
-                        || self.session.pending_hitl().is_some(),
+                        || self.session_view.is_awaiting_approval(),
                     not_connected: !connected,
                     focused: composer_focused,
-                    waiting: self.session.pending_hitl().is_some(),
+                    waiting: self.session_view.is_awaiting_approval(),
                     permission_mode: self.permission_mode,
                 },
                 regions.input,
@@ -682,7 +686,7 @@ impl TuiApp {
                 1 => FooterFocus::Effort,
                 _ => FooterFocus::Mode,
             }),
-            dimmed: self.session.pending_hitl().is_some(),
+            dimmed: self.session_view.is_awaiting_approval(),
             lifecycle: status.turn_lifecycle(),
             ctx_pct: status.ctx_pct,
         };

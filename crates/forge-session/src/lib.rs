@@ -12,8 +12,10 @@
 //! which belongs in it.
 
 mod runner;
+mod snapshot;
 
 pub use runner::{spawn, ApprovalPolicy, RunnerGone, SessionCommand, SessionEvent, SessionHandle};
+pub use snapshot::SessionSnapshot;
 
 use std::sync::Arc;
 
