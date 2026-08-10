@@ -280,7 +280,8 @@ impl TuiApp {
                 let selected = self.hitl_session.menu.selected;
                 let approval_focused = self.focus.block == FocusBlock::Approval;
                 let cwd = self.session_view.workspace_root().display().to_string();
-                conv = conv.with_pending_approval(&payload, cwd, rows, selected, approval_focused);
+                let request = crate::overlays::ApprovalOverlayState::request_view(&payload, cwd);
+                conv = conv.with_pending_approval(request, rows, selected, approval_focused);
             }
             let width = sidebar_width.saturating_sub(2) as usize;
             self.render_cache.conversation = Some(ConversationRenderCache {

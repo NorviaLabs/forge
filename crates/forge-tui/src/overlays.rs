@@ -382,6 +382,31 @@ pub struct ApprovalOverlayState {
 }
 
 impl ApprovalOverlayState {
+    /// Reduce a payload to the strings the transcript shows for it.
+    ///
+    /// Lives here rather than in `conversation` because it needs the per-tool
+    /// execution modes, which are approval-overlay knowledge. The transcript
+    /// takes the result.
+    pub fn request_view(
+        payload: &HitlPayload,
+        working_directory: impl Into<String>,
+    ) -> crate::conversation::ApprovalRequestView {
+        let approval = Self::for_payload(payload, working_directory);
+        let command = match approval.mode {
+            ApprovalExecutionMode::Shell => approval.shell_command.unwrap_or_default(),
+            ApprovalExecutionMode::Direct => std::iter::once(approval.executable_or_shell.as_str())
+                .chain(approval.arguments.iter().map(String::as_str))
+                .collect::<Vec<_>>()
+                .join(" "),
+        };
+        crate::conversation::ApprovalRequestView {
+            tool: payload.tool.clone(),
+            command,
+            cwd: approval.working_directory,
+            env_delta: approval.environment_delta,
+        }
+    }
+
     pub fn for_payload(payload: &HitlPayload, working_directory: impl Into<String>) -> Self {
         let fallback_working_directory = working_directory.into();
         let mode = approval_mode_for_tool(&payload.tool);
@@ -3332,6 +3357,49 @@ mod tests {
         assert_eq!(
             hitl_risk_summary("sql", &json!({})),
             "This executes a database query."
+        );
+    }
+}
+
+#[cfg(test)]
+mod request_view_tests {
+    use super::*;
+
+    /// The transcript renders `ApprovalRequestView`, so the payload-to-command
+    /// reduction is covered here rather than in `conversation` — which no
+    /// longer knows how a `HitlPayload` becomes a command line.
+    #[test]
+    fn shell_payload_reduces_to_its_command_line() {
+        let view = ApprovalOverlayState::request_view(
+            &HitlPayload {
+                call_id: "1".into(),
+                tool: "bash".into(),
+                args_redacted: serde_json::json!({"command": "git push -u origin feature"}),
+                reason: "policy requires human approval".into(),
+            },
+            "workspace",
+        );
+        assert_eq!(view.tool, "bash");
+        assert_eq!(view.command, "git push -u origin feature");
+        assert_eq!(view.cwd, "workspace");
+    }
+
+    /// A direct-execution tool joins executable and arguments instead.
+    #[test]
+    fn direct_payload_joins_executable_and_arguments() {
+        let view = ApprovalOverlayState::request_view(
+            &HitlPayload {
+                call_id: "2".into(),
+                tool: "write_file".into(),
+                args_redacted: serde_json::json!({"path": "a.txt", "content": "hi"}),
+                reason: "policy".into(),
+            },
+            "wd",
+        );
+        assert_eq!(view.tool, "write_file");
+        assert!(
+            !view.command.is_empty(),
+            "a direct-mode tool must still describe what would run"
         );
     }
 }

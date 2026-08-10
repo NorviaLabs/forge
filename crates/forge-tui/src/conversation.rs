@@ -1,7 +1,6 @@
 //! Conversation view model (TUI-02) — polished chat, thinking, tools, diffs.
 
 use crate::markdown::render_markdown;
-use crate::overlays::{ApprovalExecutionMode, ApprovalOverlayState};
 use crate::status_glyph::{status_glyph, Status};
 use crate::theme;
 use crate::user_message_gutter;
@@ -454,6 +453,21 @@ pub struct DiffBlockPresentation {
     pub rationale: String,
 }
 
+/// An approval request reduced to what the transcript displays: the command
+/// line, the directory it would run in, and any environment delta.
+///
+/// Turning a `HitlPayload` into these strings means knowing per-tool
+/// execution modes, which is the approval overlay's job. The transcript
+/// takes the result so it does not have to reach back into overlay state to
+/// render a card.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ApprovalRequestView {
+    pub tool: String,
+    pub command: String,
+    pub cwd: String,
+    pub env_delta: String,
+}
+
 /// One selectable row on the inline approval menu.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApprovalMenuRow {
@@ -841,20 +855,11 @@ impl ConversationModel {
     /// carries no explicit cwd.
     pub fn with_pending_approval(
         mut self,
-        payload: &forge_types::HitlPayload,
-        working_directory: impl Into<String>,
+        request: ApprovalRequestView,
         options: Vec<ApprovalMenuRow>,
         selected: usize,
         focused: bool,
     ) -> Self {
-        let approval = ApprovalOverlayState::for_payload(payload, working_directory);
-        let command = match approval.mode {
-            ApprovalExecutionMode::Shell => approval.shell_command.unwrap_or_default(),
-            ApprovalExecutionMode::Direct => std::iter::once(approval.executable_or_shell.as_str())
-                .chain(approval.arguments.iter().map(String::as_str))
-                .collect::<Vec<_>>()
-                .join(" "),
-        };
         let selected = if options.is_empty() {
             0
         } else {
@@ -862,10 +867,10 @@ impl ConversationModel {
         };
         self.items
             .push(ChatItem::ApprovalPending(ApprovalPendingPresentation {
-                tool: payload.tool.clone(),
-                command,
-                cwd: approval.working_directory,
-                env_delta: approval.environment_delta,
+                tool: request.tool,
+                command: request.command,
+                cwd: request.cwd,
+                env_delta: request.env_delta,
                 options,
                 selected,
                 focused,
@@ -4915,13 +4920,12 @@ mod tests {
             ConversationViewOpts::default(),
         )
         .with_pending_approval(
-            &forge_types::HitlPayload {
-                call_id: "1".into(),
+            ApprovalRequestView {
                 tool: "bash".into(),
-                args_redacted: serde_json::json!({"command": "git push -u origin feature"}),
-                reason: "policy requires human approval".into(),
+                command: "git push -u origin feature".into(),
+                cwd: "workspace".into(),
+                env_delta: "inherited".into(),
             },
-            "workspace",
             vec![
                 ApprovalMenuRow {
                     label: "Allow once".into(),
@@ -4967,13 +4971,12 @@ mod tests {
             ConversationViewOpts::default(),
         )
         .with_pending_approval(
-            &forge_types::HitlPayload {
-                call_id: "1".into(),
+            ApprovalRequestView {
                 tool: "bash".into(),
-                args_redacted: serde_json::json!({"command": "ls"}),
-                reason: "test".into(),
+                command: "ls".into(),
+                cwd: "wd".into(),
+                env_delta: "inherited".into(),
             },
-            "wd",
             vec![ApprovalMenuRow {
                 label: "Allow once".into(),
                 detail: None,
