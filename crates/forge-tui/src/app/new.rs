@@ -35,6 +35,9 @@ impl TuiApp {
         let repo_header_cwd = runtime.cwd.clone();
         let repo_header = chrome::load_repo_header(&repo_header_cwd);
         let mut app = Self {
+            // Captured before the first `draw` so the first frame reads a real
+            // snapshot rather than the empty default.
+            session_view: SessionSnapshot::capture(&session),
             session,
             input,
             overlay: startup_items.clone().map(Overlay::resume_picker),

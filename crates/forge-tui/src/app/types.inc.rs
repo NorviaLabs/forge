@@ -626,6 +626,10 @@ struct StreamState {
 }
 pub struct TuiApp {
     pub(crate) session: AgentSession,
+    /// Per-frame view of `session`, refreshed at the top of `draw`. Render
+    /// paths read this instead of the live session, so what they need stops
+    /// depending on who owns it.
+    pub(crate) session_view: SessionSnapshot,
     input: InputModel,
     pub(crate) overlay: Option<Overlay>,
     exit: ExitState,
