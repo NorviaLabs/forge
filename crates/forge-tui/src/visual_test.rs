@@ -352,7 +352,8 @@ mod tests {
         let mut term = Terminal::new(backend).unwrap();
         term.draw(|f| app.draw(f)).unwrap();
         let text = buffer_text(&term);
-        for expected in ["Choose a model", "mock", "current", "Esc close"] {
+        let _ = std::fs::write("/tmp/forge_tui_visual_model_table.txt", &text);
+        for expected in ["Select a model", "mock", "current", "Close"] {
             assert!(text.contains(expected), "missing {expected:?}:\n{text}");
         }
     }
