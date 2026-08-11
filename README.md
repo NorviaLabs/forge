@@ -9,6 +9,8 @@
 _Go from idea to verified code without leaving the terminal—Forge unifies an AI
 agent, code editor, and shell in one focused workflow._
 
+![Forge demo: a bug is caught in the terminal, fixed by hand in the editor, verified, then hardened by the agent—all in one pane](.github/assets/demo.gif)
+
 Forge is an open-source AI coding agent for your terminal. It runs a
 full-screen TUI in the repository you are working on, helps inspect and change
 files, runs commands with your approval, and keeps a durable session journal so
