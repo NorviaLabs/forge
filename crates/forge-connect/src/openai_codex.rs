@@ -29,7 +29,7 @@ pub fn openai_codex_profile() -> ConnectProfile {
         model_provider_prefix: "openai-codex".into(),
         vendor_id: "openai".into(),
         vendor_label: "OpenAI".into(),
-        route_label: "ChatGPT sign-in".into(),
+        route_label: "ChatGPT".into(),
     }
 }
 

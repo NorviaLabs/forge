@@ -107,6 +107,7 @@ impl PreferenceStore {
         };
         let effort = self.last_effort()?.unwrap_or_default();
         Ok(Some(ModelSelection {
+            route_id: route_id_for_profile(&profile_id),
             provider: "native".into(),
             model,
             profile_id: Some(profile_id),
@@ -308,6 +309,7 @@ mod tests {
         assert_eq!(
             prefs.last_selection_struct().unwrap(),
             Some(ModelSelection {
+                route_id: route_id_for_profile("openai_codex"),
                 provider: "native".into(),
                 model: "openai-codex/gpt-5.6-luna".into(),
                 profile_id: Some("openai_codex".into()),
@@ -434,4 +436,18 @@ mod tests {
         prefs.set_last_effort("low").unwrap();
         assert_eq!(prefs.last_effort().unwrap().as_deref(), Some("low"));
     }
+}
+
+fn route_id_for_profile(profile_id: &str) -> String {
+    match profile_id {
+        "openai" => "openai-api",
+        "openai_codex" => "openai-chatgpt",
+        "anthropic" => "anthropic-api",
+        "xai" => "xai-api",
+        "opencode_go" => "opencode-go",
+        "opencode_zen" => "opencode-zen",
+        "ollama" => "ollama",
+        other => other,
+    }
+    .into()
 }

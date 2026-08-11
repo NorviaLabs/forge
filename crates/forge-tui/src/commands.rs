@@ -1,6 +1,5 @@
 //! Slash commands — Phase 1 + Phase 2 + Phase 6 `/connect`.
 
-use forge_connect::ConnectAction;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -21,16 +20,12 @@ pub enum SlashCommand {
     Resume {
         session_id: Uuid,
     },
-    /// Switch model. `id` is a provider/model string (`openai/gpt-4.1`) or prefix+name.
-    Model {
-        /// Full model id or provider prefix (when `model` is set).
-        provider: Option<String>,
-        model: Option<String>,
-    },
+    /// Open the interactive model picker.
+    Model,
     Quit,
     Compact,
-    /// Phase 6 — provider connect flow
-    Connect(ConnectAction),
+    /// Open the interactive route connection picker.
+    Connect,
     /// Clear the visible transcript without deleting model context.
     Clear,
     /// Disconnect from the current provider and clear stored credentials.
@@ -75,12 +70,11 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
             }
         },
         "model" => {
-            let a = parts.next().map(|s| s.to_string());
-            let b = parts.next().map(|s| s.to_string());
-            Ok(SlashCommand::Model {
-                provider: a,
-                model: b,
-            })
+            if parts.next().is_some() {
+                Err(CommandError::Usage("/model".into()))
+            } else {
+                Ok(SlashCommand::Model)
+            }
         }
         "quit" | "exit" => Ok(SlashCommand::Quit),
         "disconnect" => Ok(SlashCommand::Disconnect {
@@ -88,11 +82,11 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
         }),
         "compact" => Ok(SlashCommand::Compact),
         "connect" => {
-            let rest: Vec<&str> = parts.collect();
-            let args = rest.join(" ");
-            forge_connect::parse_connect_args(&args)
-                .map(SlashCommand::Connect)
-                .map_err(|e| CommandError::Usage(e.to_string()))
+            if parts.next().is_some() {
+                Err(CommandError::Usage("/connect".into()))
+            } else {
+                Ok(SlashCommand::Connect)
+            }
         }
         "clear" => Ok(SlashCommand::Clear),
         "refresh" => Ok(SlashCommand::Refresh),
@@ -117,21 +111,12 @@ mod tests {
     }
 
     #[test]
-    fn parses_model_id() {
-        assert_eq!(
-            parse_slash("/model openai/gpt-4.1-mini").unwrap().unwrap(),
-            SlashCommand::Model {
-                provider: Some("openai/gpt-4.1-mini".into()),
-                model: None,
-            }
-        );
-        assert_eq!(
-            parse_slash("/model openai gpt-4.1").unwrap().unwrap(),
-            SlashCommand::Model {
-                provider: Some("openai".into()),
-                model: Some("gpt-4.1".into()),
-            }
-        );
+    fn model_is_an_argument_free_picker_command() {
+        assert_eq!(parse_slash("/model").unwrap().unwrap(), SlashCommand::Model);
+        assert!(matches!(
+            parse_slash("/model openai/gpt-4.1-mini").unwrap(),
+            Err(CommandError::Usage(_))
+        ));
     }
 
     #[test]
@@ -231,32 +216,13 @@ mod tests {
 
     #[test]
     fn parses_connect_commands() {
-        use forge_connect::ConnectAction;
         assert_eq!(
             parse_slash("/connect").unwrap().unwrap(),
-            SlashCommand::Connect(ConnectAction::Open)
+            SlashCommand::Connect
         );
         assert_eq!(
-            parse_slash("/connect list").unwrap().unwrap(),
-            SlashCommand::Connect(ConnectAction::List)
-        );
-        assert_eq!(
-            parse_slash("/connect status").unwrap().unwrap(),
-            SlashCommand::Connect(ConnectAction::Status)
-        );
-        assert_eq!(
-            parse_slash("/connect xai").unwrap().unwrap(),
-            SlashCommand::Connect(ConnectAction::Connect {
-                profile_id: "xai".into(),
-                api_key: None,
-                oauth_fixture: false,
-            })
-        );
-        assert_eq!(
-            parse_slash("/connect disconnect xai").unwrap().unwrap(),
-            SlashCommand::Connect(ConnectAction::Disconnect {
-                profile_id: Some("xai".into())
-            })
+            parse_slash("/connect xai").unwrap().unwrap_err(),
+            CommandError::Usage("/connect".into())
         );
     }
 }

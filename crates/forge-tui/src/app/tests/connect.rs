@@ -47,15 +47,8 @@ async fn connect_opencode_go_opens_api_key_overlay() {
     app.connect.store = CredentialStore::new(_store_dir.path().join("empty-creds.toml"));
     app.connect.preferences = PreferenceStore::new(_store_dir.path().join("preferences.toml"));
     app.dispatch_line("/connect opencode_go").await.unwrap();
-    match &app.overlay {
-        Some(Overlay::ConnectApiKey {
-            profile_id, title, ..
-        }) => {
-            assert_eq!(profile_id, "opencode_go");
-            assert!(title.contains("OpenCode"));
-        }
-        other => panic!("expected ConnectApiKey overlay, got {other:?}"),
-    }
+    assert_eq!(app.status_state.message, "usage: /connect");
+    assert!(app.overlay.is_none());
 }
 
 #[tokio::test]
@@ -686,16 +679,8 @@ async fn connect_xai_opens_oauth_overlay() {
     app.connect.preferences = PreferenceStore::new(cred_dir.path().join("preferences.toml"));
     app.dispatch_line("/connect xai").await.unwrap();
     std::env::remove_var("FORGE_CONNECT_OAUTH_STUB");
-    match &app.overlay {
-        Some(Overlay::ConnectOauth {
-            profile_id, title, ..
-        }) => {
-            assert_eq!(profile_id, "xai");
-            assert!(title.contains("Grok") || title.contains("xAI"));
-        }
-        other => panic!("expected ConnectOauth overlay, got {other:?}"),
-    }
-    assert!(app.connect.oauth_pending.is_some());
+    assert_eq!(app.status_state.message, "usage: /connect");
+    assert!(app.overlay.is_none());
 }
 
 #[tokio::test]
@@ -721,7 +706,10 @@ async fn oauth_cancel_via_escape_stops_the_background_poll() {
     );
     app.connect.store = CredentialStore::new(cred_dir.path().join("c.toml"));
     app.connect.preferences = PreferenceStore::new(cred_dir.path().join("preferences.toml"));
-    app.dispatch_line("/connect xai").await.unwrap();
+    app.show_oauth_pending(forge_connect::OauthPending::start_stub(
+        "xai",
+        "https://oauth.example.test",
+    ));
     std::env::remove_var("FORGE_CONNECT_OAUTH_STUB");
     assert!(
         app.connect.oauth_pending.is_some(),

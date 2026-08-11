@@ -10,6 +10,8 @@
 /// selection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelSelection {
+    /// Stable offering identity, e.g. `openai-chatgpt`.
+    pub route_id: String,
     /// Dispatch/route family, e.g. `"native"`.
     pub provider: String,
     /// Full canonical catalog id, e.g. `"openai-codex/gpt-5.6-luna"`. Never

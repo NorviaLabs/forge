@@ -42,6 +42,21 @@ pub struct ConnectProfile {
 }
 
 impl ConnectProfile {
+    /// Stable public route identity. Credential/profile IDs remain an
+    /// implementation detail while the picker migrates to offering identity.
+    pub fn route_id(&self) -> &str {
+        match self.id.as_str() {
+            "openai" => "openai-api",
+            "openai_codex" => "openai-chatgpt",
+            "anthropic" => "anthropic-api",
+            "xai" => "xai-api",
+            "opencode_go" => "opencode-go",
+            "opencode_zen" => "opencode-zen",
+            "ollama" => "ollama",
+            _ => self.id.as_str(),
+        }
+    }
+
     pub fn default_model(&self) -> Option<&str> {
         self.default_models.first().map(|s| s.as_str())
     }
@@ -156,5 +171,19 @@ mod tests {
         assert_eq!(KeySource::File.as_str(), "file");
         assert_eq!(KeySource::Provided.as_str(), "provided");
         assert_eq!(KeySource::Oauth.as_str(), "oauth");
+    }
+
+    #[test]
+    fn route_id_exposes_offering_identity() {
+        let mut profile = profile(
+            AuthMode::ApiKey {
+                tui_always_prompt: true,
+            },
+            vec![],
+        );
+        profile.id = "openai_codex".into();
+        assert_eq!(profile.route_id(), "openai-chatgpt");
+        profile.id = "openai".into();
+        assert_eq!(profile.route_id(), "openai-api");
     }
 }

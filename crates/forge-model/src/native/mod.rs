@@ -178,6 +178,7 @@ impl ModelClient for NativeModelClient {
         tx: Option<StreamEventTx>,
     ) -> Result<ModelResponse, ModelError> {
         let model = self.model_for(&req)?;
+        let model = canonical_model_for_route(req.route_id.as_deref(), &model);
         if model.starts_with("anthropic/") {
             return anthropic::complete(self, req, &model, tx).await;
         }
@@ -200,6 +201,30 @@ impl ModelClient for NativeModelClient {
     }
 }
 
+/// Convert the stable offering identity into the legacy provider namespace
+/// still consumed by the individual wire-format modules. The route is the
+/// authority; the model name is never used to choose credentials or transport.
+fn canonical_model_for_route(route_id: Option<&str>, model: &str) -> String {
+    let Some(route_id) = route_id else {
+        return model.to_string();
+    };
+    let bare = model
+        .split_once('/')
+        .map(|(_, value)| value)
+        .unwrap_or(model);
+    let prefix = match route_id {
+        "openai-chatgpt" => "openai-codex",
+        "openai-api" => "openai",
+        "anthropic-api" => "anthropic",
+        "xai-api" => "xai",
+        "opencode-go" => "opencode-go",
+        "opencode-zen" => "opencode-zen",
+        "ollama" => "ollama",
+        _ => return model.to_string(),
+    };
+    format!("{prefix}/{bare}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,6 +242,30 @@ mod tests {
         assert_eq!(
             client.credential(&["OPENAI_API_KEY"]).as_deref(),
             Some("injected")
+        );
+    }
+
+    #[test]
+    fn stable_route_identity_controls_legacy_wire_namespace() {
+        assert_eq!(
+            canonical_model_for_route(Some("openai-chatgpt"), "gpt-5.6"),
+            "openai-codex/gpt-5.6"
+        );
+        assert_eq!(
+            canonical_model_for_route(Some("openai-api"), "gpt-5.6"),
+            "openai/gpt-5.6"
+        );
+        assert_eq!(
+            canonical_model_for_route(Some("anthropic-api"), "claude-sonnet-4-5"),
+            "anthropic/claude-sonnet-4-5"
+        );
+        assert_eq!(
+            canonical_model_for_route(Some("openai-api"), "vendor/model"),
+            "openai/model"
+        );
+        assert_eq!(
+            canonical_model_for_route(None, "vendor/model"),
+            "vendor/model"
         );
     }
 }
