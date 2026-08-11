@@ -7,7 +7,9 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Widget};
+use ratatui::widgets::{
+    Block, Borders, Cell, List, ListItem, Padding, Paragraph, Row, Table, Widget,
+};
 use std::path::Path;
 
 #[derive(Debug, Clone)]
@@ -42,10 +44,6 @@ pub enum Overlay {
         active_model: String,
         active_effort: ReasoningEffort,
         focus: ConnectModelColumn,
-        /// `true` for the persistent footer control's picker (anchored,
-        /// small, opened for a routine change); `false` for the full-screen
-        /// browsing experience `/connect`/`/model` have always opened.
-        compact: bool,
         /// A background catalog refresh is in flight for this overlay (see
         /// `TuiApp::start_catalog_refresh`/`refresh_open_picker_items`).
         /// Distinguishes "still loading" from "genuinely no matches" in the
@@ -289,6 +287,19 @@ fn window_start(selected: usize, total: usize, visible: usize) -> usize {
         0
     } else {
         (selected + 1).saturating_sub(visible)
+    }
+}
+
+/// Like [`window_start`], but pins `selected` to the *top* visible row
+/// instead of the bottom — used for the model list so the active model
+/// lands on the first row as soon as the picker opens, rather than
+/// scrolled to the bottom of the window the way `window_start` would place
+/// it. Still clamps so the window never scrolls past the end of the list.
+fn window_start_pin_top(selected: usize, total: usize, visible: usize) -> usize {
+    if visible == 0 || total <= visible {
+        0
+    } else {
+        selected.min(total - visible)
     }
 }
 
@@ -566,14 +577,32 @@ impl Overlay {
         group_model_items(filtered)
     }
 
+    /// Index into the *flattened* rows `flatten_model_rows(groups)` would
+    /// produce, not into `groups` itself — a multi-route group expands to
+    /// one row per route, so counting groups instead of flattened rows
+    /// drifts the initial selection off the active model as soon as any
+    /// earlier group has more than one route.
     fn index_of_model(groups: &[ModelGroup], model: &str) -> usize {
         if model.is_empty() {
             return 0;
         }
-        groups
-            .iter()
-            .position(|g| g.routes.iter().any(|m| m.model == model))
-            .unwrap_or(0)
+        let mut idx = 0;
+        for g in groups {
+            if g.routes.len() > 1 {
+                for route in &g.routes {
+                    if route.model == model {
+                        return idx;
+                    }
+                    idx += 1;
+                }
+            } else if let Some(route) = g.routes.first() {
+                if route.model == model {
+                    return idx;
+                }
+                idx += 1;
+            }
+        }
+        0
     }
 
     fn provider_cursor_for(providers: &[ProviderVendorRow], profile_id: Option<&str>) -> usize {
@@ -587,11 +616,10 @@ impl Overlay {
     }
 
     /// Build the unified Connect + Model + Effort picker. `/connect` and
-    /// `/model` both call this, differing only in `focus`. Renders
-    /// full-screen — see `connect_model_open_compact` for the persistent
-    /// footer control's anchored, small variant of the same picker. Scoped
-    /// to `current_profile_id`'s models by default (a deliberate, guided
-    /// browse), unlike the compact control's cross-route search default.
+    /// `/model` both call this, differing only in `focus`. Scoped to
+    /// `current_profile_id`'s models by default (a deliberate, guided
+    /// browse) — see `connect_model_open_compact` for the persistent footer
+    /// control's cross-route search default.
     pub fn connect_model_open(
         providers: Vec<ProviderVendorRow>,
         items: Vec<ModelItem>,
@@ -608,11 +636,10 @@ impl Overlay {
             current_model,
             current_effort,
             focus,
-            false,
         )
     }
 
-    /// Full-screen picker with an explicit route scope for guided handoff.
+    /// The same picker with an explicit route scope, for guided handoff.
     pub fn connect_model_open_scoped(
         providers: Vec<ProviderVendorRow>,
         items: Vec<ModelItem>,
@@ -630,15 +657,13 @@ impl Overlay {
             current_model,
             current_effort,
             focus,
-            false,
         )
     }
 
-    /// Same picker as `connect_model_open`, but rendered anchored/small above
-    /// the footer instead of full-screen — used by the persistent
-    /// `[vendor] [model] [effort]` control for routine changes that
-    /// shouldn't take over the whole terminal. Starts unscoped (searches
-    /// every connected route's models, not just the active one) — "the model
+    /// The persistent `[vendor] [model] [effort]` footer control's picker —
+    /// same rendering as `connect_model_open`, just seeded unscoped
+    /// (`route_scope: None`) so it searches every connected route's models
+    /// immediately rather than narrowing to the active one first: "the model
     /// control opens a searchable list built from every currently connected
     /// profile/route, not just the active route."
     pub fn connect_model_open_compact(
@@ -649,7 +674,7 @@ impl Overlay {
         current_effort: ReasoningEffort,
         focus: ConnectModelColumn,
     ) -> Self {
-        Self::connect_model_open_impl(
+        Self::connect_model_open_scoped(
             providers,
             items,
             current_profile_id,
@@ -657,7 +682,6 @@ impl Overlay {
             current_model,
             current_effort,
             focus,
-            true,
         )
     }
 
@@ -665,12 +689,11 @@ impl Overlay {
     /// `provider_cursor`, cursor restoration via `index_of_model`) — always
     /// the real active profile. `route_scope` seeds `selected_route`/`groups`
     /// independently: `Some(id)` narrows the initial model list to that one
-    /// route (the full-screen picker's guided-browse default), `None` leaves
-    /// it spanning every connected route (the compact control's search
-    /// default). These used to be the same parameter, which is what made the
-    /// compact control wrongly scope to one route whenever a profile was
-    /// already active.
-    #[allow(clippy::too_many_arguments)]
+    /// route (the guided-browse default), `None` leaves it spanning every
+    /// connected route (`connect_model_open_compact`'s search default).
+    /// These used to be the same parameter, which is what made the compact
+    /// control wrongly scope to one route whenever a profile was already
+    /// active.
     fn connect_model_open_impl(
         providers: Vec<ProviderVendorRow>,
         items: Vec<ModelItem>,
@@ -679,7 +702,6 @@ impl Overlay {
         current_model: &str,
         current_effort: ReasoningEffort,
         focus: ConnectModelColumn,
-        compact: bool,
     ) -> Self {
         let selected_route = route_scope.map(str::to_string);
         let groups = Self::scoped_groups(&items, selected_route.as_deref());
@@ -706,7 +728,6 @@ impl Overlay {
             active_model: current_model.to_string(),
             active_effort: current_effort,
             focus,
-            compact,
             catalog_loading: false,
         }
     }
@@ -1001,7 +1022,6 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                 active_model,
                 active_effort: _,
                 focus,
-                compact: _,
                 catalog_loading: _,
             } => match focus {
                 ConnectModelColumn::Providers => {
@@ -1471,31 +1491,6 @@ fn centered_capped_rect(area: Rect, max_width: u16, max_height: u16) -> Rect {
     )
 }
 
-/// A small rect anchored just above the bottom of `area`, for the compact
-/// footer control's picker. `area` is the full frame passed to
-/// `OverlayWidget`, and the footer is always its last row, so a fixed
-/// bottom-up offset is enough — no coordination with the caller's own layout
-/// regions is needed. Centered horizontally, same shrink-to-fit floor as
-/// `centered_capped_rect`.
-fn anchored_above_footer_rect(area: Rect, max_width: u16, max_height: u16) -> Rect {
-    let width = area.width.saturating_sub(4).min(max_width).max(1);
-    let height = area.height.saturating_sub(4).min(max_height).max(1);
-    // Leave one row clear above the footer/input chrome the control itself
-    // sits in, so the picker doesn't touch the row that opened it.
-    const BOTTOM_MARGIN: u16 = 3;
-    let y = area
-        .y
-        .saturating_add(area.height)
-        .saturating_sub(height + BOTTOM_MARGIN)
-        .max(area.y);
-    Rect::new(
-        area.x + area.width.saturating_sub(width) / 2,
-        y,
-        width,
-        height,
-    )
-}
-
 /// Bottom band used when `OverlayWidget` paints the theme picker into a full
 /// frame (tests / fallback). Prefer the layout `input` region from `draw`.
 fn theme_dock_rect(area: Rect) -> Rect {
@@ -1658,34 +1653,27 @@ impl Widget for OverlayWidget<'_> {
                 active_model,
                 active_effort,
                 focus,
-                compact,
                 catalog_loading,
                 ..
             } => {
-                let r = if *compact {
-                    anchored_above_footer_rect(area, 44, 12)
-                } else {
-                    centered_capped_rect(area, 56, 18)
-                };
+                let r = centered_capped_rect(area, 78, 29);
+                // `dim_region` above only re-tones existing cell colors, it
+                // doesn't clear glyphs — without an explicit blank here,
+                // widgets that don't pad every cell to full width (like
+                // `Table`) leave stray background characters showing through.
+                theme::fill(r, buf, theme::panel());
                 let active = active_vendor_route_labels(providers, active_profile_id.as_deref());
-                let label_suffix = match active {
-                    Some((vendor, Some(route))) => format!(" · {vendor} · {route}"),
-                    Some((vendor, None)) => format!(" · {vendor}"),
-                    None => String::new(),
-                };
                 let title_text = match focus {
-                    ConnectModelColumn::Providers => "Choose a provider",
-                    ConnectModelColumn::Models => "Choose a model",
-                    ConnectModelColumn::Effort => "Choose reasoning effort",
+                    ConnectModelColumn::Providers => "Select a provider",
+                    ConnectModelColumn::Models => "Select a model",
+                    ConnectModelColumn::Effort => "Select reasoning effort",
                 };
                 let block = Block::default()
                     .borders(Borders::ALL)
                     .border_style(theme::border())
                     .style(theme::panel())
-                    .title(Span::styled(
-                        format!(" {title_text}{label_suffix} "),
-                        theme::brand(),
-                    ));
+                    .padding(Padding::new(1, 1, 1, 0))
+                    .title(Span::styled(format!(" {title_text} "), theme::brand()));
                 let inner = block.inner(r);
                 block.render(r, buf);
                 let regions = Layout::default()
@@ -1762,26 +1750,76 @@ impl Widget for OverlayWidget<'_> {
                         // Type-ahead filter line, then the (cross-route or
                         // scoped, per how this instance was opened) catalog.
                         let filter_text = if model_input.is_empty() {
-                            "type to filter…".to_string()
+                            "Type to filter models…".to_string()
                         } else {
                             model_input.clone()
                         };
-                        Paragraph::new(filter_text)
-                            .style(if model_input.is_empty() {
-                                theme::dim()
-                            } else {
-                                theme::text()
-                            })
-                            .render(info_area, buf);
+                        Paragraph::new(Line::from(vec![
+                            Span::styled("⌕ ", theme::dim()),
+                            Span::styled(
+                                filter_text,
+                                if model_input.is_empty() {
+                                    theme::dim()
+                                } else {
+                                    theme::text()
+                                },
+                            ),
+                        ]))
+                        .render(info_area, buf);
+
+                        // A real Table so PROVIDER/SOURCE columns stay aligned
+                        // no matter how long a MODEL or PROVIDER cell's text
+                        // is — fixed string padding can't truncate overlong
+                        // cells, which drifts every column after it.
+                        let widths = [
+                            Constraint::Min(20),
+                            Constraint::Length(22),
+                            Constraint::Length(16),
+                        ];
+                        let header = Row::new(vec![
+                            Cell::from(Span::styled(
+                                "MODEL",
+                                theme::muted().add_modifier(Modifier::BOLD),
+                            )),
+                            Cell::from(Span::styled(
+                                "PROVIDER",
+                                theme::muted().add_modifier(Modifier::BOLD),
+                            )),
+                            Cell::from(Span::styled(
+                                "SOURCE / ACCOUNT",
+                                theme::muted().add_modifier(Modifier::BOLD),
+                            )),
+                        ]);
+
+                        // Blank rows around the header (rendered as its own
+                        // single-row table sharing `widths`/spacing with the
+                        // body table below, so the columns still line up)
+                        // give the list the breathing room a bare `Table`
+                        // with `.header()` packs too tightly.
+                        let sections = Layout::default()
+                            .direction(Direction::Vertical)
+                            .constraints([
+                                Constraint::Length(1),
+                                Constraint::Length(1),
+                                Constraint::Length(1),
+                                Constraint::Min(1),
+                            ])
+                            .split(list_area);
+                        let header_area = sections[1];
+                        let list_area = sections[3];
+                        Table::new(vec![header], widths)
+                            .column_spacing(1)
+                            .render(header_area, buf);
+
                         let filtered: Vec<&ModelGroup> = groups
                             .iter()
                             .filter(|g| group_matches_input(model_input, g))
                             .collect();
                         let rows = flatten_model_rows(&filtered);
                         let visible = list_area.height.max(1) as usize;
-                        let start = window_start(*model_selected, rows.len(), visible);
+                        let start = window_start_pin_top(*model_selected, rows.len(), visible);
                         let end = (start + visible).min(rows.len());
-                        let model_items: Vec<ListItem> = if rows.is_empty() {
+                        let table_rows: Vec<Row> = if rows.is_empty() {
                             let msg = if active_profile_id.is_none() {
                                 "Connect a provider first."
                             } else if *catalog_loading {
@@ -1791,7 +1829,10 @@ impl Widget for OverlayWidget<'_> {
                             } else {
                                 "No models match this filter."
                             };
-                            vec![ListItem::new(Span::styled(msg, theme::muted()))]
+                            vec![Row::new(vec![Cell::from(Span::styled(
+                                msg,
+                                theme::muted(),
+                            ))])]
                         } else {
                             rows[start..end]
                                 .iter()
@@ -1799,7 +1840,7 @@ impl Widget for OverlayWidget<'_> {
                                 .map(|(i, row)| {
                                     let idx = start + i;
                                     let selected = idx == *model_selected;
-                                    let style = if selected {
+                                    let row_style = if selected {
                                         theme::focused_selection_style()
                                     } else {
                                         theme::text()
@@ -1808,7 +1849,7 @@ impl Widget for OverlayWidget<'_> {
                                     let item = flat_row_item(&filtered, row)
                                         .expect("flatten_model_rows only emits valid indices");
                                     let is_current = item.model == *active_model;
-                                    let tag = if is_current {
+                                    let source = if is_current {
                                         "current"
                                     } else {
                                         match item.source {
@@ -1816,25 +1857,24 @@ impl Widget for OverlayWidget<'_> {
                                             _ => "cloud",
                                         }
                                     };
-                                    let marker = if selected { "▶ " } else { "  " };
-                                    let mut text = if row.route_idx.is_some() {
-                                        format!("{marker}{} · {}", g.model_id, item.route_label)
+                                    let provider = if item.route_label.is_empty() {
+                                        "·"
                                     } else {
-                                        format!("{marker}{}", g.model_id)
+                                        item.route_label.as_str()
                                     };
-                                    let target = (list_area.width as usize)
-                                        .saturating_sub(tag.chars().count() + 1);
-                                    while text.chars().count() < target {
-                                        text.push(' ');
-                                    }
-                                    ListItem::new(Line::from(vec![
-                                        Span::styled(text, style),
-                                        Span::styled(tag, theme::tag_style(selected)),
-                                    ]))
+                                    let marker = if selected { "▶ " } else { "  " };
+                                    Row::new(vec![
+                                        Cell::from(format!("{marker}{}", g.model_id)),
+                                        Cell::from(provider.to_string()),
+                                        Cell::from(source),
+                                    ])
+                                    .style(row_style)
                                 })
                                 .collect()
                         };
-                        List::new(model_items).render(list_area, buf);
+                        Table::new(table_rows, widths)
+                            .column_spacing(1)
+                            .render(list_area, buf);
                     }
                     ConnectModelColumn::Effort => {
                         // No filter/info line for this view — the whole body
@@ -1904,9 +1944,19 @@ impl Widget for OverlayWidget<'_> {
                 Paragraph::new(active_line)
                     .style(theme::text())
                     .render(regions[2], buf);
-                Paragraph::new("↑↓ navigate · Enter select · Esc close")
-                    .style(theme::dim())
-                    .render(regions[3], buf);
+                let key_style = theme::panel_alt()
+                    .fg(theme::text_primary_color())
+                    .add_modifier(Modifier::BOLD);
+                let label_style = theme::dim();
+                Paragraph::new(Line::from(vec![
+                    Span::styled(" ↑↓ ", key_style),
+                    Span::styled(" Select   ", label_style),
+                    Span::styled(" Enter ", key_style),
+                    Span::styled(" Confirm   ", label_style),
+                    Span::styled(" Esc ", key_style),
+                    Span::styled(" Close", label_style),
+                ]))
+                .render(regions[3], buf);
             }
             Overlay::ConnectApiKey {
                 title,
@@ -2115,6 +2165,18 @@ mod tests {
     use ratatui::widgets::Widget;
     use serde_json::json;
 
+    #[test]
+    fn window_start_pin_top_puts_selected_on_the_first_row_when_room_allows() {
+        // Plenty of room below `selected` to fill the window without
+        // scrolling past the list's end — selected should be the top row.
+        assert_eq!(window_start_pin_top(4, 20, 5), 4);
+        // Selected is close enough to the end that pinning it to the top
+        // would scroll past the list — clamp instead of overscrolling.
+        assert_eq!(window_start_pin_top(18, 20, 5), 15);
+        // Whole list already fits on screen — no scrolling at all.
+        assert_eq!(window_start_pin_top(3, 4, 5), 0);
+    }
+
     fn render_text(overlay: &Overlay) -> String {
         let area = Rect::new(0, 0, 100, 48);
         let mut buf = Buffer::empty(area);
@@ -2235,31 +2297,6 @@ mod tests {
         Overlay::connect_model_open(vec![], items, None, "", ReasoningEffort::default(), focus)
     }
 
-    #[test]
-    fn connect_model_open_compact_sets_compact_flag() {
-        let full = Overlay::connect_model_open(
-            vec![],
-            vec![],
-            None,
-            "",
-            ReasoningEffort::default(),
-            ConnectModelColumn::Models,
-        );
-        let compact = Overlay::connect_model_open_compact(
-            vec![],
-            vec![],
-            None,
-            "",
-            ReasoningEffort::default(),
-            ConnectModelColumn::Models,
-        );
-        assert!(matches!(full, Overlay::ConnectModel { compact: false, .. }));
-        assert!(matches!(
-            compact,
-            Overlay::ConnectModel { compact: true, .. }
-        ));
-    }
-
     fn two_route_items() -> Vec<ModelItem> {
         vec![
             ModelItem {
@@ -2277,6 +2314,70 @@ mod tests {
                 route_label: "Anthropic".into(),
             },
         ]
+    }
+
+    /// Regression: `index_of_model` used to return an index into `groups`
+    /// (one entry per unique model id) while the render path treats
+    /// `model_selected` as an index into the *flattened* rows (one entry
+    /// per route, so a multi-route group contributes more than one row).
+    /// Any earlier multi-route group drifted the initial selection off the
+    /// real active model — this reproduces that shape: two groups ahead of
+    /// the active one each have two routes, so the flattened index is two
+    /// slots ahead of the naive group index.
+    #[test]
+    fn initial_selection_accounts_for_earlier_multi_route_groups() {
+        let items = vec![
+            ModelItem {
+                provider: "native".into(),
+                model: "alpha".into(),
+                profile_id: Some("opencode".into()),
+                source: forge_connect::CatalogSource::Live,
+                route_label: "OpenCode".into(),
+            },
+            ModelItem {
+                provider: "native".into(),
+                model: "alpha".into(),
+                profile_id: Some("openai".into()),
+                source: forge_connect::CatalogSource::Live,
+                route_label: "OpenAI".into(),
+            },
+            ModelItem {
+                provider: "native".into(),
+                model: "beta".into(),
+                profile_id: Some("opencode".into()),
+                source: forge_connect::CatalogSource::Live,
+                route_label: "OpenCode".into(),
+            },
+            ModelItem {
+                provider: "native".into(),
+                model: "beta".into(),
+                profile_id: Some("openai".into()),
+                source: forge_connect::CatalogSource::Live,
+                route_label: "OpenAI".into(),
+            },
+            ModelItem {
+                provider: "native".into(),
+                model: "gamma".into(),
+                profile_id: Some("opencode".into()),
+                source: forge_connect::CatalogSource::Live,
+                route_label: "OpenCode".into(),
+            },
+        ];
+        let overlay = Overlay::connect_model_open(
+            vec![],
+            items,
+            None,
+            "gamma",
+            ReasoningEffort::default(),
+            ConnectModelColumn::Models,
+        );
+        let Overlay::ConnectModel { model_selected, .. } = &overlay else {
+            panic!("expected ConnectModel overlay");
+        };
+        // Flattened rows are: alpha/OpenCode(0), alpha/OpenAI(1),
+        // beta/OpenCode(2), beta/OpenAI(3), gamma/OpenCode(4) — "gamma" must
+        // land on 4, not on group index 2.
+        assert_eq!(*model_selected, 4);
     }
 
     #[test]
@@ -2375,7 +2476,7 @@ mod tests {
     }
 
     #[test]
-    fn compact_connect_model_overlay_renders_anchored_near_the_bottom() {
+    fn compact_connect_model_overlay_renders_centered_same_as_full_screen() {
         let area = Rect::new(0, 0, 100, 48);
 
         let full = Overlay::connect_model_open(
@@ -2403,7 +2504,7 @@ mod tests {
                 for x in 0..area.width {
                     line.push_str(buf[(x, y)].symbol());
                 }
-                if line.contains("Choose a model") {
+                if line.contains("Select a model") {
                     return y;
                 }
             }
@@ -2412,13 +2513,10 @@ mod tests {
 
         let full_row = title_row(&full);
         let compact_row = title_row(&compact);
-        assert!(
-            compact_row > full_row,
-            "compact picker (row {compact_row}) should render lower than the full-screen picker (row {full_row})"
+        assert_eq!(
+            compact_row, full_row,
+            "the footer-triggered compact picker should center on screen just like the full picker, not anchor near the bottom"
         );
-        // Anchored above the footer, not touching the very last rows.
-        assert!(compact_row < area.height - 1);
-        assert!(compact_row > area.height / 2);
     }
 
     fn sample_default_models() -> Vec<ModelItem> {
@@ -3301,7 +3399,7 @@ mod tests {
             ReasoningEffort::default(),
             ConnectModelColumn::Providers,
         ));
-        assert!(picker.contains("Choose a provider"));
+        assert!(picker.contains("Select a provider"));
         assert!(picker.contains("Ollama"));
         assert!(picker.contains("current"));
         assert!(picker.contains("xAI"));

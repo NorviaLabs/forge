@@ -1060,8 +1060,16 @@ async fn f4_opens_compact_model_control() {
         .unwrap();
 
     match &app.overlay {
-        Some(Overlay::ConnectModel { compact, focus, .. }) => {
-            assert!(*compact);
+        Some(Overlay::ConnectModel {
+            selected_route,
+            focus,
+            ..
+        }) => {
+            // The compact control opens unscoped (searches every connected
+            // route) even though a profile is already active — that's what
+            // distinguishes it from the guided `/connect`/`/model` flow,
+            // which would scope to `selected_route: Some("anthropic")`.
+            assert_eq!(*selected_route, None);
             assert_eq!(*focus, ConnectModelColumn::Models);
         }
         other => panic!("expected compact ConnectModel overlay, got {other:?}"),
