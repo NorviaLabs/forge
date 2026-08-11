@@ -612,6 +612,28 @@ impl Overlay {
         )
     }
 
+    /// Full-screen picker with an explicit route scope for guided handoff.
+    pub fn connect_model_open_scoped(
+        providers: Vec<ProviderVendorRow>,
+        items: Vec<ModelItem>,
+        current_profile_id: Option<&str>,
+        route_scope: Option<&str>,
+        current_model: &str,
+        current_effort: ReasoningEffort,
+        focus: ConnectModelColumn,
+    ) -> Self {
+        Self::connect_model_open_impl(
+            providers,
+            items,
+            current_profile_id,
+            route_scope,
+            current_model,
+            current_effort,
+            focus,
+            false,
+        )
+    }
+
     /// Same picker as `connect_model_open`, but rendered anchored/small above
     /// the footer instead of full-screen — used by the persistent
     /// `[vendor] [model] [effort]` control for routine changes that
@@ -888,6 +910,8 @@ pub enum OverlayAction {
         /// from the model string's prefix (ambiguous once routes share ids).
         profile_id: Option<String>,
     },
+    /// The typed value is not present in an account-backed catalog.
+    ModelNotInCatalog(String),
     SelectEffort(ReasoningEffort),
     /// Live-preview a theme while the picker stays open (no persist).
     PreviewTheme(String),
@@ -1038,11 +1062,9 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                     let Some(route) = chosen_route else {
                         let typed = model_input.trim();
                         if !typed.is_empty() {
-                            // No catalog match for the typed text — let the
-                            // caller re-dispatch it as a free-text
-                            // `/model <arg>` for advanced users naming an
-                            // unlisted model.
-                            return OverlayAction::RunCommand(format!("/model {typed}"));
+                            // Catalogs are the entitlement boundary. Do not
+                            // turn arbitrary text into a model selection.
+                            return OverlayAction::ModelNotInCatalog(typed.to_string());
                         }
                         return OverlayAction::None;
                     };
@@ -2470,14 +2492,14 @@ mod tests {
     }
 
     #[test]
-    fn model_no_catalog_match_falls_back_to_free_text() {
+    fn model_no_catalog_match_is_rejected() {
         let mut overlay = model_overlay(vec![hyphenated_model_item()], ConnectModelColumn::Models);
         for c in "totally-unknown-model".chars() {
             handle_overlay_key(&mut overlay, Key::Char(c));
         }
         assert_eq!(
             handle_overlay_key(&mut overlay, Key::Enter),
-            OverlayAction::RunCommand("/model totally-unknown-model".into())
+            OverlayAction::ModelNotInCatalog("totally-unknown-model".into())
         );
     }
 
@@ -2495,7 +2517,7 @@ mod tests {
     }
 
     #[test]
-    fn model_accepts_typed_custom_model() {
+    fn model_rejects_typed_custom_model() {
         let mut overlay = model_overlay(sample_default_models(), ConnectModelColumn::Models);
         for c in "openai/custom-model".chars() {
             assert_eq!(
@@ -2505,7 +2527,7 @@ mod tests {
         }
         assert_eq!(
             handle_overlay_key(&mut overlay, Key::Enter),
-            OverlayAction::RunCommand("/model openai/custom-model".into())
+            OverlayAction::ModelNotInCatalog("openai/custom-model".into())
         );
     }
 
@@ -2516,7 +2538,7 @@ mod tests {
         handle_overlay_key(&mut overlay, Key::Backspace);
         assert_eq!(
             handle_overlay_key(&mut overlay, Key::Enter),
-            OverlayAction::RunCommand("/model anthropic/custom-model".into())
+            OverlayAction::ModelNotInCatalog("anthropic/custom-model".into())
         );
     }
 
@@ -3282,7 +3304,7 @@ mod tests {
         assert!(picker.contains("Choose a provider"));
         assert!(picker.contains("Ollama"));
         assert!(picker.contains("current"));
-        assert!(picker.contains("xAI Grok"));
+        assert!(picker.contains("xAI"));
 
         let resume = render_text(&Overlay::resume_picker(vec![ResumeSessionItem {
             id: "session-123".into(),

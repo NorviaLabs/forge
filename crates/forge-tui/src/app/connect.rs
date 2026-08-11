@@ -118,21 +118,13 @@ impl TuiApp {
         self.connect.connected = None;
     }
 
-    /// Vendor label for `profile_id`, and its route label when the vendor
-    /// has more than one registered offering — the same rule the picker's
-    /// Providers column and Active line use, so the header chip can't drift.
+    /// Vendor and offering labels for `profile_id`. The offering is always
+    /// returned so identical model IDs remain distinguishable across routes.
     pub(super) fn vendor_route_labels(&self, profile_id: &str) -> (Option<String>, Option<String>) {
         let Some(profile) = self.connect.registry.get(profile_id) else {
             return (None, None);
         };
-        let sibling_count = self
-            .connect
-            .registry
-            .profiles()
-            .iter()
-            .filter(|p| p.vendor_id == profile.vendor_id)
-            .count();
-        let route = (sibling_count > 1).then(|| profile.route_label.clone());
+        let route = (!profile.route_label.is_empty()).then(|| profile.route_label.clone());
         (Some(profile.vendor_label.clone()), route)
     }
 
@@ -353,6 +345,12 @@ impl TuiApp {
                     });
                 if let Some(model) = saved_model.or_else(|| profile.default_model()) {
                     self.apply_selection(&ModelSelection {
+                        route_id: self
+                            .connect
+                            .profile
+                            .as_deref()
+                            .map(route_id_for_profile)
+                            .unwrap_or_default(),
                         provider: "native".into(),
                         model: model.to_string(),
                         profile_id: Some(profile.id.clone()),
@@ -369,8 +367,8 @@ impl TuiApp {
         self
     }
 
-    /// After applying a model switch outside the picker (the free-text
-    /// `/model <arg>` path), resolve reasoning effort for the new model:
+    /// After applying a model switch from the picker, resolve reasoning effort
+    /// for the new model:
     /// falls back silently to the provider default when the previous effort
     /// isn't supported, persisting that fallback immediately since there's no
     /// picker open to commit it on close. Returns whether the model offers a
@@ -434,6 +432,7 @@ impl TuiApp {
         };
         self.runtime.model_label = selection.model.clone();
         self.session.set_active_model(&selection.model);
+        self.session.set_active_route_id(&selection.route_id);
         self.connect.profile = selection.profile_id.clone();
         if let Ok(effort) = selection.effort.parse::<ReasoningEffort>() {
             self.reasoning_effort.value = effort;
@@ -480,6 +479,7 @@ impl TuiApp {
             Ok(Some((profile_id, model, effort))) => {
                 self.connect.auth_suspended = false;
                 self.apply_selection(&ModelSelection {
+                    route_id: route_id_for_profile(&profile_id),
                     provider: "native".into(),
                     model: model.clone(),
                     profile_id: Some(profile_id.clone()),
@@ -633,16 +633,16 @@ impl TuiApp {
     /// (`OverlayAction::SwitchToRoute`, `verb: "active"` — the route was
     /// already connected in a past session, this is just a switch).
     ///
-    /// Reuses `model_picker_items` — its "Default" catalog tier already
-    /// falls back to `profile.default_models` even with an empty cache (see
+    /// Uses the explicit first-run fallback projection, which can fall back
+    /// to `profile.default_models` even with an empty cache (see
     /// `models_for_picker` in forge-connect), so this works offline / on a
-    /// cold cache. Falls back to the picker (today's behavior) if the
+    /// cold cache. Falls back to the picker if the
     /// profile somehow has no usable model at all, rather than stranding
     /// the user with an empty `active_model`.
     pub(super) fn apply_default_model_for_profile(&mut self, profile_id: &str, verb: &str) {
         self.connect.profile = Some(profile_id.to_string());
         let model = self
-            .model_picker_items(false)
+            .model_picker_items_with_defaults(false)
             .into_iter()
             .find(|item| item.profile_id.as_deref() == Some(profile_id))
             .map(|item| item.model);
@@ -652,6 +652,7 @@ impl TuiApp {
         };
         let effort = ReasoningEffort::default_for_model(&model);
         self.apply_selection(&ModelSelection {
+            route_id: route_id_for_profile(profile_id),
             provider: "native".into(),
             model: model.clone(),
             profile_id: Some(profile_id.to_string()),
@@ -675,7 +676,12 @@ impl TuiApp {
     }
 
     pub(super) fn open_model_picker_after_connect(&mut self, profile_id: &str) {
-        self.overlay = Some(self.build_connect_model_overlay(ConnectModelColumn::Models, false));
+        let overlay = self.build_connect_model_overlay_scoped(
+            ConnectModelColumn::Models,
+            false,
+            Some(profile_id),
+        );
+        self.overlay = Some(overlay);
         let title = self
             .connect
             .registry
@@ -690,8 +696,55 @@ impl TuiApp {
         self.start_catalog_refresh();
     }
 
+    fn build_connect_model_overlay_scoped(
+        &self,
+        focus: ConnectModelColumn,
+        compact: bool,
+        route_scope: Option<&str>,
+    ) -> Overlay {
+        let connected: HashSet<String> = {
+            let svc = ConnectService {
+                registry: &self.connect.registry,
+                store: &self.connect.store,
+                preferences: &self.connect.preferences,
+                active_profile_id: self.connect.profile.clone(),
+                active_model: Some(self.runtime.model_label.clone()),
+            };
+            svc.connected_profiles()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|p| p.id)
+                .collect()
+        };
+        let providers = build_provider_rows(
+            &self.connect.registry,
+            &connected,
+            self.connect.profile.as_deref(),
+        );
+        let items = self.model_picker_items(false);
+        if compact {
+            return Overlay::connect_model_open_compact(
+                providers,
+                items,
+                self.connect.profile.as_deref(),
+                &self.runtime.model_label,
+                self.reasoning_effort.value,
+                focus,
+            );
+        }
+        Overlay::connect_model_open_scoped(
+            providers,
+            items,
+            self.connect.profile.as_deref(),
+            route_scope,
+            &self.runtime.model_label,
+            self.reasoning_effort.value,
+            focus,
+        )
+    }
+
     pub(super) fn handle_connect(&mut self, action: ConnectAction) {
-        // /connect or /connect list → interactive profile picker (usable UX)
+        // /connect → interactive profile picker
         match &action {
             ConnectAction::Open | ConnectAction::List => {
                 self.open_connect_picker();
@@ -851,7 +904,7 @@ impl TuiApp {
         }
     }
 
-    fn show_oauth_pending(&mut self, pending: OauthPending) {
+    pub(super) fn show_oauth_pending(&mut self, pending: OauthPending) {
         let title = self
             .connect
             .registry
@@ -976,8 +1029,8 @@ impl TuiApp {
     /// `profile_id`, when known, names the exact connect profile the caller
     /// picked (e.g. from route disambiguation in the picker) and is applied
     /// directly. Without it, the profile is re-derived from the model
-    /// string's prefix — the only option for the free-text `/model <arg>`
-    /// path, but ambiguous once two profiles can offer the same prefix.
+    /// string's prefix — retained only for internal callers that do not have
+    /// an explicit catalog route, and ambiguous once routes share prefixes.
     pub(super) fn apply_model_selection(
         &mut self,
         provider: &str,
@@ -1019,6 +1072,7 @@ impl TuiApp {
         // `resolve_effort_for_model`), so carry the current value through
         // unchanged rather than resetting it.
         self.apply_selection(&ModelSelection {
+            route_id: profile_id.map(route_id_for_profile).unwrap_or_default(),
             provider: provider.to_string(),
             model: model.to_string(),
             profile_id: resolved_profile_id,
@@ -1040,37 +1094,6 @@ impl TuiApp {
 
     pub(super) fn model_prefix(model: &str) -> &str {
         model.split('/').next().unwrap_or("").trim()
-    }
-
-    pub(super) fn connected_profile_for_model_prefix(&self, prefix: &str) -> Option<String> {
-        let prefix = prefix.trim();
-        if prefix.is_empty() {
-            return None;
-        }
-        let svc = ConnectService {
-            registry: &self.connect.registry,
-            store: &self.connect.store,
-            preferences: &self.connect.preferences,
-            active_profile_id: self.connect.profile.clone(),
-            active_model: Some(self.runtime.model_label.clone()),
-        };
-        let connected = svc.connected_profiles().ok()?;
-        connected.iter().find_map(|profile| {
-            let pid = profile.id.as_str();
-            let provider_prefix = profile.model_provider_prefix.as_str();
-            let matches = prefix == pid
-                || prefix == provider_prefix
-                || (prefix == "openai" && pid == "openai_codex")
-                || (prefix == "openai-codex" && pid == "openai_codex")
-                || (prefix == "opencode-go" && pid == "opencode_go")
-                || (prefix == "opencode-zen" && pid == "opencode_zen")
-                || (prefix == "grok" && pid == "xai");
-            if matches {
-                Some(profile.id.clone())
-            } else {
-                None
-            }
-        })
     }
 
     /// Build `/model` picker rows from connected-profile catalogs (cache + optional refresh).
@@ -1096,6 +1119,30 @@ impl TuiApp {
     }
 
     pub(super) fn model_picker_items(
+        &self,
+        refresh_stale: bool,
+    ) -> Vec<crate::overlays::ModelItem> {
+        // Normal model switching is account-scoped. Do not surface stale
+        // caches from every built-in profile before a route is connected.
+        if self.connected_profile_count() == 0 {
+            return Vec::new();
+        }
+        let profiles = self.picker_profiles();
+        let cache = ModelCatalogCache::user_default();
+        let entries =
+            runnable_models_for_picker(&profiles, &self.connect.store, &cache, refresh_stale);
+        let mut items = models_from_catalog(&entries);
+        for item in &mut items {
+            if let Some(profile_id) = item.profile_id.as_deref() {
+                item.route_label = self.format_route_label(profile_id);
+            }
+        }
+        items
+    }
+
+    /// Build rows including public/default fallback tiers. Used only when a
+    /// newly connected route needs its first safe model.
+    fn model_picker_items_with_defaults(
         &self,
         refresh_stale: bool,
     ) -> Vec<crate::overlays::ModelItem> {
@@ -1221,4 +1268,18 @@ impl TuiApp {
         });
         cost
     }
+}
+
+fn route_id_for_profile(profile_id: &str) -> String {
+    match profile_id {
+        "openai" => "openai-api",
+        "openai_codex" => "openai-chatgpt",
+        "anthropic" => "anthropic-api",
+        "xai" => "xai-api",
+        "opencode_go" => "opencode-go",
+        "opencode_zen" => "opencode-zen",
+        "ollama" => "ollama",
+        other => other,
+    }
+    .into()
 }

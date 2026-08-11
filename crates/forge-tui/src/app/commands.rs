@@ -622,72 +622,10 @@ impl TuiApp {
         self.status_state.message = "pick a theme".into();
     }
 
-    async fn handle_model_command(&mut self, provider: Option<&str>, model: Option<&str>) {
-        if provider.is_none() && model.is_none() {
-            self.overlay =
-                Some(self.build_connect_model_overlay(ConnectModelColumn::Models, false));
-            self.status_state.message = "pick a model (live catalog when connected)".into();
-            self.start_catalog_refresh();
-            return;
-        }
-
-        let connected_prefix = self.connect.profile.as_deref().and_then(|id| {
-            self.connect
-                .registry
-                .get(id)
-                .map(|profile| profile.model_provider_prefix.as_str())
-        });
-        let model_id = normalize_model_id(provider.unwrap_or(""), model, connected_prefix);
-        if model_id.trim().is_empty() {
-            self.set_feedback(FeedbackSeverity::Warn, "usage: /model <provider/model>");
-            return;
-        }
-        let target_prefix = Self::model_prefix(&model_id);
-        let matching_profile = self.connected_profile_for_model_prefix(target_prefix);
-        let Some(matching_profile) = matching_profile else {
-            self.set_feedback(
-                FeedbackSeverity::Warn,
-                format!("connect `{target_prefix}` first before selecting {model_id}"),
-            );
-            self.push_notice(vec![
-                format!("No connected provider matches `{target_prefix}`."),
-                "Use /connect, or pick a model from the current provider catalog.".into(),
-            ]);
-            return;
-        };
-        // The provider is connected, but that alone doesn't mean `model_id` is
-        // a real model — free-text `/model <name>` (including the picker's own
-        // "no catalog match" fallback) previously applied *any* string here as
-        // long as its prefix matched a connected provider, corrupting the
-        // active selection to non-existent models (e.g. `xai/connect`).
-        // Reject when this provider has a known, non-empty catalog and the
-        // typed id isn't in it; only fall through for providers whose catalog
-        // can't be enumerated (genuinely unlisted/custom models).
-        let catalog = self.model_picker_items(false);
-        let profile_catalog: Vec<&crate::overlays::ModelItem> = catalog
-            .iter()
-            .filter(|item| item.profile_id.as_deref() == Some(matching_profile.as_str()))
-            .collect();
-        if !profile_catalog.is_empty()
-            && !profile_catalog
-                .iter()
-                .any(|item| item.model.eq_ignore_ascii_case(&model_id))
-        {
-            self.set_feedback(
-                FeedbackSeverity::Warn,
-                format!("`{model_id}` is not in {target_prefix}'s model catalog"),
-            );
-            self.push_notice(vec![
-                format!("`{model_id}` was not found for the connected `{target_prefix}` provider."),
-                "Pick a model from the catalog with /model, or check the spelling.".into(),
-            ]);
-            return;
-        }
-        self.apply_model_selection("native", &model_id, None);
-        // Fall back to a safe effort default for the new model if the
-        // previous one doesn't fit — no forced Effort picker; the user can
-        // open the effort view separately if they want to change it.
-        self.resolve_effort_for_model(&model_id);
+    async fn handle_model_command(&mut self) {
+        self.overlay = Some(self.build_connect_model_overlay(ConnectModelColumn::Models, false));
+        self.status_state.message = "pick a model (live catalog when connected)".into();
+        self.start_catalog_refresh();
     }
 
     pub async fn dispatch_line(&mut self, line: &str) -> Result<(), TuiError> {
@@ -734,10 +672,7 @@ impl TuiApp {
                         let _ = self.drain_pending_context_reset(None).await;
                     }
                 }
-                Ok(SlashCommand::Model { provider, model }) => {
-                    self.handle_model_command(provider.as_deref(), model.as_deref())
-                        .await
-                }
+                Ok(SlashCommand::Model) => self.handle_model_command().await,
                 Ok(SlashCommand::ResumeList) => {
                     match recent_resume_sessions(
                         self.session.journal_dir(),
@@ -853,8 +788,8 @@ impl TuiApp {
                     self.open_connect_picker();
                     self.status_state.message = msg;
                 }
-                Ok(SlashCommand::Connect(action)) => {
-                    self.handle_connect(action);
+                Ok(SlashCommand::Connect) => {
+                    self.handle_connect(ConnectAction::Open);
                 }
                 Ok(SlashCommand::Refresh) => {
                     if self.current_workspace_is_diff() {

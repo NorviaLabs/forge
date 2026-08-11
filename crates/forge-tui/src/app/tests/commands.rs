@@ -838,25 +838,11 @@ async fn model_command_rejects_cross_provider_selection_without_matching_connect
     app.runtime.model_label = "openai-codex/gpt-5.6-sol".into();
     app.session.set_active_model("openai-codex/gpt-5.6-sol");
 
-    app.dispatch_line("/model not-connected claude-sonnet-4-5")
-        .await
-        .unwrap();
+    app.dispatch_line("/model").await.unwrap();
 
     assert_eq!(app.connect.profile.as_deref(), Some("openai_codex"));
     assert_eq!(app.runtime.model_label, "openai-codex/gpt-5.6-sol");
-    assert!(
-        app.status_state
-            .message
-            .contains("connect `not-connected` first")
-            || app
-                .notice_state
-                .items
-                .iter()
-                .any(|l| l.contains("not-connected")),
-        "expected rejection notice, got status={} notices={:?}",
-        app.status_state.message,
-        app.notice_state.items
-    );
+    assert!(matches!(app.overlay, Some(Overlay::ConnectModel { .. })));
 }
 
 #[tokio::test]
@@ -1203,7 +1189,7 @@ async fn status_slash_command_opens_overlay_on_enter() {
 }
 
 #[tokio::test]
-async fn multi_token_slash_connect_list_opens_picker() {
+async fn slash_connect_opens_picker() {
     use crossterm::event::{KeyCode, KeyModifiers};
     let (_dir, session) = test_session().await;
     let mut app = TuiApp::new(
@@ -1218,7 +1204,7 @@ async fn multi_token_slash_connect_list_opens_picker() {
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
-    for c in "/connect list".chars() {
+    for c in "/connect".chars() {
         app.handle_key(press(KeyCode::Char(c), KeyModifiers::NONE))
             .await
             .unwrap();

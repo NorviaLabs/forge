@@ -173,8 +173,19 @@ impl TuiApp {
                 self.resolve_effort_for_model(&model);
                 self.overlay = None;
             }
+            OverlayAction::ModelNotInCatalog(model) => {
+                self.status_state.message =
+                    format!("model `{model}` is not available for this account");
+                self.push_notice(vec![
+                    "Choose a model from the connected route's catalog.".into()
+                ]);
+            }
             OverlayAction::SwitchToRoute { profile_id } => {
-                self.apply_default_model_for_profile(&profile_id, "active");
+                // A connected route is a credential/entitlement choice, not
+                // an independent model selection. Browse its runnable models
+                // without changing the active route-model combination until
+                // the user confirms a row.
+                self.open_model_picker_after_connect(&profile_id);
             }
             OverlayAction::SelectEffort(level) => {
                 self.overlay = None;

@@ -201,6 +201,10 @@ impl AgentSession {
         self.active_model = model.into();
     }
 
+    pub fn set_active_route_id(&mut self, route_id: impl Into<String>) {
+        self.active_route_id = route_id.into();
+    }
+
     /// Wire-level reasoning-effort value to send on the next completion, or
     /// `None` to omit the field (model doesn't support it, or effort is Auto).
     pub fn set_reasoning_effort(&mut self, effort: Option<String>) {

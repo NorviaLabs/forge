@@ -104,6 +104,15 @@ pub enum CatalogSource {
     Default,
 }
 
+impl CatalogSource {
+    /// Whether this row represents a model returned by the selected account
+    /// (directly or from that account's persisted cache). Public registry and
+    /// built-in fallback rows are metadata/safety nets, not entitlement proof.
+    pub fn is_runnable(self) -> bool {
+        matches!(self, Self::Live | Self::Cached)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CatalogEntry {
     /// Native provider/model string, e.g. `openai/gpt-4.1-mini`.
@@ -867,6 +876,24 @@ pub fn models_for_picker(
     out
 }
 
+/// Return only account-backed rows suitable for normal model selection.
+///
+/// `models_for_picker` intentionally retains registry/default rows for the
+/// first-run fallback and metadata views. Callers that let a connected user
+/// switch models must use this projection so a public registry entry cannot
+/// become an apparently selectable (but unauthorized) model.
+pub fn runnable_models_for_picker(
+    profiles: &[ConnectProfile],
+    store: &CredentialStore,
+    cache: &ModelCatalogCache,
+    refresh_stale: bool,
+) -> Vec<CatalogEntry> {
+    models_for_picker(profiles, store, cache, refresh_stale)
+        .into_iter()
+        .filter(|entry| entry.source.is_runnable())
+        .collect()
+}
+
 /// One user-facing model, grouped from every [`CatalogEntry`] route that offers it.
 ///
 /// `models_for_picker` preserves every profile's route as a separate flat entry;
@@ -1073,6 +1100,14 @@ mod tests {
         let entries = models_for_picker(std::slice::from_ref(&p), &store, &cache, false);
         assert!(!entries.is_empty());
         assert!(entries.iter().all(|e| e.id.starts_with("openai/")));
+    }
+
+    #[test]
+    fn only_account_backed_catalog_sources_are_runnable() {
+        assert!(CatalogSource::Live.is_runnable());
+        assert!(CatalogSource::Cached.is_runnable());
+        assert!(!CatalogSource::Registry.is_runnable());
+        assert!(!CatalogSource::Default.is_runnable());
     }
 
     #[test]

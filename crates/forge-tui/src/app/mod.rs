@@ -17,7 +17,7 @@ use crossterm::execute;
 use crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
 use forge_connect::{
     builtin_registry, handle_connect_action, models_for_picker, needs_tui_api_key_prompt,
-    needs_tui_oauth, normalize_model_id, ConnectAction, ConnectError, ConnectRegistry,
+    needs_tui_oauth, runnable_models_for_picker, ConnectAction, ConnectError, ConnectRegistry,
     ConnectService, CredentialStore, ModelCatalogCache, ModelSelection, OauthPending,
     PreferenceStore, OPENAI_CODEX_PROFILE_ID,
 };

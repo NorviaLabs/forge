@@ -80,6 +80,8 @@ pub struct AgentSession {
     tasks: TaskRuntime,
     /// Provider/model id for the next completion (empty → client default).
     pub active_model: String,
+    /// Stable offering identity for `active_model`.
+    pub active_route_id: String,
     /// Wire-level reasoning-effort value for the next completion, or `None`
     /// to omit the field entirely (model doesn't support it, or effort is
     /// Auto). Set via `set_reasoning_effort`, read by `build_model_request`.

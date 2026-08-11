@@ -23,7 +23,7 @@ pub fn anthropic_profile() -> ConnectProfile {
         model_provider_prefix: "anthropic".into(),
         vendor_id: PROFILE_ID.into(),
         vendor_label: "Anthropic".into(),
-        route_label: String::new(),
+        route_label: "API".into(),
     }
 }
 
