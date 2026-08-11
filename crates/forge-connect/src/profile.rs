@@ -41,20 +41,27 @@ pub struct ConnectProfile {
     pub route_label: String,
 }
 
+/// Stable public route identity for a credential/profile id, e.g.
+/// `openai_codex` → `openai-chatgpt`. Credential/profile IDs remain an
+/// implementation detail while the picker migrates to offering identity.
+pub fn route_id_for_profile_id(profile_id: &str) -> &str {
+    match profile_id {
+        "openai" => "openai-api",
+        "openai_codex" => "openai-chatgpt",
+        "anthropic" => "anthropic-api",
+        "xai" => "xai-api",
+        "opencode_go" => "opencode-go",
+        "opencode_zen" => "opencode-zen",
+        "ollama" => "ollama",
+        other => other,
+    }
+}
+
 impl ConnectProfile {
     /// Stable public route identity. Credential/profile IDs remain an
     /// implementation detail while the picker migrates to offering identity.
     pub fn route_id(&self) -> &str {
-        match self.id.as_str() {
-            "openai" => "openai-api",
-            "openai_codex" => "openai-chatgpt",
-            "anthropic" => "anthropic-api",
-            "xai" => "xai-api",
-            "opencode_go" => "opencode-go",
-            "opencode_zen" => "opencode-zen",
-            "ollama" => "ollama",
-            _ => self.id.as_str(),
-        }
+        route_id_for_profile_id(&self.id)
     }
 
     pub fn default_model(&self) -> Option<&str> {
