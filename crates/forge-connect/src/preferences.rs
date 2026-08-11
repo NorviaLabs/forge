@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::profile::route_id_for_profile_id;
 use crate::selection::ModelSelection;
 use crate::store::StoreError;
 
@@ -107,6 +108,7 @@ impl PreferenceStore {
         };
         let effort = self.last_effort()?.unwrap_or_default();
         Ok(Some(ModelSelection {
+            route_id: route_id_for_profile_id(&profile_id).to_string(),
             provider: "native".into(),
             model,
             profile_id: Some(profile_id),
@@ -308,6 +310,7 @@ mod tests {
         assert_eq!(
             prefs.last_selection_struct().unwrap(),
             Some(ModelSelection {
+                route_id: route_id_for_profile_id("openai_codex").to_string(),
                 provider: "native".into(),
                 model: "openai-codex/gpt-5.6-luna".into(),
                 profile_id: Some("openai_codex".into()),

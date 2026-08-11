@@ -390,6 +390,7 @@ mod tests {
                 idempotent: false,
             }],
             model: model.into(),
+            route_id: None,
             reasoning_effort: None,
             prompt_cache: true,
         }

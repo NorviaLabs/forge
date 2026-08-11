@@ -62,6 +62,7 @@ impl AgentSession {
             messages: self.messages.clone(),
             tools,
             model: self.active_model.clone(),
+            route_id: (!self.active_route_id.is_empty()).then(|| self.active_route_id.clone()),
             reasoning_effort: self.reasoning_effort.clone(),
             prompt_cache: true,
         }
