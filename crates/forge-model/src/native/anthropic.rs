@@ -385,6 +385,7 @@ mod tests {
     fn maps_system_tools_and_tool_results() {
         let req = ModelRequest {
             model: "anthropic/claude".into(),
+            route_id: None,
             prompt_cache: true,
             reasoning_effort: None,
             messages: vec![
@@ -510,6 +511,7 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         let request = ModelRequest {
             model: "anthropic/claude-sonnet-4-6".into(),
+            route_id: None,
             reasoning_effort: Some("high".into()),
             messages: vec![
                 Message::new(MessageRole::System, "system"),
@@ -560,6 +562,7 @@ mod tests {
         client.apply_provider_env(&[("ANTHROPIC_API_KEY".into(), String::new())]);
         let request = ModelRequest {
             model: "anthropic/claude".into(),
+            route_id: None,
             reasoning_effort: None,
             messages: vec![],
             tools: vec![],

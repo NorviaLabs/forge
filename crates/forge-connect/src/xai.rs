@@ -19,8 +19,8 @@ pub fn xai_grok_profile() -> ConnectProfile {
         auth_url: Some("https://auth.x.ai".into()),
         model_provider_prefix: "xai".into(),
         vendor_id: PROFILE_ID.into(),
-        vendor_label: "xAI Grok".into(),
-        route_label: String::new(),
+        vendor_label: "xAI".into(),
+        route_label: "API".into(),
     }
 }
 

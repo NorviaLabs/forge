@@ -105,6 +105,9 @@ pub struct ModelRequest {
     pub messages: Vec<Message>,
     pub tools: Vec<ToolDescriptor>,
     pub model: String,
+    /// Stable offering identity. `None` is retained for legacy callers while
+    /// route-aware selection is rolled through the workspace.
+    pub route_id: Option<String>,
     pub reasoning_effort: Option<String>,
     pub prompt_cache: bool,
 }
@@ -192,6 +195,7 @@ mod tests {
                 }],
                 tools: vec![],
                 model: "mock".into(),
+                route_id: None,
                 reasoning_effort: None,
                 prompt_cache: true,
             })
@@ -211,6 +215,7 @@ mod tests {
                     messages: vec![],
                     tools: vec![],
                     model: "mock".into(),
+                    route_id: None,
                     reasoning_effort: None,
                     prompt_cache: true,
                 },
@@ -246,6 +251,7 @@ mod tests {
                 messages: vec![],
                 tools: vec![],
                 model: "mock".into(),
+                route_id: None,
                 reasoning_effort: None,
                 prompt_cache: true,
             })
@@ -278,6 +284,7 @@ mod tests {
                     messages: vec![],
                     tools: vec![],
                     model: "mock".into(),
+                    route_id: None,
                     reasoning_effort: None,
                     prompt_cache: false,
                 },

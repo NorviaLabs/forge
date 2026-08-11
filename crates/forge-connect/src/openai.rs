@@ -23,7 +23,7 @@ pub fn openai_profile() -> ConnectProfile {
         model_provider_prefix: "openai".into(),
         vendor_id: "openai".into(),
         vendor_label: "OpenAI".into(),
-        route_label: "API key".into(),
+        route_label: "API".into(),
     }
 }
 
