@@ -4,69 +4,204 @@
 
 use crate::*;
 
+pub(crate) struct PendingToolExecution {
+    call: ToolCall,
+    tools: Arc<ToolRegistry>,
+    tool_ctx: ToolContext,
+    budget: ValidationBudget,
+}
+
+pub(crate) struct CompletedToolExecution {
+    call: ToolCall,
+    budget: ValidationBudget,
+    pre_edit: Option<Vec<(String, Option<u64>)>>,
+    pre_git: Option<GitPre>,
+    result: Result<ToolOutput, ToolError>,
+}
+
+pub(crate) enum ToolExecutionStart {
+    Finished(Option<ModelResponse>),
+    Execute(PendingToolExecution),
+}
+
+pub(crate) struct PendingToolApplications {
+    pub(crate) response: ModelResponse,
+    pub(crate) calls: std::vec::IntoIter<ToolCall>,
+    pub(crate) budget: ValidationBudget,
+}
+
+pub enum ModelResponseApplication {
+    Finished(ApplyOutcome),
+    Execute(Box<PendingToolApplication>),
+}
+
+pub struct PendingToolApplication {
+    execution: PendingToolExecution,
+    remaining: PendingToolApplications,
+}
+
+pub struct CompletedToolApplication {
+    execution: CompletedToolExecution,
+    remaining: PendingToolApplications,
+}
+
+impl PendingToolExecution {
+    pub async fn execute(self) -> CompletedToolExecution {
+        let Self {
+            call,
+            tools,
+            tool_ctx,
+            mut budget,
+        } = self;
+        let pre_edit = pre_edit_snapshot(&tool_ctx, &call).await;
+        let pre_git = git_pre_state(&tool_ctx, &call).await;
+        let result = tools
+            .call(&tool_ctx, &call.name, call.arguments.clone(), &mut budget)
+            .await;
+        CompletedToolExecution {
+            call,
+            budget,
+            pre_edit,
+            pre_git,
+            result,
+        }
+    }
+}
+
+impl PendingToolApplication {
+    pub async fn execute(self) -> CompletedToolApplication {
+        CompletedToolApplication {
+            execution: self.execution.execute().await,
+            remaining: self.remaining,
+        }
+    }
+}
+
+async fn hash_workspace_path(tool_ctx: &ToolContext, relative: &str) -> Option<u64> {
+    hash_file(&tool_ctx.workspace_root.join(relative)).await
+}
+
+async fn run_git_readonly(tool_ctx: &ToolContext, args: &[&str]) -> Option<String> {
+    let output = tokio::process::Command::new("git")
+        .args(args)
+        .current_dir(&tool_ctx.workspace_root)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+async fn pre_edit_snapshot(
+    tool_ctx: &ToolContext,
+    call: &ToolCall,
+) -> Option<Vec<(String, Option<u64>)>> {
+    match call.name.as_str() {
+        "write_file" => {
+            let path = call.arguments.get("path")?.as_str()?.to_string();
+            let hash = hash_workspace_path(tool_ctx, &path).await;
+            Some(vec![(path, hash)])
+        }
+        "apply_patch" => {
+            let patch = call.arguments.get("patch")?.as_str()?;
+            let mut snapshots = Vec::new();
+            for (path, _kind) in parse_patch_paths(patch) {
+                let hash = hash_workspace_path(tool_ctx, &path).await;
+                snapshots.push((path, hash));
+            }
+            Some(snapshots)
+        }
+        _ => None,
+    }
+}
+
+async fn git_pre_state(tool_ctx: &ToolContext, call: &ToolCall) -> Option<GitPre> {
+    if call.name != "git" {
+        return None;
+    }
+    let args: GitCallArgsLite = serde_json::from_value(call.arguments.clone()).ok()?;
+    let subcommand = args.subcommand.trim().to_ascii_lowercase();
+    Some(match subcommand.as_str() {
+        "commit" => GitPre::Head(run_git_readonly(tool_ctx, &["rev-parse", "HEAD"]).await),
+        "checkout" | "switch" => {
+            GitPre::Branch(run_git_readonly(tool_ctx, &["rev-parse", "--abbrev-ref", "HEAD"]).await)
+        }
+        "restore" => GitPre::RestorePath(
+            args.args
+                .iter()
+                .rev()
+                .find(|argument| !argument.starts_with('-'))
+                .cloned(),
+        ),
+        "add" => GitPre::NotVerified,
+        _ => GitPre::NotVerified,
+    })
+}
+
 impl AgentSession {
-    async fn hash_workspace_path(&self, relative: &str) -> Option<u64> {
-        hash_file(&self.tool_ctx.workspace_root.join(relative)).await
-    }
-
-    /// Read-only `git` invocation used only to capture before/after state for
-    /// effect verification — never one of the mutating tool-facing commands.
-    async fn run_git_readonly(&self, args: &[&str]) -> Option<String> {
-        let out = tokio::process::Command::new("git")
-            .args(args)
-            .current_dir(&self.tool_ctx.workspace_root)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .output()
-            .await
-            .ok()?;
-        if !out.status.success() {
-            return None;
-        }
-        Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
-    }
-
-    /// Pre-call content hashes for the path(s) a `write_file`/`apply_patch`
-    /// call is about to touch. `None` for any other tool.
-    async fn pre_edit_snapshot(&self, call: &ToolCall) -> Option<Vec<(String, Option<u64>)>> {
-        match call.name.as_str() {
-            "write_file" => {
-                let path = call.arguments.get("path")?.as_str()?.to_string();
-                let hash = self.hash_workspace_path(&path).await;
-                Some(vec![(path, hash)])
-            }
-            "apply_patch" => {
-                let patch = call.arguments.get("patch")?.as_str()?;
-                let mut out = Vec::new();
-                for (path, _kind) in parse_patch_paths(patch) {
-                    let hash = self.hash_workspace_path(&path).await;
-                    out.push((path, hash));
+    pub(crate) async fn next_tool_application(
+        &mut self,
+        mut pending: PendingToolApplications,
+    ) -> Result<ModelResponseApplication, LoopError> {
+        while let Some(call) = pending.calls.next() {
+            match self.start_tool_call(&call, &mut pending.budget).await? {
+                ToolExecutionStart::Finished(Some(pause)) => {
+                    self.turn.restore_validation_budget(pending.budget);
+                    return Ok(ModelResponseApplication::Finished(ApplyOutcome::Hitl(
+                        pause,
+                    )));
                 }
-                Some(out)
+                ToolExecutionStart::Finished(None) => {
+                    if self.active_task.lifecycle == TaskLifecycle::Failed {
+                        self.turn.restore_validation_budget(pending.budget);
+                        return Ok(ModelResponseApplication::Finished(ApplyOutcome::Done(
+                            pending.response,
+                        )));
+                    }
+                }
+                ToolExecutionStart::Execute(execution) => {
+                    return Ok(ModelResponseApplication::Execute(Box::new(
+                        PendingToolApplication {
+                            execution,
+                            remaining: pending,
+                        },
+                    )));
+                }
             }
-            _ => None,
         }
+        self.turn.restore_validation_budget(pending.budget);
+        Ok(ModelResponseApplication::Finished(ApplyOutcome::Continue))
     }
 
-    /// Pre-call git state needed to verify the requested effect afterward.
-    /// `None` for any non-`git` tool.
-    async fn git_pre_state(&self, call: &ToolCall) -> Option<GitPre> {
-        if call.name != "git" {
-            return None;
+    pub async fn finish_tool_application(
+        &mut self,
+        completed: CompletedToolApplication,
+    ) -> Result<ModelResponseApplication, LoopError> {
+        let mut pending = completed.remaining;
+        let (budget, result) = self.finish_tool_call(completed.execution).await;
+        pending.budget = budget;
+        if let Err(error) = result {
+            self.turn.restore_validation_budget(pending.budget);
+            return Err(error);
         }
-        let a: GitCallArgsLite = serde_json::from_value(call.arguments.clone()).ok()?;
-        let sub = a.subcommand.trim().to_ascii_lowercase();
-        Some(match sub.as_str() {
-            "commit" => GitPre::Head(self.run_git_readonly(&["rev-parse", "HEAD"]).await),
-            "checkout" | "switch" => GitPre::Branch(
-                self.run_git_readonly(&["rev-parse", "--abbrev-ref", "HEAD"])
-                    .await,
-            ),
-            "restore" => {
-                GitPre::RestorePath(a.args.iter().rev().find(|s| !s.starts_with('-')).cloned())
-            }
-            "add" => GitPre::NotVerified, // verified post-hoc from staged state, no pre-check needed
-            _ => GitPre::NotVerified,
-        })
+        if self.active_task.lifecycle == TaskLifecycle::Failed {
+            self.turn.restore_validation_budget(pending.budget);
+            return Ok(ModelResponseApplication::Finished(ApplyOutcome::Done(
+                pending.response,
+            )));
+        }
+        self.next_tool_application(pending).await
+    }
+
+    async fn hash_workspace_path(&self, relative: &str) -> Option<u64> {
+        hash_workspace_path(&self.tool_ctx, relative).await
+    }
+
+    async fn run_git_readonly(&self, args: &[&str]) -> Option<String> {
+        run_git_readonly(&self.tool_ctx, args).await
     }
 
     pub(crate) async fn pre_tool_state(
@@ -74,8 +209,8 @@ impl AgentSession {
         call: &ToolCall,
     ) -> (Option<Vec<(String, Option<u64>)>>, Option<GitPre>) {
         (
-            self.pre_edit_snapshot(call).await,
-            self.git_pre_state(call).await,
+            pre_edit_snapshot(&self.tool_ctx, call).await,
+            git_pre_state(&self.tool_ctx, call).await,
         )
     }
 
@@ -292,13 +427,13 @@ impl AgentSession {
     }
 
     /// Returns Some(response) if paused for HITL.
-    pub(crate) async fn run_one_tool(
+    pub(crate) async fn start_tool_call(
         &mut self,
         call: &ToolCall,
         budget: &mut ValidationBudget,
-    ) -> Result<Option<ModelResponse>, LoopError> {
+    ) -> Result<ToolExecutionStart, LoopError> {
         if self.try_serve_journaled_tool(call).await? {
-            return Ok(None);
+            return Ok(ToolExecutionStart::Finished(None));
         }
         self.turn.record_call(call.clone());
         let class = self
@@ -350,12 +485,12 @@ impl AgentSession {
                             .operation_id(call.id.clone())
                             .tool_name(call.name.clone()),
                     );
-                    return Ok(Some(ModelResponse {
+                    return Ok(ToolExecutionStart::Finished(Some(ModelResponse {
                         text: format!("Awaiting HITL approval for tool {}", call.name),
                         tool_calls: vec![call.clone()],
                         usage: None,
                         thinking: None,
-                    }));
+                    })));
                 }
                 PolicyDecision::Allow => {}
                 // `PolicyDecision` is `#[non_exhaustive]`, so the denial path is the
@@ -382,7 +517,7 @@ impl AgentSession {
                         thinking_duration_secs: None,
                         tool_calls: vec![],
                     });
-                    return Ok(None);
+                    return Ok(ToolExecutionStart::Finished(None));
                 }
             }
         }
@@ -395,113 +530,130 @@ impl AgentSession {
         // intercepted here and routed to `spawn_background_shell` instead,
         // so starting it doesn't block this turn. See `background.rs`.
         if call.name == "background_run" {
-            return self.dispatch_background_run(call).await;
+            return Ok(ToolExecutionStart::Finished(
+                self.dispatch_background_run(call).await?,
+            ));
         }
 
-        let (pre_edit, pre_git) = self.pre_tool_state(call).await;
+        Ok(ToolExecutionStart::Execute(PendingToolExecution {
+            call: call.clone(),
+            tools: self.tools.clone(),
+            tool_ctx: self.tool_ctx.clone(),
+            budget: std::mem::take(budget),
+        }))
+    }
 
-        match self
-            .tools
-            .call(&self.tool_ctx, &call.name, call.arguments.clone(), budget)
-            .await
-        {
-            Ok(mut output) => {
-                Self::backfill_tool_outcome(&mut output);
-                self.push_success_evidence(call, pre_edit, pre_git, &output)
-                    .await;
-                if self.enable_context {
-                    output.content = self.context.maybe_offload_tool_content(output.content)?;
-                }
-                self.journal
-                    .append_tool_result(self.session_id, call, &output)
-                    .await?;
-                self.remember_tool_result(call, &output);
-                self.messages.push(Message {
-                    outcome: output.effective_outcome(),
-                    role: MessageRole::Tool,
-                    content: output.content.clone(),
-                    tool_call_id: Some(call.id.clone()),
-                    name: Some(call.name.clone()),
-                    thinking: None,
-                    thinking_duration_secs: None,
-                    tool_calls: vec![],
-                });
-                self.events.push(TurnEvent {
-                    kind: "tool".into(),
-                    detail: format!("{} -> {} chars", call.name, output.content.len()),
-                });
-            }
-            Err(ToolError::Validation(ve)) => {
-                self.journal
-                    .append_validation_failed(self.session_id, &call.name, &ve.to_string())
-                    .await?;
-                // Actionable, schema-derived feedback — no guessed corrected values.
-                let msg = format!(
-                    "Tool validation error: {ve}. \
-                     Do not concatenate fields. Use separate JSON properties with native types \
-                     (for example offset: 1, limit: 100 as integers)."
-                );
-                self.messages.push(Message {
-                    outcome: ExecutionOutcome::Failed { exit_code: None },
-                    role: MessageRole::Tool,
-                    content: msg.clone(),
-                    tool_call_id: Some(call.id.clone()),
-                    name: Some(call.name.clone()),
-                    thinking: None,
-                    thinking_duration_secs: None,
-                    tool_calls: vec![],
-                });
-                self.events.push(TurnEvent {
-                    kind: "validation".into(),
-                    detail: msg,
-                });
-            }
-            Err(e) => {
-                let content = e.to_string();
-                let is_budget = content.contains("validation retry budget exceeded");
-                let outcome = e.as_outcome();
-                let output = ToolOutput {
-                    outcome: Some(outcome),
-                    content: if is_budget {
-                        format!(
-                            "{content}. Stop retrying this tool with the same invalid argument shape. \
-                             Either call it with valid structured JSON types or finish with a final answer."
-                        )
-                    } else {
-                        content
-                    },
-                    is_error: true,
-                    exit_code: None,
-                };
-                self.journal
-                    .append_tool_result(self.session_id, call, &output)
-                    .await?;
-                self.remember_tool_result(call, &output);
-                self.messages.push(Message {
-                    outcome: output.effective_outcome(),
-                    role: MessageRole::Tool,
-                    content: output.content.clone(),
-                    tool_call_id: Some(call.id.clone()),
-                    name: Some(call.name.clone()),
-                    thinking: None,
-                    thinking_duration_secs: None,
-                    tool_calls: vec![],
-                });
-                if is_budget {
-                    self.events.push(TurnEvent {
-                        kind: "validation_exhausted".into(),
-                        detail: output.content.clone(),
+    pub(crate) async fn finish_tool_call(
+        &mut self,
+        completed: CompletedToolExecution,
+    ) -> (ValidationBudget, Result<(), LoopError>) {
+        let CompletedToolExecution {
+            call,
+            budget,
+            pre_edit,
+            pre_git,
+            result,
+        } = completed;
+        let finish_result = async {
+            match result {
+                Ok(mut output) => {
+                    Self::backfill_tool_outcome(&mut output);
+                    self.push_success_evidence(&call, pre_edit, pre_git, &output)
+                        .await;
+                    if self.enable_context {
+                        output.content = self.context.maybe_offload_tool_content(output.content)?;
+                    }
+                    self.journal
+                        .append_tool_result(self.session_id, &call, &output)
+                        .await?;
+                    self.remember_tool_result(&call, &output);
+                    self.messages.push(Message {
+                        outcome: output.effective_outcome(),
+                        role: MessageRole::Tool,
+                        content: output.content.clone(),
+                        tool_call_id: Some(call.id.clone()),
+                        name: Some(call.name.clone()),
+                        thinking: None,
+                        thinking_duration_secs: None,
+                        tool_calls: vec![],
                     });
-                    // Terminal failure: stop the turn instead of activity-only hang.
-                    self.finalize_turn_failure(
-                        "Forge couldn't complete this turn after repeated invalid tool calls.",
-                        "validation_exhausted",
-                    )
-                    .await?;
+                    self.events.push(TurnEvent {
+                        kind: "tool".into(),
+                        detail: format!("{} -> {} chars", call.name, output.content.len()),
+                    });
+                }
+                Err(ToolError::Validation(ve)) => {
+                    self.journal
+                        .append_validation_failed(self.session_id, &call.name, &ve.to_string())
+                        .await?;
+                    let msg = format!(
+                        "Tool validation error: {ve}. \
+                         Do not concatenate fields. Use separate JSON properties with native types \
+                         (for example offset: 1, limit: 100 as integers)."
+                    );
+                    self.messages.push(Message {
+                        outcome: ExecutionOutcome::Failed { exit_code: None },
+                        role: MessageRole::Tool,
+                        content: msg.clone(),
+                        tool_call_id: Some(call.id.clone()),
+                        name: Some(call.name.clone()),
+                        thinking: None,
+                        thinking_duration_secs: None,
+                        tool_calls: vec![],
+                    });
+                    self.events.push(TurnEvent {
+                        kind: "validation".into(),
+                        detail: msg,
+                    });
+                }
+                Err(error) => {
+                    let content = error.to_string();
+                    let is_budget = content.contains("validation retry budget exceeded");
+                    let outcome = error.as_outcome();
+                    let output = ToolOutput {
+                        outcome: Some(outcome),
+                        content: if is_budget {
+                            format!(
+                                "{content}. Stop retrying this tool with the same invalid argument shape. \
+                                 Either call it with valid structured JSON types or finish with a final answer."
+                            )
+                        } else {
+                            content
+                        },
+                        is_error: true,
+                        exit_code: None,
+                    };
+                    self.journal
+                        .append_tool_result(self.session_id, &call, &output)
+                        .await?;
+                    self.remember_tool_result(&call, &output);
+                    self.messages.push(Message {
+                        outcome: output.effective_outcome(),
+                        role: MessageRole::Tool,
+                        content: output.content.clone(),
+                        tool_call_id: Some(call.id.clone()),
+                        name: Some(call.name.clone()),
+                        thinking: None,
+                        thinking_duration_secs: None,
+                        tool_calls: vec![],
+                    });
+                    if is_budget {
+                        self.events.push(TurnEvent {
+                            kind: "validation_exhausted".into(),
+                            detail: output.content.clone(),
+                        });
+                        self.finalize_turn_failure(
+                            "Forge couldn't complete this turn after repeated invalid tool calls.",
+                            "validation_exhausted",
+                        )
+                        .await?;
+                    }
                 }
             }
+            Ok(())
         }
-        Ok(None)
+        .await;
+        (budget, finish_result)
     }
 
     pub(crate) async fn run_one_tool_exec_only(
@@ -516,7 +668,8 @@ impl AgentSession {
         self.journal
             .append_tool_intent(self.session_id, call)
             .await?;
-        let (pre_edit, pre_git) = self.pre_tool_state(call).await;
+        let pre_edit = pre_edit_snapshot(&self.tool_ctx, call).await;
+        let pre_git = git_pre_state(&self.tool_ctx, call).await;
         match self
             .tools
             .call(&self.tool_ctx, &call.name, call.arguments.clone(), budget)
