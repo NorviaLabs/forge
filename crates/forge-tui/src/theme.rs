@@ -588,12 +588,21 @@ pub fn tag_style(selected: bool) -> Style {
 }
 
 /// Input block cursor: solid inverted cell (bg fills the whole character cell).
+pub const CURSOR_GLYPH: &str = "█";
+pub const CURSOR_CELL: &str = " ";
+
 pub fn caret() -> Style {
     let p = active_palette();
     Style::default()
         .fg(p.panel)
         .bg(p.cursor)
         .add_modifier(Modifier::BOLD)
+}
+
+pub fn paint_caret(buf: &mut ratatui::buffer::Buffer, x: u16, y: u16) {
+    let cell = &mut buf[(x, y)];
+    cell.set_symbol(CURSOR_CELL);
+    cell.set_style(caret());
 }
 
 /// History-recalled input (subtle highlight of the whole field text).

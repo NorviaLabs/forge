@@ -472,6 +472,7 @@ impl TuiApp {
                     terminal_content: interactive_terminal_output.unwrap_or(""),
                     terminal_running: interactive_terminal.is_some_and(|terminal| terminal.running),
                     terminal_shell: interactive_terminal.map(|terminal| terminal.shell.as_str()),
+                    terminal_cursor: interactive_terminal.map(InteractiveTerminal::cursor_position),
                 },
                 focused: self.focus.block == FocusBlock::BottomPanel,
             },
