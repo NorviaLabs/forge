@@ -3,6 +3,7 @@
 //!
 //! Split out of `lib.rs`; methods are moved verbatim.
 
+use super::tools::PendingToolApplications;
 use crate::*;
 
 impl AgentSession {
@@ -79,6 +80,22 @@ impl AgentSession {
         &mut self,
         last: ModelResponse,
     ) -> Result<ApplyOutcome, LoopError> {
+        let mut application = self.begin_model_response_application(last).await?;
+        loop {
+            application = match application {
+                ModelResponseApplication::Finished(outcome) => return Ok(outcome),
+                ModelResponseApplication::Execute(pending) => {
+                    self.finish_tool_application((*pending).execute().await)
+                        .await?
+                }
+            };
+        }
+    }
+
+    pub async fn begin_model_response_application(
+        &mut self,
+        last: ModelResponse,
+    ) -> Result<ModelResponseApplication, LoopError> {
         self.journal
             .append_model_response(
                 self.session_id,
@@ -137,7 +154,7 @@ impl AgentSession {
                     | TaskLifecycle::Cancelled
                     | TaskLifecycle::Interrupted
             ) {
-                return Ok(ApplyOutcome::Done(last));
+                return Ok(ModelResponseApplication::Finished(ApplyOutcome::Done(last)));
             }
             // No durable final answer *and* the turn already did tool/validation
             // work: a failed terminal state, not silent success. An idle / no-op
@@ -146,7 +163,7 @@ impl AgentSession {
             if final_text.is_empty() && self.current_turn_has_tool_activity() {
                 self.finalize_turn_failure("Forge couldn't complete this turn.", "no_final_answer")
                     .await?;
-                return Ok(ApplyOutcome::Done(last));
+                return Ok(ModelResponseApplication::Finished(ApplyOutcome::Done(last)));
             }
             // The model issued zero real tool calls this turn (in this step
             // or any earlier one), but its final text looks like an attempt
@@ -168,7 +185,7 @@ impl AgentSession {
                         CompletionReason::DanglingToolCallText.as_category(),
                     )
                     .await?;
-                    return Ok(ApplyOutcome::Done(last));
+                    return Ok(ModelResponseApplication::Finished(ApplyOutcome::Done(last)));
                 }
             }
             self.turn.push_evidence(EvidenceEntry::new(
@@ -253,27 +270,17 @@ impl AgentSession {
                 }
             }
             self.last_completion = Some(decision);
-            return Ok(ApplyOutcome::Done(last));
+            return Ok(ModelResponseApplication::Finished(ApplyOutcome::Done(last)));
         }
 
         // Budget spans the whole user turn so repeated invalid calls across
         // model steps still exhaust instead of looping forever.
-        let mut budget = self.turn.take_validation_budget();
-        let tool_result = async {
-            for call in &last.tool_calls {
-                if let Some(pause) = self.run_one_tool(call, &mut budget).await? {
-                    return Ok(ApplyOutcome::Hitl(pause));
-                }
-                // Retry exhaustion is a terminal failure — do not Continue the loop.
-                if self.active_task.lifecycle == TaskLifecycle::Failed {
-                    return Ok(ApplyOutcome::Done(last.clone()));
-                }
-            }
-            Ok(ApplyOutcome::Continue)
-        }
-        .await;
-        self.turn.restore_validation_budget(budget);
-        tool_result
+        let pending = PendingToolApplications {
+            calls: last.tool_calls.clone().into_iter(),
+            response: last,
+            budget: self.turn.take_validation_budget(),
+        };
+        self.next_tool_application(pending).await
     }
 
     /// True when the open user turn already has tool or validation activity.

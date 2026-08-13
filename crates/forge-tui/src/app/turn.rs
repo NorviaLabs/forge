@@ -11,7 +11,83 @@ use super::*;
 
 use super::shell::drain_events;
 
+struct AbortOnDrop<T>(Option<tokio::task::JoinHandle<T>>);
+
+impl<T> AbortOnDrop<T> {
+    fn new(handle: tokio::task::JoinHandle<T>) -> Self {
+        Self(Some(handle))
+    }
+
+    fn is_finished(&self) -> bool {
+        self.0.as_ref().is_some_and(|handle| handle.is_finished())
+    }
+
+    async fn join(mut self) -> Result<T, tokio::task::JoinError> {
+        self.0.take().expect("tool task handle missing").await
+    }
+}
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        if let Some(handle) = self.0.take() {
+            handle.abort();
+        }
+    }
+}
+
 impl TuiApp {
+    async fn execute_tool_application(
+        &mut self,
+        pending: PendingToolApplication,
+        mut terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
+    ) -> Result<ModelResponseApplication, LoopError> {
+        let execution = AbortOnDrop::new(tokio::spawn(pending.execute()));
+        loop {
+            if execution.is_finished() {
+                let completed = execution
+                    .join()
+                    .await
+                    .map_err(|error| LoopError::Other(format!("tool task join: {error}")))?;
+                return self.session.finish_tool_application(completed).await;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            if terminal.is_some() {
+                drain_events(self, terminal.as_deref_mut())
+                    .await
+                    .map_err(|error| LoopError::Other(error.to_string()))?;
+                self.poll_interactive_terminal();
+                if self.cancellation.requested || self.exit.requested {
+                    self.cancellation.requested = false;
+                    return Err(LoopError::Other("interrupted".into()));
+                }
+                if let Some(term) = terminal.as_deref_mut() {
+                    term.draw(|frame| self.draw(frame))
+                        .map_err(|error| LoopError::Other(error.to_string()))?;
+                }
+            }
+        }
+    }
+
+    async fn apply_model_response_responsive(
+        &mut self,
+        response: forge_types::ModelResponse,
+        mut terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
+    ) -> Result<ApplyOutcome, LoopError> {
+        let mut application = self
+            .session
+            .begin_model_response_application(response)
+            .await?;
+        loop {
+            application = match application {
+                ModelResponseApplication::Finished(outcome) => return Ok(outcome),
+                ModelResponseApplication::Execute(pending) => {
+                    self.execute_tool_application(*pending, terminal.as_deref_mut())
+                        .await?
+                }
+            };
+        }
+    }
+
     /// Close the thinking clock. Prefer wall time from first thinking token;
     /// if that is ~0 (same-batch non-stream dump), fall back to full turn elapsed.
     fn close_thinking_timer(&mut self) {
@@ -562,7 +638,10 @@ impl TuiApp {
                     term.draw(|f| self.draw(f))?;
                 }
             }
-            match self.session.apply_model_response(last).await {
+            match self
+                .apply_model_response_responsive(last, terminal.as_deref_mut())
+                .await
+            {
                 Ok(out) => {
                     if let Some(secs) = thought {
                         saw_thinking = true;
