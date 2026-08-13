@@ -839,7 +839,7 @@ impl TuiApp {
                     self.open_api_key_prompt(&profile_id, Some(error));
                 } else {
                     self.status_state.message = error.clone();
-                    self.push_notice(vec![error]);
+                    self.push_notice_with_severity(vec![error], FeedbackSeverity::Error);
                 }
             }
         }
@@ -860,7 +860,7 @@ impl TuiApp {
             Ok(Err(pending)) => self.show_oauth_pending(pending),
             Err(e) => {
                 self.status_state.message = e.to_string();
-                self.push_notice(vec![e.to_string()]);
+                self.push_notice_with_severity(vec![e.to_string()], FeedbackSeverity::Error);
                 self.report_error(&e.to_string());
             }
         }
