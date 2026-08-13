@@ -5,7 +5,7 @@ use crate::theme;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Widget;
+use ratatui::widgets::{Block, Borders, Padding, Paragraph, Widget, Wrap};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FeedbackSeverity {
@@ -65,29 +65,28 @@ impl Widget for FeedbackBar<'_> {
         if area.height == 0 || area.width == 0 || self.model.is_empty() {
             return;
         }
-        theme::fill(area, buf, theme::canvas());
-        let (prefix, separator, style) = match self.model.severity {
-            FeedbackSeverity::Info => (Span::raw(" "), "", theme::info()),
-            FeedbackSeverity::Warn => (status_glyph(Status::Warning), " ", theme::warn()),
-            FeedbackSeverity::Error => (status_glyph(Status::Error), " ", theme::danger()),
-            FeedbackSeverity::Ok => (status_glyph(Status::Success), " ", theme::ok()),
+        let (icon, style) = match self.model.severity {
+            FeedbackSeverity::Info => (status_glyph(Status::Info), theme::info()),
+            FeedbackSeverity::Warn => (status_glyph(Status::Warning), theme::warn()),
+            FeedbackSeverity::Error => (status_glyph(Status::Error), theme::danger()),
+            FeedbackSeverity::Ok => (status_glyph(Status::Success), theme::ok()),
         };
-        let max = area.width as usize;
-        let raw = format!("{}{separator}{}", prefix.content, self.model.text);
-        let mut shown: String = raw.chars().take(max.saturating_sub(1)).collect();
-        if raw.chars().count() > max.saturating_sub(1) && max > 2 {
-            shown = format!(
-                "{}…",
-                raw.chars().take(max.saturating_sub(2)).collect::<String>()
-            );
-        }
-        let message = shown.chars().skip(1).collect::<String>();
-        buf.set_line(
-            area.x,
-            area.y,
-            &Line::from(vec![prefix, Span::styled(message, style)]),
-            area.width,
-        );
+        let text = Line::from(vec![
+            icon,
+            Span::raw(" "),
+            Span::styled(&self.model.text, style),
+        ]);
+        Paragraph::new(text)
+            .style(theme::panel())
+            .wrap(Wrap { trim: true })
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(style)
+                    .style(theme::panel())
+                    .padding(Padding::horizontal(1)),
+            )
+            .render(area, buf);
     }
 }
 
@@ -142,14 +141,16 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
-    fn render_feedback(model: &FeedbackModel, width: u16) -> String {
-        let area = Rect::new(0, 0, width, 1);
-        let mut terminal = Terminal::new(TestBackend::new(width, 1)).unwrap();
+    fn render_feedback(model: &FeedbackModel, width: u16, height: u16) -> String {
+        let area = Rect::new(0, 0, width, height);
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal
             .draw(|frame| frame.render_widget(FeedbackBar { model }, area))
             .unwrap();
         let buf = terminal.backend().buffer();
-        (0..width).map(|x| buf[(x, 0)].symbol()).collect()
+        (0..height)
+            .flat_map(|y| (0..width).map(move |x| buf[(x, y)].symbol()))
+            .collect()
     }
 
     #[test]
@@ -197,14 +198,13 @@ mod tests {
     }
 
     #[test]
-    fn render_skips_empty_and_truncates_long_messages() {
+    fn render_skips_empty_and_wraps_long_messages() {
         let empty = FeedbackModel::default();
-        assert!(render_feedback(&empty, 10).trim().is_empty());
+        assert!(render_feedback(&empty, 20, 4).trim().is_empty());
 
         let long = FeedbackModel::warn("abcdefghijklmnopqrstuvwxyz");
-        let rendered = render_feedback(&long, 10);
-        assert!(rendered.contains("! abcdef"));
-        assert!(rendered.contains("...") || rendered.contains("…"));
+        let rendered = render_feedback(&long, 20, 4);
+        assert!(rendered.contains("!") && rendered.contains("abcdef"));
     }
 
     #[test]

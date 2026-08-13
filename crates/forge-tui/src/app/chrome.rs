@@ -20,8 +20,17 @@ use super::*;
 
 impl TuiApp {
     pub(super) fn push_notice(&mut self, lines: Vec<String>) {
+        self.push_notice_with_severity(lines, FeedbackSeverity::Info);
+    }
+
+    pub(super) fn push_notice_with_severity(
+        &mut self,
+        lines: Vec<String>,
+        severity: FeedbackSeverity,
+    ) {
         self.notice_state.items = lines;
-        self.notice_state.until = Some(Instant::now() + Duration::from_secs(3));
+        self.notice_state.until = Some(Instant::now() + Duration::from_secs(7));
+        self.set_feedback(severity, self.notice_state.items.join("\n"));
     }
 
     pub(super) fn tick_notices(&mut self) {
@@ -37,7 +46,6 @@ impl TuiApp {
 
     pub(super) fn push_toast(&mut self, text: impl Into<String>) {
         self.toast.current = Some((Instant::now(), text.into()));
-        // Also mirror briefly into feedback (auto-cleared in draw/tick)
         if let Some((_, ref t)) = self.toast.current {
             self.set_feedback(FeedbackSeverity::Ok, t.clone());
         }
@@ -47,10 +55,6 @@ impl TuiApp {
         if let Some((at, _)) = &self.toast.current {
             if at.elapsed() > Duration::from_secs(2) {
                 self.toast.current = None;
-                if self.feedback.severity == FeedbackSeverity::Ok {
-                    self.feedback = FeedbackModel::default();
-                    self.status_state.message.clear();
-                }
             }
         }
     }
@@ -60,12 +64,12 @@ impl TuiApp {
         let text = text.into();
         self.status_state.message = text.clone();
         self.feedback = FeedbackModel { text, severity };
-        self.feedback_until = None;
+        self.feedback_until = Some(Instant::now() + Duration::from_secs(7));
     }
 
     pub(super) fn expire_info_feedback(&mut self) {
         if self.feedback.severity == FeedbackSeverity::Info && !self.feedback.is_empty() {
-            self.feedback_until = Some(Instant::now() + Duration::from_secs(3));
+            self.feedback_until = Some(Instant::now() + Duration::from_secs(7));
         }
     }
 
