@@ -19,6 +19,7 @@ pub struct BottomPanelModel<'a> {
     pub terminal_content: &'a str,
     pub terminal_running: bool,
     pub terminal_shell: Option<&'a str>,
+    pub terminal_cursor: Option<(u16, u16)>,
 }
 
 pub struct BottomPanel<'a> {
@@ -51,6 +52,25 @@ impl Widget for BottomPanel<'_> {
         );
         let scroll = lines.len().saturating_sub(inner.height as usize) as u16;
         Paragraph::new(lines).scroll((scroll, 0)).render(inner, buf);
+        if self.focused {
+            if let Some((cursor_x, cursor_y)) = self.model.terminal_cursor {
+                let header_lines = 1 + usize::from(self.model.terminal_shell.is_some());
+                let content_lines = self.model.terminal_content.lines().count();
+                let content_skip = content_lines.saturating_sub(20);
+                let Some(content_row) = (cursor_y as usize).checked_sub(content_skip) else {
+                    return;
+                };
+                let rendered_y = inner
+                    .y
+                    .saturating_add(header_lines as u16)
+                    .saturating_add(content_row as u16)
+                    .saturating_sub(scroll);
+                let rendered_x = inner.x.saturating_add(cursor_x);
+                if rendered_x < inner.right() && rendered_y < inner.bottom() {
+                    theme::paint_caret(buf, rendered_x, rendered_y);
+                }
+            }
+        }
     }
 }
 
@@ -75,6 +95,7 @@ fn terminal_lines<'a>(
     if let Some(shell) = terminal_shell {
         lines.push(Line::styled(format!("$ {shell} -l"), theme::muted()));
     }
+
     if !terminal_content.is_empty() {
         let content = terminal_content.lines().collect::<Vec<_>>();
         for line in content.iter().rev().take(20).rev() {
@@ -133,6 +154,13 @@ mod tests {
             .join("\n")
     }
 
+    fn rendered_buffer(model: BottomPanelModel<'_>, focused: bool) -> Buffer {
+        let area = Rect::new(0, 0, 30, 8);
+        let mut buffer = Buffer::empty(area);
+        BottomPanel { model, focused }.render(area, &mut buffer);
+        buffer
+    }
+
     #[test]
     fn default_panel_is_closed() {
         let state = BottomPanelState::default();
@@ -154,6 +182,7 @@ mod tests {
             terminal_content: "",
             terminal_running: false,
             terminal_shell: None,
+            terminal_cursor: None,
         };
 
         let rendered = rendered_text(model, true);
@@ -176,6 +205,7 @@ mod tests {
             terminal_content: "",
             terminal_running: false,
             terminal_shell: None,
+            terminal_cursor: None,
         };
         let rendered = rendered_text(model, false);
         assert!(rendered.contains("Terminal"));
@@ -199,10 +229,34 @@ mod tests {
             terminal_content: &content,
             terminal_running: true,
             terminal_shell: Some("sh"),
+            terminal_cursor: None,
         };
 
         let rendered = rendered_text(model, true);
         assert!(rendered.contains("output-11"));
         assert!(!rendered.contains("output-0"));
+    }
+
+    #[test]
+    fn focused_terminal_paints_block_at_pty_column_and_row() {
+        let activity = ActivityFeed::default();
+        let state = BottomPanelState {
+            open: true,
+            focused: true,
+        };
+        let model = BottomPanelModel {
+            state: &state,
+            busy_phase: &BusyPhase::Idle,
+            activity: &activity,
+            terminal_content: "prompt\nnext",
+            terminal_running: true,
+            terminal_shell: Some("sh"),
+            terminal_cursor: Some((4, 1)),
+        };
+
+        let buffer = rendered_buffer(model, true);
+        let cursor = &buffer[(4, 4)];
+        assert_eq!(cursor.symbol(), theme::CURSOR_CELL);
+        assert_eq!(cursor.style().bg, theme::caret().bg);
     }
 }

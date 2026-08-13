@@ -903,14 +903,14 @@ impl Widget for FileExplorerWidget<'_> {
             let text_focused = self.focused && self.explorer.search_focused;
             let (search, search_style) = if self.explorer.search_query.is_empty() {
                 let text = if text_focused {
-                    "▏Search files…".to_string()
+                    format!("{}Search files…", theme::CURSOR_GLYPH)
                 } else {
                     "Search files…".to_string()
                 };
                 (text, theme::composer_placeholder())
             } else {
                 let text = if text_focused {
-                    format!("▏{}", self.explorer.search_query)
+                    format!("{}{}", self.explorer.search_query, theme::CURSOR_GLYPH)
                 } else {
                     self.explorer.search_query.clone()
                 };
@@ -921,6 +921,18 @@ impl Widget for FileExplorerWidget<'_> {
                 Span::styled(search, search_style),
             ]))
             .render(search_box_inner, buf);
+            if text_focused {
+                let cursor_x = if self.explorer.search_query.is_empty() {
+                    search_box_inner.x + TEXT_INSET
+                } else {
+                    search_box_inner.x
+                        + TEXT_INSET
+                        + self.explorer.search_query.chars().count() as u16
+                };
+                if cursor_x < search_box_inner.right() {
+                    theme::paint_caret(buf, cursor_x, search_box_inner.y);
+                }
+            }
 
             let rule_y = inner.y + SEARCH_BOX_HEIGHT;
             let width = inner.width as usize;
@@ -1591,13 +1603,16 @@ mod tests {
     }
 
     #[test]
-    fn search_box_shows_placeholder_without_icon() {
+    fn search_box_shows_block_caret_and_placeholder_without_icon() {
         let mut explorer = FileExplorer::new(None, FileIconMode::Unicode);
         let area = Rect::new(0, 0, 24, 14);
         let buf = render_widget(&mut explorer, area, true);
         let content_row = area.y + 2;
         let row = row_text(&buf, area, content_row);
-        assert!(row.contains("▏Search files…"));
+        let cursor = &buf[(area.x + 4, content_row)];
+        assert_eq!(cursor.symbol(), theme::CURSOR_CELL);
+        assert_eq!(cursor.style().bg, theme::caret().bg);
+        assert!(row.contains(" Search files…"));
         assert!(!row.contains('⌕'));
     }
 

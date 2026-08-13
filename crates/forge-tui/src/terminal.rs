@@ -5,7 +5,7 @@ use std::io::stdout;
 use std::panic;
 use std::sync::Arc;
 
-use crossterm::cursor::Show;
+use crossterm::cursor::{SetCursorStyle, Show};
 use crossterm::event::{DisableBracketedPaste, DisableMouseCapture, PopKeyboardEnhancementFlags};
 use crossterm::terminal::{disable_raw_mode, LeaveAlternateScreen};
 use crossterm::ExecutableCommand;
@@ -22,6 +22,7 @@ pub fn restore_terminal() {
     // the user's next shell session is not left reporting mouse events.
     let _ = stdout.execute(DisableMouseCapture);
     let _ = stdout.execute(LeaveAlternateScreen);
+    let _ = stdout.execute(SetCursorStyle::DefaultUserShape);
     let _ = stdout.execute(Show);
 }
 
@@ -39,6 +40,7 @@ pub fn reinit_terminal() -> Result<(), Box<dyn std::error::Error>> {
     enable_raw_mode()?;
     let mut stdout = stdout();
     stdout.execute(EnterAlternateScreen)?;
+    stdout.execute(SetCursorStyle::SteadyBlock)?;
     stdout.execute(EnableBracketedPaste)?;
     stdout.execute(EnableMouseCapture)?;
     stdout.execute(PushKeyboardEnhancementFlags(
