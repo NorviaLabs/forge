@@ -280,9 +280,9 @@ pub(crate) fn lock_highlight_cache() -> std::sync::MutexGuard<'static, ()> {
 /// re-highlight costs `CACHED_BLOCKS` misses and a fully cached render costs
 /// `CACHED_BLOCKS` hits.
 ///
-/// Each answer needs its own preceding user message: `compose_turn_presentation`
-/// keeps only one durable answer per turn, so consecutive assistant messages
-/// collapse into the last one and the earlier blocks never render at all.
+/// Each answer needs its own preceding user message so highlight-cache
+/// measurements treat the fenced blocks as separate turns rather than one
+/// long assistant message.
 pub(crate) fn push_code_transcript(app: &mut TuiApp, marker: &str) {
     for i in 0..CACHED_BLOCKS {
         app.session.messages.push(forge_types::Message::new(

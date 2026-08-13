@@ -19,8 +19,8 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Padding, Widget};
 
-/// Blocks rendered on the turn's tool rail: grouped under the turn, compact,
-/// and subordinate to user turns, phases, gates, and the final answer.
+/// Compact tool/progress rows: left-rail glyph only, no extra blank gap.
+/// Placement is event order from `forge-transcript`; this is paint, not gather.
 pub(super) fn is_railed_block(block: &ConversationBlock) -> bool {
     matches!(
         block,
@@ -327,8 +327,8 @@ impl ConversationRender for ConversationModel {
         let blocks = self.semantic_blocks();
         // A full-width rule opens every turn boundary (every UserMessage
         // after the first block in the transcript) — independent of whether
-        // that turn has a plan checklist. Everything on the tool rail stays
-        // grouped compactly instead of walled off.
+        // that turn has a plan checklist. Compact tool rows stay tight
+        // against each other; major blocks get a blank separator.
         let mut seen_any_block = false;
         for block in blocks {
             let is_turn_start = matches!(block, ConversationBlock::UserMessage(_));

@@ -272,9 +272,6 @@ impl TuiApp {
                     .collect::<Vec<_>>(),
                 self.task_selection.queue,
             );
-            if let BusyPhase::Tool { name } = &self.busy_state.phase {
-                conv = conv.with_running_tool(name.clone());
-            }
             self.sync_approval_menu();
             if let Some(payload) = self.session_view.pending_hitl.clone() {
                 let rows = self.approval_menu_rows();
