@@ -22,8 +22,8 @@ pub use permissions::{
 };
 pub use theme::{
     is_system_theme, normalize_theme_id, parse_hex_color, parse_theme_preference, parse_theme_toml,
-    Rgb, SyntaxPalette, ThemeDefinition, ThemePalette, DEFAULT_THEME_ID, THEME_SOLARIZED_DARK,
-    THEME_SOLARIZED_LIGHT, THEME_SYSTEM,
+    Rgb, SyntaxPalette, ThemeDefinition, ThemePalette, DEFAULT_THEME_ID, THEME_FORGE_DARK,
+    THEME_SOLARIZED_DARK, THEME_SOLARIZED_LIGHT, THEME_SYSTEM,
 };
 
 #[derive(Debug, Error)]
@@ -232,7 +232,7 @@ fn default_theme_id() -> String {
 pub struct TuiConfig {
     #[serde(default)]
     pub file_icons: FileIconMode,
-    /// Optional `[tui] theme` preference (theme id, e.g. `solarized-dark`).
+    /// Optional `[tui] theme` preference (theme id, e.g. `forge-dark`).
     #[serde(default = "default_theme_id")]
     pub theme: String,
 }
@@ -947,7 +947,7 @@ mod tests {
         assert!(cfg.model.model.is_empty());
         assert_eq!(cfg.model.request_timeout_secs, 300);
         assert_eq!(cfg.journal.backend, "sqlite");
-        assert_eq!(cfg.tui.theme, THEME_SOLARIZED_DARK);
+        assert_eq!(cfg.tui.theme, DEFAULT_THEME_ID);
     }
 
     #[test]
@@ -1228,7 +1228,7 @@ model = "from-file"
 
     #[test]
     fn theme_id_normalization_maps_legacy_aliases() {
-        assert_eq!(normalize_theme_id("dark"), THEME_SOLARIZED_DARK);
+        assert_eq!(normalize_theme_id("dark"), THEME_FORGE_DARK);
         assert_eq!(normalize_theme_id("light"), THEME_SOLARIZED_LIGHT);
         assert_eq!(normalize_theme_id("system"), THEME_SYSTEM);
         assert_eq!(normalize_theme_id("solarized-light"), THEME_SOLARIZED_LIGHT);
@@ -1492,7 +1492,7 @@ max_query_chars = 0
         };
         file.apply(&mut cfg, ConfigScope::Trusted);
         assert_eq!(cfg.tui.file_icons, FileIconMode::Unicode);
-        assert_eq!(cfg.tui.theme, THEME_SOLARIZED_DARK);
+        assert_eq!(cfg.tui.theme, DEFAULT_THEME_ID);
     }
 
     /// A `[validation]` section in the file replaces the whole

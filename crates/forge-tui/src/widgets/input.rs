@@ -652,7 +652,6 @@ impl Widget for InputBar<'_> {
 mod tests {
     use super::*;
     use crate::theme;
-    use forge_config::THEME_SOLARIZED_DARK;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
@@ -1019,7 +1018,7 @@ mod tests {
         let border = &buf[(0, 0)];
         assert_eq!(
             border.style().fg,
-            Some(theme::palette(THEME_SOLARIZED_DARK).warn)
+            Some(theme::palette(forge_config::DEFAULT_THEME_ID).warn)
         );
         let rendered: String = (0..buf.area().height)
             .map(|y| {
@@ -1071,7 +1070,7 @@ mod tests {
         );
         assert_eq!(
             buf[(0, 0)].style().fg,
-            Some(theme::palette(THEME_SOLARIZED_DARK).warn)
+            Some(theme::palette(forge_config::DEFAULT_THEME_ID).warn)
         );
     }
 

@@ -1185,7 +1185,7 @@ mod tests {
             thinking_text.starts_with(&INDENT_UNIT.repeat(2)),
             "thinking should be indented past normal content, got {thinking_text:?}"
         );
-        let dark = theme::palette(forge_config::THEME_SOLARIZED_DARK);
+        let dark = theme::palette(forge_config::DEFAULT_THEME_ID);
         let span = thinking_line
             .spans
             .iter()
@@ -1346,7 +1346,7 @@ mod tests {
             .collect::<Vec<_>>();
         let rendered = rendered_lines.join("\n");
         assert_eq!(rendered_lines[0].trim_end(), "  hello world", "{rendered}");
-        let dark = theme::palette(forge_config::THEME_SOLARIZED_DARK);
+        let dark = theme::palette(forge_config::DEFAULT_THEME_ID);
         let first = &lines[0];
         // No leading marker — a plain indent, background carried to the edge.
         assert_eq!(first.spans[0].content.as_ref(), "  ");
@@ -1380,7 +1380,7 @@ mod tests {
             ConversationViewOpts::default(),
         );
         let lines = m.lines_for_width(WIDTH);
-        let dark = theme::palette(forge_config::THEME_SOLARIZED_DARK);
+        let dark = theme::palette(forge_config::DEFAULT_THEME_ID);
         let user_rows: Vec<&Line<'static>> = lines
             .iter()
             .take_while(|line| {
@@ -1943,7 +1943,7 @@ mod tests {
         let removed = &rendered[1];
         let added = &rendered[2];
 
-        let dark = theme::palette(forge_config::THEME_SOLARIZED_DARK);
+        let dark = theme::palette(forge_config::DEFAULT_THEME_ID);
         assert!(removed
             .spans
             .iter()
