@@ -109,7 +109,7 @@ impl InteractiveTerminal {
                 pixel_height: 0,
             })
             .map_err(other)?;
-        self.screen.set_size(rows, cols);
+        self.screen.screen_mut().set_size(rows, cols);
         self.size = (cols, rows);
         self.display = self.screen.screen().contents();
         Ok(())
