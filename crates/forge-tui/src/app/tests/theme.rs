@@ -8,10 +8,10 @@ use crate::overlays::{handle_overlay_key, Key as OverlayKey, OverlayAction};
 #[tokio::test]
 async fn theme_change_updates_active_palette_immediately() {
     let (_dir, mut app) = focus_test_app().await;
-    assert_eq!(crate::theme::active(), forge_config::THEME_SOLARIZED_DARK);
+    assert_eq!(crate::theme::active(), forge_config::DEFAULT_THEME_ID);
     assert_eq!(
         crate::theme::text().fg,
-        Some(crate::theme::palette(forge_config::THEME_SOLARIZED_DARK).text)
+        Some(crate::theme::palette(forge_config::DEFAULT_THEME_ID).text)
     );
 
     app.handle_theme_command(Some("light"));
@@ -26,7 +26,7 @@ async fn theme_change_updates_active_palette_immediately() {
 #[tokio::test]
 async fn theme_picker_previews_on_navigate_confirms_on_enter_restores_on_esc() {
     let (_dir, mut app) = focus_test_app().await;
-    let original = forge_config::THEME_SOLARIZED_DARK.to_string();
+    let original = forge_config::DEFAULT_THEME_ID.to_string();
     assert_eq!(crate::theme::active(), original);
 
     app.handle_theme_command(None);
