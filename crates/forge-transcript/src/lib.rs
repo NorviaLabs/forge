@@ -1061,82 +1061,69 @@ fn semantic_blocks_from_items(items: &[ChatItem], tool_expanded: bool) -> Vec<Co
     }
     flush_progress(&mut blocks, &mut progress);
     flush_activity(&mut blocks, &mut activity_group);
-    compose_turn_presentation(blocks)
+    finalize_presentation(blocks)
 }
 
-/// Completed-turn composition: within each user turn, emit
-/// UserMessage → ActivityGroup → AssistantAnswer(s)|TurnFailure, so the
-/// transcript retains model narration around tool work. ActiveProgress is
-/// kept only while no terminal answer/failure exists yet.
-fn compose_turn_presentation(blocks: Vec<ConversationBlock>) -> Vec<ConversationBlock> {
+/// Keep item order. Collapse adjacent streaming snapshots and duplicate
+/// terminal-failure banners; do not re-bucket activity above answers.
+fn finalize_presentation(blocks: Vec<ConversationBlock>) -> Vec<ConversationBlock> {
+    collapse_duplicate_turn_failures(collapse_adjacent_streaming_snapshots(blocks))
+}
+
+fn is_streaming_answer(block: &ConversationBlock) -> bool {
+    matches!(
+        block,
+        ConversationBlock::AssistantAnswer(answer) if answer.streaming
+    )
+}
+
+fn is_error_callout(block: &ConversationBlock) -> bool {
+    matches!(
+        block,
+        ConversationBlock::Callout(callout) if matches!(callout.kind, BannerKind::Error)
+    )
+}
+
+/// Consecutive streaming previews are snapshots of one answer; keep the newest.
+/// Durable assistant messages stay visible, including around tool activity.
+fn collapse_adjacent_streaming_snapshots(blocks: Vec<ConversationBlock>) -> Vec<ConversationBlock> {
     let mut out = Vec::with_capacity(blocks.len());
-    let mut segment: Vec<ConversationBlock> = Vec::new();
+    for block in blocks {
+        if is_streaming_answer(&block) && out.last().is_some_and(is_streaming_answer) {
+            out.pop();
+        }
+        out.push(block);
+    }
+    out
+}
+
+/// One terminal failure summary per user turn, left in event order.
+fn collapse_duplicate_turn_failures(blocks: Vec<ConversationBlock>) -> Vec<ConversationBlock> {
+    let mut out = Vec::with_capacity(blocks.len());
+    let mut segment = Vec::new();
 
     let flush_segment = |out: &mut Vec<ConversationBlock>, segment: &mut Vec<ConversationBlock>| {
-        if segment.is_empty() {
-            return;
-        }
-        let mut user = Vec::new();
-        let mut answers = Vec::new();
-        let mut failures = Vec::new();
-        let mut activity = Vec::new();
-        let mut progress = Vec::new();
-        let mut other = Vec::new();
+        let error_count = segment
+            .iter()
+            .filter(|block| is_error_callout(block))
+            .count();
+        let mut seen = 0;
         for block in segment.drain(..) {
-            match block {
-                ConversationBlock::UserMessage(_) => user.push(block),
-                ConversationBlock::AssistantAnswer(_) => answers.push(block),
-                ConversationBlock::Callout(ref c) if matches!(c.kind, BannerKind::Error) => {
-                    failures.push(block)
+            if is_error_callout(&block) {
+                seen += 1;
+                if seen < error_count {
+                    continue;
                 }
-                ConversationBlock::ActivityGroup(_)
-                | ConversationBlock::DiffBlock(_)
-                | ConversationBlock::PlanChecklist(_)
-                | ConversationBlock::Thinking(_) => activity.push(block),
-                ConversationBlock::ActiveProgress(_) => progress.push(block),
-                other_block => other.push(other_block),
             }
+            out.push(block);
         }
-        // Consecutive streaming previews are snapshots of one answer, so keep
-        // only the newest preview. Durable assistant messages are separate
-        // model steps and must all remain visible around tool activity.
-        if answers.len() > 1
-            && answers.iter().all(|block| {
-                matches!(
-                    block,
-                    ConversationBlock::AssistantAnswer(answer) if answer.streaming
-                )
-            })
-        {
-            let last = answers.pop().into_iter().collect::<Vec<_>>();
-            answers = last;
-        }
-        // One terminal failure summary per turn.
-        if failures.len() > 1 {
-            let last = failures.pop().into_iter().collect::<Vec<_>>();
-            failures = last;
-        }
-        out.extend(user);
-        let terminal = !answers.is_empty() || !failures.is_empty();
-        if !terminal {
-            // Still streaming / waiting: progress may remain visible.
-            out.extend(progress);
-        }
-        // Chronological: tool activity ran before the final answer/failure.
-        out.extend(activity);
-        out.extend(answers);
-        out.extend(failures);
-        out.extend(other);
     };
 
     for block in blocks {
-        match block {
-            ConversationBlock::UserMessage(_) => {
-                flush_segment(&mut out, &mut segment);
-                segment.push(block);
-            }
-            other => segment.push(other),
+        if matches!(block, ConversationBlock::UserMessage(_)) {
+            flush_segment(&mut out, &mut segment);
         }
+        segment.push(block);
     }
     flush_segment(&mut out, &mut segment);
     out
@@ -1973,7 +1960,7 @@ mod tests {
     }
 
     #[test]
-    fn semantic_blocks_keep_assistant_answer_separate_from_activity() {
+    fn semantic_blocks_preserve_assistant_then_activity_order() {
         let model = ConversationModel {
             items: vec![
                 ChatItem::Assistant {
@@ -1997,16 +1984,16 @@ mod tests {
         let blocks = model.semantic_blocks();
         assert!(matches!(
             blocks.first(),
-            Some(ConversationBlock::ActivityGroup(_))
+            Some(ConversationBlock::AssistantAnswer(_))
         ));
         assert!(matches!(
             blocks.last(),
-            Some(ConversationBlock::AssistantAnswer(_))
+            Some(ConversationBlock::ActivityGroup(_))
         ));
     }
 
     #[test]
-    fn completed_turn_composes_activity_before_answer() {
+    fn completed_turn_keeps_item_order_of_activity_then_answer() {
         let model = ConversationModel {
             items: vec![
                 ChatItem::User {
@@ -2048,6 +2035,260 @@ mod tests {
                 ConversationBlock::AssistantAnswer(a),
             ] if a.text == "Forge is a Rust workspace."
         ));
+    }
+
+    #[test]
+    fn semantic_blocks_preserve_interleaved_narration_and_tools() {
+        let model = ConversationModel {
+            items: vec![
+                ChatItem::User {
+                    text: "fix the parser".into(),
+                },
+                ChatItem::Assistant {
+                    text: "I’ll edit foo.rs".into(),
+                },
+                ChatItem::ToolCard {
+                    name: "read_file".into(),
+                    summary: "src/foo.rs · 1 line".into(),
+                    detail: "src/foo.rs".into(),
+                    state: ToolCardState::Done,
+                    duration: None,
+                    subcommand: None,
+                    outcome: forge_types::ExecutionOutcome::Success,
+                },
+                ChatItem::Assistant {
+                    text: "now a test".into(),
+                },
+                ChatItem::DiffCard {
+                    path: "src/foo.rs".into(),
+                    lines: vec![
+                        "diff --git a/src/foo.rs b/src/foo.rs".into(),
+                        "--- a/src/foo.rs".into(),
+                        "+++ b/src/foo.rs".into(),
+                        "@@ -1 +1 @@".into(),
+                        "-old".into(),
+                        "+new".into(),
+                    ],
+                    rationale: String::new(),
+                },
+                ChatItem::StreamingAssistant {
+                    text: "done".into(),
+                },
+            ],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+
+        let blocks = model.semantic_blocks();
+        assert!(
+            matches!(
+                blocks.as_slice(),
+                [
+                    ConversationBlock::UserMessage(_),
+                    ConversationBlock::AssistantAnswer(a),
+                    ConversationBlock::ActivityGroup(_),
+                    ConversationBlock::AssistantAnswer(b),
+                    ConversationBlock::DiffBlock(diff),
+                    ConversationBlock::AssistantAnswer(c),
+                ] if a.text == "I’ll edit foo.rs"
+                    && !a.streaming
+                    && b.text == "now a test"
+                    && !b.streaming
+                    && diff.path == "src/foo.rs"
+                    && c.text == "done"
+                    && c.streaming
+            ),
+            "expected event order, got {blocks:?}"
+        );
+    }
+
+    #[test]
+    fn thinking_and_plan_stay_in_item_order() {
+        let model = ConversationModel {
+            items: vec![
+                ChatItem::User {
+                    text: "plan the change".into(),
+                },
+                ChatItem::Thinking {
+                    text: "Need a checklist first.".into(),
+                    duration_secs: Some(1.2),
+                },
+                ChatItem::ToolCard {
+                    name: "read_file".into(),
+                    summary: "src/lib.rs · 1 line".into(),
+                    detail: "src/lib.rs".into(),
+                    state: ToolCardState::Done,
+                    duration: None,
+                    subcommand: None,
+                    outcome: forge_types::ExecutionOutcome::Success,
+                },
+                ChatItem::PlanChecklist {
+                    explanation: Some("Next steps".into()),
+                    steps: vec![forge_types::PlanItem {
+                        step: "Inspect code".into(),
+                        status: forge_types::PlanStepStatus::Completed,
+                    }],
+                },
+                ChatItem::Assistant {
+                    text: "Ready.".into(),
+                },
+            ],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+
+        let blocks = model.semantic_blocks();
+        assert!(
+            matches!(
+                blocks.as_slice(),
+                [
+                    ConversationBlock::UserMessage(_),
+                    ConversationBlock::Thinking(_),
+                    ConversationBlock::ActivityGroup(_),
+                    ConversationBlock::PlanChecklist(_),
+                    ConversationBlock::AssistantAnswer(a),
+                ] if a.text == "Ready."
+            ),
+            "expected thinking/plan in item order, got {blocks:?}"
+        );
+    }
+
+    #[test]
+    fn routine_reads_do_not_merge_across_assistant_narration() {
+        let model = ConversationModel {
+            items: group_routine_activity(vec![
+                ChatItem::ToolCard {
+                    name: "read_file".into(),
+                    summary: "a.rs · 1 line".into(),
+                    detail: "a.rs".into(),
+                    state: ToolCardState::Done,
+                    duration: None,
+                    subcommand: None,
+                    outcome: forge_types::ExecutionOutcome::Success,
+                },
+                ChatItem::Assistant {
+                    text: "looking further".into(),
+                },
+                ChatItem::ToolCard {
+                    name: "read_file".into(),
+                    summary: "b.rs · 1 line".into(),
+                    detail: "b.rs".into(),
+                    state: ToolCardState::Done,
+                    duration: None,
+                    subcommand: None,
+                    outcome: forge_types::ExecutionOutcome::Success,
+                },
+            ]),
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+
+        let blocks = model.semantic_blocks();
+        assert!(
+            matches!(
+                blocks.as_slice(),
+                [
+                    ConversationBlock::ActivityGroup(_),
+                    ConversationBlock::AssistantAnswer(_),
+                    ConversationBlock::ActivityGroup(_),
+                ]
+            ),
+            "assistant must break the routine-activity streak, got {blocks:?}"
+        );
+    }
+
+    #[test]
+    fn failure_banner_stays_after_interleaved_answer() {
+        let model = ConversationModel {
+            items: vec![
+                ChatItem::User {
+                    text: "Summarize this codebase".into(),
+                },
+                ChatItem::ToolCard {
+                    name: "read_file".into(),
+                    summary: "invalid arguments · retry 1".into(),
+                    detail: "offset type mismatch".into(),
+                    state: ToolCardState::Error,
+                    duration: None,
+                    subcommand: None,
+                    outcome: forge_types::ExecutionOutcome::Failed { exit_code: None },
+                },
+                ChatItem::Assistant {
+                    text: "retrying".into(),
+                },
+                ChatItem::Banner {
+                    text: "Forge couldn't complete this turn after repeated invalid tool calls."
+                        .into(),
+                    kind: BannerKind::Error,
+                },
+            ],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+        let blocks = model.semantic_blocks();
+        assert!(
+            matches!(
+                blocks.as_slice(),
+                [
+                    ConversationBlock::UserMessage(_),
+                    ConversationBlock::ActivityGroup(_),
+                    ConversationBlock::AssistantAnswer(a),
+                    ConversationBlock::Callout(c),
+                ] if a.text == "retrying"
+                    && matches!(c.kind, BannerKind::Error)
+                    && c.text.contains("couldn't complete")
+            ),
+            "failure must stay in event order, got {blocks:?}"
+        );
+    }
+
+    #[test]
+    fn duplicate_turn_failure_banners_keep_the_last() {
+        let model = ConversationModel {
+            items: vec![
+                ChatItem::User { text: "go".into() },
+                ChatItem::Banner {
+                    text: "first failure".into(),
+                    kind: BannerKind::Error,
+                },
+                ChatItem::Assistant {
+                    text: "still trying".into(),
+                },
+                ChatItem::Banner {
+                    text: "final failure".into(),
+                    kind: BannerKind::Error,
+                },
+            ],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+        let blocks = model.semantic_blocks();
+        let errors: Vec<_> = blocks
+            .iter()
+            .filter_map(|block| match block {
+                ConversationBlock::Callout(c) if matches!(c.kind, BannerKind::Error) => {
+                    Some(c.text.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(errors, vec!["final failure"]);
+        assert!(
+            matches!(
+                blocks.as_slice(),
+                [
+                    ConversationBlock::UserMessage(_),
+                    ConversationBlock::AssistantAnswer(_),
+                    ConversationBlock::Callout(_),
+                ]
+            ),
+            "last failure stays after the answer, got {blocks:?}"
+        );
     }
 
     #[test]
