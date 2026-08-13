@@ -157,12 +157,13 @@ fn merge_directory(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use forge_config::{Rgb, THEME_SOLARIZED_DARK, THEME_SOLARIZED_LIGHT};
+    use forge_config::{Rgb, THEME_FORGE_DARK, THEME_SOLARIZED_DARK, THEME_SOLARIZED_LIGHT};
 
     #[test]
     fn builtins_include_all_shipped_themes() {
         let registry = ThemeRegistry::load(None);
         let expected = [
+            (THEME_FORGE_DARK, "Forge Dark", Rgb(11, 15, 13)),
             ("catppuccin-mocha", "Catppuccin Mocha", Rgb(30, 30, 46)),
             ("gruvbox-dark", "Gruvbox Dark", Rgb(40, 40, 40)),
             ("kanagawa-wave", "Kanagawa Wave", Rgb(31, 31, 40)),

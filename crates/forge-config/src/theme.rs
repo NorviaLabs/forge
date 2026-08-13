@@ -7,10 +7,12 @@ use std::fmt;
 pub const THEME_SYSTEM: &str = "system";
 /// Built-in Solarized Dark theme id.
 pub const THEME_SOLARIZED_DARK: &str = "solarized-dark";
+/// Built-in Forge Dark theme id.
+pub const THEME_FORGE_DARK: &str = "forge-dark";
 /// Built-in Solarized Light theme id.
 pub const THEME_SOLARIZED_LIGHT: &str = "solarized-light";
 /// Default when no preference is stored.
-pub const DEFAULT_THEME_ID: &str = THEME_SOLARIZED_DARK;
+pub const DEFAULT_THEME_ID: &str = THEME_FORGE_DARK;
 
 /// RGB triplet used in theme files (no terminal dependency).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,7 +56,7 @@ pub fn parse_hex_color(s: &str) -> Result<Rgb, String> {
 pub fn normalize_theme_id(raw: &str) -> String {
     match raw.trim().to_ascii_lowercase().as_str() {
         "" => DEFAULT_THEME_ID.to_string(),
-        "dark" => THEME_SOLARIZED_DARK.to_string(),
+        "dark" => THEME_FORGE_DARK.to_string(),
         "light" => THEME_SOLARIZED_LIGHT.to_string(),
         "system" => THEME_SYSTEM.to_string(),
         other => other.to_string(),
@@ -71,7 +73,8 @@ pub fn is_system_theme(id: &str) -> bool {
 /// Unknown values are ignored so a typo does not change the default theme.
 pub fn parse_theme_preference(raw: &str) -> Option<String> {
     match raw.trim().to_ascii_lowercase().as_str() {
-        "dark" | "solarized-dark" => Some(THEME_SOLARIZED_DARK.to_string()),
+        "dark" | "forge-dark" => Some(THEME_FORGE_DARK.to_string()),
+        "solarized-dark" => Some(THEME_SOLARIZED_DARK.to_string()),
         "light" | "solarized-light" => Some(THEME_SOLARIZED_LIGHT.to_string()),
         "system" => Some(THEME_SYSTEM.to_string()),
         _ => None,
@@ -320,10 +323,23 @@ default = "#E6EDF3"
 
     #[test]
     fn normalize_theme_id_maps_legacy_aliases() {
-        assert_eq!(normalize_theme_id("dark"), THEME_SOLARIZED_DARK);
+        assert_eq!(normalize_theme_id("dark"), THEME_FORGE_DARK);
         assert_eq!(normalize_theme_id("light"), THEME_SOLARIZED_LIGHT);
         assert_eq!(normalize_theme_id("system"), THEME_SYSTEM);
         assert_eq!(normalize_theme_id("custom"), "custom");
+    }
+
+    #[test]
+    fn forge_dark_is_the_default_and_configurable() {
+        assert_eq!(DEFAULT_THEME_ID, THEME_FORGE_DARK);
+        assert_eq!(
+            parse_theme_preference("forge-dark"),
+            Some(THEME_FORGE_DARK.to_string())
+        );
+        assert_eq!(
+            parse_theme_preference("solarized-dark"),
+            Some(THEME_SOLARIZED_DARK.to_string())
+        );
     }
 
     #[test]
