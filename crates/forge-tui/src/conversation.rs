@@ -643,11 +643,17 @@ impl ConversationRender for ConversationModel {
                         Some(secs) => format!("{} · {}", p.text, format_elapsed_tenths(secs)),
                         None => p.text.clone(),
                     };
-                    for l in wrap(&full_text, content_width) {
-                        lines.push(Line::from(Span::styled(
-                            format!("{indent}{l}"),
+                    for line in render_markdown(&full_text, content_width) {
+                        let mut spans = vec![Span::styled(
+                            indent.clone(),
                             theme::dim().add_modifier(Modifier::ITALIC),
-                        )));
+                        )];
+                        spans.extend(line.spans.into_iter().map(|mut span| {
+                            span.style.fg = theme::dim().fg;
+                            span.style = span.style.add_modifier(Modifier::ITALIC);
+                            span
+                        }));
+                        lines.push(Line::from(spans));
                     }
                     if gap {
                         lines.extend([Line::from(""), Line::from("")]);
@@ -1075,8 +1081,8 @@ mod tests {
             "tool result should classify into semantic activity blocks: {semantic:?}"
         );
         assert!(
-            rendered.contains("**ponder** · 2.4s"),
-            "completed thought should remain visible, without a spelled-out caption:\n{rendered}"
+            rendered.contains("ponder · 2.4s") && !rendered.contains("**ponder**"),
+            "completed thought should render markdown without a spelled-out caption:\n{rendered}"
         );
     }
 
@@ -1147,6 +1153,36 @@ mod tests {
     }
 
     #[test]
+    fn thinking_renders_markdown_emphasis_without_literal_delimiters() {
+        let model = ConversationModel {
+            items: vec![ChatItem::Thinking {
+                text: "**Inspecting** the parser".into(),
+                duration_secs: None,
+            }],
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+
+        let lines = model.lines_for_width(80);
+        let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("Inspecting the parser"), "got {text:?}");
+        assert!(!text.contains("**"), "markdown delimiters leaked: {text:?}");
+
+        let emphasis = lines
+            .iter()
+            .flat_map(|line| &line.spans)
+            .find(|span| span.content.contains("Inspecting"))
+            .expect("emphasized thinking span present");
+        assert!(emphasis.style.add_modifier.contains(Modifier::BOLD));
+        assert!(emphasis.style.add_modifier.contains(Modifier::ITALIC));
+        assert_eq!(
+            emphasis.style.fg,
+            Some(theme::palette(forge_config::DEFAULT_THEME_ID).dim)
+        );
+    }
+
+    #[test]
     fn thinking_renders_dim_italic_indented_and_precedes_the_answer() {
         let msgs = vec![Message {
             outcome: Default::default(),
@@ -1186,22 +1222,27 @@ mod tests {
             "thinking should be indented past normal content, got {thinking_text:?}"
         );
         let dark = theme::palette(forge_config::DEFAULT_THEME_ID);
-        let span = thinking_line
+        let thinking_spans = thinking_line
             .spans
             .iter()
-            .find(|s| s.content.contains("reasoning text"))
-            .expect("thinking span present");
-        assert_eq!(
-            span.style.fg,
-            Some(dark.dim),
+            .filter(|span| !span.content.trim().is_empty())
+            .collect::<Vec<_>>();
+        assert!(
+            thinking_spans
+                .iter()
+                .all(|span| span.style.fg == Some(dark.dim)),
             "thinking should use the dim token"
         );
         assert!(
-            span.style.add_modifier.contains(Modifier::ITALIC),
+            thinking_spans
+                .iter()
+                .all(|span| span.style.add_modifier.contains(Modifier::ITALIC)),
             "thinking should be italic"
         );
         assert!(
-            !span.style.add_modifier.contains(Modifier::BOLD),
+            thinking_spans
+                .iter()
+                .all(|span| !span.style.add_modifier.contains(Modifier::BOLD)),
             "thinking should not be bold — no label, unlike tool activity"
         );
         assert!(
