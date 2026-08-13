@@ -701,7 +701,10 @@ impl TuiApp {
                     theme::muted(),
                 ));
                 lines.push(Line::from(""));
-                lines.push(Line::styled(format!("> {input}"), theme::text()));
+                lines.push(Line::from(vec![
+                    Span::styled(format!("> {input}"), theme::text()),
+                    Span::styled(theme::CURSOR_CELL, theme::caret()),
+                ]));
                 if let Some(error) = error {
                     lines.push(Line::from(""));
                     lines.push(Line::styled(error.clone(), theme::danger()));
