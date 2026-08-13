@@ -62,11 +62,17 @@ impl TuiApp {
             history: InputHistory::default(),
             slash_suggestions: SlashSuggestionState { selected: 0 },
             notice_state: NoticeState {
-                items: startup_notices,
-                until: None,
+                items: startup_notices.clone(),
+                until: (!startup_notices.is_empty())
+                    .then(|| Instant::now() + Duration::from_secs(7)),
             },
-            feedback: FeedbackModel::default(),
-            feedback_until: None,
+            feedback: if startup_notices.is_empty() {
+                FeedbackModel::default()
+            } else {
+                FeedbackModel::info(startup_notices.join("\n"))
+            },
+            feedback_until: (!startup_notices.is_empty())
+                .then(|| Instant::now() + Duration::from_secs(7)),
             banner_state: BannerState { items: Vec::new() },
             search_status: SearchStatusState {
                 label: Some("mock".into()),
