@@ -120,6 +120,7 @@ async fn run_tui_inner(
     execute!(
         stdout,
         EnterAlternateScreen,
+        SetCursorStyle::SteadyBlock,
         EnableBracketedPaste,
         EnableMouseCapture
     )?;

@@ -1263,10 +1263,10 @@ impl SourceViewerWidget<'_> {
         };
         Paragraph::new(Line::styled(status, status_style)).render(rows[2], buf);
         if self.editor_command.is_some() {
-            let cursor_x =
-                rows[2].x + 1 + self.editor_command.unwrap_or_default().chars().count() as u16;
+            let command = self.editor_command.unwrap_or_default();
+            let cursor_x = rows[2].x + 1 + command.chars().count() as u16;
             if cursor_x < rows[2].x + rows[2].width {
-                buf[(cursor_x, rows[2].y)].set_style(theme::caret());
+                theme::paint_caret(buf, cursor_x, rows[2].y);
             }
         }
     }
@@ -1283,19 +1283,26 @@ impl SourceViewerWidget<'_> {
             } else {
                 format!(" · {} of {}", self.viewer.search.active_index + 1, count)
             };
-            let text = format!("Search: {}{status}", self.viewer.search.query);
+            let text = format!(
+                "Search: {}{}{status}",
+                self.viewer.search.query,
+                theme::CURSOR_GLYPH
+            );
             Paragraph::new(Line::styled(text, theme::text())).render(area, buf);
-            // Cursor position: after "Search: " + query.
             let cursor_x = area.x + 8 + self.viewer.search.query.chars().count() as u16;
             if cursor_x < area.x + area.width {
-                buf[(cursor_x, area.y)].set_style(theme::caret());
+                theme::paint_caret(buf, cursor_x, area.y);
             }
         } else if self.viewer.jump.open {
-            let text = format!("Go to line: {}", self.viewer.jump.input);
+            let text = format!(
+                "Go to line: {}{}",
+                self.viewer.jump.input,
+                theme::CURSOR_GLYPH
+            );
             Paragraph::new(Line::styled(text, theme::text())).render(area, buf);
             let cursor_x = area.x + 12 + self.viewer.jump.input.chars().count() as u16;
             if cursor_x < area.x + area.width {
-                buf[(cursor_x, area.y)].set_style(theme::caret());
+                theme::paint_caret(buf, cursor_x, area.y);
             }
         }
     }
