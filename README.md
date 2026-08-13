@@ -191,7 +191,7 @@ A minimal project `forge.toml` can look like this:
 model = "openai/gpt-4.1-mini"
 
 [tui]
-theme = "solarized-dark"
+theme = "forge-dark"
 file_icons = "unicode"
 
 [journal]
@@ -206,7 +206,8 @@ confirms, Esc restores the previous theme. `/theme <id>` applies immediately.
 
 | Theme id | Name |
 | --- | --- |
-| `solarized-dark` | Solarized Dark (default) |
+| `forge-dark` | Forge Dark (default) |
+| `solarized-dark` | Solarized Dark |
 | `solarized-light` | Solarized Light |
 | `catppuccin-mocha` | Catppuccin Mocha |
 | `gruvbox-dark` | Gruvbox Dark |

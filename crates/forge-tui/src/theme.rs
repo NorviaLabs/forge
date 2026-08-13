@@ -53,7 +53,7 @@ pub fn set_active(theme_id: impl Into<String>) {
     ACTIVE_THEME_ID.with(|active| *active.borrow_mut() = id);
 }
 
-/// Active theme id (`solarized-dark`, `solarized-light`, `system`, or a custom id).
+/// Active theme id (`forge-dark`, `solarized-dark`, `solarized-light`, `system`, or a custom id).
 pub fn active() -> String {
     ACTIVE_THEME_ID.with(|active| active.borrow().clone())
 }
@@ -780,7 +780,7 @@ mod tests {
         );
         assert_eq!(
             system_theme_id_from_os_output("'prefer-dark'"),
-            Some(THEME_SOLARIZED_DARK)
+            Some(DEFAULT_THEME_ID)
         );
         assert_eq!(
             system_theme_id_from_os_output("AppsUseLightTheme REG_DWORD 0x1"),
