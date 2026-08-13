@@ -118,6 +118,11 @@ impl InteractiveTerminal {
     pub(crate) fn display_output(&self) -> &str {
         &self.display
     }
+
+    pub(crate) fn cursor_position(&self) -> (u16, u16) {
+        let (row, column) = self.screen.screen().cursor_position();
+        (column, row)
+    }
 }
 
 impl Drop for InteractiveTerminal {
@@ -142,6 +147,13 @@ mod tests {
         let mut terminal = vt100::Parser::new(3, 20, 0);
         terminal.process(b"one\r two\x1b[31m!\x1b[0m\r\nthree\r\n");
         assert_eq!(terminal.screen().contents(), " two!\nthree");
+    }
+
+    #[test]
+    fn vt100_cursor_position_is_row_then_column() {
+        let mut terminal = vt100::Parser::new(3, 20, 0);
+        terminal.process(b"ab\r\n12345");
+        assert_eq!(terminal.screen().cursor_position(), (1, 5));
     }
 
     #[test]

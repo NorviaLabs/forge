@@ -1750,9 +1750,9 @@ impl Widget for OverlayWidget<'_> {
                         // Type-ahead filter line, then the (cross-route or
                         // scoped, per how this instance was opened) catalog.
                         let filter_text = if model_input.is_empty() {
-                            "Type to filter models…".to_string()
+                            format!("{}Type to filter models…", theme::CURSOR_GLYPH)
                         } else {
-                            model_input.clone()
+                            format!("{}{}", model_input, theme::CURSOR_GLYPH)
                         };
                         Paragraph::new(Line::from(vec![
                             Span::styled("⌕ ", theme::dim()),
@@ -1766,6 +1766,16 @@ impl Widget for OverlayWidget<'_> {
                             ),
                         ]))
                         .render(info_area, buf);
+                        let cursor_x = info_area.x.saturating_add(2).saturating_add(
+                            if model_input.is_empty() {
+                                0
+                            } else {
+                                model_input.chars().count() as u16
+                            },
+                        );
+                        if cursor_x < info_area.right() {
+                            theme::paint_caret(buf, cursor_x, info_area.y);
+                        }
 
                         // A real Table so PROVIDER/SOURCE columns stay aligned
                         // no matter how long a MODEL or PROVIDER cell's text
@@ -1993,6 +2003,11 @@ impl Widget for OverlayWidget<'_> {
                             )),
                     )
                     .render(r, buf);
+                let cursor_y = r.y + 7;
+                let cursor_x = r.x + 1 + key_input.chars().count() as u16;
+                if cursor_y < r.bottom() && cursor_x < r.right() {
+                    theme::paint_caret(buf, cursor_x, cursor_y);
+                }
             }
             Overlay::ConnectOauth {
                 title,

@@ -3,7 +3,7 @@
 use crate::theme;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Widget, Wrap};
 use std::ops::Range;
@@ -27,7 +27,7 @@ pub struct InputModel {
 
 const LARGE_PASTE_CHAR_THRESHOLD: usize = 1000;
 const MAX_VISIBLE_ROWS: usize = 8;
-const CURSOR_GLYPH: &str = "▏";
+const CURSOR_GLYPH: &str = theme::CURSOR_GLYPH;
 
 #[derive(Debug, Clone)]
 struct PendingPaste {
@@ -549,8 +549,6 @@ impl Widget for InputBar<'_> {
         } else {
             theme::composer_text()
         };
-        let theme = crate::theme::active();
-
         let text_focused = self.focused;
         let border = if text_focused {
             theme::active_panel_border()
@@ -628,18 +626,11 @@ impl Widget for InputBar<'_> {
             .scroll((scroll, 0))
             .render(text_area, buf);
         if text_focused {
-            // The real terminal cursor (driven by `composer_cursor_position`
-            // from the caller) renders the visible caret now — blend this
-            // sentinel cell into its own background instead of styling it as
-            // a fake caret, so it doesn't double up with the real cursor.
+            // Paint the same solid block caret used by every other input.
             for y in text_area.top()..text_area.bottom() {
                 for x in text_area.left()..text_area.right() {
                     if buf[(x, y)].symbol() == CURSOR_GLYPH {
-                        let bg = buf[(x, y)]
-                            .style()
-                            .bg
-                            .unwrap_or_else(|| theme::palette(&theme).panel);
-                        buf[(x, y)].set_style(Style::default().fg(bg).bg(bg));
+                        theme::paint_caret(buf, x, y);
                         break;
                     }
                 }
@@ -910,13 +901,8 @@ mod tests {
         assert_eq!(m.take(), "before\n\tmiddle after");
     }
 
-    /// The real terminal cursor (driven by `composer_cursor_position`) is now
-    /// the visible caret, so the in-buffer sentinel is intentionally blended
-    /// into its own background — this asserts the sentinel cell still exists
-    /// (for `composer_cursor_position` to find) and that it's actually
-    /// invisible (fg == bg), not that it's rendered with caret styling.
     #[test]
-    fn cursor_sentinel_cell_exists_and_is_blended_invisible() {
+    fn composer_paints_background_filled_caret_cell() {
         let mut m = InputModel::default();
         m.set_text("ab");
         m.cursor = 2;
@@ -925,16 +911,16 @@ mod tests {
         let mut found = None;
         for y in 0..area.height {
             for x in 0..area.width {
-                if buf[(x, y)].symbol() == CURSOR_GLYPH {
+                if buf[(x, y)].style().bg == theme::caret().bg {
                     found = Some(buf[(x, y)].style());
                 }
             }
         }
-        let style = found.expect("expected cursor sentinel cell");
-        assert_eq!(
-            style.fg, style.bg,
-            "sentinel should blend into its background"
-        );
+        let style = found.expect("expected cursor cell");
+        let caret = theme::caret();
+        assert_eq!(style.fg, caret.fg);
+        assert_eq!(style.bg, caret.bg);
+        assert!(style.add_modifier.contains(Modifier::BOLD));
     }
 
     #[test]
@@ -945,7 +931,8 @@ mod tests {
         // inner rows, 1 line of content → 1 row of top padding), and text
         // starts right after TEXT_INSET, not a removed gutter column.
         let cell = &buf[(2, 2)];
-        assert_eq!(cell.symbol(), CURSOR_GLYPH);
+        assert_eq!(cell.symbol(), theme::CURSOR_CELL);
+        assert_eq!(cell.style().bg, theme::caret().bg);
     }
 
     #[test]
@@ -959,7 +946,7 @@ mod tests {
         for y in 0..area.height {
             for x in 0..area.width {
                 let cell = &buf[(x, y)];
-                if cell.symbol() == CURSOR_GLYPH {
+                if cell.style().bg == theme::caret().bg {
                     found_marker = true;
                 }
             }
@@ -1167,11 +1154,7 @@ mod tests {
         };
         let rows = render_lines(&m, 60, 5, true);
         assert_eq!(rows.len(), 1);
-        // Leading space is TEXT_INSET; focused so the cursor sentinel
-        // precedes the hint text — neither is the removed marker glyph.
-        assert!(rows[0]
-            .trim_start()
-            .starts_with(&format!("{CURSOR_GLYPH}Ask Forge anything…")));
+        assert!(rows[0].trim_start().starts_with("Ask Forge anything…"));
         assert!(m.copy_text().is_empty());
     }
 
@@ -1184,9 +1167,7 @@ mod tests {
         };
         let rows = render_lines(&m, 60, 5, true);
         assert_eq!(rows.len(), 1);
-        assert!(rows[0]
-            .trim_start()
-            .starts_with(&format!("{CURSOR_GLYPH}Summarize")));
+        assert!(rows[0].trim_start().starts_with("Summarize"));
         assert_eq!(m.copy_text(), "Summarize this codebase");
     }
 
@@ -1211,7 +1192,7 @@ mod tests {
             cursor: "alpha beta ".len(),
             ..Default::default()
         };
-        assert_eq!(composer_text(&model, true), "alpha beta ▏gamma");
+        assert_eq!(composer_text(&model, true), "alpha beta █gamma");
     }
 
     #[test]
