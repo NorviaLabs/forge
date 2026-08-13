@@ -3,11 +3,53 @@
 //! Split out of `lib.rs`; moved verbatim.
 
 use super::*;
+use async_trait::async_trait;
 use forge_governance::AclPolicy;
 use forge_model::MockModelClient;
-use forge_types::{Message, MessageRole, ToolCall, Usage};
+use forge_types::{Message, MessageRole, SideEffectClass, ToolCall, ToolOutput, Usage};
 use serde_json::json;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tempfile::tempdir;
+use tokio::sync::Notify;
+
+struct GatedTool {
+    started: Arc<AtomicBool>,
+    release: Arc<Notify>,
+}
+
+#[async_trait]
+impl forge_tools::Tool for GatedTool {
+    fn name(&self) -> &str {
+        "gated"
+    }
+
+    fn description(&self) -> &str {
+        "Wait until the test releases execution"
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        json!({"type": "object", "additionalProperties": false})
+    }
+
+    fn side_effect_class(&self) -> SideEffectClass {
+        SideEffectClass::Read
+    }
+
+    async fn call(
+        &self,
+        _ctx: &ToolContext,
+        _args: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
+        self.started.store(true, Ordering::SeqCst);
+        self.release.notified().await;
+        Ok(ToolOutput {
+            outcome: Default::default(),
+            content: "released".into(),
+            is_error: false,
+            exit_code: None,
+        })
+    }
+}
 
 #[test]
 fn system_prompt_uses_forge_policy() {
@@ -15,6 +57,69 @@ fn system_prompt_uses_forge_policy() {
     assert!(prompt.starts_with("You are a coding agent running in the Forge"));
     assert!(prompt.contains("Forge is an open source project led by NorviaLabs."));
     assert!(!prompt.contains("# Project Instructions"));
+}
+
+#[tokio::test]
+async fn model_response_application_releases_session_while_tool_runs() {
+    let dir = tempdir().unwrap();
+    let model = Arc::new(MockModelClient::script(vec![]));
+    let started = Arc::new(AtomicBool::new(false));
+    let release = Arc::new(Notify::new());
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(GatedTool {
+        started: started.clone(),
+        release: release.clone(),
+    }));
+    let mut cfg = base_cfg(dir.path());
+    cfg.enable_governance = false;
+    let mut session = AgentSession::create(cfg, model, tools).await.unwrap();
+    session
+        .append_user_message("run the gated tool")
+        .await
+        .unwrap();
+
+    let application = session
+        .begin_model_response_application(ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "call-gated".into(),
+                name: "gated".into(),
+                arguments: json!({}),
+            }],
+            usage: None,
+            thinking: None,
+        })
+        .await
+        .unwrap();
+    let ModelResponseApplication::Execute(pending) = application else {
+        panic!("tool execution should be returned to the caller");
+    };
+
+    let handle = tokio::spawn((*pending).execute());
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while !started.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(session.active_task.lifecycle, TaskLifecycle::Working);
+    assert!(session.messages.iter().any(|message| {
+        message.role == MessageRole::Assistant && !message.tool_calls.is_empty()
+    }));
+
+    release.notify_one();
+    let completed = handle.await.unwrap();
+    let application = session.finish_tool_application(completed).await.unwrap();
+    assert!(matches!(
+        application,
+        ModelResponseApplication::Finished(ApplyOutcome::Continue)
+    ));
+    assert!(session
+        .messages
+        .iter()
+        .any(|message| { message.role == MessageRole::Tool && message.content == "released" }));
 }
 
 #[test]

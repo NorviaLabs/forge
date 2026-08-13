@@ -27,6 +27,9 @@ pub use completion::{
 };
 pub use lifecycle::{ActiveTaskState, TransitionError, TransitionReason};
 pub use queue::{QueuedTask, TaskQueue};
+pub use session::tools::{
+    CompletedToolApplication, ModelResponseApplication, PendingToolApplication,
+};
 pub use subagent::{SubagentOutcome, SubagentSpec};
 
 use std::collections::HashMap;
