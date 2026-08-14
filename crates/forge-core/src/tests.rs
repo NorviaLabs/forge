@@ -60,6 +60,16 @@ fn system_prompt_uses_forge_policy() {
     assert!(!prompt.contains("# Project Instructions"));
 }
 
+#[test]
+fn default_system_prompt_stays_under_the_token_budget() {
+    let prompt = assemble_system_prompt("", &[]);
+    let tokens = forge_context::estimate_tokens(&prompt);
+    assert!(
+        tokens < 6_500,
+        "baseline system prompt is {tokens} tokens; keep discovery text short"
+    );
+}
+
 #[tokio::test]
 async fn model_response_application_releases_session_while_tool_runs() {
     let dir = tempdir().unwrap();
@@ -223,6 +233,35 @@ async fn tool_count_matches_the_length_of_the_listed_tools() {
             "tool_count diverged from list_tools with enable_governance={enable_governance}"
         );
     }
+}
+
+#[tokio::test]
+async fn growing_the_last_message_refreshes_the_context_token_estimate() {
+    let dir = tempdir().unwrap();
+    let model = Arc::new(MockModelClient::script(vec![ModelResponse {
+        text: "ok".into(),
+        tool_calls: vec![],
+        usage: None,
+        thinking: None,
+    }]));
+    let mut session = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+        .await
+        .unwrap();
+    session
+        .messages
+        .push(Message::new(MessageRole::User, "short"));
+    let before = session.context_usage_ratio();
+    session
+        .messages
+        .last_mut()
+        .unwrap()
+        .content
+        .push_str(&"x".repeat(8_000));
+    let after = session.context_usage_ratio();
+    assert!(
+        after > before,
+        "a growing last message must raise the in-context estimate ({before} -> {after})"
+    );
 }
 
 #[tokio::test]

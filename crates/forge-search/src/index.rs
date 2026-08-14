@@ -12,6 +12,9 @@ use thiserror::Error;
 
 const DEFAULT_SCAN_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_CONTEXT_LINES: usize = 1;
+/// Cap in-memory grep hit text so a 30-hit search cannot materialize whole files.
+const MAX_GREP_LINE_CHARS: usize = 240;
+const MAX_GREP_CONTEXT_CHARS: usize = 320;
 
 #[derive(Debug, Error)]
 pub enum SearchError {
@@ -263,8 +266,9 @@ impl WorkspaceIndex {
                 path: rel.to_string(),
                 line: entry.line_number,
                 column: entry.col.saturating_add(1) as u32,
-                text: entry.line_content.trim().to_string(),
-                context: format_grep_context(&entry.context_before, &entry.context_after),
+                text: truncate_chars(entry.line_content.trim(), MAX_GREP_LINE_CHARS),
+                context: format_grep_context(&entry.context_before, &entry.context_after)
+                    .map(|ctx| truncate_chars(&ctx, MAX_GREP_CONTEXT_CHARS)),
                 relevance,
                 is_definition: entry.is_definition,
             });
@@ -323,6 +327,15 @@ fn parse_regex_literal(pattern: &str) -> Option<&str> {
     } else {
         None
     }
+}
+
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let mut out: String = text.chars().take(max_chars.saturating_sub(1)).collect();
+    out.push('…');
+    out
 }
 
 fn format_grep_context(before: &[String], after: &[String]) -> Option<String> {
@@ -386,6 +399,30 @@ mod tests {
         assert_eq!(response.hits[0].line, 2);
         assert_eq!(response.hits[0].text, "hello world");
         assert!(response.hits[0].context.is_some());
+    }
+
+    #[test]
+    fn grep_truncates_oversized_hit_text() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("wide.txt"),
+            format!("prefix {} suffix\n", "x".repeat(800)),
+        )
+        .unwrap();
+        let index = WorkspaceIndex::open_with_options(
+            dir.path(),
+            WorkspaceIndexOptions {
+                watch: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let response = index
+            .grep("prefix", None, GrepQueryMode::Plain, 10)
+            .unwrap();
+        assert_eq!(response.hits.len(), 1);
+        assert!(response.hits[0].text.chars().count() <= MAX_GREP_LINE_CHARS);
+        assert!(response.hits[0].text.ends_with('…'));
     }
 
     #[test]
