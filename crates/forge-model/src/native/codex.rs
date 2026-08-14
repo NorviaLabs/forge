@@ -441,7 +441,7 @@ mod tests {
                 idempotent: true,
             }],
             model: "openai-codex/gpt-test".into(),
-            route_id: None,
+            route_id: Some("openai-chatgpt".into()),
             reasoning_effort: None,
             prompt_cache: true,
         }
@@ -703,7 +703,7 @@ mod tests {
         let request = ModelRequest {
             workspace_root: std::path::PathBuf::new(),
             model: "openai-codex/gpt-test".into(),
-            route_id: None,
+            route_id: Some("openai-chatgpt".into()),
             messages: vec![Message::new(MessageRole::User, "hello")],
             tools: vec![],
             reasoning_effort: None,
@@ -730,7 +730,7 @@ mod tests {
         let request = ModelRequest {
             workspace_root: std::path::PathBuf::new(),
             model: "openai-codex/gpt-test".into(),
-            route_id: None,
+            route_id: Some("openai-chatgpt".into()),
             messages: vec![Message::new(MessageRole::User, "hello")],
             tools: vec![],
             reasoning_effort: None,

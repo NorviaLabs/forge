@@ -5,7 +5,7 @@
 //! Native routing maps `opencode-zen/<id>` to the Zen OpenAI-compatible endpoint.
 
 use crate::auth::AuthMode;
-use crate::profile::ConnectProfile;
+use crate::profile::{CatalogMode, ProviderSpec, ProviderTransport, SpecOrigin};
 
 pub const PROFILE_ID: &str = "opencode_zen";
 
@@ -15,8 +15,8 @@ pub const DEFAULT_BASE_URL: &str = "https://opencode.ai/zen/v1";
 /// Env var the worker reads for the Zen API base (set by connect).
 pub const API_BASE_ENV: &str = "OPENCODE_ZEN_API_BASE";
 
-pub fn opencode_zen_profile() -> ConnectProfile {
-    ConnectProfile {
+pub fn opencode_zen_profile() -> ProviderSpec {
+    ProviderSpec {
         id: PROFILE_ID.into(),
         title: "OpenCode Zen".into(),
         description: "OpenCode Zen model catalog — API key required (TUI prompts)".into(),
@@ -38,6 +38,10 @@ pub fn opencode_zen_profile() -> ConnectProfile {
         vendor_id: "opencode".into(),
         vendor_label: "OpenCode".into(),
         route_label: "Zen".into(),
+        route_id: "opencode-zen".into(),
+        catalog_mode: CatalogMode::LiveRegistry,
+        transport: ProviderTransport::OpenaiCompat,
+        origin: SpecOrigin::Builtin,
     }
 }
 

@@ -107,22 +107,8 @@ mod tests {
     use super::*;
     use crate::auth::{AuthMode, OauthPending};
 
-    fn profile(id: &str, auth_mode: AuthMode) -> ConnectProfile {
-        ConnectProfile {
-            id: id.into(),
-            title: "Test".into(),
-            description: String::new(),
-            auth_mode,
-            api_key_env: vec![],
-            default_base_url: None,
-            default_models: vec![],
-            models_dev_providers: vec![],
-            auth_url: None,
-            model_provider_prefix: id.into(),
-            vendor_id: id.into(),
-            vendor_label: "Test".into(),
-            route_label: String::new(),
-        }
+    fn profile(id: &str, auth_mode: AuthMode) -> crate::ProviderSpec {
+        crate::profile::test_spec(id, auth_mode, vec![])
     }
 
     #[test]

@@ -57,8 +57,11 @@ pub use opencode_zen::{
     DEFAULT_BASE_URL as OPENCODE_ZEN_DEFAULT_BASE_URL, PROFILE_ID as OPENCODE_ZEN_PROFILE_ID,
 };
 pub use preferences::PreferenceStore;
-pub use profile::{ConnectOutcome, ConnectProfile, ConnectStatus, KeySource};
-pub use registry::{builtin_registry, ConnectRegistry};
+pub use profile::{
+    CatalogMode, ConnectOutcome, ConnectProfile, ConnectStatus, KeySource, ProviderSpec,
+    ProviderTransport, SpecOrigin,
+};
+pub use registry::{builtin_registry, loaded_registry, ConnectRegistry};
 pub use selection::ModelSelection;
 pub use service::{
     format_connected, handle_connect_action, has_connected_profile, needs_tui_api_key_prompt,

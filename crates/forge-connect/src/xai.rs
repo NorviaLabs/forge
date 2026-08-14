@@ -1,12 +1,12 @@
 //! xAI Grok connect profile — OAuth (PROV-01 / Phase 6.1).
 
 use crate::auth::AuthMode;
-use crate::profile::ConnectProfile;
+use crate::profile::{CatalogMode, ProviderSpec, ProviderTransport, SpecOrigin};
 
 pub const PROFILE_ID: &str = "xai";
 
-pub fn xai_grok_profile() -> ConnectProfile {
-    ConnectProfile {
+pub fn xai_grok_profile() -> ProviderSpec {
+    ProviderSpec {
         id: PROFILE_ID.into(),
         title: "xAI Grok".into(),
         description: "Grok via xAI OAuth (not API key); xai/* models".into(),
@@ -21,6 +21,10 @@ pub fn xai_grok_profile() -> ConnectProfile {
         vendor_id: PROFILE_ID.into(),
         vendor_label: "xAI".into(),
         route_label: "API".into(),
+        route_id: "xai-api".into(),
+        catalog_mode: CatalogMode::LiveRegistry,
+        transport: ProviderTransport::OpenaiCompat,
+        origin: SpecOrigin::Builtin,
     }
 }
 

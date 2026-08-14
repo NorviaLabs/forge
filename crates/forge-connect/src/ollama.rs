@@ -3,7 +3,7 @@
 //! No cloud API key required. Connect checks that the Ollama daemon is reachable.
 
 use crate::auth::AuthMode;
-use crate::profile::ConnectProfile;
+use crate::profile::{CatalogMode, ProviderSpec, ProviderTransport, SpecOrigin};
 use crate::verify::VerifyError;
 
 pub const PROFILE_ID: &str = "ollama";
@@ -13,8 +13,8 @@ pub const API_BASE_ENV: &str = "OLLAMA_API_BASE";
 /// Stored / exported placeholder when no optional key is set (Ollama ignores it).
 pub const LOCAL_PLACEHOLDER_KEY: &str = "ollama";
 
-pub fn ollama_profile() -> ConnectProfile {
-    ConnectProfile {
+pub fn ollama_profile() -> ProviderSpec {
+    ProviderSpec {
         id: PROFILE_ID.into(),
         title: "Ollama (local)".into(),
         description: "Local Ollama models — no API key required (ollama/*)".into(),
@@ -31,6 +31,10 @@ pub fn ollama_profile() -> ConnectProfile {
         vendor_id: PROFILE_ID.into(),
         vendor_label: "Ollama".into(),
         route_label: "Local".into(),
+        route_id: "ollama".into(),
+        catalog_mode: CatalogMode::Live,
+        transport: ProviderTransport::OpenaiCompat,
+        origin: SpecOrigin::Builtin,
     }
 }
 
