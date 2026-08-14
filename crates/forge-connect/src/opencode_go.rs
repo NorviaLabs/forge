@@ -24,7 +24,7 @@ pub fn opencode_go_profile() -> ConnectProfile {
         default_base_url: Some(DEFAULT_BASE_URL.into()),
         // Distinctive prefix avoids hijacking real OpenAI (`openai/gpt-*`) routes.
         default_models: vec!["opencode-go/gpt-4.1-mini".into()],
-        models_dev_providers: vec![],
+        models_dev_providers: vec!["opencode-go".into()],
         auth_url: Some("https://opencode.ai/auth".into()),
         model_provider_prefix: "opencode-go".into(),
         vendor_id: "opencode".into(),

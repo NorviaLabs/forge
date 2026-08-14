@@ -382,22 +382,30 @@ fn apply_reasoning_effort(body: &mut Value, model: &str, reasoning_effort: Optio
         effort = "low".into();
     }
     let model_id = model.trim_start_matches("anthropic/");
-    let supported = [
-        "sonnet-5",
-        "opus-4-8",
-        "opus-4-7",
-        "opus-4-6",
-        "sonnet-4-6",
-        "opus-4-5",
-    ]
-    .iter()
-    .any(|marker| model_id.contains(marker));
+    let supported = catalog_supports_anthropic_effort(model).unwrap_or_else(|| {
+        [
+            "sonnet-5",
+            "opus-4-8",
+            "opus-4-7",
+            "opus-4-6",
+            "sonnet-4-6",
+            "opus-4-5",
+        ]
+        .iter()
+        .any(|marker| model_id.contains(marker))
+    });
     if supported {
         if effort == "xhigh" && (model_id.contains("4-6") || model_id.contains("opus-4-5")) {
             effort = "high".into();
         }
         body["output_config"] = json!({"effort": effort});
     }
+}
+
+fn catalog_supports_anthropic_effort(model: &str) -> Option<bool> {
+    forge_connect::ModelCatalogCache::user_default()
+        .model_effort_options(model)
+        .map(|options| !options.is_empty())
 }
 
 #[cfg(test)]
