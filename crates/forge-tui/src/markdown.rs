@@ -13,11 +13,12 @@
 
 use crate::theme;
 use forge_syntax::highlight_to_lines;
-use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Alignment, CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-const TABLE_SEP: &str = " │ ";
+/// Space on each side of a cell, inside the `│` walls.
+const CELL_PAD: usize = 1;
 
 pub fn render_markdown(text: &str, width: usize) -> Vec<Line<'static>> {
     let options = Options::ENABLE_TABLES
@@ -43,22 +44,34 @@ struct CodeBuffer {
     body: String,
 }
 
+struct TableRow {
+    header: bool,
+    cells: Vec<Vec<Span<'static>>>,
+}
+
 struct TableBuilder {
-    rows: Vec<Vec<Vec<Span<'static>>>>,
+    alignments: Vec<Alignment>,
+    rows: Vec<TableRow>,
 }
 
 impl TableBuilder {
-    fn new() -> Self {
-        TableBuilder { rows: Vec::new() }
+    fn new(alignments: Vec<Alignment>) -> Self {
+        TableBuilder {
+            alignments,
+            rows: Vec::new(),
+        }
     }
 
-    fn start_row(&mut self) {
-        self.rows.push(Vec::new());
+    fn start_row(&mut self, header: bool) {
+        self.rows.push(TableRow {
+            header,
+            cells: Vec::new(),
+        });
     }
 
     fn end_cell(&mut self, spans: Vec<Span<'static>>) {
         if let Some(row) = self.rows.last_mut() {
-            row.push(spans);
+            row.cells.push(spans);
         }
     }
 }
@@ -205,13 +218,18 @@ impl MdRenderer {
                         .add_modifier(Modifier::ITALIC),
                 );
             }
-            Tag::Table(_) => {
+            Tag::Table(alignments) => {
                 self.flush_para();
-                self.table = Some(TableBuilder::new());
+                self.table = Some(TableBuilder::new(alignments));
             }
-            Tag::TableHead | Tag::TableRow => {
+            Tag::TableHead => {
                 if let Some(table) = &mut self.table {
-                    table.start_row();
+                    table.start_row(true);
+                }
+            }
+            Tag::TableRow => {
+                if let Some(table) = &mut self.table {
+                    table.start_row(false);
                 }
             }
             Tag::TableCell => {
@@ -269,7 +287,12 @@ impl MdRenderer {
             }
             TagEnd::Table => {
                 if let Some(table) = self.table.take() {
-                    self.out.extend(render_table(&table, self.width));
+                    // The item marker belongs to the list text, not the box.
+                    // Indent every table line with the quote rail plus the
+                    // list continuation so the left wall stays a straight line.
+                    let prefix = format!("{}{}", "│ ".repeat(self.quote_depth), self.cont_prefix);
+                    self.out
+                        .extend(render_table(&table, self.width, &prefix, &prefix));
                 }
             }
             TagEnd::TableRow => {}
@@ -376,9 +399,35 @@ impl MdRenderer {
     }
 }
 
+fn display_width(s: &str) -> usize {
+    Span::raw(s).width()
+}
+
+/// Split `s` so the first piece is at most `max` columns wide. A single
+/// display-wider-than-`max` grapheme is taken anyway so wrapping can progress.
+fn split_at_width(s: &str, max: usize) -> (&str, &str) {
+    if max == 0 {
+        return ("", s);
+    }
+    let mut used = 0;
+    for (idx, ch) in s.char_indices() {
+        let cw = display_width(ch.encode_utf8(&mut [0; 4]));
+        if used + cw > max {
+            if idx == 0 {
+                let end = idx + ch.len_utf8();
+                return (&s[..end], &s[end..]);
+            }
+            return (&s[..idx], &s[idx..]);
+        }
+        used += cw;
+    }
+    (s, "")
+}
+
 /// Greedy word-wrap `spans` to `width`, prefixing the first line with `prefix`
 /// and continuation lines with `cont`. Styles travel with the words, so inline
-/// code and emphasis stay styled across wraps.
+/// code and emphasis stay styled across wraps. Words that still do not fit a
+/// fresh line are hard-broken so a table cell cannot blow the pane width.
 fn wrap_spans(
     spans: &[Span<'static>],
     width: usize,
@@ -390,25 +439,50 @@ fn wrap_spans(
     }
     let prefix_span = Span::styled(prefix.to_string(), theme::muted());
     let cont_span = Span::styled(cont.to_string(), theme::muted());
+    let prefix_w = display_width(prefix);
+    let cont_w = display_width(cont);
     let mut out: Vec<Line<'static>> = Vec::new();
     let mut cur: Vec<Span<'static>> = vec![prefix_span];
-    let mut cur_w = prefix.len();
+    let mut cur_w = prefix_w;
     let mut has_content = false;
+
     for (word, style) in spans.iter().flat_map(tokenize) {
-        let wlen = word.len();
-        if has_content && cur_w + 1 + wlen > width {
+        let mut remaining = word.as_str();
+        while !remaining.is_empty() {
+            let gap = usize::from(has_content);
+            let room = width.saturating_sub(cur_w + gap);
+            let wlen = display_width(remaining);
+            if wlen <= room {
+                if has_content {
+                    cur.push(Span::raw(" "));
+                    cur_w += 1;
+                }
+                cur.push(Span::styled(remaining.to_string(), style));
+                cur_w += wlen;
+                has_content = true;
+                break;
+            }
+            if has_content {
+                out.push(Line::from(std::mem::take(&mut cur)));
+                cur.push(cont_span.clone());
+                cur_w = cont_w;
+                has_content = false;
+                continue;
+            }
+            if room == 0 {
+                out.push(Line::from(std::mem::take(&mut cur)));
+                cur.push(cont_span.clone());
+                cur_w = cont_w;
+                continue;
+            }
+            let (chunk, rest) = split_at_width(remaining, room);
+            cur.push(Span::styled(chunk.to_string(), style));
             out.push(Line::from(std::mem::take(&mut cur)));
             cur.push(cont_span.clone());
-            cur_w = cont.len();
+            cur_w = cont_w;
             has_content = false;
+            remaining = rest;
         }
-        if has_content {
-            cur.push(Span::raw(" "));
-            cur_w += 1;
-        }
-        cur.push(Span::styled(word, style));
-        cur_w += wlen;
-        has_content = true;
     }
     out.push(Line::from(cur));
     out
@@ -421,44 +495,185 @@ fn tokenize(span: &Span<'static>) -> Vec<(String, Style)> {
         .collect()
 }
 
-fn render_table(table: &TableBuilder, width: usize) -> Vec<Line<'static>> {
-    let col_count = table.rows.iter().map(|row| row.len()).max().unwrap_or(0);
+/// Walls + inner verticals + `CELL_PAD` on each side of every column.
+fn table_chrome(col_count: usize) -> usize {
+    2 + col_count.saturating_sub(1) + col_count.saturating_mul(2 * CELL_PAD)
+}
+
+fn spans_width(spans: &[Span<'static>]) -> usize {
+    spans.iter().map(Span::width).sum()
+}
+
+fn style_header_cell(cell: &[Span<'static>]) -> Vec<Span<'static>> {
+    let header = theme::tag_style(false).add_modifier(Modifier::BOLD);
+    cell.iter()
+        .map(|span| {
+            let mut styled = span.clone();
+            styled.style = styled.style.patch(header);
+            styled
+        })
+        .collect()
+}
+
+fn align_cell(line: Line<'static>, width: usize, alignment: Alignment) -> Vec<Span<'static>> {
+    let used = line.width();
+    let pad = width.saturating_sub(used);
+    let (left, right) = match alignment {
+        Alignment::Right => (pad, 0),
+        Alignment::Center => (pad / 2, pad - pad / 2),
+        Alignment::None | Alignment::Left => (0, pad),
+    };
+    let mut out = Vec::new();
+    if left > 0 {
+        out.push(Span::raw(" ".repeat(left)));
+    }
+    out.extend(line.spans);
+    if right > 0 {
+        out.push(Span::raw(" ".repeat(right)));
+    }
+    out
+}
+
+fn frame_line(prefix: &str, widths: &[usize], left: char, mid: char, right: char) -> Line<'static> {
+    let mut rule = String::new();
+    rule.push(left);
+    for (i, w) in widths.iter().enumerate() {
+        if i > 0 {
+            rule.push(mid);
+        }
+        rule.push_str(&"─".repeat(*w + 2 * CELL_PAD));
+    }
+    rule.push(right);
+    Line::from(vec![
+        Span::styled(prefix.to_string(), theme::muted()),
+        Span::styled(rule, theme::border_muted()),
+    ])
+}
+
+fn render_table(
+    table: &TableBuilder,
+    width: usize,
+    first_prefix: &str,
+    rest_prefix: &str,
+) -> Vec<Line<'static>> {
+    let col_count = table
+        .rows
+        .iter()
+        .map(|row| row.cells.len())
+        .max()
+        .unwrap_or(0);
     if col_count == 0 {
         return Vec::new();
     }
-    let mut rows: Vec<Vec<Vec<Span<'static>>>> = Vec::with_capacity(table.rows.len());
-    for row in &table.rows {
-        let mut padded = row.clone();
-        padded.resize(col_count, Vec::new());
-        rows.push(padded);
+
+    let mut alignments = table.alignments.clone();
+    alignments.resize(col_count, Alignment::None);
+
+    let mut rows: Vec<(bool, Vec<Vec<Span<'static>>>)> = Vec::with_capacity(table.rows.len());
+    for (idx, row) in table.rows.iter().enumerate() {
+        let mut cells = row.cells.clone();
+        cells.resize(col_count, Vec::new());
+        let header = row.header || idx == 0;
+        let cells = if header {
+            cells.iter().map(|cell| style_header_cell(cell)).collect()
+        } else {
+            cells
+        };
+        rows.push((header, cells));
     }
-    let cell_len =
-        |cell: &[Span<'static>]| cell.iter().map(|span| span.content.len()).sum::<usize>();
+
     let mut natural = vec![0usize; col_count];
-    for row in &rows {
-        for (column, cell) in row.iter().enumerate() {
-            natural[column] = natural[column].max(cell_len(cell));
+    for (_, cells) in &rows {
+        for (column, cell) in cells.iter().enumerate() {
+            natural[column] = natural[column].max(spans_width(cell));
         }
     }
-    let sep_total = TABLE_SEP.chars().count() * col_count.saturating_sub(1);
-    let widths = if natural.iter().sum::<usize>() + sep_total <= width {
+
+    let prefix_w = display_width(first_prefix).max(display_width(rest_prefix));
+    let available = width.saturating_sub(prefix_w);
+    let chrome = table_chrome(col_count);
+    let inner_budget = available.saturating_sub(chrome);
+    let widths = if natural.iter().copied().sum::<usize>() <= inner_budget {
         natural
     } else {
-        shrink_widths(&natural, width.saturating_sub(sep_total))
+        shrink_widths(&natural, inner_budget)
     };
 
     let mut out = Vec::new();
-    if let Some(header) = rows.first() {
-        out.extend(render_row(header, &widths));
-        let rule: String = widths
-            .iter()
-            .map(|w| "─".repeat(*w))
-            .collect::<Vec<_>>()
-            .join("─┼─");
-        out.push(Line::from(Span::styled(rule, theme::border_muted())));
+    let mut emitted = 0usize;
+    let mut take_prefix = || {
+        let prefix = if emitted == 0 {
+            first_prefix
+        } else {
+            rest_prefix
+        };
+        emitted += 1;
+        prefix.to_string()
+    };
+
+    out.push(frame_line(&take_prefix(), &widths, '┌', '┬', '┐'));
+
+    let mut saw_body = false;
+    for (header, cells) in &rows {
+        if !header && !saw_body {
+            out.push(frame_line(&take_prefix(), &widths, '├', '┼', '┤'));
+            saw_body = true;
+        }
+        out.extend(render_boxed_row(
+            &mut take_prefix,
+            cells,
+            &widths,
+            &alignments,
+        ));
     }
-    for row in rows.iter().skip(1) {
-        out.extend(render_row(row, &widths));
+    if !saw_body {
+        out.push(frame_line(&take_prefix(), &widths, '├', '┼', '┤'));
+    }
+    out.push(frame_line(&take_prefix(), &widths, '└', '┴', '┘'));
+    out
+}
+
+fn render_boxed_row(
+    take_prefix: &mut impl FnMut() -> String,
+    cells: &[Vec<Span<'static>>],
+    widths: &[usize],
+    alignments: &[Alignment],
+) -> Vec<Line<'static>> {
+    let wrapped: Vec<Vec<Line<'static>>> = cells
+        .iter()
+        .zip(widths)
+        .map(|(cell, w)| {
+            if *w == 0 {
+                return vec![Line::from("")];
+            }
+            let lines = wrap_spans(cell, *w, "", "");
+            if lines.is_empty() {
+                vec![Line::from("")]
+            } else {
+                lines
+            }
+        })
+        .collect();
+    let height = wrapped.iter().map(|lines| lines.len()).max().unwrap_or(1);
+    let border = theme::border_muted();
+    let mut out = Vec::new();
+    for row_line in 0..height {
+        let mut spans = vec![
+            Span::styled(take_prefix(), theme::muted()),
+            Span::styled("│".to_string(), border),
+        ];
+        for (column, lines) in wrapped.iter().enumerate() {
+            if column > 0 {
+                spans.push(Span::styled("│".to_string(), border));
+            }
+            spans.push(Span::raw(" ".repeat(CELL_PAD)));
+            let line = lines.get(row_line).cloned().unwrap_or_default();
+            let alignment = alignments.get(column).copied().unwrap_or(Alignment::None);
+            spans.extend(align_cell(line, widths[column], alignment));
+            spans.push(Span::raw(" ".repeat(CELL_PAD)));
+        }
+        spans.push(Span::styled("│".to_string(), border));
+        out.push(Line::from(spans));
     }
     out
 }
@@ -508,33 +723,6 @@ fn shrink_widths(natural: &[usize], available: usize) -> Vec<usize> {
         }
     }
     widths
-}
-
-fn render_row(cells: &[Vec<Span<'static>>], widths: &[usize]) -> Vec<Line<'static>> {
-    let wrapped: Vec<Vec<Line<'static>>> = cells
-        .iter()
-        .zip(widths)
-        .map(|(cell, w)| wrap_spans(cell, *w, "", ""))
-        .collect();
-    let height = wrapped.iter().map(|lines| lines.len()).max().unwrap_or(1);
-    let mut out = Vec::new();
-    for row_line in 0..height {
-        let mut spans: Vec<Span<'static>> = Vec::new();
-        for (column, lines) in wrapped.iter().enumerate() {
-            if column > 0 {
-                spans.push(Span::raw(TABLE_SEP));
-            }
-            let mut line = lines.get(row_line).cloned().unwrap_or_default();
-            let used: usize = line.spans.iter().map(|s| s.content.len()).sum();
-            if used < widths[column] {
-                line.spans
-                    .push(Span::raw(" ".repeat(widths[column] - used)));
-            }
-            spans.extend(line.spans);
-        }
-        out.push(Line::from(spans));
-    }
-    out
 }
 
 fn render_highlighted_line(segments: &[forge_syntax::HighlightedSegment]) -> Vec<Span<'static>> {
@@ -600,7 +788,9 @@ Some **bold** and *italic* and ~struck~ and `code` text.
         assert!(rendered.contains("• item one"), "{rendered}");
         assert!(rendered.contains("1. first"), "{rendered}");
         assert!(rendered.contains("│ a quote"), "{rendered}");
+        assert!(rendered.contains("┌"), "{rendered}");
         assert!(rendered.contains("┼"), "{rendered}");
+        assert!(rendered.contains("└"), "{rendered}");
     }
 
     #[test]
@@ -659,6 +849,217 @@ Some **bold** and *italic* and ~struck~ and `code` text.
                 "line exceeds width {width}: {line:?}"
             );
         }
+    }
+
+    fn table_md() -> &'static str {
+        "\
+| Name | Age |
+| --- | --- |
+| Ana | 30 |
+| Bob | 31 |
+"
+    }
+
+    #[test]
+    fn table_draws_outer_box_with_header_rule_only() {
+        let rendered = text(&render_markdown(table_md(), 80));
+        let lines: Vec<&str> = rendered.lines().collect();
+        assert!(
+            lines[0].starts_with('┌') && lines[0].contains('┬') && lines[0].ends_with('┐'),
+            "{rendered}"
+        );
+        assert!(
+            lines[1].starts_with('│') && lines[1].contains("Name"),
+            "{rendered}"
+        );
+        assert!(
+            lines[2].starts_with('├') && lines[2].contains('┼') && lines[2].ends_with('┤'),
+            "{rendered}"
+        );
+        assert!(
+            lines[3].contains("Ana") && lines[3].contains("30"),
+            "{rendered}"
+        );
+        assert!(
+            lines[4].contains("Bob") && !lines[4].contains('┼'),
+            "{rendered}"
+        );
+        assert!(
+            lines
+                .last()
+                .is_some_and(|l| l.starts_with('└') && l.contains('┴') && l.ends_with('┘')),
+            "{rendered}"
+        );
+        assert_eq!(
+            rendered.matches('┼').count(),
+            1,
+            "only the header rule should have ┼:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn table_hugs_content_instead_of_stretching() {
+        let rendered = render_markdown(table_md(), 80);
+        for line in &rendered {
+            assert!(
+                line.width() < 30,
+                "hug failed, line width {}:\n{:?}",
+                line.width(),
+                line
+            );
+        }
+    }
+
+    #[test]
+    fn table_header_uses_tag_and_bold() {
+        let rendered = render_markdown(table_md(), 80);
+        let name = rendered
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .find(|span| span.content.as_ref() == "Name")
+            .expect("header cell");
+        assert_eq!(name.style.fg, theme::tag_style(false).fg);
+        assert!(name.style.add_modifier.contains(Modifier::BOLD));
+        let ana = rendered
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .find(|span| span.content.as_ref() == "Ana")
+            .expect("body cell");
+        assert_ne!(ana.style.fg, theme::tag_style(false).fg);
+    }
+
+    #[test]
+    fn table_honors_gfm_alignment() {
+        let md = "\
+| left | mid | right |
+|:-----|:---:|------:|
+| a | b | c |
+";
+        let rendered = text(&render_markdown(md, 80));
+        let body = rendered
+            .lines()
+            .find(|l| l.contains('a') && l.contains('b') && l.contains('c'))
+            .expect(&rendered);
+        // inner widths follow the headers: left=4, mid=3, right=5
+        assert!(
+            body.contains("│ a    │  b  │     c │"),
+            "alignment padding:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn table_wraps_header_and_body_inside_the_box() {
+        let md = "\
+| Very long column name | Status |
+| --- | --- |
+| a fairly long value | ok |
+";
+        let width = 24usize;
+        let rendered = render_markdown(md, width);
+        for line in &rendered {
+            assert!(
+                line.width() <= width,
+                "line exceeds width {width}: {line:?}"
+            );
+        }
+        let text = text(&rendered);
+        assert!(text.contains("Very"), "{text}");
+        assert!(text.contains("column"), "{text}");
+        assert!(text.contains("fairly"), "{text}");
+        assert!(text.contains('┌') && text.contains('└'), "{text}");
+        // wrapped header/body still carry verticals
+        let vertical_rows = text.lines().filter(|l| l.starts_with('│')).count();
+        assert!(
+            vertical_rows >= 4,
+            "expected wrapped rows inside the box:\n{text}"
+        );
+    }
+
+    #[test]
+    fn table_inside_quote_keeps_quote_rail() {
+        let md = "\
+> | Name | Age |
+> | --- | --- |
+> | Ana | 30 |
+";
+        let rendered = text(&render_markdown(md, 80));
+        for line in rendered.lines() {
+            assert!(
+                line.starts_with("│ "),
+                "quoted table line must keep the quote rail:\n{rendered}"
+            );
+        }
+        assert!(rendered.contains("│ ┌"), "{rendered}");
+        assert!(rendered.contains("│ │ Name"), "{rendered}");
+        assert!(rendered.contains("│ └"), "{rendered}");
+    }
+
+    #[test]
+    fn table_inside_list_item_stays_indented() {
+        let md = "\
+- item
+
+  | Name | Age |
+  | --- | --- |
+  | Ana | 30 |
+";
+        let rendered = text(&render_markdown(md, 80));
+        let top = rendered
+            .lines()
+            .find(|l| l.contains('┌'))
+            .unwrap_or_else(|| panic!("boxed table missing:\n{rendered}"));
+        // List continuation uses marker.len() (bytes), so `• ` indents 4.
+        // Match that existing indent rather than inventing a new one.
+        assert!(
+            top.starts_with("    ┌"),
+            "table should sit on the list continuation indent:\n{rendered}"
+        );
+        assert!(
+            !top.contains('•'),
+            "item marker must not attach to the box:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn table_column_width_uses_display_width() {
+        let md = "\
+| 中 | x |
+| --- | --- |
+| 中 | y |
+";
+        let rendered = text(&render_markdown(md, 80));
+        let top = rendered.lines().next().expect("top rule");
+        // 中 is 2 columns. Inner 2 + 2 pad = 4 dashes, then ┬, then x is 1 + 2 pad = 3.
+        assert_eq!(top, "┌────┬───┐", "{rendered}");
+    }
+
+    #[test]
+    fn table_header_tag_survives_answer_line_style() {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        use ratatui::widgets::Widget;
+
+        let parts = render_markdown(table_md(), 40);
+        let mut saw_header = false;
+        for line in parts {
+            let mut spans = vec![Span::raw("  ")];
+            spans.extend(line.spans);
+            let styled = Line::from(spans).style(theme::assistant_answer_style());
+            let width = styled.width().max(1) as u16;
+            let mut buf = Buffer::empty(Rect::new(0, 0, width, 1));
+            Widget::render(styled, buf.area, &mut buf);
+            for x in 0..width {
+                if buf[(x, 0)].symbol() == "N" {
+                    assert_eq!(
+                        buf[(x, 0)].style().fg,
+                        theme::tag_style(false).fg,
+                        "header fg flattened by answer line style"
+                    );
+                    saw_header = true;
+                }
+            }
+        }
+        assert!(saw_header, "did not find header 'N' in painted buffer");
     }
 
     #[test]

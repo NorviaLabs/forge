@@ -724,6 +724,7 @@ pub struct Palette {
     pub cursor: Color,
 }
 
+#[cfg(test)]
 pub fn palette(theme_id: &str) -> Palette {
     palette_from_source(&resolved_palette(theme_id))
 }
