@@ -237,36 +237,24 @@ impl FromStr for ReasoningEffort {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
+    use crate::app::tests::helpers::isolated_home_guard;
 
-    struct IsolatedCatalogHome {
-        _dir: TempDir,
-        previous: Option<String>,
+    fn isolated_catalog_home() -> (
+        tempfile::TempDir,
+        crate::app::tests::helpers::ScopedEnvGuard,
+    ) {
+        isolated_home_guard()
     }
 
-    impl IsolatedCatalogHome {
-        fn new() -> Self {
-            let dir = TempDir::new().unwrap();
-            let previous = std::env::var("HOME").ok();
-            std::env::set_var("HOME", dir.path());
-            Self {
-                _dir: dir,
-                previous,
-            }
+    #[test]
+    fn isolated_catalog_home_restores_home_on_drop() {
+        let isolated;
+        {
+            let home = isolated_catalog_home();
+            isolated = home.0.path().to_path_buf();
+            assert_eq!(std::env::var("HOME").ok().as_deref(), isolated.to_str());
         }
-    }
-
-    impl Drop for IsolatedCatalogHome {
-        fn drop(&mut self) {
-            match &self.previous {
-                Some(home) => std::env::set_var("HOME", home),
-                None => std::env::remove_var("HOME"),
-            }
-        }
-    }
-
-    fn isolated_catalog_home() -> IsolatedCatalogHome {
-        IsolatedCatalogHome::new()
+        assert_ne!(std::env::var("HOME").ok().as_deref(), isolated.to_str());
     }
 
     #[test]

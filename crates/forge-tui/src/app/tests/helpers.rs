@@ -192,6 +192,17 @@ pub(crate) fn press(code: KeyCode, mods: KeyModifiers) -> event::KeyEvent {
     }
 }
 
+/// Serialise every test that reads or writes process environment, including
+/// `HOME` / `dirs::home_dir()`. Recover poison so one failing test does not
+/// cascade into the rest of the suite.
+pub(crate) fn lock_test_env() -> MutexGuard<'static, ()> {
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    ENV_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Save-and-restore env vars so dev machine credentials don't leak into tests.
 pub(crate) struct ScopedEnvGuard {
     _lock: MutexGuard<'static, ()>,
@@ -200,11 +211,7 @@ pub(crate) struct ScopedEnvGuard {
 
 impl ScopedEnvGuard {
     pub(crate) fn new(keys: &[&str]) -> Self {
-        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        let lock = ENV_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("environment test lock poisoned");
+        let lock = lock_test_env();
         let mut saved = Vec::new();
         for key in keys {
             saved.push((key.to_string(), std::env::var(key).ok()));
