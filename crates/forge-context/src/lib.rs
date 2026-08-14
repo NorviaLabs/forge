@@ -287,6 +287,7 @@ impl ContextEngine {
             thinking: None,
             thinking_duration_secs: None,
             tool_calls: vec![],
+            attachments: Vec::new(),
 }];
         new_msgs.push(Message {
             outcome: Default::default(),
@@ -300,6 +301,7 @@ impl ContextEngine {
             thinking: None,
             thinking_duration_secs: None,
             tool_calls: vec![],
+            attachments: Vec::new(),
         });
         Ok((doc, new_msgs))
     }
@@ -520,6 +522,7 @@ mod tests {
                 thinking: None,
                 thinking_duration_secs: None,
                 tool_calls: vec![],
+                attachments: Vec::new(),
             },
             Message {
                 outcome: Default::default(),
@@ -530,6 +533,7 @@ mod tests {
                 thinking: None,
                 thinking_duration_secs: None,
                 tool_calls: vec![],
+                attachments: Vec::new(),
             },
         ];
         let system_prompt = "Forge system prompt\n\nAGENTS.md:\nBe careful";
@@ -554,6 +558,7 @@ mod tests {
                     thinking: None,
                     thinking_duration_secs: None,
                     tool_calls: vec![],
+                    attachments: Vec::new(),
                 },
                 200,
             )
@@ -662,6 +667,7 @@ mod tests {
             thinking: None,
             thinking_duration_secs: None,
             tool_calls: vec![],
+            attachments: Vec::new(),
         }];
         assert!(eng.usage_ratio(&small) < 0.01);
     }
@@ -780,6 +786,7 @@ mod tests {
                 thinking: None,
                 thinking_duration_secs: None,
                 tool_calls: vec![],
+                attachments: Vec::new(),
             },
             Message {
                 outcome: Default::default(),
@@ -790,6 +797,7 @@ mod tests {
                 thinking: None,
                 thinking_duration_secs: None,
                 tool_calls: vec![],
+                attachments: Vec::new(),
             },
         ];
         let (doc, _new_msgs) = eng.handoff_reset(&messages, "ws", "prompt").unwrap();
@@ -812,6 +820,7 @@ mod tests {
             thinking: None,
             thinking_duration_secs: None,
             tool_calls: vec![],
+            attachments: Vec::new(),
         }];
         let (doc, _new_msgs) = eng.handoff_reset(&messages, "ws", "prompt").unwrap();
         assert_eq!(doc.goal, "continue task");

@@ -4,7 +4,7 @@
 //! A models.dev registry supplies durable public metadata; provider catalogs remain
 //! account-specific availability signals.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -141,6 +141,14 @@ struct CatalogFile {
     /// provider/model id → dollars per million tokens.
     #[serde(default)]
     registry_costs: BTreeMap<String, CatalogCost>,
+    /// provider/model ids whose models.dev `modalities.input` includes `image`.
+    /// Missing from this set is fail-closed: the model cannot take image input.
+    #[serde(default)]
+    registry_image_input: BTreeSet<String>,
+    /// Set when this process has ingested `modalities.input`. Pre-feature
+    /// catalog files stay `false` even if `registry_fetched_at` is fresh.
+    #[serde(default)]
+    registry_image_input_ready: bool,
     /// Unix seconds when the public registry was refreshed.
     #[serde(default)]
     registry_fetched_at: Option<u64>,
@@ -252,14 +260,33 @@ impl ModelCatalogCache {
         self.load().registry_costs.get(model_id).copied()
     }
 
+    /// Fail-closed: unknown or missing `modalities.input` ⇒ no image input.
+    pub fn model_accepts_image_input(&self, model_id: &str) -> bool {
+        if model_id.is_empty() {
+            return false;
+        }
+        let file = self.load();
+        image_input_candidates(model_id)
+            .into_iter()
+            .any(|id| file.registry_image_input.contains(&id))
+    }
+
+    /// Whether `modalities.input` has been ingested at least once.
+    pub fn image_input_ready(&self) -> bool {
+        self.load().registry_image_input_ready
+    }
+
     fn put_registry(
         &self,
         models: BTreeMap<String, Vec<String>>,
         costs: BTreeMap<String, CatalogCost>,
+        image_input: BTreeSet<String>,
     ) -> Result<(), CatalogError> {
         let mut file = self.load();
         file.registry_models = models;
         file.registry_costs = costs;
+        file.registry_image_input = image_input;
+        file.registry_image_input_ready = true;
         file.registry_fetched_at = Some(Self::now_secs());
         self.save(&file)
     }
@@ -291,6 +318,7 @@ pub fn refresh_models_dev_registry(
 
     let mut by_profile = BTreeMap::new();
     let mut costs = BTreeMap::new();
+    let mut image_input = BTreeSet::new();
     let mut total = 0usize;
     for profile in profiles {
         let mut ids = std::collections::BTreeSet::new();
@@ -308,6 +336,14 @@ pub fn refresh_models_dev_registry(
                     if let Some(cost) = models_dev_cost(model) {
                         costs.insert(id.clone(), cost);
                     }
+                    if models_dev_image_input(model) {
+                        image_input.insert(id.clone());
+                        // ChatGPT Codex and the OpenAI API share models.dev's
+                        // `openai` row; stamp both route prefixes.
+                        for alias in image_input_route_aliases(&id) {
+                            image_input.insert(alias);
+                        }
+                    }
                     ids.insert(id);
                 }
             }
@@ -315,7 +351,7 @@ pub fn refresh_models_dev_registry(
         total += ids.len();
         by_profile.insert(profile.id.clone(), ids.into_iter().collect());
     }
-    cache.put_registry(by_profile, costs)?;
+    cache.put_registry(by_profile, costs, image_input)?;
     Ok(total)
 }
 
@@ -325,6 +361,30 @@ fn models_dev_cost(model: &serde_json::Value) -> Option<CatalogCost> {
         input: cost.get("input").and_then(serde_json::Value::as_f64)?,
         output: cost.get("output").and_then(serde_json::Value::as_f64)?,
     })
+}
+
+fn image_input_candidates(model_id: &str) -> Vec<String> {
+    let mut ids = vec![model_id.to_string()];
+    ids.extend(image_input_route_aliases(model_id));
+    ids
+}
+
+fn image_input_route_aliases(model_id: &str) -> Vec<String> {
+    let Some((prefix, rest)) = model_id.split_once('/') else {
+        return Vec::new();
+    };
+    match prefix {
+        "openai" => vec![format!("openai-codex/{rest}")],
+        "openai-codex" => vec![format!("openai/{rest}")],
+        _ => Vec::new(),
+    }
+}
+
+fn models_dev_image_input(model: &serde_json::Value) -> bool {
+    model
+        .pointer("/modalities/input")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|input| input.iter().any(|m| m.as_str() == Some("image")))
 }
 
 fn models_dev_model_is_agent_compatible(model: &serde_json::Value) -> bool {
@@ -1053,6 +1113,7 @@ mod tests {
                         output: 8.0,
                     },
                 )]),
+                BTreeSet::new(),
             )
             .unwrap();
 
@@ -1089,6 +1150,13 @@ mod tests {
         assert!(!models_dev_model_is_agent_compatible(&serde_json::json!({
             "tool_call": true
         })));
+        assert!(models_dev_image_input(&serde_json::json!({
+            "modalities": { "input": ["text", "image"] }
+        })));
+        assert!(!models_dev_image_input(&serde_json::json!({
+            "modalities": { "input": ["text"] }
+        })));
+        assert!(!models_dev_image_input(&serde_json::json!({})));
     }
 
     #[test]
@@ -1118,7 +1186,9 @@ mod tests {
         let profile = openai_profile();
         let mut registry = BTreeMap::new();
         registry.insert(profile.id.clone(), vec!["openai/gpt-5.6-terra".into()]);
-        cache.put_registry(registry, BTreeMap::new()).unwrap();
+        cache
+            .put_registry(registry, BTreeMap::new(), BTreeSet::new())
+            .unwrap();
 
         let entries = models_for_picker(&[profile], &store, &cache, false);
         assert_eq!(entries[0].id, "openai/gpt-5.6-terra");
@@ -1139,7 +1209,9 @@ mod tests {
             profile.id.clone(),
             vec!["openai/gpt-5.6-sol".into(), "openai/gpt-5.6-terra".into()],
         );
-        cache.put_registry(registry, BTreeMap::new()).unwrap();
+        cache
+            .put_registry(registry, BTreeMap::new(), BTreeSet::new())
+            .unwrap();
 
         let entries = models_for_picker(&[profile], &store, &cache, false);
         assert_eq!(entries.len(), 2);
@@ -1258,7 +1330,9 @@ mod tests {
         let profile = crate::openai_codex::openai_codex_profile();
         let mut registry = BTreeMap::new();
         registry.insert(profile.id.clone(), vec!["openai-codex/not-entitled".into()]);
-        cache.put_registry(registry, BTreeMap::new()).unwrap();
+        cache
+            .put_registry(registry, BTreeMap::new(), BTreeSet::new())
+            .unwrap();
 
         let entries = models_for_picker(&[profile], &store, &cache, false);
         assert!(entries
@@ -1622,7 +1696,7 @@ mod tests {
         let guard = EnvGuard::new(ENV);
         let base = mock_http(vec![(
             200,
-            r#"{"openai":{"models":{"gpt-4.1-mini":{"cost":{"input":1.0,"output":2.0},"tool_call":true,"modalities":{"output":["text"]}}}}}"#,
+            r#"{"openai":{"models":{"gpt-4.1-mini":{"cost":{"input":1.0,"output":2.0},"tool_call":true,"modalities":{"output":["text"]}},"gpt-4o":{"cost":{"input":1.0,"output":2.0},"tool_call":true,"modalities":{"input":["text","image"],"output":["text"]}}}}}"#,
             vec![],
         )]);
         guard.set("FORGE_MODELS_DEV_URL", &base);
@@ -1631,7 +1705,7 @@ mod tests {
         let cache = ModelCatalogCache::new(dir.path().join("c.toml"));
         let profiles = vec![openai_profile()];
         let count = refresh_models_dev_registry(&profiles, &cache).unwrap();
-        assert_eq!(count, 1);
+        assert_eq!(count, 2);
         let entries = models_for_picker(
             &profiles,
             &CredentialStore::new(dir.path().join("k.toml")),
@@ -1641,6 +1715,38 @@ mod tests {
         assert!(entries
             .iter()
             .any(|entry| entry.id == "openai/gpt-4.1-mini"));
+        assert!(!cache.model_accepts_image_input("openai/gpt-4.1-mini"));
+        assert!(cache.model_accepts_image_input("openai/gpt-4o"));
+        assert!(
+            cache.model_accepts_image_input("openai-codex/gpt-4o"),
+            "ChatGPT Codex route must inherit openai models.dev image input"
+        );
+        assert!(!cache.model_accepts_image_input("unknown/model"));
+        assert!(!cache.model_accepts_image_input(""));
+        assert!(cache.image_input_ready());
+    }
+
+    #[test]
+    fn image_input_aliases_openai_api_and_codex_routes() {
+        assert_eq!(
+            image_input_candidates("openai-codex/gpt-5.6-sol"),
+            vec![
+                "openai-codex/gpt-5.6-sol".to_string(),
+                "openai/gpt-5.6-sol".to_string()
+            ]
+        );
+        let dir = tempdir().unwrap();
+        let cache = ModelCatalogCache::new(dir.path().join("c.toml"));
+        cache
+            .put_registry(
+                BTreeMap::new(),
+                BTreeMap::new(),
+                BTreeSet::from(["openai/gpt-5.6-sol".into()]),
+            )
+            .unwrap();
+        assert!(cache.model_accepts_image_input("openai-codex/gpt-5.6-sol"));
+        assert!(cache.model_accepts_image_input("openai/gpt-5.6-sol"));
+        assert!(!cache.model_accepts_image_input("openai-codex/mystery"));
     }
 
     #[test]

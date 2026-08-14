@@ -174,6 +174,7 @@ impl TuiApp {
                     .then(|| self.stream.thinking.clone()),
                 thinking_duration_secs: self.timing.thought_secs,
                 tool_calls: Vec::new(),
+                attachments: Vec::new(),
             });
         }
         self.set_feedback(
@@ -484,7 +485,12 @@ impl TuiApp {
         self.timing.thought_secs = None;
 
         if let Some(ref line) = line {
-            if let Err(e) = self.session.append_user_message(line).await {
+            let attachments = std::mem::take(&mut self.pending_turn.attachments);
+            if let Err(e) = self
+                .session
+                .append_user_message_with_attachments(line, attachments)
+                .await
+            {
                 self.busy_state.active = false;
                 self.busy_state.phase = BusyPhase::Idle;
                 self.report_error(&e.to_string());

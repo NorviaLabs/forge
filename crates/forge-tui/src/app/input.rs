@@ -469,7 +469,7 @@ impl TuiApp {
         }
 
         let line = self.input.take();
-        if line.trim().is_empty() {
+        if line.trim().is_empty() && self.attachment.pending_images.is_empty() {
             if !self.busy_state.active && !self.session.queue().is_empty() {
                 self.dequeue_and_send_next().await;
             }
@@ -801,7 +801,16 @@ impl TuiApp {
         let Some(area) = self.composer_area else {
             return false;
         };
-        let attachment_label = self.attachment.pending.as_ref().map(|a| a.label());
+        let attachment_label = {
+            let file = self.attachment.pending.as_ref().map(|a| a.label());
+            let images = self.pending_image_label();
+            match (file, images) {
+                (Some(file), Some(images)) => Some(format!("{file} · {images}")),
+                (Some(file), None) => Some(file),
+                (None, Some(images)) => Some(images),
+                (None, None) => None,
+            }
+        };
         let Some(width) = composer_text_area_width(&self.input, area, attachment_label.as_deref())
         else {
             return false;
@@ -869,8 +878,12 @@ impl TuiApp {
                 true
             }
             KeyCode::Backspace if key.modifiers.is_empty() => {
-                self.input.backspace();
-                self.clamp_slash_suggest();
+                if self.input.text.is_empty() && self.dismiss_last_image_chip() {
+                    self.set_feedback(FeedbackSeverity::Info, "image dismissed");
+                } else {
+                    self.input.backspace();
+                    self.clamp_slash_suggest();
+                }
                 true
             }
             // Standard readline "clear line" — previously unbound, so the

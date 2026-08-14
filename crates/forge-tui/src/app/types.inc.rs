@@ -302,6 +302,7 @@ enum SemanticCommand {
     StartJumpToLine,
     OpenExternalEditor,
     ToggleCurrentFileAttachment,
+    PasteClipboardImage,
     ToggleToolDetails,
     CyclePermissionMode,
     /// Step reasoning effort one level (`Alt+,` back, `Alt+.` forward)
@@ -520,6 +521,7 @@ struct ExternalEditorState {
 struct PendingTurnState {
     prompt: Option<String>,
     continue_turn: bool,
+    attachments: Vec<forge_types::ImageRef>,
 }
 
 struct PendingInteractionState {
@@ -529,6 +531,7 @@ struct PendingInteractionState {
 
 struct AttachmentState {
     pending: Option<forge_workspace::file_context::FileAttachment>,
+    pending_images: Vec<forge_types::ImageRef>,
 }
 
 #[derive(Default)]

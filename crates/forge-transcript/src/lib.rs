@@ -1777,6 +1777,22 @@ fn classify_tool_content(
                 .map(|path| format!("{path} · {label}"))
                 .unwrap_or(label)
         }
+        "view_image" => {
+            let path = tool_argument(call, "path").unwrap_or("image");
+            if !outcome.is_success() {
+                format!("{path} · failed")
+            } else if detail.contains("no longer available") {
+                format!("{path} · missing")
+            } else {
+                let size = detail
+                    .split(" · ")
+                    .nth(1)
+                    .unwrap_or("loaded")
+                    .trim()
+                    .to_string();
+                format!("{path} · {size}")
+            }
+        }
         "bash" => {
             let label = outcome_label(outcome, count);
             tool_argument(call, "command")
@@ -2303,6 +2319,7 @@ mod tests {
                 thinking: None,
                 thinking_duration_secs: None,
                 tool_calls: vec![],
+                attachments: Vec::new(),
             },
             Message {
                 outcome: Default::default(),
@@ -2313,6 +2330,7 @@ mod tests {
                 thinking: Some("First, the user asked to summarize...".into()),
                 thinking_duration_secs: None,
                 tool_calls: vec![],
+                attachments: Vec::new(),
             },
         ];
         let model = ConversationModel::from_messages(
@@ -2389,6 +2407,7 @@ mod tests {
                 thinking: None,
                 thinking_duration_secs: None,
                 tool_calls: vec![],
+                attachments: Vec::new(),
             },
             Message {
                 outcome: Default::default(),
@@ -2399,6 +2418,7 @@ mod tests {
                 thinking: None,
                 thinking_duration_secs: None,
                 tool_calls: vec![],
+                attachments: Vec::new(),
             },
         ];
         let model = ConversationModel::from_messages(
@@ -2464,6 +2484,7 @@ mod tests {
                 thinking: None,
                 thinking_duration_secs: None,
                 tool_calls: vec![],
+                attachments: Vec::new(),
             },
             Message {
                 outcome: Default::default(),
@@ -2478,6 +2499,7 @@ mod tests {
                     name: "read_file".into(),
                     arguments: serde_json::json!({"path": "README.md"}),
                 }],
+                attachments: Vec::new(),
             },
         ];
         let model = ConversationModel::from_messages(
@@ -2504,6 +2526,7 @@ mod tests {
                 thinking: None,
                 thinking_duration_secs: None,
                 tool_calls: vec![],
+                attachments: Vec::new(),
             },
             Message {
                 outcome: Default::default(),
@@ -2514,6 +2537,7 @@ mod tests {
                 thinking: None,
                 thinking_duration_secs: None,
                 tool_calls: vec![],
+                attachments: Vec::new(),
             },
         ];
         let model = ConversationModel::from_messages(
@@ -2546,6 +2570,7 @@ mod tests {
             thinking: None,
             thinking_duration_secs: None,
             tool_calls: vec![],
+            attachments: Vec::new(),
         }];
         let m = ConversationModel::from_messages(
             &msgs,
@@ -2634,6 +2659,26 @@ mod tests {
             &ExecutionOutcome::Success,
         );
         assert_eq!(state, ToolCardState::Done);
+    }
+
+    #[test]
+    fn classify_view_image_summarizes_path_and_omits_bytes() {
+        let call = ToolCall {
+            id: "img-1".into(),
+            name: "view_image".into(),
+            arguments: serde_json::json!({"path": "docs/shot.png"}),
+        };
+        let (state, summary, invocation, detail) = classify_tool_content(
+            "view_image",
+            "image loaded · 12 KB · docs/shot.png · 80×40",
+            Some(&call),
+            &ExecutionOutcome::Success,
+        );
+        assert_eq!(state, ToolCardState::Done);
+        assert!(summary.contains("docs/shot.png"));
+        assert!(!summary.contains("data:"));
+        assert_eq!(invocation.as_deref(), Some("docs/shot.png"));
+        assert!(!detail.contains("data:"));
     }
 
     #[test]
@@ -2785,6 +2830,7 @@ mod tests {
                 thinking: None,
                 thinking_duration_secs: None,
                 tool_calls: vec![],
+                attachments: Vec::new(),
             },
             Message {
                 outcome: Default::default(),
@@ -2795,6 +2841,7 @@ mod tests {
                 thinking: None,
                 thinking_duration_secs: None,
                 tool_calls: vec![],
+                attachments: Vec::new(),
             },
             Message {
                 outcome: Default::default(),
@@ -2805,6 +2852,7 @@ mod tests {
                 thinking: None,
                 thinking_duration_secs: None,
                 tool_calls: vec![],
+                attachments: Vec::new(),
             },
         ];
         let events = vec![TurnEvent {
@@ -2857,6 +2905,7 @@ mod tests {
             thinking: None,
             thinking_duration_secs: None,
             tool_calls: vec![],
+            attachments: Vec::new(),
         }];
         let m = ConversationModel::from_messages(
             &msgs,
@@ -2890,6 +2939,7 @@ mod tests {
             thinking: None,
             thinking_duration_secs: None,
             tool_calls: vec![],
+            attachments: Vec::new(),
         }];
 
         let model = ConversationModel::from_messages(

@@ -1,5 +1,12 @@
 //! Shared types for Forge (Phase 1 + 2).
 
+mod image;
+
+pub use image::{
+    inspect_image, sample_png_bytes, sniff_allowed_image, ImageInspectError, ImageMeta, ImageRef,
+    MAX_IMAGE_BYTES,
+};
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -72,6 +79,10 @@ pub struct Message {
     /// every non-tool role (no execution to report).
     #[serde(default)]
     pub outcome: ExecutionOutcome,
+    /// Path-refs for images on user messages (clipboard paste) and tool
+    /// results (`view_image`). Never holds bytes; transports re-read the file.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<ImageRef>,
 }
 
 impl Message {
@@ -85,6 +96,26 @@ impl Message {
             thinking_duration_secs: None,
             tool_calls: vec![],
             outcome: ExecutionOutcome::Success,
+            attachments: Vec::new(),
+        }
+    }
+
+    pub fn with_attachments(mut self, attachments: Vec<ImageRef>) -> Self {
+        self.attachments = attachments;
+        self
+    }
+
+    pub fn from_tool_output(call: &ToolCall, output: &ToolOutput) -> Self {
+        Self {
+            outcome: output.effective_outcome(),
+            role: MessageRole::Tool,
+            content: output.content.clone(),
+            tool_call_id: Some(call.id.clone()),
+            name: Some(call.name.clone()),
+            thinking: None,
+            thinking_duration_secs: None,
+            tool_calls: vec![],
+            attachments: output.attachments.clone(),
         }
     }
 }
@@ -145,6 +176,9 @@ pub struct ToolOutput {
     /// legacy failure to `Success`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome: Option<ExecutionOutcome>,
+    /// Path-refs for images this tool result should send on the next request.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<ImageRef>,
 }
 
 impl ToolOutput {
@@ -154,6 +188,7 @@ impl ToolOutput {
             is_error: false,
             exit_code: None,
             outcome: Some(ExecutionOutcome::Success),
+            attachments: Vec::new(),
         }
     }
 
@@ -163,6 +198,7 @@ impl ToolOutput {
             is_error: true,
             exit_code,
             outcome: Some(ExecutionOutcome::Failed { exit_code }),
+            attachments: Vec::new(),
         }
     }
 
@@ -174,6 +210,7 @@ impl ToolOutput {
             outcome: Some(ExecutionOutcome::SpawnFailed {
                 reason: reason.into(),
             }),
+            attachments: Vec::new(),
         }
     }
 
@@ -184,6 +221,7 @@ impl ToolOutput {
             is_error: true,
             exit_code: None,
             outcome: Some(ExecutionOutcome::Denied { reason }),
+            attachments: Vec::new(),
         }
     }
 
@@ -193,6 +231,7 @@ impl ToolOutput {
             is_error: true,
             exit_code: None,
             outcome: Some(ExecutionOutcome::Cancelled),
+            attachments: Vec::new(),
         }
     }
 

@@ -199,6 +199,16 @@ impl AgentSession {
     /// Use this provider/model id on subsequent completions (e.g. after `/connect`).
     pub fn set_active_model(&mut self, model: impl Into<String>) {
         self.active_model = model.into();
+        self.tool_ctx.active_model = self.active_model.clone();
+    }
+
+    /// Fail-closed capability flag used to hide/reject `view_image`.
+    pub fn set_image_input_supported(&mut self, supported: bool) {
+        self.tool_ctx.image_input = supported;
+    }
+
+    pub fn image_input_supported(&self) -> bool {
+        self.tool_ctx.image_input
     }
 
     pub fn set_active_route_id(&mut self, route_id: impl Into<String>) {

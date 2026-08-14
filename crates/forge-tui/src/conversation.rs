@@ -1006,6 +1006,7 @@ mod tests {
                 thinking: None,
                 thinking_duration_secs: None,
                 tool_calls: vec![],
+                attachments: Vec::new(),
             },
             Message {
                 outcome: Default::default(),
@@ -1016,6 +1017,7 @@ mod tests {
                 thinking: None,
                 thinking_duration_secs: None,
                 tool_calls: vec![],
+                attachments: Vec::new(),
             },
             Message {
                 outcome: Default::default(),
@@ -1026,6 +1028,7 @@ mod tests {
                 thinking: Some("**ponder**".into()),
                 thinking_duration_secs: Some(2.4),
                 tool_calls: vec![],
+                attachments: Vec::new(),
             },
             Message {
                 outcome: Default::default(),
@@ -1036,6 +1039,7 @@ mod tests {
                 thinking: None,
                 thinking_duration_secs: None,
                 tool_calls: vec![],
+                attachments: Vec::new(),
             },
         ];
         let m = ConversationModel::from_messages(
@@ -1125,6 +1129,7 @@ mod tests {
             thinking: Some("long thinking text here that should collapse".into()),
             thinking_duration_secs: Some(3.1),
             tool_calls: vec![],
+            attachments: Vec::new(),
         }];
         let m = ConversationModel::from_messages(
             &msgs,
@@ -1193,6 +1198,7 @@ mod tests {
             thinking: Some("reasoning text".into()),
             thinking_duration_secs: Some(2.4),
             tool_calls: vec![],
+            attachments: Vec::new(),
         }];
         let m = ConversationModel::from_messages(
             &msgs,
@@ -1265,6 +1271,7 @@ mod tests {
             thinking: None,
             thinking_duration_secs: None,
             tool_calls: vec![],
+            attachments: Vec::new(),
         }];
         let model = ConversationModel::from_messages(
             &msgs,
@@ -1294,6 +1301,7 @@ mod tests {
             ),
             thinking_duration_secs: None,
             tool_calls: vec![],
+            attachments: Vec::new(),
         }];
         let model = ConversationModel::from_messages(
             &msgs,
@@ -1322,6 +1330,7 @@ mod tests {
             thinking: Some("this is a very long active thinking message that should wrap into multiple lines in the conversation pane".into()),
             thinking_duration_secs: None,
             tool_calls: vec![],
+            attachments: Vec::new(),
         }];
         let m = ConversationModel::from_messages(
             &msgs,
@@ -1368,6 +1377,7 @@ mod tests {
             thinking: None,
             thinking_duration_secs: None,
             tool_calls: vec![],
+            attachments: Vec::new(),
         }];
         let m = ConversationModel::from_messages(
             &msgs,
@@ -1413,6 +1423,7 @@ mod tests {
             thinking: None,
             thinking_duration_secs: None,
             tool_calls: vec![],
+            attachments: Vec::new(),
         }];
         let m = ConversationModel::from_messages(
             &msgs,
@@ -1474,6 +1485,7 @@ mod tests {
             thinking: None,
             thinking_duration_secs: None,
             tool_calls: vec![],
+            attachments: Vec::new(),
         }];
         let model = ConversationModel::from_messages(
             &msgs,
@@ -1535,6 +1547,7 @@ mod tests {
             thinking: None,
             thinking_duration_secs: None,
             tool_calls: calls.to_vec(),
+            attachments: Vec::new(),
         }];
         let outputs = [
             ("read", "read_file", "pub fn noisy() {\n- old\n+ new\n}"),
@@ -1562,6 +1575,7 @@ mod tests {
             thinking: None,
             thinking_duration_secs: None,
             tool_calls: vec![],
+            attachments: Vec::new(),
         }));
 
         let model = ConversationModel::from_messages(
@@ -1883,6 +1897,7 @@ mod tests {
                         ]
                     }),
                 }],
+                attachments: Vec::new(),
             },
             Message {
                 outcome: Default::default(),
@@ -1893,6 +1908,7 @@ mod tests {
                 thinking: None,
                 thinking_duration_secs: None,
                 tool_calls: vec![],
+                attachments: Vec::new(),
             },
         ];
         let m = ConversationModel::from_messages(
@@ -2399,6 +2415,7 @@ mod tests {
                 thinking: None,
                 thinking_duration_secs: None,
                 tool_calls: vec![],
+            attachments: Vec::new(),
             },
             Message {
                 outcome: Default::default(),
@@ -2409,6 +2426,7 @@ mod tests {
                 thinking: None,
                 thinking_duration_secs: None,
                 tool_calls: vec![],
+            attachments: Vec::new(),
             },
         ];
         let model = ConversationModel::from_messages(
@@ -2441,6 +2459,7 @@ mod tests {
                 thinking: None,
                 thinking_duration_secs: None,
                 tool_calls: vec![],
+                attachments: Vec::new(),
             },
             Message {
                 outcome: Default::default(),
@@ -2451,6 +2470,7 @@ mod tests {
                 thinking: None,
                 thinking_duration_secs: None,
                 tool_calls: vec![],
+                attachments: Vec::new(),
             },
             Message {
                 outcome: Default::default(),
@@ -2461,6 +2481,7 @@ mod tests {
                 thinking: None,
                 thinking_duration_secs: None,
                 tool_calls: vec![],
+                attachments: Vec::new(),
             },
         ];
         ConversationModel::from_messages(

@@ -216,6 +216,7 @@ async fn light_theme_representative_layout_snapshot() {
         thinking: None,
         thinking_duration_secs: None,
         tool_calls: vec![],
+        attachments: Vec::new(),
     });
     app.session.messages.push(Message {
         outcome: Default::default(),
@@ -226,6 +227,7 @@ async fn light_theme_representative_layout_snapshot() {
         thinking: None,
         thinking_duration_secs: None,
         tool_calls: vec![],
+        attachments: Vec::new(),
     });
     app.feedback = FeedbackModel::error("Model error: rate limited (HTTP 429).");
     app.render_cache.conversation = None;

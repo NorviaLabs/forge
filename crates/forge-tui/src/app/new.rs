@@ -82,13 +82,17 @@ impl TuiApp {
             pending_turn: PendingTurnState {
                 prompt: None,
                 continue_turn: false,
+                attachments: Vec::new(),
             },
             pending_interaction: PendingInteractionState {
                 hitl_decision: None,
                 context_reset: false,
             },
             external_editor: ExternalEditorState { requested: false },
-            attachment: AttachmentState { pending: None },
+            attachment: AttachmentState {
+                pending: None,
+                pending_images: Vec::new(),
+            },
             task_selection: TaskSelectionState {
                 queue: None,
                 tasks: None,

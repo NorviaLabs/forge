@@ -63,6 +63,7 @@ async fn streaming_updates_reuse_cached_transcript_lines() {
         thinking: Some("historical completed thinking".into()),
         thinking_duration_secs: Some(1.0),
         tool_calls: vec![],
+        attachments: Vec::new(),
     });
     let mut app = TuiApp::new(
         session,

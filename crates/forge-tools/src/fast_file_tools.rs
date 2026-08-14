@@ -170,6 +170,7 @@ impl Tool for FffFindTool {
             },
             is_error: false,
             exit_code: None,
+            attachments: Vec::new(),
         })
     }
 }
@@ -239,6 +240,7 @@ impl Tool for FffGrepTool {
             },
             is_error: false,
             exit_code: None,
+            attachments: Vec::new(),
         })
     }
 }

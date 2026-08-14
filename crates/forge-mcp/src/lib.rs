@@ -292,6 +292,7 @@ impl McpStdioClient {
             content,
             is_error,
             exit_code: None,
+            attachments: Vec::new(),
         })
     }
 
@@ -466,6 +467,7 @@ done
                         .to_string(),
                     is_error: false,
                     exit_code: None,
+                    attachments: Vec::new(),
                 }),
             }],
         );
@@ -499,6 +501,7 @@ done
                     content: "x".into(),
                     is_error: false,
                     exit_code: None,
+                    attachments: Vec::new(),
                 }),
             }],
         );
@@ -648,6 +651,7 @@ done
                 content: "ok".into(),
                 is_error: false,
                 exit_code: None,
+                attachments: Vec::new(),
             }),
         };
         assert_eq!(tool.name(), "mcp:demo:echo");

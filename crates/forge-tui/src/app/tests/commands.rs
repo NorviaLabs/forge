@@ -1401,3 +1401,47 @@ async fn enter_on_status_suggestion_runs_immediately() {
         .unwrap();
     assert!(app.input.text.is_empty());
 }
+
+#[tokio::test]
+async fn attaching_clipboard_bytes_writes_workspace_path_ref() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.attach_image_bytes(&forge_types::sample_png_bytes());
+    assert_eq!(app.attachment.pending_images.len(), 1);
+    let image = &app.attachment.pending_images[0];
+    assert!(image.path.starts_with(".forge/local/pasted/"));
+    assert_eq!(image.mime, "image/png");
+    assert!(app.session.workspace_root().join(&image.path).is_file());
+    assert!(app.pending_image_label().unwrap().starts_with("Image: "));
+}
+
+#[tokio::test]
+async fn send_with_image_is_blocked_when_model_cannot_see() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.runtime.provider = "mock".into();
+    app.runtime.model_label = "mock".into();
+    app.session.set_image_input_supported(false);
+    app.attach_image_bytes(&forge_types::sample_png_bytes());
+    app.input.set_text("compare this");
+    app.submit_composer_message().await.unwrap();
+    assert_eq!(app.input.text, "compare this");
+    assert_eq!(app.attachment.pending_images.len(), 1);
+    assert!(app.pending_turn.prompt.is_none());
+}
+
+#[tokio::test]
+async fn send_with_image_is_allowed_when_model_can_see() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.runtime.provider = "mock".into();
+    app.runtime.model_label = "mock".into();
+    app.session.set_image_input_supported(true);
+    app.attach_image_bytes(&forge_types::sample_png_bytes());
+    app.dispatch_line("compare this").await.unwrap();
+    assert!(
+        app.pending_turn.prompt.is_some(),
+        "feedback={}",
+        app.feedback.text
+    );
+    assert!(app.attachment.pending_images.is_empty());
+    assert_eq!(app.pending_turn.prompt.as_deref(), Some("compare this"));
+    assert_eq!(app.pending_turn.attachments.len(), 1);
+}

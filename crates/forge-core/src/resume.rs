@@ -51,16 +51,8 @@ impl AgentSession {
         };
         self.turn.record_call(call.clone());
         if !self.has_tool_message(&call.id) {
-            self.messages.push(Message {
-                outcome: cached.output.effective_outcome(),
-                role: MessageRole::Tool,
-                content: cached.output.content.clone(),
-                tool_call_id: Some(call.id.clone()),
-                name: Some(call.name.clone()),
-                thinking: None,
-                thinking_duration_secs: None,
-                tool_calls: vec![],
-            });
+            self.messages
+                .push(Message::from_tool_output(call, &cached.output));
             self.events.push(TurnEvent {
                 kind: "tool_replay".into(),
                 detail: format!("{} (journaled)", call.name),
@@ -112,6 +104,7 @@ impl AgentSession {
                 thinking: None,
                 thinking_duration_secs: None,
                 tool_calls: vec![],
+                attachments: Vec::new(),
             });
         }
         self.events.push(TurnEvent {
@@ -158,6 +151,7 @@ impl AgentSession {
                         thinking: None,
                         thinking_duration_secs: None,
                         tool_calls: vec![],
+                        attachments: Vec::new(),
                     });
                 }
                 self.events.push(TurnEvent {
@@ -180,6 +174,7 @@ impl AgentSession {
                         thinking: None,
                         thinking_duration_secs: None,
                         tool_calls: vec![],
+                        attachments: Vec::new(),
                     });
                 }
                 self.events.push(TurnEvent {
@@ -194,6 +189,7 @@ impl AgentSession {
                     content: error.to_string(),
                     is_error: true,
                     exit_code: None,
+                    attachments: Vec::new(),
                 };
                 self.journal
                     .append_tool_result(self.session_id, call, &output)
@@ -209,6 +205,7 @@ impl AgentSession {
                         thinking: None,
                         thinking_duration_secs: None,
                         tool_calls: vec![],
+                        attachments: Vec::new(),
                     });
                 }
             }

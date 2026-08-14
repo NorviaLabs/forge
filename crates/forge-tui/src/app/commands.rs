@@ -345,6 +345,12 @@ impl TuiApp {
             KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(SemanticCommand::InsertComposerNewline)
             }
+            KeyCode::Char('v')
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && key.modifiers.contains(KeyModifiers::SHIFT) =>
+            {
+                Some(SemanticCommand::PasteClipboardImage)
+            }
             // Help's own advertised shortcut ("? Help") only applies to a
             // truly empty composer, so a real message that happens to end in
             // "?" is never intercepted — F1 remains the fallback either way.
@@ -539,6 +545,9 @@ impl TuiApp {
             }
             SemanticCommand::OpenExternalEditor => self.external_editor.requested = true,
             SemanticCommand::ToggleCurrentFileAttachment => self.toggle_file_attachment(),
+            SemanticCommand::PasteClipboardImage => {
+                self.paste_clipboard_image();
+            }
             SemanticCommand::ToggleToolDetails => {
                 self.tool_detail.expanded = !self.tool_detail.expanded
             }
@@ -829,6 +838,32 @@ impl TuiApp {
         // before the model call, and so stream deltas can redraw each frame.
         self.clear_error_chrome();
 
+        if !self.attachment.pending_images.is_empty() {
+            if !self.session.image_input_supported() {
+                self.input.set_text(line);
+                self.set_feedback(
+                    FeedbackSeverity::Warn,
+                    "active model does not support image inputs — switch model or dismiss the image",
+                );
+                return Ok(());
+            }
+            if matches!(
+                input_route::classify_input(
+                    &self.session.active_task,
+                    self.overlay.is_some(),
+                    line
+                ),
+                input_route::InputRoute::QueueFutureTask
+            ) {
+                self.input.set_text(line);
+                self.set_feedback(
+                    FeedbackSeverity::Warn,
+                    "wait for the current turn to finish before sending images",
+                );
+                return Ok(());
+            }
+        }
+
         // Build the final message text, prepending file context if attached.
         let mut final_line = line.to_string();
         let attachment = self.attachment.pending.take();
@@ -876,6 +911,7 @@ impl TuiApp {
                     if let Some(m) = p.default_model() {
                         self.runtime.model_label = m.to_string();
                         self.session.set_active_model(m);
+                        self.sync_image_input_capability();
                     }
                     self.refresh_connection_ui();
                 }
@@ -892,6 +928,7 @@ impl TuiApp {
         }
 
         self.pending_turn.prompt = Some(final_line);
+        self.pending_turn.attachments = std::mem::take(&mut self.attachment.pending_images);
         self.busy_state.active = true;
         self.busy_state.phase = BusyPhase::Model;
         self.timing.started = Some(Instant::now());

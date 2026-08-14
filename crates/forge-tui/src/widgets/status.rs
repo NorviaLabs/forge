@@ -74,6 +74,7 @@ impl BusyPhase {
 fn tool_progress_description(name: &str) -> String {
     match name {
         "read_file" => "Reading files".into(),
+        "view_image" => "Viewing image".into(),
         "write_file" | "apply_patch" => "Editing files".into(),
         "fffind" | "fffind_files" => "Searching files".into(),
         "ffgrep" | "ffgrep_files" => "Searching code".into(),

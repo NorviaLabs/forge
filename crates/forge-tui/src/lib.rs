@@ -3,6 +3,7 @@
 mod activity;
 mod app;
 mod clipboard;
+mod clipboard_image;
 mod commands;
 mod conversation;
 mod editor;

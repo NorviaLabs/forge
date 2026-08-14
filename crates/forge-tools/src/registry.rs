@@ -13,6 +13,11 @@ use crate::{Tool, ToolError};
 pub struct ToolContext {
     pub workspace_root: PathBuf,
     pub principal: String,
+    /// Fail-closed: `view_image` is allowed only when the active model
+    /// advertises image input and the transport can serialize attachments.
+    pub image_input: bool,
+    /// Display id used in the capability-gate error (`provider/model`).
+    pub active_model: String,
 }
 
 impl ToolContext {
@@ -20,6 +25,8 @@ impl ToolContext {
         Self {
             workspace_root,
             principal: "local-dev".into(),
+            image_input: false,
+            active_model: String::new(),
         }
     }
 

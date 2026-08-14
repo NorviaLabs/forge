@@ -212,6 +212,7 @@ impl TuiApp {
         self.connect.oauth_pending = None;
         self.connect.oauth_last_poll = None;
         self.pending_turn.prompt = None;
+        self.pending_turn.attachments.clear();
         self.pending_interaction.hitl_decision = None;
         self.pending_interaction.context_reset = false;
         // The future-task queue is durable session state (owned by
@@ -233,6 +234,7 @@ impl TuiApp {
         self.runtime.provider.clear();
         self.runtime.model_label.clear();
         self.session.set_active_model(String::new());
+        self.sync_image_input_capability();
         self.feedback = FeedbackModel::default();
         self.status_state.message = "disconnected".into();
         self.notice_state.items.clear();
@@ -360,6 +362,7 @@ impl TuiApp {
             } else if self.session.active_model.is_empty() {
                 self.session
                     .set_active_model(self.runtime.model_label.clone());
+                self.sync_image_input_capability();
             }
             self.status_state.message =
                 format!("restored {} · {}", profile.id, self.runtime.model_label);
@@ -424,6 +427,21 @@ impl TuiApp {
     /// change must go through this rather than assigning the fields by hand,
     /// so the copies can't drift the way the picker's Enter-key bug once let
     /// a discarded selection produce a mismatched model id.
+    pub(super) fn sync_image_input_capability(&mut self) {
+        let cache = forge_connect::ModelCatalogCache::user_default();
+        // Pre-feature catalog files can be "fresh" on TTL but have never
+        // ingested `modalities.input`. Refresh once so Codex/API twins
+        // (openai-codex/gpt-5.6-sol ↔ openai/gpt-5.6-sol) get a real flag.
+        if !cfg!(test) && !cache.image_input_ready() {
+            let _ = forge_connect::refresh_models_dev_registry(
+                forge_connect::builtin_registry().profiles(),
+                &cache,
+            );
+        }
+        let supported = cache.model_accepts_image_input(&self.session.active_model);
+        self.session.set_image_input_supported(supported);
+    }
+
     pub(super) fn apply_selection(&mut self, selection: &ModelSelection) {
         self.runtime.provider = if selection.provider.trim().is_empty() {
             "native".into()
@@ -433,6 +451,7 @@ impl TuiApp {
         self.runtime.model_label = selection.model.clone();
         self.session.set_active_model(&selection.model);
         self.session.set_active_route_id(&selection.route_id);
+        self.sync_image_input_capability();
         self.connect.profile = selection.profile_id.clone();
         if let Ok(effort) = selection.effort.parse::<ReasoningEffort>() {
             self.reasoning_effort.value = effort;
@@ -807,6 +826,7 @@ impl TuiApp {
                     self.runtime.provider = "native".into();
                     self.connect.auth_suspended = false;
                     self.session.set_active_model(m);
+                    self.sync_image_input_capability();
                 }
                 if let Some(pid) = self.connect.profile.clone() {
                     self.apply_connect_credentials(&pid);
@@ -874,6 +894,7 @@ impl TuiApp {
         self.runtime.provider = "native".into();
         self.connect.auth_suspended = false;
         self.session.set_active_model(out.model.clone());
+        self.sync_image_input_capability();
         self.apply_connect_credentials(&out.profile_id);
         self.connect.oauth_pending = None;
         self.connect.oauth_last_poll = None;
@@ -1001,6 +1022,7 @@ impl TuiApp {
                     self.runtime.provider = "native".into();
                     self.connect.auth_suspended = false;
                     self.session.set_active_model(m);
+                    self.sync_image_input_capability();
                 }
                 if let Some(pid) = self.connect.profile.clone() {
                     self.apply_connect_credentials(&pid);

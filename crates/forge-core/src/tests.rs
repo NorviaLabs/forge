@@ -47,6 +47,7 @@ impl forge_tools::Tool for GatedTool {
             content: "released".into(),
             is_error: false,
             exit_code: None,
+            attachments: Vec::new(),
         })
     }
 }
@@ -292,6 +293,60 @@ async fn build_model_request_omits_reasoning_effort_when_none() {
         .await
         .unwrap();
     assert_eq!(s.build_model_request().reasoning_effort, None);
+}
+
+#[tokio::test]
+async fn view_image_is_hidden_until_image_input_is_enabled() {
+    let dir = tempdir().unwrap();
+    let model = Arc::new(MockModelClient::script(vec![ModelResponse {
+        text: "ok".into(),
+        tool_calls: vec![],
+        usage: None,
+        thinking: None,
+    }]));
+    let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+        .await
+        .unwrap();
+    assert!(s.list_tools().iter().any(|n| n == "view_image"));
+    assert!(!s
+        .build_model_request()
+        .tools
+        .iter()
+        .any(|t| t.name == "view_image"));
+    s.set_image_input_supported(true);
+    assert!(s
+        .build_model_request()
+        .tools
+        .iter()
+        .any(|t| t.name == "view_image"));
+}
+
+#[tokio::test]
+async fn missing_pasted_image_is_noted_on_the_request() {
+    let dir = tempdir().unwrap();
+    let model = Arc::new(MockModelClient::script(vec![ModelResponse {
+        text: "ok".into(),
+        tool_calls: vec![],
+        usage: None,
+        thinking: None,
+    }]));
+    let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+        .await
+        .unwrap();
+    s.append_user_message_with_attachments(
+        "look",
+        vec![forge_types::ImageRef::new("gone.png", "image/png", 8)],
+    )
+    .await
+    .unwrap();
+    let req = s.build_model_request();
+    let user = req
+        .messages
+        .iter()
+        .find(|m| m.role == MessageRole::User)
+        .unwrap();
+    assert!(user.attachments.is_empty());
+    assert!(user.content.contains("no longer available"));
 }
 
 /// A streaming step must forward every event to `forward`, including when
