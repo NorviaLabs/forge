@@ -24,7 +24,9 @@ pub fn openai_codex_profile() -> ConnectProfile {
         api_key_env: vec![],
         default_base_url: Some(DEFAULT_BASE_URL.into()),
         default_models: vec!["openai-codex/gpt-5.6-sol".into()],
-        models_dev_providers: vec![],
+        // Entitlement still comes from the live Codex catalog; models.dev
+        // only supplies public metadata such as effort and image input.
+        models_dev_providers: vec!["openai".into()],
         auth_url: Some("https://auth.openai.com/codex/device".into()),
         model_provider_prefix: "openai-codex".into(),
         vendor_id: "openai".into(),
