@@ -1,5 +1,9 @@
 //! Provider-neutral reasoning effort selected for the current TUI session.
 
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
+use std::time::SystemTime;
 use std::{fmt, str::FromStr};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -111,15 +115,84 @@ impl ReasoningEffort {
     }
 }
 
-fn catalog_effort_options(model: &str) -> Option<Vec<ReasoningEffort>> {
-    let cache = forge_connect::ModelCatalogCache::user_default();
-    cache.model_effort_options(model).map(|values| {
-        values
-            .into_iter()
-            .filter_map(|value| value.parse::<ReasoningEffort>().ok())
-            .filter(|effort| *effort != ReasoningEffort::Auto)
-            .collect()
+struct EffortCatalogMemo {
+    home: Option<String>,
+    xdg_config: Option<String>,
+    path: PathBuf,
+    modified: Option<SystemTime>,
+    len: u64,
+    by_model: HashMap<String, Option<Vec<ReasoningEffort>>>,
+}
+
+fn effort_catalog_memo() -> &'static Mutex<EffortCatalogMemo> {
+    static MEMO: OnceLock<Mutex<EffortCatalogMemo>> = OnceLock::new();
+    MEMO.get_or_init(|| {
+        Mutex::new(EffortCatalogMemo {
+            home: None,
+            xdg_config: None,
+            path: PathBuf::new(),
+            modified: None,
+            len: 0,
+            by_model: HashMap::new(),
+        })
     })
+}
+
+fn catalog_file_fingerprint(path: &std::path::Path) -> (Option<SystemTime>, u64) {
+    match std::fs::metadata(path) {
+        Ok(meta) => (meta.modified().ok(), meta.len()),
+        Err(_) => (None, 0),
+    }
+}
+
+fn parse_catalog_effort_values(values: Vec<String>) -> Vec<ReasoningEffort> {
+    values
+        .into_iter()
+        .filter_map(|value| value.parse::<ReasoningEffort>().ok())
+        .filter(|effort| *effort != ReasoningEffort::Auto)
+        .collect()
+}
+
+/// Catalog lookups sit on the footer render path (`display_label` every
+/// frame). Re-reading and parsing `model-catalog.toml` there blows the
+/// allocation budget, so memoize by process env + file fingerprint.
+fn catalog_effort_options(model: &str) -> Option<Vec<ReasoningEffort>> {
+    let home = std::env::var("HOME").ok();
+    let xdg_config = std::env::var("XDG_CONFIG_HOME").ok();
+    let mut memo = effort_catalog_memo()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    let env_changed = memo.home != home || memo.xdg_config != xdg_config;
+    if !env_changed {
+        let (modified, len) = catalog_file_fingerprint(&memo.path);
+        if modified == memo.modified && len == memo.len {
+            if let Some(hit) = memo.by_model.get(model) {
+                return hit.clone();
+            }
+        } else {
+            memo.modified = modified;
+            memo.len = len;
+            memo.by_model.clear();
+        }
+    }
+
+    let cache = forge_connect::ModelCatalogCache::user_default();
+    if env_changed || memo.path != cache.path() {
+        let (modified, len) = catalog_file_fingerprint(cache.path());
+        memo.home = home;
+        memo.xdg_config = xdg_config;
+        memo.path = cache.path().to_path_buf();
+        memo.modified = modified;
+        memo.len = len;
+        memo.by_model.clear();
+    }
+
+    let value = cache
+        .model_effort_options(model)
+        .map(parse_catalog_effort_values);
+    memo.by_model.insert(model.to_string(), value.clone());
+    value
 }
 
 fn preferred_default(options: &[ReasoningEffort]) -> Option<ReasoningEffort> {
@@ -255,6 +328,45 @@ mod tests {
             assert_eq!(std::env::var("HOME").ok().as_deref(), isolated.to_str());
         }
         assert_ne!(std::env::var("HOME").ok().as_deref(), isolated.to_str());
+    }
+
+    fn write_user_catalog_effort(model: &str, values: &[&str]) {
+        let cache = forge_connect::ModelCatalogCache::user_default();
+        if let Some(parent) = cache.path().parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        let listed = values
+            .iter()
+            .map(|value| format!("\"{value}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        std::fs::write(
+            cache.path(),
+            format!("registry_effort_ready = true\n[registry_effort]\n\"{model}\" = [{listed}]\n"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn catalog_effort_memo_invalidates_when_the_cache_file_changes() {
+        let _home = isolated_catalog_home();
+        let model = "xai/grok-4.6";
+        write_user_catalog_effort(model, &["low"]);
+        assert_eq!(
+            ReasoningEffort::options_for_model(model),
+            vec![ReasoningEffort::Low]
+        );
+
+        write_user_catalog_effort(model, &["low", "medium", "high", "xhigh"]);
+        assert_eq!(
+            ReasoningEffort::options_for_model(model),
+            vec![
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+                ReasoningEffort::XHigh
+            ]
+        );
     }
 
     #[test]
