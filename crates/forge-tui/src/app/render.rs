@@ -676,7 +676,7 @@ impl TuiApp {
                 .feedback
                 .text
                 .lines()
-                .map(|line| (line.chars().count().max(1) + content_width - 1) / content_width)
+                .map(|line| line.chars().count().max(1).div_ceil(content_width))
                 .sum::<usize>()
                 .max(1) as u16;
             let height = line_count
