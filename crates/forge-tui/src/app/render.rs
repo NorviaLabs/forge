@@ -32,9 +32,7 @@ impl TuiApp {
         if crate::theme::refresh_system() {
             self.render_cache.conversation = None;
         }
-        if self.workspace_files.explorer.git_status.poll() {
-            self.reconcile_diff_staleness();
-        }
+        let _ = self.workspace_files.explorer.git_status.poll();
         // Advance the off-thread repo-header refresh. Cheap (a `try_recv` plus an
         // elapsed check); every draw path funnels through here, including the
         // streaming and `drain_pending_*` loops that bypass `run_loop`'s polls.
@@ -78,12 +76,12 @@ impl TuiApp {
         // footer's hint shares the content row (replacing the right-side
         // activity while focused), never adds a third row.
         let hint_h: u16 = 2;
-        // File and Review occupy the center workspace pane. Anything else
+        // An open file occupies the center workspace pane. Anything else
         // (home / empty) expands conversation into that pane and there is
         // no Workspace block to focus.
         let expand_conversation = !matches!(
             self.workspace_navigation.current,
-            Some(WorkspaceView::File(_)) | Some(WorkspaceView::Diff(_))
+            Some(WorkspaceView::File(_))
         );
         let regions = if expand_conversation {
             split_areas_with_expanded_conversation(
@@ -118,10 +116,8 @@ impl TuiApp {
             None
         };
         self.conversation_area = None;
-        self.diff_area = None;
         self.terminal_area = None;
         self.conversation_rows.clear();
-        self.diff_rows.clear();
         self.terminal_rows.clear();
         // Layout can hide a requested side/bottom panel. Focus must follow the
         // rendered geometry rather than leaving an invisible key owner behind.
@@ -424,15 +420,6 @@ impl TuiApp {
                         chat_area,
                     );
                 }
-                Some(WorkspaceView::Diff(DiffCommandContext::Current)) => {
-                    self.diff_area = Some(ratatui::layout::Rect {
-                        x: chat_area.x.saturating_add(1),
-                        y: chat_area.y.saturating_add(1),
-                        width: chat_area.width.saturating_sub(2),
-                        height: chat_area.height.saturating_sub(2),
-                    });
-                    self.render_diff_workspace(chat_area, frame.buffer_mut());
-                }
             }
         }
 
@@ -455,15 +442,12 @@ impl TuiApp {
             && matches!(
                 self.selection.pane,
                 Some(
-                    crate::selection::CopyPane::Conversation
-                        | crate::selection::CopyPane::Diff
-                        | crate::selection::CopyPane::Terminal
+                    crate::selection::CopyPane::Conversation | crate::selection::CopyPane::Terminal
                 )
             )
         {
             let area = match self.selection.pane {
                 Some(crate::selection::CopyPane::Conversation) => self.conversation_area,
-                Some(crate::selection::CopyPane::Diff) => self.diff_area,
                 Some(crate::selection::CopyPane::Terminal) => self.terminal_area,
                 _ => None,
             };
@@ -694,6 +678,7 @@ impl TuiApp {
             dimmed: self.session_view.is_awaiting_approval(),
             lifecycle: status.turn_lifecycle(),
             ctx_pct: status.ctx_pct,
+            workspace_activity: self.workspace_activity_label(),
         };
         frame.render_widget(FooterBar { model: &footer }, regions.footer);
 
@@ -750,7 +735,7 @@ impl TuiApp {
         area: ratatui::layout::Rect,
         buf: &mut ratatui::buffer::Buffer,
     ) {
-        // Vertically centered (identical for Editor and Diff views).
+        // Vertically centered empty-workspace placeholder.
         render_centered_text(
             area,
             buf,
@@ -758,205 +743,6 @@ impl TuiApp {
             theme::muted(),
             theme::inactive_panel_border(),
         );
-    }
-
-    /// Accent border when the center workspace pane is focused, muted otherwise.
-    fn workspace_border(&self) -> ratatui::style::Style {
-        if self.focus.block == FocusBlock::Workspace {
-            theme::active_panel_border()
-        } else {
-            theme::inactive_panel_border()
-        }
-    }
-
-    fn render_diff_workspace(
-        &mut self,
-        area: ratatui::layout::Rect,
-        buf: &mut ratatui::buffer::Buffer,
-    ) {
-        let (loading, error, status_empty, changed) = {
-            let gs = &self.workspace_files.explorer.git_status;
-            (
-                gs.loading,
-                gs.error.is_some(),
-                gs.status.is_empty(),
-                gs.changed_files(),
-            )
-        };
-        if loading && status_empty && !self.diff_view.snapshot.stale {
-            Paragraph::new("Loading changes…")
-                .style(theme::muted())
-                .alignment(ratatui::layout::Alignment::Center)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .padding(ratatui::widgets::Padding::horizontal(1))
-                        .border_style(self.workspace_border())
-                        .style(theme::panel()),
-                )
-                .render(area, buf);
-            return;
-        }
-        if error && !self.diff_view.snapshot.stale {
-            Paragraph::new("Changes unavailable\n\nGit status could not be read.\nThe rest of Forge remains usable.")
-                .style(theme::muted())
-                .alignment(ratatui::layout::Alignment::Center)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .padding(ratatui::widgets::Padding::horizontal(1))
-                        .border_style(self.workspace_border())
-                        .style(theme::panel()),
-                )
-                .render(area, buf);
-            return;
-        }
-        if status_empty && !self.diff_view.snapshot.stale {
-            render_centered_text(
-                area,
-                buf,
-                "No changes\n\nThe working tree is clean.",
-                theme::muted(),
-                self.workspace_border(),
-            );
-            return;
-        }
-
-        let review_paths = self.review_file_paths();
-        let selected = self
-            .diff_view
-            .selected
-            .min(review_paths.len().saturating_sub(1));
-        let selected_path = review_paths.get(selected);
-
-        let mut lines = vec![Line::from(Span::styled("CHANGES", theme::brand()))];
-        if self.diff_view.snapshot.stale {
-            lines.push(Line::styled(
-                "Stale review · changes updated externally · press r to Refresh",
-                theme::warn(),
-            ));
-            lines.push(Line::styled(
-                "Keep and Discard disabled until refresh.",
-                theme::disabled(),
-            ));
-        }
-        if let Some(pending) = &self.diff_view.pending_untracked_delete {
-            lines.push(Line::styled(
-                format!(
-                    "Delete untracked file {}? y delete · n cancel",
-                    pending.display()
-                ),
-                theme::warn(),
-            ));
-        }
-        lines.push(Line::from(""));
-
-        for (i, path) in review_paths.iter().enumerate() {
-            let marker = if i == selected { "▶ " } else { "  " };
-            let file = changed.iter().find(|file| file.path == *path);
-            let marker_kind = file
-                .and_then(|file| file.unstaged.or(file.staged))
-                .map(GitStatusKind::marker)
-                .unwrap_or("!");
-            let extra = match (file.and_then(|f| f.staged), file.and_then(|f| f.unstaged)) {
-                (Some(_), Some(_)) => " staged+worktree",
-                (Some(_), None) => " staged",
-                _ => "",
-            };
-            lines.push(Line::from(format!(
-                "{marker}{marker_kind} {}{extra}",
-                path.display()
-            )));
-        }
-
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled("DIFF vs HEAD", theme::info())));
-
-        if let Some(path) = selected_path {
-            match combined_diff(self.session_view.workspace_root(), path) {
-                Ok(diff) => {
-                    let ability = reviewability(self.review_status(path), &diff);
-                    match ability {
-                        Reviewability::Conflicted => {
-                            lines.push(Line::styled("Conflicted · view only", theme::warn()));
-                        }
-                        Reviewability::Binary => {
-                            let bytes = self
-                                .session_view
-                                .workspace_root()
-                                .join(path)
-                                .metadata()
-                                .map(|m| m.len())
-                                .unwrap_or(0);
-                            lines.push(Line::styled(
-                                format!("Binary · {bytes} bytes · view only"),
-                                theme::muted(),
-                            ));
-                        }
-                        Reviewability::Reviewable => {}
-                    }
-                    if diff.hunks.is_empty() && !diff.binary {
-                        lines.push(Line::styled("No hunks.", theme::muted()));
-                    }
-                    let hunk_idx = self.diff_view.hunk.min(diff.hunks.len().saturating_sub(1));
-                    for (i, hunk) in diff.hunks.iter().enumerate() {
-                        let kept = self.hunk_is_kept(path, &hunk.header);
-                        let marker = if i == hunk_idx { "▶ " } else { "  " };
-                        let label = if kept { "kept " } else { "" };
-                        lines.push(Line::styled(
-                            format!("{marker}{label}{}", hunk.header),
-                            if i == hunk_idx {
-                                theme::focused_selection_style()
-                            } else {
-                                theme::warn()
-                            },
-                        ));
-                        for line in &hunk.lines {
-                            let style = if line.starts_with('+') {
-                                theme::ok()
-                            } else if line.starts_with('-') {
-                                theme::danger()
-                            } else {
-                                theme::muted()
-                            };
-                            lines.push(Line::styled(format!("    {line}"), style));
-                        }
-                    }
-                }
-                Err(e) => {
-                    lines.push(Line::styled(
-                        format!("Unable to load diff: {}", e),
-                        theme::danger(),
-                    ));
-                }
-            }
-        } else {
-            lines.push(Line::from("No changed file selected."));
-        }
-
-        self.diff_rows = lines
-            .iter()
-            .map(|line| {
-                line.spans
-                    .iter()
-                    .map(|span| span.content.as_ref())
-                    .collect()
-            })
-            .take(
-                self.diff_area
-                    .map_or(usize::MAX, |area| area.height as usize),
-            )
-            .collect();
-        Paragraph::new(lines)
-            .style(theme::text())
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .padding(ratatui::widgets::Padding::horizontal(1))
-                    .border_style(self.workspace_border())
-                    .style(theme::panel()),
-            )
-            .render(area, buf);
     }
 }
 

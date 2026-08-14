@@ -8,20 +8,17 @@ const UI_STATE_VERSION: u32 = 2;
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum WorkspaceView {
     File(PathBuf),
-    Diff(DiffCommandContext),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WorkspaceViewKind {
     File,
-    Diff,
 }
 
 impl WorkspaceView {
     fn kind(&self) -> WorkspaceViewKind {
         match self {
             Self::File(_) => WorkspaceViewKind::File,
-            Self::Diff(_) => WorkspaceViewKind::Diff,
         }
     }
 }
@@ -223,22 +220,10 @@ enum ExplorerDialog {
     SaveConflict,
 }
 
-#[allow(dead_code)]
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum DiffCommandContext {
-    Current,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ActivitySummaryAction {
-    ReviewChanges,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ActivitySummaryModel {
     label: String,
     action_label: Option<&'static str>,
-    action: Option<ActivitySummaryAction>,
     kind: BannerKind,
 }
 
@@ -257,7 +242,6 @@ enum SemanticCommand {
     PushView(WorkspaceView),
     ReplaceView(WorkspaceView),
     OpenFile(PathBuf),
-    ReviewChanges(DiffCommandContext),
     ToggleFiles,
     CloseOverlay,
     FocusComposer,
@@ -266,7 +250,6 @@ enum SemanticCommand {
     InsertComposerNewline,
     OpenSlashCommands,
     OpenHelp,
-    ActivateActivitySummary,
     SelectEntry(PathBuf),
     MoveFileSelection(isize),
     ExpandSelectedDirectory,
@@ -291,21 +274,10 @@ enum SemanticCommand {
     RefreshFiles,
     RefreshEditor,
     SaveEditor,
-    RefreshDiff,
     BeginCreateFile,
     BeginCreateDirectory,
     BeginRename,
     RequestDelete,
-    SelectPreviousChange,
-    SelectNextChange,
-    SelectPreviousHunk,
-    SelectNextHunk,
-    KeepHunk,
-    DiscardHunk,
-    KeepRestOfFile,
-    DiscardRestOfFile,
-    ConfirmReviewDelete,
-    CancelReviewDelete,
     StartSourceSearch,
     StartJumpToLine,
     OpenExternalEditor,
@@ -325,22 +297,6 @@ enum SemanticCommand {
     DenySelectedBackgroundTask,
     QuitOrInterrupt,
     Quit,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct DiffSnapshot {
-    paths: Vec<PathBuf>,
-    stale: bool,
-}
-
-#[derive(Debug, Clone, Default)]
-struct DiffViewState {
-    selected: usize,
-    hunk: usize,
-    snapshot: DiffSnapshot,
-    kept: HashSet<(PathBuf, String)>,
-    expect_own_change: bool,
-    pending_untracked_delete: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -709,7 +665,6 @@ pub struct TuiApp {
     pub(crate) editor_message: Option<String>,
     pub(crate) pending_editor_path: Option<PathBuf>,
     pub(crate) pending_editor_home: bool,
-    pub(crate) pending_editor_diff: bool,
     file_watch: FileWatchState,
     bottom_panel: BottomPanelState,
     pub(crate) workspace_files: WorkspaceFilesState,
@@ -717,8 +672,6 @@ pub struct TuiApp {
     /// Authoritative keyboard ownership. Legacy component `focused` flags are
     /// synchronised from this state for rendering only.
     focus: FocusState,
-    /// Selected index in the changed-files inventory for Diff workspace.
-    diff_view: DiffViewState,
     cancellation: CancellationState,
     hitl_session: HitlSessionState,
     toast: ToastState,
@@ -746,8 +699,6 @@ pub struct TuiApp {
     pub(crate) context_menu: Option<crate::selection::ContextMenu>,
     pub(crate) conversation_area: Option<ratatui::layout::Rect>,
     pub(crate) conversation_rows: Vec<String>,
-    pub(crate) diff_area: Option<ratatui::layout::Rect>,
-    pub(crate) diff_rows: Vec<String>,
     pub(crate) terminal_area: Option<ratatui::layout::Rect>,
     pub(crate) terminal_rows: Vec<String>,
     catalog_fetch: CatalogFetchState,

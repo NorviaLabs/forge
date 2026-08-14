@@ -52,81 +52,77 @@ async fn agent_thinking_keeps_composer_usable() {
 }
 
 #[tokio::test]
-async fn activity_summary_priority_renders_one_actionable_row() {
-    let (_dir, mut app) = focus_test_app().await;
-    app.workspace_files
-        .explorer
-        .git_status
-        .status
-        .insert(PathBuf::from("changed.rs"), GitStatusKind::Modified);
-    app.busy_state.active = true;
-    app.busy_state.phase = BusyPhase::Model;
-
-    let summary = app.activity_summary().expect("changes summary");
-    assert_eq!(summary.label, "1 file changed");
-    assert_eq!(summary.action_label, Some("Review"));
-}
-
-#[tokio::test]
-async fn changes_summary_action_uses_review_changes_command() {
-    let (_dir, mut app) = focus_test_app().await;
-    app.workspace_files
-        .explorer
-        .git_status
-        .status
-        .insert(PathBuf::from("changed.rs"), GitStatusKind::Modified);
-
-    app.handle_key(press(KeyCode::Right, KeyModifiers::ALT))
-        .await
-        .unwrap();
-
-    assert_eq!(
-        app.workspace_navigation.current,
-        Some(WorkspaceView::Diff(DiffCommandContext::Current))
-    );
-}
-
-#[tokio::test]
-async fn alt_right_activity_review_requires_a_dirty_editor_decision() {
+async fn changed_files_are_footer_only_without_review_cta() {
     let (dir, mut app) = focus_test_app().await;
-    let path = dir.path().join("dirty-review.rs");
-    fs::write(&path, "fn main() {}\n").unwrap();
-    app.execute_semantic_command(SemanticCommand::OpenFile(path.clone()))
-        .await
+    init_repo(dir.path());
+    let status = std::process::Command::new("git")
+        .args(["-C", dir.path().to_str().unwrap(), "add", "-A"])
+        .status()
         .unwrap();
+    assert!(status.success());
+    let status = std::process::Command::new("git")
+        .args([
+            "-C",
+            dir.path().to_str().unwrap(),
+            "commit",
+            "-qm",
+            "initial",
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    fs::write(dir.path().join("changed.rs"), "changed\n").unwrap();
+    app.workspace_files.explorer.refresh_git_status();
+    for _ in 0..20 {
+        let _ = app.workspace_files.explorer.git_status.poll();
+        if !app.workspace_files.explorer.git_status.status.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        !app.workspace_files.explorer.git_status.status.is_empty(),
+        "expected a dirty worktree for the footer count"
+    );
 
-    let editor = app.editor_session.as_mut().unwrap();
-    editor.handle_key(press(KeyCode::Char('i'), KeyModifiers::NONE));
-    editor.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE));
-    editor.handle_key(press(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.activity_summary().is_none());
+    assert_eq!(app.workspace_activity_label().as_deref(), Some("1 changes"));
+    let rendered = render_app_text(&mut app, 140, 30);
+    assert!(
+        rendered.contains("1 changes"),
+        "footer should show an inert change count:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("Review"),
+        "Review CTA must not appear in conversation or footer:\n{rendered}"
+    );
+}
+
+#[tokio::test]
+async fn alt_right_and_workspace_right_do_not_open_review() {
+    let (_dir, mut app) = focus_test_app().await;
     app.workspace_files
         .explorer
         .git_status
         .status
-        .insert(PathBuf::from("dirty-review.rs"), GitStatusKind::Modified);
+        .insert(PathBuf::from("changed.rs"), GitStatusKind::Modified);
+    app.focus_block(FocusBlock::Workspace);
 
-    app.handle_key(press(KeyCode::Right, KeyModifiers::ALT))
-        .await
-        .unwrap();
-
-    assert!(matches!(
-        app.explorer_dialog.current,
-        Some(ExplorerDialog::DirtyExit)
-    ));
-    assert!(app.current_workspace_is_file());
-    assert!(app.editor_session.as_ref().unwrap().is_dirty());
-    assert_eq!(fs::read_to_string(path).unwrap(), "fn main() {}\n");
-}
-
-#[tokio::test]
-async fn alt_right_without_summary_still_opens_review_changes() {
-    let (_dir, mut app) = focus_test_app().await;
-    // No git changes, no run — summary has no action.
-    app.handle_key(press(KeyCode::Right, KeyModifiers::ALT))
-        .await
-        .unwrap();
     assert_eq!(
-        app.workspace_navigation.current,
-        Some(WorkspaceView::Diff(DiffCommandContext::Current))
+        app.semantic_command_for_global_key(press(KeyCode::Right, KeyModifiers::ALT)),
+        None
     );
+    assert_eq!(
+        app.semantic_command_for_workspace_key(press(KeyCode::Right, KeyModifiers::NONE)),
+        None
+    );
+
+    app.handle_key(press(KeyCode::Right, KeyModifiers::ALT))
+        .await
+        .unwrap();
+    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    assert_eq!(app.workspace_navigation.current, None);
 }

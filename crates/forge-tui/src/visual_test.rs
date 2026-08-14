@@ -197,32 +197,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn contextual_workspace_review_changes_uses_redirected_tab_control() {
-        let (dir, mut app) = app().await;
-        let workspace = dir.path().join("repo");
-        fs::create_dir_all(&workspace).unwrap();
-        Command::new("git")
-            .arg("init")
-            .current_dir(&workspace)
-            .output()
-            .unwrap();
-        fs::write(workspace.join("x.txt"), "changed").unwrap();
-        app.session = rebuild_session(dir.path(), &workspace).await;
-        app.runtime.cwd = workspace.clone();
-        app.workspace_files.explorer = crate::file_explorer::FileExplorer::new(
-            Some(workspace.clone()),
-            forge_config::FileIconMode::Unicode,
-        );
-
+    async fn alt_right_does_not_open_a_review_workspace() {
+        let (_d, mut app) = app().await;
         app.handle_key(press_with(KeyCode::Right, KeyModifiers::ALT))
             .await
             .unwrap();
-
-        // Wait for the background git-status thread.
-        while app.workspace_files.explorer.git_status.loading {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            app.workspace_files.explorer.git_status.poll();
-        }
 
         let backend = TestBackend::new(120, 40);
         let mut term = Terminal::new(backend).unwrap();
@@ -232,6 +211,7 @@ mod tests {
             text.contains("Describe a task"),
             "conversation not expanded:\n{text}"
         );
+        assert!(!text.contains("Review changes"), "{text}");
     }
 
     #[tokio::test]
@@ -671,63 +651,6 @@ mod tests {
         assert!(
             text.contains("untracked.txt ?"),
             "missing untracked marker:\n{text}"
-        );
-    }
-
-    #[tokio::test]
-    async fn diff_tab_loads_changes_with_files_hidden() {
-        let (dir, mut app) = app().await;
-        let workspace = dir.path().join("repo");
-        fs::create_dir_all(&workspace).unwrap();
-        Command::new("git")
-            .arg("init")
-            .current_dir(&workspace)
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["config", "user.email", "test@example.com"])
-            .current_dir(&workspace)
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["config", "user.name", "Forge Test"])
-            .current_dir(&workspace)
-            .output()
-            .unwrap();
-        fs::write(workspace.join("tracked.txt"), "x").unwrap();
-        Command::new("git")
-            .args(["add", "tracked.txt"])
-            .current_dir(&workspace)
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["commit", "-m", "init"])
-            .current_dir(&workspace)
-            .output()
-            .unwrap();
-        fs::write(workspace.join("tracked.txt"), "changed").unwrap();
-
-        app.session = rebuild_session(dir.path(), &workspace).await;
-        app.runtime.cwd = workspace.clone();
-        app.workspace_files.explorer = crate::file_explorer::FileExplorer::new(
-            Some(workspace),
-            forge_config::FileIconMode::Unicode,
-        );
-        app.workspace_files.visible = false;
-        app.review_changes_for_test();
-
-        let backend = TestBackend::new(120, 40);
-        let mut term = Terminal::new(backend).unwrap();
-        while app.workspace_files.explorer.git_status.loading {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            term.draw(|f| app.draw(f)).unwrap();
-        }
-
-        term.draw(|f| app.draw(f)).unwrap();
-        let text = buffer_text(&term);
-        assert!(
-            text.contains("Describe a task"),
-            "conversation not expanded:\n{text}"
         );
     }
 

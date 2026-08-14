@@ -264,12 +264,10 @@ impl TuiApp {
             ExplorerDialog::DirtyExit => match key.code {
                 KeyCode::Esc if key.modifiers.is_empty() => {
                     self.pending_editor_home = false;
-                    self.pending_editor_diff = false;
                     None
                 }
                 KeyCode::Char('c') | KeyCode::Char('C') => {
                     self.pending_editor_home = false;
-                    self.pending_editor_diff = false;
                     None
                 }
                 KeyCode::Char('d') | KeyCode::Char('D') => {
@@ -336,7 +334,6 @@ impl TuiApp {
                 KeyCode::Esc if key.modifiers.is_empty() => {
                     self.pending_editor_path = None;
                     self.pending_editor_home = false;
-                    self.pending_editor_diff = false;
                     None
                 }
                 KeyCode::Char('r') | KeyCode::Char('R') => {
@@ -352,7 +349,7 @@ impl TuiApp {
                         .editor_session
                         .as_ref()
                         .is_some_and(|editor| !editor.is_dirty())
-                        && (self.pending_editor_home || self.pending_editor_diff)
+                        && self.pending_editor_home
                     {
                         self.complete_dirty_editor_exit();
                     }
@@ -367,7 +364,7 @@ impl TuiApp {
                     {
                         if self.pending_editor_path.is_some() {
                             self.complete_pending_editor_switch(false);
-                        } else if self.pending_editor_home || self.pending_editor_diff {
+                        } else if self.pending_editor_home {
                             self.complete_dirty_editor_exit();
                         }
                         None

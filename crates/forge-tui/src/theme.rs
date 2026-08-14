@@ -417,11 +417,6 @@ pub fn surface_hover() -> Style {
     Style::default().bg(active_palette().surface_hover)
 }
 
-/// Disabled menu/action label (text_muted, no emphasis).
-pub fn disabled() -> Style {
-    dim()
-}
-
 pub fn tool() -> Style {
     Style::default().fg(active_palette().tool)
 }
@@ -824,11 +819,10 @@ mod tests {
     }
 
     #[test]
-    fn surface_hover_and_disabled_expose_spec_tokens() {
+    fn surface_hover_exposes_spec_token() {
         install_defaults();
         let dark = dark_palette();
         assert_eq!(surface_hover().bg, Some(to_color(dark.surface_hover)));
-        assert_eq!(disabled().fg, dim().fg);
         assert_eq!(
             registry()
                 .get(THEME_SOLARIZED_DARK)

@@ -41,7 +41,6 @@ impl TuiApp {
             _ => match &self.workspace_navigation.current {
                 None => "No file open",
                 Some(WorkspaceView::File(_)) => "File",
-                Some(WorkspaceView::Diff(_)) => "Review changes",
             },
         };
         let mut text = String::from("Forge is an AI coding agent for your terminal.\n\n");
@@ -54,22 +53,12 @@ impl TuiApp {
         text.push_str("• Tab / Shift+Tab  Move between visible blocks\n");
         text.push_str("• Ctrl+E  Toggle Files (focuses explorer when opening)\n");
         text.push_str("• F4  Open model picker\n");
-        text.push_str("• Alt+→  Activate activity summary, else review changes\n");
         text.push_str("• ?  Help\n");
         text.push_str("• Esc  Leave one interaction level\n\n");
         text.push_str("Active block\n");
         match self.focus.block {
             FocusBlock::Workspace => {
                 text.push_str("• Alt+←  Back\n");
-                text.push_str("• Alt+→  Review changes / activity summary\n");
-                if self.current_workspace_is_diff() {
-                    text.push_str("• ↑/↓  Previous / next file\n");
-                    text.push_str("• [ / ]  Previous / next hunk\n");
-                    text.push_str("• k / d  Keep / discard hunk\n");
-                    text.push_str("• K / D  Keep-rest / discard-rest of file\n");
-                    text.push_str("• r  Refresh review\n");
-                    text.push_str("• y / n  Confirm / cancel untracked delete\n");
-                }
                 text.push_str("• Type  Start chat in composer\n");
                 text.push_str("• Vim Normal/Insert/Search modes  Edit text files\n");
                 text.push_str("• :w / :q / :wq  Save / quit / save and quit\n");

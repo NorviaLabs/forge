@@ -121,7 +121,6 @@ impl TuiApp {
             editor_message: None,
             pending_editor_path: None,
             pending_editor_home: false,
-            pending_editor_diff: false,
             file_watch: FileWatchState {
                 watcher: None,
                 change_rx: file_change_rx,
@@ -137,7 +136,6 @@ impl TuiApp {
             },
             explorer_dialog: ExplorerDialogState::default(),
             focus: FocusState::default(),
-            diff_view: DiffViewState::default(),
             cancellation: CancellationState { requested: false },
             hitl_session: HitlSessionState {
                 allowed: HashSet::new(),
@@ -174,8 +172,6 @@ impl TuiApp {
             context_menu: None,
             conversation_area: None,
             conversation_rows: Vec::new(),
-            diff_area: None,
-            diff_rows: Vec::new(),
             terminal_area: None,
             terminal_rows: Vec::new(),
             catalog_fetch: CatalogFetchState {

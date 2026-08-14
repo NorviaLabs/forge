@@ -145,12 +145,6 @@ async fn final_shell_rendering_matrix_covers_v31_states_without_obsolete_chrome(
     scenarios.push(("file open", dir, app, vec!["matrix.rs"]));
 
     let (dir, mut app) = focus_test_app().await;
-    app.execute_semantic_command(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
-        .await
-        .unwrap();
-    scenarios.push(("diff", dir, app, vec!["Describe a task"]));
-
-    let (dir, mut app) = focus_test_app().await;
     set_pending_hitl(
         &mut app,
         direct_hitl_payload("matrix-approval", "src/main.rs"),

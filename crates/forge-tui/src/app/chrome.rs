@@ -204,8 +204,8 @@ impl TuiApp {
             dirty: repo.dirty,
             cwd_display: crate::widgets::status::shorten_home_path(&self.runtime.cwd),
             resource: self.workspace_resource_label(),
-            // Workspace secondary metadata only — never overall task lifecycle.
-            activity: self.workspace_activity_label(),
+            // Workspace change count lives on the footer, not header chrome.
+            activity: None,
             progress_description: self.header_progress_description(),
             failure_category: self.header_failure_category(transcript),
             waiting_detail: self.header_waiting_detail(),
@@ -290,50 +290,27 @@ impl TuiApp {
     }
 
     fn workspace_resource_label(&self) -> Option<String> {
-        match &self.workspace_navigation.current {
-            None => None,
-            Some(WorkspaceView::File(path)) => {
-                Some(relative_display(self.session_view.workspace_root(), path))
-            }
-            Some(WorkspaceView::Diff(DiffCommandContext::Current)) => Some("Review changes".into()),
-        }
+        self.workspace_navigation
+            .current
+            .as_ref()
+            .map(|WorkspaceView::File(path)| {
+                relative_display(self.session_view.workspace_root(), path)
+            })
     }
 
-    fn workspace_activity_label(&self) -> Option<String> {
-        match &self.workspace_navigation.current {
-            Some(WorkspaceView::Diff(DiffCommandContext::Current)) => {
-                let total = self.workspace_files.explorer.git_status.status.len();
-                (total > 0).then(|| format!("{} of {} changes", self.diff_view.selected + 1, total))
-            }
-            _ => {
-                let changes = self.workspace_files.explorer.git_status.status.len();
-                if changes > 0 {
-                    Some(format!("{changes} changes · Review"))
-                } else {
-                    // Do not mirror task lifecycle/progress into secondary activity.
-                    None
-                }
-            }
+    pub(super) fn workspace_activity_label(&self) -> Option<String> {
+        let changes = self.workspace_files.explorer.git_status.status.len();
+        if changes > 0 {
+            Some(format!("{changes} changes"))
+        } else {
+            // Do not mirror task lifecycle/progress into secondary activity.
+            None
         }
     }
 
     pub(super) fn activity_summary(&self) -> Option<ActivitySummaryModel> {
-        // Approval is represented by the inline approval card, not a background summary.
-        if self.overlay.is_some() || self.session_view.is_awaiting_approval() {
-            return None;
-        }
-
-        let changes = self.workspace_files.explorer.git_status.status.len();
-        if changes > 0 {
-            let files = if changes == 1 { "file" } else { "files" };
-            return Some(ActivitySummaryModel {
-                label: format!("{changes} {files} changed"),
-                action_label: Some("Review"),
-                action: Some(ActivitySummaryAction::ReviewChanges),
-                kind: BannerKind::Info,
-            });
-        }
-
+        // Review CTA and conversation banner were removed. Changed-file count
+        // is footer-only until a later redesign.
         None
     }
 
@@ -342,22 +319,6 @@ impl TuiApp {
     ) -> Option<(String, Option<&'static str>, BannerKind)> {
         self.activity_summary()
             .map(|summary| (summary.label, summary.action_label, summary.kind))
-    }
-
-    pub(super) fn activate_activity_summary(&mut self) {
-        match self.activity_summary().and_then(|summary| summary.action) {
-            Some(ActivitySummaryAction::ReviewChanges) => {
-                // Unlike the Alt+-> / `ReviewChanges` command path, entering
-                // here skipped `capture_diff_snapshot()`, so a review opened
-                // via the inline "N files changed" summary could start
-                // already marked stale (with Apply disabled) even though
-                // nothing has changed since. Snapshot on entry here too so
-                // both paths start from the same fresh baseline.
-                self.capture_diff_snapshot();
-                self.review_changes_workspace();
-            }
-            None => {}
-        }
     }
 
     /// Read the cached repo header. This is a plain field read: it must never
