@@ -15,6 +15,32 @@ pub enum GitStatusKind {
     Conflicted,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PathStatus {
+    pub staged: Option<GitStatusKind>,
+    pub unstaged: Option<GitStatusKind>,
+}
+
+impl PathStatus {
+    pub fn primary(self) -> Option<GitStatusKind> {
+        match (self.staged, self.unstaged) {
+            (Some(a), Some(b)) => Some(if a.is_more_severe(b) { a } else { b }),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        }
+    }
+
+    pub fn is_untracked(self) -> bool {
+        self.unstaged == Some(GitStatusKind::Untracked)
+    }
+
+    pub fn is_conflicted(self) -> bool {
+        self.staged == Some(GitStatusKind::Conflicted)
+            || self.unstaged == Some(GitStatusKind::Conflicted)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ChangedFile {
     pub path: PathBuf,
@@ -48,13 +74,15 @@ impl GitStatusKind {
 
 #[derive(Debug)]
 pub struct GitStatusCache {
-    /// Repository-root-relative canonical paths to status.
+    /// Repository-root-relative paths to the primary (display) status.
     pub status: HashMap<PathBuf, GitStatusKind>,
+    /// Staged vs worktree split for the same paths.
+    pub details: HashMap<PathBuf, PathStatus>,
     /// Whether a refresh is currently in flight.
     pub loading: bool,
     /// Last refresh error, if any.
     pub error: Option<String>,
-    pending: Option<Receiver<Result<HashMap<PathBuf, GitStatusKind>, String>>>,
+    pending: Option<Receiver<Result<HashMap<PathBuf, PathStatus>, String>>>,
     revision: u64,
     diff_cache: RefCell<HashMap<(u64, PathBuf), Result<String, String>>>,
 }
@@ -69,6 +97,7 @@ impl GitStatusCache {
     pub fn new() -> Self {
         Self {
             status: HashMap::new(),
+            details: HashMap::new(),
             loading: false,
             error: None,
             pending: None,
@@ -107,9 +136,14 @@ impl GitStatusCache {
             return false;
         };
         match rx.try_recv() {
-            Ok(Ok(map)) => {
+            Ok(Ok(details)) => {
                 self.loading = false;
-                self.status = map;
+                self.details = details;
+                self.status = self
+                    .details
+                    .iter()
+                    .filter_map(|(path, detail)| detail.primary().map(|kind| (path.clone(), kind)))
+                    .collect();
                 true
             }
             Ok(Err(err)) => {
@@ -136,15 +170,34 @@ impl GitStatusCache {
     /// Returns changed files with staged and unstaged status distinguished.
     pub fn changed_files(&self) -> Vec<ChangedFile> {
         let mut files = Vec::new();
-        for (path, status) in &self.status {
-            files.push(ChangedFile {
-                path: path.clone(),
-                staged: None,
-                unstaged: Some(*status),
-            });
+        if !self.details.is_empty() {
+            for (path, detail) in &self.details {
+                files.push(ChangedFile {
+                    path: path.clone(),
+                    staged: detail.staged,
+                    unstaged: detail.unstaged,
+                });
+            }
+        } else {
+            for (path, status) in &self.status {
+                files.push(ChangedFile {
+                    path: path.clone(),
+                    staged: None,
+                    unstaged: Some(*status),
+                });
+            }
         }
         files.sort_by(|a, b| a.path.cmp(&b.path));
         files
+    }
+
+    pub fn path_status(&self, path: &Path) -> Option<PathStatus> {
+        self.details.get(path).copied().or_else(|| {
+            self.status.get(path).map(|kind| PathStatus {
+                staged: None,
+                unstaged: Some(*kind),
+            })
+        })
     }
 
     pub fn revision(&self) -> u64 {
@@ -177,7 +230,7 @@ fn load_unstaged_diff(root: &Path, path: &Path) -> Result<String, String> {
     String::from_utf8(output.stdout).map_err(|e| format!("diff output is not valid UTF-8: {e}"))
 }
 
-fn load_git_status(root: &Path) -> Result<HashMap<PathBuf, GitStatusKind>, String> {
+fn load_git_status(root: &Path) -> Result<HashMap<PathBuf, PathStatus>, String> {
     if !root.join(".git").exists() {
         return Ok(HashMap::new());
     }
@@ -195,7 +248,7 @@ fn load_git_status(root: &Path) -> Result<HashMap<PathBuf, GitStatusKind>, Strin
     parse_null_terminated(&output.stdout)
 }
 
-fn parse_null_terminated(data: &[u8]) -> Result<HashMap<PathBuf, GitStatusKind>, String> {
+fn parse_null_terminated(data: &[u8]) -> Result<HashMap<PathBuf, PathStatus>, String> {
     let mut map = HashMap::new();
     let text = String::from_utf8_lossy(data);
     let parts: Vec<&str> = text.split('\0').collect();
@@ -212,12 +265,10 @@ fn parse_null_terminated(data: &[u8]) -> Result<HashMap<PathBuf, GitStatusKind>,
         }
         let xy = &record[..2];
         let path = record[2..].trim_start_matches(' ');
-        let status = classify_status(xy);
-        if status.is_none() {
+        let Some(status) = classify_path_status(xy) else {
             i += 1;
             continue;
-        }
-        let status = status.unwrap();
+        };
 
         let (target_path, consumed) = if xy.starts_with('R') || xy.starts_with('C') {
             // Rename/copy format: "XY old_path\0new_path\0".
@@ -233,51 +284,92 @@ fn parse_null_terminated(data: &[u8]) -> Result<HashMap<PathBuf, GitStatusKind>,
 
         let target = PathBuf::from(target_path);
         map.entry(target)
-            .and_modify(|existing| {
-                if status.is_more_severe(*existing) {
-                    *existing = status;
-                }
-            })
+            .and_modify(|existing| *existing = merge_path_status(*existing, status))
             .or_insert(status);
         i += consumed;
     }
     Ok(map)
 }
 
-fn classify_status(xy: &str) -> Option<GitStatusKind> {
+fn classify_letter(letter: char) -> Option<GitStatusKind> {
+    match letter {
+        'M' | 'T' | 'R' | 'C' => Some(GitStatusKind::Modified),
+        'A' => Some(GitStatusKind::Added),
+        'D' => Some(GitStatusKind::Deleted),
+        'U' => Some(GitStatusKind::Conflicted),
+        '?' => Some(GitStatusKind::Untracked),
+        '!' => Some(GitStatusKind::Ignored),
+        _ => None,
+    }
+}
+
+fn classify_path_status(xy: &str) -> Option<PathStatus> {
     if xy.len() != 2 {
         return None;
     }
     let mut chars = xy.chars();
     let x = chars.next().unwrap();
     let y = chars.next().unwrap();
-
-    if x == '?' && y == '?' {
-        return Some(GitStatusKind::Untracked);
-    }
-    if x == '!' || y == '!' {
-        return Some(GitStatusKind::Ignored);
-    }
     if xy == "DD" || xy == "AU" || xy == "UA" || xy == "DU" || xy == "UD" || x == 'U' || y == 'U' {
-        return Some(GitStatusKind::Conflicted);
+        return Some(PathStatus {
+            staged: Some(GitStatusKind::Conflicted),
+            unstaged: Some(GitStatusKind::Conflicted),
+        });
     }
-    if x == 'A' || y == 'A' {
-        return Some(GitStatusKind::Added);
+    if x == '?' && y == '?' {
+        return Some(PathStatus {
+            staged: None,
+            unstaged: Some(GitStatusKind::Untracked),
+        });
     }
-    if x == 'D' || y == 'D' {
-        return Some(GitStatusKind::Deleted);
+    Some(PathStatus {
+        staged: if x == ' ' { None } else { classify_letter(x) },
+        unstaged: if y == ' ' { None } else { classify_letter(y) },
+    })
+    .filter(|status| status.primary().is_some())
+}
+
+fn merge_path_status(left: PathStatus, right: PathStatus) -> PathStatus {
+    PathStatus {
+        staged: pick_more_severe(left.staged, right.staged),
+        unstaged: pick_more_severe(left.unstaged, right.unstaged),
     }
-    if x == 'M' || y == 'M' || x == 'R' || y == 'R' || x == 'T' || y == 'T' || x == 'C' || y == 'C'
-    {
-        return Some(GitStatusKind::Modified);
+}
+
+fn pick_more_severe(
+    left: Option<GitStatusKind>,
+    right: Option<GitStatusKind>,
+) -> Option<GitStatusKind> {
+    match (left, right) {
+        (Some(a), Some(b)) => Some(if a.is_more_severe(b) { a } else { b }),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
     }
-    None
+}
+
+#[cfg(test)]
+fn classify_status(xy: &str) -> Option<GitStatusKind> {
+    classify_path_status(xy).and_then(PathStatus::primary)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::process::Command;
+
+    #[test]
+    fn porcelain_splits_staged_and_unstaged() {
+        let status = classify_path_status("MM").unwrap();
+        assert_eq!(status.staged, Some(GitStatusKind::Modified));
+        assert_eq!(status.unstaged, Some(GitStatusKind::Modified));
+        let staged_only = classify_path_status("M ").unwrap();
+        assert_eq!(staged_only.staged, Some(GitStatusKind::Modified));
+        assert_eq!(staged_only.unstaged, None);
+        let worktree_only = classify_path_status(" M").unwrap();
+        assert_eq!(worktree_only.staged, None);
+        assert_eq!(worktree_only.unstaged, Some(GitStatusKind::Modified));
+    }
 
     #[test]
     fn classify_status_maps_common_codes() {
@@ -293,8 +385,14 @@ mod tests {
     fn parse_null_terminated_simple() {
         let data = b"M a.txt\0?? b.txt\0";
         let map = parse_null_terminated(data).unwrap();
-        assert_eq!(map.get(Path::new("a.txt")), Some(&GitStatusKind::Modified));
-        assert_eq!(map.get(Path::new("b.txt")), Some(&GitStatusKind::Untracked));
+        assert_eq!(
+            map.get(Path::new("a.txt")).and_then(|s| s.primary()),
+            Some(GitStatusKind::Modified)
+        );
+        assert_eq!(
+            map.get(Path::new("b.txt")).and_then(|s| s.primary()),
+            Some(GitStatusKind::Untracked)
+        );
     }
 
     #[test]
@@ -303,8 +401,8 @@ mod tests {
         let map = parse_null_terminated(data).unwrap();
         assert_eq!(map.get(Path::new("old.txt")), None);
         assert_eq!(
-            map.get(Path::new("new.txt")),
-            Some(&GitStatusKind::Modified)
+            map.get(Path::new("new.txt")).and_then(|s| s.primary()),
+            Some(GitStatusKind::Modified)
         );
     }
 
@@ -342,12 +440,13 @@ mod tests {
 
         let map = load_git_status(root.path()).unwrap();
         assert_eq!(
-            map.get(Path::new("tracked.txt")),
-            Some(&GitStatusKind::Modified)
+            map.get(Path::new("tracked.txt")).and_then(|s| s.primary()),
+            Some(GitStatusKind::Modified)
         );
         assert_eq!(
-            map.get(Path::new("untracked.txt")),
-            Some(&GitStatusKind::Untracked)
+            map.get(Path::new("untracked.txt"))
+                .and_then(|s| s.primary()),
+            Some(GitStatusKind::Untracked)
         );
     }
 
@@ -387,10 +486,14 @@ mod tests {
 
         let map = load_git_status(root.path()).unwrap();
         assert_eq!(
-            map.get(Path::new("file with spaces.txt")),
-            Some(&GitStatusKind::Added)
+            map.get(Path::new("file with spaces.txt"))
+                .and_then(|s| s.primary()),
+            Some(GitStatusKind::Added)
         );
-        assert_eq!(map.get(Path::new("文件.txt")), Some(&GitStatusKind::Added));
+        assert_eq!(
+            map.get(Path::new("文件.txt")).and_then(|s| s.primary()),
+            Some(GitStatusKind::Added)
+        );
     }
 
     #[test]
@@ -542,8 +645,7 @@ mod tests {
 
     #[test]
     fn poll_reports_a_dropped_sender() {
-        let (tx, rx) =
-            std::sync::mpsc::channel::<Result<HashMap<PathBuf, GitStatusKind>, String>>();
+        let (tx, rx) = std::sync::mpsc::channel::<Result<HashMap<PathBuf, PathStatus>, String>>();
         drop(tx);
         let mut cache = GitStatusCache::new();
         cache.loading = true;
@@ -560,8 +662,7 @@ mod tests {
 
     #[test]
     fn poll_retains_the_receiver_while_a_refresh_is_still_running() {
-        let (tx, rx) =
-            std::sync::mpsc::channel::<Result<HashMap<PathBuf, GitStatusKind>, String>>();
+        let (tx, rx) = std::sync::mpsc::channel::<Result<HashMap<PathBuf, PathStatus>, String>>();
         let mut cache = GitStatusCache::new();
         cache.loading = true;
         cache.pending = Some(rx);
@@ -572,7 +673,13 @@ mod tests {
         assert!(cache.pending.is_some());
 
         let mut map = HashMap::new();
-        map.insert(PathBuf::from("late.txt"), GitStatusKind::Added);
+        map.insert(
+            PathBuf::from("late.txt"),
+            PathStatus {
+                staged: Some(GitStatusKind::Added),
+                unstaged: None,
+            },
+        );
         tx.send(Ok(map)).unwrap();
         cache.poll();
 
@@ -648,8 +755,8 @@ mod tests {
         let map = parse_null_terminated(b"M\0ZZ x.txt\0M  good.txt\0").unwrap();
         assert_eq!(map.len(), 1);
         assert_eq!(
-            map.get(Path::new("good.txt")),
-            Some(&GitStatusKind::Modified)
+            map.get(Path::new("good.txt")).and_then(|s| s.primary()),
+            Some(GitStatusKind::Modified)
         );
     }
 
@@ -658,13 +765,17 @@ mod tests {
         // The severity comparison must win regardless of the order git reports in.
         let escalating = parse_null_terminated(b"M  dup.txt\0A  dup.txt\0").unwrap();
         assert_eq!(
-            escalating.get(Path::new("dup.txt")),
-            Some(&GitStatusKind::Added)
+            escalating
+                .get(Path::new("dup.txt"))
+                .and_then(|s| s.primary()),
+            Some(GitStatusKind::Added)
         );
         let descending = parse_null_terminated(b"A  dup.txt\0M  dup.txt\0").unwrap();
         assert_eq!(
-            descending.get(Path::new("dup.txt")),
-            Some(&GitStatusKind::Added)
+            descending
+                .get(Path::new("dup.txt"))
+                .and_then(|s| s.primary()),
+            Some(GitStatusKind::Added)
         );
     }
 
@@ -674,8 +785,8 @@ mod tests {
         // panic, and should fall back to the path carried by the first record.
         let map = parse_null_terminated(b"R  only.txt").unwrap();
         assert_eq!(
-            map.get(Path::new("only.txt")),
-            Some(&GitStatusKind::Modified)
+            map.get(Path::new("only.txt")).and_then(|s| s.primary()),
+            Some(GitStatusKind::Modified)
         );
     }
 }

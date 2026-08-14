@@ -298,6 +298,14 @@ enum SemanticCommand {
     RequestDelete,
     SelectPreviousChange,
     SelectNextChange,
+    SelectPreviousHunk,
+    SelectNextHunk,
+    KeepHunk,
+    DiscardHunk,
+    KeepRestOfFile,
+    DiscardRestOfFile,
+    ConfirmReviewDelete,
+    CancelReviewDelete,
     StartSourceSearch,
     StartJumpToLine,
     OpenExternalEditor,
@@ -323,6 +331,16 @@ enum SemanticCommand {
 struct DiffSnapshot {
     paths: Vec<PathBuf>,
     stale: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+struct DiffViewState {
+    selected: usize,
+    hunk: usize,
+    snapshot: DiffSnapshot,
+    kept: HashSet<(PathBuf, String)>,
+    expect_own_change: bool,
+    pending_untracked_delete: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -488,10 +506,7 @@ struct ConversationViewState {
     splash_dismissed: bool,
 }
 
-struct DiffViewState {
-    selected: usize,
-    snapshot: DiffSnapshot,
-}
+
 
 pub(crate) struct WorkspaceFilesState {
     pub(crate) visible: bool,

@@ -101,6 +101,23 @@ impl TuiApp {
     pub(super) fn capture_diff_snapshot(&mut self) {
         self.diff_view.snapshot.paths = self.current_changed_paths();
         self.diff_view.snapshot.stale = false;
+        self.diff_view.pending_untracked_delete = None;
+        let live_paths = self.diff_view.snapshot.paths.clone();
+        self.diff_view.kept.retain(|(path, header)| {
+            live_paths.contains(path)
+                && combined_diff(self.session_view.workspace_root(), path)
+                    .ok()
+                    .is_some_and(|diff| diff.hunks.iter().any(|hunk| hunk.header == *header))
+        });
+        if !self.diff_view.snapshot.paths.is_empty() {
+            self.diff_view.selected = self
+                .diff_view
+                .selected
+                .min(self.diff_view.snapshot.paths.len() - 1);
+        } else {
+            self.diff_view.selected = 0;
+        }
+        self.diff_view.hunk = 0;
     }
 
     /// Whether the set of changed paths currently known to git status differs
@@ -123,6 +140,9 @@ impl TuiApp {
     /// [`reconcile_diff_staleness`] catches the remaining case where the
     /// disagreement only becomes visible once that refresh completes.
     pub(super) fn mark_diff_stale_if_reviewing(&mut self) {
+        if self.diff_view.expect_own_change {
+            return;
+        }
         if self.current_workspace_is_diff() && self.diff_review_paths_changed() {
             self.diff_view.snapshot.stale = true;
         }
@@ -131,6 +151,11 @@ impl TuiApp {
     /// Re-checks diff staleness once a git-status refresh has actually
     /// resolved. Call after `git_status.poll()` returns `true`.
     pub(super) fn reconcile_diff_staleness(&mut self) {
+        if self.diff_view.expect_own_change {
+            self.capture_diff_snapshot();
+            self.diff_view.expect_own_change = false;
+            return;
+        }
         if self.current_workspace_is_diff()
             && !self.diff_view.snapshot.stale
             && self.diff_review_paths_changed()
@@ -140,7 +165,9 @@ impl TuiApp {
     }
 
     pub(super) fn refresh_diff_review(&mut self) {
+        self.diff_view.expect_own_change = false;
         self.workspace_files.explorer.refresh_git_status();
+        let _ = self.workspace_files.explorer.git_status.poll();
         self.capture_diff_snapshot();
     }
 
