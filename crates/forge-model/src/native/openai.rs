@@ -350,19 +350,27 @@ fn apply_reasoning_effort(body: &mut Value, model: &str, reasoning_effort: Optio
     } else if effort == "max" {
         effort = "xhigh".into();
     }
-    let model_id = model.split_once('/').map(|(_, id)| id).unwrap_or(model);
-    let supported = model.starts_with("opencode-")
-        || (model.starts_with("openai/")
-            && ["gpt-5", "o1", "o3", "o4"]
-                .iter()
-                .any(|prefix| model_id.starts_with(prefix)))
-        || ((model.starts_with("xai/") || model.starts_with("grok/"))
-            && ["grok-4.3", "grok-4.5", "grok-4.20"]
-                .iter()
-                .any(|marker| model_id.contains(marker)));
+    let supported = catalog_supports_openai_effort(model).unwrap_or_else(|| {
+        let model_id = model.split_once('/').map(|(_, id)| id).unwrap_or(model);
+        model.starts_with("opencode-")
+            || (model.starts_with("openai/")
+                && ["gpt-5", "o1", "o3", "o4"]
+                    .iter()
+                    .any(|prefix| model_id.starts_with(prefix)))
+            || ((model.starts_with("xai/") || model.starts_with("grok/"))
+                && ["grok-4.3", "grok-4.5", "grok-4.20", "grok-4.6"]
+                    .iter()
+                    .any(|marker| model_id.contains(marker)))
+    });
     if supported {
         body["reasoning_effort"] = Value::String(effort);
     }
+}
+
+fn catalog_supports_openai_effort(model: &str) -> Option<bool> {
+    forge_connect::ModelCatalogCache::user_default()
+        .model_effort_options(model)
+        .map(|options| !options.is_empty())
 }
 
 async fn response_error(response: reqwest::Response) -> ModelError {

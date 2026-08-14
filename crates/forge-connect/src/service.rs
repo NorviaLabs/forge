@@ -681,11 +681,14 @@ impl ConnectService<'_> {
     ) -> Result<ConnectOutcome, ConnectError> {
         // Prefer the live catalog, then a configured default, then a provider-scoped
         // placeholder so connect output is non-empty even before the first refresh.
-        let model = ModelCatalogCache::user_default()
-            .get_cached(&profile.id)
-            .into_iter()
-            .next()
-            .or_else(|| profile.default_model().map(str::to_string))
+        // First-run activation stays on the profile default. Live/registry
+        // catalogs can sort a different model first and should not hijack
+        // the initial selection (for example xAI listing grok-4.20 before grok-3).
+        let cache = ModelCatalogCache::user_default();
+        let model = profile
+            .default_model()
+            .map(str::to_string)
+            .or_else(|| cache.get_cached(&profile.id).into_iter().next())
             .unwrap_or_else(|| format!("{}/default", profile.model_provider_prefix));
         self.active_profile_id = Some(profile.id.clone());
         self.active_model = Some(model.clone());
