@@ -137,10 +137,7 @@ impl TuiApp {
             },
             explorer_dialog: ExplorerDialogState::default(),
             focus: FocusState::default(),
-            diff_view: DiffViewState {
-                selected: 0,
-                snapshot: DiffSnapshot::default(),
-            },
+            diff_view: DiffViewState::default(),
             cancellation: CancellationState { requested: false },
             hitl_session: HitlSessionState {
                 allowed: HashSet::new(),
