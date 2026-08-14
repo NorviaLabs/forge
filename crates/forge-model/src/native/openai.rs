@@ -5,7 +5,7 @@ use futures::StreamExt;
 use serde_json::{json, Value};
 
 use super::{process_sse_lines, NativeModelClient};
-use crate::normalize::{forge_messages_to_wire, tools_to_openai_functions};
+use crate::normalize::tools_to_openai_functions;
 use crate::prompt_cache::{apply_openai_prompt_cache, usage_from_provider};
 use crate::{ModelError, ModelRequest, StreamEventTx};
 
@@ -32,7 +32,7 @@ pub(super) async fn complete(
     let route = route(client, model)?;
     let mut body = json!({
         "model": route.model,
-        "messages": forge_messages_to_wire(&req.messages),
+        "messages": crate::normalize::forge_messages_to_wire_in(&req.messages, &req.workspace_root),
         "stream": true,
         "stream_options": {"include_usage": true}
     });
@@ -381,6 +381,7 @@ mod tests {
 
     fn request(model: &str) -> ModelRequest {
         ModelRequest {
+            workspace_root: std::path::PathBuf::new(),
             messages: vec![Message::new(MessageRole::User, "hello")],
             tools: vec![ToolDescriptor {
                 name: "bash".into(),

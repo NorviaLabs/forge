@@ -131,6 +131,46 @@ pub(super) async fn complete(
     })
 }
 
+fn codex_user_content(message: &forge_types::Message, workspace: &std::path::Path) -> Value {
+    let mut parts = vec![json!({"type": "input_text", "text": message.content})];
+    for image in &message.attachments {
+        match crate::image::load_image_ref(workspace, image) {
+            Ok(loaded) => parts.push(crate::image::codex_input_image_part(
+                &loaded.mime,
+                &loaded.bytes,
+            )),
+            Err(_) => parts.push(json!({
+                "type": "input_text",
+                "text": format!("image at `{}` is no longer available", image.path)
+            })),
+        }
+    }
+    Value::Array(parts)
+}
+
+fn codex_tool_output(message: &forge_types::Message, workspace: &std::path::Path) -> Value {
+    if message.attachments.is_empty() {
+        return json!(message.content);
+    }
+    let mut parts = Vec::new();
+    if !message.content.is_empty() {
+        parts.push(json!({"type": "input_text", "text": message.content}));
+    }
+    for image in &message.attachments {
+        match crate::image::load_image_ref(workspace, image) {
+            Ok(loaded) => parts.push(crate::image::codex_input_image_part(
+                &loaded.mime,
+                &loaded.bytes,
+            )),
+            Err(_) => parts.push(json!({
+                "type": "input_text",
+                "text": format!("image at `{}` is no longer available", image.path)
+            })),
+        }
+    }
+    Value::Array(parts)
+}
+
 fn request_body(
     _client: &NativeModelClient,
     req: &ModelRequest,
@@ -162,14 +202,14 @@ fn request_body(
                     input.push(json!({
                         "type": "function_call_output",
                         "call_id": call_id,
-                        "output": message.content
+                        "output": codex_tool_output(message, &req.workspace_root)
                     }));
                 }
             }
             MessageRole::User => input.push(json!({
                 "type": "message",
                 "role": "user",
-                "content": [{"type": "input_text", "text": message.content}]
+                "content": codex_user_content(message, &req.workspace_root)
             })),
             MessageRole::Assistant => {
                 if !message.content.is_empty() {
@@ -391,6 +431,7 @@ mod tests {
 
     fn request_with_tool(name: &str) -> ModelRequest {
         ModelRequest {
+            workspace_root: std::path::PathBuf::new(),
             messages: vec![],
             tools: vec![ToolDescriptor {
                 name: name.into(),
@@ -460,6 +501,7 @@ mod tests {
                     name: "read_file".into(),
                     arguments: json!({"path":"README.md"}),
                 }],
+                attachments: Vec::new(),
             },
             Message {
                 outcome: Default::default(),
@@ -470,6 +512,7 @@ mod tests {
                 thinking: None,
                 thinking_duration_secs: None,
                 tool_calls: vec![],
+                attachments: Vec::new(),
             },
         ];
         let client = NativeModelClient::from_config(&Config::default()).unwrap();
@@ -517,6 +560,7 @@ mod tests {
                     name: "read_file".into(),
                     arguments: json!({"path":"README.md"}),
                 }],
+                attachments: Vec::new(),
             },
             Message {
                 outcome: Default::default(),
@@ -527,6 +571,7 @@ mod tests {
                 thinking: None,
                 thinking_duration_secs: None,
                 tool_calls: vec![],
+                attachments: Vec::new(),
             },
             Message::new(MessageRole::User, "and now?"),
         ];
@@ -559,6 +604,7 @@ mod tests {
                     name: "read_file".into(),
                     arguments: json!({"path":"README.md"}),
                 }],
+                attachments: Vec::new(),
             },
             Message {
                 outcome: Default::default(),
@@ -569,6 +615,7 @@ mod tests {
                 thinking: None,
                 thinking_duration_secs: None,
                 tool_calls: vec![],
+                attachments: Vec::new(),
             },
         ];
         let client = NativeModelClient::from_config(&Config::default()).unwrap();
@@ -654,6 +701,7 @@ mod tests {
             ("FORGE_CODEX_ACCOUNT_ID".into(), "account-123".into()),
         ]);
         let request = ModelRequest {
+            workspace_root: std::path::PathBuf::new(),
             model: "openai-codex/gpt-test".into(),
             route_id: None,
             messages: vec![Message::new(MessageRole::User, "hello")],
@@ -680,6 +728,7 @@ mod tests {
             ("FORGE_CODEX_ACCOUNT_ID".into(), "account-123".into()),
         ]);
         let request = ModelRequest {
+            workspace_root: std::path::PathBuf::new(),
             model: "openai-codex/gpt-test".into(),
             route_id: None,
             messages: vec![Message::new(MessageRole::User, "hello")],

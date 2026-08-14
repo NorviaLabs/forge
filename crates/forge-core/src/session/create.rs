@@ -52,6 +52,7 @@ impl AgentSession {
             thinking: None,
             thinking_duration_secs: None,
             tool_calls: vec![],
+            attachments: Vec::new(),
         };
         let mut messages = state.messages;
         if let Some(first) = messages
@@ -133,6 +134,7 @@ impl AgentSession {
                 thinking: None,
                 thinking_duration_secs: None,
                 tool_calls: vec![],
+                attachments: Vec::new(),
             }],
             events: vec![],
             active_task: ActiveTaskState::new(session_id),
@@ -182,6 +184,7 @@ impl AgentSession {
             thinking: None,
             thinking_duration_secs: None,
             tool_calls: vec![],
+            attachments: Vec::new(),
         };
         let mut messages = state.messages.clone();
         if let Some(first) = messages

@@ -577,7 +577,16 @@ impl TuiApp {
             );
         }
 
-        let attachment_label = self.attachment.pending.as_ref().map(|a| a.label());
+        let attachment_label = {
+            let file = self.attachment.pending.as_ref().map(|a| a.label());
+            let images = self.pending_image_label();
+            match (file, images) {
+                (Some(file), Some(images)) => Some(format!("{file} · {images}")),
+                (Some(file), None) => Some(file),
+                (None, Some(images)) => Some(images),
+                (None, None) => None,
+            }
+        };
         let effort_label = self
             .reasoning_effort
             .value

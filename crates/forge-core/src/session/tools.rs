@@ -507,16 +507,7 @@ impl AgentSession {
                         .append_tool_result(self.session_id, call, &output)
                         .await?;
                     self.remember_tool_result(call, &output);
-                    self.messages.push(Message {
-                        outcome: output.effective_outcome(),
-                        role: MessageRole::Tool,
-                        content: output.content,
-                        tool_call_id: Some(call.id.clone()),
-                        name: Some(call.name.clone()),
-                        thinking: None,
-                        thinking_duration_secs: None,
-                        tool_calls: vec![],
-                    });
+                    self.messages.push(Message::from_tool_output(call, &output));
                     return Ok(ToolExecutionStart::Finished(None));
                 }
             }
@@ -567,16 +558,7 @@ impl AgentSession {
                         .append_tool_result(self.session_id, &call, &output)
                         .await?;
                     self.remember_tool_result(&call, &output);
-                    self.messages.push(Message {
-                        outcome: output.effective_outcome(),
-                        role: MessageRole::Tool,
-                        content: output.content.clone(),
-                        tool_call_id: Some(call.id.clone()),
-                        name: Some(call.name.clone()),
-                        thinking: None,
-                        thinking_duration_secs: None,
-                        tool_calls: vec![],
-                    });
+                    self.messages.push(Message::from_tool_output(&call, &output));
                     self.events.push(TurnEvent {
                         kind: "tool".into(),
                         detail: format!("{} -> {} chars", call.name, output.content.len()),
@@ -600,6 +582,7 @@ impl AgentSession {
                         thinking: None,
                         thinking_duration_secs: None,
                         tool_calls: vec![],
+            attachments: Vec::new(),
                     });
                     self.events.push(TurnEvent {
                         kind: "validation".into(),
@@ -622,21 +605,13 @@ impl AgentSession {
                         },
                         is_error: true,
                         exit_code: None,
+                        attachments: Vec::new(),
                     };
                     self.journal
                         .append_tool_result(self.session_id, &call, &output)
                         .await?;
                     self.remember_tool_result(&call, &output);
-                    self.messages.push(Message {
-                        outcome: output.effective_outcome(),
-                        role: MessageRole::Tool,
-                        content: output.content.clone(),
-                        tool_call_id: Some(call.id.clone()),
-                        name: Some(call.name.clone()),
-                        thinking: None,
-                        thinking_duration_secs: None,
-                        tool_calls: vec![],
-                    });
+                    self.messages.push(Message::from_tool_output(&call, &output));
                     if is_budget {
                         self.events.push(TurnEvent {
                             kind: "validation_exhausted".into(),
@@ -691,16 +666,7 @@ impl AgentSession {
                         detail: call.arguments.to_string(),
                     });
                 }
-                self.messages.push(Message {
-                    outcome: output.effective_outcome(),
-                    role: MessageRole::Tool,
-                    content: output.content,
-                    tool_call_id: Some(call.id.clone()),
-                    name: Some(call.name.clone()),
-                    thinking: None,
-                    thinking_duration_secs: None,
-                    tool_calls: vec![],
-                });
+                self.messages.push(Message::from_tool_output(call, &output));
             }
             Err(e) => {
                 let outcome = e.as_outcome();
@@ -709,6 +675,7 @@ impl AgentSession {
                     content: e.to_string(),
                     is_error: true,
                     exit_code: None,
+                    attachments: Vec::new(),
                 };
                 self.journal
                     .append_tool_result(self.session_id, call, &output)
