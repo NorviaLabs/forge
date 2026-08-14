@@ -1315,6 +1315,7 @@ version = "0.1.0-beta.4"
 dependencies = [
  "async-trait",
  "forge-config",
+ "forge-connect",
  "forge-test-support",
  "forge-types",
  "futures",

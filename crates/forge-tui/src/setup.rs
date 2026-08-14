@@ -270,6 +270,7 @@ mod tests {
 
     #[test]
     fn wide_root_detects_home_and_projects() {
+        let _lock = crate::app::tests::helpers::lock_test_env();
         let Some(home) = dirs::home_dir() else {
             return;
         };

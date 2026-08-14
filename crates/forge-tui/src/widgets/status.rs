@@ -499,6 +499,7 @@ mod tests {
 
     #[test]
     fn shortens_home_prefix_to_tilde() {
+        let _lock = crate::app::tests::helpers::lock_test_env();
         if let Some(home) = dirs::home_dir() {
             let path = home.join("Projects/forge");
             assert_eq!(shorten_home_path(&path), "~/Projects/forge");

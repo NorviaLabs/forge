@@ -113,4 +113,4 @@ use chrome::{footer_limits_from_report, footer_usage_summary_with_cost};
 pub use shell::{run_tui, run_tui_with_launch, run_tui_with_resume_picker, TuiLaunch};
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

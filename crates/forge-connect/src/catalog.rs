@@ -151,6 +151,13 @@ struct CatalogFile {
     /// catalog files stay `false` even if `registry_fetched_at` is fresh.
     #[serde(default)]
     registry_image_input_ready: bool,
+    /// provider/model id → discrete models.dev effort values (`low`, `xhigh`, …).
+    /// An empty vec means the model is known and has no adjustable effort.
+    #[serde(default)]
+    registry_effort: BTreeMap<String, Vec<String>>,
+    /// Set when this process has ingested `reasoning_options`.
+    #[serde(default)]
+    registry_effort_ready: bool,
     /// Unix seconds when the public registry was refreshed.
     #[serde(default)]
     registry_fetched_at: Option<u64>,
@@ -278,17 +285,43 @@ impl ModelCatalogCache {
         self.load().registry_image_input_ready
     }
 
+    /// Discrete effort values advertised for `model_id` by models.dev.
+    ///
+    /// `None` means this cache has no row (offline / pre-feature / unknown
+    /// id) and callers should use the built-in fallback. `Some([])` means
+    /// the registry knows the model and it has no adjustable effort.
+    pub fn model_effort_options(&self, model_id: &str) -> Option<Vec<String>> {
+        if model_id.is_empty() {
+            return None;
+        }
+        let file = self.load();
+        if !file.registry_effort_ready {
+            return None;
+        }
+        metadata_id_candidates(model_id)
+            .into_iter()
+            .find_map(|id| file.registry_effort.get(&id).cloned())
+    }
+
+    /// Whether `reasoning_options` has been ingested at least once.
+    pub fn effort_ready(&self) -> bool {
+        self.load().registry_effort_ready
+    }
+
     fn put_registry(
         &self,
         models: BTreeMap<String, Vec<String>>,
         costs: BTreeMap<String, CatalogCost>,
         image_input: BTreeSet<String>,
+        effort: BTreeMap<String, Vec<String>>,
     ) -> Result<(), CatalogError> {
         let mut file = self.load();
         file.registry_models = models;
         file.registry_costs = costs;
         file.registry_image_input = image_input;
         file.registry_image_input_ready = true;
+        file.registry_effort = effort;
+        file.registry_effort_ready = true;
         file.registry_fetched_at = Some(Self::now_secs());
         self.save(&file)
     }
@@ -321,6 +354,7 @@ pub fn refresh_models_dev_registry(
     let mut by_profile = BTreeMap::new();
     let mut costs = BTreeMap::new();
     let mut image_input = BTreeSet::new();
+    let mut effort_by_model = BTreeMap::new();
     let mut total = 0usize;
     for profile in profiles {
         let mut ids = std::collections::BTreeSet::new();
@@ -346,6 +380,8 @@ pub fn refresh_models_dev_registry(
                             image_input.insert(alias);
                         }
                     }
+                    let effort = models_dev_effort_options(model);
+                    insert_effort_metadata(&mut effort_by_model, &id, effort);
                     ids.insert(id);
                 }
             }
@@ -353,7 +389,7 @@ pub fn refresh_models_dev_registry(
         total += ids.len();
         by_profile.insert(profile.id.clone(), ids.into_iter().collect());
     }
-    cache.put_registry(by_profile, costs, image_input)?;
+    cache.put_registry(by_profile, costs, image_input, effort_by_model)?;
     Ok(total)
 }
 
@@ -369,6 +405,52 @@ fn image_input_candidates(model_id: &str) -> Vec<String> {
     let mut ids = vec![model_id.to_string()];
     ids.extend(image_input_route_aliases(model_id));
     ids
+}
+
+fn metadata_id_candidates(model_id: &str) -> Vec<String> {
+    image_input_candidates(model_id)
+}
+
+fn insert_effort_metadata(
+    effort: &mut BTreeMap<String, Vec<String>>,
+    model_id: &str,
+    values: Vec<String>,
+) {
+    effort.insert(model_id.to_string(), values.clone());
+    for alias in image_input_route_aliases(model_id) {
+        effort.insert(alias, values.clone());
+    }
+}
+
+fn models_dev_effort_options(model: &serde_json::Value) -> Vec<String> {
+    let Some(options) = model
+        .get("reasoning_options")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return Vec::new();
+    };
+    let mut values = Vec::new();
+    for option in options {
+        if option.get("type").and_then(serde_json::Value::as_str) != Some("effort") {
+            continue;
+        }
+        let Some(raw) = option.get("values").and_then(serde_json::Value::as_array) else {
+            continue;
+        };
+        for value in raw {
+            let Some(value) = value.as_str() else {
+                continue;
+            };
+            let value = value.trim().to_ascii_lowercase();
+            if matches!(value.as_str(), "none" | "auto" | "default" | "") {
+                continue;
+            }
+            if !values.iter().any(|existing| existing == &value) {
+                values.push(value);
+            }
+        }
+    }
+    values
 }
 
 fn image_input_route_aliases(model_id: &str) -> Vec<String> {
@@ -905,9 +987,14 @@ pub fn models_for_picker(
                 .map(|id| (id, CatalogSource::Cached)),
             );
         }
-        if !is_ollama && !p.models_dev_providers.is_empty() {
+        if !is_ollama
+            && !p.models_dev_providers.is_empty()
+            && p.id != crate::openai_codex::PROFILE_ID
+        {
             // Provider catalog rows come first; append the opted-in public
             // registry only as explicitly-unverified supplemental metadata.
+            // Codex entitlement is account-scoped; keep models.dev as
+            // metadata (effort/image) without inventing selectable rows.
             entries.extend(
                 cache
                     .get_registry_cached(&p.id)
@@ -1121,6 +1208,7 @@ mod tests {
                     },
                 )]),
                 BTreeSet::new(),
+                BTreeMap::new(),
             )
             .unwrap();
 
@@ -1164,6 +1252,22 @@ mod tests {
             "modalities": { "input": ["text"] }
         })));
         assert!(!models_dev_image_input(&serde_json::json!({})));
+        assert_eq!(
+            models_dev_effort_options(&serde_json::json!({
+                "reasoning_options": [
+                    {"type": "effort", "values": ["low", "medium", "high", "xhigh"]},
+                    {"type": "budget_tokens", "min": 1024}
+                ]
+            })),
+            vec!["low", "medium", "high", "xhigh"]
+        );
+        assert_eq!(
+            models_dev_effort_options(&serde_json::json!({
+                "reasoning_options": [{"type": "effort", "values": ["none", "low"]}]
+            })),
+            vec!["low"]
+        );
+        assert!(models_dev_effort_options(&serde_json::json!({})).is_empty());
     }
 
     #[test]
@@ -1194,7 +1298,7 @@ mod tests {
         let mut registry = BTreeMap::new();
         registry.insert(profile.id.clone(), vec!["openai/gpt-5.6-terra".into()]);
         cache
-            .put_registry(registry, BTreeMap::new(), BTreeSet::new())
+            .put_registry(registry, BTreeMap::new(), BTreeSet::new(), BTreeMap::new())
             .unwrap();
 
         let entries = models_for_picker(&[profile], &store, &cache, false);
@@ -1217,7 +1321,7 @@ mod tests {
             vec!["openai/gpt-5.6-sol".into(), "openai/gpt-5.6-terra".into()],
         );
         cache
-            .put_registry(registry, BTreeMap::new(), BTreeSet::new())
+            .put_registry(registry, BTreeMap::new(), BTreeSet::new(), BTreeMap::new())
             .unwrap();
 
         let entries = models_for_picker(&[profile], &store, &cache, false);
@@ -1378,7 +1482,7 @@ mod tests {
         let mut registry = BTreeMap::new();
         registry.insert(profile.id.clone(), vec!["openai-codex/not-entitled".into()]);
         cache
-            .put_registry(registry, BTreeMap::new(), BTreeSet::new())
+            .put_registry(registry, BTreeMap::new(), BTreeSet::new(), BTreeMap::new())
             .unwrap();
 
         let entries = models_for_picker(&[profile], &store, &cache, false);
@@ -1743,16 +1847,16 @@ mod tests {
         let guard = EnvGuard::new(ENV);
         let base = mock_http(vec![(
             200,
-            r#"{"openai":{"models":{"gpt-4.1-mini":{"cost":{"input":1.0,"output":2.0},"tool_call":true,"modalities":{"output":["text"]}},"gpt-4o":{"cost":{"input":1.0,"output":2.0},"tool_call":true,"modalities":{"input":["text","image"],"output":["text"]}}}}}"#,
+            r#"{"openai":{"models":{"gpt-4.1-mini":{"cost":{"input":1.0,"output":2.0},"tool_call":true,"modalities":{"output":["text"]}},"gpt-4o":{"cost":{"input":1.0,"output":2.0},"tool_call":true,"modalities":{"input":["text","image"],"output":["text"]},"reasoning_options":[{"type":"effort","values":["low","medium","high"]}]},"gpt-5.2":{"cost":{"input":1.0,"output":2.0},"tool_call":true,"modalities":{"output":["text"]},"reasoning_options":[{"type":"effort","values":["none","low","medium","high","xhigh"]}]}}},"xai":{"models":{"grok-4.6":{"cost":{"input":2.0,"output":6.0},"tool_call":true,"modalities":{"output":["text"]},"reasoning_options":[{"type":"effort","values":["low","medium","high","xhigh"]}]}}}}"#,
             vec![],
         )]);
         guard.set("FORGE_MODELS_DEV_URL", &base);
 
         let dir = tempdir().unwrap();
         let cache = ModelCatalogCache::new(dir.path().join("c.toml"));
-        let profiles = vec![openai_profile()];
+        let profiles = vec![openai_profile(), crate::xai::xai_grok_profile()];
         let count = refresh_models_dev_registry(&profiles, &cache).unwrap();
-        assert_eq!(count, 2);
+        assert_eq!(count, 4);
         let entries = models_for_picker(
             &profiles,
             &CredentialStore::new(dir.path().join("k.toml")),
@@ -1771,6 +1875,39 @@ mod tests {
         assert!(!cache.model_accepts_image_input("unknown/model"));
         assert!(!cache.model_accepts_image_input(""));
         assert!(cache.image_input_ready());
+        assert!(cache.effort_ready());
+        assert_eq!(
+            cache.model_effort_options("openai/gpt-4.1-mini"),
+            Some(Vec::<String>::new())
+        );
+        assert_eq!(
+            cache.model_effort_options("openai/gpt-5.2"),
+            Some(vec![
+                "low".into(),
+                "medium".into(),
+                "high".into(),
+                "xhigh".into()
+            ])
+        );
+        assert_eq!(
+            cache.model_effort_options("xai/grok-4.6"),
+            Some(vec![
+                "low".into(),
+                "medium".into(),
+                "high".into(),
+                "xhigh".into()
+            ])
+        );
+        assert_eq!(
+            cache.model_effort_options("openai-codex/gpt-5.2"),
+            Some(vec![
+                "low".into(),
+                "medium".into(),
+                "high".into(),
+                "xhigh".into()
+            ])
+        );
+        assert_eq!(cache.model_effort_options("unknown/model"), None);
     }
 
     #[test]
@@ -1789,6 +1926,7 @@ mod tests {
                 BTreeMap::new(),
                 BTreeMap::new(),
                 BTreeSet::from(["openai/gpt-5.6-sol".into()]),
+                BTreeMap::new(),
             )
             .unwrap();
         assert!(cache.model_accepts_image_input("openai-codex/gpt-5.6-sol"));

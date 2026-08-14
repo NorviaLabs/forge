@@ -1080,8 +1080,8 @@ async fn f4_opens_compact_model_control() {
 async fn footer_shows_na_effort_for_a_model_that_does_not_support_it() {
     let _home_guard = isolated_home_guard();
     let (_dir, session) = test_session().await;
-    // gpt-4.1-mini isn't in ReasoningEffort::model_supports_effort's
-    // openai allow-list (only gpt-5/o1/o3/o4 prefixes are) — a real,
+    // Isolated home leaves the catalog cache empty, so gpt-4.1-mini
+    // falls back to the built-in family list and is treated as a real
     // connected model with no adjustable effort.
     let mut app = TuiApp::new(
         session,
