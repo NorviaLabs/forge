@@ -239,10 +239,34 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    fn isolated_catalog_home() -> TempDir {
-        let dir = TempDir::new().unwrap();
-        std::env::set_var("HOME", dir.path());
-        dir
+    struct IsolatedCatalogHome {
+        _dir: TempDir,
+        previous: Option<String>,
+    }
+
+    impl IsolatedCatalogHome {
+        fn new() -> Self {
+            let dir = TempDir::new().unwrap();
+            let previous = std::env::var("HOME").ok();
+            std::env::set_var("HOME", dir.path());
+            Self {
+                _dir: dir,
+                previous,
+            }
+        }
+    }
+
+    impl Drop for IsolatedCatalogHome {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(home) => std::env::set_var("HOME", home),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+    }
+
+    fn isolated_catalog_home() -> IsolatedCatalogHome {
+        IsolatedCatalogHome::new()
     }
 
     #[test]
