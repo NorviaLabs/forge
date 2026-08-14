@@ -75,6 +75,7 @@ impl AgentSession {
                 thinking: None,
                 thinking_duration_secs: None,
                 tool_calls: vec![],
+                attachments: Vec::new(),
             });
             // Stale evidence from the paused call must not leak into a later
             // completion decision within this same turn (see `apply_model_response`).

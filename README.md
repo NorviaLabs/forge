@@ -160,11 +160,15 @@ controls are:
 | `F2` | Cycle permission mode (Manual ↔ Accept Edits) |
 | `F3` | Focus composer chips (mode · connect · model · effort) |
 | `F4` | Open model picker |
+| `Ctrl+Shift+V` | Attach a screenshot from the local OS clipboard |
 | `?` | Open help |
 
 The composer shows a chip row under the input: permission mode, connection,
 model, and effort. `F3` then `←`/`→`/`Enter` activates a chip (disconnected
-→ connect flow). `Enter` still sends; `⏎` is a hint only.
+→ connect flow). `Enter` still sends; `⏎` is a hint only. `Ctrl+Shift+V`
+attaches a PNG/JPEG/GIF/WebP from the local clipboard (workspace-only;
+SSH has no image clipboard). The model can also call `view_image` on a
+workspace file when the active model accepts image input.
 
 When the bottom panel is focused, it is an interactive login shell. Type or
 paste commands directly into it; standard control keys, arrows, Tab, and

@@ -10,22 +10,23 @@ impl AgentSession {
     /// Append a user message to the session (journal + transcript) without calling the model.
     /// Used by the TUI so the YOU bubble can paint before the model run starts.
     pub async fn append_user_message(&mut self, text: &str) -> Result<(), LoopError> {
+        self.append_user_message_with_attachments(text, Vec::new())
+            .await
+    }
+
+    pub async fn append_user_message_with_attachments(
+        &mut self,
+        text: &str,
+        attachments: Vec<forge_types::ImageRef>,
+    ) -> Result<(), LoopError> {
         if self.active_task.lifecycle == TaskLifecycle::Waiting {
             return Err(LoopError::AwaitingHitl);
         }
         self.journal
-            .append_user_message(self.session_id, text)
+            .append_user_message_with_attachments(self.session_id, text, &attachments)
             .await?;
-        self.messages.push(Message {
-            outcome: Default::default(),
-            role: MessageRole::User,
-            content: text.into(),
-            tool_call_id: None,
-            name: None,
-            thinking: None,
-            thinking_duration_secs: None,
-            tool_calls: vec![],
-        });
+        self.messages
+            .push(Message::new(MessageRole::User, text).with_attachments(attachments));
         if self.context.goal.is_empty() {
             self.context.goal = text.chars().take(200).collect();
         }
@@ -59,10 +60,16 @@ impl AgentSession {
         if self.enable_gov {
             tools = self.governance.filter_tools(tools);
         }
+        if !self.tool_ctx.image_input {
+            tools.retain(|tool| tool.name != "view_image");
+        }
+        let mut messages = self.messages.clone();
+        forge_model::apply_missing_image_notes(&mut messages, &self.tool_ctx.workspace_root);
         ModelRequest {
-            messages: self.messages.clone(),
+            messages,
             tools,
             model: self.active_model.clone(),
+            workspace_root: self.tool_ctx.workspace_root.clone(),
             route_id: (!self.active_route_id.is_empty()).then(|| self.active_route_id.clone()),
             reasoning_effort: self.reasoning_effort.clone(),
             prompt_cache: true,
@@ -123,6 +130,7 @@ impl AgentSession {
                 thinking: last.thinking.clone().filter(|t| !t.trim().is_empty()),
                 thinking_duration_secs: None,
                 tool_calls: last.tool_calls.clone(),
+                attachments: Vec::new(),
             });
             if has_thinking {
                 if let Some(ref th) = last.thinking {
@@ -323,6 +331,7 @@ impl AgentSession {
             thinking: None,
             thinking_duration_secs: None,
             tool_calls: vec![],
+            attachments: Vec::new(),
         });
         self.events.push(TurnEvent {
             kind: "turn_failed".into(),

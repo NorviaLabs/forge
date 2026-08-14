@@ -133,6 +133,7 @@ async fn collect(
                 content: body.to_string(),
                 is_error: !status.success(),
                 exit_code: status.code(),
+                attachments: Vec::new(),
             });
         }
         if tokio::time::Instant::now() >= deadline {
@@ -157,6 +158,7 @@ async fn collect(
         content: body.to_string(),
         is_error: false,
         exit_code: None,
+        attachments: Vec::new(),
     })
 }
 

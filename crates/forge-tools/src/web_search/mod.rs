@@ -111,6 +111,7 @@ impl Tool for WebSearchTool {
                 content: "web_search: query must be non-empty".into(),
                 is_error: true,
                 exit_code: None,
+                attachments: Vec::new(),
             });
         }
         if query.chars().count() > self.cfg.max_query_chars as usize {
@@ -122,6 +123,7 @@ impl Tool for WebSearchTool {
                 ),
                 is_error: true,
                 exit_code: None,
+                attachments: Vec::new(),
             });
         }
 
@@ -132,6 +134,7 @@ impl Tool for WebSearchTool {
                 content: "web_search not configured (missing API key)".into(),
                 is_error: true,
                 exit_code: None,
+                attachments: Vec::new(),
             });
         }
 
@@ -159,6 +162,7 @@ impl Tool for WebSearchTool {
                             content: "web_search: redacted unexpected secret in result".into(),
                             is_error: true,
                             exit_code: None,
+                            attachments: Vec::new(),
                         });
                     }
                 }
@@ -167,6 +171,7 @@ impl Tool for WebSearchTool {
                     content,
                     is_error: false,
                     exit_code: None,
+                    attachments: Vec::new(),
                 })
             }
             Err(e) => Ok(ToolOutput {
@@ -174,6 +179,7 @@ impl Tool for WebSearchTool {
                 content: format!("web_search failed: {e}"),
                 is_error: true,
                 exit_code: None,
+                attachments: Vec::new(),
             }),
         }
     }

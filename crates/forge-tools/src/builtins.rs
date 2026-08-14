@@ -53,6 +53,22 @@ impl Tool for ReadFileTool {
             ToolError::Execution(format!("internal deserialize after validation: {e}"))
         })?;
         let path = ctx.resolve_path(&a.path)?;
+        let mut header = [0_u8; 32];
+        {
+            let mut probe = tokio::fs::File::open(&path).await?;
+            let n = probe.read(&mut header).await?;
+            if forge_types::sniff_allowed_image(&header[..n]) {
+                let hint = if ctx.image_input {
+                    "use view_image on this path"
+                } else {
+                    "the active model does not support image inputs"
+                };
+                return Ok(ToolOutput::failed_exit(
+                    format!("`{}` is an image; {hint}", a.path),
+                    None,
+                ));
+            }
+        }
         let file = tokio::fs::File::open(&path).await?;
         let mut lines = BufReader::new(file).lines();
         let start = a.offset.unwrap_or(1).saturating_sub(1);
@@ -78,6 +94,7 @@ impl Tool for ReadFileTool {
             content,
             is_error: false,
             exit_code: None,
+            attachments: Vec::new(),
         })
     }
 }
@@ -143,6 +160,7 @@ impl Tool for WriteFileTool {
             content,
             is_error: false,
             exit_code: None,
+            attachments: Vec::new(),
         })
     }
 }
@@ -223,6 +241,7 @@ pub async fn run_shell_command(
         content,
         is_error,
         exit_code,
+        attachments: Vec::new(),
     })
 }
 
@@ -369,6 +388,7 @@ Use this as a structured checklist the user can see — not as a substitute for 
             content: "Plan updated".into(),
             is_error: false,
             exit_code: None,
+            attachments: Vec::new(),
         })
     }
 }
@@ -1236,6 +1256,7 @@ impl Tool for GitTool {
             content,
             is_error: !out.status.success(),
             exit_code: out.status.code(),
+            attachments: Vec::new(),
         })
     }
 }
@@ -1245,6 +1266,7 @@ impl Tool for GitTool {
 pub fn default_builtins() -> Vec<std::sync::Arc<dyn Tool>> {
     let mut tools: Vec<std::sync::Arc<dyn Tool>> = vec![
         std::sync::Arc::new(ReadFileTool),
+        std::sync::Arc::new(crate::ViewImageTool),
         std::sync::Arc::new(WriteFileTool),
         std::sync::Arc::new(crate::ApplyPatchTool),
         std::sync::Arc::new(BashTool),
@@ -1317,6 +1339,46 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(out.content, "");
+    }
+
+    #[tokio::test]
+    async fn read_file_rejects_image_and_names_view_image() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("shot.png"), forge_types::sample_png_bytes()).unwrap();
+        let mut ctx = ToolContext::new(dir.path().to_path_buf());
+        ctx.image_input = true;
+        let out = ReadFileTool
+            .call(&ctx, json!({"path": "shot.png"}))
+            .await
+            .unwrap();
+        assert!(out.is_error);
+        assert!(out.content.contains("view_image"), "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn read_file_rejects_image_when_vision_unavailable() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("shot.png"), forge_types::sample_png_bytes()).unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let out = ReadFileTool
+            .call(&ctx, json!({"path": "shot.png"}))
+            .await
+            .unwrap();
+        assert!(out.is_error);
+        assert!(
+            out.content.contains("does not support image inputs"),
+            "{}",
+            out.content
+        );
+    }
+
+    #[test]
+    fn default_builtins_includes_view_image() {
+        let names: Vec<_> = default_builtins()
+            .iter()
+            .map(|t| t.name().to_string())
+            .collect();
+        assert!(names.contains(&"view_image".to_string()), "{names:?}");
     }
 
     #[test]
