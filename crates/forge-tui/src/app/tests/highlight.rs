@@ -5,8 +5,8 @@
 use super::prelude::*;
 
 /// Highlighting does not depend on terminal width, so a resize must reuse it.
-/// A resize flips the conversation render key and rebuilds every line; before
-/// this cache that re-ran tree-sitter over every code block in the transcript.
+/// A resize flips the conversation render key and rebuilds visible lines;
+/// before this cache that re-ran tree-sitter over every code block.
 #[tokio::test]
 async fn resize_reuses_cached_highlights() {
     let (_dir, mut app) = app_with_code("resize").await;

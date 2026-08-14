@@ -202,6 +202,21 @@ impl TuiApp {
         let activity_summary = self.activity_summary();
         let activity_summary_key = self.activity_summary_cache_key();
         let sidebar_width = regions.sidebar.map(|r| r.width).unwrap_or(0);
+        let sidebar_inner_h = regions
+            .sidebar
+            .map(|r| r.height.saturating_sub(2) as usize)
+            .unwrap_or(0);
+        // Follow-mode only paints the viewport plus overscan. Scrolling up
+        // raises the window so earlier blocks are materialized on demand.
+        const TRANSCRIPT_OVERSCAN: usize = 64;
+        let keep_from_end = if self.conversation_view.follow {
+            sidebar_inner_h.saturating_add(TRANSCRIPT_OVERSCAN)
+        } else {
+            sidebar_inner_h
+                .saturating_add(self.conversation_view.scroll as usize)
+                .saturating_add(TRANSCRIPT_OVERSCAN)
+        }
+        .max(1);
         let key = ConversationRenderKey {
             session_id: self.session_view.session_id,
             width: sidebar_width,
@@ -220,8 +235,7 @@ impl TuiApp {
             queue_selected: self.task_selection.queue,
             chat_message_start: self.conversation_view.message_start,
             chat_event_start: self.conversation_view.event_start,
-            busy: self.busy_state.active,
-            busy_phase: self.busy_state.phase.label(),
+            keep_from_end,
             activity_summary: activity_summary_key,
             tool_expanded: self.tool_detail.expanded,
             splash_dismissed: self.conversation_view.splash_dismissed,
@@ -287,7 +301,7 @@ impl TuiApp {
             let width = sidebar_width.saturating_sub(2) as usize;
             self.render_cache.conversation = Some(ConversationRenderCache {
                 key,
-                lines: Arc::new(conv.lines_for_width(width)),
+                lines: Arc::new(conv.lines_for_width_from_end(width, keep_from_end)),
             });
         }
         let width = sidebar_width.saturating_sub(2) as usize;

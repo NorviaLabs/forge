@@ -151,3 +151,30 @@ async fn cache_hit_shares_transcript_lines_without_copying() {
         "a cache hit must reuse the same line allocation, not clone it"
     );
 }
+
+/// Busy-phase flips used to sit on the conversation render key, so every
+/// tool-call start rebuilt the whole transcript. Historical lines do not
+/// depend on the current phase — live chrome is the separate preview buffer.
+#[tokio::test]
+async fn busy_phase_reuses_cached_transcript_lines() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.conversation_view.splash_dismissed = true;
+    app.session.messages.push(forge_types::Message::new(
+        forge_types::MessageRole::Assistant,
+        "cached transcript body",
+    ));
+    draw_app(&mut app, 100, 30);
+    let first = Arc::clone(&app.render_cache.conversation.as_ref().unwrap().lines);
+
+    app.busy_state.active = true;
+    app.busy_state.phase = crate::widgets::BusyPhase::Tool {
+        name: "bash".into(),
+    };
+    draw_app(&mut app, 100, 30);
+    let second = Arc::clone(&app.render_cache.conversation.as_ref().unwrap().lines);
+
+    assert!(
+        Arc::ptr_eq(&first, &second),
+        "a busy-phase change must not rebuild historical transcript lines"
+    );
+}

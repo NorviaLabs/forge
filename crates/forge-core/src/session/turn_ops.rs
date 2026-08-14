@@ -56,15 +56,14 @@ impl AgentSession {
 
     /// Build the next model request from current transcript + tools.
     pub fn build_model_request(&self) -> ModelRequest {
-        let mut tools = self.tools.list_descriptors();
-        if self.enable_gov {
-            tools = self.governance.filter_tools(tools);
-        }
-        if !self.tool_ctx.image_input {
-            tools.retain(|tool| tool.name != "view_image");
-        }
+        let tools = self.tools_for_model();
         let mut messages = self.messages.clone();
-        forge_model::apply_missing_image_notes(&mut messages, &self.tool_ctx.workspace_root);
+        if messages
+            .iter()
+            .any(|message| !message.attachments.is_empty())
+        {
+            forge_model::apply_missing_image_notes(&mut messages, &self.tool_ctx.workspace_root);
+        }
         ModelRequest {
             messages,
             tools,
@@ -74,6 +73,23 @@ impl AgentSession {
             reasoning_effort: self.reasoning_effort.clone(),
             prompt_cache: true,
         }
+    }
+
+    /// Tool list the model sees. Cached on the registry; filtered only when
+    /// governance or the image-input flag actually changes the set.
+    fn tools_for_model(&self) -> Vec<forge_types::ToolDescriptor> {
+        let descriptors = self.tools.list_descriptors();
+        if !self.enable_gov && self.tool_ctx.image_input {
+            return (*descriptors).clone();
+        }
+        let mut tools = (*descriptors).clone();
+        if self.enable_gov {
+            tools = self.governance.filter_tools(tools);
+        }
+        if !self.tool_ctx.image_input {
+            tools.retain(|tool| tool.name != "view_image");
+        }
+        tools
     }
 
     /// Apply a model response: journal, assistant message, then run tools.
@@ -184,8 +200,8 @@ impl AgentSession {
                 let tool_names: Vec<String> = self
                     .tools
                     .list_descriptors()
-                    .into_iter()
-                    .map(|d| d.name)
+                    .iter()
+                    .map(|d| d.name.clone())
                     .collect();
                 if looks_like_dangling_tool_call(&final_text, &tool_names) {
                     self.finalize_turn_failure(
@@ -454,8 +470,10 @@ impl AgentSession {
     pub async fn prepare_model_step(&mut self, turn: u32) -> Result<ModelRequest, LoopError> {
         if self.enable_context && self.context.should_reset(&self.messages) {
             let ws_ref = String::new();
-            let system =
-                assemble_system_prompt(&self.context.load_agents_md(), &self.context.load_skills());
+            let system = assemble_system_prompt(
+                &self.context.load_agents_md(),
+                self.context.load_skills().as_slice(),
+            );
             let (doc, msgs) = self
                 .context
                 .handoff_reset(&self.messages, &ws_ref, &system)?;
@@ -502,8 +520,10 @@ impl AgentSession {
 
     pub async fn force_context_reset_async(&mut self) -> Result<(), LoopError> {
         let ws_ref = String::new();
-        let system =
-            assemble_system_prompt(&self.context.load_agents_md(), &self.context.load_skills());
+        let system = assemble_system_prompt(
+            &self.context.load_agents_md(),
+            self.context.load_skills().as_slice(),
+        );
         let (doc, msgs) = self
             .context
             .handoff_reset(&self.messages, &ws_ref, &system)?;

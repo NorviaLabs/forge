@@ -90,3 +90,14 @@ forge-storage = { path = "crates/forge-storage" }
 forge-search = { path = "crates/forge-search" }
 sha2 = "0.10"
 hex = "0.4"
+
+# Default release: strip symbols so `forge` is not 5MB of leftover names.
+# `dist` is the shipping profile (thin LTO). Not the default: every
+# `cargo test --release` / render-perf run would pay the LTO tax.
+[profile.release]
+strip = "symbols"
+
+[profile.dist]
+inherits = "release"
+lto = "thin"
+codegen-units = 1

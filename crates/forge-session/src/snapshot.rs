@@ -6,7 +6,7 @@
 //! frame reads a value, and where that value came from stops mattering.
 //!
 //! It is also cheaper. The reads it replaces are not all field accesses:
-//! `loaded_skills_count` clones a `Vec<SkillManifest>` to take its length,
+//! `loaded_skills_count` used to clone a `Vec<SkillManifest>` to take its length,
 //! `tool_count` walks the registry through the governance filter, and
 //! `context_usage_ratio` sums the transcript estimate. Scattered across a
 //! frame those ran once per call site — `pending_hitl` alone had 26. Captured

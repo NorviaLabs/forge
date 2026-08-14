@@ -133,6 +133,9 @@ pub struct ToolRegistry {
     tools: HashMap<String, Arc<dyn Tool>>,
     schemas: HashMap<String, Value>,
     validators: Mutex<HashMap<String, Arc<Validator>>>,
+    /// Rebuilt on `register`. Callers that only need to send the list to the
+    /// model clone this handle instead of reconstructing every JSON schema.
+    descriptors: Mutex<Option<Arc<Vec<ToolDescriptor>>>>,
 }
 
 impl ToolRegistry {
@@ -141,6 +144,7 @@ impl ToolRegistry {
             tools: HashMap::new(),
             schemas: HashMap::new(),
             validators: Mutex::new(HashMap::new()),
+            descriptors: Mutex::new(None),
         }
     }
 
@@ -149,13 +153,21 @@ impl ToolRegistry {
         self.schemas.insert(name.clone(), tool.input_schema());
         self.validators.get_mut().unwrap().remove(&name);
         self.tools.insert(name, tool);
+        *self.descriptors.get_mut().unwrap() = None;
     }
 
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
         self.tools.get(name).cloned()
     }
 
-    pub fn list_descriptors(&self) -> Vec<ToolDescriptor> {
+    pub fn list_descriptors(&self) -> Arc<Vec<ToolDescriptor>> {
+        let mut cache = self
+            .descriptors
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(descriptors) = cache.as_ref() {
+            return Arc::clone(descriptors);
+        }
         let mut v: Vec<_> = self
             .tools
             .values()
@@ -168,7 +180,9 @@ impl ToolRegistry {
             })
             .collect();
         v.sort_by(|a, b| a.name.cmp(&b.name));
-        v
+        let descriptors = Arc::new(v);
+        *cache = Some(Arc::clone(&descriptors));
+        descriptors
     }
 
     pub fn names(&self) -> Vec<String> {
@@ -513,6 +527,24 @@ mod tests {
                 "expected `{rel}` to remain writable"
             );
         }
+    }
+
+    #[test]
+    fn list_descriptors_reuses_the_cached_allocation() {
+        let mut reg = ToolRegistry::new();
+        reg.register(Arc::new(ReadFileTool));
+        let first = reg.list_descriptors();
+        let second = reg.list_descriptors();
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "descriptors must be rebuilt only when the registry changes"
+        );
+        reg.register(Arc::new(ReadFileTool));
+        let third = reg.list_descriptors();
+        assert!(
+            !Arc::ptr_eq(&first, &third),
+            "register must drop the descriptor cache"
+        );
     }
 
     #[test]

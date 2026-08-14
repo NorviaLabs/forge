@@ -165,7 +165,7 @@ impl Tool for FffFindTool {
                 })
                 .to_string()
             } else {
-                serde_json::to_string_pretty(&response)
+                serde_json::to_string(&response)
                     .map_err(|e| ToolError::Execution(format!("fff encode: {e}")))?
             },
             is_error: false,
@@ -235,7 +235,7 @@ impl Tool for FffGrepTool {
                 })
                 .to_string()
             } else {
-                serde_json::to_string_pretty(&response)
+                serde_json::to_string(&response)
                     .map_err(|e| ToolError::Execution(format!("fff encode: {e}")))?
             },
             is_error: false,

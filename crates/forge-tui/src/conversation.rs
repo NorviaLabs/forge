@@ -297,6 +297,50 @@ pub(super) fn render_plan_checklist(
     lines
 }
 
+fn estimate_wrapped_lines(text: &str, width: usize) -> usize {
+    let width = width.max(1);
+    text.lines()
+        .map(|line| line.chars().count().div_ceil(width).max(1))
+        .sum::<usize>()
+        .max(1)
+}
+
+fn estimate_block_lines(block: &ConversationBlock, width: usize, prose_width: usize) -> usize {
+    let body = match block {
+        ConversationBlock::UserMessage(p) => {
+            estimate_wrapped_lines(&p.text, width.saturating_sub(2))
+        }
+        ConversationBlock::AssistantAnswer(p) => estimate_wrapped_lines(&p.text, prose_width),
+        ConversationBlock::Thinking(p) => estimate_wrapped_lines(&p.text, prose_width),
+        ConversationBlock::CodeBlock(p) => estimate_wrapped_lines(&p.text, width),
+        ConversationBlock::DiffBlock(p) => p.lines.len().saturating_add(2),
+        ConversationBlock::Callout(p) => estimate_wrapped_lines(&p.text, width).saturating_add(1),
+        ConversationBlock::PlanChecklist(p) => p.steps.len().saturating_add(3),
+        ConversationBlock::ActivityGroup(p) => 2usize.saturating_add(p.items.len().min(6)),
+        ConversationBlock::ActiveProgress(_) | ConversationBlock::Metadata(_) => 1,
+        ConversationBlock::ApprovalPending(_) => 8,
+    };
+    body.saturating_add(2)
+}
+
+fn start_block_for_tail(
+    blocks: &[ConversationBlock],
+    width: usize,
+    prose_width: usize,
+    keep_from_end: usize,
+) -> usize {
+    if keep_from_end == usize::MAX || blocks.is_empty() {
+        return 0;
+    }
+    let mut acc = 0usize;
+    let mut start = blocks.len();
+    while start > 0 && acc < keep_from_end {
+        start -= 1;
+        acc = acc.saturating_add(estimate_block_lines(&blocks[start], width, prose_width));
+    }
+    start
+}
+
 /// Drawing a [`ConversationModel`].
 ///
 /// An extension trait rather than an inherent impl, because Rust requires
@@ -307,6 +351,14 @@ pub trait ConversationRender {
     fn lines(&self) -> Vec<Line<'static>>;
     /// Render wrapped to `available_width` columns.
     fn lines_for_width(&self, available_width: usize) -> Vec<Line<'static>>;
+    /// Render only the last `keep_from_end` estimated lines, walking blocks
+    /// from the tail. Follow-mode frames use this so a long transcript does
+    /// not rebuild off-screen history.
+    fn lines_for_width_from_end(
+        &self,
+        available_width: usize,
+        keep_from_end: usize,
+    ) -> Vec<Line<'static>>;
 }
 
 impl ConversationRender for ConversationModel {
@@ -317,6 +369,14 @@ impl ConversationRender for ConversationModel {
     /// Build display lines for the actual conversation viewport. Prose gets a
     /// readable cap; code and structured blocks keep the full pane width.
     fn lines_for_width(&self, available_width: usize) -> Vec<Line<'static>> {
+        self.lines_for_width_from_end(available_width, usize::MAX)
+    }
+
+    fn lines_for_width_from_end(
+        &self,
+        available_width: usize,
+        keep_from_end: usize,
+    ) -> Vec<Line<'static>> {
         let width = available_width.max(4);
         let prose_width = width
             .saturating_sub(MESSAGE_PADDING * 2)
@@ -325,12 +385,13 @@ impl ConversationRender for ConversationModel {
         let gap = !self.opts.compact;
         let rail = width >= RAIL_MIN_WIDTH;
         let blocks = self.semantic_blocks();
+        let start_block = start_block_for_tail(&blocks, width, prose_width, keep_from_end);
         // A full-width rule opens every turn boundary (every UserMessage
         // after the first block in the transcript) — independent of whether
         // that turn has a plan checklist. Compact tool rows stay tight
         // against each other; major blocks get a blank separator.
-        let mut seen_any_block = false;
-        for block in blocks {
+        let mut seen_any_block = start_block > 0;
+        for block in blocks.into_iter().skip(start_block) {
             let is_turn_start = matches!(block, ConversationBlock::UserMessage(_));
             let railed = is_railed_block(&block);
             if !railed && gap && !lines.is_empty() {

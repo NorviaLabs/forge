@@ -46,7 +46,10 @@ impl AgentSession {
         let system_message = Message {
             outcome: Default::default(),
             role: MessageRole::System,
-            content: assemble_system_prompt(&context.load_agents_md(), &context.load_skills()),
+            content: assemble_system_prompt(
+                &context.load_agents_md(),
+                context.load_skills().as_slice(),
+            ),
             tool_call_id: None,
             name: None,
             thinking: None,
@@ -121,7 +124,7 @@ impl AgentSession {
         let context = ContextEngine::new(loop_cfg.workspace.clone(), session_id);
         let agents = context.load_agents_md();
         let skills = context.load_skills();
-        let system = assemble_system_prompt(&agents, &skills);
+        let system = assemble_system_prompt(&agents, skills.as_slice());
 
         Ok(Self {
             session_id,
@@ -174,7 +177,8 @@ impl AgentSession {
         let journal = Journal::open(&loop_cfg.journal_dir, session_id).await?;
         let state = journal.replay(session_id).await?;
         let context = ContextEngine::new(loop_cfg.workspace.clone(), session_id);
-        let system = assemble_system_prompt(&context.load_agents_md(), &context.load_skills());
+        let system =
+            assemble_system_prompt(&context.load_agents_md(), context.load_skills().as_slice());
         let system_message = Message {
             outcome: Default::default(),
             role: MessageRole::System,

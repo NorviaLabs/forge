@@ -93,7 +93,7 @@ pub struct ContextEngine {
     pub workspace: PathBuf,
     pub session_id: SessionId,
     pub goal: String,
-    skills_cache: Arc<RwLock<Option<Vec<SkillManifest>>>>,
+    skills_cache: Arc<RwLock<Option<Arc<Vec<SkillManifest>>>>>,
 }
 
 impl ContextEngine {
@@ -225,7 +225,7 @@ impl ContextEngine {
         fs::read_to_string(p).unwrap_or_default()
     }
 
-    pub fn load_skills(&self) -> Vec<SkillManifest> {
+    pub fn load_skills(&self) -> Arc<Vec<SkillManifest>> {
         if let Some(skills) = self
             .skills_cache
             .read()
@@ -234,17 +234,23 @@ impl ContextEngine {
         {
             return skills;
         }
-        let skills = discover_skills(&self.workspace);
+        let skills = Arc::new(discover_skills(&self.workspace));
         if let Ok(mut cache) = self.skills_cache.write() {
-            *cache = Some(skills.clone());
+            *cache = Some(Arc::clone(&skills));
         }
         skills
     }
 
-    pub fn refresh_skills(&self) -> Vec<SkillManifest> {
-        let skills = discover_skills(&self.workspace);
+    /// Skill count without cloning manifests. The status bar asks for this
+    /// every frame; `load_skills().len()` used to deep-copy every body.
+    pub fn skill_count(&self) -> usize {
+        self.load_skills().len()
+    }
+
+    pub fn refresh_skills(&self) -> Arc<Vec<SkillManifest>> {
+        let skills = Arc::new(discover_skills(&self.workspace));
         if let Ok(mut cache) = self.skills_cache.write() {
-            *cache = Some(skills.clone());
+            *cache = Some(Arc::clone(&skills));
         }
         skills
     }
@@ -564,6 +570,25 @@ mod tests {
             )
             .collect::<Vec<_>>()
         ));
+    }
+
+    #[test]
+    fn load_skills_shares_one_allocation() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".agents/skills/ponytail")).unwrap();
+        std::fs::write(
+            dir.path().join(".agents/skills/ponytail/SKILL.md"),
+            "forge skill",
+        )
+        .unwrap();
+        let eng = ContextEngine::new(dir.path().to_path_buf(), Uuid::new_v4());
+        let first = eng.load_skills();
+        let second = eng.load_skills();
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "a cache hit must share the skill list, not clone every manifest"
+        );
+        assert_eq!(eng.skill_count(), first.len());
     }
 
     #[test]

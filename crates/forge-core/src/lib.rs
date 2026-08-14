@@ -119,13 +119,30 @@ pub struct AgentSession {
     pub last_completion: Option<CompletionDecision>,
     /// Journaled tool results indexed by call id — used to avoid re-execution on resume.
     journaled_tool_results: HashMap<String, forge_durable::ToolResultPayload>,
-    /// Memoized `estimate_messages_tokens` total, keyed by `messages.len()`.
-    /// Messages only ever grow (append) or are wholesale replaced (context
-    /// reset), so a length match means the sum is current. The status bar asks
-    /// for this on every frame from an `&self` path; the lock is uncontended and
-    /// held only to read/write two words, so it stays cheaper than the O(history)
-    /// char scan it avoids.
-    ctx_tokens_cache: Mutex<Option<(usize, usize)>>,
+    /// Memoized `estimate_messages_tokens` total. Length alone is not enough:
+    /// streaming grows the last message in place. The fingerprint matches
+    /// `TranscriptSnapshot` — count plus the tail sizes.
+    ctx_tokens_cache: Mutex<Option<(CtxTokensFingerprint, usize)>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CtxTokensFingerprint {
+    messages: usize,
+    last_content: usize,
+    last_thinking: usize,
+}
+
+impl CtxTokensFingerprint {
+    fn of(messages: &[Message]) -> Self {
+        Self {
+            messages: messages.len(),
+            last_content: messages.last().map_or(0, |m| m.content.len()),
+            last_thinking: messages
+                .last()
+                .and_then(|m| m.thinking.as_ref())
+                .map_or(0, String::len),
+        }
+    }
 }
 
 #[cfg(test)]

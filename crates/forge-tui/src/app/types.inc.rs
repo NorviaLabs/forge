@@ -458,8 +458,10 @@ struct ConversationRenderKey {
     queue_selected: Option<usize>,
     chat_message_start: usize,
     chat_event_start: usize,
-    busy: bool,
-    busy_phase: String,
+    /// How many lines from the tail to materialize. Follow-mode frames only
+    /// need a viewport plus overscan; scrolling up raises this. History above
+    /// the window is not rebuilt.
+    keep_from_end: usize,
     activity_summary: Option<(String, Option<&'static str>, BannerKind)>,
     tool_expanded: bool,
     splash_dismissed: bool,

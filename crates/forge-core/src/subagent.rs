@@ -76,7 +76,7 @@ impl AgentSession {
         let context = forge_context::ContextEngine::new(workspace.clone(), session_id);
         let agents = context.load_agents_md();
         let skills = context.load_skills();
-        let system = assemble_system_prompt(&agents, &skills);
+        let system = assemble_system_prompt(&agents, skills.as_slice());
 
         // Same HITL/governance policy as the parent by default (per product
         // decision: a subagent can legitimately pause on an approval prompt,
@@ -148,7 +148,8 @@ impl AgentSession {
         let state = journal.replay(session_id).await?;
 
         let context = forge_context::ContextEngine::new(workspace.clone(), session_id);
-        let system = assemble_system_prompt(&context.load_agents_md(), &context.load_skills());
+        let system =
+            assemble_system_prompt(&context.load_agents_md(), context.load_skills().as_slice());
         let system_message = Message {
             outcome: Default::default(),
             role: MessageRole::System,

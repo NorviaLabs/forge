@@ -13,27 +13,27 @@ impl AgentSession {
     /// Number of project/global skills available to the current session.
     /// This is intentionally a count only: skill contents remain model context.
     pub fn loaded_skills_count(&self) -> usize {
-        self.context.load_skills().len()
+        self.context.skill_count()
     }
 
     /// Names of project/global skills available to the current session.
     pub fn loaded_skill_names(&self) -> Vec<String> {
         self.context
             .load_skills()
-            .into_iter()
-            .map(|skill| skill.name)
+            .iter()
+            .map(|skill| skill.name.clone())
             .collect()
     }
 
     pub fn loaded_skills(&self) -> Vec<forge_context::SkillManifest> {
-        self.context.load_skills()
+        (*self.context.load_skills()).clone()
     }
 
     pub fn list_tools(&self) -> Vec<String> {
         let desc = self.tools.list_descriptors();
         if self.enable_gov {
             self.governance
-                .filter_tools(desc)
+                .filter_tools((*desc).clone())
                 .into_iter()
                 .map(|t| t.name)
                 .collect()
@@ -68,21 +68,21 @@ impl AgentSession {
     }
 
     /// Estimated in-context tokens for `self.messages`, memoized across frames.
-    /// Safe because message transcripts only grow by append or get replaced
-    /// wholesale (context reset) — both change the length, so the length key is
-    /// a faithful dirty check. See `ctx_tokens_cache`.
+    /// Keyed on length plus the last message's content/thinking sizes so a
+    /// growing tail (streaming commit) invalidates the sum.
     fn context_tokens_estimate(&self) -> usize {
+        let fingerprint = CtxTokensFingerprint::of(&self.messages);
         let mut cache = self
             .ctx_tokens_cache
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some((len, total)) = *cache {
-            if len == self.messages.len() {
+        if let Some((cached, total)) = *cache {
+            if cached == fingerprint {
                 return total;
             }
         }
         let total = estimate_messages_tokens(&self.messages);
-        *cache = Some((self.messages.len(), total));
+        *cache = Some((fingerprint, total));
         total
     }
 

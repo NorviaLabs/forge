@@ -267,8 +267,9 @@ fn frame_allocations_do_not_scale_with_transcript_length() {
     let long_cost = steady_frame_cost(&mut long, 20);
     let growth = long_cost.allocs.saturating_sub(empty_cost.allocs);
 
-    // Reference: ~236 allocations empty, ~452 at 150 turns => growth ~216.
-    // Before the fix: ~1,080 -> ~17,040 => growth ~15,960.
+    // Reference after the skills-count and windowed-tail work: growth stays
+    // well under a thousand. Before the original share-not-copy fix this was
+    // ~15,960.
     const MAX_GROWTH: usize = 1_000;
     assert!(
         growth < MAX_GROWTH,
@@ -328,15 +329,10 @@ fn frame_allocation_budget_holds_at_a_long_transcript() {
     let (_dir, mut app) = runtime.block_on(app_with_turns(150));
     let cost = steady_frame_cost(&mut app, 20);
 
-    // Reference: ~452 allocations per frame at 150 turns.
-    //
-    // Kept close to the measured value on purpose. An earlier budget of 5,000
-    // sat so far above the reference that per-frame cost grew 2.6x — a
-    // credential file re-read and re-parsed several times per frame, a tool
-    // list rebuilt to read its length, an uncached layout solve — without any
-    // guard noticing, because each of those is flat in transcript length and
-    // so invisible to the scaling tests above.
-    const BUDGET: usize = 1_500;
+    // SLO: a steady-state frame at 150 turns stays under 600 allocations
+    // (was 1,500; ~467 measured before the skills-count fix, ~380 after).
+    // Kept close to the measured value so a new per-frame clone cannot hide.
+    const BUDGET: usize = 600;
     assert!(
         cost.allocs < BUDGET,
         "a steady-state frame at 150 turns allocated {} times (budget {BUDGET}). \
@@ -376,8 +372,10 @@ fn cache_miss_cost_per_message_is_bounded() {
     let extra_messages = (150 - 40) * 2;
     let per_message = long_allocs.saturating_sub(short_allocs) / extra_messages;
 
-    // Reference: ~10,200 allocs at 40 turns, ~36,800 at 150 => ~120 per message.
-    const MAX_PER_MESSAGE: usize = 300;
+    // Follow-mode cache misses only materialize a viewport-sized tail, so the
+    // marginal cost of extra history is the projection of new messages, not a
+    // full wrap of every line. SLO target is 80; 300 was the pre-window budget.
+    const MAX_PER_MESSAGE: usize = 80;
     assert!(
         per_message < MAX_PER_MESSAGE,
         "rebuilding the transcript cost {per_message} allocations per message \
@@ -435,5 +433,10 @@ fn perf_report_frame_cost_by_transcript_length() {
     println!(
         "\nFlat allocations across rows is the invariant the guards in this file \
          protect: a frame should cost the viewport, not the history."
+    );
+    println!(
+        "Wall-clock SLOs (session create < 50ms, cold frame @ 150 < 8ms, \
+         forge --version RSS < 10MiB) are measured here, not asserted — \
+         CI runners are too noisy. Allocation budgets above are the gates."
     );
 }
