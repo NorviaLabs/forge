@@ -1,14 +1,14 @@
 //! OpenAI connect profile — API key (`openai/*`).
 
 use crate::auth::AuthMode;
-use crate::profile::ConnectProfile;
+use crate::profile::{CatalogMode, ProviderSpec, ProviderTransport, SpecOrigin};
 use crate::verify::VerifyError;
 
 pub const PROFILE_ID: &str = "openai";
 pub const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 
-pub fn openai_profile() -> ConnectProfile {
-    ConnectProfile {
+pub fn openai_profile() -> ProviderSpec {
+    ProviderSpec {
         id: PROFILE_ID.into(),
         title: "OpenAI".into(),
         description: "OpenAI API key — openai/* models".into(),
@@ -24,6 +24,10 @@ pub fn openai_profile() -> ConnectProfile {
         vendor_id: "openai".into(),
         vendor_label: "OpenAI".into(),
         route_label: "API".into(),
+        route_id: "openai-api".into(),
+        catalog_mode: CatalogMode::LiveRegistry,
+        transport: ProviderTransport::OpenaiCompat,
+        origin: SpecOrigin::Builtin,
     }
 }
 
