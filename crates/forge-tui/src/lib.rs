@@ -11,14 +11,17 @@ mod effort;
 mod file_explorer;
 mod history;
 mod interactive_terminal;
+mod launch;
 mod layout;
 mod markdown;
 mod overlays;
 mod selection;
+mod setup;
 mod source_viewer;
 mod status_glyph;
 mod terminal;
 mod theme;
+mod theme_preview;
 mod theme_registry;
 mod user_message_gutter;
 mod validation;
@@ -28,8 +31,8 @@ mod widgets;
 
 pub use activity::{ActivityFeed, ActivityItem, ActivityKind};
 pub use app::{
-    resume_session_items, run_tui, run_tui_with_resume_picker, ExitSummary, TuiApp, TuiError,
-    TuiRuntimeConfig,
+    resume_session_items, run_tui, run_tui_with_launch, run_tui_with_resume_picker, ExitSummary,
+    TuiApp, TuiError, TuiLaunch, TuiRuntimeConfig,
 };
 pub use commands::{parse_slash, CommandError, SlashCommand};
 pub use conversation::{
@@ -39,6 +42,7 @@ pub use conversation::{
 pub use effort::ReasoningEffort;
 pub use file_explorer::{FileExplorer, FileExplorerWidget};
 pub use history::InputHistory;
+pub use launch::{decide_launch, LaunchDecision};
 pub use layout::{
     is_too_small, split_areas, split_areas_ex, split_areas_full, LayoutRegions, MIN_HEIGHT,
     MIN_WIDTH,
@@ -47,6 +51,7 @@ pub use overlays::{
     default_palette_items, filter_palette, handle_overlay_key, models_from_catalog,
     Key as OverlayKey, Overlay, OverlayAction, ResumeSessionItem,
 };
+pub use setup::{run_setup, SetupRequest, SetupResult};
 pub use validation::{
     is_cargo_test_command, validation_command_text, CargoTestSummary, ValidationParseState,
     ValidationSnapshot, ValidationStatus, MAX_FAILED_DISPLAY,

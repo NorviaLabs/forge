@@ -636,6 +636,8 @@ pub struct TuiApp {
     pub(crate) transcript_view: TranscriptSnapshot,
     input: InputModel,
     pub(crate) overlay: Option<Overlay>,
+    /// Esc on connect overlays exits the process (first-install / resume-at-provider).
+    onboarding_connect: bool,
     exit: ExitState,
     startup_resume: StartupResumeState,
     busy_state: BusyState,

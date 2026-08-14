@@ -42,6 +42,7 @@ impl TuiApp {
             session,
             input,
             overlay: startup_items.clone().map(Overlay::resume_picker),
+            onboarding_connect: false,
             exit: ExitState {
                 requested: false,
                 code: ExitCode::Success,

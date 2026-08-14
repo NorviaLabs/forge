@@ -89,12 +89,20 @@ fn wait_for_input_or_terminal_output(
     }
 }
 
+/// Extra launch flags for first-install / new-project / returning.
+#[derive(Debug, Clone, Default)]
+pub struct TuiLaunch {
+    pub startup_items: Option<Vec<ResumeSessionItem>>,
+    pub onboarding_connect: bool,
+    pub ready_placeholder: bool,
+}
+
 /// Run the full-screen TUI until quit.
 pub async fn run_tui(
     session: AgentSession,
     runtime: TuiRuntimeConfig,
 ) -> Result<ExitSummary, TuiError> {
-    run_tui_inner(session, runtime, None).await
+    run_tui_inner(session, runtime, TuiLaunch::default()).await
 }
 
 /// Run the TUI with a startup session picker. The temporary session created
@@ -105,13 +113,29 @@ pub async fn run_tui_with_resume_picker(
     runtime: TuiRuntimeConfig,
     items: Vec<ResumeSessionItem>,
 ) -> Result<ExitSummary, TuiError> {
-    run_tui_inner(session, runtime, Some(items)).await
+    run_tui_inner(
+        session,
+        runtime,
+        TuiLaunch {
+            startup_items: Some(items),
+            ..TuiLaunch::default()
+        },
+    )
+    .await
+}
+
+pub async fn run_tui_with_launch(
+    session: AgentSession,
+    runtime: TuiRuntimeConfig,
+    launch: TuiLaunch,
+) -> Result<ExitSummary, TuiError> {
+    run_tui_inner(session, runtime, launch).await
 }
 
 async fn run_tui_inner(
     session: AgentSession,
     runtime: TuiRuntimeConfig,
-    startup_items: Option<Vec<ResumeSessionItem>>,
+    launch: TuiLaunch,
 ) -> Result<ExitSummary, TuiError> {
     enable_raw_mode()?;
     // Ensure the terminal is restored on panic, returned errors and normal exit.
@@ -134,13 +158,14 @@ async fn run_tui_inner(
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = TuiApp::new_with_startup_resume_picker(session, runtime, startup_items);
-    if app.overlay.is_none() && !app.is_provider_connected() {
-        app.overlay = Some(Overlay::welcome());
-        app.set_feedback(
-            FeedbackSeverity::Info,
-            "Welcome · connect a provider to start chatting",
-        );
+    let mut app = TuiApp::new_with_startup_resume_picker(session, runtime, launch.startup_items);
+    app.onboarding_connect = launch.onboarding_connect;
+    if launch.ready_placeholder {
+        app.input.hint = "What does this project do?".into();
+    }
+    if app.overlay.is_none() && launch.onboarding_connect && !app.is_provider_connected() {
+        app.open_connect_picker();
+        app.set_feedback(FeedbackSeverity::Info, "Connect a provider · Esc quits");
     }
     let result = run_loop(&mut terminal, &mut app).await;
 

@@ -101,6 +101,35 @@ async fn theme_picker_dock_keeps_conversation_visible() {
 }
 
 #[tokio::test]
+async fn theme_picker_draws_a_snippet_preview_of_the_focused_theme() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let (_dir, mut app) = focus_test_app().await;
+    app.conversation_view.splash_dismissed = true;
+    app.handle_theme_command(None);
+    let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    term.draw(|f| app.draw(f)).unwrap();
+    let buf = term.backend().buffer();
+    let mut text = String::new();
+    for y in 0..buf.area.height {
+        for x in 0..buf.area.width {
+            text.push_str(buf[(x, y)].symbol());
+        }
+        text.push('\n');
+    }
+    assert!(text.contains("Preview"), "expected preview card:\n{text}");
+    assert!(
+        text.contains("What does this project do?"),
+        "expected composer suggestion in the snippet:\n{text}"
+    );
+    assert!(
+        text.contains("approval"),
+        "expected approval token in the snippet:\n{text}"
+    );
+}
+
+#[tokio::test]
 async fn theme_picker_down_key_emits_preview_action() {
     let (_dir, mut app) = focus_test_app().await;
     app.handle_theme_command(None);

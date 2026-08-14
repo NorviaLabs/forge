@@ -89,9 +89,11 @@ forge
 The default workspace is the current directory. Forge also respects the
 `FORGE_WORKSPACE` environment variable.
 
-On first launch, connect a provider with `/connect`, choose a model, and start
-typing a task. You can also configure a model before launching Forge with
-environment variables or `forge.toml`.
+On first launch, Forge walks through theme, directory trust, and provider
+connect. A committed theme is stored in your user config; trust is stored
+per directory (children inherit). Esc during those steps quits without
+claiming setup is done. Later folders only ask for trust. Returning to a
+trusted folder opens the normal TUI.
 
 ## Providers and models
 

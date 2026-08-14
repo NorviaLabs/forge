@@ -61,8 +61,8 @@ pub use profile::{ConnectOutcome, ConnectProfile, ConnectStatus, KeySource};
 pub use registry::{builtin_registry, ConnectRegistry};
 pub use selection::ModelSelection;
 pub use service::{
-    format_connected, handle_connect_action, needs_tui_api_key_prompt, needs_tui_oauth,
-    parse_connect_args, ConnectAction, ConnectError, ConnectService,
+    format_connected, handle_connect_action, has_connected_profile, needs_tui_api_key_prompt,
+    needs_tui_oauth, parse_connect_args, ConnectAction, ConnectError, ConnectService,
 };
 pub use store::{resolve_connected, resolve_key, CredentialStore, StoreError};
 pub use verify::VerifyError;

@@ -3,12 +3,16 @@
 use std::io::{self, Write};
 
 use clap::Parser;
-use forge_config::{Config, ConfigOverrides};
+
+use forge_config::{is_trusted, Config, ConfigOverrides};
 use forge_core::AgentSession;
 use forge_session::{
     open_session, resolve_journal_dir, ApprovalPolicy, SessionCommand, SessionEvent, SessionTarget,
 };
-use forge_tui::{resume_session_items, run_tui, ExitCode, TuiRuntimeConfig};
+use forge_tui::{
+    decide_launch, resume_session_items, run_setup, run_tui_with_launch, ExitCode, SetupRequest,
+    SetupResult, TuiLaunch, TuiRuntimeConfig,
+};
 use forge_types::SessionId;
 use tracing_subscriber::EnvFilter;
 
@@ -121,32 +125,81 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     };
     let cfg = Config::load(overrides).map_err(|e| anyhow::anyhow!(e))?;
 
-    let (target, create_notice) = resolve_target(&cfg, cli.resume).await?;
-    let opened = open_session(&cfg, target).await?;
-    let mut startup_notices = opened.notices;
-    if let Some(notice) = create_notice {
-        startup_notices.push(notice);
-    }
-
     if let Some(prompt) = cli.print {
+        let (target, create_notice) = resolve_target(&cfg, cli.resume).await?;
+        let opened = open_session(&cfg, target).await?;
+        let mut startup_notices = opened.notices;
+        if let Some(notice) = create_notice {
+            startup_notices.push(notice);
+        }
         for notice in &startup_notices {
             eprintln!("note: {notice}");
         }
         return run_headless(opened.session, prompt, cli.approvals.into()).await;
     }
 
+    let cwd = cfg.workspace_root().to_path_buf();
+    let trusted_at_start = is_trusted(&cwd);
+    let provider_connected = forge_connect::has_connected_profile();
+    let decision = decide_launch(
+        cfg.tui.theme_committed,
+        trusted_at_start,
+        provider_connected,
+    );
+
+    if decision.run_theme_setup || decision.run_trust_setup {
+        match run_setup(SetupRequest {
+            run_theme: decision.run_theme_setup,
+            run_trust: decision.run_trust_setup,
+            cwd: cwd.clone(),
+        })
+        .map_err(|e| anyhow::anyhow!(e))?
+        {
+            SetupResult::Canceled => return Ok(ExitCode::Canceled),
+            SetupResult::Completed => {}
+        }
+    }
+
+    let (target, create_notice) = if decision.allow_resume_picker {
+        resolve_target(&cfg, cli.resume).await?
+    } else {
+        (SessionTarget::New, None)
+    };
+    let opened = open_session(&cfg, target).await?;
+    let mut startup_notices = opened.notices;
+    if let Some(notice) = create_notice {
+        startup_notices.push(notice);
+    }
+
+    let cfg = Config::load(ConfigOverrides {
+        config_path: None,
+        workspace: None,
+        model_provider: None,
+        model_id: None,
+        api_key: None,
+        journal_path: None,
+    })
+    .map_err(|e| anyhow::anyhow!(e))?;
     let runtime = TuiRuntimeConfig {
         model_label: cfg.model.model.clone(),
         provider: cfg.model.provider.as_str().into(),
-        cwd: cfg.workspace_root().to_path_buf(),
+        cwd,
         version: env!("CARGO_PKG_VERSION").into(),
         startup_notices,
         file_icons: cfg.tui.file_icons,
         theme_id: cfg.tui.theme.clone(),
     };
-    let summary = run_tui(opened.session, runtime)
-        .await
-        .map_err(|e| anyhow::anyhow!(e))?;
+    let summary = run_tui_with_launch(
+        opened.session,
+        runtime,
+        TuiLaunch {
+            startup_items: None,
+            onboarding_connect: decision.require_connect,
+            ready_placeholder: decision.show_ready_placeholder,
+        },
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!(e))?;
     if let Some(token_usage) = summary.token_usage {
         println!("{token_usage}");
         println!(

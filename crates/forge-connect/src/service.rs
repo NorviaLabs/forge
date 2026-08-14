@@ -623,7 +623,26 @@ impl<'a> ConnectService<'a> {
         }
         Ok(out)
     }
+}
 
+/// True when any live (non-fixture) profile is connected in the user store.
+pub fn has_connected_profile() -> bool {
+    let registry = crate::builtin_registry();
+    let store = crate::CredentialStore::user_default();
+    let preferences = crate::PreferenceStore::user_default();
+    let svc = ConnectService {
+        registry: &registry,
+        store: &store,
+        preferences: &preferences,
+        active_profile_id: None,
+        active_model: None,
+    };
+    svc.connected_profiles()
+        .map(|profiles| !profiles.is_empty())
+        .unwrap_or(false)
+}
+
+impl ConnectService<'_> {
     /// Profiles that already have stored credentials (for session restore).
     pub fn connected_profiles(&self) -> Result<Vec<ConnectProfile>, ConnectError> {
         let mut out = Vec::new();

@@ -1493,6 +1493,55 @@ fn centered_capped_rect(area: Rect, max_width: u16, max_height: u16) -> Rect {
 
 /// Bottom band used when `OverlayWidget` paints the theme picker into a full
 /// frame (tests / fallback). Prefer the layout `input` region from `draw`.
+/// Card in the lower-right of `area`. Use this when the host is already the
+/// pane above the theme list (the conversation column), not the full frame.
+pub fn theme_preview_card(area: Rect) -> Rect {
+    if area.width < 24 || area.height < 8 {
+        return Rect::new(area.x, area.y, 0, 0);
+    }
+    // Keep a left gutter so a conversation line is still readable.
+    let reserved = 28.min(area.width.saturating_sub(24));
+    let width = area
+        .width
+        .saturating_sub(reserved)
+        .clamp(24, 58)
+        .min(area.width);
+    let height = area.height.min(16);
+    Rect {
+        x: area.x.saturating_add(area.width.saturating_sub(width)),
+        y: area.y.saturating_add(area.height.saturating_sub(height)),
+        width,
+        height,
+    }
+}
+
+/// Snippet card above the theme dock, right-aligned so the list stays readable.
+pub fn theme_preview_rect(area: Rect) -> Rect {
+    if area.width < 24 || area.height < 8 {
+        return Rect::new(area.x, area.y, 0, 0);
+    }
+    let dock = theme_dock_rect(area);
+    let gap = 1;
+    let available = dock.y.saturating_sub(area.y).saturating_sub(gap);
+    let height = available.clamp(8, 16);
+    let max_w = area.width.saturating_sub(2);
+    let width = (area.width.saturating_mul(58) / 100).max(24).min(max_w);
+    let x = area
+        .x
+        .saturating_add(area.width.saturating_sub(width).saturating_sub(1));
+    let y = dock
+        .y
+        .saturating_sub(height)
+        .saturating_sub(gap)
+        .max(area.y);
+    Rect {
+        x,
+        y,
+        width,
+        height: height.min(dock.y.saturating_sub(y)).min(area.height),
+    }
+}
+
 fn theme_dock_rect(area: Rect) -> Rect {
     let height = crate::layout::THEME_DOCK_H
         .min(area.height.saturating_sub(1))
@@ -1526,6 +1575,7 @@ pub fn render_theme_dock(
         ));
     let inner = block.inner(area);
     block.render(area, buf);
+    let list_area = inner;
 
     // System is always first; keep a separator under it when present.
     let mut rows: Vec<(usize, ListItem)> = Vec::with_capacity(items.len().saturating_add(1));
@@ -1552,14 +1602,14 @@ pub fn render_theme_dock(
             rows.push((
                 usize::MAX,
                 ListItem::new(Span::styled(
-                    "─".repeat(inner.width as usize),
+                    "─".repeat(list_area.width as usize),
                     theme::border_muted(),
                 )),
             ));
         }
     }
 
-    let visible = inner.height.max(1) as usize;
+    let visible = list_area.height.max(1) as usize;
     let selected_row_pos = rows
         .iter()
         .position(|(index, _)| *index == selected)
@@ -1574,7 +1624,7 @@ pub fn render_theme_dock(
         .take(visible)
         .map(|(_, item)| item)
         .collect();
-    List::new(list_items).render(inner, buf);
+    List::new(list_items).render(list_area, buf);
 }
 
 pub struct OverlayWidget<'a> {
@@ -2073,6 +2123,9 @@ impl Widget for OverlayWidget<'_> {
                 items,
             } => {
                 render_theme_dock(*selected, current, items, theme_dock_rect(area), buf);
+                if let Some((id, _)) = items.get(*selected) {
+                    crate::theme_preview::render_theme_preview(id, theme_preview_rect(area), buf);
+                }
             }
             Overlay::FileExplorer {
                 cwd,
@@ -3254,6 +3307,18 @@ mod tests {
         assert!(
             text.contains("· current"),
             "expected current-theme marker:\n{text}"
+        );
+        assert!(
+            text.contains("Preview"),
+            "expected theme preview pane:\n{text}"
+        );
+        assert!(
+            text.contains("What does this project do?"),
+            "expected composer suggestion in preview:\n{text}"
+        );
+        assert!(
+            text.contains("approval"),
+            "expected approval snippet in preview:\n{text}"
         );
         // Dock sits in the bottom band — title should appear in the lower half.
         let area = Rect::new(0, 0, 100, 48);
