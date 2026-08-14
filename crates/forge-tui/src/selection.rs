@@ -40,7 +40,6 @@ pub(crate) struct SelectionRect {
 pub(crate) enum CopyPane {
     Conversation,
     Editor,
-    Diff,
     Terminal,
 }
 
@@ -458,17 +457,10 @@ mod tests {
     }
 
     #[test]
-    fn diff_and_terminal_extraction_keep_display_text_without_number_injection() {
+    fn terminal_extraction_keeps_display_text_without_number_injection() {
         let rows = vec!["@@ -1 +1 @@".to_string(), "+changed".to_string()];
         let area = Rect::new(2, 4, 30, 2);
         let mut selection = MouseSelection::default();
-        selection.start_in(CopyPane::Diff, Cell { row: 4, col: 2 });
-        selection.update(Cell { row: 5, col: 20 });
-        assert_eq!(
-            visible_rows_selection_text(&rows, area, &selection, false),
-            "@@ -1 +1 @@\n+changed"
-        );
-
         selection.start_in(CopyPane::Terminal, Cell { row: 4, col: 2 });
         selection.update(Cell { row: 5, col: 20 });
         assert_eq!(

@@ -80,17 +80,8 @@ impl TuiApp {
         self.clamp_slash_suggest();
     }
 
-    fn review_or_activity_summary(&self) -> SemanticCommand {
-        if self.activity_summary().and_then(|s| s.action).is_some() {
-            SemanticCommand::ActivateActivitySummary
-        } else {
-            SemanticCommand::ReviewChanges(DiffCommandContext::Current)
-        }
-    }
-
     pub(super) fn tab_nav_command(&self, key: event::KeyEvent) -> Option<TabNavCommand> {
-        // Plain Left/Right is the unified in-panel horizontal navigation:
-        // inside the workspace panel it switches between file/review views.
+        // Plain Left is in-panel back. Right is unbound after Review removal.
         let plain = !key.modifiers.contains(KeyModifiers::CONTROL)
             && !key.modifiers.contains(KeyModifiers::ALT)
             && !key.modifiers.contains(KeyModifiers::SHIFT);
@@ -108,9 +99,6 @@ impl TuiApp {
         match key.code {
             KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => {
                 Some(SemanticCommand::GoBack)
-            }
-            KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => {
-                Some(self.review_or_activity_summary())
             }
 
             KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -241,59 +229,9 @@ impl TuiApp {
             Some(TabNavCommand::PreviousTab) => {
                 return Some(SemanticCommand::GoBack);
             }
-            Some(TabNavCommand::NextTab) => {
-                return Some(SemanticCommand::ReviewChanges(DiffCommandContext::Current));
-            }
-            None => {}
+            Some(TabNavCommand::NextTab) | None => {}
         }
         match key.code {
-            KeyCode::Up if key.modifiers.is_empty() && self.current_workspace_is_diff() => {
-                Some(SemanticCommand::SelectPreviousChange)
-            }
-            KeyCode::Down if key.modifiers.is_empty() && self.current_workspace_is_diff() => {
-                Some(SemanticCommand::SelectNextChange)
-            }
-            KeyCode::Char('r') if key.modifiers.is_empty() && self.current_workspace_is_diff() => {
-                Some(SemanticCommand::RefreshDiff)
-            }
-            KeyCode::Char('[') if key.modifiers.is_empty() && self.current_workspace_is_diff() => {
-                Some(SemanticCommand::SelectPreviousHunk)
-            }
-            KeyCode::Char(']') if key.modifiers.is_empty() && self.current_workspace_is_diff() => {
-                Some(SemanticCommand::SelectNextHunk)
-            }
-            KeyCode::Char('k') if key.modifiers.is_empty() && self.current_workspace_is_diff() => {
-                Some(SemanticCommand::KeepHunk)
-            }
-            KeyCode::Char('d') if key.modifiers.is_empty() && self.current_workspace_is_diff() => {
-                Some(SemanticCommand::DiscardHunk)
-            }
-            KeyCode::Char('K')
-                if self.current_workspace_is_diff()
-                    && (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT) =>
-            {
-                Some(SemanticCommand::KeepRestOfFile)
-            }
-            KeyCode::Char('D')
-                if self.current_workspace_is_diff()
-                    && (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT) =>
-            {
-                Some(SemanticCommand::DiscardRestOfFile)
-            }
-            KeyCode::Char('y')
-                if key.modifiers.is_empty()
-                    && self.current_workspace_is_diff()
-                    && self.diff_view.pending_untracked_delete.is_some() =>
-            {
-                Some(SemanticCommand::ConfirmReviewDelete)
-            }
-            KeyCode::Char('n')
-                if key.modifiers.is_empty()
-                    && self.current_workspace_is_diff()
-                    && self.diff_view.pending_untracked_delete.is_some() =>
-            {
-                Some(SemanticCommand::CancelReviewDelete)
-            }
             KeyCode::Esc
                 if key.modifiers.is_empty()
                     && self.current_workspace_is_file()
@@ -462,10 +400,6 @@ impl TuiApp {
                     );
                 }
             }
-            SemanticCommand::ReviewChanges(DiffCommandContext::Current) => {
-                self.capture_diff_snapshot();
-                self.review_changes_workspace()
-            }
             SemanticCommand::ToggleFiles => self.toggle_files_panel(),
             SemanticCommand::CloseOverlay => {
                 self.dismiss_overlay();
@@ -489,7 +423,6 @@ impl TuiApp {
                     "Help · press Enter to get started or Esc to dismiss",
                 );
             }
-            SemanticCommand::ActivateActivitySummary => self.activate_activity_summary(),
             SemanticCommand::SelectEntry(path) => {
                 if self.workspace_files.explorer.is_visible(&path) {
                     self.workspace_files.explorer.selected_path = Some(path);
@@ -543,12 +476,8 @@ impl TuiApp {
                 self.source_viewer
                     .refresh(self.session_view.workspace_root());
                 self.workspace_files.explorer.refresh_git_status();
-                if self.current_workspace_is_diff() {
-                    self.refresh_diff_review();
-                }
             }
             SemanticCommand::SaveEditor => self.save_active_editor(),
-            SemanticCommand::RefreshDiff => self.refresh_diff_review(),
             SemanticCommand::BeginCreateFile => {
                 self.open_explorer_name_dialog(ExplorerNameAction::CreateFile)
             }
@@ -559,27 +488,6 @@ impl TuiApp {
                 self.open_explorer_name_dialog(ExplorerNameAction::Rename)
             }
             SemanticCommand::RequestDelete => self.open_explorer_delete_dialog(),
-            SemanticCommand::SelectPreviousChange => {
-                self.diff_view.selected = self.diff_view.selected.saturating_sub(1);
-                self.diff_view.hunk = 0;
-            }
-            SemanticCommand::SelectNextChange => {
-                let count = self.review_file_paths().len();
-                self.diff_view.selected = self
-                    .diff_view
-                    .selected
-                    .saturating_add(1)
-                    .min(count.saturating_sub(1));
-                self.diff_view.hunk = 0;
-            }
-            SemanticCommand::SelectPreviousHunk => self.select_previous_hunk(),
-            SemanticCommand::SelectNextHunk => self.select_next_hunk(),
-            SemanticCommand::KeepHunk => self.keep_selected_hunk(),
-            SemanticCommand::DiscardHunk => self.discard_selected_hunk(),
-            SemanticCommand::KeepRestOfFile => self.keep_rest_of_file(),
-            SemanticCommand::DiscardRestOfFile => self.discard_rest_of_file(),
-            SemanticCommand::ConfirmReviewDelete => self.confirm_review_delete(),
-            SemanticCommand::CancelReviewDelete => self.cancel_review_delete(),
             SemanticCommand::StartSourceSearch => {
                 self.source_viewer.start_search();
                 self.enter_transient(TransientOwner::SourceSearch);
@@ -846,11 +754,7 @@ impl TuiApp {
                     self.handle_connect(ConnectAction::Open);
                 }
                 Ok(SlashCommand::Refresh) => {
-                    if self.current_workspace_is_diff() {
-                        self.refresh_diff_review();
-                    } else {
-                        self.note_workspace_changed();
-                    }
+                    self.note_workspace_changed();
                     self.status_state.message = "Refreshing git status...".into();
                 }
                 Ok(SlashCommand::Edit) => {
@@ -1098,10 +1002,6 @@ mod tests {
         let cases: Vec<(event::KeyEvent, SemanticCommand)> = vec![
             (key(KeyCode::Left, ALT), SemanticCommand::GoBack),
             (
-                key(KeyCode::Right, ALT),
-                SemanticCommand::ReviewChanges(DiffCommandContext::Current),
-            ),
-            (
                 key(KeyCode::Up, CTRL),
                 SemanticCommand::MoveQueueSelection(-1),
             ),
@@ -1147,6 +1047,11 @@ mod tests {
                 "{k:?} should map to {expected:?}"
             );
         }
+        assert_eq!(
+            app.semantic_command_for_global_key(key(KeyCode::Right, ALT)),
+            None,
+            "Alt+Right is unbound after Review removal"
+        );
 
         // Unmodified keys are not global bindings.
         assert_eq!(

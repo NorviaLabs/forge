@@ -1,7 +1,7 @@
 //! Workspace view navigation for [`TuiApp`].
 //!
-//! Split out of `app.rs` per #19. Conversation, file and diff-review views
-//! share one navigation stack; these methods push, replace and validate views.
+//! Split out of `app.rs` per #19. Conversation and file views share one
+//! navigation stack; these methods push, replace and validate views.
 //! Methods are moved verbatim.
 
 use super::*;
@@ -11,13 +11,6 @@ impl TuiApp {
         matches!(
             self.workspace_navigation.current,
             Some(WorkspaceView::File(_))
-        )
-    }
-
-    pub(super) fn current_workspace_is_diff(&self) -> bool {
-        matches!(
-            self.workspace_navigation.current,
-            Some(WorkspaceView::Diff(_))
         )
     }
 
@@ -35,7 +28,6 @@ impl TuiApp {
     pub(super) fn workspace_view_is_valid(&self, view: &WorkspaceView) -> bool {
         match view {
             WorkspaceView::File(path) => path.is_file() || path.is_symlink(),
-            WorkspaceView::Diff(DiffCommandContext::Current) => true,
         }
     }
 
@@ -43,9 +35,6 @@ impl TuiApp {
         match view {
             WorkspaceView::File(path) => {
                 self.show_file_in_editor(path);
-            }
-            WorkspaceView::Diff(DiffCommandContext::Current) => {
-                self.focus_block(FocusBlock::Workspace);
             }
         }
         self.normalize_focus();
@@ -73,7 +62,6 @@ impl TuiApp {
             .is_some_and(|editor| editor.is_dirty())
         {
             self.pending_editor_home = true;
-            self.pending_editor_diff = false;
             self.explorer_dialog.current = Some(ExplorerDialog::DirtyExit);
             return;
         }
@@ -86,26 +74,9 @@ impl TuiApp {
         if self.pending_editor_home {
             self.pending_editor_home = false;
             self.go_home_workspace();
-        } else if self.pending_editor_diff {
-            self.pending_editor_diff = false;
-            self.navigate_to_workspace_view(WorkspaceView::Diff(DiffCommandContext::Current));
         } else {
             self.go_back_workspace();
         }
-    }
-
-    pub(super) fn review_changes_workspace(&mut self) {
-        if self
-            .editor_session
-            .as_ref()
-            .is_some_and(|editor| editor.is_dirty())
-        {
-            self.pending_editor_home = false;
-            self.pending_editor_diff = true;
-            self.explorer_dialog.current = Some(ExplorerDialog::DirtyExit);
-            return;
-        }
-        self.navigate_to_workspace_view(WorkspaceView::Diff(DiffCommandContext::Current));
     }
 
     pub(super) fn go_back_workspace(&mut self) {
