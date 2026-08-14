@@ -1220,6 +1220,8 @@ impl TuiApp {
     /// `ModelCatalogCache` as a side effect; `poll_catalog_refresh` (called
     /// once per event-loop tick, never from `draw()`) picks up completion
     /// and refreshes any open picker's rows from the now-warm cache.
+    /// Account catalogs are always re-fetched here; the disk cache is only
+    /// the instant-open / offline fallback.
     pub(super) fn start_catalog_refresh(&mut self) {
         if self.catalog_fetch.refresh_rx.is_some() {
             return;

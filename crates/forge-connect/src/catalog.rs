@@ -15,6 +15,8 @@ use crate::profile::ConnectProfile;
 use crate::store::{resolve_key, CredentialStore};
 
 /// Default TTL for cached catalog entries (1 hour).
+/// Live picker refreshes do not wait for this window; they re-fetch the
+/// account catalog and keep the cache for instant open / offline fallback.
 pub const DEFAULT_TTL_SECS: u64 = 3600;
 /// Public registry data changes less frequently than a provider's account catalog.
 pub const MODELS_DEV_TTL_SECS: u64 = 24 * 60 * 60;
@@ -853,6 +855,11 @@ pub fn refresh_profile_catalog(
 
 /// Models for the picker: account-returned rows first, supplemented by models.dev
 /// public metadata, then the profile's minimal built-in fallback.
+///
+/// `refresh_stale` always re-fetches each profile's live account catalog.
+/// The on-disk cache is used for instant cache-only reads (`refresh_stale =
+/// false`) and as a fallback when that live fetch fails. models.dev still
+/// uses its own longer TTL because it is public metadata, not entitlement.
 pub fn models_for_picker(
     profiles: &[ConnectProfile],
     store: &CredentialStore,
@@ -870,7 +877,7 @@ pub fn models_for_picker(
     for p in profiles {
         let mut entries = Vec::new();
         let is_ollama = p.id == crate::ollama::PROFILE_ID;
-        if refresh_stale && (is_ollama || !cache.is_fresh(&p.id)) {
+        if refresh_stale {
             if let Ok(m) = refresh_profile_catalog(p, store, cache) {
                 entries.extend(m.into_iter().map(|id| (id, CatalogSource::Live)));
             }
@@ -1218,6 +1225,46 @@ mod tests {
         assert_eq!(entries[0].source, CatalogSource::Cached);
         assert_eq!(entries[1].id, "openai/gpt-5.6-terra");
         assert_eq!(entries[1].source, CatalogSource::Registry);
+    }
+
+    #[test]
+    fn picker_refresh_replaces_a_fresh_account_catalog() {
+        let dir = tempdir().unwrap();
+        let cache = ModelCatalogCache::new(dir.path().join("c.toml")).with_ttl(3600);
+        let store = CredentialStore::new(dir.path().join("k.toml"));
+        let mut profile = crate::xai::xai_grok_profile();
+        store
+            .set_oauth(
+                &profile.id,
+                OauthTokens {
+                    access_token: "xai-real-token".into(),
+                    refresh_token: None,
+                    expires_at: None,
+                },
+            )
+            .unwrap();
+        cache.put(&profile.id, vec!["xai/grok-3".into()]).unwrap();
+        assert!(cache.is_fresh(&profile.id));
+
+        profile.default_base_url = Some(mock_http(vec![(
+            200,
+            r#"{"data":[{"id":"grok-3"},{"id":"grok-4.6"}]}"#,
+            vec![],
+        )]));
+
+        let entries = models_for_picker(&[profile], &store, &cache, true);
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| entry.source == CatalogSource::Live)
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            ["xai/grok-3", "xai/grok-4.6"]
+        );
+        assert_eq!(
+            cache.get_cached("xai"),
+            vec!["xai/grok-3".to_string(), "xai/grok-4.6".to_string()]
+        );
     }
 
     #[test]
