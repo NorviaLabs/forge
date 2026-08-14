@@ -1,8 +1,7 @@
 //! Filesystem change watching for [`TuiApp`].
 //!
-//! Split out of `app.rs` per #19. Watches the workspace for external edits,
-//! refreshes the file tree and open source viewer, and keeps diff review snapshots
-//! current. Methods are moved verbatim.
+//! Split out of `app.rs` per #19. Watches the workspace for external edits
+//! and refreshes the file tree and open source viewer. Methods are moved verbatim.
 
 use std::path::Path;
 
@@ -60,7 +59,6 @@ impl TuiApp {
     }
 
     pub(super) fn note_workspace_changed(&mut self) {
-        self.mark_diff_stale_if_reviewing();
         self.workspace_files.explorer.refresh_workspace();
     }
 
@@ -86,89 +84,6 @@ impl TuiApp {
         if mutated {
             self.note_workspace_changed();
         }
-    }
-
-    pub(super) fn current_changed_paths(&self) -> Vec<PathBuf> {
-        self.workspace_files
-            .explorer
-            .git_status
-            .changed_files()
-            .into_iter()
-            .map(|file| file.path)
-            .collect()
-    }
-
-    pub(super) fn capture_diff_snapshot(&mut self) {
-        self.diff_view.snapshot.paths = self.current_changed_paths();
-        self.diff_view.snapshot.stale = false;
-        self.diff_view.pending_untracked_delete = None;
-        let live_paths = self.diff_view.snapshot.paths.clone();
-        self.diff_view.kept.retain(|(path, header)| {
-            live_paths.contains(path)
-                && combined_diff(self.session_view.workspace_root(), path)
-                    .ok()
-                    .is_some_and(|diff| diff.hunks.iter().any(|hunk| hunk.header == *header))
-        });
-        if !self.diff_view.snapshot.paths.is_empty() {
-            self.diff_view.selected = self
-                .diff_view
-                .selected
-                .min(self.diff_view.snapshot.paths.len() - 1);
-        } else {
-            self.diff_view.selected = 0;
-        }
-        self.diff_view.hunk = 0;
-    }
-
-    /// Whether the set of changed paths currently known to git status differs
-    /// from the set captured when the review was last (re)opened. Order
-    /// doesn't matter — only membership does.
-    fn diff_review_paths_changed(&self) -> bool {
-        let mut current = self.current_changed_paths();
-        let mut captured = self.diff_view.snapshot.paths.clone();
-        current.sort();
-        captured.sort();
-        current != captured
-    }
-
-    /// Called on every raw filesystem-watch event. A single external write
-    /// can fire several watch events (and, on some platforms, replay recent
-    /// history once the watcher attaches) well before the async git-status
-    /// refresh they trigger has actually landed — so this only flags the
-    /// review as stale when the *currently known* changed-path set already
-    /// disagrees with what's under review, not on every raw notification.
-    /// [`reconcile_diff_staleness`] catches the remaining case where the
-    /// disagreement only becomes visible once that refresh completes.
-    pub(super) fn mark_diff_stale_if_reviewing(&mut self) {
-        if self.diff_view.expect_own_change {
-            return;
-        }
-        if self.current_workspace_is_diff() && self.diff_review_paths_changed() {
-            self.diff_view.snapshot.stale = true;
-        }
-    }
-
-    /// Re-checks diff staleness once a git-status refresh has actually
-    /// resolved. Call after `git_status.poll()` returns `true`.
-    pub(super) fn reconcile_diff_staleness(&mut self) {
-        if self.diff_view.expect_own_change {
-            self.capture_diff_snapshot();
-            self.diff_view.expect_own_change = false;
-            return;
-        }
-        if self.current_workspace_is_diff()
-            && !self.diff_view.snapshot.stale
-            && self.diff_review_paths_changed()
-        {
-            self.diff_view.snapshot.stale = true;
-        }
-    }
-
-    pub(super) fn refresh_diff_review(&mut self) {
-        self.diff_view.expect_own_change = false;
-        self.workspace_files.explorer.refresh_git_status();
-        let _ = self.workspace_files.explorer.git_status.poll();
-        self.capture_diff_snapshot();
     }
 
     pub(super) fn refresh_after_filesystem_change(&mut self, active_file_changed: bool) {

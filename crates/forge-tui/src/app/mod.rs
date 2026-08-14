@@ -71,11 +71,6 @@ use forge_config::FileIconMode;
 use forge_workspace::file_ops::{
     DeleteMode, EntryKind, FileOperationError, FileOperationKind, WorkspaceFileOps,
 };
-use forge_workspace::git_review::{
-    combined_diff, delete_untracked, discard_hunk, restore_path, reviewability, FileDiff,
-    Reviewability,
-};
-use forge_workspace::git_status::GitStatusKind;
 
 use crate::ExitCode;
 
@@ -99,7 +94,6 @@ mod persist;
 /// for a type across several modules of the same crate, so this is a file split
 /// only — `TuiApp`'s fields and every signature are unchanged.
 mod render;
-mod review;
 mod shell;
 mod turn;
 mod util;

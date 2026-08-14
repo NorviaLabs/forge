@@ -44,48 +44,7 @@ async fn workspace_navigation_pushes_file_and_replaces_file_resource() {
 }
 
 #[tokio::test]
-async fn workspace_navigation_pushes_between_file_diff_and_file() {
-    let (dir, mut app) = focus_test_app().await;
-    let first = dir.path().join("a.rs");
-    let second = dir.path().join("b.rs");
-    fs::write(&first, "fn a() {}\n").unwrap();
-    fs::write(&second, "fn b() {}\n").unwrap();
-
-    app.execute_semantic_command(SemanticCommand::OpenFile(first.clone()))
-        .await
-        .unwrap();
-    app.execute_semantic_command(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
-        .await
-        .unwrap();
-
-    assert_eq!(
-        app.workspace_navigation.current,
-        Some(WorkspaceView::Diff(DiffCommandContext::Current))
-    );
-    assert_eq!(
-        app.workspace_navigation.history,
-        vec![WorkspaceView::File(first.clone())]
-    );
-
-    app.execute_semantic_command(SemanticCommand::OpenFile(second.clone()))
-        .await
-        .unwrap();
-
-    assert_eq!(
-        app.workspace_navigation.current,
-        Some(WorkspaceView::File(second))
-    );
-    assert_eq!(
-        app.workspace_navigation.history,
-        vec![
-            WorkspaceView::File(first),
-            WorkspaceView::Diff(DiffCommandContext::Current)
-        ]
-    );
-}
-
-#[tokio::test]
-async fn workspace_back_skips_invalid_file_entries() {
+async fn workspace_back_from_a_file_returns_home() {
     let (dir, mut app) = focus_test_app().await;
     let path = dir.path().join("stale.rs");
     fs::write(&path, "fn stale() {}\n").unwrap();
@@ -93,16 +52,10 @@ async fn workspace_back_skips_invalid_file_entries() {
     app.execute_semantic_command(SemanticCommand::OpenFile(path.clone()))
         .await
         .unwrap();
-    app.execute_semantic_command(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
-        .await
-        .unwrap();
-    fs::remove_file(&path).unwrap();
     app.execute_semantic_command(SemanticCommand::GoBack)
         .await
         .unwrap();
 
-    // The only history entry (the now-deleted file) is invalid, and there's
-    // nothing else to fall back to — home is `None`, not a concrete view.
     assert_eq!(app.workspace_navigation.current, None);
 }
 
@@ -152,43 +105,6 @@ async fn workspace_home_requires_a_dirty_editor_decision() {
 }
 
 #[tokio::test]
-async fn review_changes_requires_a_dirty_editor_decision() {
-    let (dir, mut app) = focus_test_app().await;
-    let path = dir.path().join("dirty-diff.rs");
-    fs::write(&path, "fn main() {}\n").unwrap();
-    app.execute_semantic_command(SemanticCommand::OpenFile(path.clone()))
-        .await
-        .unwrap();
-    let editor = app.editor_session.as_mut().unwrap();
-    editor.handle_key(press(KeyCode::Char('i'), KeyModifiers::NONE));
-    editor.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE));
-    editor.handle_key(press(KeyCode::Esc, KeyModifiers::NONE));
-    fs::write(&path, "outside\n").unwrap();
-
-    app.execute_semantic_command(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
-        .await
-        .unwrap();
-    assert!(matches!(
-        app.explorer_dialog.current,
-        Some(ExplorerDialog::DirtyExit)
-    ));
-    assert!(app.current_workspace_is_file());
-
-    app.handle_key(press(KeyCode::Char('s'), KeyModifiers::NONE))
-        .await
-        .unwrap();
-    assert!(matches!(
-        app.explorer_dialog.current,
-        Some(ExplorerDialog::SaveConflict)
-    ));
-
-    app.handle_key(press(KeyCode::Char('f'), KeyModifiers::NONE))
-        .await
-        .unwrap();
-    assert!(app.current_workspace_is_diff());
-}
-
-#[tokio::test]
 async fn alt_navigation_requires_a_dirty_editor_decision() {
     let (dir, mut app) = focus_test_app().await;
     let path = dir.path().join("dirty-nav.rs");
@@ -209,54 +125,6 @@ async fn alt_navigation_requires_a_dirty_editor_decision() {
         Some(ExplorerDialog::DirtyExit)
     ));
     assert!(app.current_workspace_is_file());
-
-    app.explorer_dialog.current = None;
-    app.handle_key(press(KeyCode::Right, KeyModifiers::ALT))
-        .await
-        .unwrap();
-    assert!(matches!(
-        app.explorer_dialog.current,
-        Some(ExplorerDialog::DirtyExit)
-    ));
-    assert!(app.current_workspace_is_file());
-}
-
-#[tokio::test]
-async fn cancelling_a_navigation_save_conflict_does_not_reuse_its_destination() {
-    let (dir, mut app) = focus_test_app().await;
-    let path = dir.path().join("cancel-diff.rs");
-    fs::write(&path, "fn main() {}\n").unwrap();
-    app.execute_semantic_command(SemanticCommand::OpenFile(path.clone()))
-        .await
-        .unwrap();
-    let editor = app.editor_session.as_mut().unwrap();
-    editor.handle_key(press(KeyCode::Char('i'), KeyModifiers::NONE));
-    editor.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE));
-    editor.handle_key(press(KeyCode::Esc, KeyModifiers::NONE));
-    fs::write(&path, "outside\n").unwrap();
-
-    app.execute_semantic_command(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
-        .await
-        .unwrap();
-    app.handle_key(press(KeyCode::Char('s'), KeyModifiers::NONE))
-        .await
-        .unwrap();
-    assert!(matches!(
-        app.explorer_dialog.current,
-        Some(ExplorerDialog::SaveConflict)
-    ));
-    app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
-        .await
-        .unwrap();
-
-    app.execute_semantic_command(SemanticCommand::GoBack)
-        .await
-        .unwrap();
-    app.handle_key(press(KeyCode::Char('d'), KeyModifiers::NONE))
-        .await
-        .unwrap();
-    assert!(!app.current_workspace_is_diff());
-    assert_eq!(app.workspace_navigation.current, None);
 }
 
 #[tokio::test]
@@ -288,9 +156,6 @@ async fn files_visibility_is_independent_of_workspace_navigation() {
     app.execute_semantic_command(SemanticCommand::OpenFile(path))
         .await
         .unwrap();
-    app.execute_semantic_command(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
-        .await
-        .unwrap();
     app.execute_semantic_command(SemanticCommand::GoHome)
         .await
         .unwrap();
@@ -313,18 +178,13 @@ async fn files_visibility_renders_independently_in_each_workspace_view() {
     let path = dir.path().join("main.rs");
     fs::write(&path, "fn main() {}\n").unwrap();
 
-    for view in [
-        WorkspaceView::File(path.clone()),
-        WorkspaceView::Diff(DiffCommandContext::Current),
-    ] {
-        app.workspace_files.visible = true;
-        app.navigate_to_workspace_view(view.clone());
-        assert!(app.workspace_files.visible);
+    app.workspace_files.visible = true;
+    app.navigate_to_workspace_view(WorkspaceView::File(path.clone()));
+    assert!(app.workspace_files.visible);
 
-        app.workspace_files.visible = false;
-        let _rendered = render_app_text(&mut app, 160, 50);
-        assert!(!app.workspace_files.visible);
-    }
+    app.workspace_files.visible = false;
+    let _rendered = render_app_text(&mut app, 160, 50);
+    assert!(!app.workspace_files.visible);
 
     // The empty/home state (`current == None`) is its own case now —
     // conversation isn't a navigable `WorkspaceView` to loop over above.
