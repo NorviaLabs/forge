@@ -80,6 +80,14 @@ impl TuiApp {
         self.clamp_slash_suggest();
     }
 
+    fn review_or_activity_summary(&self) -> SemanticCommand {
+        if self.activity_summary().and_then(|s| s.action).is_some() {
+            SemanticCommand::ActivateActivitySummary
+        } else {
+            SemanticCommand::ReviewChanges(DiffCommandContext::Current)
+        }
+    }
+
     pub(super) fn tab_nav_command(&self, key: event::KeyEvent) -> Option<TabNavCommand> {
         // Plain Left/Right is the unified in-panel horizontal navigation:
         // inside the workspace panel it switches between file/review views.
@@ -102,11 +110,7 @@ impl TuiApp {
                 Some(SemanticCommand::GoBack)
             }
             KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => {
-                if self.activity_summary().and_then(|s| s.action).is_some() {
-                    Some(SemanticCommand::ActivateActivitySummary)
-                } else {
-                    Some(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
-                }
+                Some(self.review_or_activity_summary())
             }
 
             KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -249,10 +253,46 @@ impl TuiApp {
             KeyCode::Down if key.modifiers.is_empty() && self.current_workspace_is_diff() => {
                 Some(SemanticCommand::SelectNextChange)
             }
-            KeyCode::Char('r' | 'R')
-                if key.modifiers.is_empty() && self.current_workspace_is_diff() =>
-            {
+            KeyCode::Char('r') if key.modifiers.is_empty() && self.current_workspace_is_diff() => {
                 Some(SemanticCommand::RefreshDiff)
+            }
+            KeyCode::Char('[') if key.modifiers.is_empty() && self.current_workspace_is_diff() => {
+                Some(SemanticCommand::SelectPreviousHunk)
+            }
+            KeyCode::Char(']') if key.modifiers.is_empty() && self.current_workspace_is_diff() => {
+                Some(SemanticCommand::SelectNextHunk)
+            }
+            KeyCode::Char('k') if key.modifiers.is_empty() && self.current_workspace_is_diff() => {
+                Some(SemanticCommand::KeepHunk)
+            }
+            KeyCode::Char('d') if key.modifiers.is_empty() && self.current_workspace_is_diff() => {
+                Some(SemanticCommand::DiscardHunk)
+            }
+            KeyCode::Char('K')
+                if self.current_workspace_is_diff()
+                    && (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT) =>
+            {
+                Some(SemanticCommand::KeepRestOfFile)
+            }
+            KeyCode::Char('D')
+                if self.current_workspace_is_diff()
+                    && (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT) =>
+            {
+                Some(SemanticCommand::DiscardRestOfFile)
+            }
+            KeyCode::Char('y')
+                if key.modifiers.is_empty()
+                    && self.current_workspace_is_diff()
+                    && self.diff_view.pending_untracked_delete.is_some() =>
+            {
+                Some(SemanticCommand::ConfirmReviewDelete)
+            }
+            KeyCode::Char('n')
+                if key.modifiers.is_empty()
+                    && self.current_workspace_is_diff()
+                    && self.diff_view.pending_untracked_delete.is_some() =>
+            {
+                Some(SemanticCommand::CancelReviewDelete)
             }
             KeyCode::Esc
                 if key.modifiers.is_empty()
@@ -521,20 +561,25 @@ impl TuiApp {
             SemanticCommand::RequestDelete => self.open_explorer_delete_dialog(),
             SemanticCommand::SelectPreviousChange => {
                 self.diff_view.selected = self.diff_view.selected.saturating_sub(1);
+                self.diff_view.hunk = 0;
             }
             SemanticCommand::SelectNextChange => {
-                let count = self
-                    .workspace_files
-                    .explorer
-                    .git_status
-                    .changed_files()
-                    .len();
+                let count = self.review_file_paths().len();
                 self.diff_view.selected = self
                     .diff_view
                     .selected
                     .saturating_add(1)
                     .min(count.saturating_sub(1));
+                self.diff_view.hunk = 0;
             }
+            SemanticCommand::SelectPreviousHunk => self.select_previous_hunk(),
+            SemanticCommand::SelectNextHunk => self.select_next_hunk(),
+            SemanticCommand::KeepHunk => self.keep_selected_hunk(),
+            SemanticCommand::DiscardHunk => self.discard_selected_hunk(),
+            SemanticCommand::KeepRestOfFile => self.keep_rest_of_file(),
+            SemanticCommand::DiscardRestOfFile => self.discard_rest_of_file(),
+            SemanticCommand::ConfirmReviewDelete => self.confirm_review_delete(),
+            SemanticCommand::CancelReviewDelete => self.cancel_review_delete(),
             SemanticCommand::StartSourceSearch => {
                 self.source_viewer.start_search();
                 self.enter_transient(TransientOwner::SourceSearch);

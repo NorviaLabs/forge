@@ -62,6 +62,14 @@ impl TuiApp {
             FocusBlock::Workspace => {
                 text.push_str("• Alt+←  Back\n");
                 text.push_str("• Alt+→  Review changes / activity summary\n");
+                if self.current_workspace_is_diff() {
+                    text.push_str("• ↑/↓  Previous / next file\n");
+                    text.push_str("• [ / ]  Previous / next hunk\n");
+                    text.push_str("• k / d  Keep / discard hunk\n");
+                    text.push_str("• K / D  Keep-rest / discard-rest of file\n");
+                    text.push_str("• r  Refresh review\n");
+                    text.push_str("• y / n  Confirm / cancel untracked delete\n");
+                }
                 text.push_str("• Type  Start chat in composer\n");
                 text.push_str("• Vim Normal/Insert/Search modes  Edit text files\n");
                 text.push_str("• :w / :q / :wq  Save / quit / save and quit\n");

@@ -78,9 +78,12 @@ impl TuiApp {
         // footer's hint shares the content row (replacing the right-side
         // activity while focused), never adds a third row.
         let hint_h: u16 = 2;
+        // File and Review occupy the center workspace pane. Anything else
+        // (home / empty) expands conversation into that pane and there is
+        // no Workspace block to focus.
         let expand_conversation = !matches!(
             self.workspace_navigation.current,
-            Some(WorkspaceView::File(_))
+            Some(WorkspaceView::File(_)) | Some(WorkspaceView::Diff(_))
         );
         let regions = if expand_conversation {
             split_areas_with_expanded_conversation(
@@ -805,12 +808,7 @@ impl TuiApp {
             return;
         }
 
-        let review_paths =
-            if self.diff_view.snapshot.stale && !self.diff_view.snapshot.paths.is_empty() {
-                self.diff_view.snapshot.paths.clone()
-            } else {
-                changed.iter().map(|f| f.path.clone()).collect()
-            };
+        let review_paths = self.review_file_paths();
         let selected = self
             .diff_view
             .selected
@@ -824,45 +822,91 @@ impl TuiApp {
                 theme::warn(),
             ));
             lines.push(Line::styled(
-                "Apply disabled until refresh.",
+                "Keep and Discard disabled until refresh.",
                 theme::disabled(),
+            ));
+        }
+        if let Some(pending) = &self.diff_view.pending_untracked_delete {
+            lines.push(Line::styled(
+                format!(
+                    "Delete untracked file {}? y delete · n cancel",
+                    pending.display()
+                ),
+                theme::warn(),
             ));
         }
         lines.push(Line::from(""));
 
         for (i, path) in review_paths.iter().enumerate() {
             let marker = if i == selected { "▶ " } else { "  " };
-            let status = changed
-                .iter()
-                .find(|file| file.path == *path)
-                .and_then(|file| file.unstaged)
+            let file = changed.iter().find(|file| file.path == *path);
+            let marker_kind = file
+                .and_then(|file| file.unstaged.or(file.staged))
                 .map(GitStatusKind::marker)
                 .unwrap_or("!");
-            lines.push(Line::from(format!("{marker}{status} {}", path.display())));
+            let extra = match (file.and_then(|f| f.staged), file.and_then(|f| f.unstaged)) {
+                (Some(_), Some(_)) => " staged+worktree",
+                (Some(_), None) => " staged",
+                _ => "",
+            };
+            lines.push(Line::from(format!(
+                "{marker}{marker_kind} {}{extra}",
+                path.display()
+            )));
         }
 
         lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled("UNSTAGED DIFF", theme::info())));
+        lines.push(Line::from(Span::styled("DIFF vs HEAD", theme::info())));
 
         if let Some(path) = selected_path {
-            match self
-                .workspace_files
-                .explorer
-                .git_status
-                .get_unstaged_diff(&self.runtime.cwd, path)
-            {
+            match combined_diff(self.session_view.workspace_root(), path) {
                 Ok(diff) => {
-                    for line in diff.lines().take(20) {
-                        let style = if line.starts_with('+') {
-                            theme::ok()
-                        } else if line.starts_with('-') {
-                            theme::danger()
-                        } else if line.starts_with("@@") {
-                            theme::warn()
-                        } else {
-                            theme::muted()
-                        };
-                        lines.push(Line::styled(line.to_string(), style));
+                    let ability = reviewability(self.review_status(path), &diff);
+                    match ability {
+                        Reviewability::Conflicted => {
+                            lines.push(Line::styled("Conflicted · view only", theme::warn()));
+                        }
+                        Reviewability::Binary => {
+                            let bytes = self
+                                .session_view
+                                .workspace_root()
+                                .join(path)
+                                .metadata()
+                                .map(|m| m.len())
+                                .unwrap_or(0);
+                            lines.push(Line::styled(
+                                format!("Binary · {bytes} bytes · view only"),
+                                theme::muted(),
+                            ));
+                        }
+                        Reviewability::Reviewable => {}
+                    }
+                    if diff.hunks.is_empty() && !diff.binary {
+                        lines.push(Line::styled("No hunks.", theme::muted()));
+                    }
+                    let hunk_idx = self.diff_view.hunk.min(diff.hunks.len().saturating_sub(1));
+                    for (i, hunk) in diff.hunks.iter().enumerate() {
+                        let kept = self.hunk_is_kept(path, &hunk.header);
+                        let marker = if i == hunk_idx { "▶ " } else { "  " };
+                        let label = if kept { "kept " } else { "" };
+                        lines.push(Line::styled(
+                            format!("{marker}{label}{}", hunk.header),
+                            if i == hunk_idx {
+                                theme::focused_selection_style()
+                            } else {
+                                theme::warn()
+                            },
+                        ));
+                        for line in &hunk.lines {
+                            let style = if line.starts_with('+') {
+                                theme::ok()
+                            } else if line.starts_with('-') {
+                                theme::danger()
+                            } else {
+                                theme::muted()
+                            };
+                            lines.push(Line::styled(format!("    {line}"), style));
+                        }
                     }
                 }
                 Err(e) => {
@@ -873,7 +917,7 @@ impl TuiApp {
                 }
             }
         } else {
-            lines.push(Line::from("No unstaged file selected."));
+            lines.push(Line::from("No changed file selected."));
         }
 
         self.diff_rows = lines

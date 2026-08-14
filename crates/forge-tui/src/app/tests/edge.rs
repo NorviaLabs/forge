@@ -302,10 +302,14 @@ async fn edge_diff_stale_marking_waits_for_confirmed_status_change() {
         "a confirmed change to the tracked path set must mark the review stale"
     );
 
-    // 'r' and 'R' both refresh and clear staleness.
+    // 'r' refreshes; 'R' is keep-rest of the selected file.
     assert_eq!(
-        app.semantic_command_for_workspace_key(press(KeyCode::Char('R'), KeyModifiers::NONE)),
+        app.semantic_command_for_workspace_key(press(KeyCode::Char('r'), KeyModifiers::NONE)),
         Some(SemanticCommand::RefreshDiff)
+    );
+    assert_eq!(
+        app.semantic_command_for_workspace_key(press(KeyCode::Char('K'), KeyModifiers::SHIFT)),
+        Some(SemanticCommand::KeepRestOfFile)
     );
     app.execute_semantic_command(SemanticCommand::RefreshDiff)
         .await
