@@ -51,6 +51,12 @@ cargo build --release --locked --package forge-cli
 ./target/release/forge --version
 ```
 
+Release builds strip symbols. The shipping profile adds thin LTO:
+
+```sh
+cargo build --profile dist --locked --package forge-cli
+```
+
 Do not silence warnings or weaken tests solely to make CI pass. If a failure is unrelated to your change, describe it clearly in the pull request.
 
 ## Pull requests
