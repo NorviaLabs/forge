@@ -15,16 +15,8 @@ async fn characterization_contextual_views_are_reachable_with_current_controls()
     app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(
-        app.workspace_navigation.current,
-        Some(WorkspaceView::Diff(DiffCommandContext::Current))
-    );
-    assert_eq!(app.focus.block, FocusBlock::Workspace);
-
-    app.handle_key(press(KeyCode::Left, KeyModifiers::NONE))
-        .await
-        .unwrap();
     assert_eq!(app.workspace_navigation.current, None);
+    assert_eq!(app.focus.block, FocusBlock::Workspace);
 
     app.execute_semantic_command(SemanticCommand::OpenFile(path.clone()))
         .await

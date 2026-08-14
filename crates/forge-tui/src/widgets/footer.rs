@@ -42,6 +42,9 @@ pub struct FooterModel {
     pub lifecycle: TurnLifecycle,
     /// 0.0..=1.0
     pub ctx_pct: f64,
+    /// Inert workspace change count, e.g. `"3 changes"`. Replaces the
+    /// reserved job-count slot when present.
+    pub workspace_activity: Option<String>,
 }
 
 pub struct FooterBar<'a> {
@@ -320,9 +323,13 @@ impl FooterBar<'_> {
             Span::raw("  "),
             Span::styled("·", theme::dim()),
             Span::raw("  "),
-            // Reserved for background job/agent counts — dim/empty today.
-            Span::styled("⚑", theme::dim()),
         ]);
+        if let Some(activity) = &m.workspace_activity {
+            right.push(Span::styled(activity.clone(), theme::text_secondary()));
+        } else {
+            // Reserved for background job/agent counts — dim/empty today.
+            right.push(Span::styled("⚑", theme::dim()));
+        }
         if dim {
             for span in right.iter_mut() {
                 span.style = theme::dim();
@@ -570,6 +577,15 @@ mod tests {
         assert!(out.contains("Auto"), "{out:?}");
         assert!(out.contains("Working"), "{out:?}");
         assert!(out.contains("34%"), "{out:?}");
+    }
+
+    #[test]
+    fn workspace_activity_replaces_the_reserved_job_slot() {
+        let mut m = model(TurnLifecycle::Ready, 0.34);
+        m.workspace_activity = Some("2 changes".into());
+        let out = rendered(&m, 90);
+        assert!(out.contains("2 changes"), "{out:?}");
+        assert!(!out.contains('⚑'), "{out:?}");
     }
 
     #[test]

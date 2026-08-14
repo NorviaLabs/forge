@@ -332,11 +332,6 @@ impl TuiApp {
         self.open_file_in_editor(path);
     }
 
-    #[cfg(test)]
-    pub(crate) fn review_changes_for_test(&mut self) {
-        self.navigate_to_workspace_view(WorkspaceView::Diff(DiffCommandContext::Current));
-    }
-
     fn file_ops(&self) -> Result<WorkspaceFileOps, FileOperationError> {
         WorkspaceFileOps::new(self.session_view.workspace_root())
     }
@@ -537,14 +532,6 @@ impl TuiApp {
                 );
             }
         }
-        self.diff_view.selected = self.diff_view.selected.min(
-            self.workspace_files
-                .explorer
-                .git_status
-                .changed_files()
-                .len()
-                .saturating_sub(1),
-        );
     }
 
     fn reconcile_path_rename(&mut self, old_path: &Path, new_path: &Path) {

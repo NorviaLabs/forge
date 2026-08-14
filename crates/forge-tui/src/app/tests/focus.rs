@@ -245,10 +245,7 @@ async fn arrows_switch_tabs_only_in_the_active_navigation_block() {
     app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(
-        app.workspace_navigation.current,
-        Some(WorkspaceView::Diff(DiffCommandContext::Current))
-    );
+    assert_eq!(app.workspace_navigation.current, None);
 
     // The bottom panel is Terminal-only now (Tasks moved to the sidebar),
     // so left/right has nothing to cycle while it's focused — workspace
@@ -258,10 +255,7 @@ async fn arrows_switch_tabs_only_in_the_active_navigation_block() {
     app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(
-        app.workspace_navigation.current,
-        Some(WorkspaceView::Diff(DiffCommandContext::Current))
-    );
+    assert_eq!(app.workspace_navigation.current, None);
 }
 
 #[tokio::test]
@@ -315,9 +309,6 @@ async fn esc_from_composer_returns_to_previous_block_and_keeps_draft() {
 async fn type_to_compose_keeps_first_unbound_printable() {
     let (_dir, mut app) = focus_test_app().await;
     app.focus_block(FocusBlock::Workspace);
-    app.execute_semantic_command(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
-        .await
-        .unwrap();
 
     app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
         .await
@@ -338,7 +329,11 @@ async fn semantic_key_paths_emit_existing_commands() {
     app.focus_block(FocusBlock::Workspace);
     assert_eq!(
         app.semantic_command_for_workspace_key(press(KeyCode::Right, KeyModifiers::NONE)),
-        Some(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
+        None
+    );
+    assert_eq!(
+        app.semantic_command_for_global_key(press(KeyCode::Right, KeyModifiers::ALT)),
+        None
     );
     assert_eq!(
         app.semantic_command_for_composer_key(press(KeyCode::Enter, KeyModifiers::NONE)),
@@ -393,14 +388,6 @@ async fn semantic_commands_dispatch_without_rendering_a_frame() {
         .unwrap();
     assert!(app.workspace_files.visible);
     assert_eq!(app.focus.block, FocusBlock::Search);
-
-    app.execute_semantic_command(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
-        .await
-        .unwrap();
-    assert_eq!(
-        app.workspace_navigation.current,
-        Some(WorkspaceView::Diff(DiffCommandContext::Current))
-    );
 
     app.execute_semantic_command(SemanticCommand::OpenFile(path.clone()))
         .await
@@ -494,35 +481,6 @@ async fn global_palette_selection_uses_semantic_dispatch() {
 }
 
 #[tokio::test]
-async fn switching_to_diff_focuses_workspace_for_navigation() {
-    let (_dir, mut app) = focus_test_app().await;
-    app.execute_semantic_command(SemanticCommand::ReviewChanges(DiffCommandContext::Current))
-        .await
-        .unwrap();
-    app.workspace_files
-        .explorer
-        .git_status
-        .status
-        .insert(std::path::PathBuf::from("a.txt"), GitStatusKind::Modified);
-    app.workspace_files
-        .explorer
-        .git_status
-        .status
-        .insert(std::path::PathBuf::from("b.txt"), GitStatusKind::Modified);
-
-    app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
-        .await
-        .unwrap();
-
-    assert_eq!(
-        app.workspace_navigation.current,
-        Some(WorkspaceView::Diff(DiffCommandContext::Current))
-    );
-    assert_eq!(app.focus.block, FocusBlock::Workspace);
-    assert_eq!(app.diff_view.selected, 1);
-}
-
-#[tokio::test]
 async fn registered_printable_editor_commands_do_not_enter_composer() {
     let (dir, mut app) = focus_test_app().await;
     let path = dir.path().join("source.txt");
@@ -589,7 +547,7 @@ async fn resize_drops_focus_from_a_zero_width_files_block() {
 #[tokio::test]
 async fn helper_labels_reflect_focus_mode() {
     let (_dir, session) = test_session().await;
-    let mut app = TuiApp::new(
+    let app = TuiApp::new(
         session,
         TuiRuntimeConfig {
             model_label: "mock".into(),
@@ -602,9 +560,8 @@ async fn helper_labels_reflect_focus_mode() {
         },
     );
     assert!(app.help_text().contains("No file open"));
-    app.workspace_navigation
-        .replace_view(WorkspaceView::Diff(DiffCommandContext::Current));
-    assert!(app.help_text().contains("Review changes"));
+    assert!(!app.help_text().contains("Review changes"));
+    assert!(!app.help_text().contains("Alt+→"));
 }
 
 #[tokio::test]
