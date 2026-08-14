@@ -1,11 +1,48 @@
-//! Connect profile schema (connect-command.md §3.3 + 6.1 auth_mode).
+//! Provider specs: identity, auth, catalog source, and transport.
 
 use serde::{Deserialize, Serialize};
 
 use crate::auth::AuthMode;
 
+/// Where a spec's model list and capability metadata come from.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CatalogMode {
+    /// Live provider `/models` entitles; models.dev supplies effort/image/cost.
+    #[serde(rename = "live+registry")]
+    #[default]
+    LiveRegistry,
+    /// models.dev metadata only. Never entitlement.
+    Registry,
+    /// Live provider `/models` only.
+    Live,
+    /// `default_models` on the spec. No metadata.
+    Static,
+}
+
+/// Wire implementation a request is sent through.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProviderTransport {
+    #[default]
+    #[serde(rename = "openai-compat")]
+    OpenaiCompat,
+    Anthropic,
+    Codex,
+}
+
+/// Who authored the spec.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpecOrigin {
+    #[default]
+    Builtin,
+    User,
+}
+
+/// One provider offering Forge can connect and run.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ConnectProfile {
+pub struct ProviderSpec {
     pub id: String,
     pub title: String,
     pub description: String,
@@ -14,6 +51,7 @@ pub struct ConnectProfile {
     pub api_key_env: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_base_url: Option<String>,
+    #[serde(default)]
     pub default_models: Vec<String>,
     /// models.dev provider ids used for public model metadata and fallbacks.
     ///
@@ -39,29 +77,24 @@ pub struct ConnectProfile {
     /// one offering, since those never render a nested route row.
     #[serde(default)]
     pub route_label: String,
+    /// Stable public route identity, e.g. `openai-chatgpt`.
+    #[serde(default)]
+    pub route_id: String,
+    #[serde(default)]
+    pub catalog_mode: CatalogMode,
+    #[serde(default)]
+    pub transport: ProviderTransport,
+    #[serde(default, skip_serializing)]
+    pub origin: SpecOrigin,
 }
 
-/// Stable public route identity for a credential/profile id, e.g.
-/// `openai_codex` → `openai-chatgpt`. Credential/profile IDs remain an
-/// implementation detail while the picker migrates to offering identity.
-pub fn route_id_for_profile_id(profile_id: &str) -> &str {
-    match profile_id {
-        "openai" => "openai-api",
-        "openai_codex" => "openai-chatgpt",
-        "anthropic" => "anthropic-api",
-        "xai" => "xai-api",
-        "opencode_go" => "opencode-go",
-        "opencode_zen" => "opencode-zen",
-        "ollama" => "ollama",
-        other => other,
-    }
-}
+/// Historical name. Same type as [`ProviderSpec`].
+pub type ConnectProfile = ProviderSpec;
 
-impl ConnectProfile {
-    /// Stable public route identity. Credential/profile IDs remain an
-    /// implementation detail while the picker migrates to offering identity.
+impl ProviderSpec {
+    /// Stable public route identity.
     pub fn route_id(&self) -> &str {
-        route_id_for_profile_id(&self.id)
+        self.route_id.as_str()
     }
 
     pub fn default_model(&self) -> Option<&str> {
@@ -85,6 +118,10 @@ impl ConnectProfile {
 
     pub fn rejects_api_key_cli(&self) -> bool {
         self.auth_mode.is_oauth()
+    }
+
+    pub fn is_user(&self) -> bool {
+        self.origin == SpecOrigin::User
     }
 }
 
@@ -126,25 +163,38 @@ pub struct ConnectStatus {
 }
 
 #[cfg(test)]
+pub(crate) fn test_spec(
+    id: &str,
+    auth_mode: AuthMode,
+    default_models: Vec<String>,
+) -> ProviderSpec {
+    ProviderSpec {
+        id: id.into(),
+        title: id.into(),
+        description: format!("{id} profile"),
+        auth_mode,
+        api_key_env: vec!["DEMO_KEY".into()],
+        default_base_url: Some("https://example.test".into()),
+        default_models,
+        models_dev_providers: vec![],
+        auth_url: None,
+        model_provider_prefix: id.into(),
+        vendor_id: id.into(),
+        vendor_label: id.into(),
+        route_label: String::new(),
+        route_id: id.into(),
+        catalog_mode: CatalogMode::LiveRegistry,
+        transport: ProviderTransport::OpenaiCompat,
+        origin: SpecOrigin::Builtin,
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
-    fn profile(auth_mode: AuthMode, default_models: Vec<String>) -> ConnectProfile {
-        ConnectProfile {
-            id: "demo".into(),
-            title: "Demo".into(),
-            description: "Demo profile".into(),
-            auth_mode,
-            api_key_env: vec!["DEMO_KEY".into()],
-            default_base_url: Some("https://example.test".into()),
-            default_models,
-            models_dev_providers: vec![],
-            auth_url: None,
-            model_provider_prefix: "demo".into(),
-            vendor_id: "demo".into(),
-            vendor_label: "Demo".into(),
-            route_label: String::new(),
-        }
+    fn profile(auth_mode: AuthMode, default_models: Vec<String>) -> ProviderSpec {
+        test_spec("demo", auth_mode, default_models)
     }
 
     #[test]
@@ -181,16 +231,16 @@ mod tests {
     }
 
     #[test]
-    fn route_id_exposes_offering_identity() {
+    fn route_id_is_a_field_not_a_match() {
         let mut profile = profile(
             AuthMode::ApiKey {
                 tui_always_prompt: true,
             },
             vec![],
         );
-        profile.id = "openai_codex".into();
+        profile.route_id = "openai-chatgpt".into();
         assert_eq!(profile.route_id(), "openai-chatgpt");
-        profile.id = "openai".into();
+        profile.route_id = "openai-api".into();
         assert_eq!(profile.route_id(), "openai-api");
     }
 }

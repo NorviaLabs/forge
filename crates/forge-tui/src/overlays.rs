@@ -2589,7 +2589,7 @@ mod tests {
 
     fn sample_default_models() -> Vec<ModelItem> {
         let mut items = Vec::new();
-        for p in forge_connect::builtin_registry().profiles() {
+        for p in forge_connect::loaded_registry().profiles() {
             let mut seen = std::collections::BTreeSet::new();
             for m in &p.default_models {
                 if seen.insert(m.clone()) {

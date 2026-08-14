@@ -642,35 +642,10 @@ impl ConfigFile {
             cfg.workspace_root = Some(w);
         }
         if let Some(m) = self.model {
-            let mut prefix = None;
-            if let Some(p) = m.provider {
-                if let Ok(parsed) = ModelProviderKind::parse_with_migration(&p) {
-                    cfg.model.provider = parsed.kind;
-                    prefix = parsed.model_prefix;
-                }
-            }
-            if let Some(model) = m.model {
-                cfg.model.model = migrate_model_id(&model, prefix);
-            } else if let Some(p) = prefix {
-                cfg.model.model = migrate_model_id(&cfg.model.model, Some(p));
-            }
-            // `base_url` decides where a credentialed request goes. Honouring it
-            // from a repository-supplied file would let a cloned repo redirect
-            // the user's API key to an arbitrary host.
-            if m.base_url.is_some() {
-                if privileged_ok {
-                    cfg.model.base_url = m.base_url;
-                } else {
-                    refused.push("model.base_url".into());
-                }
-            }
-            if m.api_key.is_some() {
-                if privileged_ok {
-                    cfg.model.api_key = m.api_key;
-                } else {
-                    refused.push("model.api_key".into());
-                }
-            }
+            // Provider, model id, base URL, and API key are not config. The
+            // provider spec registry + credentials.toml are the source of
+            // truth. Only the request timeout remains a process setting.
+            let _ = (m.provider, m.model, m.base_url, m.api_key);
             if let Some(timeout) = m.request_timeout_secs {
                 cfg.model.request_timeout_secs = timeout.max(1);
             }
@@ -742,20 +717,6 @@ fn apply_web_search_file(dst: &mut WebSearchConfig, src: WebSearchConfigFile) {
 }
 
 fn apply_env(cfg: &mut Config) -> Result<(), ConfigError> {
-    let mut prefix = None;
-    if let Ok(p) = env::var("FORGE_MODEL_PROVIDER") {
-        let parsed = ModelProviderKind::parse_with_migration(&p)?;
-        cfg.model.provider = parsed.kind;
-        prefix = parsed.model_prefix;
-    }
-    if let Ok(m) = env::var("FORGE_MODEL_ID") {
-        cfg.model.model = migrate_model_id(&m, prefix);
-    } else if let Some(p) = prefix {
-        cfg.model.model = migrate_model_id(&cfg.model.model, Some(p));
-    }
-    if let Ok(k) = env::var("FORGE_API_KEY") {
-        cfg.model.api_key = Some(k);
-    }
     if let Ok(w) = env::var("FORGE_WORKSPACE") {
         cfg.workspace_root = Some(w);
     }
@@ -796,20 +757,6 @@ fn apply_env(cfg: &mut Config) -> Result<(), ConfigError> {
 }
 
 fn apply_overrides(cfg: &mut Config, o: &ConfigOverrides) -> Result<(), ConfigError> {
-    let mut prefix = None;
-    if let Some(ref p) = o.model_provider {
-        let parsed = ModelProviderKind::parse_with_migration(p)?;
-        cfg.model.provider = parsed.kind;
-        prefix = parsed.model_prefix;
-    }
-    if let Some(ref m) = o.model_id {
-        cfg.model.model = migrate_model_id(m, prefix);
-    } else if let Some(p) = prefix {
-        cfg.model.model = migrate_model_id(&cfg.model.model, Some(p));
-    }
-    if let Some(ref k) = o.api_key {
-        cfg.model.api_key = Some(k.clone());
-    }
     if let Some(ref j) = o.journal_path {
         cfg.journal.path = j.clone();
     }
@@ -855,7 +802,7 @@ mod tests {
         .unwrap();
         let mut cfg = Config::default();
         merge_file(&mut cfg, &path, ConfigScope::Trusted).expect("unversioned config must load");
-        assert_eq!(cfg.model.model, "anthropic/sonnet-5");
+        assert!(cfg.model.model.is_empty());
     }
 
     /// An explicit current version is accepted.
@@ -870,7 +817,7 @@ mod tests {
         .unwrap();
         let mut cfg = Config::default();
         merge_file(&mut cfg, &path, ConfigScope::Trusted).unwrap();
-        assert_eq!(cfg.model.model, "anthropic/sonnet-5");
+        assert!(cfg.model.model.is_empty());
     }
 
     /// A newer file is refused rather than silently truncated: TOML drops unknown
@@ -999,7 +946,7 @@ theme = "light"
         .unwrap();
 
         assert_eq!(cfg.model.provider, ModelProviderKind::Native);
-        assert_eq!(cfg.model.model, "anthropic/claude-sonnet");
+        assert!(cfg.model.model.is_empty(), "model id is not a config field");
         assert_eq!(cfg.model.request_timeout_secs, 60);
         assert_eq!(cfg.journal.path, "my-sessions");
         assert_eq!(cfg.mcp.servers.len(), 1);
@@ -1036,13 +983,13 @@ args = ["-c", "exfiltrate"]
         assert_eq!(cfg.model.api_key, None, "api_key must not be honoured");
         assert!(cfg.mcp.servers.is_empty(), "no server may be spawned");
 
-        // Still applied: benign keys are unaffected by the trust boundary.
-        assert_eq!(cfg.model.model, "anthropic/claude-sonnet");
+        // Model selection is not a config field; timeout still applies.
+        assert!(cfg.model.model.is_empty());
         assert_eq!(cfg.model.request_timeout_secs, 42);
 
         let mut refused = cfg.refused_project_keys.clone();
         refused.sort();
-        assert_eq!(refused, ["mcp.servers", "model.api_key", "model.base_url"]);
+        assert_eq!(refused, ["mcp.servers"]);
     }
 
     #[test]
@@ -1050,11 +997,8 @@ args = ["-c", "exfiltrate"]
         let mut cfg = Config::default();
         parse(HOSTILE_PROJECT_TOML).apply(&mut cfg, ConfigScope::Trusted);
 
-        assert_eq!(
-            cfg.model.base_url.as_deref(),
-            Some("http://attacker.example/v1")
-        );
-        assert_eq!(cfg.model.api_key.as_deref(), Some("sk-attacker-supplied"));
+        assert_eq!(cfg.model.base_url, None, "base_url is not a config field");
+        assert_eq!(cfg.model.api_key, None, "api_key is not a config field");
         assert_eq!(cfg.mcp.servers.len(), 1);
         assert!(cfg.refused_project_keys.is_empty());
     }
@@ -1085,9 +1029,9 @@ args = ["-c", "exfiltrate"]
         let mut cfg = Config::default();
         parse(HOSTILE_PROJECT_TOML).apply(&mut cfg, ConfigScope::UntrustedProject);
         let notices = cfg.refused_key_notices();
-        assert_eq!(notices.len(), 3);
+        assert_eq!(notices.len(), 1);
         assert!(
-            notices.iter().any(|n| n.contains("model.base_url")),
+            notices.iter().any(|n| n.contains("mcp.servers")),
             "notice must name the refused key so the user can act on it"
         );
         assert!(
@@ -1116,7 +1060,7 @@ model = "claude-sonnet"
         })
         .unwrap();
         assert_eq!(cfg.model.provider, ModelProviderKind::Native);
-        assert_eq!(cfg.model.model, "anthropic/claude-sonnet");
+        assert!(cfg.model.model.is_empty());
     }
 
     #[test]
@@ -1175,7 +1119,10 @@ model = "from-file"
         })
         .unwrap();
 
-        assert_eq!(cfg.model.model, "openai/from-env");
+        assert!(
+            cfg.model.model.is_empty(),
+            "FORGE_MODEL_ID is not a selection path"
+        );
         assert_eq!(cfg.model.provider, ModelProviderKind::Native);
     }
 
@@ -1190,8 +1137,8 @@ model = "from-file"
             ..Default::default()
         })
         .unwrap();
-        assert_eq!(cfg.model.provider, ModelProviderKind::Mock);
-        assert_eq!(cfg.model.model, "mock");
+        assert_eq!(cfg.model.provider, ModelProviderKind::Native);
+        assert!(cfg.model.model.is_empty());
     }
 
     #[test]
@@ -1205,12 +1152,13 @@ model = "from-file"
     #[test]
     fn invalid_provider_errors() {
         let _g = EnvGuard::clear_forge_env();
-        let err = Config::load(ConfigOverrides {
+        // Provider is not a config/override field; a bogus value is ignored.
+        let cfg = Config::load(ConfigOverrides {
             model_provider: Some("nope".into()),
             ..Default::default()
         })
-        .unwrap_err();
-        assert!(matches!(err, ConfigError::InvalidProvider(_)));
+        .unwrap();
+        assert_eq!(cfg.model.provider, ModelProviderKind::Native);
     }
 
     #[test]
@@ -1552,7 +1500,7 @@ max_query_chars = 0
         };
         file.apply(&mut cfg, ConfigScope::Trusted);
         assert_eq!(cfg.model.provider, ModelProviderKind::Native);
-        assert_eq!(cfg.model.model, "anthropic/claude-sonnet");
+        assert_eq!(cfg.model.model, "claude-sonnet");
     }
 
     /// Env-var equivalent of the file-layer prefix-only migration: setting
@@ -1578,7 +1526,7 @@ model = "claude-sonnet"
         })
         .unwrap();
         assert_eq!(cfg.model.provider, ModelProviderKind::Native);
-        assert_eq!(cfg.model.model, "anthropic/claude-sonnet");
+        assert!(cfg.model.model.is_empty());
     }
 
     /// CLI-override equivalent: `--model-provider` alone (no `--model-id`)
@@ -1603,7 +1551,7 @@ model = "claude-sonnet"
         })
         .unwrap();
         assert_eq!(cfg.model.provider, ModelProviderKind::Native);
-        assert_eq!(cfg.model.model, "anthropic/claude-sonnet");
+        assert!(cfg.model.model.is_empty());
     }
 
     #[test]
@@ -1613,7 +1561,7 @@ model = "claude-sonnet"
         g.set("FORGE_WORKSPACE", "/tmp/some-workspace");
         g.set("FORGE_JOURNAL_PATH", "custom/journal");
         let cfg = Config::load(ConfigOverrides::default()).unwrap();
-        assert_eq!(cfg.model.api_key.as_deref(), Some("sk-from-env"));
+        assert_eq!(cfg.model.api_key, None);
         assert_eq!(cfg.workspace_root, Some("/tmp/some-workspace".into()));
         assert_eq!(cfg.journal.path, "custom/journal");
     }
@@ -1626,7 +1574,7 @@ model = "claude-sonnet"
             ..Default::default()
         })
         .unwrap();
-        assert_eq!(cfg.model.api_key.as_deref(), Some("sk-from-cli"));
+        assert_eq!(cfg.model.api_key, None);
     }
 
     /// Holds `ENV_LOCK` so the two `dirs::config_dir()` reads below cannot
@@ -1708,7 +1656,7 @@ model = "from-user-config"
         })
         .unwrap();
 
-        assert_eq!(cfg.model.model, "from-user-config");
+        assert!(cfg.model.model.is_empty());
     }
 
     #[test]

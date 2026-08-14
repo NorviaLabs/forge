@@ -627,7 +627,7 @@ impl<'a> ConnectService<'a> {
 
 /// True when any live (non-fixture) profile is connected in the user store.
 pub fn has_connected_profile() -> bool {
-    let registry = crate::builtin_registry();
+    let registry = crate::loaded_registry();
     let store = crate::CredentialStore::user_default();
     let preferences = crate::PreferenceStore::user_default();
     let svc = ConnectService {
@@ -788,7 +788,7 @@ pub fn handle_connect_action(
 mod tests {
     use super::*;
     use crate::auth::AuthMode;
-    use crate::profile::ConnectProfile;
+
     use crate::registry::ConnectRegistry;
     use tempfile::tempdir;
 
@@ -807,43 +807,30 @@ mod tests {
 
     fn api_key_registry() -> ConnectRegistry {
         let mut r = ConnectRegistry::new();
-        r.register(ConnectProfile {
-            id: "demo".into(),
-            title: "Demo".into(),
-            description: "test".into(),
-            auth_mode: AuthMode::ApiKey {
+        let mut spec = crate::profile::test_spec(
+            "demo",
+            AuthMode::ApiKey {
                 tui_always_prompt: true,
             },
-            api_key_env: vec!["DEMO_API_KEY".into()],
-            default_base_url: None,
-            default_models: vec!["demo/model-1".into()],
-            models_dev_providers: vec![],
-            auth_url: Some("https://example.com".into()),
-            model_provider_prefix: "demo".into(),
-            vendor_id: "demo".into(),
-            vendor_label: "Demo".into(),
-            route_label: String::new(),
-        });
+            vec!["demo/model-1".into()],
+        );
+        spec.title = "Demo".into();
+        spec.vendor_label = "Demo".into();
+        spec.api_key_env = vec!["DEMO_API_KEY".into()];
+        spec.auth_url = Some("https://example.com".into());
+        r.register(spec);
         r
     }
 
     fn oauth_registry() -> ConnectRegistry {
         let mut r = ConnectRegistry::new();
-        r.register(ConnectProfile {
-            id: "xai".into(),
-            title: "xAI Grok".into(),
-            description: "oauth".into(),
-            auth_mode: AuthMode::xai_oauth(),
-            api_key_env: vec![],
-            default_base_url: None,
-            default_models: vec!["xai/grok-3".into()],
-            models_dev_providers: vec![],
-            auth_url: Some("https://auth.x.ai".into()),
-            model_provider_prefix: "xai".into(),
-            vendor_id: "xai".into(),
-            vendor_label: "xAI Grok".into(),
-            route_label: String::new(),
-        });
+        let mut spec =
+            crate::profile::test_spec("xai", AuthMode::xai_oauth(), vec!["xai/grok-3".into()]);
+        spec.title = "xAI Grok".into();
+        spec.api_key_env = vec![];
+        spec.auth_url = Some("https://auth.x.ai".into());
+        spec.vendor_label = "xAI Grok".into();
+        r.register(spec);
         r
     }
 
@@ -1338,23 +1325,18 @@ mod tests {
         let store = CredentialStore::new(dir.path().join("c.toml"));
         let preferences = PreferenceStore::new(dir.path().join("p.toml"));
         let mut reg = ConnectRegistry::new();
-        reg.register(ConnectProfile {
-            id: "custom".into(),
-            title: "Custom".into(),
-            description: "".into(),
-            auth_mode: AuthMode::ApiKey {
+        let mut custom = crate::profile::test_spec(
+            "custom",
+            AuthMode::ApiKey {
                 tui_always_prompt: false,
             },
-            api_key_env: vec!["CUSTOM_KEY".into(), "CUSTOM_ALT".into()],
-            default_base_url: Some("https://api.example".into()),
-            default_models: vec!["custom/model".into()],
-            models_dev_providers: vec![],
-            auth_url: None,
-            model_provider_prefix: "custom".into(),
-            vendor_id: "custom".into(),
-            vendor_label: "Custom".into(),
-            route_label: String::new(),
-        });
+            vec!["custom/model".into()],
+        );
+        custom.api_key_env = vec!["CUSTOM_KEY".into(), "CUSTOM_ALT".into()];
+        custom.default_base_url = Some("https://api.example".into());
+        custom.title = "Custom".into();
+        custom.vendor_label = "Custom".into();
+        reg.register(custom);
         store.set_api_key("custom", "secret").unwrap();
         let svc = ConnectService {
             registry: &reg,
@@ -1462,36 +1444,24 @@ mod tests {
     fn needs_tui_flags() {
         let reg = {
             let mut r = ConnectRegistry::new();
-            r.register(ConnectProfile {
-                id: "opencode_go".into(),
-                title: "Go".into(),
-                description: "".into(),
-                auth_mode: AuthMode::opencode_go_api_key(),
-                api_key_env: vec![],
-                default_base_url: None,
-                default_models: vec!["m".into()],
-                models_dev_providers: vec![],
-                auth_url: None,
-                model_provider_prefix: "o".into(),
-                vendor_id: "opencode".into(),
-                vendor_label: "OpenCode".into(),
-                route_label: "Go".into(),
-            });
-            r.register(ConnectProfile {
-                id: "xai".into(),
-                title: "Grok".into(),
-                description: "".into(),
-                auth_mode: AuthMode::xai_oauth(),
-                api_key_env: vec![],
-                default_base_url: None,
-                default_models: vec!["xai/m".into()],
-                models_dev_providers: vec![],
-                auth_url: None,
-                model_provider_prefix: "xai".into(),
-                vendor_id: "xai".into(),
-                vendor_label: "Grok".into(),
-                route_label: String::new(),
-            });
+            let mut go = crate::profile::test_spec(
+                "opencode_go",
+                AuthMode::opencode_go_api_key(),
+                vec!["m".into()],
+            );
+            go.title = "Go".into();
+            go.api_key_env = vec![];
+            go.model_provider_prefix = "o".into();
+            go.vendor_id = "opencode".into();
+            go.vendor_label = "OpenCode".into();
+            go.route_label = "Go".into();
+            r.register(go);
+            let mut xai =
+                crate::profile::test_spec("xai", AuthMode::xai_oauth(), vec!["xai/m".into()]);
+            xai.title = "Grok".into();
+            xai.api_key_env = vec![];
+            xai.vendor_label = "Grok".into();
+            r.register(xai);
             r
         };
         assert!(needs_tui_api_key_prompt(&reg, "opencode_go"));

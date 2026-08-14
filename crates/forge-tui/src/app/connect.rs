@@ -37,7 +37,7 @@ pub(super) struct ConnectionModel {
 impl ConnectionModel {
     pub(super) fn new() -> Self {
         Self {
-            registry: builtin_registry(),
+            registry: loaded_registry(),
             store: CredentialStore::user_default(),
             preferences: PreferenceStore::user_default(),
             profile: None,
@@ -315,7 +315,6 @@ impl TuiApp {
         let chosen = connected
             .iter()
             .find(|p| saved_selection.as_ref().is_some_and(|(id, _)| id == &p.id))
-            .or_else(|| connected.first())
             .cloned();
         if let Some(profile) = chosen {
             // Refresh and inject provider credentials into the client only.
@@ -434,7 +433,7 @@ impl TuiApp {
         // (openai-codex/gpt-5.6-sol ↔ openai/gpt-5.6-sol) get a real flag.
         if !cfg!(test) && !cache.image_input_ready() {
             let _ = forge_connect::refresh_models_dev_registry(
-                forge_connect::builtin_registry().profiles(),
+                forge_connect::loaded_registry().profiles(),
                 &cache,
             );
         }
@@ -1296,15 +1295,8 @@ impl TuiApp {
 }
 
 fn route_id_for_profile(profile_id: &str) -> String {
-    match profile_id {
-        "openai" => "openai-api",
-        "openai_codex" => "openai-chatgpt",
-        "anthropic" => "anthropic-api",
-        "xai" => "xai-api",
-        "opencode_go" => "opencode-go",
-        "opencode_zen" => "opencode-zen",
-        "ollama" => "ollama",
-        other => other,
-    }
-    .into()
+    forge_connect::loaded_registry()
+        .get(profile_id)
+        .map(|spec| spec.route_id.clone())
+        .unwrap_or_else(|| profile_id.to_string())
 }

@@ -179,13 +179,15 @@ impl ModelClient for NativeModelClient {
     ) -> Result<ModelResponse, ModelError> {
         let model = self.model_for(&req)?;
         let model = canonical_model_for_route(req.route_id.as_deref(), &model);
-        if model.starts_with("anthropic/") {
-            return anthropic::complete(self, req, &model, tx).await;
+        match transport_for_route(req.route_id.as_deref()) {
+            forge_connect::ProviderTransport::Anthropic => {
+                anthropic::complete(self, req, &model, tx).await
+            }
+            forge_connect::ProviderTransport::Codex => codex::complete(self, req, &model, tx).await,
+            forge_connect::ProviderTransport::OpenaiCompat => {
+                openai::complete(self, req, &model, tx).await
+            }
         }
-        if model.starts_with("openai-codex/") {
-            return codex::complete(self, req, &model, tx).await;
-        }
-        openai::complete(self, req, &model, tx).await
     }
 
     fn apply_provider_env(&self, pairs: &[(String, String)]) {
@@ -201,28 +203,33 @@ impl ModelClient for NativeModelClient {
     }
 }
 
-/// Convert the stable offering identity into the legacy provider namespace
-/// still consumed by the individual wire-format modules. The route is the
-/// authority; the model name is never used to choose credentials or transport.
+/// Convert the stable offering identity into the namespaced model id the
+/// wire modules consume. Prefix comes from the registered spec, not a match.
+fn spec_for_route(route_id: &str) -> Option<forge_connect::ProviderSpec> {
+    forge_connect::loaded_registry()
+        .get_by_route(route_id)
+        .cloned()
+}
+
+fn transport_for_route(route_id: Option<&str>) -> forge_connect::ProviderTransport {
+    route_id
+        .and_then(spec_for_route)
+        .map(|spec| spec.transport)
+        .unwrap_or(forge_connect::ProviderTransport::OpenaiCompat)
+}
+
 fn canonical_model_for_route(route_id: Option<&str>, model: &str) -> String {
     let Some(route_id) = route_id else {
+        return model.to_string();
+    };
+    let Some(spec) = spec_for_route(route_id) else {
         return model.to_string();
     };
     let bare = model
         .split_once('/')
         .map(|(_, value)| value)
         .unwrap_or(model);
-    let prefix = match route_id {
-        "openai-chatgpt" => "openai-codex",
-        "openai-api" => "openai",
-        "anthropic-api" => "anthropic",
-        "xai-api" => "xai",
-        "opencode-go" => "opencode-go",
-        "opencode-zen" => "opencode-zen",
-        "ollama" => "ollama",
-        _ => return model.to_string(),
-    };
-    format!("{prefix}/{bare}")
+    format!("{}/{bare}", spec.model_provider_prefix)
 }
 
 #[cfg(test)]

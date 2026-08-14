@@ -101,7 +101,7 @@ pub fn resolve_journal_dir(cfg: &Config) -> (std::path::PathBuf, Vec<String>) {
 /// An explicitly exported variable still wins, which is the precedence
 /// `forge_connect::resolve_key` already uses.
 pub fn connect_credentials() -> Vec<(String, String)> {
-    let reg = forge_connect::builtin_registry();
+    let reg = forge_connect::loaded_registry();
     let store = forge_connect::CredentialStore::user_default();
     let preferences = forge_connect::PreferenceStore::user_default();
     let svc = forge_connect::ConnectService {
@@ -198,7 +198,7 @@ pub async fn open_session(cfg: &Config, target: SessionTarget) -> anyhow::Result
         let cache = forge_connect::ModelCatalogCache::user_default();
         if !cfg!(test) && !cache.image_input_ready() {
             let _ = forge_connect::refresh_models_dev_registry(
-                forge_connect::builtin_registry().profiles(),
+                forge_connect::loaded_registry().profiles(),
                 &cache,
             );
         }

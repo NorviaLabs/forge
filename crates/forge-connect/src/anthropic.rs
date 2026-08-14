@@ -1,14 +1,14 @@
 //! Anthropic connect profile — API key (`anthropic/*`).
 
 use crate::auth::AuthMode;
-use crate::profile::ConnectProfile;
+use crate::profile::{CatalogMode, ProviderSpec, ProviderTransport, SpecOrigin};
 use crate::verify::VerifyError;
 
 pub const PROFILE_ID: &str = "anthropic";
 pub const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
 
-pub fn anthropic_profile() -> ConnectProfile {
-    ConnectProfile {
+pub fn anthropic_profile() -> ProviderSpec {
+    ProviderSpec {
         id: PROFILE_ID.into(),
         title: "Anthropic".into(),
         description: "Anthropic API key — anthropic/* (Claude) models".into(),
@@ -24,6 +24,10 @@ pub fn anthropic_profile() -> ConnectProfile {
         vendor_id: PROFILE_ID.into(),
         vendor_label: "Anthropic".into(),
         route_label: "API".into(),
+        route_id: "anthropic-api".into(),
+        catalog_mode: CatalogMode::LiveRegistry,
+        transport: ProviderTransport::Anthropic,
+        origin: SpecOrigin::Builtin,
     }
 }
 

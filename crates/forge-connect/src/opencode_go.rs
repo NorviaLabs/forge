@@ -4,7 +4,7 @@
 //! Native routing maps `opencode-go/<id>` to this OpenAI-compatible endpoint.
 
 use crate::auth::AuthMode;
-use crate::profile::ConnectProfile;
+use crate::profile::{CatalogMode, ProviderSpec, ProviderTransport, SpecOrigin};
 
 pub const PROFILE_ID: &str = "opencode_go";
 
@@ -14,8 +14,8 @@ pub const DEFAULT_BASE_URL: &str = "https://opencode.ai/zen/go/v1";
 /// Env var the worker reads for the Go API base (set by connect).
 pub const API_BASE_ENV: &str = "OPENCODE_API_BASE";
 
-pub fn opencode_go_profile() -> ConnectProfile {
-    ConnectProfile {
+pub fn opencode_go_profile() -> ProviderSpec {
+    ProviderSpec {
         id: PROFILE_ID.into(),
         title: "OpenCode Go".into(),
         description: "OpenCode Go coding models — API key required (TUI prompts)".into(),
@@ -30,6 +30,10 @@ pub fn opencode_go_profile() -> ConnectProfile {
         vendor_id: "opencode".into(),
         vendor_label: "OpenCode".into(),
         route_label: "Go".into(),
+        route_id: "opencode-go".into(),
+        catalog_mode: CatalogMode::LiveRegistry,
+        transport: ProviderTransport::OpenaiCompat,
+        origin: SpecOrigin::Builtin,
     }
 }
 

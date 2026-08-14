@@ -2,7 +2,7 @@
 
 use base64::Engine;
 
-use crate::{AuthMode, ConnectProfile};
+use crate::{AuthMode, CatalogMode, ProviderSpec, ProviderTransport, SpecOrigin};
 
 pub const PROFILE_ID: &str = "openai_codex";
 pub const ACCESS_TOKEN_ENV: &str = "FORGE_CODEX_ACCESS_TOKEN";
@@ -11,8 +11,8 @@ pub const API_BASE_ENV: &str = "FORGE_CODEX_API_BASE";
 pub const AUTH_SERVER: &str = "https://auth.openai.com";
 pub const DEFAULT_BASE_URL: &str = "https://chatgpt.com/backend-api";
 
-pub fn openai_codex_profile() -> ConnectProfile {
-    ConnectProfile {
+pub fn openai_codex_profile() -> ProviderSpec {
+    ProviderSpec {
         id: PROFILE_ID.into(),
         title: "OpenAI Codex subscription".into(),
         description: "Use a ChatGPT plan through Forge's own device login".into(),
@@ -32,6 +32,10 @@ pub fn openai_codex_profile() -> ConnectProfile {
         vendor_id: "openai".into(),
         vendor_label: "OpenAI".into(),
         route_label: "ChatGPT".into(),
+        route_id: "openai-chatgpt".into(),
+        catalog_mode: CatalogMode::LiveRegistry,
+        transport: ProviderTransport::Codex,
+        origin: SpecOrigin::Builtin,
     }
 }
 

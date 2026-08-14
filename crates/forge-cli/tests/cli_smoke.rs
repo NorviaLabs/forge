@@ -28,6 +28,8 @@ fn help_lists_only_core_options() {
         "--max-turns",
         "--provider",
         "--mock",
+        "--print",
+        "--approvals",
     ] {
         assert!(
             !out.contains(flag),
@@ -35,15 +37,16 @@ fn help_lists_only_core_options() {
         );
     }
 
-    for flag in ["--resume", "--print", "--approvals"] {
-        assert!(out.contains(flag), "`{flag}` should be offered:\n{out}");
-    }
-
-    // Unattended approval must stay opt-in.
     assert!(
-        out.contains("[default: ask]"),
-        "--approvals must default to `ask`:\n{out}"
+        out.contains("--resume"),
+        "`--resume` should be offered:\n{out}"
     );
+    for flag in ["--print", "--approvals"] {
+        assert!(
+            !out.contains(flag),
+            "`{flag}` should not be offered:\n{out}"
+        );
+    }
 }
 
 #[test]

@@ -593,7 +593,7 @@ mod tests {
         let request = ModelRequest {
             workspace_root: std::path::PathBuf::new(),
             model: "anthropic/claude-sonnet-4-6".into(),
-            route_id: None,
+            route_id: Some("anthropic-api".into()),
             reasoning_effort: Some("high".into()),
             messages: vec![
                 Message::new(MessageRole::System, "system"),
@@ -645,7 +645,7 @@ mod tests {
         let request = ModelRequest {
             workspace_root: std::path::PathBuf::new(),
             model: "anthropic/claude".into(),
-            route_id: None,
+            route_id: Some("anthropic-api".into()),
             reasoning_effort: None,
             messages: vec![],
             tools: vec![],

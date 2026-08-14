@@ -11,7 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::profile::ConnectProfile;
+use crate::profile::{CatalogMode, ConnectProfile, ProviderTransport};
 use crate::store::{resolve_key, CredentialStore};
 
 /// Default TTL for cached catalog entries (1 hour).
@@ -104,6 +104,8 @@ pub enum CatalogSource {
     Registry,
     /// Built-in emergency fallback when no catalog data is available.
     Default,
+    /// Declared on a `static` provider spec. The author entitled these ids.
+    Configured,
 }
 
 impl CatalogSource {
@@ -111,7 +113,7 @@ impl CatalogSource {
     /// (directly or from that account's persisted cache). Public registry and
     /// built-in fallback rows are metadata/safety nets, not entitlement proof.
     pub fn is_runnable(self) -> bool {
-        matches!(self, Self::Live | Self::Cached)
+        matches!(self, Self::Live | Self::Cached | Self::Configured)
     }
 }
 
@@ -958,13 +960,16 @@ pub fn models_for_picker(
 
     for p in profiles {
         let mut entries = Vec::new();
-        let is_ollama = p.id == crate::ollama::PROFILE_ID;
-        if refresh_stale {
+        let live = matches!(
+            p.catalog_mode,
+            CatalogMode::Live | CatalogMode::LiveRegistry
+        );
+        if live && refresh_stale {
             if let Ok(m) = refresh_profile_catalog(p, store, cache) {
                 entries.extend(m.into_iter().map(|id| (id, CatalogSource::Live)));
             }
         }
-        if entries.is_empty() && !(is_ollama && refresh_stale) {
+        if live && entries.is_empty() && !(p.catalog_mode == CatalogMode::Live && refresh_stale) {
             entries.extend(
                 cache
                     .get_cached(&p.id)
@@ -972,7 +977,7 @@ pub fn models_for_picker(
                     .map(|id| (id, CatalogSource::Cached)),
             );
         }
-        if p.id == crate::openai_codex::PROFILE_ID {
+        if p.transport == ProviderTransport::Codex {
             // Keep a previously refreshed Forge cache useful, but supplement it
             // with the official CLI's current account-scoped cache. This avoids
             // waiting for the Forge cache TTL after a temporary empty endpoint
@@ -987,14 +992,14 @@ pub fn models_for_picker(
                 .map(|id| (id, CatalogSource::Cached)),
             );
         }
-        if !is_ollama
-            && !p.models_dev_providers.is_empty()
-            && p.id != crate::openai_codex::PROFILE_ID
-        {
-            // Provider catalog rows come first; append the opted-in public
-            // registry only as explicitly-unverified supplemental metadata.
-            // Codex entitlement is account-scoped; keep models.dev as
-            // metadata (effort/image) without inventing selectable rows.
+        let include_registry_rows = match p.catalog_mode {
+            CatalogMode::Registry => true,
+            CatalogMode::LiveRegistry => {
+                !p.models_dev_providers.is_empty() && p.transport != ProviderTransport::Codex
+            }
+            CatalogMode::Live | CatalogMode::Static => false,
+        };
+        if include_registry_rows {
             entries.extend(
                 cache
                     .get_registry_cached(&p.id)
@@ -1002,7 +1007,14 @@ pub fn models_for_picker(
                     .map(|id| (id, CatalogSource::Registry)),
             );
         }
-        if entries.is_empty() && !is_ollama {
+        if p.catalog_mode == CatalogMode::Static {
+            entries.extend(
+                p.default_models
+                    .iter()
+                    .cloned()
+                    .map(|id| (id, CatalogSource::Configured)),
+            );
+        } else if entries.is_empty() && p.catalog_mode != CatalogMode::Live {
             entries.extend(
                 p.default_models
                     .iter()
