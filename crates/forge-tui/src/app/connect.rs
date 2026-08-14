@@ -661,6 +661,7 @@ impl TuiApp {
         self.persist_selection();
         self.record_deliberate_selection();
         self.overlay = None;
+        self.onboarding_connect = false;
         self.notice_state.items.clear();
         let title = self
             .connect

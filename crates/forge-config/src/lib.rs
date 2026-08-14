@@ -2,6 +2,7 @@
 
 mod permissions;
 mod theme;
+mod trust;
 
 use std::env;
 use std::fs;
@@ -24,6 +25,10 @@ pub use theme::{
     is_system_theme, normalize_theme_id, parse_hex_color, parse_theme_preference, parse_theme_toml,
     Rgb, SyntaxPalette, ThemeDefinition, ThemePalette, DEFAULT_THEME_ID, THEME_FORGE_DARK,
     THEME_SOLARIZED_DARK, THEME_SOLARIZED_LIGHT, THEME_SYSTEM,
+};
+pub use trust::{
+    grant_trust, is_trusted, persist_committed_theme, persist_committed_theme_at,
+    trust_display_path, trust_file_path, TrustError, HOME_PROJECTS_DIR,
 };
 
 #[derive(Debug, Error)]
@@ -235,6 +240,10 @@ pub struct TuiConfig {
     /// Optional `[tui] theme` preference (theme id, e.g. `forge-dark`).
     #[serde(default = "default_theme_id")]
     pub theme: String,
+    /// Explicit first-install commit. A missing key or defaulted `forge-dark`
+    /// is not a committed theme.
+    #[serde(default)]
+    pub theme_committed: bool,
 }
 
 impl Default for TuiConfig {
@@ -242,6 +251,7 @@ impl Default for TuiConfig {
         Self {
             file_icons: FileIconMode::Unicode,
             theme: default_theme_id(),
+            theme_committed: false,
         }
     }
 }
@@ -257,6 +267,7 @@ pub struct CommandConfig {
 struct TuiConfigFile {
     file_icons: Option<String>,
     theme: Option<String>,
+    theme_committed: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -545,7 +556,7 @@ impl Config {
     }
 }
 
-fn user_config_path() -> Option<PathBuf> {
+pub(crate) fn user_config_path() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("forge").join("config.toml"))
 }
 
@@ -687,6 +698,9 @@ impl ConfigFile {
                 if let Some(id) = parse_theme_preference(&theme) {
                     cfg.tui.theme = id;
                 }
+            }
+            if let Some(committed) = tui.theme_committed {
+                cfg.tui.theme_committed = committed;
             }
         }
         if let Some(validation) = self.validation {
@@ -1470,12 +1484,14 @@ max_query_chars = 0
             tui: Some(TuiConfigFile {
                 file_icons: Some("off".into()),
                 theme: Some("system".into()),
+                theme_committed: Some(true),
             }),
             ..Default::default()
         };
         file.apply(&mut cfg, ConfigScope::Trusted);
         assert_eq!(cfg.tui.file_icons, FileIconMode::Off);
         assert_eq!(cfg.tui.theme, THEME_SYSTEM);
+        assert!(cfg.tui.theme_committed);
     }
 
     /// An invalid `file_icons` / `theme` string in the file is silently
@@ -1487,6 +1503,7 @@ max_query_chars = 0
             tui: Some(TuiConfigFile {
                 file_icons: Some("bogus".into()),
                 theme: Some("bogus".into()),
+                theme_committed: None,
             }),
             ..Default::default()
         };

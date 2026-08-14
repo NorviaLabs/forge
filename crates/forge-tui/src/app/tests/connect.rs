@@ -1181,3 +1181,25 @@ async fn mock_provider_allows_chat_without_connect() {
     app.dispatch_line("hi").await.unwrap();
     assert_eq!(app.pending_turn.prompt.as_deref(), Some("hi"));
 }
+
+#[tokio::test]
+async fn onboarding_connect_esc_exits_the_process() {
+    let (_dir, session) = test_session().await;
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "m".into(),
+            provider: "native".into(),
+            cwd: PathBuf::from("."),
+            version: "0.6.1".into(),
+            startup_notices: Vec::new(),
+            file_icons: FileIconMode::Unicode,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+    app.onboarding_connect = true;
+    app.open_connect_picker();
+    app.dismiss_overlay();
+    assert!(app.exit.requested);
+    assert_eq!(app.exit.code, crate::ExitCode::Canceled);
+}
