@@ -109,9 +109,9 @@ impl GitStatusCache {
     /// Start a background refresh of the Git status for `root`.
     /// This is fully non-blocking: any previous in-flight refresh is dropped
     /// without waiting for its thread to finish. The previous `status` is
-    /// kept until the refresh resolves, so callers that re-trigger a refresh
-    /// on every navigation step (e.g. expanding a directory) don't flash
-    /// stale markers to empty for a frame.
+    /// kept until the refresh resolves. Do not call this on folder expand —
+    /// status is whole-repo, and a refresh also bumps `revision` and clears
+    /// the diff cache.
     pub fn start_refresh(&mut self, root: PathBuf) {
         self.loading = true;
         self.error = None;
