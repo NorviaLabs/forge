@@ -96,6 +96,10 @@ pub struct VisibleNode {
 pub struct FileExplorer {
     pub root: Option<FileNode>,
     pub selected_path: Option<PathBuf>,
+    /// Index of `selected_path` in `visible`, when that mapping is known.
+    /// `move_selection` uses this so holding j/k does not rescan every
+    /// `PathBuf` on a large listing.
+    selected_index: Option<usize>,
     pub scroll: usize,
     pub focused: bool,
     pub search_focused: bool,
@@ -116,6 +120,7 @@ impl FileExplorer {
         let mut explorer = Self {
             root: root_path.clone().map(FileNode::root),
             selected_path: root_path.clone(),
+            selected_index: None,
             scroll: 0,
             focused: false,
             search_focused: true,
@@ -314,34 +319,44 @@ impl FileExplorer {
         if self.visible.is_empty() {
             return;
         }
-        let current = self
-            .selected_path
-            .as_ref()
-            .and_then(|path| self.visible.iter().position(|node| &node.path == path))
-            .unwrap_or(0);
+        let current = self.selected_visible_index().unwrap_or(0);
         let next = current
             .saturating_add_signed(delta)
             .min(self.visible.len() - 1);
-        self.selected_path = Some(self.visible[next].path.clone());
+        self.select_visible_index(next);
     }
 
     pub fn expand_selected(&mut self) {
+        if let Some(index) = self.selected_visible_index() {
+            let node = &self.visible[index];
+            if node.kind != FileKind::Directory {
+                return;
+            }
+            if node.expanded && node.loaded {
+                return;
+            }
+        }
         let Some(path) = self.selected_path.clone() else {
             return;
         };
         let root_path = self.root_path.clone();
-        if let Some(node) = self.find_mut(&path) {
-            if node.kind == FileKind::Directory {
-                if !node.loaded {
-                    load_children(root_path.as_deref(), node);
-                }
-                node.expanded = true;
-                self.rebuild_visible();
-                if let Some(root) = root_path {
-                    self.git_status.start_refresh(root);
-                }
-            }
+        let Some(node) = self.find_mut(&path) else {
+            return;
+        };
+        if node.kind != FileKind::Directory {
+            return;
         }
+        // Git status is whole-repo (`git status -z -uall`), so expanding a
+        // folder cannot change markers. Spawning porcelain here made holding
+        // → hitch on process spawn and cleared the diff cache every time.
+        if node.expanded && node.loaded {
+            return;
+        }
+        if !node.loaded {
+            load_children(root_path.as_deref(), node);
+        }
+        node.expanded = true;
+        self.rebuild_visible();
     }
 
     pub fn activate_selected(&mut self) {
@@ -452,19 +467,49 @@ impl FileExplorer {
             flatten_filtered(root, 0, &self.search_query, self.root_path(), &mut visible);
         }
         self.visible = visible;
+        self.selected_index = None;
+    }
+
+    fn selected_visible_index(&mut self) -> Option<usize> {
+        if let Some(index) = self.selected_index {
+            if self
+                .visible
+                .get(index)
+                .is_some_and(|node| Some(&node.path) == self.selected_path.as_ref())
+            {
+                return Some(index);
+            }
+        }
+        let index = self
+            .selected_path
+            .as_ref()
+            .and_then(|path| self.visible.iter().position(|node| &node.path == path))?;
+        self.selected_index = Some(index);
+        Some(index)
+    }
+
+    fn select_visible_index(&mut self, index: usize) {
+        let Some(node) = self.visible.get(index) else {
+            return;
+        };
+        self.selected_path = Some(node.path.clone());
+        self.selected_index = Some(index);
     }
 
     fn repair_selection(&mut self, previous_index: usize) {
-        if self.visible.is_empty()
-            || self
-                .visible
-                .iter()
-                .any(|node| Some(&node.path) == self.selected_path.as_ref())
-        {
+        if self.visible.is_empty() {
+            self.selected_index = None;
             return;
         }
-        let index = previous_index.min(self.visible.len() - 1);
-        self.selected_path = Some(self.visible[index].path.clone());
+        if self
+            .visible
+            .iter()
+            .any(|node| Some(&node.path) == self.selected_path.as_ref())
+        {
+            self.selected_index = None;
+            return;
+        }
+        self.select_visible_index(previous_index.min(self.visible.len() - 1));
     }
 
     /// Returns the selected path if it points to a regular file.
@@ -979,6 +1024,7 @@ impl Widget for FileExplorerWidget<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, Instant};
 
     fn wait_for_search_load(explorer: &mut FileExplorer) {
         for _ in 0..1_000 {
@@ -1200,6 +1246,137 @@ mod tests {
             .filter_map(|n| n.path.file_name().and_then(|s| s.to_str()))
             .collect();
         assert!(names.contains(&"local"), "{names:?}");
+    }
+
+    fn wait_for_git(explorer: &mut FileExplorer) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while explorer.git_status.loading && Instant::now() < deadline {
+            explorer.git_status.poll();
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    fn init_git(dir: &Path) {
+        for args in [
+            ["init", "--initial-branch=main", "-q"].as_slice(),
+            ["config", "user.email", "test@example.com"].as_slice(),
+            ["config", "user.name", "Test"].as_slice(),
+        ] {
+            assert!(std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .status()
+                .unwrap()
+                .success());
+        }
+    }
+
+    #[test]
+    fn expand_does_not_respawn_git_status() {
+        let root = tempfile::tempdir().unwrap();
+        init_git(root.path());
+        fs::create_dir(root.path().join("src")).unwrap();
+        fs::write(root.path().join("src/lib.rs"), "").unwrap();
+        let mut explorer = FileExplorer::new(
+            Some(root.path().to_path_buf()),
+            forge_config::FileIconMode::Unicode,
+        );
+        wait_for_git(&mut explorer);
+        assert!(!explorer.git_status.loading);
+
+        explorer.selected_path = Some(root.path().join("src").canonicalize().unwrap());
+        explorer.expand_selected();
+
+        assert!(
+            !explorer.git_status.loading,
+            "git status is whole-repo; expanding a folder must not spawn another porcelain"
+        );
+    }
+
+    #[test]
+    fn expanding_an_already_open_directory_does_not_rebuild() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("src")).unwrap();
+        fs::write(root.path().join("src/lib.rs"), "").unwrap();
+        let mut explorer = FileExplorer::new(
+            Some(root.path().to_path_buf()),
+            forge_config::FileIconMode::Unicode,
+        );
+        explorer.selected_path = Some(root.path().join("src").canonicalize().unwrap());
+        explorer.expand_selected();
+        let visible = explorer.visible.as_ptr();
+        explorer.expand_selected();
+        assert_eq!(
+            explorer.visible.as_ptr(),
+            visible,
+            "a second → on an open folder must not rebuild the listing"
+        );
+    }
+
+    #[test]
+    fn large_tree_navigation_stays_on_a_keystroke_budget() {
+        let root = tempfile::tempdir().unwrap();
+        init_git(root.path());
+        const DIRS: usize = 30;
+        const FILES: usize = 40;
+        for dir in 0..DIRS {
+            let path = root.path().join(format!("pkg_{dir:02}"));
+            fs::create_dir(&path).unwrap();
+            for file in 0..FILES {
+                fs::write(path.join(format!("f_{file:02}.rs")), "").unwrap();
+            }
+        }
+        let mut explorer = FileExplorer::new(
+            Some(root.path().to_path_buf()),
+            forge_config::FileIconMode::Unicode,
+        );
+        wait_for_git(&mut explorer);
+
+        let dirs: Vec<_> = explorer
+            .visible
+            .iter()
+            .filter(|node| node.kind == FileKind::Directory && node.depth == 1)
+            .map(|node| node.path.clone())
+            .collect();
+        assert_eq!(dirs.len(), DIRS);
+
+        let started = Instant::now();
+        for path in &dirs {
+            explorer.selected_path = Some(path.clone());
+            explorer.expand_selected();
+        }
+        let expand_ms = started.elapsed().as_secs_f64() * 1000.0;
+        assert!(
+            expand_ms < 150.0,
+            "expanding {DIRS} directories took {expand_ms:.1}ms; each expand must be a read_dir, not git status"
+        );
+        assert_eq!(
+            explorer.visible.len(),
+            1 + DIRS + DIRS * FILES,
+            "every file should be visible after expanding"
+        );
+
+        let started = Instant::now();
+        for _ in 0..500 {
+            explorer.move_selection(1);
+        }
+        let move_ms = started.elapsed().as_secs_f64() * 1000.0;
+        assert!(
+            move_ms < 10.0,
+            "500 selection moves on a {FILES}-file listing took {move_ms:.1}ms"
+        );
+
+        explorer.selected_path = Some(dirs[0].clone());
+        let started = Instant::now();
+        for _ in 0..50 {
+            explorer.expand_selected();
+        }
+        let noop_us = started.elapsed().as_secs_f64() * 1_000_000.0;
+        assert!(
+            noop_us < 2_000.0,
+            "50 expands of an already-open directory took {noop_us:.0}us"
+        );
     }
 
     #[test]
@@ -1528,6 +1705,7 @@ mod tests {
         let mut explorer = FileExplorer {
             root: Some(root),
             selected_path: Some(PathBuf::from("/tmp/forge-test-root")),
+            selected_index: None,
             scroll: 0,
             focused: false,
             search_focused: true,

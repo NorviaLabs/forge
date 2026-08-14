@@ -242,3 +242,80 @@ async fn explorer_delete_non_empty_folder_requires_stronger_confirmation() {
     assert!(folder.exists());
     assert!(app.explorer_dialog.current.is_some());
 }
+
+#[tokio::test]
+async fn holding_arrows_in_a_large_tree_stays_on_a_frame_budget() {
+    use std::time::Instant;
+
+    let dir = TempDir::new().unwrap();
+    init_repo(dir.path());
+    for pkg in 0..20 {
+        let pkg_dir = dir.path().join(format!("pkg_{pkg:02}"));
+        std::fs::create_dir(&pkg_dir).unwrap();
+        for file in 0..30 {
+            std::fs::write(pkg_dir.join(format!("f_{file:02}.rs")), "").unwrap();
+        }
+    }
+    let session = session_for_workspace(dir.path()).await;
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            model_label: "mock".into(),
+            provider: "mock".into(),
+            cwd: dir.path().to_path_buf(),
+            version: "test".into(),
+            startup_notices: Vec::new(),
+            file_icons: FileIconMode::Unicode,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+    app.connect.profile = None;
+    app.workspace_files.visible = true;
+    app.focus_block(FocusBlock::Files);
+    draw_app(&mut app, 120, 40);
+
+    let dirs: Vec<_> = app
+        .workspace_files
+        .explorer
+        .visible_nodes()
+        .into_iter()
+        .filter(|node| {
+            node.depth == 1
+                && app
+                    .workspace_files
+                    .explorer
+                    .is_visible_directory(&node.path)
+        })
+        .map(|node| node.path)
+        .collect();
+    for path in dirs {
+        app.workspace_files.explorer.selected_path = Some(path);
+        app.workspace_files.explorer.expand_selected();
+    }
+    draw_app(&mut app, 120, 40);
+
+    let started = Instant::now();
+    for _ in 0..200 {
+        app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
+            .await
+            .unwrap();
+    }
+    let move_ms = started.elapsed().as_secs_f64() * 1000.0;
+    assert!(
+        move_ms < 50.0,
+        "200 down keys in a 600-file tree took {move_ms:.1}ms"
+    );
+
+    let started = Instant::now();
+    for _ in 0..30 {
+        app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        draw_app(&mut app, 120, 40);
+    }
+    let frame_ms = started.elapsed().as_secs_f64() * 1000.0;
+    assert!(
+        frame_ms < 500.0,
+        "30 down+draw steps in a 600-file tree took {frame_ms:.1}ms"
+    );
+}
