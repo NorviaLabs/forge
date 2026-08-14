@@ -541,6 +541,7 @@ impl AgentSession {
             thinking: None,
             thinking_duration_secs: None,
             tool_calls: vec![],
+            attachments: Vec::new(),
         });
         Ok(None)
     }

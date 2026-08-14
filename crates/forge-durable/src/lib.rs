@@ -241,12 +241,22 @@ impl Journal {
         session_id: SessionId,
         text: &str,
     ) -> Result<u64, JournalError> {
-        self.append(
-            session_id,
-            JournalEventType::UserMessage,
-            json!({ "content": text }),
-        )
-        .await
+        self.append_user_message_with_attachments(session_id, text, &[])
+            .await
+    }
+
+    pub async fn append_user_message_with_attachments(
+        &self,
+        session_id: SessionId,
+        text: &str,
+        attachments: &[forge_types::ImageRef],
+    ) -> Result<u64, JournalError> {
+        let mut payload = json!({ "content": text });
+        if !attachments.is_empty() {
+            payload["attachments"] = serde_json::to_value(attachments).unwrap_or(json!([]));
+        }
+        self.append(session_id, JournalEventType::UserMessage, payload)
+            .await
     }
 
     /// Records a composer submission independent of whether it became a
@@ -590,7 +600,16 @@ impl Journal {
                 JournalEventType::UserMessage => {
                     if let Some(c) = payload.get("content").and_then(|v| v.as_str()) {
                         state.user_messages.push(c.to_string());
-                        state.messages.push(Message::new(MessageRole::User, c));
+                        let attachments = payload
+                            .get("attachments")
+                            .and_then(|value| {
+                                serde_json::from_value::<Vec<forge_types::ImageRef>>(value.clone())
+                                    .ok()
+                            })
+                            .unwrap_or_default();
+                        state
+                            .messages
+                            .push(Message::new(MessageRole::User, c).with_attachments(attachments));
                     }
                     if let Some(id) = promoting_item {
                         promoted_without_confirmation.insert(id);
@@ -625,6 +644,7 @@ impl Journal {
                                     .filter(|thinking| !thinking.trim().is_empty()),
                                 thinking_duration_secs: None,
                                 tool_calls: response.tool_calls.clone(),
+                                attachments: Vec::new(),
                             });
                         }
                         state.model_responses.push(response);
@@ -647,6 +667,7 @@ impl Journal {
                             thinking: None,
                             thinking_duration_secs: None,
                             tool_calls: vec![],
+                            attachments: p.output.attachments.clone(),
                         });
                         state.tool_results.insert(p.call_id.clone(), p);
                     }
@@ -828,6 +849,7 @@ mod tests {
                 content: "ok".into(),
                 is_error: false,
                 exit_code: None,
+                attachments: Vec::new(),
             },
         )
         .await
@@ -898,6 +920,7 @@ mod tests {
                     content: "contents".into(),
                     is_error: false,
                     exit_code: None,
+                    attachments: Vec::new(),
                 },
             )
             .await

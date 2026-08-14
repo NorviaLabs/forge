@@ -626,6 +626,68 @@ impl TuiApp {
         }
     }
 
+    pub(super) fn paste_clipboard_image(&mut self) {
+        match crate::clipboard_image::read_os_clipboard_image() {
+            Ok(bytes) => self.attach_image_bytes(&bytes),
+            Err(err) => self.set_feedback(FeedbackSeverity::Warn, err),
+        }
+    }
+
+    pub(super) fn attach_image_bytes(&mut self, bytes: &[u8]) {
+        match self.store_pasted_image(bytes) {
+            Ok(image) => {
+                let label = image_chip_label(&image);
+                self.attachment.pending_images.push(image);
+                self.set_feedback(FeedbackSeverity::Info, format!("image attached · {label}"));
+            }
+            Err(err) => self.set_feedback(FeedbackSeverity::Warn, err),
+        }
+    }
+
+    pub(super) fn dismiss_last_image_chip(&mut self) -> bool {
+        self.attachment.pending_images.pop().is_some()
+    }
+
+    fn store_pasted_image(&self, bytes: &[u8]) -> Result<forge_types::ImageRef, String> {
+        let meta = forge_types::inspect_image(bytes).map_err(|err| err.to_string())?;
+        let ext = match meta.mime {
+            "image/png" => "png",
+            "image/jpeg" => "jpg",
+            "image/gif" => "gif",
+            "image/webp" => "webp",
+            _ => "img",
+        };
+        let dir = self.session.workspace_root().join(".forge/local/pasted");
+        std::fs::create_dir_all(&dir).map_err(|err| format!("cannot write pasted image: {err}"))?;
+        let name = format!(
+            "{}-{}.{}",
+            chrono::Utc::now().format("%Y%m%dT%H%M%S"),
+            self.attachment.pending_images.len() + 1,
+            ext
+        );
+        let abs = dir.join(&name);
+        std::fs::write(&abs, bytes).map_err(|err| format!("cannot write pasted image: {err}"))?;
+        let rel = format!(".forge/local/pasted/{name}");
+        Ok(
+            forge_types::ImageRef::new(rel, meta.mime, bytes.len() as u64)
+                .with_dimensions(meta.width, meta.height),
+        )
+    }
+
+    pub(super) fn pending_image_label(&self) -> Option<String> {
+        if self.attachment.pending_images.is_empty() {
+            return None;
+        }
+        Some(
+            self.attachment
+                .pending_images
+                .iter()
+                .map(image_chip_label)
+                .collect::<Vec<_>>()
+                .join(" · "),
+        )
+    }
+
     pub(super) fn refresh_active_source_viewer(&mut self) {
         let root = self.session_view.workspace_root().to_path_buf();
         let path = self.source_viewer.path.clone();
@@ -849,4 +911,17 @@ impl TuiApp {
             )
             .render(r, buf);
     }
+}
+
+fn image_chip_label(image: &forge_types::ImageRef) -> String {
+    let name = std::path::Path::new(&image.path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(&image.path);
+    let size = if image.byte_len >= 1024 {
+        format!("{} KB", (image.byte_len + 512) / 1024)
+    } else {
+        format!("{} B", image.byte_len)
+    };
+    format!("Image: {name} · {size}")
 }

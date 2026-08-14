@@ -87,6 +87,7 @@ skill's description matches the current task, before following its instructions.
             content,
             is_error: false,
             exit_code: None,
+            attachments: Vec::new(),
         })
     }
 }

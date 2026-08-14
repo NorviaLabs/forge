@@ -141,6 +141,33 @@ pub(super) async fn complete(
     })
 }
 
+fn anthropic_payload_content(message: &forge_types::Message, workspace: &std::path::Path) -> Value {
+    if message.attachments.is_empty() {
+        return json!(message.content);
+    }
+    let mut parts = Vec::new();
+    if !message.content.is_empty() {
+        parts.push(json!({"type": "text", "text": message.content}));
+    }
+    for image in &message.attachments {
+        match crate::image::load_image_ref(workspace, image) {
+            Ok(loaded) => parts.push(crate::image::anthropic_image_part(
+                &loaded.mime,
+                &loaded.bytes,
+            )),
+            Err(_) => parts.push(json!({
+                "type": "text",
+                "text": format!("image at `{}` is no longer available", image.path)
+            })),
+        }
+    }
+    if parts.is_empty() {
+        json!(message.content)
+    } else {
+        Value::Array(parts)
+    }
+}
+
 fn messages_body(req: &ModelRequest) -> (String, Vec<Value>) {
     let mut system = Vec::new();
     let mut messages = Vec::new();
@@ -152,12 +179,12 @@ fn messages_body(req: &ModelRequest) -> (String, Vec<Value>) {
                 "content": [{
                     "type": "tool_result",
                     "tool_use_id": message.tool_call_id.clone().unwrap_or_default(),
-                    "content": message.content
+                    "content": anthropic_payload_content(message, &req.workspace_root)
                 }]
             })),
             MessageRole::User => messages.push(json!({
                 "role": "user",
-                "content": message.content
+                "content": anthropic_payload_content(message, &req.workspace_root)
             })),
             MessageRole::Assistant => {
                 let mut content = Vec::new();
@@ -382,8 +409,52 @@ mod tests {
     use forge_types::{Message, ModelStreamEvent, SideEffectClass, ToolDescriptor};
 
     #[test]
+    fn user_and_tool_image_refs_become_anthropic_image_blocks() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("shot.png"), forge_types::sample_png_bytes()).unwrap();
+        let req = ModelRequest {
+            workspace_root: dir.path().to_path_buf(),
+            model: "anthropic/claude".into(),
+            route_id: None,
+            prompt_cache: true,
+            reasoning_effort: None,
+            messages: vec![
+                Message::new(MessageRole::User, "compare")
+                    .with_attachments(vec![forge_types::ImageRef::new("shot.png", "image/png", 1)]),
+                Message::from_tool_output(
+                    &forge_types::ToolCall {
+                        id: "v1".into(),
+                        name: "view_image".into(),
+                        arguments: serde_json::json!({"path": "shot.png"}),
+                    },
+                    &forge_types::ToolOutput {
+                        content: "image loaded · 1 KB · shot.png".into(),
+                        is_error: false,
+                        exit_code: None,
+                        outcome: Some(forge_types::ExecutionOutcome::Success),
+                        attachments: vec![forge_types::ImageRef::new("shot.png", "image/png", 1)],
+                    },
+                ),
+            ],
+            tools: vec![],
+        };
+        let (_system, messages) = messages_body(&req);
+        let user = &messages[0]["content"];
+        assert_eq!(user[0]["type"], "text");
+        assert_eq!(user[1]["type"], "image");
+        assert_eq!(user[1]["source"]["media_type"], "image/png");
+        assert!(user[1]["source"]["data"].as_str().unwrap().len() > 8);
+        let tool = &messages[1]["content"][0];
+        assert_eq!(tool["type"], "tool_result");
+        assert_eq!(tool["content"][1]["type"], "image");
+        let dumped = serde_json::to_string(&messages).unwrap();
+        assert!(!dumped.contains("data:image"), "{dumped}");
+    }
+
+    #[test]
     fn maps_system_tools_and_tool_results() {
         let req = ModelRequest {
+            workspace_root: std::path::PathBuf::new(),
             model: "anthropic/claude".into(),
             route_id: None,
             prompt_cache: true,
@@ -404,6 +475,7 @@ mod tests {
                         name: "read_file".into(),
                         arguments: json!({"path": "README.md"}),
                     }],
+                    attachments: Vec::new(),
                 },
                 Message {
                     outcome: Default::default(),
@@ -414,6 +486,7 @@ mod tests {
                     thinking: None,
                     thinking_duration_secs: None,
                     tool_calls: vec![],
+                    attachments: Vec::new(),
                 },
             ],
             tools: Vec::<ToolDescriptor>::new(),
@@ -510,6 +583,7 @@ mod tests {
         client.apply_provider_env(&[("ANTHROPIC_API_KEY".into(), "anthropic-secret".into())]);
         let (tx, rx) = std::sync::mpsc::channel();
         let request = ModelRequest {
+            workspace_root: std::path::PathBuf::new(),
             model: "anthropic/claude-sonnet-4-6".into(),
             route_id: None,
             reasoning_effort: Some("high".into()),
@@ -561,6 +635,7 @@ mod tests {
         // assertion below deterministic.
         client.apply_provider_env(&[("ANTHROPIC_API_KEY".into(), String::new())]);
         let request = ModelRequest {
+            workspace_root: std::path::PathBuf::new(),
             model: "anthropic/claude".into(),
             route_id: None,
             reasoning_effort: None,

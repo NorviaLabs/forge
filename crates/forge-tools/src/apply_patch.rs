@@ -108,6 +108,7 @@ impl Tool for ApplyPatchTool {
             content: diffs.join("\n"),
             is_error: false,
             exit_code: None,
+            attachments: Vec::new(),
         })
     }
 }

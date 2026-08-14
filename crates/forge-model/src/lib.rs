@@ -1,10 +1,12 @@
 //! Model providers — native Rust transports; mock for CI.
 
+mod image;
 mod mock;
 mod native;
 mod normalize;
 mod prompt_cache;
 
+pub use image::apply_missing_image_notes;
 pub use mock::MockModelClient;
 pub use native::NativeModelClient;
 pub use normalize::{
@@ -105,6 +107,8 @@ pub struct ModelRequest {
     pub messages: Vec<Message>,
     pub tools: Vec<ToolDescriptor>,
     pub model: String,
+    /// Workspace used to re-read `ImageRef` paths at request-build time.
+    pub workspace_root: std::path::PathBuf,
     /// Stable offering identity. `None` is retained for legacy callers while
     /// route-aware selection is rolled through the workspace.
     pub route_id: Option<String>,
@@ -183,6 +187,7 @@ mod tests {
         }]);
         let resp = client
             .complete(ModelRequest {
+                workspace_root: std::path::PathBuf::new(),
                 messages: vec![Message {
                     outcome: Default::default(),
                     role: MessageRole::User,
@@ -192,6 +197,7 @@ mod tests {
                     thinking: None,
                     thinking_duration_secs: None,
                     tool_calls: vec![],
+                    attachments: Vec::new(),
                 }],
                 tools: vec![],
                 model: "mock".into(),
@@ -212,6 +218,7 @@ mod tests {
         let error = client
             .complete_with_stream(
                 ModelRequest {
+                    workspace_root: std::path::PathBuf::new(),
                     messages: vec![],
                     tools: vec![],
                     model: "mock".into(),
@@ -248,6 +255,7 @@ mod tests {
         }]);
         let resp = client
             .complete(ModelRequest {
+                workspace_root: std::path::PathBuf::new(),
                 messages: vec![],
                 tools: vec![],
                 model: "mock".into(),
@@ -281,6 +289,7 @@ mod tests {
         let resp = client
             .complete_with_stream(
                 ModelRequest {
+                    workspace_root: std::path::PathBuf::new(),
                     messages: vec![],
                     tools: vec![],
                     model: "mock".into(),

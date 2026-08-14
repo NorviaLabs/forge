@@ -1,8 +1,11 @@
 //! OpenAI-shaped JSON → Forge ModelResponse.
 
+use std::path::Path;
+
 use forge_types::{Message, MessageRole, ModelResponse, ToolCall, ToolDescriptor, Usage};
 use serde_json::{json, Value};
 
+use crate::image::{load_image_ref, openai_image_part};
 use crate::ModelError;
 
 /// Map wire `complete` result object to Forge `ModelResponse`.
@@ -168,6 +171,10 @@ fn parse_usage(v: Option<&Value>) -> Option<Usage> {
 }
 
 pub fn forge_messages_to_wire(messages: &[Message]) -> Vec<Value> {
+    forge_messages_to_wire_in(messages, Path::new("."))
+}
+
+pub fn forge_messages_to_wire_in(messages: &[Message], workspace: &Path) -> Vec<Value> {
     messages
         .iter()
         .map(|m| {
@@ -180,9 +187,10 @@ pub fn forge_messages_to_wire(messages: &[Message]) -> Vec<Value> {
                 // user rather than escalating it to system/assistant.
                 _ => "user",
             };
+            let content = openai_message_content(m, workspace);
             let mut obj = json!({
                 "role": role,
-                "content": m.content,
+                "content": content,
             });
             if let Some(ref id) = m.tool_call_id {
                 obj["tool_call_id"] = json!(id);
@@ -216,6 +224,30 @@ pub fn forge_messages_to_wire(messages: &[Message]) -> Vec<Value> {
             obj
         })
         .collect()
+}
+
+fn openai_message_content(message: &Message, workspace: &Path) -> Value {
+    if message.attachments.is_empty() {
+        return json!(message.content);
+    }
+    let mut parts = Vec::new();
+    if !message.content.is_empty() {
+        parts.push(json!({"type": "text", "text": message.content}));
+    }
+    for image in &message.attachments {
+        match load_image_ref(workspace, image) {
+            Ok(loaded) => parts.push(openai_image_part(&loaded.mime, &loaded.bytes)),
+            Err(_) => parts.push(json!({
+                "type": "text",
+                "text": format!("image at `{}` is no longer available", image.path)
+            })),
+        }
+    }
+    if parts.is_empty() {
+        json!(message.content)
+    } else {
+        Value::Array(parts)
+    }
 }
 
 pub fn tools_to_openai_functions(tools: &[ToolDescriptor]) -> Vec<Value> {
@@ -311,6 +343,19 @@ mod tests {
     }
 
     #[test]
+    fn user_image_attachment_becomes_openai_image_url() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("shot.png"), forge_types::sample_png_bytes()).unwrap();
+        let msg = Message::new(MessageRole::User, "see this")
+            .with_attachments(vec![forge_types::ImageRef::new("shot.png", "image/png", 1)]);
+        let wire = forge_messages_to_wire_in(&[msg], dir.path());
+        assert_eq!(wire[0]["content"][0]["type"], "text");
+        assert_eq!(wire[0]["content"][1]["type"], "image_url");
+        let url = wire[0]["content"][1]["image_url"]["url"].as_str().unwrap();
+        assert!(url.starts_with("data:image/png;base64,"));
+    }
+
+    #[test]
     fn messages_and_tools_wire() {
         let msgs = forge_messages_to_wire(&[Message {
             outcome: Default::default(),
@@ -321,6 +366,7 @@ mod tests {
             thinking: None,
             thinking_duration_secs: None,
             tool_calls: vec![],
+            attachments: Vec::new(),
         }]);
         assert_eq!(msgs[0]["role"], "user");
         let assistant = forge_messages_to_wire(&[Message {
@@ -336,6 +382,7 @@ mod tests {
                 name: "read_file".into(),
                 arguments: json!({"path": "README.md"}),
             }],
+            attachments: Vec::new(),
         }]);
         assert_eq!(assistant[0]["tool_calls"][0]["id"], "call_1");
         assert_eq!(
@@ -367,6 +414,7 @@ mod tests {
                 name: "read_file".into(),
                 arguments: json!({"path": "main.rs"}),
             }],
+            attachments: Vec::new(),
         }]);
         assert_eq!(with_thinking[0]["reasoning_content"], "need the file");
         assert_eq!(with_thinking[0]["tool_calls"][0]["id"], "call_0");
@@ -384,6 +432,7 @@ mod tests {
                 name: "bash".into(),
                 arguments: json!({"command": "ls"}),
             }],
+            attachments: Vec::new(),
         }]);
         // Empty string is enough for DeepSeek; the field must be present.
         assert_eq!(without_thinking[0]["reasoning_content"], "");
@@ -398,6 +447,7 @@ mod tests {
             thinking: None,
             thinking_duration_secs: None,
             tool_calls: vec![],
+            attachments: Vec::new(),
         }]);
         assert!(plain[0].get("reasoning_content").is_none());
     }

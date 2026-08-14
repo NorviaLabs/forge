@@ -158,6 +158,7 @@ pub async fn open_session(cfg: &Config, target: SessionTarget) -> anyhow::Result
                     .to_string(),
                 is_error: false,
                 exit_code: None,
+                attachments: Vec::new(),
             }),
         }],
     );
@@ -194,6 +195,14 @@ pub async fn open_session(cfg: &Config, target: SessionTarget) -> anyhow::Result
     };
     if !cfg.model.model.is_empty() {
         session.set_active_model(cfg.model.model.clone());
+        let cache = forge_connect::ModelCatalogCache::user_default();
+        if !cfg!(test) && !cache.image_input_ready() {
+            let _ = forge_connect::refresh_models_dev_registry(
+                forge_connect::builtin_registry().profiles(),
+                &cache,
+            );
+        }
+        session.set_image_input_supported(cache.model_accepts_image_input(&cfg.model.model));
     }
 
     let (permissions, permission_notices) = forge_config::load_permissions(cfg.workspace_root());
