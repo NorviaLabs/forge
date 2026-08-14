@@ -607,6 +607,19 @@ impl TuiApp {
                     regions.input,
                     frame.buffer_mut(),
                 );
+                if let Some((id, _)) = items.get(*selected) {
+                    let host = if regions.chat.width >= 24 {
+                        regions.chat
+                    } else {
+                        regions.sidebar.unwrap_or(area)
+                    };
+                    let preview_area = crate::overlays::theme_preview_card(host);
+                    crate::theme_preview::render_theme_preview(
+                        id,
+                        preview_area,
+                        frame.buffer_mut(),
+                    );
+                }
             }
         } else {
             self.composer_area = Some(regions.input);

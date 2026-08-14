@@ -305,7 +305,12 @@ pub fn accent_soft_bg() -> Color {
 }
 
 pub fn syntax_theme() -> forge_syntax::HighlightTheme {
-    syntax_from_palette(&resolved_palette(&active()))
+    syntax_theme_for(&active())
+}
+
+/// Syntax roles for a specific theme id (including `system`).
+pub fn syntax_theme_for(theme_id: &str) -> forge_syntax::HighlightTheme {
+    syntax_from_palette(&resolved_palette(theme_id))
 }
 
 pub fn brand() -> Style {
@@ -724,7 +729,8 @@ pub struct Palette {
     pub cursor: Color,
 }
 
-#[cfg(test)]
+/// Palette for a specific theme id. Used by the theme picker preview so the
+/// snippet can show the focused theme without relying on the active cache.
 pub fn palette(theme_id: &str) -> Palette {
     palette_from_source(&resolved_palette(theme_id))
 }

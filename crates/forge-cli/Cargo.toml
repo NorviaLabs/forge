@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 forge-config = { workspace = true }
+forge-connect = { workspace = true }
 forge-core = { workspace = true }
 forge-session = { workspace = true }
 forge-tui = { workspace = true }

@@ -258,6 +258,19 @@ impl TuiApp {
             self.exit.requested = true;
             self.exit.code = ExitCode::Canceled;
         }
+        if self.onboarding_connect
+            && matches!(
+                self.overlay,
+                Some(
+                    Overlay::ConnectModel { .. }
+                        | Overlay::ConnectApiKey { .. }
+                        | Overlay::ConnectOauth { .. }
+                )
+            )
+        {
+            self.exit.requested = true;
+            self.exit.code = ExitCode::Canceled;
+        }
         // An in-flight device-code OAuth poll must not be able to
         // complete a connection the user just cancelled — `poll_oauth_tick`
         // runs unconditionally every event-loop tick regardless of
@@ -289,6 +302,8 @@ impl TuiApp {
         self.overlay = None;
         if persist {
             self.save_ui_state();
+            #[cfg(not(test))]
+            let _ = forge_config::persist_committed_theme(&theme_id);
             let label = crate::theme::registry().display_name(&theme_id);
             self.set_feedback(FeedbackSeverity::Ok, format!("theme · {label}"));
         }
