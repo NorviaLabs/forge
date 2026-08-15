@@ -7,11 +7,9 @@ mod pattern;
 pub use acl::{AclPolicy, AclRule};
 pub use audit::{AuditEvent, AuditLog};
 pub use pattern::{
-    default_shell_hitl_tools, exact_pattern, is_shell_tool, parse_pattern_rules, suggest_pattern,
-    PatternRule,
+    default_shell_hitl_tools, is_shell_tool, parse_pattern_rules, suggest_pattern, PatternRule,
 };
 
-use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use forge_types::{PolicyDecision, Principal, SideEffectClass, ToolCall, ToolDescriptor};
@@ -55,52 +53,6 @@ impl PermissionMode {
     }
 }
 
-/// Exact invocation remembered for the rest of this process session.
-///
-/// Distinct from a `PatternRule`: this matches one argv + cwd + env tuple,
-/// never a family of commands, and is never written to `permissions.toml`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct SessionExactAllow {
-    pub tool: String,
-    pub arguments: serde_json::Value,
-    pub working_directory: String,
-    pub environment_delta: String,
-}
-
-impl SessionExactAllow {
-    pub fn from_call(call: &ToolCall, workspace_root: impl AsRef<std::path::Path>) -> Self {
-        Self {
-            tool: call.name.clone(),
-            arguments: call.arguments.clone(),
-            working_directory: call_working_directory(&call.arguments, workspace_root),
-            environment_delta: call_environment_delta(&call.arguments),
-        }
-    }
-}
-
-fn call_working_directory(
-    args: &serde_json::Value,
-    workspace_root: impl AsRef<std::path::Path>,
-) -> String {
-    args.get("working_directory")
-        .or_else(|| args.get("cwd"))
-        .and_then(|value| value.as_str())
-        .filter(|value| !value.trim().is_empty())
-        .map(str::to_owned)
-        .unwrap_or_else(|| workspace_root.as_ref().display().to_string())
-}
-
-fn call_environment_delta(args: &serde_json::Value) -> String {
-    args.get("environment_delta")
-        .or_else(|| args.get("env_delta"))
-        .or_else(|| args.get("env"))
-        .map(|value| serde_json::to_string(value).unwrap_or_else(|_| "[unavailable]".into()))
-        .unwrap_or_else(|| "inherited".into())
-        .chars()
-        .take(300)
-        .collect()
-}
-
 /// High-level governance facade for the tool path.
 #[derive(Debug, Clone)]
 pub struct Governance {
@@ -118,9 +70,10 @@ pub struct Governance {
     /// Mode-scoped allow seed (Accept Edits). Cleared in Manual. Not persisted
     /// to user toml — recomputed on `apply_mode`.
     pub mode_pattern_allow: Vec<PatternRule>,
-    /// Exact argv+cwd+env grants for this process session only.
+    /// Generalized pattern grants for this process session only (Allow pattern).
     /// Shared across clones so a parent and its subagents see the same set.
-    session_exact_allow: Arc<Mutex<HashSet<SessionExactAllow>>>,
+    /// Never written to `permissions.toml`.
+    session_pattern_allow: Arc<Mutex<Vec<PatternRule>>>,
 }
 
 impl Default for Governance {
@@ -139,7 +92,7 @@ impl Default for Governance {
             pattern_allow: vec![],
             pattern_deny: vec![],
             mode_pattern_allow: vec![],
-            session_exact_allow: Arc::new(Mutex::new(HashSet::new())),
+            session_pattern_allow: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
@@ -267,52 +220,63 @@ impl Governance {
         if self.pattern_deny.iter().any(|rule| rule.matches(call)) {
             return PolicyDecision::Hitl;
         }
+        if self.allows_pattern(call) {
+            return PolicyDecision::Allow;
+        }
+        PolicyDecision::Hitl
+    }
+
+    fn allows_pattern(&self, call: &ToolCall) -> bool {
         if self
             .pattern_allow
             .iter()
             .chain(self.mode_pattern_allow.iter())
             .any(|rule| rule.matches(call))
         {
-            return PolicyDecision::Allow;
+            return true;
         }
-        PolicyDecision::Hitl
+        self.session_pattern_allows(call)
     }
 
-    /// Remember this exact invocation for the rest of the process session.
-    /// Does not persist and does not generalize to a command family.
-    /// Keep this instance's session-exact grants when replacing the rest of
+    /// Keep this instance's session pattern grants when replacing the rest of
     /// the policy (`set_governance` reloads ACL / pattern files).
-    pub fn retain_session_exact_from(&mut self, other: &Self) {
-        self.session_exact_allow = other.session_exact_allow.clone();
+    pub fn retain_session_patterns_from(&mut self, other: &Self) {
+        self.session_pattern_allow = other.session_pattern_allow.clone();
     }
 
-    pub fn allow_exact_for_session(&mut self, grant: SessionExactAllow) {
-        self.session_exact_lock().insert(grant);
+    /// Remember the suggested pattern for `call` for the rest of this process
+    /// session. Does not persist. Returns the pattern string shown in the menu.
+    pub fn allow_suggested_pattern_for_session(&mut self, call: &ToolCall) -> String {
+        let raw = suggest_pattern(call);
+        if let Some(rule) = PatternRule::parse(&raw) {
+            self.allow_pattern_for_session(rule);
+        }
+        raw
     }
 
-    pub fn clear_session_exact_allows(&mut self) {
-        self.session_exact_lock().clear();
+    pub fn allow_pattern_for_session(&mut self, rule: PatternRule) {
+        let mut rules = self.session_pattern_lock();
+        if !rules.iter().any(|existing| existing.raw == rule.raw) {
+            rules.push(rule);
+        }
     }
 
-    pub fn session_exact_allow_count(&self) -> usize {
-        self.session_exact_lock().len()
+    pub fn clear_session_pattern_allows(&mut self) {
+        self.session_pattern_lock().clear();
     }
 
-    pub fn session_exact_allows(&self, grant: &SessionExactAllow) -> bool {
-        self.session_exact_lock().contains(grant)
+    pub fn session_pattern_allow_count(&self) -> usize {
+        self.session_pattern_lock().len()
     }
 
-    /// Whether a session-exact grant already covers this call in `workspace`.
-    pub fn allows_session_exact(
-        &self,
-        call: &ToolCall,
-        workspace_root: impl AsRef<std::path::Path>,
-    ) -> bool {
-        self.session_exact_allows(&SessionExactAllow::from_call(call, workspace_root))
+    pub fn session_pattern_allows(&self, call: &ToolCall) -> bool {
+        self.session_pattern_lock()
+            .iter()
+            .any(|rule| rule.matches(call))
     }
 
-    fn session_exact_lock(&self) -> std::sync::MutexGuard<'_, HashSet<SessionExactAllow>> {
-        self.session_exact_allow
+    fn session_pattern_lock(&self) -> std::sync::MutexGuard<'_, Vec<PatternRule>> {
+        self.session_pattern_allow
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
@@ -702,34 +666,35 @@ mod tests {
     /// `Allow`, but only for calls that match the pattern — everything else
     /// on that tool still requires approval.
     #[test]
-    fn session_exact_allow_covers_only_the_same_argv_cwd_and_env() {
+    fn session_pattern_allow_covers_the_suggested_family() {
         let mut g = Governance::default();
-        let workspace = std::path::Path::new("/tmp/ws");
-        let first = call("bash", json!({"command": "rg -n hang crates"}));
-        g.allow_exact_for_session(SessionExactAllow::from_call(&first, workspace));
-        assert!(g.allows_session_exact(&first, workspace));
-        assert!(!g.allows_session_exact(
-            &call("bash", json!({"command": "rg -n other crates"})),
-            workspace
-        ));
-        assert!(!g.allows_session_exact(
-            &call(
-                "bash",
-                json!({"command": "rg -n hang crates", "cwd": "nested"})
-            ),
-            workspace
-        ));
-        assert!(!g.allows_session_exact(
-            &call(
-                "bash",
-                json!({"command": "rg -n hang crates", "env": {"RUST_LOG": "debug"}})
-            ),
-            workspace
-        ));
+        let first = call("bash", json!({"command": "git push -u origin main"}));
+        assert_eq!(
+            g.allow_suggested_pattern_for_session(&first),
+            "bash(git push *)"
+        );
+        assert!(g.session_pattern_allows(&first));
+        assert!(
+            g.session_pattern_allows(&call("bash", json!({"command": "git push origin feature"})))
+        );
+        assert!(!g.session_pattern_allows(&call("bash", json!({"command": "git status"}))));
         assert_eq!(
             g.authorize(&first, SideEffectClass::Exec),
-            PolicyDecision::Hitl,
-            "session-exact grants are applied by the session, not as a durable pattern rule"
+            PolicyDecision::Allow
+        );
+        assert_eq!(
+            g.authorize(
+                &call("bash", json!({"command": "git push origin feature"})),
+                SideEffectClass::Exec
+            ),
+            PolicyDecision::Allow
+        );
+        assert_eq!(
+            g.authorize(
+                &call("bash", json!({"command": "git status"})),
+                SideEffectClass::Exec
+            ),
+            PolicyDecision::Hitl
         );
     }
 
