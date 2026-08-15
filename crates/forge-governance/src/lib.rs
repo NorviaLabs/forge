@@ -7,7 +7,8 @@ mod pattern;
 pub use acl::{AclPolicy, AclRule};
 pub use audit::{AuditEvent, AuditLog};
 pub use pattern::{
-    default_shell_hitl_tools, is_shell_tool, parse_pattern_rules, suggest_pattern, PatternRule,
+    default_shell_hitl_tools, exact_pattern, is_shell_tool, parse_pattern_rules, suggest_pattern,
+    PatternRule,
 };
 
 use std::collections::HashSet;
