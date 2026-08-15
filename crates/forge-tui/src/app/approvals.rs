@@ -151,9 +151,10 @@ impl TuiApp {
     }
 
     pub(super) fn approval_menu_rows(&self) -> Vec<crate::conversation::ApprovalMenuRow> {
-        if self.session.pending_hitl().is_none() {
+        let Some(payload) = self.session.pending_hitl() else {
             return Vec::new();
-        }
+        };
+        let remembered = forge_governance::exact_pattern(&tool_call_for_payload(payload));
         self.approval_menu_kinds()
             .into_iter()
             .map(|kind| match kind {
@@ -163,7 +164,7 @@ impl TuiApp {
                 },
                 ApprovalMenuKind::AllowPattern => crate::conversation::ApprovalMenuRow {
                     label: "Allow pattern".into(),
-                    detail: None,
+                    detail: Some(remembered.clone()),
                 },
                 ApprovalMenuKind::Deny => crate::conversation::ApprovalMenuRow {
                     label: "Deny".into(),
