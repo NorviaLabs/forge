@@ -1,6 +1,6 @@
-//! Inline HITL approval: focus-gated menu card, remember-session, and
-//! per-theme render tests. Decisions are made only through the card's menu
-//! (↑↓ Enter Esc) while it holds focus; typed answers were removed.
+//! Inline HITL approval: focus-gated conversation prompt, session-exact
+//! Allow pattern, and per-theme render tests. Decisions are made only through
+//! the prompt's menu (↑↓ Enter Esc) while it holds focus.
 
 use super::super::approvals::ApprovalMenuKind;
 use super::prelude::*;
@@ -54,7 +54,11 @@ async fn inline_approval_renders_full_payload_in_sidebar() {
     );
 
     let rendered = render_app_text(&mut app, 100, 30);
-    assert!(rendered.contains("⏸ APPROVAL REQUIRED"), "{rendered}");
+    assert!(
+        rendered.contains("Allow this command for the rest of the session?"),
+        "{rendered}"
+    );
+    assert!(!rendered.contains("⏸ APPROVAL REQUIRED"), "{rendered}");
     assert!(rendered.contains("git push -u origin main"), "{rendered}");
     assert!(rendered.contains("cwd:"), "{rendered}");
     // The card now hugs its own content width (capped at prose width) rather
@@ -64,11 +68,8 @@ async fn inline_approval_renders_full_payload_in_sidebar() {
     assert!(rendered.contains("env:"), "{rendered}");
     assert!(rendered.contains("inherited"), "{rendered}");
     assert!(rendered.contains("› Allow once"), "{rendered}");
-    assert!(
-        rendered.contains("Allow pattern going forward"),
-        "{rendered}"
-    );
-    assert!(rendered.contains("bash(git push *)"), "{rendered}");
+    assert!(rendered.contains("Allow pattern"), "{rendered}");
+    assert!(!rendered.contains("bash(git push *)"), "{rendered}");
     assert!(
         rendered.contains("↑↓ select · Enter confirm · Esc cancel"),
         "{rendered}"
@@ -95,7 +96,8 @@ async fn approval_leaves_underlying_workspace_untouched() {
     );
 
     let rendered = render_app_text(&mut app, 100, 30);
-    assert!(rendered.contains("⏸ APPROVAL REQUIRED"), "{rendered}");
+    assert!(rendered.contains("Allow this command"), "{rendered}");
+    assert!(rendered.contains("rest of the session?"), "{rendered}");
     assert_eq!(app.workspace_navigation, before);
     assert!(app.activity_summary().is_none());
     assert_eq!(
@@ -130,7 +132,7 @@ async fn menu_remember_approves_and_matches_exact_identity() {
     let payload = direct_hitl_payload("remember", "remember.txt");
     set_pending_approval(&mut app, payload.clone());
 
-    press_down_to(&mut app, "Remember exact (session)").await;
+    press_down_to(&mut app, "Allow pattern").await;
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
@@ -168,7 +170,7 @@ async fn remembered_approval_expires_with_session() {
     let payload = direct_hitl_payload("session", "session.txt");
     set_pending_approval(&mut app, payload.clone());
 
-    press_down_to(&mut app, "Remember exact (session)").await;
+    press_down_to(&mut app, "Allow pattern").await;
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
@@ -195,27 +197,22 @@ async fn remembered_approval_expires_with_session() {
 }
 
 #[tokio::test]
-async fn shell_approval_cannot_be_remembered() {
+async fn shell_approval_can_be_remembered_exactly() {
     let (_dir, mut app) = focus_test_app().await;
     set_pending_approval(&mut app, bash_hitl_payload("shell", "git push origin main"));
 
-    // Ineligible verb: the Remember row is not offered at all, and there is
-    // no identity to persist even if it were.
     let labels: Vec<String> = app
         .approval_menu_rows()
         .iter()
         .map(|row| row.label.clone())
         .collect();
     assert!(
-        !labels
-            .iter()
-            .any(|label| label == "Remember exact (session)"),
+        labels.iter().any(|label| label == "Allow pattern"),
         "{labels:?}"
     );
-    assert_eq!(
-        app.approval_identity_for_payload(app.session.pending_hitl().unwrap()),
-        None
-    );
+    assert!(app
+        .approval_identity_for_payload(app.session.pending_hitl().unwrap())
+        .is_some());
 }
 
 #[tokio::test]
@@ -261,43 +258,28 @@ async fn menu_esc_denies_and_records_tool_denial() {
 }
 
 #[tokio::test]
-async fn menu_allow_pattern_persists_and_auto_allows_matching_calls() {
-    // Writes the pattern to the personal permissions file
-    // (`forge_config::append_user_allow_rule`), which resolves via
-    // `dirs::config_dir()`. Redirect that to a throwaway `HOME` so the test
-    // never touches the developer's real config directory.
-    let _env_guard = ScopedEnvGuard::new(&["HOME", "XDG_CONFIG_HOME"]);
-    let home_dir = TempDir::new().unwrap();
-    std::env::set_var("HOME", home_dir.path());
-
+async fn menu_allow_pattern_remembers_exact_argv_for_the_session() {
     let (_dir, mut app) = focus_test_app().await;
     set_pending_approval(&mut app, bash_hitl_payload("call-1", "cargo test --all"));
 
-    press_down_to(&mut app, "Allow pattern going forward").await;
+    press_down_to(&mut app, "Allow pattern").await;
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
 
     assert!(app.session.pending_hitl().is_none());
-    assert_eq!(app.session_pattern_count(), 1);
-    assert_eq!(app.session_pattern_raw(0).unwrap(), "bash(cargo test *)");
-    let persisted = forge_config::user_permissions_path()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .expect("pattern should be persisted to the redirected personal permissions file");
-    assert!(persisted.contains("bash(cargo test *)"), "{persisted}");
+    assert_eq!(app.remembered_approval_count(), 1);
 
-    // A second, differently-worded but matching call auto-approves without
-    // presenting an inline approval item — the pattern covers it, not just
-    // the exact call.
-    set_pending_hitl(
-        &mut app,
-        bash_hitl_payload("call-2", "cargo test --release"),
-    );
+    // The same argv auto-approves without presenting another prompt.
+    set_pending_hitl(&mut app, bash_hitl_payload("call-2", "cargo test --all"));
     app.drain_auto_hitl().await.unwrap();
     assert!(app.session.pending_hitl().is_none());
 
-    // But a non-matching command on the same tool still gates normally.
-    set_pending_hitl(&mut app, bash_hitl_payload("call-3", "rm -rf /"));
+    // A sibling command still gates.
+    set_pending_hitl(
+        &mut app,
+        bash_hitl_payload("call-3", "cargo test --release"),
+    );
     assert!(app.session.pending_hitl().is_some());
 }
 
@@ -311,16 +293,12 @@ async fn menu_enter_on_allow_once_approves() {
         .await
         .unwrap();
     assert!(app.session.pending_hitl().is_none());
-    // Allow once must not surface a second (pattern) confirmation.
-    assert!(app.session_pattern_count() == 0);
+    // Allow once must not remember the invocation.
+    assert!(app.remembered_approval_count() == 0);
 }
 
 #[tokio::test]
 async fn menu_down_to_allow_pattern_and_enter() {
-    let _env_guard = ScopedEnvGuard::new(&["HOME", "XDG_CONFIG_HOME"]);
-    let home_dir = TempDir::new().unwrap();
-    std::env::set_var("HOME", home_dir.path());
-
     let (_dir, mut app) = focus_test_app().await;
     set_pending_approval(&mut app, bash_hitl_payload("m2", "cargo test --all"));
     app.sync_approval_menu();
@@ -333,7 +311,7 @@ async fn menu_down_to_allow_pattern_and_enter() {
         .await
         .unwrap();
     assert!(app.session.pending_hitl().is_none());
-    assert_eq!(app.session_pattern_count(), 1);
+    assert_eq!(app.remembered_approval_count(), 1);
 }
 
 #[tokio::test]
@@ -417,7 +395,10 @@ async fn approval_card_wraps_long_command() {
     set_pending_hitl(&mut app, bash_hitl_payload("long", &command));
 
     let rendered = render_app_text(&mut app, 100, 40);
-    assert!(rendered.contains("⏸ APPROVAL REQUIRED"), "{rendered}");
+    assert!(
+        rendered.contains("Allow this command for the rest of the session?"),
+        "{rendered}"
+    );
     assert!(rendered.contains("git commit -m"), "{rendered}");
     assert!(
         rendered.lines().all(|line| line.chars().count() <= 100),
@@ -448,7 +429,7 @@ async fn approval_card_renders_in_every_shipped_theme() {
             );
             let rendered = render_app_text(&mut app, width, 30);
             assert!(
-                rendered.contains("⏸ APPROVAL REQUIRED"),
+                rendered.contains("Allow this command for the rest of the session?"),
                 "{theme_id} @ {width}:\n{rendered}"
             );
             assert!(

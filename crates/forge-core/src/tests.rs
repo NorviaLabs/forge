@@ -1588,6 +1588,65 @@ async fn hitl_approve_does_not_take_the_denial_path() {
 }
 
 #[tokio::test]
+async fn session_exact_allow_skips_hitl_for_the_same_argv() {
+    let dir = tempdir().unwrap();
+    let command = json!({"command": "echo ok"});
+    let model = Arc::new(MockModelClient::script(vec![
+        ModelResponse {
+            text: "".into(),
+            tool_calls: vec![ToolCall {
+                id: "1".into(),
+                name: "bash".into(),
+                arguments: command.clone(),
+            }],
+            usage: None,
+            thinking: None,
+        },
+        ModelResponse {
+            text: "first done".into(),
+            tool_calls: vec![],
+            usage: None,
+            thinking: None,
+        },
+        ModelResponse {
+            text: "".into(),
+            tool_calls: vec![ToolCall {
+                id: "2".into(),
+                name: "bash".into(),
+                arguments: command.clone(),
+            }],
+            usage: None,
+            thinking: None,
+        },
+        ModelResponse {
+            text: "second done".into(),
+            tool_calls: vec![],
+            usage: None,
+            thinking: None,
+        },
+    ]));
+    let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+        .await
+        .unwrap();
+    s.run_user_message("run it").await.unwrap();
+    assert!(s.pending_hitl().is_some());
+    s.allow_exact_for_session(forge_governance::SessionExactAllow::from_call(
+        &ToolCall {
+            id: "remember".into(),
+            name: "bash".into(),
+            arguments: command.clone(),
+        },
+        dir.path(),
+    ));
+    s.resolve_hitl(HitlDecision::Approve, "test").await.unwrap();
+    let _ = s.run_agent_turns(None).await.unwrap();
+    assert!(
+        s.pending_hitl().is_none(),
+        "the same argv must not prompt again after Allow pattern"
+    );
+}
+
+#[tokio::test]
 async fn offload_large_tool_output() {
     let dir = tempdir().unwrap();
     // Offloading now routes through the runtime-storage resolver, which

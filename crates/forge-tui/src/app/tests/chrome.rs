@@ -153,7 +153,10 @@ async fn final_shell_rendering_matrix_covers_v31_states_without_obsolete_chrome(
         "approval",
         dir,
         app,
-        vec!["⏸ APPROVAL REQUIRED", "Allow once"],
+        vec![
+            "Allow this command for the rest of the session?",
+            "Allow once",
+        ],
     ));
 
     let (dir, app) = focus_test_app().await;

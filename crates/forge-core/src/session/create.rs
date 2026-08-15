@@ -272,4 +272,21 @@ impl AgentSession {
     pub fn permission_mode(&self) -> forge_governance::PermissionMode {
         self.governance.permission_mode()
     }
+
+    /// Remember this exact invocation for the rest of the process session.
+    pub fn allow_exact_for_session(&mut self, grant: forge_governance::SessionExactAllow) {
+        self.governance.allow_exact_for_session(grant);
+    }
+
+    pub fn clear_session_exact_allows(&mut self) {
+        self.governance.clear_session_exact_allows();
+    }
+
+    pub fn session_exact_allow_count(&self) -> usize {
+        self.governance.session_exact_allow_count()
+    }
+
+    pub fn session_exact_allows(&self, grant: &forge_governance::SessionExactAllow) -> bool {
+        self.governance.session_exact_allows(grant)
+    }
 }
