@@ -1350,7 +1350,7 @@ mod tests {
     }
 
     #[test]
-    fn active_thinking_is_hidden_from_rendered_lines() {
+    fn active_thinking_renders_above_empty_answer() {
         let msgs = vec![Message {
             outcome: Default::default(),
             role: MessageRole::Assistant,
@@ -1373,15 +1373,17 @@ mod tests {
 
         let rendered_text = rendered_text(&model);
         assert!(
-            !rendered_text.contains("one two three"),
-            "active reasoning must not appear in chat: {rendered_text}"
+            rendered_text.contains("one two three"),
+            "active reasoning should appear at the top of the turn: {rendered_text}"
         );
-        // The only visible content should be the empty assistant placeholder (if any).
-        assert!(model.items.is_empty() || rendered_text.is_empty());
+        assert!(matches!(
+            model.items.first(),
+            Some(ChatItem::Thinking { .. })
+        ));
     }
 
     #[test]
-    fn assistant_output_remains_visible_while_thinking_is_hidden() {
+    fn assistant_output_stays_visible_below_thinking() {
         let msgs = vec![Message {
             outcome: Default::default(),
             role: MessageRole::Assistant,
@@ -1409,19 +1411,17 @@ mod tests {
                     .collect::<String>()
             })
             .collect();
-        let thought_lines = rendered_lines
+        let thinking_idx = rendered_lines
             .iter()
-            .filter(|line| line.starts_with("⋯ "))
-            .count();
-        assert_eq!(
-            thought_lines,
-            0,
-            "active reasoning must not produce visible rows, got:\n{}",
-            rendered_lines.join("\n")
-        );
+            .position(|line| line.contains("very long active thinking"))
+            .expect("thinking visible");
+        let answer_idx = rendered_lines
+            .iter()
+            .position(|line| line.contains("ans"))
+            .expect("answer visible");
         assert!(
-            rendered_lines.iter().any(|line| line.contains("ans")),
-            "assistant output must remain visible, got:\n{}",
+            thinking_idx < answer_idx,
+            "thinking must appear above the answer, got:\n{}",
             rendered_lines.join("\n")
         );
     }
