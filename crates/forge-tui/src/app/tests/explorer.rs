@@ -278,7 +278,7 @@ async fn holding_arrows_in_a_large_tree_stays_on_a_frame_budget() {
         .workspace_files
         .explorer
         .visible_nodes()
-        .into_iter()
+        .iter()
         .filter(|node| {
             node.depth == 1
                 && app

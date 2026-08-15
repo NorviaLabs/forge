@@ -1554,7 +1554,7 @@ mod tests {
         explorer.set_search_query("src cmp btn".replace(' ', ""));
         let names: Vec<_> = explorer
             .visible_nodes()
-            .into_iter()
+            .iter()
             .map(|node| node.display_name.clone())
             .collect();
         assert!(names[0] != "src");
@@ -1624,7 +1624,7 @@ mod tests {
 
         let visible: Vec<_> = explorer
             .visible_nodes()
-            .into_iter()
+            .iter()
             .map(|node| {
                 let relative = node.path.strip_prefix(&root_path).unwrap();
                 if relative.as_os_str().is_empty() {
