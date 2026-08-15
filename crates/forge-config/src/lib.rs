@@ -8,6 +8,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use forge_types::SideEffectClass;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -195,7 +196,7 @@ impl Default for JournalConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpServerConfig {
     pub id: String,
     #[serde(default = "default_mcp_transport")]
@@ -203,10 +204,31 @@ pub struct McpServerConfig {
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
+    /// Declared authority for every tool exposed by this server. MCP servers
+    /// execute outside Forge's workspace-constrained built-ins, so the safe
+    /// default is `exec`; callers must opt into a narrower class explicitly.
+    #[serde(default = "default_mcp_side_effect_class")]
+    pub side_effect_class: SideEffectClass,
+}
+
+fn default_mcp_side_effect_class() -> SideEffectClass {
+    SideEffectClass::Exec
 }
 
 fn default_mcp_transport() -> String {
     "stdio".into()
+}
+
+impl Default for McpServerConfig {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            transport: default_mcp_transport(),
+            command: String::new(),
+            args: Vec::new(),
+            side_effect_class: default_mcp_side_effect_class(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]

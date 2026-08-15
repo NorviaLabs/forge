@@ -38,7 +38,7 @@ async fn edge_network_stream_interruption_preserves_partial_response() {
     app.drain_pending_prompt(None).await.unwrap();
 
     assert_eq!(app.workspace_navigation, before);
-    assert!(!app.busy_state.active);
+    assert!(!app.busy_state.is_active());
     // Opening a file now gives the workspace an active Vim editor. Move back
     // to the composer before testing retry input routing.
     app.focus_block(FocusBlock::Composer);
@@ -132,7 +132,7 @@ async fn edge_provider_error_unsticks_session_for_the_next_message() {
 
     app.dispatch_line("first message").await.unwrap();
     app.drain_pending_prompt(None).await.unwrap();
-    assert!(!app.busy_state.active);
+    assert!(!app.busy_state.is_active());
     assert_eq!(
         app.session.active_task.lifecycle,
         forge_types::TaskLifecycle::Failed,
@@ -168,16 +168,13 @@ async fn edge_open_file_external_rename_updates_path_when_identity_matches() {
     app.source_viewer.top_line = 1;
     fs::rename(&old, &new).unwrap();
 
-    app.file_watch
-        .change_tx
-        .send(FileChangeEvent { path: new.clone() })
-        .unwrap();
+    app.file_watch.inject_change(new.clone());
     app.poll_file_changes();
 
     let new = new.canonicalize().unwrap();
     assert_eq!(app.source_viewer.path.as_deref(), Some(new.as_path()));
     assert_eq!(
-        app.workspace_navigation.current,
+        app.workspace_navigation.current(),
         Some(WorkspaceView::File(new))
     );
     assert_eq!(app.source_viewer.current_line, 2);
@@ -200,16 +197,11 @@ async fn edge_open_file_external_delete_keeps_file_view_and_buffer() {
     let lines = app.source_viewer.lines.clone();
     fs::remove_file(&path).unwrap();
 
-    app.file_watch
-        .change_tx
-        .send(FileChangeEvent {
-            path: opened.clone(),
-        })
-        .unwrap();
+    app.file_watch.inject_change(opened.clone());
     app.poll_file_changes();
 
     assert_eq!(
-        app.workspace_navigation.current,
+        app.workspace_navigation.current(),
         Some(WorkspaceView::File(path))
     );
     assert_eq!(app.source_viewer.path.as_deref(), Some(opened.as_path()));

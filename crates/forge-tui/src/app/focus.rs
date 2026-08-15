@@ -23,32 +23,28 @@ impl TuiApp {
 
     pub(super) fn normalize_focus(&mut self) {
         let available = self.focus_availability();
-        if !available.contains(self.focus.block) {
-            self.focus.block = FocusBlock::Workspace;
-            self.focus.mode = FocusMode::Navigation;
-            self.focus.return_block = Some(FocusBlock::Workspace);
+        if !available.contains(self.focus.block()) {
+            self.focus.reset_to_workspace();
         }
         if self.source_viewer.search.open {
-            self.focus.block = FocusBlock::Workspace;
-            self.focus.mode = FocusMode::Transient(TransientOwner::SourceSearch);
+            self.focus.set_transient(TransientOwner::SourceSearch);
         } else if self.source_viewer.jump.open {
-            self.focus.block = FocusBlock::Workspace;
-            self.focus.mode = FocusMode::Transient(TransientOwner::JumpToLine);
+            self.focus.set_transient(TransientOwner::JumpToLine);
         }
         self.workspace_files.explorer.focused =
-            matches!(self.focus.block, FocusBlock::Files | FocusBlock::Search)
-                && self.focus.mode == FocusMode::Navigation
+            matches!(self.focus.block(), FocusBlock::Files | FocusBlock::Search)
+                && self.focus.mode() == FocusMode::Navigation
                 && self.workspace_files.visible;
-        self.workspace_files.explorer.search_focused = self.focus.block == FocusBlock::Search
-            && self.focus.mode == FocusMode::Navigation
+        self.workspace_files.explorer.search_focused = self.focus.block() == FocusBlock::Search
+            && self.focus.mode() == FocusMode::Navigation
             && self.workspace_files.visible;
-        self.bottom_panel.focused = self.focus.block == FocusBlock::BottomPanel
-            && self.focus.mode == FocusMode::Navigation
+        self.bottom_panel.focused = self.focus.block() == FocusBlock::BottomPanel
+            && self.focus.mode() == FocusMode::Navigation
             && self.bottom_panel.open;
-        self.source_viewer.focused = self.focus.block == FocusBlock::Workspace
+        self.source_viewer.focused = self.focus.block() == FocusBlock::Workspace
             && self.current_workspace_is_file()
             && matches!(
-                self.focus.mode,
+                self.focus.mode(),
                 FocusMode::Navigation | FocusMode::Transient(_)
             );
         // `composer_chip_focus` is the footer's own sub-focus (which of the
@@ -56,7 +52,7 @@ impl TuiApp {
         // now tracks `FocusBlock::Footer` directly rather than a standalone
         // `F3` side-channel: entering the block selects the first control,
         // leaving it clears the selection.
-        if self.focus.block == FocusBlock::Footer && self.focus.mode == FocusMode::Navigation {
+        if self.focus.block() == FocusBlock::Footer && self.focus.mode() == FocusMode::Navigation {
             self.composer_chip_focus = Some(self.composer_chip_focus.unwrap_or(0).min(2));
         } else {
             self.composer_chip_focus = None;
@@ -64,12 +60,7 @@ impl TuiApp {
     }
 
     pub(crate) fn focus_block(&mut self, block: FocusBlock) {
-        if self.focus.block != block {
-            self.focus.previous_block = Some(self.focus.block);
-        }
-        self.focus.block = block;
-        self.focus.mode = FocusMode::Navigation;
-        self.focus.return_block = Some(block);
+        self.focus.transition_to(block);
         self.normalize_focus();
     }
 
@@ -79,28 +70,24 @@ impl TuiApp {
     }
 
     pub(super) fn enter_transient(&mut self, owner: TransientOwner) {
-        self.focus.block = FocusBlock::Workspace;
-        self.focus.mode = FocusMode::Transient(owner);
-        self.focus.return_block = Some(FocusBlock::Workspace);
+        self.focus.set_transient(owner);
         self.normalize_focus();
     }
 
     pub(super) fn restore_focus_after_closing(&mut self, closed: FocusBlock) {
         let previous = self
             .focus
-            .previous_block
+            .previous_block()
             .filter(|block| *block != closed && self.focus_availability().contains(*block))
             .unwrap_or(FocusBlock::Workspace);
-        self.focus.block = previous;
-        self.focus.mode = FocusMode::Navigation;
-        self.focus.return_block = Some(previous);
+        self.focus.restore(previous);
     }
 
     pub(super) fn cycle_focus_block(&mut self, forward: bool) {
         let available = self.focus_availability();
         let current = FocusBlock::ORDER
             .iter()
-            .position(|block| *block == self.focus.block)
+            .position(|block| *block == self.focus.block())
             .unwrap_or(1);
         for offset in 1..=FocusBlock::ORDER.len() {
             let index = if forward {
@@ -117,12 +104,12 @@ impl TuiApp {
     }
 
     pub(super) fn escape_navigation(&mut self) {
-        match self.focus.block {
+        match self.focus.block() {
             FocusBlock::Workspace => {}
             FocusBlock::Composer => {
                 let previous = self
                     .focus
-                    .previous_block
+                    .previous_block()
                     .filter(|block| *block != FocusBlock::Composer)
                     .filter(|block| self.focus_availability().contains(*block))
                     .unwrap_or(FocusBlock::Workspace);
@@ -152,7 +139,7 @@ impl TuiApp {
     }
 
     pub(super) fn contextual_hint(&self) -> Option<String> {
-        if self.explorer_dialog.current.is_some() {
+        if self.explorer_dialog.is_open() {
             return Some("Enter confirm · Esc cancel".into());
         }
         if self.session.pending_hitl().is_some() {
@@ -166,7 +153,7 @@ impl TuiApp {
                 _ => None,
             };
         }
-        match self.focus.mode {
+        match self.focus.mode() {
             FocusMode::Transient(TransientOwner::SourceSearch) => {
                 Some("Enter next · ⇧Enter previous · Esc cancel".into())
             }
@@ -176,7 +163,7 @@ impl TuiApp {
             // The footer chips stay visible; the hint names the action of
             // whichever chip is currently selected. Enter is the one action
             // key across all chips.
-            FocusMode::Navigation if self.focus.block == FocusBlock::Footer => {
+            FocusMode::Navigation if self.focus.block() == FocusBlock::Footer => {
                 Some(match self.composer_chip_focus.unwrap_or(0).min(2) {
                     0 => "Hit Enter ⏎ to open model".into(),
                     1 => "Hit Enter ⏎ to change effort".into(),

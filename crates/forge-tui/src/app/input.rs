@@ -57,7 +57,7 @@ impl TuiApp {
                             .as_ref()
                             .is_some_and(|editor| editor.is_dirty())
                         {
-                            self.explorer_dialog.current = Some(ExplorerDialog::SaveConflict);
+                            self.explorer_dialog.show(ExplorerDialog::SaveConflict);
                         } else {
                             self.reload_active_editor_from_disk();
                             self.editor_message =
@@ -77,8 +77,7 @@ impl TuiApp {
                                         .as_ref()
                                         .is_some_and(|editor| editor.is_dirty())
                                 {
-                                    self.explorer_dialog.current =
-                                        Some(ExplorerDialog::SaveConflict);
+                                    self.explorer_dialog.show(ExplorerDialog::SaveConflict);
                                 } else {
                                     self.open_file_in_editor(&path);
                                 }
@@ -130,7 +129,7 @@ impl TuiApp {
     }
 
     fn handle_explorer_dialog_key(&mut self, key: event::KeyEvent) -> bool {
-        let Some(dialog) = self.explorer_dialog.current.take() else {
+        let Some(dialog) = self.explorer_dialog.take() else {
             return false;
         };
         let next = match dialog {
@@ -280,7 +279,7 @@ impl TuiApp {
                 KeyCode::Char('s') | KeyCode::Char('S') | KeyCode::Enter => {
                     self.save_active_editor();
                     if matches!(
-                        self.explorer_dialog.current,
+                        self.explorer_dialog.current(),
                         Some(ExplorerDialog::SaveConflict)
                     ) {
                         Some(ExplorerDialog::SaveConflict)
@@ -313,7 +312,7 @@ impl TuiApp {
                 KeyCode::Char('s') | KeyCode::Char('S') | KeyCode::Enter => {
                     self.save_active_editor();
                     if matches!(
-                        self.explorer_dialog.current,
+                        self.explorer_dialog.current(),
                         Some(ExplorerDialog::SaveConflict)
                     ) {
                         Some(ExplorerDialog::SaveConflict)
@@ -375,14 +374,13 @@ impl TuiApp {
                 _ => Some(ExplorerDialog::SaveConflict),
             },
         };
-        self.explorer_dialog.current = next;
+        self.explorer_dialog.replace(next);
         true
     }
 
     /// Insert bracketed-paste text into the current explicit text owner.
     pub(super) fn handle_paste(&mut self, data: &str) {
-        if let Some(ExplorerDialog::Name { input, error, .. }) =
-            self.explorer_dialog.current.as_mut()
+        if let Some(ExplorerDialog::Name { input, error, .. }) = self.explorer_dialog.current_mut()
         {
             for ch in data.chars().filter(|ch| !ch.is_control()) {
                 input.push(ch);
@@ -390,7 +388,7 @@ impl TuiApp {
             *error = None;
             return;
         }
-        if self.focus.block == FocusBlock::BottomPanel {
+        if self.focus.block() == FocusBlock::BottomPanel {
             if let Some(terminal) = self.interactive_terminal.as_mut() {
                 if let Err(error) = terminal.write(data.as_bytes()) {
                     self.set_feedback(
@@ -406,8 +404,8 @@ impl TuiApp {
             return;
         }
         self.normalize_focus();
-        match self.focus.mode {
-            FocusMode::Navigation if self.focus.block == FocusBlock::Composer => {
+        match self.focus.mode() {
+            FocusMode::Navigation if self.focus.block() == FocusBlock::Composer => {
                 self.input.history_browse = false;
                 self.input.insert_paste(data);
                 self.clamp_slash_suggest();
@@ -466,8 +464,8 @@ impl TuiApp {
         }
 
         let line = self.input.take();
-        if line.trim().is_empty() && self.attachment.pending_images.is_empty() {
-            if !self.busy_state.active && !self.session.queue().is_empty() {
+        if line.trim().is_empty() && !self.attachment.has_images() {
+            if !self.busy_state.is_active() && !self.session.queue().is_empty() {
                 self.dequeue_and_send_next().await;
             }
             return Ok(());
@@ -645,7 +643,7 @@ impl TuiApp {
         match key.code {
             KeyCode::Esc => {
                 self.source_viewer.close_search();
-                self.focus.mode = FocusMode::Navigation;
+                self.focus.set_navigation(FocusBlock::Workspace);
                 self.normalize_focus();
                 true
             }
@@ -673,7 +671,7 @@ impl TuiApp {
         match key.code {
             KeyCode::Esc => {
                 self.source_viewer.close_jump();
-                self.focus.mode = FocusMode::Navigation;
+                self.focus.set_navigation(FocusBlock::Workspace);
                 self.normalize_focus();
                 true
             }
@@ -744,7 +742,7 @@ impl TuiApp {
     }
 
     async fn handle_active_block_key(&mut self, key: event::KeyEvent) -> Result<bool, TuiError> {
-        match self.focus.block {
+        match self.focus.block() {
             FocusBlock::Search | FocusBlock::Files => self.handle_file_explorer_key(key).await,
             FocusBlock::Workspace => self.handle_workspace_navigation_key(key).await,
             FocusBlock::Sidebar => self.handle_sidebar_key(key).await,
@@ -799,7 +797,7 @@ impl TuiApp {
             return false;
         };
         let attachment_label = {
-            let file = self.attachment.pending.as_ref().map(|a| a.label());
+            let file = self.attachment.file().map(|a| a.label());
             let images = self.pending_image_label();
             match (file, images) {
                 (Some(file), Some(images)) => Some(format!("{file} · {images}")),
@@ -1018,7 +1016,7 @@ impl TuiApp {
         // keypress also continues with its ordinary action.
         self.editor_message = None;
 
-        if self.explorer_dialog.current.is_some() {
+        if self.explorer_dialog.is_open() {
             self.handle_explorer_dialog_key(key);
             return Ok(());
         }
@@ -1066,7 +1064,7 @@ impl TuiApp {
             self.handle_editor_command_key(key).await?;
             return Ok(());
         }
-        match self.focus.mode {
+        match self.focus.mode() {
             FocusMode::Transient(TransientOwner::SourceSearch) => {
                 self.handle_search_key(key);
                 return Ok(());
@@ -1075,7 +1073,7 @@ impl TuiApp {
                 self.handle_jump_key(key);
                 return Ok(());
             }
-            FocusMode::Navigation if self.focus.block == FocusBlock::Composer => {
+            FocusMode::Navigation if self.focus.block() == FocusBlock::Composer => {
                 if self.handle_chat_composer_key(key).await? {
                     return Ok(());
                 }
@@ -1260,8 +1258,8 @@ mod tests {
     /// Focus the composer in navigation mode, which is what `handle_key` needs
     /// before it will route a press to the chat composer.
     fn focus_composer(app: &mut TuiApp) {
-        app.focus.mode = FocusMode::Navigation;
-        app.focus.block = FocusBlock::Composer;
+        app.focus.set_navigation(app.focus.block());
+        app.focus.set_navigation(FocusBlock::Composer);
     }
 
     fn press(code: KeyCode) -> event::KeyEvent {
@@ -1427,7 +1425,7 @@ mod tests {
             app.input.text,
             "first second third fourth fifth sixth seventh eighth ninth"
         );
-        assert_eq!(app.focus.block, FocusBlock::Composer);
+        assert_eq!(app.focus.block(), FocusBlock::Composer);
     }
 
     #[tokio::test]
@@ -1488,12 +1486,11 @@ mod tests {
         let (_dir, mut app) = app().await;
         // Focus something other than the composer; a printable key should fall
         // through to `type_to_compose`, which refocuses and inserts.
-        app.focus.mode = FocusMode::Navigation;
-        app.focus.block = FocusBlock::Workspace;
+        app.focus.set_navigation(FocusBlock::Workspace);
 
         app.handle_key(press(KeyCode::Char('z'))).await.unwrap();
 
         assert_eq!(app.input.text, "z");
-        assert_eq!(app.focus.block, FocusBlock::Composer);
+        assert_eq!(app.focus.block(), FocusBlock::Composer);
     }
 }

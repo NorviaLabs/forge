@@ -122,8 +122,8 @@ async fn final_shell_rendering_matrix_covers_v31_states_without_obsolete_chrome(
     scenarios.push(("conversation idle", dir, app, vec!["Describe a task"]));
 
     let (dir, mut app) = focus_test_app().await;
-    app.busy_state.active = true;
-    app.busy_state.phase = BusyPhase::Model;
+    app.busy_state.activate();
+    app.busy_state.set_phase(BusyPhase::Model);
     app.timing.started = Some(Instant::now());
     scenarios.push(("agent thinking", dir, app, vec!["Describe a task"]));
 
@@ -288,10 +288,10 @@ async fn header_status_follows_session_lifecycle() {
         .append_user_message("do something")
         .await
         .unwrap();
-    app.busy_state.active = true;
-    app.busy_state.phase = BusyPhase::Tool {
+    app.busy_state.activate();
+    app.busy_state.set_phase(BusyPhase::Tool {
         name: "read_file".into(),
-    };
+    });
     let working = app.refresh_status_model();
     assert_eq!(working.turn_lifecycle(), TurnLifecycle::Working);
     assert!(working.status_label().0.contains("Working"));
@@ -301,8 +301,8 @@ async fn header_status_follows_session_lifecycle() {
         working.status_label().0
     );
 
-    app.busy_state.active = false;
-    app.busy_state.phase = BusyPhase::Idle;
+    app.busy_state.stop();
+    app.busy_state.set_phase(BusyPhase::Idle);
     app.session.active_task.lifecycle = forge_types::TaskLifecycle::Completed;
     assert_eq!(
         app.refresh_status_model().turn_lifecycle(),
@@ -712,7 +712,7 @@ async fn tui10_activity_feed_records_model_and_error() {
             .any(|s| s.contains("rate") || s.contains("429") || s.contains("Model")),
         "recent={recent:?}"
     );
-    assert_eq!(app.busy_state.phase, BusyPhase::Idle);
+    assert_eq!(app.busy_state.phase(), BusyPhase::Idle);
 }
 
 #[tokio::test]
@@ -730,15 +730,15 @@ async fn elapsed_status_persists_during_answer_and_tool_processing() {
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
-    app.busy_state.active = true;
+    app.busy_state.activate();
     app.timing.started = Some(Instant::now() - Duration::from_millis(1200));
     app.stream.preview = "partial answer".into();
     assert_eq!(app.busy_status_detail().as_deref(), Some("Working... 1.2s"));
 
     app.stream.preview.clear();
-    app.busy_state.phase = BusyPhase::Tool {
+    app.busy_state.set_phase(BusyPhase::Tool {
         name: "read_file".into(),
-    };
+    });
     assert!(app
         .busy_status_detail()
         .unwrap()
@@ -761,10 +761,10 @@ async fn tui10_busy_phase_model_during_turn_clears_after() {
         },
     );
     app.dispatch_line("hello").await.unwrap();
-    assert_eq!(app.busy_state.phase, BusyPhase::Model);
-    assert!(app.pending_turn.prompt.is_some());
+    assert_eq!(app.busy_state.phase(), BusyPhase::Model);
+    assert!(app.pending_turn.has_prompt());
     app.drain_pending_prompt(None).await.unwrap();
-    assert_eq!(app.busy_state.phase, BusyPhase::Idle);
+    assert_eq!(app.busy_state.phase(), BusyPhase::Idle);
     assert!(
         app.activity
             .all()

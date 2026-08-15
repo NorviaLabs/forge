@@ -52,13 +52,13 @@ impl TuiApp {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
             if terminal.is_some() {
-                drain_events(self, terminal.as_deref_mut())
-                    .await
-                    .map_err(|error| LoopError::Other(error.to_string()))?;
+                // A tool application owns the session while it is in flight. Do not
+                // re-enter the general input dispatcher here: it can enqueue prompts,
+                // open overlays, or otherwise mutate session-owned state mid-apply.
+                // Pending input remains in Crossterm's queue for the outer event loop.
                 self.poll_interactive_terminal();
-                if self.cancellation.requested || self.exit.requested {
-                    self.cancellation.requested = false;
-                    return Err(LoopError::Other("interrupted".into()));
+                if self.cancellation.take_requested() || self.exit.is_requested() {
+                    return Err(LoopError::Cancelled);
                 }
                 if let Some(term) = terminal.as_deref_mut() {
                     term.draw(|frame| self.draw(frame))
@@ -139,7 +139,8 @@ impl TuiApp {
                 self.stream.thinking.push_str(text);
             }
             ModelStreamEvent::ToolCallStart { name, .. } => {
-                self.busy_state.phase = BusyPhase::Tool { name: name.clone() };
+                self.busy_state
+                    .set_phase(BusyPhase::Tool { name: name.clone() });
             }
             ModelStreamEvent::Error { message } => return Some(message.clone()),
             _ => {}
@@ -195,9 +196,7 @@ impl TuiApp {
         match self.session.enqueue_task(&line).await {
             Ok(_item) => {
                 let n = self.session.queue().len();
-                if self.task_selection.queue.is_none() {
-                    self.task_selection.queue = Some(0);
-                }
+                self.task_selection.ensure_queue();
                 self.push_toast(format!("queued #{n}"));
                 self.set_feedback(
                     FeedbackSeverity::Info,
@@ -224,7 +223,7 @@ impl TuiApp {
     /// — the queue store owns the atomic Queued->Promoting->Promoted pipeline;
     /// this only decides when to call it and how to kick off streaming.
     pub(super) async fn dequeue_and_send_next(&mut self) {
-        if self.busy_state.active || self.pending_turn.prompt.is_some() {
+        if self.busy_state.is_active() || self.pending_turn.has_prompt() {
             self.set_feedback(
                 FeedbackSeverity::Warn,
                 "still processing — wait before sending the next queued message",
@@ -267,9 +266,8 @@ impl TuiApp {
                 if let Some(pid) = self.connect.profile.clone() {
                     self.apply_connect_credentials(&pid);
                 }
-                self.pending_turn.continue_turn = true;
-                self.busy_state.active = true;
-                self.busy_state.phase = BusyPhase::Model;
+                self.pending_turn.request_continue();
+                self.busy_state.start(BusyPhase::Model);
                 self.timing.started = Some(Instant::now());
                 self.stream.preview.clear();
                 self.stream.thinking.clear();
@@ -319,28 +317,16 @@ impl TuiApp {
     }
 
     fn clamp_queue_selection(&mut self) {
-        let len = self.session.queue().len();
-        self.task_selection.queue = match (len, self.task_selection.queue) {
-            (0, _) => None,
-            (_, Some(i)) if i < len => Some(i),
-            (_, Some(_)) => Some(len - 1),
-            (_, None) => Some(0),
-        };
+        self.task_selection.clamp_queue(self.session.queue().len());
     }
 
     pub(super) fn move_queue_selection(&mut self, delta: i32) {
-        let len = self.session.queue().len();
-        if len == 0 {
-            self.task_selection.queue = None;
-            return;
-        }
-        let cur = self.task_selection.queue.unwrap_or(0) as i32;
-        let next = (cur + delta).rem_euclid(len as i32) as usize;
-        self.task_selection.queue = Some(next);
+        self.task_selection
+            .move_queue(self.session.queue().len(), delta);
     }
 
     pub(super) async fn cancel_selected_queue(&mut self) {
-        let Some(idx) = self.task_selection.queue else {
+        let Some(idx) = self.task_selection.queue() else {
             self.set_feedback(FeedbackSeverity::Warn, "queue empty");
             return;
         };
@@ -373,30 +359,19 @@ impl TuiApp {
     }
 
     fn clamp_tasks_selection(&mut self) {
-        let len = self.session.background().list().count();
-        self.task_selection.tasks = match (len, self.task_selection.tasks) {
-            (0, _) => None,
-            (_, Some(i)) if i < len => Some(i),
-            (_, Some(_)) => Some(len - 1),
-            (_, None) => Some(0),
-        };
+        self.task_selection
+            .clamp_tasks(self.session.background().list().count());
     }
 
     pub(super) fn move_tasks_selection(&mut self, delta: i32) {
-        let len = self.session.background().list().count();
-        if len == 0 {
-            self.task_selection.tasks = None;
-            return;
-        }
-        let cur = self.task_selection.tasks.unwrap_or(0) as i32;
-        let next = (cur + delta).rem_euclid(len as i32) as usize;
-        self.task_selection.tasks = Some(next);
+        self.task_selection
+            .move_tasks(self.session.background().list().count(), delta);
     }
 
     /// Cancel the background task at the currently selected row. Rows are
     /// sorted by id ascending, matching `tasks_lines`'s render order.
     pub(super) async fn cancel_selected_task(&mut self) {
-        let Some(idx) = self.task_selection.tasks else {
+        let Some(idx) = self.task_selection.task() else {
             self.set_feedback(FeedbackSeverity::Warn, "no background tasks");
             return;
         };
@@ -426,7 +401,7 @@ impl TuiApp {
     /// can't detect, which is exactly why `resolve_subagent_hitl` reports
     /// success/failure rather than being fire-and-forget.
     pub(super) fn resolve_selected_task_hitl(&mut self, decision: HitlDecision) {
-        let Some(idx) = self.task_selection.tasks else {
+        let Some(idx) = self.task_selection.task() else {
             self.set_feedback(FeedbackSeverity::Warn, "no background tasks");
             return;
         };
@@ -464,8 +439,7 @@ impl TuiApp {
         &mut self,
         mut terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
     ) -> Result<(), TuiError> {
-        let continuing = std::mem::take(&mut self.pending_turn.continue_turn);
-        let line = self.pending_turn.prompt.take();
+        let (line, continuing, attachments) = self.pending_turn.take();
         if line.is_none() && !continuing {
             return Ok(());
         }
@@ -475,8 +449,7 @@ impl TuiApp {
             self.apply_connect_credentials(&profile_id);
         }
 
-        self.busy_state.active = true;
-        self.busy_state.phase = BusyPhase::Model;
+        self.busy_state.start(BusyPhase::Model);
         self.stream.preview.clear();
         self.stream.thinking.clear();
         self.stream.live_lines = None;
@@ -485,16 +458,14 @@ impl TuiApp {
         self.timing.thought_secs = None;
 
         if let Some(ref line) = line {
-            let attachments = std::mem::take(&mut self.pending_turn.attachments);
             if let Err(e) = self
                 .session
                 .append_user_message_with_attachments(line, attachments)
                 .await
             {
-                self.busy_state.active = false;
-                self.busy_state.phase = BusyPhase::Idle;
+                self.busy_state.stop();
                 self.report_error(&e.to_string());
-                self.exit.code = ExitCode::Failed;
+                self.exit.set_code(ExitCode::Failed);
                 return Ok(());
             }
         }
@@ -508,6 +479,7 @@ impl TuiApp {
 
         let max_turns = self.session.max_turns();
         let mut outcome_err: Option<String> = None;
+        let mut turn_cancelled = false;
         let mut turn_thought_secs = 0.0f64;
         let mut saw_thinking = false;
 
@@ -528,11 +500,12 @@ impl TuiApp {
             let mut step_acc = ModelStepAccumulator::default();
             // Pump stream events + redraw until the model call finishes
             loop {
-                if self.cancellation.requested {
+                if self.cancellation.is_requested() {
                     handle.abort();
-                    self.cancellation.requested = false;
+                    self.cancellation.clear();
                     self.timing.started = None;
-                    outcome_err = Some("interrupted".into());
+                    turn_cancelled = true;
+                    outcome_err = Some("cancelled".into());
                     break 'turns;
                 }
                 while let Ok(ev) = rx.try_recv() {
@@ -552,16 +525,15 @@ impl TuiApp {
                 if terminal.is_some() {
                     drain_events(self, terminal.as_deref_mut()).await?;
                     self.poll_interactive_terminal();
-                    if self.exit.requested {
+                    if self.exit.is_requested() {
                         handle.abort();
-                        self.busy_state.active = false;
-                        self.busy_state.phase = BusyPhase::Idle;
+                        self.busy_state.stop();
                         self.stream.preview.clear();
                         self.stream.thinking.clear();
                         self.timing.started = None;
                         self.timing.thinking_started = None;
                         self.timing.thought_secs = None;
-                        self.exit.code = ExitCode::Canceled;
+                        self.exit.set_code(ExitCode::Canceled);
                         let _ = self.session.mark_cancelled().await;
                         return Ok(());
                     }
@@ -632,9 +604,9 @@ impl TuiApp {
             self.stream.live_lines = None;
             // Keep turn_started until full agent turn ends (multi-tool steps).
             if let Some(call) = last.tool_calls.first() {
-                self.busy_state.phase = BusyPhase::Tool {
+                self.busy_state.set_phase(BusyPhase::Tool {
                     name: call.name.clone(),
-                };
+                });
                 self.push_activity(
                     ActivityKind::Tool,
                     FeedbackSeverity::Info,
@@ -663,7 +635,7 @@ impl TuiApp {
                             break 'turns;
                         }
                         ApplyOutcome::Continue => {
-                            self.busy_state.phase = BusyPhase::Model;
+                            self.busy_state.set_phase(BusyPhase::Model);
                             if let Some(term) = terminal.as_deref_mut() {
                                 term.draw(|f| self.draw(f))?;
                             }
@@ -680,6 +652,7 @@ impl TuiApp {
                     }
                 }
                 Err(e) => {
+                    turn_cancelled = matches!(e, LoopError::Cancelled);
                     outcome_err = Some(e.to_string());
                     break;
                 }
@@ -693,8 +666,7 @@ impl TuiApp {
             .filter(|_| !self.stream.preview.trim().is_empty())
             .cloned();
 
-        self.busy_state.active = false;
-        self.busy_state.phase = BusyPhase::Idle;
+        self.busy_state.stop();
 
         if turn_limit_reached {
             self.stream.preview.clear();
@@ -703,7 +675,7 @@ impl TuiApp {
             self.timing.thinking_started = None;
             self.timing.thought_secs = None;
             self.overlay = Some(Overlay::turn_limit(max_turns));
-            self.exit.code = ExitCode::Success;
+            self.exit.set_code(ExitCode::Success);
             self.set_feedback(
                 FeedbackSeverity::Warn,
                 format!("{max_turns} steps reached — continue?"),
@@ -714,7 +686,7 @@ impl TuiApp {
                 "turn limit reached",
             );
         } else if let Some(e) = outcome_err {
-            let was_cancel = e == "interrupted";
+            let was_cancel = turn_cancelled;
             if let Some(interrupted) = interrupted_partial {
                 self.record_interrupted_stream(&interrupted);
             } else if was_cancel {
@@ -733,12 +705,12 @@ impl TuiApp {
             self.timing.thinking_started = None;
             self.timing.thought_secs = None;
             if was_cancel {
-                self.exit.code = ExitCode::Canceled;
+                self.exit.set_code(ExitCode::Canceled);
                 if let Err(err) = self.session.mark_cancelled().await {
                     self.report_error(&err.to_string());
                 }
             } else {
-                self.exit.code = ExitCode::Failed;
+                self.exit.set_code(ExitCode::Failed);
                 // This error path means the turn ended without ever calling
                 // `apply_model_response` successfully (a provider/HTTP error,
                 // a join error, or `apply_model_response` itself returning
@@ -759,7 +731,7 @@ impl TuiApp {
             self.timing.started = None;
             self.timing.thinking_started = None;
             self.timing.thought_secs = None;
-            self.exit.code = ExitCode::AwaitingHitl;
+            self.exit.set_code(ExitCode::AwaitingHitl);
             self.set_feedback(FeedbackSeverity::Warn, "awaiting human approval");
             self.push_activity(ActivityKind::Hitl, FeedbackSeverity::Warn, "hitl waiting");
             // Do not auto-dequeue until HITL is resolved.
@@ -773,7 +745,7 @@ impl TuiApp {
                 self.persist_turn_thinking_duration(turn_thought_secs);
             }
             self.clear_error_chrome();
-            self.tool_detail.expanded = false;
+            self.tool_detail.collapse();
             if self.session.queue().is_empty() {
                 self.feedback = FeedbackModel::default();
                 self.status_state.message.clear();

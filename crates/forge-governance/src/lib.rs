@@ -54,6 +54,7 @@ impl PermissionMode {
 /// High-level governance facade for the tool path.
 #[derive(Debug, Clone)]
 pub struct Governance {
+    mode: PermissionMode,
     pub principal: Principal,
     pub acl: AclPolicy,
     pub hitl_tools: Vec<String>,
@@ -72,6 +73,9 @@ pub struct Governance {
 impl Default for Governance {
     fn default() -> Self {
         Self {
+            // Default policy prompts for shell tools, which is Manual until a
+            // caller explicitly applies the UI's default Accept Edits mode.
+            mode: PermissionMode::Manual,
             principal: Principal::local_dev(),
             acl: AclPolicy::allow_all(),
             // Shell-equivalent tools always prompt (bash, background_run,
@@ -141,10 +145,16 @@ impl Governance {
         self
     }
 
+    /// The named permission mode that produced the active policy.
+    pub fn permission_mode(&self) -> PermissionMode {
+        self.mode
+    }
+
     /// Apply a named mode in place. Preserves `hitl_tools`, `acl`, and user
     /// `pattern_allow`/`pattern_deny`. Sets `mode_pattern_allow` for Accept
     /// Edits; clears it for Manual. Also clears `hitl_classes` (writes stay free).
     pub fn apply_mode(&mut self, mode: PermissionMode) {
+        self.mode = mode;
         self.hitl_classes = vec![];
         match mode {
             PermissionMode::Manual => {
@@ -817,5 +827,10 @@ mod tests {
     fn permission_mode_cycles_manual_and_accept_edits() {
         assert_eq!(PermissionMode::Manual.next(), PermissionMode::AcceptEdits);
         assert_eq!(PermissionMode::AcceptEdits.next(), PermissionMode::Manual);
+
+        let mut governance = Governance::default();
+        assert_eq!(governance.permission_mode(), PermissionMode::Manual);
+        governance.apply_mode(PermissionMode::AcceptEdits);
+        assert_eq!(governance.permission_mode(), PermissionMode::AcceptEdits);
     }
 }

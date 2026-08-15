@@ -338,7 +338,7 @@ async fn enter_while_busy_enqueues_user_message() {
     // Input routing keys off the authoritative session lifecycle, not the
     // UI `busy` flag — a real task must be Working for Enter to enqueue.
     app.session.append_user_message("first").await.unwrap();
-    app.busy_state.active = true;
+    app.busy_state.activate();
     for c in "queued later".chars() {
         app.handle_key(press(KeyCode::Char(c), KeyModifiers::NONE))
             .await
@@ -348,7 +348,7 @@ async fn enter_while_busy_enqueues_user_message() {
         .await
         .unwrap();
     assert_eq!(app.session.queue().len(), 1);
-    assert!(app.pending_turn.prompt.is_none());
+    assert!(!app.pending_turn.has_prompt());
     assert_eq!(
         app.session
             .queue()
@@ -375,7 +375,7 @@ async fn typing_while_busy_updates_input_buffer() {
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
-    app.busy_state.active = true;
+    app.busy_state.activate();
     for c in "next".chars() {
         app.handle_key(press(KeyCode::Char(c), KeyModifiers::NONE))
             .await
@@ -561,8 +561,8 @@ async fn empty_enter_when_idle_dequeues_and_sends() {
     );
     // Simulate a message enqueued while processing.
     app.session.enqueue_task("from queue").await.unwrap();
-    app.busy_state.active = false;
-    assert!(app.pending_turn.prompt.is_none());
+    app.busy_state.stop();
+    assert!(!app.pending_turn.has_prompt());
     // Empty Enter = user action to dequeue + send
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
@@ -571,9 +571,9 @@ async fn empty_enter_when_idle_dequeues_and_sends() {
     // Promotion already appended the message and started the task; the
     // turn continues via `PendingTurnState`, not a re-appended prompt
     // (that would double-append).
-    assert!(app.pending_turn.prompt.is_none());
-    assert!(app.pending_turn.continue_turn);
-    assert!(app.busy_state.active);
+    assert!(!app.pending_turn.has_prompt());
+    assert!(app.pending_turn.continue_requested());
+    assert!(app.busy_state.is_active());
     assert!(app
         .session
         .messages
@@ -801,7 +801,7 @@ async fn model_command_applies_provider_id_to_session() {
     app.apply_model_selection("native", "openai/gpt-4.1-mini", None);
     assert_eq!(app.runtime.model_label, "openai/gpt-4.1-mini");
     assert_eq!(app.session.active_model, "openai/gpt-4.1-mini");
-    assert!(app.pending_turn.prompt.is_none());
+    assert!(!app.pending_turn.has_prompt());
 }
 
 #[tokio::test]
@@ -945,7 +945,7 @@ async fn app_quit_command() {
         },
     );
     app.dispatch_line("/quit").await.unwrap();
-    assert!(app.exit.requested);
+    assert!(app.exit.is_requested());
 }
 
 #[tokio::test]
@@ -1403,14 +1403,17 @@ async fn enter_on_status_suggestion_runs_immediately() {
 }
 
 #[tokio::test]
-async fn attaching_clipboard_bytes_writes_workspace_path_ref() {
+async fn attaching_clipboard_bytes_uses_application_storage_outside_a_repository() {
     let (_dir, mut app) = focus_test_app().await;
     app.attach_image_bytes(&forge_types::sample_png_bytes());
-    assert_eq!(app.attachment.pending_images.len(), 1);
-    let image = &app.attachment.pending_images[0];
-    assert!(image.path.starts_with(".forge/local/pasted/"));
+    assert_eq!(app.attachment.image_count(), 1);
+    let image = &app.attachment.images()[0];
+    assert!(
+        std::path::Path::new(&image.path).is_absolute(),
+        "application-data fallback must not be faked as a workspace path"
+    );
     assert_eq!(image.mime, "image/png");
-    assert!(app.session.workspace_root().join(&image.path).is_file());
+    assert!(std::path::Path::new(&image.path).is_file());
     assert!(app.pending_image_label().unwrap().starts_with("Image: "));
 }
 
@@ -1424,8 +1427,8 @@ async fn send_with_image_is_blocked_when_model_cannot_see() {
     app.input.set_text("compare this");
     app.submit_composer_message().await.unwrap();
     assert_eq!(app.input.text, "compare this");
-    assert_eq!(app.attachment.pending_images.len(), 1);
-    assert!(app.pending_turn.prompt.is_none());
+    assert_eq!(app.attachment.image_count(), 1);
+    assert!(!app.pending_turn.has_prompt());
 }
 
 #[tokio::test]
@@ -1437,11 +1440,11 @@ async fn send_with_image_is_allowed_when_model_can_see() {
     app.attach_image_bytes(&forge_types::sample_png_bytes());
     app.dispatch_line("compare this").await.unwrap();
     assert!(
-        app.pending_turn.prompt.is_some(),
+        app.pending_turn.has_prompt(),
         "feedback={}",
         app.feedback.text
     );
-    assert!(app.attachment.pending_images.is_empty());
-    assert_eq!(app.pending_turn.prompt.as_deref(), Some("compare this"));
-    assert_eq!(app.pending_turn.attachments.len(), 1);
+    assert!(!app.attachment.has_images());
+    assert_eq!(app.pending_turn.prompt(), Some("compare this"));
+    assert_eq!(app.pending_turn.attachment_count(), 1);
 }

@@ -35,6 +35,9 @@ pub enum RuntimeDataKind {
     Log,
     Index,
     Checkpoint,
+    /// Temporary images attached from the clipboard. They must remain available
+    /// for the duration of a model request, but are never project files.
+    Attachment,
     /// Per-subagent git worktrees — see `forge-storage::worktree`. Lives
     /// under the same repository-local/application-data root as every other
     /// runtime category, so a subagent's isolated working directory is
@@ -54,6 +57,7 @@ impl RuntimeDataKind {
             Self::Log => "logs",
             Self::Index => "index",
             Self::Checkpoint => "checkpoints",
+            Self::Attachment => "attachments",
             Self::Worktree => "worktrees",
         }
     }

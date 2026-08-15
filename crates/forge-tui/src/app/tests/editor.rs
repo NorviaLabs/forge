@@ -229,7 +229,7 @@ async fn dirty_editor_exit_requires_an_explicit_discard_or_save_choice() {
         .await
         .unwrap();
     assert!(matches!(
-        app.explorer_dialog.current,
+        app.explorer_dialog.current(),
         Some(ExplorerDialog::DirtyExit)
     ));
     assert!(app.current_workspace_is_file());
@@ -280,7 +280,7 @@ async fn dirty_editor_file_switch_requires_an_explicit_choice() {
 
     app.open_file_in_editor(&second);
     assert!(matches!(
-        app.explorer_dialog.current,
+        app.explorer_dialog.current(),
         Some(ExplorerDialog::DirtySwitch { .. })
     ));
     assert_eq!(
@@ -314,7 +314,7 @@ async fn reopening_the_active_dirty_file_keeps_the_embedded_buffer() {
 
     assert_eq!(app.editor_session.as_ref().unwrap().text(), in_memory);
     assert!(app.editor_session.as_ref().unwrap().is_dirty());
-    assert!(app.explorer_dialog.current.is_none());
+    assert!(!app.explorer_dialog.is_open());
 }
 
 #[tokio::test]
@@ -367,7 +367,7 @@ async fn save_conflict_requires_explicit_force_or_reload_choice() {
         .await
         .unwrap();
     assert!(matches!(
-        app.explorer_dialog.current,
+        app.explorer_dialog.current(),
         Some(ExplorerDialog::SaveConflict)
     ));
     assert_eq!(fs::read_to_string(&path).unwrap(), "outside");
@@ -375,7 +375,7 @@ async fn save_conflict_requires_explicit_force_or_reload_choice() {
     app.handle_key(press(KeyCode::Char('f'), KeyModifiers::NONE))
         .await
         .unwrap();
-    assert!(app.explorer_dialog.current.is_none());
+    assert!(!app.explorer_dialog.is_open());
     assert_eq!(fs::read_to_string(&path).unwrap(), "xbefore");
 }
 
@@ -398,7 +398,7 @@ async fn dirty_switch_preserves_save_conflict_and_reloads_before_switching() {
         .await
         .unwrap();
     assert!(matches!(
-        app.explorer_dialog.current,
+        app.explorer_dialog.current(),
         Some(ExplorerDialog::SaveConflict)
     ));
 
@@ -470,7 +470,7 @@ async fn vim_command_line_e_same_dirty_file_requires_reload_decision() {
     }
 
     assert!(matches!(
-        app.explorer_dialog.current,
+        app.explorer_dialog.current(),
         Some(ExplorerDialog::SaveConflict)
     ));
     app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
@@ -539,9 +539,9 @@ async fn external_editor_rejects_during_tool_execution() {
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
-    app.busy_state.phase = BusyPhase::Tool {
+    app.busy_state.set_phase(BusyPhase::Tool {
         name: "write".into(),
-    };
+    });
     app.source_viewer.status = crate::source_viewer::ViewerStatus::Ok;
     app.source_viewer.path = Some(PathBuf::from("/tmp/fake.txt"));
     app.external_editor.requested = true;
@@ -636,7 +636,7 @@ async fn source_viewer_esc_exits_insert_before_navigating_back() {
         edtui::EditorMode::Normal
     );
     assert_eq!(
-        app.workspace_navigation.current,
+        app.workspace_navigation.current(),
         Some(WorkspaceView::File(path))
     );
 
@@ -645,7 +645,7 @@ async fn source_viewer_esc_exits_insert_before_navigating_back() {
         .await
         .unwrap();
     assert_ne!(
-        app.workspace_navigation.current,
+        app.workspace_navigation.current(),
         Some(WorkspaceView::File(
             dir.path().join("main.rs").canonicalize().unwrap()
         ))

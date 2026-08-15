@@ -179,7 +179,7 @@ async fn run_tui_inner(
     result.map(|_| {
         let report = app.session.token_usage_report();
         ExitSummary {
-            exit_code: app.exit.code,
+            exit_code: app.exit.code(),
             session_id: app.session.session_id.to_string(),
             token_usage: (report.api.total_api_tokens() > 0)
                 .then(|| format_exit_token_usage(&report)),
@@ -191,9 +191,10 @@ async fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut TuiApp,
 ) -> Result<(), TuiError> {
-    while !app.exit.requested {
+    while !app.exit.is_requested() {
         app.poll_file_changes();
         app.poll_interactive_terminal();
+        app.tick_render_state();
         app.warm_catalog_once_connected();
         app.poll_catalog_refresh();
         app.poll_background_tasks().await?;
@@ -208,19 +209,19 @@ async fn run_loop(
         terminal.draw(|f| app.draw(f))?;
 
         // Drain queued user prompt with streaming redraws (YOU paints before first token)
-        if app.pending_turn.prompt.is_some() {
+        if app.pending_turn.has_prompt() {
             app.drain_pending_prompt(Some(terminal)).await?;
             continue;
         }
-        if app.pending_turn.continue_turn {
+        if app.pending_turn.continue_requested() {
             app.drain_pending_prompt(Some(terminal)).await?;
             continue;
         }
-        if app.pending_interaction.hitl_decision.is_some() {
+        if app.pending_interaction.has_hitl_decision() {
             app.drain_pending_hitl(Some(terminal)).await?;
             continue;
         }
-        if app.pending_interaction.context_reset {
+        if app.pending_interaction.context_reset_pending() {
             app.drain_pending_context_reset(Some(terminal)).await?;
             continue;
         }

@@ -56,7 +56,7 @@ impl TuiApp {
     /// Block click/selection routing when a modal or transient surface owns the
     /// pointer (mirrors the wheel guard's precedence in `dispatch_mouse_scroll`).
     fn pointer_blocked(&self) -> bool {
-        self.explorer_dialog.current.is_some()
+        self.explorer_dialog.is_open()
             || self.session.pending_hitl().is_some()
             || self.overlay.is_some()
     }
@@ -276,18 +276,18 @@ impl TuiApp {
         // Mirror `handle_key`'s guard precedence: while a modal or transient
         // surface is active the wheel must not scroll a pane the user cannot
         // see (or the transcript hidden beneath an overlay).
-        if self.explorer_dialog.current.is_some()
+        if self.explorer_dialog.is_open()
             || self.session.pending_hitl().is_some()
             || self.overlay.is_some()
             || matches!(
-                self.focus.mode,
+                self.focus.mode(),
                 FocusMode::Transient(TransientOwner::SourceSearch | TransientOwner::JumpToLine)
             )
         {
             return;
         }
 
-        match self.focus.block {
+        match self.focus.block() {
             // The composer is the resting focus; the wheel over it scrolls the
             // transcript behind it, same as PageUp/PageDown while composing.
             FocusBlock::Composer => self.mouse_scroll_conversation(direction, shift),

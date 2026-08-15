@@ -4,17 +4,15 @@
 //! MCP servers, locating the journal, and composing governance from workspace
 //! permissions. That work used to live in `forge-cli`'s `main.rs`, which made
 //! the terminal binary the only thing in the workspace that could produce a
-//! session. Anything else wanting one — a headless runner, a background agent
-//! host, a test harness — had to duplicate it.
+//! session. Anything else wanting one — a background agent host or a test
+//! harness — had to duplicate it.
 //!
 //! This crate sits above `forge-core` because assembly needs `forge-mcp` and
 //! `forge-connect`, neither of which `forge-core` depends on and neither of
 //! which belongs in it.
 
-mod runner;
 mod snapshot;
 
-pub use runner::{spawn, ApprovalPolicy, RunnerGone, SessionCommand, SessionEvent, SessionHandle};
 pub use snapshot::{SessionSnapshot, TranscriptSnapshot};
 
 use std::sync::Arc;
@@ -26,7 +24,7 @@ use forge_mcp::{register_static_mcp, McpManager, StaticMcpTool};
 use forge_model::{client_from_config, ModelClient};
 use forge_storage::{LocalRuntimeStorage, RuntimeDataKind, RuntimeStorage};
 use forge_tools::ToolRegistry;
-use forge_types::SessionId;
+use forge_types::{SessionId, SideEffectClass};
 use serde_json::json;
 
 /// Which session to open: a new one, or a specific existing one to resume.
@@ -149,6 +147,7 @@ pub async fn open_session(cfg: &Config, target: SessionTarget) -> anyhow::Result
                 "properties": { "text": { "type": "string" } },
                 "required": ["text"]
             }),
+            side_effect_class: SideEffectClass::Meta,
             handler: Box::new(|args| forge_types::ToolOutput {
                 outcome: Default::default(),
                 content: args

@@ -131,6 +131,7 @@ pub(crate) fn render_app_text(app: &mut TuiApp, width: u16, height: u16) -> Stri
     use ratatui::backend::TestBackend;
 
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+    app.tick_render_state();
     terminal.draw(|frame| app.draw(frame)).unwrap();
     let buffer = terminal.backend().buffer();
     let area = buffer.area();

@@ -40,6 +40,9 @@ pub struct StaticMcpTool {
     pub tool_name: String,
     pub description: String,
     pub schema: Value,
+    /// Declared authority for this test/in-process MCP tool. Unlike built-ins,
+    /// MCP handlers are not assumed safe metadata operations.
+    pub side_effect_class: SideEffectClass,
     pub handler: Box<dyn Fn(Value) -> ToolOutput + Send + Sync>,
 }
 
@@ -56,7 +59,7 @@ impl Tool for StaticMcpTool {
         self.schema.clone()
     }
     fn side_effect_class(&self) -> SideEffectClass {
-        SideEffectClass::Meta
+        self.side_effect_class
     }
     async fn call(&self, _ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
         Ok((self.handler)(args))
@@ -312,6 +315,9 @@ pub struct McpToolInfo {
 pub struct RemoteMcpTool {
     pub full_name: String,
     pub info: McpToolInfo,
+    /// Declared by the trusted MCP server configuration, not inferred from
+    /// the remote tool's name or untrusted MCP metadata.
+    pub side_effect_class: SideEffectClass,
     pub client: Arc<McpStdioClient>,
     pub remote_name: String,
 }
@@ -328,7 +334,7 @@ impl Tool for RemoteMcpTool {
         self.info.input_schema.clone()
     }
     fn side_effect_class(&self) -> SideEffectClass {
-        SideEffectClass::Meta
+        self.side_effect_class
     }
     async fn call(&self, _ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
         self.client
@@ -340,12 +346,14 @@ impl Tool for RemoteMcpTool {
 
 pub struct McpManager {
     clients: HashMap<String, Arc<McpStdioClient>>,
+    side_effect_classes: HashMap<String, SideEffectClass>,
 }
 
 impl McpManager {
     pub fn new() -> Self {
         Self {
             clients: HashMap::new(),
+            side_effect_classes: HashMap::new(),
         }
     }
 
@@ -355,6 +363,8 @@ impl McpManager {
             match McpStdioClient::spawn(s).await {
                 Ok(c) => {
                     self.clients.insert(s.id.clone(), Arc::new(c));
+                    self.side_effect_classes
+                        .insert(s.id.clone(), s.side_effect_class);
                 }
                 Err(e) => errors.push(format!("{}: {e}", s.id)),
             }
@@ -371,6 +381,11 @@ impl McpManager {
                 registry.register(Arc::new(RemoteMcpTool {
                     full_name: full,
                     info,
+                    side_effect_class: self
+                        .side_effect_classes
+                        .get(sid)
+                        .copied()
+                        .unwrap_or(SideEffectClass::Exec),
                     client: client.clone(),
                     remote_name,
                 }));
@@ -458,6 +473,7 @@ done
                     "properties": { "text": { "type": "string" } },
                     "required": ["text"]
                 }),
+                side_effect_class: SideEffectClass::Exec,
                 handler: Box::new(|args| ToolOutput {
                     outcome: Default::default(),
                     content: args
@@ -496,6 +512,7 @@ done
                     "properties": { "text": { "type": "string" } },
                     "required": ["text"]
                 }),
+                side_effect_class: SideEffectClass::Exec,
                 handler: Box::new(|_| ToolOutput {
                     outcome: Default::default(),
                     content: "x".into(),
@@ -527,6 +544,7 @@ done
                 .to_string_lossy()
                 .into_owned(),
             args: Vec::new(),
+            side_effect_class: SideEffectClass::Exec,
         };
         let client = McpStdioClient::spawn(&cfg).await.unwrap();
 
@@ -556,6 +574,7 @@ done
                 .to_string_lossy()
                 .into_owned(),
             args: Vec::new(),
+            side_effect_class: SideEffectClass::Exec,
         };
         let client = McpStdioClient::spawn(&cfg).await.unwrap();
         let (first, second) = tokio::join!(
@@ -573,6 +592,7 @@ done
             transport: "http".into(),
             command: "true".into(),
             args: Vec::new(),
+            side_effect_class: SideEffectClass::Exec,
         };
         match McpStdioClient::spawn(&cfg).await {
             Err(McpError::Protocol(message)) => {
@@ -596,6 +616,7 @@ done
                 .to_string_lossy()
                 .into_owned(),
             args: Vec::new(),
+            side_effect_class: SideEffectClass::Exec,
         };
 
         let mut manager = McpManager::new();
@@ -629,6 +650,7 @@ done
                 transport: "stdio".into(),
                 command: "/no/such/mcp-server".into(),
                 args: Vec::new(),
+                side_effect_class: SideEffectClass::Exec,
             }])
             .await;
         assert_eq!(errors.len(), 1);
@@ -646,6 +668,7 @@ done
             tool_name: "mcp:demo:echo".into(),
             description: "echo back".into(),
             schema: json!({"type": "object"}),
+            side_effect_class: SideEffectClass::Read,
             handler: Box::new(|_| ToolOutput {
                 outcome: Default::default(),
                 content: "ok".into(),
@@ -656,7 +679,7 @@ done
         };
         assert_eq!(tool.name(), "mcp:demo:echo");
         assert_eq!(tool.description(), "echo back");
-        assert_eq!(tool.side_effect_class(), SideEffectClass::Meta);
+        assert_eq!(tool.side_effect_class(), SideEffectClass::Read);
         assert!(tool.input_schema().is_object());
     }
 }

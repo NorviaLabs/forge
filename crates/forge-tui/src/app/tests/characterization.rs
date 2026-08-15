@@ -10,19 +10,19 @@ async fn characterization_contextual_views_are_reachable_with_current_controls()
     let path = dir.path().join("source.rs");
     fs::write(&path, "fn main() {}\n").unwrap();
     app.focus_block(FocusBlock::Workspace);
-    assert_eq!(app.workspace_navigation.current, None);
+    assert_eq!(app.workspace_navigation.current(), None);
 
     app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.workspace_navigation.current, None);
-    assert_eq!(app.focus.block, FocusBlock::Workspace);
+    assert_eq!(app.workspace_navigation.current(), None);
+    assert_eq!(app.focus.block(), FocusBlock::Workspace);
 
     app.execute_semantic_command(SemanticCommand::OpenFile(path.clone()))
         .await
         .unwrap();
     assert_eq!(
-        app.workspace_navigation.current,
+        app.workspace_navigation.current(),
         Some(WorkspaceView::File(path))
     );
 }
@@ -43,12 +43,12 @@ async fn characterization_files_selection_and_expansion_survive_focus_roundtrip(
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_ne!(app.focus.block, FocusBlock::Files);
+    assert_ne!(app.focus.block(), FocusBlock::Files);
     app.handle_key(press(KeyCode::BackTab, KeyModifiers::NONE))
         .await
         .unwrap();
 
-    assert_eq!(app.focus.block, FocusBlock::Files);
+    assert_eq!(app.focus.block(), FocusBlock::Files);
     assert_eq!(
         app.workspace_files.explorer.selected_path.as_deref(),
         Some(src.as_path())

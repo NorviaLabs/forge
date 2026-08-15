@@ -78,8 +78,8 @@ async fn streaming_updates_reuse_cached_transcript_lines() {
         },
     );
     app.conversation_view.splash_dismissed = true;
-    app.busy_state.active = true;
-    app.busy_state.phase = BusyPhase::Model;
+    app.busy_state.activate();
+    app.busy_state.set_phase(BusyPhase::Model);
     app.stream.preview = "first chunk".into();
     let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
     terminal.draw(|frame| app.draw(frame)).unwrap();
@@ -166,10 +166,10 @@ async fn busy_phase_reuses_cached_transcript_lines() {
     draw_app(&mut app, 100, 30);
     let first = Arc::clone(&app.render_cache.conversation.as_ref().unwrap().lines);
 
-    app.busy_state.active = true;
-    app.busy_state.phase = crate::widgets::BusyPhase::Tool {
+    app.busy_state.activate();
+    app.busy_state.set_phase(crate::widgets::BusyPhase::Tool {
         name: "bash".into(),
-    };
+    });
     draw_app(&mut app, 100, 30);
     let second = Arc::clone(&app.render_cache.conversation.as_ref().unwrap().lines);
 

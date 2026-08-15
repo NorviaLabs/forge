@@ -95,7 +95,7 @@ async fn wheel_over_terminal_is_a_noop() {
     app.handle_mouse(wheel_up()).await.unwrap();
 
     assert_eq!(app.conversation_view.scroll, 0);
-    assert_eq!(app.focus.block, FocusBlock::BottomPanel);
+    assert_eq!(app.focus.block(), FocusBlock::BottomPanel);
 }
 
 #[tokio::test]

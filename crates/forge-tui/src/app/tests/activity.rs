@@ -14,15 +14,15 @@ async fn agent_streaming_while_viewing_file_does_not_navigate() {
         .unwrap();
     let before = app.workspace_navigation.clone();
 
-    app.busy_state.active = true;
-    app.busy_state.phase = BusyPhase::Model;
-    app.pending_turn.prompt = None;
+    app.busy_state.activate();
+    app.busy_state.set_phase(BusyPhase::Model);
+    app.pending_turn.clear();
     app.stream.preview = "partial answer".into();
     let rendered = render_app_text(&mut app, 100, 30);
 
     assert_eq!(app.workspace_navigation, before);
     assert_eq!(
-        app.workspace_navigation.current,
+        app.workspace_navigation.current(),
         Some(WorkspaceView::File(path))
     );
     assert!(rendered.contains("fn main()"), "{rendered}");
@@ -37,8 +37,8 @@ async fn agent_streaming_while_viewing_file_does_not_navigate() {
 #[tokio::test]
 async fn agent_thinking_keeps_composer_usable() {
     let (_dir, mut app) = focus_test_app().await;
-    app.busy_state.active = true;
-    app.busy_state.phase = BusyPhase::Model;
+    app.busy_state.activate();
+    app.busy_state.set_phase(BusyPhase::Model);
     app.stream.thinking = "planning".into();
     app.focus_block(FocusBlock::Composer);
 
@@ -47,7 +47,7 @@ async fn agent_thinking_keeps_composer_usable() {
         .unwrap();
 
     assert_eq!(app.input.text, "x");
-    assert_eq!(app.workspace_navigation.current, None);
+    assert_eq!(app.workspace_navigation.current(), None);
     assert!(app.activity_summary().is_none());
 }
 
@@ -124,5 +124,5 @@ async fn alt_right_and_workspace_right_do_not_open_review() {
         .await
         .unwrap();
 
-    assert_eq!(app.workspace_navigation.current, None);
+    assert_eq!(app.workspace_navigation.current(), None);
 }

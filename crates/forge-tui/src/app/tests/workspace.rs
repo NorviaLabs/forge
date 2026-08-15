@@ -8,8 +8,8 @@ use super::prelude::*;
 async fn workspace_navigation_starts_empty_at_home() {
     let (_dir, app) = focus_test_app().await;
 
-    assert_eq!(app.workspace_navigation.current, None);
-    assert!(app.workspace_navigation.history.is_empty());
+    assert_eq!(app.workspace_navigation.current(), None);
+    assert!(app.workspace_navigation.history().is_empty());
 }
 
 #[tokio::test]
@@ -25,22 +25,22 @@ async fn workspace_navigation_pushes_file_and_replaces_file_resource() {
         .unwrap();
 
     assert_eq!(
-        app.workspace_navigation.current,
+        app.workspace_navigation.current(),
         Some(WorkspaceView::File(first.clone()))
     );
     // Nothing to push onto history yet — the home state (`None`) isn't a
     // concrete view, so opening the first file from home leaves history empty.
-    assert_eq!(app.workspace_navigation.history, Vec::new());
+    assert_eq!(app.workspace_navigation.history(), Vec::new());
 
     app.execute_semantic_command(SemanticCommand::OpenFile(second.clone()))
         .await
         .unwrap();
 
     assert_eq!(
-        app.workspace_navigation.current,
+        app.workspace_navigation.current(),
         Some(WorkspaceView::File(second))
     );
-    assert_eq!(app.workspace_navigation.history, Vec::new());
+    assert_eq!(app.workspace_navigation.history(), Vec::new());
 }
 
 #[tokio::test]
@@ -56,7 +56,7 @@ async fn workspace_back_from_a_file_returns_home() {
         .await
         .unwrap();
 
-    assert_eq!(app.workspace_navigation.current, None);
+    assert_eq!(app.workspace_navigation.current(), None);
 }
 
 #[tokio::test]
@@ -72,8 +72,8 @@ async fn workspace_home_returns_to_empty_and_clears_history() {
         .await
         .unwrap();
 
-    assert_eq!(app.workspace_navigation.current, None);
-    assert!(app.workspace_navigation.history.is_empty());
+    assert_eq!(app.workspace_navigation.current(), None);
+    assert!(app.workspace_navigation.history().is_empty());
 }
 
 #[tokio::test]
@@ -92,7 +92,7 @@ async fn workspace_home_requires_a_dirty_editor_decision() {
         .await
         .unwrap();
     assert!(matches!(
-        app.explorer_dialog.current,
+        app.explorer_dialog.current(),
         Some(ExplorerDialog::DirtyExit)
     ));
     assert!(app.current_workspace_is_file());
@@ -100,8 +100,8 @@ async fn workspace_home_requires_a_dirty_editor_decision() {
     app.handle_key(press(KeyCode::Char('d'), KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.workspace_navigation.current, None);
-    assert!(app.workspace_navigation.history.is_empty());
+    assert_eq!(app.workspace_navigation.current(), None);
+    assert!(app.workspace_navigation.history().is_empty());
 }
 
 #[tokio::test]
@@ -121,7 +121,7 @@ async fn alt_navigation_requires_a_dirty_editor_decision() {
         .await
         .unwrap();
     assert!(matches!(
-        app.explorer_dialog.current,
+        app.explorer_dialog.current(),
         Some(ExplorerDialog::DirtyExit)
     ));
     assert!(app.current_workspace_is_file());
@@ -161,7 +161,7 @@ async fn files_visibility_is_independent_of_workspace_navigation() {
         .unwrap();
 
     assert!(app.workspace_files.visible);
-    assert_eq!(app.workspace_navigation.current, None);
+    assert_eq!(app.workspace_navigation.current(), None);
 }
 
 #[tokio::test]
@@ -169,7 +169,7 @@ async fn files_panel_is_open_by_default() {
     let (_dir, app) = focus_test_app().await;
 
     assert!(app.workspace_files.visible);
-    assert_eq!(app.focus.block, FocusBlock::Composer);
+    assert_eq!(app.focus.block(), FocusBlock::Composer);
 }
 
 #[tokio::test]
@@ -208,7 +208,7 @@ async fn files_visibility_auto_collapses_and_restores_without_mutating_preferenc
         app.workspace_files.visible,
         "auto-collapse must not persist close"
     );
-    assert_eq!(app.focus.block, FocusBlock::Sidebar);
+    assert_eq!(app.focus.block(), FocusBlock::Sidebar);
 
     let _wide = render_app_text(&mut app, 160, 50);
     assert!(app.workspace_files.visible);
@@ -271,7 +271,7 @@ async fn opening_file_does_not_open_closed_files_preference() {
 
     assert!(!app.workspace_files.visible);
     assert_eq!(
-        app.workspace_navigation.current,
+        app.workspace_navigation.current(),
         Some(WorkspaceView::File(path))
     );
 }

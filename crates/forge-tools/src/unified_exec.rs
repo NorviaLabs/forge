@@ -5,7 +5,8 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::process::Stdio;
-use std::sync::{Arc, OnceLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
@@ -76,11 +77,19 @@ fn append_output(session: &mut Session, bytes: &[u8]) {
     }
 }
 
-type Sessions = Arc<Mutex<HashMap<u64, Arc<Mutex<Session>>>>>;
+/// Sessions belong to one tool-registry installation. They must never be
+/// process-global: independent agent sessions and subagents may share a
+/// process, but must not be able to poll or write each other's shells.
+#[derive(Default)]
+struct ExecSessionStore {
+    next_id: AtomicU64,
+    sessions: Mutex<HashMap<u64, Arc<Mutex<Session>>>>,
+}
 
-fn sessions() -> &'static Sessions {
-    static SESSIONS: OnceLock<Sessions> = OnceLock::new();
-    SESSIONS.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
+impl ExecSessionStore {
+    fn next_id(&self) -> u64 {
+        self.next_id.fetch_add(1, Ordering::Relaxed) + 1
+    }
 }
 
 fn output_for(session_id: u64, session: &Session, max_tokens: Option<usize>) -> Value {
@@ -162,7 +171,11 @@ async fn collect(
     })
 }
 
-async fn start(ctx: &ToolContext, args: ExecCommandArgs) -> Result<ToolOutput, ToolError> {
+async fn start(
+    sessions: &ExecSessionStore,
+    ctx: &ToolContext,
+    args: ExecCommandArgs,
+) -> Result<ToolOutput, ToolError> {
     if args.tty {
         return Err(ToolError::Execution(
             "exec_command tty mode is not supported yet".into(),
@@ -210,9 +223,9 @@ async fn start(ctx: &ToolContext, args: ExecCommandArgs) -> Result<ToolOutput, T
         output_truncated: false,
         started: Instant::now(),
     };
-    let id = next_id();
+    let id = sessions.next_id();
     let session = Arc::new(Mutex::new(session));
-    sessions().lock().await.insert(id, session.clone());
+    sessions.sessions.lock().await.insert(id, session.clone());
     let mut session = session.lock().await;
     let result = collect(
         id,
@@ -225,18 +238,29 @@ async fn start(ctx: &ToolContext, args: ExecCommandArgs) -> Result<ToolOutput, T
         .as_ref()
         .is_ok_and(|output| output.exit_code.is_some())
     {
-        sessions().lock().await.remove(&id);
+        sessions.sessions.lock().await.remove(&id);
     }
     result
 }
 
-fn next_id() -> u64 {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+pub struct ExecCommandTool {
+    sessions: Arc<ExecSessionStore>,
 }
 
-pub struct ExecCommandTool;
-pub struct WriteStdinTool;
+pub struct WriteStdinTool {
+    sessions: Arc<ExecSessionStore>,
+}
+
+/// Creates the paired tools sharing one registry-scoped shell-session store.
+pub fn unified_exec_tools() -> (ExecCommandTool, WriteStdinTool) {
+    let sessions = Arc::new(ExecSessionStore::default());
+    (
+        ExecCommandTool {
+            sessions: Arc::clone(&sessions),
+        },
+        WriteStdinTool { sessions },
+    )
+}
 
 #[async_trait]
 impl Tool for ExecCommandTool {
@@ -254,6 +278,7 @@ impl Tool for ExecCommandTool {
     }
     async fn call(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
         start(
+            &self.sessions,
             ctx,
             serde_json::from_value(args).map_err(|e| ToolError::Execution(e.to_string()))?,
         )
@@ -278,7 +303,9 @@ impl Tool for WriteStdinTool {
     async fn call(&self, _ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
         let args: WriteStdinArgs =
             serde_json::from_value(args).map_err(|e| ToolError::Execution(e.to_string()))?;
-        let session = sessions()
+        let session = self
+            .sessions
+            .sessions
             .lock()
             .await
             .get(&args.session_id)
@@ -306,7 +333,7 @@ impl Tool for WriteStdinTool {
             .as_ref()
             .is_ok_and(|output| output.exit_code.is_some())
         {
-            sessions().lock().await.remove(&args.session_id);
+            self.sessions.sessions.lock().await.remove(&args.session_id);
         }
         result
     }
@@ -322,7 +349,8 @@ mod tests {
     async fn starts_running_session_and_polls_without_input() {
         let dir = tempdir().unwrap();
         let ctx = ToolContext::new(dir.path().to_path_buf());
-        let first = ExecCommandTool
+        let (exec_command, write_stdin) = unified_exec_tools();
+        let first = exec_command
             .call(
                 &ctx,
                 json!({"cmd": "printf ready; sleep 1", "yield_time_ms": 20}),
@@ -333,7 +361,7 @@ mod tests {
         assert!(body["session_id"].as_u64().is_some());
         assert!(body["output"].as_str().unwrap().contains("ready"));
         let id = body["session_id"].as_u64().unwrap();
-        let polled = WriteStdinTool
+        let polled = write_stdin
             .call(&ctx, json!({"session_id": id, "yield_time_ms": 1200}))
             .await
             .unwrap();
@@ -344,10 +372,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sessions_cannot_cross_tool_registry_boundaries() {
+        let dir = tempdir().unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let (exec_command, _) = unified_exec_tools();
+        let (_, other_write_stdin) = unified_exec_tools();
+        let first = exec_command
+            .call(&ctx, json!({"cmd": "sleep 1", "yield_time_ms": 20}))
+            .await
+            .unwrap();
+        let id = serde_json::from_str::<Value>(&first.content).unwrap()["session_id"]
+            .as_u64()
+            .unwrap();
+
+        let error = other_write_stdin
+            .call(&ctx, json!({"session_id": id, "yield_time_ms": 20}))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("unknown shell session"));
+    }
+
+    #[tokio::test]
     async fn empty_chars_does_not_write_to_stdin() {
         let dir = tempdir().unwrap();
         let ctx = ToolContext::new(dir.path().to_path_buf());
-        let first = ExecCommandTool
+        let (exec_command, write_stdin) = unified_exec_tools();
+        let first = exec_command
             .call(
                 &ctx,
                 json!({"cmd": "read x; echo got:$x", "yield_time_ms": 20}),
@@ -357,7 +407,7 @@ mod tests {
         let id = serde_json::from_str::<Value>(&first.content).unwrap()["session_id"]
             .as_u64()
             .unwrap();
-        let polled = WriteStdinTool
+        let polled = write_stdin
             .call(
                 &ctx,
                 json!({"session_id": id, "chars": "", "yield_time_ms": 20}),
@@ -367,7 +417,7 @@ mod tests {
         let polled_body: Value = serde_json::from_str(&polled.content).unwrap();
         assert_eq!(polled_body["running"], true);
 
-        let completed = WriteStdinTool
+        let completed = write_stdin
             .call(
                 &ctx,
                 json!({"session_id": id, "chars": "input\n", "yield_time_ms": 1000}),

@@ -14,7 +14,7 @@ pub(super) fn path_is_ignored_by_file_watcher(path: &Path) -> bool {
 
 impl TuiApp {
     pub(super) fn init_file_watcher(&mut self) {
-        let tx = self.file_watch.change_tx.clone();
+        let tx = self.file_watch.sender();
         let mut watcher = match RecommendedWatcher::new(
             move |result: notify::Result<notify::Event>| {
                 if let Ok(event) = result {
@@ -39,16 +39,16 @@ impl TuiApp {
             Err(_) => return,
         };
         let _ = watcher.watch(self.session_view.workspace_root(), RecursiveMode::Recursive);
-        self.file_watch.watcher = Some(watcher);
+        self.file_watch.install(watcher);
     }
 
     pub(super) fn poll_file_changes(&mut self) {
         let mut active_file_changed = false;
         let mut workspace_changed = false;
-        while let Ok(change) = self.file_watch.change_rx.try_recv() {
+        while let Ok(change_path) = self.file_watch.try_recv() {
             workspace_changed = true;
             if let Some(path) = &self.source_viewer.path {
-                if same_file_identity(&change.path, path) {
+                if same_file_identity(&change_path, path) {
                     active_file_changed = true;
                 }
             }
@@ -107,8 +107,8 @@ impl TuiApp {
         } else if renamed_open_file {
             self.notice_state.items.clear();
         }
-        if matches!(self.focus.block, FocusBlock::Files | FocusBlock::Search)
-            && self.focus.mode == FocusMode::Navigation
+        if matches!(self.focus.block(), FocusBlock::Files | FocusBlock::Search)
+            && self.focus.mode() == FocusMode::Navigation
         {
             self.workspace_files.explorer.refresh_git_status();
         } else {
