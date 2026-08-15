@@ -153,7 +153,7 @@ pub fn render_theme_preview(theme_id: &str, area: Rect, buf: &mut Buffer) {
         x,
         y,
         w,
-        "▶ Allow once",
+        "▶ Run once",
         Style::default()
             .fg(palette.selection_fg)
             .bg(palette.selection),

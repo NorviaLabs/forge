@@ -565,9 +565,9 @@ impl ConversationRender for ConversationModel {
                     }
                 }
                 ConversationBlock::ApprovalPending(p) => {
-                    const HINT: &str = "↑↓ select · Enter confirm · Esc cancel";
+                    const HINT: &str = "↑↓  Enter  Esc don't run";
                     let pad = " ".repeat(MESSAGE_PADDING);
-                    let question = "Allow this command for the rest of the session?";
+                    let question = approval_question(&p.tool);
                     let question_style = if p.focused {
                         theme::text().add_modifier(Modifier::BOLD)
                     } else {
@@ -579,35 +579,59 @@ impl ConversationRender for ConversationModel {
                             Span::styled(wrapped, question_style),
                         ]));
                     }
-                    for wrapped in wrap(&p.command, prose_width) {
+                    let command_lines: Vec<&str> = p.command.lines().collect();
+                    if command_lines.is_empty() {
                         lines.push(Line::from(vec![
                             Span::raw(pad.clone()),
-                            Span::styled(wrapped, theme::muted()),
+                            Span::styled("  (empty command)", theme::muted()),
                         ]));
+                    } else {
+                        for command_line in command_lines {
+                            let display = if command_line.is_empty() {
+                                "  ".to_string()
+                            } else {
+                                format!("  {command_line}")
+                            };
+                            for wrapped in wrap(&display, prose_width) {
+                                lines.push(Line::from(vec![
+                                    Span::raw(pad.clone()),
+                                    Span::styled(wrapped, theme::muted()),
+                                ]));
+                            }
+                        }
                     }
-                    let cwd_env = format!("cwd: {}  env: {}", p.cwd, p.env_delta);
-                    for wrapped in wrap(&cwd_env, prose_width) {
+                    let cwd_line = approval_location_line(&p.cwd, &p.env_delta);
+                    for wrapped in wrap(&cwd_line, prose_width) {
                         lines.push(Line::from(vec![
                             Span::raw(pad.clone()),
                             Span::styled(wrapped, theme::muted()),
                         ]));
                     }
                     for (idx, opt) in p.options.iter().enumerate() {
-                        let marker = if idx == p.selected { "›" } else { " " };
-                        let style = if idx == p.selected {
+                        let selected = idx == p.selected;
+                        let marker = if selected { "›" } else { " " };
+                        let style = if selected {
                             theme::text().add_modifier(Modifier::BOLD)
                         } else {
                             theme::muted()
                         };
-                        let row = match &opt.detail {
-                            Some(detail) => format!("{marker} {}  {detail}", opt.label),
-                            None => format!("{marker} {}", opt.label),
-                        };
+                        let row = format!("{marker} {}", opt.label);
                         for wrapped in wrap(&row, prose_width) {
                             lines.push(Line::from(vec![
                                 Span::raw(pad.clone()),
                                 Span::styled(wrapped, style),
                             ]));
+                        }
+                        if selected {
+                            if let Some(help) = opt.help.as_deref().filter(|help| !help.is_empty())
+                            {
+                                for wrapped in wrap(help, prose_width.saturating_sub(4)) {
+                                    lines.push(Line::from(vec![
+                                        Span::raw(pad.clone()),
+                                        Span::styled(format!("    {wrapped}"), theme::muted()),
+                                    ]));
+                                }
+                            }
                         }
                     }
                     for wrapped in wrap(HINT, prose_width) {
@@ -879,6 +903,21 @@ pub(super) fn lang_from_path(path: &str) -> Option<&'static str> {
         "toml" | "yaml" | "yml" => Some("yaml"),
         "txt" | "log" => None,
         _ => None,
+    }
+}
+
+fn approval_question(tool: &str) -> &'static str {
+    if forge_governance::is_shell_tool(tool) {
+        "Forge wants to run a shell command."
+    } else {
+        "Forge wants to run this tool."
+    }
+}
+
+fn approval_location_line(cwd: &str, env_delta: &str) -> String {
+    match env_delta {
+        "" | "inherited" => cwd.to_string(),
+        other => format!("{cwd}  ·  env {other}"),
     }
 }
 
@@ -2327,16 +2366,19 @@ mod tests {
             },
             vec![
                 ApprovalMenuRow {
-                    label: "Allow once".into(),
+                    label: "Run once".into(),
                     detail: None,
+                    help: Some("Runs now. You will be asked again.".into()),
                 },
                 ApprovalMenuRow {
-                    label: "Allow pattern".into(),
+                    label: "Remember similar commands this session".into(),
                     detail: Some("bash(git push *)".into()),
+                    help: Some("Would match: git push …".into()),
                 },
                 ApprovalMenuRow {
-                    label: "Deny".into(),
+                    label: "Don't run".into(),
                     detail: None,
+                    help: Some("The agent is told the command was denied.".into()),
                 },
             ],
             0,
@@ -2349,20 +2391,26 @@ mod tests {
             .map(|span| span.content.as_ref())
             .collect::<String>();
         assert!(
-            text.contains("Allow this command for the rest of the session?"),
+            text.contains("Forge wants to run a shell command."),
             "{text}"
         );
         assert!(!text.contains("⏸ APPROVAL REQUIRED"), "{text}");
         assert!(text.contains("git push -u origin feature"), "{text}");
-        assert!(text.contains("cwd: workspace"), "{text}");
-        assert!(text.contains("env: inherited"), "{text}");
-        assert!(text.contains("› Allow once"), "{text}");
-        assert!(text.contains("Allow pattern"), "{text}");
-        assert!(text.contains("bash(git push *)"), "{text}");
+        assert!(text.contains("workspace"), "{text}");
+        assert!(!text.contains("cwd: workspace"), "{text}");
+        assert!(text.contains("› Run once"), "{text}");
         assert!(
-            text.contains("↑↓ select · Enter confirm · Esc cancel"),
+            text.contains("Remember similar commands this session"),
             "{text}"
         );
+        assert!(
+            text.contains("Runs now. You will be asked again."),
+            "{text}"
+        );
+        assert!(!text.contains("Would match: git push"), "{text}");
+        assert!(text.contains("↑↓"), "{text}");
+        assert!(text.contains("Enter"), "{text}");
+        assert!(text.contains("Esc don't run"), "{text}");
     }
 
     #[test]
@@ -2382,8 +2430,9 @@ mod tests {
                 env_delta: "inherited".into(),
             },
             vec![ApprovalMenuRow {
-                label: "Allow once".into(),
+                label: "Run once".into(),
                 detail: None,
+                help: Some("Runs now. You will be asked again.".into()),
             }],
             0,
             false,
@@ -2391,7 +2440,7 @@ mod tests {
         let lines = m.lines_for_width(PANE_WIDTH);
         let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
         assert!(
-            text.contains("Allow this command for the rest of the session?"),
+            text.contains("Forge wants to run a shell command."),
             "{text}"
         );
         assert!(

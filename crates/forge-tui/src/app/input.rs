@@ -509,7 +509,7 @@ impl TuiApp {
                 self.input.set_text(line);
                 self.set_feedback(
                     FeedbackSeverity::Warn,
-                    "resolve the pending approval first — ↑↓ select · Enter confirm · Esc cancel",
+                    "resolve the pending approval first — ↑↓  Enter  Esc don't run",
                 );
             }
         }

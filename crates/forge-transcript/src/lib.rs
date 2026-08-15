@@ -340,6 +340,8 @@ pub struct ApprovalRequestView {
 pub struct ApprovalMenuRow {
     pub label: String,
     pub detail: Option<String>,
+    /// Consequence shown only while this row is selected.
+    pub help: Option<String>,
 }
 
 /// The redacted command awaiting a human approval decision, with enough
@@ -569,7 +571,7 @@ impl ConversationModel {
         items = group_routine_activity(items);
         if status == TaskLifecycle::Waiting {
             items.push(ChatItem::Banner {
-                text: "Awaiting approval · ↑↓ select · Enter confirm · Esc cancel".into(),
+                text: "Waiting · approval".into(),
                 kind: BannerKind::Warn,
             });
         }

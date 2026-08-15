@@ -1,5 +1,5 @@
 //! Inline HITL approval: focus-gated conversation prompt, session pattern
-//! Allow pattern, and per-theme render tests. Decisions are made only through
+//! session remember, and per-theme render tests. Decisions are made only through
 //! the prompt's menu (↑↓ Enter Esc) while it holds focus.
 
 use super::super::approvals::ApprovalMenuKind;
@@ -55,29 +55,22 @@ async fn inline_approval_renders_full_payload_in_sidebar() {
 
     let rendered = render_app_text(&mut app, 100, 30);
     assert!(
-        rendered.contains("Allow this command for the rest of the session?"),
+        rendered.contains("Forge wants to run a shell command."),
         "{rendered}"
     );
     assert!(!rendered.contains("⏸ APPROVAL REQUIRED"), "{rendered}");
     assert!(rendered.contains("git push -u origin main"), "{rendered}");
-    assert!(rendered.contains("cwd:"), "{rendered}");
-    // The card now hugs its own content width (capped at prose width) rather
-    // than always spanning the full pane, so a long cwd path can legitimately
-    // wrap before reaching "env:" — check the two independently instead of
-    // asserting they're contiguous.
-    assert!(rendered.contains("env:"), "{rendered}");
-    assert!(rendered.contains("inherited"), "{rendered}");
-    assert!(rendered.contains("› Allow once"), "{rendered}");
-    assert!(rendered.contains("Allow pattern"), "{rendered}");
-    assert!(rendered.contains("bash(git push *)"), "{rendered}");
+    assert!(rendered.contains("› Run once"), "{rendered}");
     assert!(
-        !rendered.contains("bash(git push -u origin main)"),
+        rendered.contains("Remember similar commands this session"),
         "{rendered}"
     );
     assert!(
-        rendered.contains("↑↓ select · Enter confirm · Esc cancel"),
+        rendered.contains("Runs now. You will be asked again."),
         "{rendered}"
     );
+    assert!(!rendered.contains("Would match: git push"), "{rendered}");
+    assert!(rendered.contains("Esc don't run"), "{rendered}");
 }
 
 #[tokio::test]
@@ -100,8 +93,8 @@ async fn approval_leaves_underlying_workspace_untouched() {
     );
 
     let rendered = render_app_text(&mut app, 100, 30);
-    assert!(rendered.contains("Allow this command"), "{rendered}");
-    assert!(rendered.contains("rest of the session?"), "{rendered}");
+    assert!(rendered.contains("Forge wants to run"), "{rendered}");
+    assert!(rendered.contains("Run once"), "{rendered}");
     assert_eq!(app.workspace_navigation, before);
     assert!(app.activity_summary().is_none());
     assert_eq!(
@@ -137,7 +130,7 @@ async fn menu_remember_approves_and_matches_the_suggested_family() {
     let payload = direct_hitl_payload("remember", "src/foo.txt");
     set_pending_approval(&mut app, payload.clone());
 
-    press_down_to(&mut app, "Allow pattern").await;
+    press_down_to(&mut app, "Remember similar commands this session").await;
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
@@ -159,7 +152,7 @@ async fn remembered_approval_expires_with_session() {
     let payload = direct_hitl_payload("session", "session.txt");
     set_pending_approval(&mut app, payload.clone());
 
-    press_down_to(&mut app, "Allow pattern").await;
+    press_down_to(&mut app, "Remember similar commands this session").await;
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
@@ -193,12 +186,14 @@ async fn shell_approval_offers_a_generalized_pattern() {
     let rows = app.approval_menu_rows();
     let labels: Vec<String> = rows.iter().map(|row| row.label.clone()).collect();
     assert!(
-        labels.iter().any(|label| label == "Allow pattern"),
+        labels
+            .iter()
+            .any(|label| label == "Remember similar commands this session"),
         "{labels:?}"
     );
     let pattern = rows
         .iter()
-        .find(|row| row.label == "Allow pattern")
+        .find(|row| row.label == "Remember similar commands this session")
         .and_then(|row| row.detail.as_deref());
     assert_eq!(pattern, Some("bash(git push *)"));
     assert!(app
@@ -216,13 +211,17 @@ async fn allow_pattern_row_shows_the_suggested_file_pattern() {
     let pattern = app
         .approval_menu_rows()
         .into_iter()
-        .find(|row| row.label == "Allow pattern")
+        .find(|row| row.label == "Remember similar commands this session")
         .and_then(|row| row.detail);
     assert_eq!(pattern.as_deref(), Some("read_file(src/**)"));
 
+    press_down_to(&mut app, "Remember similar commands this session").await;
     let rendered = render_app_text(&mut app, 100, 30);
-    assert!(rendered.contains("Allow pattern"), "{rendered}");
-    assert!(rendered.contains("read_file(src/**)"), "{rendered}");
+    assert!(
+        rendered.contains("Remember similar commands this session"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("files under src/"), "{rendered}");
 }
 
 #[tokio::test]
@@ -238,7 +237,7 @@ async fn unrecognized_line_preserves_text_and_keeps_pending() {
     assert_eq!(app.input.text, "run the tests instead");
     assert!(app.session.pending_hitl().is_some());
     assert!(
-        app.feedback.text.contains("↑↓ select"),
+        app.feedback.text.contains("Esc don't run"),
         "{}",
         app.feedback.text
     );
@@ -275,7 +274,7 @@ async fn menu_allow_pattern_remembers_the_command_family_for_the_session() {
         bash_hitl_payload("call-1", "git push -u origin main"),
     );
 
-    press_down_to(&mut app, "Allow pattern").await;
+    press_down_to(&mut app, "Remember similar commands this session").await;
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
@@ -314,7 +313,7 @@ async fn menu_enter_on_allow_once_approves() {
         .await
         .unwrap();
     assert!(app.session.pending_hitl().is_none());
-    // Allow once must not remember the invocation.
+    // Run once must not remember the invocation.
     assert!(app.remembered_approval_count() == 0);
 }
 
@@ -323,7 +322,7 @@ async fn menu_down_to_allow_pattern_and_enter() {
     let (_dir, mut app) = focus_test_app().await;
     set_pending_approval(&mut app, bash_hitl_payload("m2", "cargo test --all"));
     app.sync_approval_menu();
-    // Allow once (0) → Allow pattern (1)
+    // Run once (0) → Remember similar (1)
     app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
         .await
         .unwrap();
@@ -417,7 +416,7 @@ async fn approval_card_wraps_long_command() {
 
     let rendered = render_app_text(&mut app, 100, 40);
     assert!(
-        rendered.contains("Allow this command for the rest of the session?"),
+        rendered.contains("Forge wants to run a shell command."),
         "{rendered}"
     );
     assert!(rendered.contains("git commit -m"), "{rendered}");
@@ -450,15 +449,15 @@ async fn approval_card_renders_in_every_shipped_theme() {
             );
             let rendered = render_app_text(&mut app, width, 30);
             assert!(
-                rendered.contains("Allow this command for the rest of the session?"),
+                rendered.contains("Forge wants to run a shell command."),
                 "{theme_id} @ {width}:\n{rendered}"
             );
             assert!(
-                rendered.contains("› Allow once"),
+                rendered.contains("› Run once"),
                 "{theme_id} @ {width}:\n{rendered}"
             );
             assert!(
-                rendered.contains("↑↓ select · Enter confirm · Esc cancel"),
+                rendered.contains("Esc don't run"),
                 "{theme_id} @ {width}:\n{rendered}"
             );
             for line in rendered.lines() {
