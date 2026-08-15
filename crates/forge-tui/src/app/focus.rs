@@ -143,7 +143,7 @@ impl TuiApp {
             return Some("Enter confirm · Esc cancel".into());
         }
         if self.session.pending_hitl().is_some() {
-            return Some("⏸ approval · ↑↓ select · Enter confirm · Esc cancel".into());
+            return Some("Waiting · approval · ↑↓  Enter  Esc don't run".into());
         }
         if let Some(overlay) = self.overlay.as_ref() {
             return match overlay {
