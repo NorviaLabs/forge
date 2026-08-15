@@ -1,4 +1,4 @@
-//! Inline HITL approval: focus-gated conversation prompt, session-exact
+//! Inline HITL approval: focus-gated conversation prompt, session pattern
 //! Allow pattern, and per-theme render tests. Decisions are made only through
 //! the prompt's menu (↑↓ Enter Esc) while it holds focus.
 
@@ -69,11 +69,11 @@ async fn inline_approval_renders_full_payload_in_sidebar() {
     assert!(rendered.contains("inherited"), "{rendered}");
     assert!(rendered.contains("› Allow once"), "{rendered}");
     assert!(rendered.contains("Allow pattern"), "{rendered}");
+    assert!(rendered.contains("bash(git push *)"), "{rendered}");
     assert!(
-        rendered.contains("bash(git push -u origin main)"),
+        !rendered.contains("bash(git push -u origin main)"),
         "{rendered}"
     );
-    assert!(!rendered.contains("bash(git push *)"), "{rendered}");
     assert!(
         rendered.contains("↑↓ select · Enter confirm · Esc cancel"),
         "{rendered}"
@@ -130,10 +130,11 @@ async fn menu_allow_once_approves_without_remembering() {
 }
 
 #[tokio::test]
-async fn menu_remember_approves_and_matches_exact_identity() {
+async fn menu_remember_approves_and_matches_the_suggested_family() {
     let (dir, mut app) = focus_test_app().await;
-    fs::write(dir.path().join("remember.txt"), "ok").unwrap();
-    let payload = direct_hitl_payload("remember", "remember.txt");
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(dir.path().join("src/foo.txt"), "ok").unwrap();
+    let payload = direct_hitl_payload("remember", "src/foo.txt");
     set_pending_approval(&mut app, payload.clone());
 
     press_down_to(&mut app, "Allow pattern").await;
@@ -141,30 +142,14 @@ async fn menu_remember_approves_and_matches_exact_identity() {
         .await
         .unwrap();
 
-    let identity = app.approval_identity_for_payload(&payload).unwrap();
-    assert!(app.is_approval_remembered(&identity));
-    assert!(!app.is_approval_remembered(
-        &app.approval_identity_for_payload(&direct_hitl_payload("arg", "other.txt"))
-            .unwrap()
-    ));
-
-    let env_payload = HitlPayload {
-        args_redacted: json!({"path": "remember.txt", "env": {"RUST_LOG": "debug"}}),
-        ..direct_hitl_payload("env", "remember.txt")
-    };
-    assert!(!app.is_approval_remembered(&app.approval_identity_for_payload(&env_payload).unwrap()));
-
-    let cwd_payload = HitlPayload {
-        args_redacted: json!({"path": "remember.txt", "cwd": "nested"}),
-        ..direct_hitl_payload("cwd", "remember.txt")
-    };
-    assert!(!app.is_approval_remembered(&app.approval_identity_for_payload(&cwd_payload).unwrap()));
+    assert!(app.is_approval_pattern_remembered(&payload));
+    assert!(app.is_approval_pattern_remembered(&direct_hitl_payload("sib", "src/bar.txt")));
+    assert!(!app.is_approval_pattern_remembered(&direct_hitl_payload("other", "other.txt")));
 
     let (other_dir, other_app) = focus_test_app().await;
-    fs::write(other_dir.path().join("remember.txt"), "ok").unwrap();
-    assert!(
-        !app.is_approval_remembered(&other_app.approval_identity_for_payload(&payload).unwrap())
-    );
+    fs::create_dir_all(other_dir.path().join("src")).unwrap();
+    fs::write(other_dir.path().join("src/foo.txt"), "ok").unwrap();
+    assert!(!other_app.is_approval_pattern_remembered(&payload));
 }
 
 #[tokio::test]
@@ -201,7 +186,7 @@ async fn remembered_approval_expires_with_session() {
 }
 
 #[tokio::test]
-async fn shell_approval_can_be_remembered_exactly() {
+async fn shell_approval_offers_a_generalized_pattern() {
     let (_dir, mut app) = focus_test_app().await;
     set_pending_approval(&mut app, bash_hitl_payload("shell", "git push origin main"));
 
@@ -215,28 +200,29 @@ async fn shell_approval_can_be_remembered_exactly() {
         .iter()
         .find(|row| row.label == "Allow pattern")
         .and_then(|row| row.detail.as_deref());
-    assert_eq!(pattern, Some("bash(git push origin main)"));
+    assert_eq!(pattern, Some("bash(git push *)"));
     assert!(app
         .approval_identity_for_payload(app.session.pending_hitl().unwrap())
         .is_some());
 }
 
 #[tokio::test]
-async fn allow_pattern_row_shows_the_exact_file_pattern() {
+async fn allow_pattern_row_shows_the_suggested_file_pattern() {
     let (dir, mut app) = focus_test_app().await;
-    fs::write(dir.path().join("remember.txt"), "ok").unwrap();
-    set_pending_approval(&mut app, direct_hitl_payload("file", "remember.txt"));
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(dir.path().join("src/remember.txt"), "ok").unwrap();
+    set_pending_approval(&mut app, direct_hitl_payload("file", "src/remember.txt"));
 
     let pattern = app
         .approval_menu_rows()
         .into_iter()
         .find(|row| row.label == "Allow pattern")
         .and_then(|row| row.detail);
-    assert_eq!(pattern.as_deref(), Some("read_file(remember.txt)"));
+    assert_eq!(pattern.as_deref(), Some("read_file(src/**)"));
 
     let rendered = render_app_text(&mut app, 100, 30);
     assert!(rendered.contains("Allow pattern"), "{rendered}");
-    assert!(rendered.contains("read_file(remember.txt)"), "{rendered}");
+    assert!(rendered.contains("read_file(src/**)"), "{rendered}");
 }
 
 #[tokio::test]
@@ -282,9 +268,12 @@ async fn menu_esc_denies_and_records_tool_denial() {
 }
 
 #[tokio::test]
-async fn menu_allow_pattern_remembers_exact_argv_for_the_session() {
+async fn menu_allow_pattern_remembers_the_command_family_for_the_session() {
     let (_dir, mut app) = focus_test_app().await;
-    set_pending_approval(&mut app, bash_hitl_payload("call-1", "cargo test --all"));
+    set_pending_approval(
+        &mut app,
+        bash_hitl_payload("call-1", "git push -u origin main"),
+    );
 
     press_down_to(&mut app, "Allow pattern").await;
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
@@ -295,15 +284,23 @@ async fn menu_allow_pattern_remembers_exact_argv_for_the_session() {
     assert_eq!(app.remembered_approval_count(), 1);
 
     // The same argv auto-approves without presenting another prompt.
-    set_pending_hitl(&mut app, bash_hitl_payload("call-2", "cargo test --all"));
+    set_pending_hitl(
+        &mut app,
+        bash_hitl_payload("call-2", "git push -u origin main"),
+    );
     app.drain_auto_hitl().await.unwrap();
     assert!(app.session.pending_hitl().is_none());
 
-    // A sibling command still gates.
+    // A sibling in the same family also auto-approves.
     set_pending_hitl(
         &mut app,
-        bash_hitl_payload("call-3", "cargo test --release"),
+        bash_hitl_payload("call-3", "git push origin feature"),
     );
+    app.drain_auto_hitl().await.unwrap();
+    assert!(app.session.pending_hitl().is_none());
+
+    // A different family still gates.
+    set_pending_hitl(&mut app, bash_hitl_payload("call-4", "git status"));
     assert!(app.session.pending_hitl().is_some());
 }
 
