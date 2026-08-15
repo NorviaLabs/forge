@@ -55,8 +55,8 @@ use crate::layout::is_too_small;
 use crate::layout::{split_areas_with_chrome, split_areas_with_expanded_conversation};
 use crate::overlays::{
     build_provider_rows, centered_rect, filter_palette, handle_overlay_key, models_from_catalog,
-    ApprovalOverlayState, ConnectModelColumn, FileExplorerItem, Key,
-    Key as OverlayKey, Overlay, OverlayAction, OverlayWidget, PaletteItem, ResumeSessionItem,
+    ApprovalOverlayState, ConnectModelColumn, FileExplorerItem, Key, Key as OverlayKey, Overlay,
+    OverlayAction, OverlayWidget, PaletteItem, ResumeSessionItem,
 };
 use crate::source_viewer::{SourceViewer, SourceViewerWidget};
 use crate::terminal::TerminalGuard;
