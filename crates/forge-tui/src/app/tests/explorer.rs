@@ -286,7 +286,7 @@ async fn holding_arrows_in_a_large_tree_stays_on_a_frame_budget() {
                     .explorer
                     .is_visible_directory(&node.path)
         })
-        .map(|node| node.path)
+        .map(|node| node.path.clone())
         .collect();
     for path in dirs {
         app.workspace_files.explorer.selected_path = Some(path);

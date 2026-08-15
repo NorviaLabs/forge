@@ -108,10 +108,20 @@ pub struct FileExplorer {
     root_path: Option<PathBuf>,
     pub git_status: GitStatusCache,
     visible: Vec<VisibleNode>,
-    search_loader: Option<Receiver<FileNode>>,
+    search_loader: Option<Receiver<Vec<SearchEntry>>>,
     search_cancel: Option<Arc<AtomicBool>>,
     search_loading: bool,
-    search_expanded: Option<HashSet<PathBuf>>,
+    /// Compact, immutable filesystem index shared across query keystrokes.
+    search_index: Option<Arc<Vec<SearchEntry>>>,
+}
+
+#[derive(Debug)]
+struct SearchEntry {
+    path: PathBuf,
+    relative: String,
+    display_name: String,
+    kind: FileKind,
+    depth: usize,
 }
 
 impl FileExplorer {
@@ -132,7 +142,7 @@ impl FileExplorer {
             search_loader: None,
             search_cancel: None,
             search_loading: false,
-            search_expanded: None,
+            search_index: None,
         };
         explorer.load_root();
         if let Some(root) = root_path {
@@ -143,6 +153,7 @@ impl FileExplorer {
 
     pub fn load_root(&mut self) {
         self.cancel_search_load();
+        self.search_index = None;
         if let Some(root) = self.root.as_mut() {
             load_children(self.root_path.as_deref(), root);
         }
@@ -158,6 +169,7 @@ impl FileExplorer {
 
     pub fn refresh_workspace(&mut self) {
         self.cancel_search_load();
+        self.search_index = None;
         let root_path = self.root_path.clone();
         if let Some(root) = self.root.as_mut() {
             refresh_loaded_directories(root_path.as_deref(), root);
@@ -169,6 +181,7 @@ impl FileExplorer {
 
     pub fn refresh_selected(&mut self) {
         self.cancel_search_load();
+        self.search_index = None;
         let selected = self.selected_path.clone();
         let root_path = self.root_path.clone();
         if let Some(path) = selected {
@@ -190,6 +203,7 @@ impl FileExplorer {
 
     pub fn refresh_parent_and_select(&mut self, parent: &Path, selected: &Path) {
         self.cancel_search_load();
+        self.search_index = None;
         let root_path = self.root_path.clone();
         if let Some(node) = self.find_mut(parent) {
             if node.kind == FileKind::Directory {
@@ -228,8 +242,11 @@ impl FileExplorer {
         self.focused = !self.focused;
     }
 
-    pub fn visible_nodes(&self) -> Vec<VisibleNode> {
-        self.visible.clone()
+    /// Borrow the current flattened explorer rows without cloning their paths
+    /// and display names. Callers that need ownership can explicitly clone the
+    /// individual rows they retain.
+    pub fn visible_nodes(&self) -> &[VisibleNode] {
+        &self.visible
     }
 
     pub fn is_visible(&self, path: &Path) -> bool {
@@ -252,23 +269,11 @@ impl FileExplorer {
         let query = query.into();
 
         if was_empty && !query.trim().is_empty() {
-            let mut expanded = HashSet::new();
-            if let Some(root) = self.root.as_ref() {
-                collect_expanded_paths(root, &mut expanded);
-            }
-            self.search_expanded = Some(expanded);
             self.start_search_load();
         }
         self.search_query = query;
         if self.search_query.trim().is_empty() {
             self.cancel_search_load();
-            if let Some(expanded) = self.search_expanded.take() {
-                if let Some(root) = self.root.as_mut() {
-                    restore_expanded_paths(root, &expanded);
-                }
-            }
-        } else if let Some(root) = self.root.as_mut() {
-            expand_matching_paths(root, &self.search_query, self.root_path.as_deref());
         }
         self.rebuild_visible();
         self.repair_selection(previous_index);
@@ -313,6 +318,32 @@ impl FileExplorer {
         let root = self.root_path.as_ref()?;
         let rel = path.strip_prefix(root).ok()?;
         self.git_status.get(rel)
+    }
+
+    /// Start loading the active file's unstaged diff without blocking the UI.
+    /// Completed results remain in `GitStatusCache` for a future diff view.
+    pub fn request_unstaged_diff(&mut self, path: &Path) {
+        let Some(root) = self.root_path.clone() else {
+            return;
+        };
+        let Ok(relative) = path.strip_prefix(&root) else {
+            return;
+        };
+        if self
+            .git_status
+            .path_status(relative)
+            .is_some_and(|status| status.unstaged.is_some())
+        {
+            self.git_status
+                .request_unstaged_diff(root, relative.to_path_buf());
+        }
+    }
+
+    /// Poll both Git status and any active diff request without blocking.
+    pub fn poll_git(&mut self) -> bool {
+        let status_updated = self.git_status.poll();
+        let diff_updated = self.git_status.poll_diff();
+        status_updated || diff_updated
     }
 
     pub fn move_selection(&mut self, delta: isize) {
@@ -398,20 +429,19 @@ impl FileExplorer {
     }
 
     fn start_search_load(&mut self) {
-        let Some(mut root) = self.root.clone() else {
-            return;
-        };
-        if all_directories_loaded(&root) || self.search_loading {
+        if self.search_index.is_some() || self.search_loading {
             return;
         }
-        let root_path = self.root_path.clone();
+        let Some(root_path) = self.root_path.clone() else {
+            return;
+        };
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_cancel = Arc::clone(&cancel);
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            load_all_directories(root_path.as_deref(), &mut root, &worker_cancel);
+            let index = build_search_index(&root_path, &worker_cancel);
             if !worker_cancel.load(Ordering::Relaxed) {
-                let _ = tx.send(root);
+                let _ = tx.send(index);
             }
         });
         self.search_loader = Some(rx);
@@ -438,16 +468,13 @@ impl FileExplorer {
             return;
         };
         match rx.try_recv() {
-            Ok(mut root) => {
+            Ok(index) => {
                 let previous_index = self
                     .selected_path
                     .as_ref()
                     .and_then(|path| self.visible.iter().position(|node| &node.path == path))
                     .unwrap_or(0);
-                if !self.search_query.trim().is_empty() {
-                    expand_matching_paths(&mut root, &self.search_query, self.root_path.as_deref());
-                }
-                self.root = Some(root);
+                self.search_index = Some(Arc::new(index));
                 self.search_cancel = None;
                 self.search_loading = false;
                 self.rebuild_visible();
@@ -463,8 +490,15 @@ impl FileExplorer {
 
     fn rebuild_visible(&mut self) {
         let mut visible = Vec::new();
-        if let Some(root) = &self.root {
-            flatten_filtered(root, 0, &self.search_query, self.root_path(), &mut visible);
+        if !self.search_query.trim().is_empty() {
+            if let Some(index) = &self.search_index {
+                flatten_search_index(index, &self.search_query, &mut visible);
+            } else if let Some(root) = &self.root {
+                // Show already-loaded paths while the one-time index builds.
+                flatten_filtered(root, 0, &self.search_query, self.root_path(), &mut visible);
+            }
+        } else if let Some(root) = &self.root {
+            flatten_filtered(root, 0, "", self.root_path(), &mut visible);
         }
         self.visible = visible;
         self.selected_index = None;
@@ -515,9 +549,16 @@ impl FileExplorer {
     /// Returns the selected path if it points to a regular file.
     pub fn selected_file_path(&self) -> Option<PathBuf> {
         let path = self.selected_path.as_ref()?;
-        self.find(path)
-            .filter(|node| matches!(node.kind, FileKind::File | FileKind::Symlink))
-            .map(|_| path.clone())
+        let is_file = self
+            .visible
+            .iter()
+            .find(|node| &node.path == path)
+            .map(|node| matches!(node.kind, FileKind::File | FileKind::Symlink))
+            .or_else(|| {
+                self.find(path)
+                    .map(|node| matches!(node.kind, FileKind::File | FileKind::Symlink))
+            })?;
+        is_file.then(|| path.clone())
     }
 
     fn ensure_selection_visible(&mut self, height: usize) {
@@ -612,55 +653,82 @@ fn fuzzy_subsequence(path: &str, query: &str) -> bool {
     true
 }
 
-fn load_all_directories(root: Option<&Path>, node: &mut FileNode, cancel: &AtomicBool) {
-    if node.kind != FileKind::Directory || cancel.load(Ordering::Relaxed) {
+fn build_search_index(root: &Path, cancel: &AtomicBool) -> Vec<SearchEntry> {
+    let mut index = vec![SearchEntry {
+        path: root.to_path_buf(),
+        relative: ".".into(),
+        display_name: root
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| root.display().to_string()),
+        kind: FileKind::Directory,
+        depth: 0,
+    }];
+    index_directory(root, root, 1, cancel, &mut index);
+    index
+}
+
+fn index_directory(
+    root: &Path,
+    directory: &Path,
+    depth: usize,
+    cancel: &AtomicBool,
+    index: &mut Vec<SearchEntry>,
+) {
+    if cancel.load(Ordering::Relaxed) {
         return;
     }
-    if !node.loaded {
-        load_children(root, node);
-    }
-    for child in &mut node.children {
-        load_all_directories(root, child, cancel);
-    }
-}
-
-fn all_directories_loaded(node: &FileNode) -> bool {
-    node.kind != FileKind::Directory
-        || (node.loaded && node.children.iter().all(all_directories_loaded))
-}
-
-fn collect_expanded_paths(node: &FileNode, expanded: &mut HashSet<PathBuf>) {
-    if node.expanded {
-        expanded.insert(node.path.clone());
-    }
-    for child in &node.children {
-        collect_expanded_paths(child, expanded);
-    }
-}
-
-fn restore_expanded_paths(node: &mut FileNode, expanded: &HashSet<PathBuf>) {
-    node.expanded = expanded.contains(&node.path);
-    for child in &mut node.children {
-        restore_expanded_paths(child, expanded);
-    }
-}
-
-fn expand_matching_paths(node: &mut FileNode, query: &str, root: Option<&Path>) -> bool {
-    let relative = root
-        .and_then(|root| node.path.strip_prefix(root).ok())
-        .map(|path| path.to_string_lossy().into_owned())
-        .unwrap_or_else(|| node.path.to_string_lossy().into_owned());
-    let self_matches = path_matches_query(&relative, query);
-    let mut child_matches = false;
-    if node.kind == FileKind::Directory {
-        for child in &mut node.children {
-            child_matches |= expand_matching_paths(child, query, root);
+    let Ok(children) = read_children(Some(root), directory) else {
+        return;
+    };
+    for child in children {
+        if cancel.load(Ordering::Relaxed) {
+            return;
         }
-        if child_matches {
-            node.expanded = true;
+        let relative = child
+            .path
+            .strip_prefix(root)
+            .unwrap_or(&child.path)
+            .to_string_lossy()
+            .into_owned();
+        index.push(SearchEntry {
+            path: child.path.clone(),
+            relative,
+            display_name: child.display_name,
+            kind: child.kind,
+            depth,
+        });
+        if child.kind == FileKind::Directory {
+            index_directory(root, &child.path, depth + 1, cancel, index);
         }
     }
-    self_matches || child_matches
+}
+
+fn flatten_search_index(index: &[SearchEntry], query: &str, out: &mut Vec<VisibleNode>) {
+    let mut included = HashSet::new();
+    for entry in index {
+        if !path_matches_query(&entry.relative, query) {
+            continue;
+        }
+        let mut path = Some(entry.path.as_path());
+        while let Some(current) = path {
+            included.insert(current.to_path_buf());
+            path = current.parent();
+        }
+    }
+    for entry in index.iter().filter(|entry| included.contains(&entry.path)) {
+        out.push(VisibleNode {
+            path: entry.path.clone(),
+            display_name: entry.display_name.clone(),
+            kind: entry.kind,
+            expanded: entry.kind == FileKind::Directory,
+            loading: false,
+            loaded: true,
+            error: None,
+            child_count: usize::from(entry.kind == FileKind::Directory),
+            depth: entry.depth,
+        });
+    }
 }
 
 fn path_matches_query(path: &str, query: &str) -> bool {
@@ -1195,6 +1263,34 @@ mod tests {
     }
 
     #[test]
+    fn requesting_selected_unstaged_diff_is_non_blocking() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("changed.rs");
+        fs::write(&path, "changed\n").unwrap();
+        let path = path.canonicalize().unwrap();
+        let mut explorer = FileExplorer::new(
+            Some(root.path().to_path_buf()),
+            forge_config::FileIconMode::Unicode,
+        );
+        let relative = PathBuf::from("changed.rs");
+        explorer.git_status.details.insert(
+            relative,
+            forge_workspace::git_status::PathStatus {
+                staged: None,
+                unstaged: Some(GitStatusKind::Modified),
+            },
+        );
+
+        explorer.request_unstaged_diff(&path);
+
+        assert!(explorer.git_status.diff_loading);
+        assert!(explorer
+            .git_status
+            .get_unstaged_diff(Path::new("changed.rs"))
+            .is_none());
+    }
+
+    #[test]
     fn forge_local_is_hidden_but_project_owned_forge_resources_are_visible() {
         let root = tempfile::tempdir().unwrap();
         fs::create_dir_all(root.path().join(".forge/local/sessions")).unwrap();
@@ -1459,7 +1555,7 @@ mod tests {
         let names: Vec<_> = explorer
             .visible_nodes()
             .into_iter()
-            .map(|node| node.display_name)
+            .map(|node| node.display_name.clone())
             .collect();
         assert!(names[0] != "src");
         assert_eq!(&names[1..], ["src", "components", "button.rs"]);
@@ -1547,6 +1643,40 @@ mod tests {
                 PathBuf::from("src/api/client.rs"),
             ]
         );
+    }
+
+    #[test]
+    fn search_keystrokes_reuse_compact_index_without_materializing_tree() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("src/api/deep")).unwrap();
+        fs::write(root.path().join("src/api/deep/client.rs"), "").unwrap();
+        let mut explorer = FileExplorer::new(
+            Some(root.path().to_path_buf()),
+            forge_config::FileIconMode::Unicode,
+        );
+
+        explorer.set_search_query("c");
+        wait_for_search_load(&mut explorer);
+        let index = Arc::as_ptr(explorer.search_index.as_ref().unwrap());
+        let src = explorer
+            .root
+            .as_ref()
+            .unwrap()
+            .children
+            .iter()
+            .find(|node| node.display_name == "src")
+            .unwrap();
+        assert!(!src.loaded, "search must not materialize the FileNode tree");
+
+        for query in ["cl", "cli", "client"] {
+            explorer.set_search_query(query);
+            assert_eq!(Arc::as_ptr(explorer.search_index.as_ref().unwrap()), index);
+            assert!(!explorer.search_loading);
+        }
+        assert!(explorer
+            .visible
+            .iter()
+            .any(|node| node.display_name == "client.rs"));
     }
 
     #[test]
@@ -1717,7 +1847,7 @@ mod tests {
             search_loader: None,
             search_cancel: None,
             search_loading: false,
-            search_expanded: None,
+            search_index: None,
         };
         explorer.rebuild_visible();
         let root_node = explorer.root.as_ref().unwrap();

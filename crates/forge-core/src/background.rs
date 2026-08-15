@@ -264,6 +264,11 @@ impl BackgroundTaskRegistry {
         self.tasks.values()
     }
 
+    /// Number of tracked background tasks without walking the registry.
+    pub fn len(&self) -> usize {
+        self.tasks.len()
+    }
+
     /// All non-terminal tasks spawned under a given foreground task —
     /// used to propagate cancellation when that foreground task ends.
     pub fn children_of(
