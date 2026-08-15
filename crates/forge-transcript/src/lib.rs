@@ -417,7 +417,7 @@ impl ConversationModel {
 
     pub fn from_messages(
         messages: &[Message],
-        events: &[TurnEvent],
+        _events: &[TurnEvent],
         status: TaskLifecycle,
         opts: ConversationViewOpts,
     ) -> Self {
@@ -454,12 +454,10 @@ impl ConversationModel {
                     if let Some(ref th) = m.thinking {
                         if !th.trim().is_empty() {
                             latest_thinking = Some(th.clone());
-                            if m.thinking_duration_secs.is_some() {
-                                items.push(ChatItem::Thinking {
-                                    text: th.clone(),
-                                    duration_secs: m.thinking_duration_secs,
-                                });
-                            }
+                            items.push(ChatItem::Thinking {
+                                text: th.clone(),
+                                duration_secs: m.thinking_duration_secs,
+                            });
                         }
                     }
                     // Terminal failure summaries are durable assistant messages with a
@@ -568,20 +566,6 @@ impl ConversationModel {
                 _ => {}
             }
         }
-        let mut latest_progress = None;
-        for event in events {
-            if event.kind == "progress" || event.kind == "thinking" {
-                latest_progress = Some(event.detail.clone());
-            }
-        }
-        if let Some(text) = latest_progress {
-            if status == TaskLifecycle::Working {
-                items.push(ChatItem::Thinking {
-                    text,
-                    duration_secs: None,
-                });
-            }
-        }
         items = group_routine_activity(items);
         if status == TaskLifecycle::Waiting {
             items.push(ChatItem::Banner {
@@ -606,15 +590,28 @@ impl ConversationModel {
         )
     }
 
-    /// Streaming assistant preview. Live reasoning is tracked by the caller via
-    /// `opts.stream_wait` / `opts.stream_thought_secs` and is not rendered as Chat rows.
+    /// Streaming assistant preview. Live reasoning is shown above the answer
+    /// so the turn reads thought-then-reply, including while tokens arrive.
     pub fn with_streaming_preview(
         mut self,
-        _thinking: impl Into<String>,
+        thinking: impl Into<String>,
         text: impl Into<String>,
     ) -> Self {
+        let thinking = thinking.into();
         let text = text.into();
-        // Only show the answer bubble once content tokens start (status line covers wait/think).
+        if !thinking.trim().is_empty()
+            && !self.items.iter().any(|item| {
+                matches!(
+                    item,
+                    ChatItem::Thinking { text, .. } if text == &thinking
+                )
+            })
+        {
+            self.items.push(ChatItem::Thinking {
+                text: thinking,
+                duration_secs: self.opts.stream_thought_secs,
+            });
+        }
         if !text.is_empty() {
             let mut body = text;
             if self.opts.busy && !body.ends_with('▌') {
@@ -2345,6 +2342,92 @@ mod tests {
                 .iter()
                 .any(|b| matches!(b, ConversationBlock::AssistantAnswer(_))),
             "thinking-only assistant must not become answer: {blocks:?}"
+        );
+    }
+
+    #[test]
+    fn live_progress_thinking_is_not_appended_after_the_answer() {
+        let messages = vec![
+            Message {
+                outcome: Default::default(),
+                role: MessageRole::User,
+                content: "hi".into(),
+                tool_call_id: None,
+                name: None,
+                thinking: None,
+                thinking_duration_secs: None,
+                tool_calls: vec![],
+                attachments: Vec::new(),
+            },
+            Message {
+                outcome: Default::default(),
+                role: MessageRole::Assistant,
+                content: "final answer".into(),
+                tool_call_id: None,
+                name: None,
+                thinking: Some("reason first".into()),
+                thinking_duration_secs: None,
+                tool_calls: vec![],
+                attachments: Vec::new(),
+            },
+        ];
+        let events = vec![forge_core::TurnEvent {
+            kind: "progress".into(),
+            detail: "stale late thought".into(),
+        }];
+        let model = ConversationModel::from_messages(
+            &messages,
+            &events,
+            TaskLifecycle::Working,
+            ConversationViewOpts::default(),
+        );
+        let blocks = model.semantic_blocks();
+        assert!(
+            matches!(
+                blocks.as_slice(),
+                [
+                    ConversationBlock::UserMessage(_),
+                    ConversationBlock::Thinking(t),
+                    ConversationBlock::AssistantAnswer(a),
+                ] if t.text == "reason first" && a.text == "final answer"
+            ),
+            "thinking must stay above the answer, got {blocks:?}"
+        );
+        assert!(
+            !blocks.iter().any(|block| match block {
+                ConversationBlock::Thinking(t) => t.text.contains("stale late thought"),
+                _ => false,
+            }),
+            "progress events must not append thinking after the answer: {blocks:?}"
+        );
+    }
+
+    #[test]
+    fn streaming_preview_places_thinking_before_the_answer() {
+        let model = ConversationModel::from_messages(
+            &[],
+            &[],
+            TaskLifecycle::Working,
+            ConversationViewOpts {
+                busy: true,
+                stream_thought_secs: Some(1.5),
+                ..Default::default()
+            },
+        )
+        .with_streaming_preview("planning the edit", "partial reply");
+        let blocks = model.semantic_blocks();
+        assert!(
+            matches!(
+                blocks.as_slice(),
+                [
+                    ConversationBlock::Thinking(t),
+                    ConversationBlock::AssistantAnswer(a),
+                ] if t.text == "planning the edit"
+                    && t.duration_secs == Some(1.5)
+                    && a.text.contains("partial reply")
+                    && a.streaming
+            ),
+            "live thinking must precede the streaming answer, got {blocks:?}"
         );
     }
 
