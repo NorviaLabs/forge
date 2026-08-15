@@ -280,12 +280,12 @@ that's still the ACL's job. Two files are read and merged:
 
 Menu rows (when a prompt appears):
 
-- **Allow once** — run this call; ask again next time.
-- **Allow pattern** — remember a generalized pattern for the rest of the
-  session. The menu shows the pattern (for example `bash(git push *)`).
-  Matching commands later run without a prompt; a different family still
-  asks. Not written to `permissions.toml`.
-- **Deny** — block the call.
+- **Run once** — run this call; ask again next time.
+- **Remember similar commands this session** — remember a generalized
+  family for the rest of the session. The selected row explains what would
+  match (for example `git push …`). Matching commands later run without a
+  prompt; a different family still asks. Not written to `permissions.toml`.
+- **Don't run** — block the call.
 
 ### Permission modes
 
@@ -306,9 +306,9 @@ A stricter `Locked` mode is deferred until headless/CI entry exists.
 
 When a command needs approval, use the inline menu:
 
-- **↑ / ↓** — move selection (default: Allow once)
+- **↑ / ↓** — move selection (default: Run once)
 - **Enter** — confirm
-- **Esc** — deny (or back out of “Deny with note”)
+- **Esc** — don’t run (or back out of “Deny with note”)
 
 Optional text aliases still work: `yes`, `no`, `remember`, `always`,
 `no <note>`.
