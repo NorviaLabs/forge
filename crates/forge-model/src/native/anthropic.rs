@@ -171,7 +171,7 @@ fn anthropic_payload_content(message: &forge_types::Message, workspace: &std::pa
 fn messages_body(req: &ModelRequest) -> (String, Vec<Value>) {
     let mut system = Vec::new();
     let mut messages = Vec::new();
-    for message in &req.messages {
+    for message in req.messages.iter() {
         match message.role {
             MessageRole::System => system.push(message.content.clone()),
             MessageRole::Tool => messages.push(json!({
@@ -443,7 +443,8 @@ mod tests {
                         attachments: vec![forge_types::ImageRef::new("shot.png", "image/png", 1)],
                     },
                 ),
-            ],
+            ]
+            .into(),
             tools: vec![],
         };
         let (_system, messages) = messages_body(&req);
@@ -496,7 +497,8 @@ mod tests {
                     tool_calls: vec![],
                     attachments: Vec::new(),
                 },
-            ],
+            ]
+            .into(),
             tools: Vec::<ToolDescriptor>::new(),
         };
         let (system, messages) = messages_body(&req);
@@ -598,7 +600,8 @@ mod tests {
             messages: vec![
                 Message::new(MessageRole::System, "system"),
                 Message::new(MessageRole::User, "hello"),
-            ],
+            ]
+            .into(),
             tools: vec![ToolDescriptor {
                 name: "bash".into(),
                 description: "run".into(),
@@ -647,7 +650,7 @@ mod tests {
             model: "anthropic/claude".into(),
             route_id: Some("anthropic-api".into()),
             reasoning_effort: None,
-            messages: vec![],
+            messages: vec![].into(),
             tools: vec![],
             prompt_cache: true,
         };

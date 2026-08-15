@@ -17,6 +17,44 @@ struct GatedTool {
     release: Arc<Notify>,
 }
 
+/// Emits more events than the core relay can buffer before returning. This
+/// models a provider burst and guards the relay-drain ordering from regressing
+/// into a completion-time deadlock.
+struct BurstStreamingModel {
+    events: usize,
+}
+
+#[async_trait]
+impl forge_model::ModelClient for BurstStreamingModel {
+    async fn complete(
+        &self,
+        _req: forge_model::ModelRequest,
+    ) -> Result<ModelResponse, forge_model::ModelError> {
+        unreachable!("streaming path only")
+    }
+
+    async fn complete_with_stream(
+        &self,
+        _req: forge_model::ModelRequest,
+        tx: Option<forge_model::StreamEventTx>,
+    ) -> Result<ModelResponse, forge_model::ModelError> {
+        let tx = tx.expect("core supplies a stream sender");
+        for _ in 0..self.events {
+            tx.send(forge_types::ModelStreamEvent::TextDelta { text: "x".into() })
+                .unwrap();
+        }
+        tx.send(forge_types::ModelStreamEvent::MessageEnd).unwrap();
+        Ok(ModelResponse {
+            text: "done".into(),
+            tool_calls: vec![],
+            usage: None,
+            thinking: None,
+        })
+    }
+
+    fn clear_provider_env(&self) {}
+}
+
 #[async_trait]
 impl forge_tools::Tool for GatedTool {
     fn name(&self) -> &str {
@@ -265,6 +303,37 @@ async fn growing_the_last_message_refreshes_the_context_token_estimate() {
 }
 
 #[tokio::test]
+async fn appending_messages_updates_the_context_estimate_from_the_tail() {
+    let dir = tempdir().unwrap();
+    let mut session = idle_session(dir.path()).await;
+    session
+        .messages
+        .push(Message::new(MessageRole::User, "first message"));
+    let before = session.context_usage_ratio();
+    let cache_before = {
+        let cache = session.ctx_tokens_cache.lock().unwrap();
+        let cached = cache.as_ref().unwrap();
+        (cached.storage_id, cached.fingerprint)
+    };
+
+    session
+        .messages
+        .push(Message::new(MessageRole::Tool, "second message"));
+    let after = session.context_usage_ratio();
+    let cache_after = session
+        .ctx_tokens_cache
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .fingerprint;
+
+    assert!(after > before);
+    assert_eq!(cache_before.0, session.messages.storage_id());
+    assert_eq!(cache_after.messages, cache_before.1.messages + 1);
+}
+
+#[tokio::test]
 async fn session_registers_web_search_with_default_config() {
     let dir = tempdir().unwrap();
     let model = Arc::new(MockModelClient::script(vec![ModelResponse {
@@ -361,7 +430,26 @@ async fn view_image_is_hidden_until_image_input_is_enabled() {
 }
 
 #[tokio::test]
-async fn missing_pasted_image_is_noted_on_the_request() {
+async fn model_request_shares_the_session_transcript_without_attachments() {
+    let dir = tempdir().unwrap();
+    let model = Arc::new(MockModelClient::script(vec![ModelResponse {
+        text: "ok".into(),
+        tool_calls: vec![],
+        usage: None,
+        thinking: None,
+    }]));
+    let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+        .await
+        .unwrap();
+    s.append_user_message("look").await.unwrap();
+
+    let req = s.build_model_request();
+
+    assert!(req.messages.shares_storage_with(&s.messages));
+}
+
+#[tokio::test]
+async fn missing_pasted_image_is_noted_without_mutating_the_session_transcript() {
     let dir = tempdir().unwrap();
     let model = Arc::new(MockModelClient::script(vec![ModelResponse {
         text: "ok".into(),
@@ -378,14 +466,24 @@ async fn missing_pasted_image_is_noted_on_the_request() {
     )
     .await
     .unwrap();
+
     let req = s.build_model_request();
-    let user = req
+    let request_user = req
         .messages
         .iter()
         .find(|m| m.role == MessageRole::User)
         .unwrap();
-    assert!(user.attachments.is_empty());
-    assert!(user.content.contains("no longer available"));
+    let session_user = s
+        .messages
+        .iter()
+        .find(|m| m.role == MessageRole::User)
+        .unwrap();
+
+    assert!(!req.messages.shares_storage_with(&s.messages));
+    assert!(request_user.attachments.is_empty());
+    assert!(request_user.content.contains("no longer available"));
+    assert_eq!(session_user.attachments.len(), 1);
+    assert!(!session_user.content.contains("no longer available"));
 }
 
 /// A streaming step must forward every event to `forward`, including when
@@ -429,6 +527,42 @@ async fn a_streaming_step_forwards_its_deltas() {
         )),
         "the text delta was dropped; forwarded: {forwarded:?}"
     );
+}
+
+/// A bounded relay must keep draining after the model returns: joining it
+/// first would block forever once its bounded queue filled.
+#[tokio::test]
+async fn streaming_burst_over_relay_capacity_completes_and_preserves_deltas() {
+    let dir = tempdir().unwrap();
+    let event_count = 256;
+    let model = Arc::new(BurstStreamingModel {
+        events: event_count,
+    });
+    let mut session = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
+        .await
+        .unwrap();
+    session
+        .messages
+        .push(Message::new(MessageRole::User, "hello"));
+    let (tx, rx) = std::sync::mpsc::channel();
+
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        session.run_model_step_with_stream(0, Some(tx)),
+    )
+    .await
+    .expect("a full relay must not deadlock completion")
+    .unwrap();
+    assert_eq!(response.text, "done");
+
+    let forwarded: String = rx
+        .into_iter()
+        .filter_map(|event| match event {
+            forge_types::ModelStreamEvent::TextDelta { text } => Some(text),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(forwarded, "x".repeat(event_count));
 }
 
 #[tokio::test]
@@ -1735,14 +1869,16 @@ async fn current_turn_has_tool_activity_stops_at_the_user_boundary() {
     s.messages = vec![
         Message::new(MessageRole::User, "hi"),
         Message::new(MessageRole::Assistant, "hello"),
-    ];
+    ]
+    .into();
     assert!(!s.current_turn_has_tool_activity());
 
     // An assistant turn carrying tool calls counts as activity.
     s.messages = vec![
         Message::new(MessageRole::User, "hi"),
         assistant_with_tool_call("read_file"),
-    ];
+    ]
+    .into();
     assert!(s.current_turn_has_tool_activity());
 
     // Tool activity from a *previous* turn must not leak into this one:
@@ -1753,7 +1889,8 @@ async fn current_turn_has_tool_activity_stops_at_the_user_boundary() {
         Message::new(MessageRole::Tool, "contents"),
         Message::new(MessageRole::User, "second"),
         Message::new(MessageRole::Assistant, "plain reply"),
-    ];
+    ]
+    .into();
     assert!(!s.current_turn_has_tool_activity());
 }
 
@@ -1822,7 +1959,8 @@ async fn prepare_model_step_resets_context_when_over_threshold() {
     s.messages = vec![
         Message::new(MessageRole::User, "x".repeat(400)),
         Message::new(MessageRole::Assistant, "y".repeat(400)),
-    ];
+    ]
+    .into();
     assert!(s.context.should_reset(&s.messages));
 
     let request = s.prepare_model_step(3).await.unwrap();
@@ -1851,7 +1989,7 @@ async fn prepare_model_step_resets_context_when_over_threshold() {
 async fn prepare_model_step_leaves_a_small_context_alone() {
     let dir = tempdir().unwrap();
     let mut s = idle_session(dir.path()).await;
-    s.messages = vec![Message::new(MessageRole::User, "short")];
+    s.messages = vec![Message::new(MessageRole::User, "short")].into();
 
     s.prepare_model_step(1).await.unwrap();
 
@@ -1890,7 +2028,8 @@ async fn token_usage_report_buckets_tool_messages_separately() {
         thinking_turn,
         Message::new(MessageRole::Tool, "tool output one"),
         Message::new(MessageRole::Tool, "tool output two"),
-    ];
+    ]
+    .into();
 
     let report = s.token_usage_report();
 

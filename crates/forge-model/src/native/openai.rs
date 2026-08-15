@@ -390,7 +390,7 @@ mod tests {
     fn request(model: &str) -> ModelRequest {
         ModelRequest {
             workspace_root: std::path::PathBuf::new(),
-            messages: vec![Message::new(MessageRole::User, "hello")],
+            messages: vec![Message::new(MessageRole::User, "hello")].into(),
             tools: vec![ToolDescriptor {
                 name: "bash".into(),
                 description: "run command".into(),

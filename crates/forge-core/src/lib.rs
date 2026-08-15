@@ -40,7 +40,7 @@ use forge_config::WebSearchConfig;
 use forge_context::{estimate_messages_tokens, estimate_tokens, ContextEngine};
 use forge_durable::{new_session_id, Journal};
 use forge_governance::{AuditEvent, Governance};
-use forge_model::{ModelClient, ModelRequest, StreamEventTx};
+use forge_model::{ModelClient, ModelRequest, SharedMessages, StreamEventTx};
 use forge_tools::{
     default_builtins_with_web_search, ToolContext, ToolError, ToolRegistry, ValidationBudget,
 };
@@ -70,7 +70,7 @@ pub(crate) use helpers::*;
 
 pub struct AgentSession {
     pub session_id: SessionId,
-    pub messages: Vec<Message>,
+    pub messages: SharedMessages,
     pub events: Vec<TurnEvent>,
     /// Authoritative task/attempt lifecycle. The single source of truth for
     /// "what task is active, is Forge working/waiting, and why" — UI code
@@ -119,10 +119,17 @@ pub struct AgentSession {
     pub last_completion: Option<CompletionDecision>,
     /// Journaled tool results indexed by call id — used to avoid re-execution on resume.
     journaled_tool_results: HashMap<String, forge_durable::ToolResultPayload>,
-    /// Memoized `estimate_messages_tokens` total. Length alone is not enough:
-    /// streaming grows the last message in place. The fingerprint matches
-    /// `TranscriptSnapshot` — count plus the tail sizes.
-    ctx_tokens_cache: Mutex<Option<(CtxTokensFingerprint, usize)>>,
+    /// Memoized `estimate_messages_tokens` total. When the same transcript
+    /// allocation only grows at the tail, the cache adds the new messages
+    /// instead of recounting the complete history.
+    ctx_tokens_cache: Mutex<Option<CtxTokensCache>>,
+}
+
+#[derive(Debug)]
+struct CtxTokensCache {
+    storage_id: u64,
+    fingerprint: CtxTokensFingerprint,
+    total: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

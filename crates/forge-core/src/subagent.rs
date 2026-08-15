@@ -103,7 +103,8 @@ impl AgentSession {
                 thinking_duration_secs: None,
                 tool_calls: vec![],
                 attachments: Vec::new(),
-            }],
+            }]
+            .into(),
             events: vec![],
             active_task: ActiveTaskState::new(session_id),
             tasks: crate::task_runtime::TaskRuntime::new(),
@@ -183,7 +184,7 @@ impl AgentSession {
 
         let mut child = AgentSession {
             session_id,
-            messages,
+            messages: messages.into(),
             events: vec![crate::TurnEvent {
                 kind: "resume".into(),
                 detail: format!("seq={}", state.last_seq),

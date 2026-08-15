@@ -90,7 +90,7 @@ impl AgentSession {
         self.session_id = session_id;
         self.active_task = ActiveTaskState::from_restored(session_id, state.status, wait_reason);
         self.tasks = TaskRuntime::with_queue(queue);
-        self.messages = messages;
+        self.messages = messages.into();
         self.events = vec![TurnEvent {
             kind: "resume".into(),
             detail: format!("seq={}", state.last_seq),
@@ -138,7 +138,8 @@ impl AgentSession {
                 thinking_duration_secs: None,
                 tool_calls: vec![],
                 attachments: Vec::new(),
-            }],
+            }]
+            .into(),
             events: vec![],
             active_task: ActiveTaskState::new(session_id),
             tasks: TaskRuntime::new(),
@@ -216,7 +217,7 @@ impl AgentSession {
 
         let mut session = Self {
             session_id,
-            messages,
+            messages: messages.into(),
             events: vec![TurnEvent {
                 kind: "resume".into(),
                 detail: format!("seq={}", state.last_seq),

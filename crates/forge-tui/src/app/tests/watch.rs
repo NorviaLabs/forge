@@ -151,6 +151,23 @@ async fn file_change_does_not_reload_tree_while_files_sidebar_is_focused() {
 }
 
 #[test]
+fn watcher_coalesces_duplicate_paths_and_waits_for_a_quiet_period() {
+    let mut watch = FileWatchState::new();
+    let first = PathBuf::from("src/lib.rs");
+    let second = PathBuf::from("src/app.rs");
+    watch.inject_test_change(first.clone(), false, false);
+    watch.inject_test_change(first, true, false);
+    watch.inject_test_change(second, false, false);
+
+    assert!(watch.take_ready_batch().is_none());
+    std::thread::sleep(FileWatchState::DEBOUNCE + Duration::from_millis(10));
+    let batch = watch.take_ready_batch().expect("debounced batch");
+    assert_eq!(batch.paths.len(), 2);
+    assert!(batch.tree_changed, "path classifications should be merged");
+    assert!(watch.take_ready_batch().is_none());
+}
+
+#[test]
 fn forge_runtime_paths_are_ignored_by_file_watcher_filter() {
     assert!(path_is_ignored_by_file_watcher(Path::new(
         ".forge/progress.json"

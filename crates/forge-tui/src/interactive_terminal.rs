@@ -5,6 +5,11 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 
 const SCROLLBACK_LINES: usize = 1_024;
+/// Cap queued PTY chunks so a command that outpaces terminal rendering applies
+/// backpressure to its reader instead of growing process memory without bound.
+const OUTPUT_QUEUE_CAPACITY: usize = 64;
+/// Leave time for input and drawing when a program emits a large burst.
+const MAX_OUTPUT_CHUNKS_PER_POLL: usize = 64;
 
 pub(crate) struct InteractiveTerminal {
     master: Box<dyn MasterPty + Send>,
@@ -35,7 +40,7 @@ impl InteractiveTerminal {
         let child = pty.slave.spawn_command(command).map_err(other)?;
         let mut reader = pty.master.try_clone_reader().map_err(other)?;
         let writer = pty.master.take_writer().map_err(other)?;
-        let (output_tx, output_rx) = mpsc::channel();
+        let (output_tx, output_rx) = mpsc::sync_channel(OUTPUT_QUEUE_CAPACITY);
         thread::Builder::new()
             .name("forge-terminal-reader".into())
             .spawn(move || {
@@ -72,7 +77,10 @@ impl InteractiveTerminal {
     /// to repaint while it is waiting for keyboard input.
     pub(crate) fn poll(&mut self) -> bool {
         let mut changed = false;
-        while let Ok(bytes) = self.output_rx.try_recv() {
+        for _ in 0..MAX_OUTPUT_CHUNKS_PER_POLL {
+            let Ok(bytes) = self.output_rx.try_recv() else {
+                break;
+            };
             self.screen.process(&bytes);
             changed = true;
         }

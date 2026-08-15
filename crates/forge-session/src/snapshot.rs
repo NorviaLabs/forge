@@ -56,7 +56,7 @@ impl SessionSnapshot {
             lifecycle: session.active_task.lifecycle,
             pending_hitl: session.pending_hitl().cloned(),
             queue_len: session.queue().len(),
-            background_len: session.background().list().count(),
+            background_len: session.background().len(),
             workspace_root: session.workspace_root().to_path_buf(),
             tool_count: session.tool_count(),
             loaded_skills_count: session.loaded_skills_count(),
