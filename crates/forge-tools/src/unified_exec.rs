@@ -357,16 +357,40 @@ mod tests {
             )
             .await
             .unwrap();
-        let body: Value = serde_json::from_str(&first.content).unwrap();
-        assert!(body["session_id"].as_u64().is_some());
-        assert!(body["output"].as_str().unwrap().contains("ready"));
-        let id = body["session_id"].as_u64().unwrap();
-        let polled = write_stdin
+        let mut body: Value = serde_json::from_str(&first.content).unwrap();
+        let id = body["session_id"]
+            .as_u64()
+            .expect("exec_command should retain a session id");
+        // A 20ms first yield can miss stdout on a loaded runner. Keep the
+        // session running and poll until the initial output arrives.
+        for _ in 0..50 {
+            if body["output"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("ready")
+            {
+                break;
+            }
+            assert_eq!(
+                body["running"], true,
+                "session exited before printing ready: {body}"
+            );
+            let polled = write_stdin
+                .call(&ctx, json!({"session_id": id, "yield_time_ms": 50}))
+                .await
+                .unwrap();
+            body = serde_json::from_str(&polled.content).unwrap();
+        }
+        assert!(
+            body["output"].as_str().unwrap().contains("ready"),
+            "expected ready in session output, got {body}"
+        );
+        let finished = write_stdin
             .call(&ctx, json!({"session_id": id, "yield_time_ms": 1200}))
             .await
             .unwrap();
         assert_eq!(
-            serde_json::from_str::<Value>(&polled.content).unwrap()["running"],
+            serde_json::from_str::<Value>(&finished.content).unwrap()["running"],
             false
         );
     }
