@@ -75,6 +75,7 @@ pub(super) fn card_bottom_border(total_width: usize, border: Style) -> Line<'sta
 /// A bordered card's content row: `│ {content, padded to interior_width} │`.
 /// `fill`, when set, paints the row's background edge-to-edge (Approval
 /// wants `panel_alt`; Plan wants none — canvas shows through).
+#[allow(dead_code)]
 pub(super) fn card_content_line(
     content: &str,
     interior_width: usize,
@@ -564,53 +565,33 @@ impl ConversationRender for ConversationModel {
                     }
                 }
                 ConversationBlock::ApprovalPending(p) => {
-                    let border = if p.focused {
-                        theme::approval_accent()
-                    } else {
-                        theme::border_muted()
-                    };
-                    let title = "⏸ APPROVAL REQUIRED";
                     const HINT: &str = "↑↓ select · Enter confirm · Esc cancel";
+                    let pad = " ".repeat(MESSAGE_PADDING);
+                    let question = "Allow this command for the rest of the session?";
+                    let question_style = if p.focused {
+                        theme::text().add_modifier(Modifier::BOLD)
+                    } else {
+                        theme::text()
+                    };
+                    for wrapped in wrap(question, prose_width) {
+                        lines.push(Line::from(vec![
+                            Span::raw(pad.clone()),
+                            Span::styled(wrapped, question_style),
+                        ]));
+                    }
+                    for wrapped in wrap(&p.command, prose_width) {
+                        lines.push(Line::from(vec![
+                            Span::raw(pad.clone()),
+                            Span::styled(wrapped, theme::muted()),
+                        ]));
+                    }
                     let cwd_env = format!("cwd: {}  env: {}", p.cwd, p.env_delta);
-                    let option_rows: Vec<String> = p
-                        .options
-                        .iter()
-                        .map(|opt| match &opt.detail {
-                            Some(detail) => format!("›  {}  {detail}", opt.label),
-                            None => format!("›  {}", opt.label),
-                        })
-                        .collect();
-                    // Hug the card's own content instead of always spanning
-                    // the full pane width; still capped at prose width for
-                    // readability and clamped to what the pane can show.
-                    let longest_content = [
-                        title.chars().count() + 5,
-                        cwd_env.chars().count(),
-                        HINT.chars().count(),
-                        p.command.chars().count(),
-                    ]
-                    .into_iter()
-                    .chain(option_rows.iter().map(|r| r.chars().count()))
-                    .max()
-                    .unwrap_or(0);
-                    let available_interior = width.saturating_sub(4);
-                    let inner_w = longest_content
-                        .min(PROSE_MAX_WIDTH)
-                        .min(available_interior)
-                        .max((title.chars().count() + 1).min(available_interior));
-                    let card_width = inner_w + 4;
-                    let fill = Some(theme::panel_alt_bg());
-                    let boxed_line =
-                        |s: &str, style: Style| card_content_line(s, inner_w, style, border, fill);
-                    lines.push(card_top_border(card_width, Some(title), border));
-                    lines.push(boxed_line("", theme::panel()));
-                    for wrapped in wrap(&p.command, inner_w) {
-                        lines.push(boxed_line(&wrapped, theme::muted()));
+                    for wrapped in wrap(&cwd_env, prose_width) {
+                        lines.push(Line::from(vec![
+                            Span::raw(pad.clone()),
+                            Span::styled(wrapped, theme::muted()),
+                        ]));
                     }
-                    for wrapped in wrap(&cwd_env, inner_w) {
-                        lines.push(boxed_line(&wrapped, theme::muted()));
-                    }
-                    lines.push(boxed_line("", theme::panel()));
                     for (idx, opt) in p.options.iter().enumerate() {
                         let marker = if idx == p.selected { "›" } else { " " };
                         let style = if idx == p.selected {
@@ -622,15 +603,19 @@ impl ConversationRender for ConversationModel {
                             Some(detail) => format!("{marker} {}  {detail}", opt.label),
                             None => format!("{marker} {}", opt.label),
                         };
-                        for wrapped in wrap(&row, inner_w) {
-                            lines.push(boxed_line(&wrapped, style));
+                        for wrapped in wrap(&row, prose_width) {
+                            lines.push(Line::from(vec![
+                                Span::raw(pad.clone()),
+                                Span::styled(wrapped, style),
+                            ]));
                         }
                     }
-                    for wrapped in wrap(HINT, inner_w) {
-                        lines.push(boxed_line(&wrapped, theme::metadata_style()));
+                    for wrapped in wrap(HINT, prose_width) {
+                        lines.push(Line::from(vec![
+                            Span::raw(pad.clone()),
+                            Span::styled(wrapped, theme::metadata_style()),
+                        ]));
                     }
-                    lines.push(boxed_line("", theme::panel()));
-                    lines.push(card_bottom_border(card_width, border));
                     if gap {
                         lines.extend([Line::from(""), Line::from("")]);
                     }
@@ -2346,8 +2331,8 @@ mod tests {
                     detail: None,
                 },
                 ApprovalMenuRow {
-                    label: "Allow pattern going forward".into(),
-                    detail: Some("bash(git push *)".into()),
+                    label: "Allow pattern".into(),
+                    detail: None,
                 },
                 ApprovalMenuRow {
                     label: "Deny".into(),
@@ -2363,12 +2348,16 @@ mod tests {
             .flat_map(|line| line.spans.iter())
             .map(|span| span.content.as_ref())
             .collect::<String>();
-        assert!(text.contains("⏸ APPROVAL REQUIRED"), "{text}");
+        assert!(
+            text.contains("Allow this command for the rest of the session?"),
+            "{text}"
+        );
+        assert!(!text.contains("⏸ APPROVAL REQUIRED"), "{text}");
         assert!(text.contains("git push -u origin feature"), "{text}");
         assert!(text.contains("cwd: workspace"), "{text}");
         assert!(text.contains("env: inherited"), "{text}");
         assert!(text.contains("› Allow once"), "{text}");
-        assert!(text.contains("bash(git push *)"), "{text}");
+        assert!(text.contains("Allow pattern"), "{text}");
         assert!(
             text.contains("↑↓ select · Enter confirm · Esc cancel"),
             "{text}"
@@ -2376,7 +2365,7 @@ mod tests {
     }
 
     #[test]
-    fn approval_card_hugs_short_content_instead_of_spanning_the_full_pane() {
+    fn approval_prompt_is_a_conversation_message_not_a_card() {
         const PANE_WIDTH: usize = 100;
         let m = ConversationModel::from_messages(
             &[],
@@ -2399,23 +2388,15 @@ mod tests {
             false,
         );
         let lines = m.lines_for_width(PANE_WIDTH);
-        let top_border = lines
-            .iter()
-            .find(|l| line_text(l).starts_with('┌'))
-            .expect("top border present");
-        let border_width = line_text(top_border).chars().count();
+        let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
         assert!(
-            border_width < PANE_WIDTH,
-            "a short command's card should not span the full {PANE_WIDTH}-col pane, got {border_width}: {lines:?}"
+            text.contains("Allow this command for the rest of the session?"),
+            "{text}"
         );
-        // But every content row and the bottom border must still match the
-        // top border's width exactly, or the box wouldn't line up.
-        let bottom_border = lines
-            .iter()
-            .rev()
-            .find(|l| line_text(l).starts_with('└'))
-            .expect("bottom border present");
-        assert_eq!(line_text(bottom_border).chars().count(), border_width);
+        assert!(
+            lines.iter().all(|line| !line_text(line).starts_with('┌')),
+            "approval must not render as a boxed card: {text}"
+        );
     }
 
     #[test]

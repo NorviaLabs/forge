@@ -1,9 +1,9 @@
 //! Human-in-the-loop tool approval for [`TuiApp`].
 //!
 //! Split out of `app.rs` per #19. A tool call that governance defers surfaces as
-//! an approval overlay; these methods build its identity, decide whether a
-//! session-scoped allowance already covers it, and apply the operator's
-//! decision.
+//! an inline conversation prompt; these methods build its identity, decide
+//! whether a session-scoped allowance already covers it, and apply the
+//! operator's decision.
 //!
 //! [`ApprovalIdentity`] lives here too, so the definition of what makes two tool
 //! calls "the same" for approval purposes sits beside the code that acts on it.
@@ -18,7 +18,6 @@ use super::*;
 pub(crate) enum ApprovalMenuKind {
     AllowOnce,
     AllowPattern,
-    Remember,
     Deny,
 }
 
@@ -33,8 +32,6 @@ struct ApprovalMenuState {
 /// approval policy must not be changed by unrelated TUI modules.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ApprovalSessionState {
-    allowed: HashSet<ApprovalIdentity>,
-    pattern_allow: Vec<forge_governance::PatternRule>,
     menu: ApprovalMenuState,
 }
 
@@ -42,6 +39,7 @@ pub(crate) struct ApprovalSessionState {
 pub(crate) struct ApprovalIdentity {
     executable: String,
     arguments: Vec<String>,
+    raw_args: serde_json::Value,
     working_directory: String,
     environment_delta: String,
     workspace_identity: String,
@@ -77,31 +75,23 @@ impl TuiApp {
     }
 
     pub(super) fn remembered_approval_count(&self) -> usize {
-        self.approval_session.allowed.len()
+        self.session.session_exact_allow_count()
     }
 
     pub(super) fn clear_session_approvals(&mut self) {
-        self.approval_session.allowed.clear();
-        self.approval_session.pattern_allow.clear();
+        self.session.clear_session_exact_allows();
         self.approval_session.menu = ApprovalMenuState::default();
     }
 
     #[cfg(test)]
     pub(super) fn is_approval_remembered(&self, identity: &ApprovalIdentity) -> bool {
-        self.approval_session.allowed.contains(identity)
-    }
-
-    #[cfg(test)]
-    pub(super) fn session_pattern_count(&self) -> usize {
-        self.approval_session.pattern_allow.len()
-    }
-
-    #[cfg(test)]
-    pub(super) fn session_pattern_raw(&self, index: usize) -> Option<&str> {
-        self.approval_session
-            .pattern_allow
-            .get(index)
-            .map(|rule| rule.raw.as_str())
+        self.session
+            .session_exact_allows(&forge_governance::SessionExactAllow {
+                tool: identity.executable.clone(),
+                arguments: identity.raw_args.clone(),
+                working_directory: identity.working_directory.clone(),
+                environment_delta: identity.environment_delta.clone(),
+            })
     }
 
     fn approval_state_for_payload(&self, payload: &HitlPayload) -> ApprovalOverlayState {
@@ -156,18 +146,14 @@ impl TuiApp {
         if approval.pattern_allow_eligible {
             kinds.push(ApprovalMenuKind::AllowPattern);
         }
-        if approval.remember_eligible {
-            kinds.push(ApprovalMenuKind::Remember);
-        }
         kinds.push(ApprovalMenuKind::Deny);
         kinds
     }
 
     pub(super) fn approval_menu_rows(&self) -> Vec<crate::conversation::ApprovalMenuRow> {
-        let Some(payload) = self.session.pending_hitl() else {
+        if self.session.pending_hitl().is_none() {
             return Vec::new();
-        };
-        let approval = self.approval_state_for_payload(payload);
+        }
         self.approval_menu_kinds()
             .into_iter()
             .map(|kind| match kind {
@@ -176,11 +162,7 @@ impl TuiApp {
                     detail: None,
                 },
                 ApprovalMenuKind::AllowPattern => crate::conversation::ApprovalMenuRow {
-                    label: "Allow pattern going forward".into(),
-                    detail: Some(approval.suggested_pattern.clone()),
-                },
-                ApprovalMenuKind::Remember => crate::conversation::ApprovalMenuRow {
-                    label: "Remember exact (session)".into(),
+                    label: "Allow pattern".into(),
                     detail: None,
                 },
                 ApprovalMenuKind::Deny => crate::conversation::ApprovalMenuRow {
@@ -236,10 +218,6 @@ impl TuiApp {
                         self.resolve_approval_line(ApprovalMenuKind::AllowPattern)
                             .await?;
                     }
-                    ApprovalMenuKind::Remember => {
-                        self.resolve_approval_line(ApprovalMenuKind::Remember)
-                            .await?;
-                    }
                     ApprovalMenuKind::Deny => {
                         self.resolve_approval_line(ApprovalMenuKind::Deny).await?;
                     }
@@ -250,42 +228,18 @@ impl TuiApp {
         }
     }
 
-    /// Persist an allow pattern without re-approving a tool call.
-    fn persist_pattern_allow(&mut self, pattern: String) {
-        let Some(rule) = forge_governance::PatternRule::parse(&pattern) else {
-            self.set_feedback(FeedbackSeverity::Warn, "could not parse the pattern rule");
-            return;
-        };
-        if self
-            .approval_session
-            .pattern_allow
-            .iter()
-            .any(|existing| existing.raw == rule.raw)
-        {
-            self.push_toast(format!("already allowed: {pattern}"));
-            return;
+    fn session_exact_for_payload(
+        &self,
+        payload: &HitlPayload,
+    ) -> Option<forge_governance::SessionExactAllow> {
+        let approval = self.approval_state_for_payload(payload);
+        if !approval.pattern_allow_eligible {
+            return None;
         }
-        if let Err(error) = forge_config::append_user_allow_rule(&pattern) {
-            self.set_feedback(
-                FeedbackSeverity::Warn,
-                format!("pattern rule not saved to disk ({error}); active for this session only"),
-            );
-        }
-        self.approval_session.pattern_allow.push(rule);
-        self.push_toast(format!("allowed going forward: {pattern}"));
-    }
-
-    /// Whether a session-scoped pattern rule (added this session via "allow
-    /// this pattern going forward") already covers `payload`. Distinct from
-    /// `Governance.pattern_allow`, which is fixed for the session from the
-    /// permissions file at startup — this lets a rule added mid-session take
-    /// effect immediately without a restart.
-    fn pattern_allows(&self, payload: &HitlPayload) -> bool {
-        let call = tool_call_for_payload(payload);
-        self.approval_session
-            .pattern_allow
-            .iter()
-            .any(|rule| rule.matches(&call))
+        Some(forge_governance::SessionExactAllow::from_call(
+            &tool_call_for_payload(payload),
+            self.session.workspace_root(),
+        ))
     }
 
     pub(super) fn approval_identity_for_payload(
@@ -293,12 +247,13 @@ impl TuiApp {
         payload: &HitlPayload,
     ) -> Option<ApprovalIdentity> {
         let approval = self.approval_state_for_payload(payload);
-        if approval.mode != ApprovalExecutionMode::Direct || !approval.remember_eligible {
+        if !approval.pattern_allow_eligible {
             return None;
         }
         Some(ApprovalIdentity {
-            executable: approval.executable_or_shell,
+            executable: payload.tool.clone(),
             arguments: approval.arguments,
+            raw_args: payload.args_redacted.clone(),
             working_directory: approval.working_directory,
             environment_delta: approval.environment_delta,
             workspace_identity: self.repository_or_workspace_id(),
@@ -318,23 +273,8 @@ impl TuiApp {
                 self.resolve_hitl_overlay(HitlDecision::Approve, false)
                     .await
             }
-            ApprovalMenuKind::Remember => {
-                self.resolve_hitl_overlay(HitlDecision::Approve, true).await
-            }
             ApprovalMenuKind::AllowPattern => {
-                let Some(payload) = self.session.pending_hitl() else {
-                    return Ok(());
-                };
-                let approval = self.approval_state_for_payload(payload);
-                if !approval.pattern_allow_eligible {
-                    self.set_feedback(
-                        FeedbackSeverity::Warn,
-                        "this call has no allow pattern to persist; use Allow once or Deny",
-                    );
-                    return Ok(());
-                }
-                self.resolve_hitl_overlay_with_pattern(approval.suggested_pattern)
-                    .await
+                self.resolve_hitl_overlay(HitlDecision::Approve, true).await
             }
             ApprovalMenuKind::Deny => self.resolve_hitl_overlay(HitlDecision::Deny, false).await,
         }
@@ -376,26 +316,20 @@ impl TuiApp {
             return Ok(());
         };
 
-        let identity_to_remember = if remember_exact_direct {
-            let Some(identity) = self.approval_identity_for_payload(&payload) else {
+        if remember_exact_direct {
+            let Some(grant) = self.session_exact_for_payload(&payload) else {
                 self.set_feedback(
                     FeedbackSeverity::Warn,
-                    "this approval cannot be remembered; use Allow once or Deny",
+                    "this call has no session pattern to remember; use Allow once or Deny",
                 );
                 return Ok(());
             };
-            Some(identity)
-        } else {
-            None
-        };
-
-        self.session.resolve_hitl(decision.clone(), "tui").await?;
-        if let Some(identity) = identity_to_remember {
-            self.approval_session.allowed.insert(identity);
+            self.session.allow_exact_for_session(grant);
         }
+        self.session.resolve_hitl(decision.clone(), "tui").await?;
         match decision {
             HitlDecision::Approve if remember_exact_direct => {
-                self.push_toast("remembered exact Direct invocation");
+                self.push_toast("allowed this command for the session");
             }
             HitlDecision::Approve => self.push_toast("approved once"),
             HitlDecision::Deny => self.push_toast("denied"),
@@ -426,18 +360,18 @@ impl TuiApp {
         self.stream.thinking.clear();
     }
 
-    /// Auto-approve HITL for exact Direct invocations remembered this
-    /// session, or calls matching a pattern rule added this session.
+    /// Auto-approve HITL for exact invocations remembered this session.
+    /// The session authorizer already skips a matching call; this covers
+    /// a prompt that was already on screen when the grant was recorded.
     pub async fn drain_auto_hitl(&mut self) -> Result<(), TuiError> {
         let Some(payload) = self.session.pending_hitl().cloned() else {
             return Ok(());
         };
         let identity = self.approval_identity_for_payload(&payload);
-        let identity_allowed = identity
-            .as_ref()
-            .is_some_and(|identity| self.approval_session.allowed.contains(identity));
-        let pattern_allowed = self.pattern_allows(&payload);
-        if !identity_allowed && !pattern_allowed {
+        let identity_allowed = self
+            .session_exact_for_payload(&payload)
+            .is_some_and(|grant| self.session.session_exact_allows(&grant));
+        if !identity_allowed {
             return Ok(());
         }
         self.session
@@ -453,32 +387,6 @@ impl TuiApp {
         if self.focus.block() == FocusBlock::Approval {
             self.enter_chat_composer();
         }
-        Ok(())
-    }
-
-    /// Approve the pending call and add `pattern` as a durable `allow` rule:
-    /// persisted to the personal permissions file for future launches, and
-    /// added to the in-session pattern-allow list so it takes effect
-    /// immediately without a restart. A write failure still lets the
-    /// approval through — the user made a decision either way — but is
-    /// surfaced so they know it won't outlive this session.
-    pub(super) async fn resolve_hitl_overlay_with_pattern(
-        &mut self,
-        pattern: String,
-    ) -> Result<(), TuiError> {
-        if self.session.pending_hitl().is_none() {
-            return Ok(());
-        }
-        self.persist_pattern_allow(pattern);
-        // persist_pattern_allow toasts; still need to approve the pending call.
-        if self.session.pending_hitl().is_none() {
-            return Ok(());
-        }
-        self.session
-            .resolve_hitl(HitlDecision::Approve, "tui")
-            .await?;
-        self.resume_turn_after_hitl();
-        self.enter_chat_composer();
         Ok(())
     }
 }

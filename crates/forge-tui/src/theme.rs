@@ -629,6 +629,7 @@ pub fn waiting_border() -> Style {
 }
 
 /// Accent border for the focused approval card.
+#[allow(dead_code)]
 pub fn approval_accent() -> Style {
     Style::default().fg(active_palette().approval_accent)
 }
@@ -715,6 +716,7 @@ pub struct Palette {
     /// Composer border while an approval is pending (see [`waiting_border`]).
     pub waiting_border: Color,
     /// Accent border for the focused approval card (see [`approval_accent`]).
+    #[allow(dead_code)]
     pub approval_accent: Color,
     /// Foreground for text painted on top of `selection` (see [`SELECTION_FG`]).
     pub selection_fg: Color,

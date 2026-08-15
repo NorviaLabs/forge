@@ -281,11 +281,10 @@ that's still the ACL's job. Two files are read and merged:
 Menu rows (when a prompt appears):
 
 - **Allow once** — run this call; ask again next time.
-- **Allow pattern going forward** — shows e.g. `bash(cargo test *)`, writes
-  it to personal `permissions.toml`, applies immediately (covers
-  `background_run` / `exec_command` with the same command too).
-- **Remember exact** — Direct tools only; identical invocation this session.
-- **Deny** / **Deny with note…** — block; optional note reaches the agent.
+- **Allow pattern** — remember this exact argv, cwd, and env for the rest of
+  the session. The same command later runs without a prompt; a different
+  argv, cwd, or env asks again. Not written to `permissions.toml`.
+- **Deny** — block the call.
 
 ### Permission modes
 
