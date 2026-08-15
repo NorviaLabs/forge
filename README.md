@@ -282,8 +282,10 @@ Menu rows (when a prompt appears):
 
 - **Allow once** — run this call; ask again next time.
 - **Allow pattern** — remember this exact argv, cwd, and env for the rest of
-  the session. The same command later runs without a prompt; a different
-  argv, cwd, or env asks again. Not written to `permissions.toml`.
+  the session. The menu shows the exact pattern (for example
+  `bash(git push origin main)`). The same command later runs without a
+  prompt; a different argv, cwd, or env asks again. Not written to
+  `permissions.toml`.
 - **Deny** — block the call.
 
 ### Permission modes

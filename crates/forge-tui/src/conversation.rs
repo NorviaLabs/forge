@@ -2332,7 +2332,7 @@ mod tests {
                 },
                 ApprovalMenuRow {
                     label: "Allow pattern".into(),
-                    detail: None,
+                    detail: Some("bash(git push -u origin feature)".into()),
                 },
                 ApprovalMenuRow {
                     label: "Deny".into(),
@@ -2358,6 +2358,7 @@ mod tests {
         assert!(text.contains("env: inherited"), "{text}");
         assert!(text.contains("› Allow once"), "{text}");
         assert!(text.contains("Allow pattern"), "{text}");
+        assert!(text.contains("bash(git push -u origin feature)"), "{text}");
         assert!(
             text.contains("↑↓ select · Enter confirm · Esc cancel"),
             "{text}"

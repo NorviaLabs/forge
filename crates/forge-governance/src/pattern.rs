@@ -88,6 +88,40 @@ pub fn parse_pattern_rules<S: AsRef<str>>(raw: &[S]) -> Vec<PatternRule> {
         .collect()
 }
 
+/// Format this call as a pattern-rule string without generalizing — the
+/// exact command, path, or URL, wrapped as `tool(subject)`. Used by the
+/// approval menu so "Allow pattern" can show what the session will remember
+/// (this argv only). Falls back to the bare tool name when the call has no
+/// known subject.
+///
+/// Distinct from [`suggest_pattern`], which widens the same call into a
+/// prefix / directory / host rule for `permissions.toml`.
+pub fn exact_pattern(call: &ToolCall) -> String {
+    if is_shell_tool(&call.name) {
+        return match call
+            .arguments
+            .get("command")
+            .or_else(|| call.arguments.get("cmd"))
+            .and_then(|value| value.as_str())
+            .filter(|command| !command.is_empty())
+        {
+            Some(command) => format!("bash({command})"),
+            None => "bash".into(),
+        };
+    }
+    if is_file_tool(&call.name) {
+        if let Some(path) = call.arguments.get("path").and_then(|value| value.as_str()) {
+            return format!("{}({path})", call.name);
+        }
+    }
+    if is_fetch_tool(&call.name) {
+        if let Some(url) = call.arguments.get("url").and_then(|value| value.as_str()) {
+            return format!("{}({url})", call.name);
+        }
+    }
+    call.name.clone()
+}
+
 /// Suggest a pattern-rule string for "allow this pattern going forward",
 /// generalizing the call's command prefix / path directory / host so the
 /// rule reasonably covers similar future invocations rather than only the
@@ -332,6 +366,28 @@ mod tests {
         assert_eq!(suggest_pattern(&c), "bash(cargo test *)");
         let c = call("exec_command", json!({"cmd": "ls -la /tmp"}));
         assert_eq!(suggest_pattern(&c), "bash(ls -la *)");
+    }
+
+    #[test]
+    fn exact_pattern_keeps_the_full_subject_without_generalizing() {
+        let c = call("bash", json!({"command": "cargo test --all --release"}));
+        assert_eq!(exact_pattern(&c), "bash(cargo test --all --release)");
+        let c = call(
+            "background_run",
+            json!({"command": "git push -u origin main"}),
+        );
+        assert_eq!(exact_pattern(&c), "bash(git push -u origin main)");
+        let c = call("write_file", json!({"path": "src/app/render.rs"}));
+        assert_eq!(exact_pattern(&c), "write_file(src/app/render.rs)");
+        let c = call("fetch", json!({"url": "https://docs.example.com/page?x=1"}));
+        assert_eq!(
+            exact_pattern(&c),
+            "fetch(https://docs.example.com/page?x=1)"
+        );
+        let c = call("deploy", json!({"target": "prod"}));
+        assert_eq!(exact_pattern(&c), "deploy");
+        let c = call("bash", json!({}));
+        assert_eq!(exact_pattern(&c), "bash");
     }
 
     #[test]
