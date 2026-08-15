@@ -11,7 +11,7 @@
 //! to avoid confusion with the crate-level `activity` module.
 //!
 //! Methods and chrome-related free functions are moved verbatim. Types such as
-//! `FooterLimits` and `ActivitySummaryModel` live in `types.inc.rs`.
+//! `FooterLimits` and `ActivitySummaryModel` live in `types.rs`.
 
 use crate::widgets::session_chrome_lines;
 
@@ -45,18 +45,12 @@ impl TuiApp {
     }
 
     pub(super) fn push_toast(&mut self, text: impl Into<String>) {
-        self.toast.current = Some((Instant::now(), text.into()));
-        if let Some((_, ref t)) = self.toast.current {
-            self.set_feedback(FeedbackSeverity::Ok, t.clone());
-        }
+        let text = self.toast.show(text);
+        self.set_feedback(FeedbackSeverity::Ok, text);
     }
 
     pub(super) fn tick_toast(&mut self) {
-        if let Some((at, _)) = &self.toast.current {
-            if at.elapsed() > Duration::from_secs(2) {
-                self.toast.current = None;
-            }
-        }
+        self.toast.expire(Duration::from_secs(2));
     }
 
     /// Phase 10: set strip + keep `status_message` in sync for tests/compat.
@@ -104,7 +98,7 @@ impl TuiApp {
         });
         self.activity
             .push(ActivityKind::Error, FeedbackSeverity::Error, msg);
-        self.busy_state.phase = BusyPhase::Idle;
+        self.busy_state.set_phase(BusyPhase::Idle);
     }
 
     /// Drop ephemeral error UI (call on new user turn / Esc).
@@ -189,8 +183,8 @@ impl TuiApp {
             provider: self.runtime.provider.clone(),
             effort: self.reasoning_effort.value.to_string(),
             ctx_pct: session_view.context_usage_ratio,
-            busy: self.busy_state.active,
-            busy_phase: self.busy_state.phase.clone(),
+            busy: self.busy_state.is_active(),
+            busy_phase: self.busy_state.phase().clone(),
             connect_profile: self.connect.profile.clone(),
             provider_connected,
             vendor_label,
@@ -212,30 +206,48 @@ impl TuiApp {
         }
     }
 
-    /// Typed progress for the header while Working. Structured sources only.
-    fn header_progress_description(&self) -> Option<String> {
-        if !self.busy_state.active {
-            return None;
+    /// Refresh state that requires I/O. This belongs to the event-loop tick,
+    /// never the render path.
+    pub(crate) fn tick_render_state(&mut self) {
+        if crate::theme::refresh_system() {
+            self.render_cache.conversation = None;
         }
-        // Prefer durable progress.json in_progress when present. Reparse only
-        // after mtime changes; this runs during every render tick while busy.
+        let _ = self.workspace_files.explorer.git_status.poll();
+        self.poll_repo_header();
+        self.connected_cached();
+        self.refresh_progress_state();
+    }
+
+    fn refresh_progress_state(&mut self) {
         let path = self.runtime.cwd.join(".forge/progress.json");
         let modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
-        let mut progress = self.progress_state.borrow_mut();
-        if modified != progress.modified {
-            progress.modified = modified;
-            progress.description = std::fs::read_to_string(path)
-                .ok()
-                .and_then(|text| serde_json::from_str::<ProgressDocument>(&text).ok())
-                .and_then(|doc| {
-                    let step = doc.in_progress.trim().to_string();
-                    (!step.is_empty()).then_some(step)
-                });
+        if self.progress_state.path.as_ref() == Some(&path)
+            && modified == self.progress_state.modified
+        {
+            return;
         }
-        progress
-            .description
-            .clone()
-            .or_else(|| self.busy_state.phase.progress_description())
+        self.progress_state.path = Some(path.clone());
+        self.progress_state.modified = modified;
+        self.progress_state.description = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|text| serde_json::from_str::<ProgressDocument>(&text).ok())
+            .and_then(|doc| {
+                let step = doc.in_progress.trim().to_string();
+                (!step.is_empty()).then_some(step)
+            });
+    }
+
+    /// Typed progress for the header while Working. Structured sources only.
+    fn header_progress_description(&self) -> Option<String> {
+        self.busy_state
+            .is_active()
+            .then(|| {
+                self.progress_state
+                    .description
+                    .clone()
+                    .or_else(|| self.busy_state.phase().progress_description())
+            })
+            .flatten()
     }
 
     fn header_waiting_detail(&self) -> Option<String> {
@@ -244,7 +256,7 @@ impl TuiApp {
         {
             return Some("Approval required".into());
         }
-        if self.busy_state.active && matches!(self.busy_state.phase, BusyPhase::Connect) {
+        if self.busy_state.is_active() && matches!(self.busy_state.phase(), BusyPhase::Connect) {
             return Some("Your input required".into());
         }
         None
@@ -291,7 +303,7 @@ impl TuiApp {
 
     fn workspace_resource_label(&self) -> Option<String> {
         self.workspace_navigation
-            .current
+            .current()
             .as_ref()
             .map(|WorkspaceView::File(path)| {
                 relative_display(self.session_view.workspace_root(), path)
@@ -376,7 +388,7 @@ impl TuiApp {
 
     #[cfg(test)]
     pub(super) fn busy_status_detail(&self) -> Option<String> {
-        self.busy_state.active.then(|| {
+        self.busy_state.is_active().then(|| {
             let label = if !self.stream.thinking.is_empty() && self.stream.preview.is_empty() {
                 "Thinking..."
             } else {
@@ -394,62 +406,6 @@ impl TuiApp {
         })
     }
 
-    #[allow(dead_code)]
-    fn footer_limits(&mut self, provider: &str) -> FooterLimits {
-        if let Some(rx) = &self.footer_limits.refresh_rx {
-            match rx.try_recv() {
-                Ok((provider, limits)) => {
-                    self.footer_limits.cache = Some(FooterLimitsCache {
-                        provider,
-                        fetched_at: Instant::now(),
-                        limits,
-                    });
-                    self.footer_limits.refresh_rx = None;
-                }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    self.footer_limits.refresh_rx = None;
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            }
-        }
-
-        if provider != OPENAI_CODEX_PROFILE_ID {
-            return FooterLimits::default();
-        }
-
-        let (cached_limits, needs_refresh) = match self
-            .footer_limits
-            .cache
-            .as_ref()
-            .filter(|cache| cache.provider == provider)
-        {
-            Some(cache) => (
-                Some(cache.limits.clone()),
-                cache.fetched_at.elapsed() >= Duration::from_secs(60),
-            ),
-            None => (None, true),
-        };
-        if needs_refresh && self.footer_limits.refresh_rx.is_none() {
-            let provider = provider.to_string();
-            let request_provider = provider.clone();
-            let (tx, rx) = std::sync::mpsc::channel();
-            std::thread::spawn(move || {
-                let report = forge_connect::provider_cost_report(
-                    &request_provider,
-                    "",
-                    0,
-                    0,
-                    &CredentialStore::user_default(),
-                )
-                .unwrap_or_default();
-                let _ = tx.send((request_provider, footer_limits_from_report(&report)));
-            });
-            self.footer_limits.refresh_rx = Some(rx);
-        }
-
-        cached_limits.unwrap_or_default()
-    }
-
     pub(super) fn status_report_lines(&self) -> Vec<String> {
         let m = self.refresh_status_model();
         let mut lines = session_chrome_lines(&m);
@@ -457,7 +413,10 @@ impl TuiApp {
         let short = if id.len() > 8 { &id[..8] } else { &id };
         lines.push(format!("session_id={short}"));
         lines.push(format!("journal={}", self.session.journal_dir().display()));
-        lines.push(format!("permission_mode={}", self.permission_mode.label()));
+        lines.push(format!(
+            "permission_mode={}",
+            self.session.permission_mode().label()
+        ));
         let usage = self.session.token_usage_report();
         lines.push(format!(
             "context_tokens={} / {}",
@@ -483,7 +442,7 @@ impl TuiApp {
         }
         lines.push(format!(
             "session_allows={}",
-            self.hitl_session.allowed.len()
+            self.remembered_approval_count()
         ));
         lines
     }
@@ -623,6 +582,7 @@ pub(crate) fn footer_usage_summary_with_cost(
     )
 }
 
+#[cfg(test)]
 pub(super) fn footer_limits_from_report(lines: &[String]) -> FooterLimits {
     FooterLimits {
         usage: lines

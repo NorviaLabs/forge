@@ -64,7 +64,6 @@ impl TuiApp {
                 }
             }
             if let Some(mode) = state.permission_mode {
-                self.permission_mode = mode;
                 self.session.apply_permission_mode(mode);
             }
         }
@@ -77,7 +76,7 @@ impl TuiApp {
             repository_or_workspace_id: self.repository_or_workspace_id(),
             files_visibility: FilesVisibility::from_open(self.workspace_files.visible),
             theme: Some(self.runtime.theme_id.clone()),
-            permission_mode: Some(self.permission_mode),
+            permission_mode: Some(self.session.permission_mode()),
         };
         let result = fs::create_dir_all(path.parent().unwrap_or_else(|| Path::new(".")))
             .and_then(|_| fs::write(&path, serde_json::to_vec_pretty(&state).unwrap_or_default()));

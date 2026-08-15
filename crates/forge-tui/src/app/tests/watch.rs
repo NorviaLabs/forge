@@ -13,11 +13,7 @@ async fn file_change_event_refreshes_git_status() {
     assert!(!app.workspace_files.explorer.git_status.loading);
 
     app.file_watch
-        .change_tx
-        .send(FileChangeEvent {
-            path: app.session.workspace_root().join("changed.txt"),
-        })
-        .unwrap();
+        .inject_change(app.session.workspace_root().join("changed.txt"));
     app.poll_file_changes();
 
     assert!(app.workspace_files.explorer.git_status.loading);
@@ -36,10 +32,7 @@ async fn watcher_does_not_reload_active_edtui_buffer() {
     let in_memory = editor.text();
     fs::write(&path, "outside").unwrap();
 
-    app.file_watch
-        .change_tx
-        .send(FileChangeEvent { path: path.clone() })
-        .unwrap();
+    app.file_watch.inject_change(path.clone());
     app.poll_file_changes();
 
     assert_eq!(app.editor_session.as_ref().unwrap().text(), in_memory);
@@ -145,11 +138,7 @@ async fn file_change_does_not_reload_tree_while_files_sidebar_is_focused() {
     app.workspace_files.explorer.git_status = forge_workspace::git_status::GitStatusCache::new();
 
     app.file_watch
-        .change_tx
-        .send(FileChangeEvent {
-            path: app.session.workspace_root().join("changed.txt"),
-        })
-        .unwrap();
+        .inject_change(app.session.workspace_root().join("changed.txt"));
     app.poll_file_changes();
 
     assert!(app.workspace_files.explorer.git_status.loading);

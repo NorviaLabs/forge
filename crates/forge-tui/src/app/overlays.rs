@@ -27,7 +27,7 @@ impl TuiApp {
     }
 
     pub(super) fn help_text(&self) -> String {
-        let mode = match self.focus.mode {
+        let mode = match self.focus.mode() {
             FocusMode::Transient(TransientOwner::SourceSearch)
                 if self.current_workspace_is_file() =>
             {
@@ -38,7 +38,7 @@ impl TuiApp {
             {
                 "JUMP"
             }
-            _ => match &self.workspace_navigation.current {
+            _ => match self.workspace_navigation.current() {
                 None => "No file open",
                 Some(WorkspaceView::File(_)) => "File",
             },
@@ -46,7 +46,7 @@ impl TuiApp {
         let mut text = String::from("Forge is an AI coding agent for your terminal.\n\n");
         text.push_str(&format!(
             "Active: {} · {}\n\n",
-            self.focus.block.label(),
+            self.focus.block().label(),
             mode
         ));
         text.push_str("Global\n");
@@ -56,7 +56,7 @@ impl TuiApp {
         text.push_str("• ?  Help\n");
         text.push_str("• Esc  Leave one interaction level\n\n");
         text.push_str("Active block\n");
-        match self.focus.block {
+        match self.focus.block() {
             FocusBlock::Workspace => {
                 text.push_str("• Alt+←  Back\n");
                 text.push_str("• Type  Start chat in composer\n");
@@ -109,7 +109,7 @@ impl TuiApp {
                 text.push_str("• Ctrl+`  Close the terminal panel\n");
             }
         }
-        if matches!(self.focus.mode, FocusMode::Transient(_)) {
+        if matches!(self.focus.mode(), FocusMode::Transient(_)) {
             text.push_str("\nTransient input\n• Esc  Close\n");
         }
         text
@@ -140,8 +140,8 @@ impl TuiApp {
             }
             OverlayAction::ContinueTurns => {
                 self.overlay = None;
-                self.pending_turn.continue_turn = true;
-                self.busy_state.active = true;
+                self.pending_turn.request_continue();
+                self.busy_state.activate();
                 self.push_toast("continuing");
             }
             OverlayAction::StopTurns => {
@@ -228,14 +228,14 @@ impl TuiApp {
             }
             OverlayAction::ConnectPickProfile { profile_id } => {
                 self.overlay = None;
-                self.busy_state.phase = BusyPhase::Connect;
+                self.busy_state.set_phase(BusyPhase::Connect);
                 self.push_activity(
                     ActivityKind::Connect,
                     FeedbackSeverity::Info,
                     format!("connect {profile_id}"),
                 );
                 self.finish_connect(&profile_id, None, false);
-                self.busy_state.phase = BusyPhase::Idle;
+                self.busy_state.set_phase(BusyPhase::Idle);
             }
             OverlayAction::FilePick { path, is_dir } => {
                 if is_dir {
@@ -252,8 +252,7 @@ impl TuiApp {
     /// active when `/theme` opened (preview is non-persistent until Enter).
     pub(super) fn dismiss_overlay(&mut self) {
         if self.startup_resume.picker {
-            self.exit.requested = true;
-            self.exit.code = ExitCode::Canceled;
+            self.exit.request_with_code(ExitCode::Canceled);
         }
         if self.onboarding_connect
             && matches!(
@@ -265,8 +264,7 @@ impl TuiApp {
                 )
             )
         {
-            self.exit.requested = true;
-            self.exit.code = ExitCode::Canceled;
+            self.exit.request_with_code(ExitCode::Canceled);
         }
         // An in-flight device-code OAuth poll must not be able to
         // complete a connection the user just cancelled — `poll_oauth_tick`

@@ -823,10 +823,10 @@ async fn blocks_chat_when_not_connected() {
         .unwrap();
 
     assert!(
-        app.pending_turn.prompt.is_none(),
+        !app.pending_turn.has_prompt(),
         "must not queue a model turn"
     );
-    assert!(!app.busy_state.active);
+    assert!(!app.busy_state.is_active());
     assert_eq!(app.input.text, "hello world");
     assert!(
         app.banner_state.items.iter().any(|b| matches!(
@@ -1179,7 +1179,7 @@ async fn mock_provider_allows_chat_without_connect() {
     );
     assert!(app.is_provider_connected());
     app.dispatch_line("hi").await.unwrap();
-    assert_eq!(app.pending_turn.prompt.as_deref(), Some("hi"));
+    assert_eq!(app.pending_turn.prompt(), Some("hi"));
 }
 
 #[tokio::test]
@@ -1200,6 +1200,6 @@ async fn onboarding_connect_esc_exits_the_process() {
     app.onboarding_connect = true;
     app.open_connect_picker();
     app.dismiss_overlay();
-    assert!(app.exit.requested);
-    assert_eq!(app.exit.code, crate::ExitCode::Canceled);
+    assert!(app.exit.is_requested());
+    assert_eq!(app.exit.code(), crate::ExitCode::Canceled);
 }

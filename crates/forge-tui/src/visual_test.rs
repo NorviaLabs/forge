@@ -101,6 +101,7 @@ mod tests {
         std::fs::write(repo.join("dirty.txt"), "x").unwrap();
         app.runtime.cwd = repo.clone();
         app.handle_key(press(KeyCode::Char('x'))).await.unwrap();
+        app.tick_render_state();
         let backend = TestBackend::new(120, 30);
         let mut term = Terminal::new(backend).unwrap();
         term.draw(|f| app.draw(f)).unwrap();
