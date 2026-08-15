@@ -281,11 +281,10 @@ that's still the ACL's job. Two files are read and merged:
 Menu rows (when a prompt appears):
 
 - **Allow once** — run this call; ask again next time.
-- **Allow pattern** — remember this exact argv, cwd, and env for the rest of
-  the session. The menu shows the exact pattern (for example
-  `bash(git push origin main)`). The same command later runs without a
-  prompt; a different argv, cwd, or env asks again. Not written to
-  `permissions.toml`.
+- **Allow pattern** — remember a generalized pattern for the rest of the
+  session. The menu shows the pattern (for example `bash(git push *)`).
+  Matching commands later run without a prompt; a different family still
+  asks. Not written to `permissions.toml`.
 - **Deny** — block the call.
 
 ### Permission modes

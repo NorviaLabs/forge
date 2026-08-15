@@ -273,20 +273,20 @@ impl AgentSession {
         self.governance.permission_mode()
     }
 
-    /// Remember this exact invocation for the rest of the process session.
-    pub fn allow_exact_for_session(&mut self, grant: forge_governance::SessionExactAllow) {
-        self.governance.allow_exact_for_session(grant);
+    /// Remember the suggested pattern for `call` for the rest of this session.
+    pub fn allow_suggested_pattern_for_session(&mut self, call: &forge_types::ToolCall) -> String {
+        self.governance.allow_suggested_pattern_for_session(call)
     }
 
-    pub fn clear_session_exact_allows(&mut self) {
-        self.governance.clear_session_exact_allows();
+    pub fn clear_session_pattern_allows(&mut self) {
+        self.governance.clear_session_pattern_allows();
     }
 
-    pub fn session_exact_allow_count(&self) -> usize {
-        self.governance.session_exact_allow_count()
+    pub fn session_pattern_allow_count(&self) -> usize {
+        self.governance.session_pattern_allow_count()
     }
 
-    pub fn session_exact_allows(&self, grant: &forge_governance::SessionExactAllow) -> bool {
-        self.governance.session_exact_allows(grant)
+    pub fn session_pattern_allows(&self, call: &forge_types::ToolCall) -> bool {
+        self.governance.session_pattern_allows(call)
     }
 }
