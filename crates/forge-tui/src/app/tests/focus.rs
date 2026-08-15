@@ -7,8 +7,8 @@ use super::prelude::*;
 #[tokio::test]
 async fn focus_starts_on_composer_block() {
     let (_dir, app) = focus_test_app().await;
-    assert_eq!(app.focus.block, FocusBlock::Composer);
-    assert_eq!(app.focus.mode, FocusMode::Navigation);
+    assert_eq!(app.focus.block(), FocusBlock::Composer);
+    assert_eq!(app.focus.mode(), FocusMode::Navigation);
 }
 
 #[tokio::test]
@@ -22,44 +22,44 @@ async fn tab_cycles_visible_blocks_and_skips_hidden_ones() {
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.focus.block, FocusBlock::Sidebar);
+    assert_eq!(app.focus.block(), FocusBlock::Sidebar);
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.focus.block, FocusBlock::Composer);
+    assert_eq!(app.focus.block(), FocusBlock::Composer);
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.focus.block, FocusBlock::Footer);
+    assert_eq!(app.focus.block(), FocusBlock::Footer);
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.focus.block, FocusBlock::BottomPanel);
+    assert_eq!(app.focus.block(), FocusBlock::BottomPanel);
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.focus.block, FocusBlock::Search);
+    assert_eq!(app.focus.block(), FocusBlock::Search);
     assert!(app.workspace_files.explorer.search_focused);
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.focus.block, FocusBlock::Files);
+    assert_eq!(app.focus.block(), FocusBlock::Files);
     assert!(!app.workspace_files.explorer.search_focused);
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.focus.block, FocusBlock::Workspace);
+    assert_eq!(app.focus.block(), FocusBlock::Workspace);
 
     app.normalize_focus();
     app.handle_key(press(KeyCode::BackTab, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.focus.block, FocusBlock::Files);
+    assert_eq!(app.focus.block(), FocusBlock::Files);
     assert!(!app.workspace_files.explorer.search_focused);
     app.handle_key(press(KeyCode::BackTab, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.focus.block, FocusBlock::Search);
+    assert_eq!(app.focus.block(), FocusBlock::Search);
     assert!(app.workspace_files.explorer.search_focused);
 }
 
@@ -75,7 +75,7 @@ async fn tabbing_into_footer_selects_which_llm_first() {
         .await
         .unwrap();
 
-    assert_eq!(app.focus.block, FocusBlock::Footer);
+    assert_eq!(app.focus.block(), FocusBlock::Footer);
     assert_eq!(app.composer_chip_focus, Some(0));
 }
 
@@ -138,17 +138,21 @@ async fn mode_chip_cycles_permission_mode_with_enter() {
         .unwrap();
     assert_eq!(app.composer_chip_focus, Some(2));
 
-    let before = app.permission_mode;
+    let before = app.session.permission_mode();
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_ne!(app.permission_mode, before, "Enter should cycle the mode");
+    assert_ne!(
+        app.session.permission_mode(),
+        before,
+        "Enter should cycle the mode"
+    );
     assert_eq!(app.composer_chip_focus, Some(2), "stays on the mode chip");
 
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.permission_mode, before, "Enter cycles back");
+    assert_eq!(app.session.permission_mode(), before, "Enter cycles back");
 }
 
 #[tokio::test]
@@ -161,7 +165,7 @@ async fn leaving_footer_clears_its_sub_focus() {
         .await
         .unwrap();
 
-    assert_ne!(app.focus.block, FocusBlock::Footer);
+    assert_ne!(app.focus.block(), FocusBlock::Footer);
     assert_eq!(app.composer_chip_focus, None);
 }
 
@@ -175,7 +179,7 @@ async fn esc_leaves_footer_back_to_previous_block() {
         .await
         .unwrap();
 
-    assert_ne!(app.focus.block, FocusBlock::Footer);
+    assert_ne!(app.focus.block(), FocusBlock::Footer);
     assert_eq!(app.composer_chip_focus, None);
 }
 
@@ -190,7 +194,7 @@ async fn f3_no_longer_focuses_the_footer() {
         .await
         .unwrap();
 
-    assert_eq!(app.focus.block, FocusBlock::Composer);
+    assert_eq!(app.focus.block(), FocusBlock::Composer);
     assert_eq!(app.composer_chip_focus, None);
 }
 
@@ -204,22 +208,22 @@ async fn tab_and_shift_tab_traverse_sidebar_and_composer() {
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.focus.block, FocusBlock::Sidebar);
+    assert_eq!(app.focus.block(), FocusBlock::Sidebar);
 
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.focus.block, FocusBlock::Composer);
+    assert_eq!(app.focus.block(), FocusBlock::Composer);
 
     app.handle_key(press(KeyCode::BackTab, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.focus.block, FocusBlock::Sidebar);
+    assert_eq!(app.focus.block(), FocusBlock::Sidebar);
 
     app.handle_key(press(KeyCode::BackTab, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.focus.block, FocusBlock::Workspace);
+    assert_eq!(app.focus.block(), FocusBlock::Workspace);
 }
 
 #[tokio::test]
@@ -229,12 +233,12 @@ async fn opening_and_closing_bottom_panel_transfers_focus() {
     app.handle_key(press(KeyCode::Char('`'), KeyModifiers::CONTROL))
         .await
         .unwrap();
-    assert_eq!(app.focus.block, FocusBlock::BottomPanel);
+    assert_eq!(app.focus.block(), FocusBlock::BottomPanel);
     assert!(app.bottom_panel.open);
     app.handle_key(press(KeyCode::Char('`'), KeyModifiers::CONTROL))
         .await
         .unwrap();
-    assert_eq!(app.focus.block, FocusBlock::Workspace);
+    assert_eq!(app.focus.block(), FocusBlock::Workspace);
     assert!(!app.bottom_panel.open);
 }
 
@@ -245,7 +249,7 @@ async fn arrows_switch_tabs_only_in_the_active_navigation_block() {
     app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.workspace_navigation.current, None);
+    assert_eq!(app.workspace_navigation.current(), None);
 
     // The bottom panel is Terminal-only now (Tasks moved to the sidebar),
     // so left/right has nothing to cycle while it's focused — workspace
@@ -255,7 +259,7 @@ async fn arrows_switch_tabs_only_in_the_active_navigation_block() {
     app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.workspace_navigation.current, None);
+    assert_eq!(app.workspace_navigation.current(), None);
 }
 
 #[tokio::test]
@@ -271,16 +275,16 @@ async fn chat_input_keeps_literal_brackets_and_shift_arrows_do_not_switch_tabs()
     app.handle_key(press(KeyCode::Right, KeyModifiers::SHIFT))
         .await
         .unwrap();
-    assert_eq!(app.workspace_navigation.current, None);
+    assert_eq!(app.workspace_navigation.current(), None);
     app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.focus.mode, FocusMode::Navigation);
-    assert_eq!(app.focus.block, FocusBlock::Workspace);
+    assert_eq!(app.focus.mode(), FocusMode::Navigation);
+    assert_eq!(app.focus.block(), FocusBlock::Workspace);
     app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.focus.block, FocusBlock::Composer);
+    assert_eq!(app.focus.block(), FocusBlock::Composer);
     assert_eq!(app.input.text, "[]x");
 }
 
@@ -300,7 +304,7 @@ async fn esc_from_composer_returns_to_previous_block_and_keeps_draft() {
         app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
             .await
             .unwrap();
-        assert_eq!(app.focus.block, block);
+        assert_eq!(app.focus.block(), block);
         assert_eq!(app.input.text, "draft");
     }
 }
@@ -314,7 +318,7 @@ async fn type_to_compose_keeps_first_unbound_printable() {
         .await
         .unwrap();
 
-    assert_eq!(app.focus.block, FocusBlock::Composer);
+    assert_eq!(app.focus.block(), FocusBlock::Composer);
     assert_eq!(app.input.text, "x");
 }
 
@@ -364,14 +368,14 @@ async fn ctrl_e_then_enter_opens_file_from_explorer() {
         .await
         .unwrap();
     assert!(app.workspace_files.visible);
-    assert_eq!(app.focus.block, FocusBlock::Search);
+    assert_eq!(app.focus.block(), FocusBlock::Search);
 
     app.workspace_files.explorer.selected_path = Some(path.clone());
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
     assert_eq!(
-        app.workspace_navigation.current,
+        app.workspace_navigation.current(),
         Some(WorkspaceView::File(path))
     );
 }
@@ -387,13 +391,13 @@ async fn semantic_commands_dispatch_without_rendering_a_frame() {
         .await
         .unwrap();
     assert!(app.workspace_files.visible);
-    assert_eq!(app.focus.block, FocusBlock::Search);
+    assert_eq!(app.focus.block(), FocusBlock::Search);
 
     app.execute_semantic_command(SemanticCommand::OpenFile(path.clone()))
         .await
         .unwrap();
     assert_eq!(
-        app.workspace_navigation.current,
+        app.workspace_navigation.current(),
         Some(WorkspaceView::File(path.clone()))
     );
     assert_eq!(
@@ -417,7 +421,7 @@ async fn semantic_dispatch_handles_invalid_or_stale_identifiers_without_panic() 
         .await
         .unwrap();
 
-    assert_eq!(app.workspace_navigation.current, None);
+    assert_eq!(app.workspace_navigation.current(), None);
     assert!(!app.bottom_panel.open);
 }
 
@@ -463,7 +467,7 @@ async fn printable_globals_remain_available_to_type_to_compose() {
         .await
         .unwrap();
 
-    assert_eq!(app.focus.block, FocusBlock::Composer);
+    assert_eq!(app.focus.block(), FocusBlock::Composer);
     assert_eq!(app.input.text, "x");
 }
 
@@ -491,13 +495,13 @@ async fn registered_printable_editor_commands_do_not_enter_composer() {
     app.handle_key(press(KeyCode::Char('r'), KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.focus.block, FocusBlock::Workspace);
+    assert_eq!(app.focus.block(), FocusBlock::Workspace);
     assert!(app.input.text.is_empty());
 
     app.handle_key(press(KeyCode::Char('G'), KeyModifiers::SHIFT))
         .await
         .unwrap();
-    assert_eq!(app.focus.block, FocusBlock::Workspace);
+    assert_eq!(app.focus.block(), FocusBlock::Workspace);
     assert!(app.input.text.is_empty());
 }
 
@@ -514,7 +518,7 @@ async fn non_printable_keys_do_not_type_to_compose() {
         press(KeyCode::Char('x'), KeyModifiers::ALT),
     ] {
         app.handle_key(key).await.unwrap();
-        assert_eq!(app.focus.block, FocusBlock::Workspace);
+        assert_eq!(app.focus.block(), FocusBlock::Workspace);
         assert!(app.input.text.is_empty());
     }
 }
@@ -522,12 +526,12 @@ async fn non_printable_keys_do_not_type_to_compose() {
 #[tokio::test]
 async fn overlay_precedes_block_navigation() {
     let (_dir, mut app) = focus_test_app().await;
-    app.focus.mode = FocusMode::Navigation;
+    app.focus.set_navigation(app.focus.block());
     app.overlay = Some(Overlay::welcome());
     app.handle_key(press(KeyCode::Char(']'), KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.workspace_navigation.current, None);
+    assert_eq!(app.workspace_navigation.current(), None);
     assert!(app.overlay.is_some());
 }
 
@@ -540,8 +544,8 @@ async fn resize_drops_focus_from_a_zero_width_files_block() {
     app.focus_block(FocusBlock::Files);
     let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
     terminal.draw(|frame| app.draw(frame)).unwrap();
-    assert_eq!(app.focus.block, FocusBlock::Sidebar);
-    assert_eq!(app.focus.mode, FocusMode::Navigation);
+    assert_eq!(app.focus.block(), FocusBlock::Sidebar);
+    assert_eq!(app.focus.mode(), FocusMode::Navigation);
 }
 
 #[tokio::test]
@@ -599,10 +603,11 @@ async fn focus_availability_and_restore_skip_hidden_blocks() {
     assert!(availability.contains(FocusBlock::Files));
     assert!(!availability.contains(FocusBlock::BottomPanel));
 
-    app.focus.previous_block = Some(FocusBlock::BottomPanel);
+    app.focus
+        .set_previous_block_for_test(Some(FocusBlock::BottomPanel));
     app.restore_focus_after_closing(FocusBlock::Files);
-    assert_eq!(app.focus.block, FocusBlock::Workspace);
-    assert_eq!(app.focus.return_block, Some(FocusBlock::Workspace));
+    assert_eq!(app.focus.block(), FocusBlock::Workspace);
+    assert_eq!(app.focus.return_block(), Some(FocusBlock::Workspace));
 }
 
 #[tokio::test]
@@ -613,12 +618,12 @@ async fn contextual_hint_appears_only_for_transient_or_blocking_state() {
     app.focus_block(FocusBlock::Workspace);
     assert!(app.contextual_hint().is_none());
 
-    app.focus.mode = FocusMode::Transient(TransientOwner::SourceSearch);
+    app.focus.set_transient(TransientOwner::SourceSearch);
     assert!(app
         .contextual_hint()
         .is_some_and(|hint| hint.contains("Esc cancel")));
 
-    app.focus.mode = FocusMode::Navigation;
+    app.focus.set_navigation(app.focus.block());
     app.overlay = Some(Overlay::turn_limit(4));
     assert_eq!(
         app.contextual_hint().as_deref(),

@@ -29,7 +29,6 @@ impl TuiApp {
         let mut startup_notices = runtime.startup_notices.clone();
         startup_notices.extend(theme_notices);
         let file_icons = runtime.file_icons;
-        let (file_change_tx, file_change_rx) = mpsc::channel();
         // One synchronous read at startup so the first frame shows the real branch
         // instead of blanking until the first background refresh lands.
         let repo_header_cwd = runtime.cwd.clone();
@@ -43,18 +42,12 @@ impl TuiApp {
             input,
             overlay: startup_items.clone().map(Overlay::resume_picker),
             onboarding_connect: false,
-            exit: ExitState {
-                requested: false,
-                code: ExitCode::Success,
-            },
+            exit: ExitState::default(),
             startup_resume: StartupResumeState {
                 picker: startup_items.is_some(),
                 session_id: startup_resume_session_id,
             },
-            busy_state: BusyState {
-                active: false,
-                phase: BusyPhase::Idle,
-            },
+            busy_state: BusyState::default(),
             status_state: StatusMessageState {
                 message: String::new(),
             },
@@ -79,24 +72,11 @@ impl TuiApp {
                 label: Some("mock".into()),
             },
             activity: ActivityFeed::default(),
-            pending_turn: PendingTurnState {
-                prompt: None,
-                continue_turn: false,
-                attachments: Vec::new(),
-            },
-            pending_interaction: PendingInteractionState {
-                hitl_decision: None,
-                context_reset: false,
-            },
+            pending_turn: PendingTurnState::default(),
+            pending_interaction: PendingInteractionState::default(),
             external_editor: ExternalEditorState { requested: false },
-            attachment: AttachmentState {
-                pending: None,
-                pending_images: Vec::new(),
-            },
-            task_selection: TaskSelectionState {
-                queue: None,
-                tasks: None,
-            },
+            attachment: AttachmentState::default(),
+            task_selection: TaskSelectionState::default(),
             stream: StreamState {
                 preview: String::new(),
                 thinking: String::new(),
@@ -111,9 +91,8 @@ impl TuiApp {
             reasoning_effort: ReasoningEffortState {
                 value: ReasoningEffort::Auto,
             },
-            permission_mode: forge_governance::PermissionMode::AcceptEdits,
             composer_chip_focus: None,
-            tool_detail: ToolDetailState { expanded: false },
+            tool_detail: ToolDetailState::default(),
             workspace_navigation: WorkspaceNavigation::default(),
             source_viewer: SourceViewer::new(),
             editor_session: None,
@@ -121,11 +100,7 @@ impl TuiApp {
             editor_message: None,
             pending_editor_path: None,
             pending_editor_home: false,
-            file_watch: FileWatchState {
-                watcher: None,
-                change_rx: file_change_rx,
-                change_tx: file_change_tx,
-            },
+            file_watch: FileWatchState::new(),
             bottom_panel: BottomPanelState::default(),
             workspace_files: WorkspaceFilesState {
                 // Make Forge's editor/file-browser surface discoverable on a
@@ -136,13 +111,9 @@ impl TuiApp {
             },
             explorer_dialog: ExplorerDialogState::default(),
             focus: FocusState::default(),
-            cancellation: CancellationState { requested: false },
-            hitl_session: HitlSessionState {
-                allowed: HashSet::new(),
-                pattern_allow: Vec::new(),
-                menu: ApprovalMenuState::default(),
-            },
-            toast: ToastState { current: None },
+            cancellation: CancellationState::default(),
+            approval_session: approvals::ApprovalSessionState::default(),
+            toast: ToastState::default(),
             conversation_view: ConversationViewState {
                 message_start: 0,
                 event_start: 0,
@@ -152,18 +123,13 @@ impl TuiApp {
                 splash_dismissed: false,
             },
             render_cache: RenderCacheState { conversation: None },
-            model_cost_cache: None,
-            footer_limits: FooterLimitsState {
-                cache: None,
-                refresh_rx: None,
-            },
             repo_header_state: RepoHeaderState {
                 cache: repo_header,
                 refresh_rx: None,
                 refreshed_at: Instant::now(),
                 cwd: repo_header_cwd.clone(),
             },
-            progress_state: std::cell::RefCell::new(ProgressState::default()),
+            progress_state: ProgressState::default(),
             interactive_terminal: None,
             editor_viewport: EditorViewportState { height: 24 },
             editor_area: None,

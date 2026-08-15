@@ -14,8 +14,32 @@
 
 use super::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ApprovalMenuKind {
+    AllowOnce,
+    AllowPattern,
+    Remember,
+    Deny,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ApprovalMenuState {
+    /// `call_id` of the pending payload this menu was built for.
+    call_id: Option<String>,
+    selected: usize,
+}
+
+/// All session-scoped approval state. Its fields intentionally remain private:
+/// approval policy must not be changed by unrelated TUI modules.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ApprovalSessionState {
+    allowed: HashSet<ApprovalIdentity>,
+    pattern_allow: Vec<forge_governance::PatternRule>,
+    menu: ApprovalMenuState,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(super) struct ApprovalIdentity {
+pub(crate) struct ApprovalIdentity {
     executable: String,
     arguments: Vec<String>,
     working_directory: String,
@@ -48,6 +72,38 @@ fn tool_call_for_payload(payload: &HitlPayload) -> forge_types::ToolCall {
 }
 
 impl TuiApp {
+    pub(super) fn approval_menu_selected(&self) -> usize {
+        self.approval_session.menu.selected
+    }
+
+    pub(super) fn remembered_approval_count(&self) -> usize {
+        self.approval_session.allowed.len()
+    }
+
+    pub(super) fn clear_session_approvals(&mut self) {
+        self.approval_session.allowed.clear();
+        self.approval_session.pattern_allow.clear();
+        self.approval_session.menu = ApprovalMenuState::default();
+    }
+
+    #[cfg(test)]
+    pub(super) fn is_approval_remembered(&self, identity: &ApprovalIdentity) -> bool {
+        self.approval_session.allowed.contains(identity)
+    }
+
+    #[cfg(test)]
+    pub(super) fn session_pattern_count(&self) -> usize {
+        self.approval_session.pattern_allow.len()
+    }
+
+    #[cfg(test)]
+    pub(super) fn session_pattern_raw(&self, index: usize) -> Option<&str> {
+        self.approval_session
+            .pattern_allow
+            .get(index)
+            .map(|rule| rule.raw.as_str())
+    }
+
     fn approval_state_for_payload(&self, payload: &HitlPayload) -> ApprovalOverlayState {
         ApprovalOverlayState::for_payload(
             payload,
@@ -59,18 +115,19 @@ impl TuiApp {
     pub(super) fn sync_approval_menu(&mut self) {
         match self.session.pending_hitl() {
             None => {
-                self.hitl_session.menu = ApprovalMenuState::default();
+                self.approval_session.menu = ApprovalMenuState::default();
             }
             Some(payload) => {
-                if self.hitl_session.menu.call_id.as_deref() != Some(payload.call_id.as_str()) {
-                    self.hitl_session.menu = ApprovalMenuState {
+                if self.approval_session.menu.call_id.as_deref() != Some(payload.call_id.as_str()) {
+                    self.approval_session.menu = ApprovalMenuState {
                         call_id: Some(payload.call_id.clone()),
                         selected: 0,
                     };
                 }
                 let n = self.approval_menu_kinds().len();
                 if n > 0 {
-                    self.hitl_session.menu.selected = self.hitl_session.menu.selected.min(n - 1);
+                    self.approval_session.menu.selected =
+                        self.approval_session.menu.selected.min(n - 1);
                 }
             }
         }
@@ -84,7 +141,7 @@ impl TuiApp {
         let Some(payload) = self.session.pending_hitl() else {
             return;
         };
-        if self.hitl_session.menu.call_id.as_deref() != Some(payload.call_id.as_str()) {
+        if self.approval_session.menu.call_id.as_deref() != Some(payload.call_id.as_str()) {
             self.focus_block(FocusBlock::Approval);
             self.conversation_view.follow = true;
         }
@@ -145,19 +202,20 @@ impl TuiApp {
         if self.session.pending_hitl().is_none() {
             return Ok(false);
         }
-        if self.focus.block != FocusBlock::Approval {
+        if self.focus.block() != FocusBlock::Approval {
             return Ok(false);
         }
         self.sync_approval_menu();
         match key.code {
             KeyCode::Up if key.modifiers.is_empty() => {
                 let n = self.approval_menu_kinds().len().max(1);
-                self.hitl_session.menu.selected = (self.hitl_session.menu.selected + n - 1) % n;
+                self.approval_session.menu.selected =
+                    (self.approval_session.menu.selected + n - 1) % n;
                 Ok(true)
             }
             KeyCode::Down if key.modifiers.is_empty() => {
                 let n = self.approval_menu_kinds().len().max(1);
-                self.hitl_session.menu.selected = (self.hitl_session.menu.selected + 1) % n;
+                self.approval_session.menu.selected = (self.approval_session.menu.selected + 1) % n;
                 Ok(true)
             }
             KeyCode::Esc if key.modifiers.is_empty() => {
@@ -166,7 +224,7 @@ impl TuiApp {
             }
             KeyCode::Enter if key.modifiers.is_empty() => {
                 let kinds = self.approval_menu_kinds();
-                let Some(kind) = kinds.get(self.hitl_session.menu.selected).copied() else {
+                let Some(kind) = kinds.get(self.approval_session.menu.selected).copied() else {
                     return Ok(true);
                 };
                 match kind {
@@ -199,7 +257,7 @@ impl TuiApp {
             return;
         };
         if self
-            .hitl_session
+            .approval_session
             .pattern_allow
             .iter()
             .any(|existing| existing.raw == rule.raw)
@@ -213,7 +271,7 @@ impl TuiApp {
                 format!("pattern rule not saved to disk ({error}); active for this session only"),
             );
         }
-        self.hitl_session.pattern_allow.push(rule);
+        self.approval_session.pattern_allow.push(rule);
         self.push_toast(format!("allowed going forward: {pattern}"));
     }
 
@@ -224,7 +282,7 @@ impl TuiApp {
     /// effect immediately without a restart.
     fn pattern_allows(&self, payload: &HitlPayload) -> bool {
         let call = tool_call_for_payload(payload);
-        self.hitl_session
+        self.approval_session
             .pattern_allow
             .iter()
             .any(|rule| rule.matches(&call))
@@ -286,7 +344,7 @@ impl TuiApp {
         &mut self,
         mut terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
     ) -> Result<(), TuiError> {
-        let Some(decision) = self.pending_interaction.hitl_decision.take() else {
+        let Some(decision) = self.pending_interaction.take_hitl_decision() else {
             return Ok(());
         };
         if let Some(term) = terminal.as_deref_mut() {
@@ -301,7 +359,7 @@ impl TuiApp {
             _ => "Action denied".into(),
         };
         self.push_notice(vec![self.status_state.message.clone()]);
-        self.busy_state.phase = BusyPhase::Idle;
+        self.busy_state.set_phase(BusyPhase::Idle);
         self.enter_chat_composer();
         if let Some(term) = terminal {
             let _ = term.draw(|f| self.draw(f));
@@ -333,7 +391,7 @@ impl TuiApp {
 
         self.session.resolve_hitl(decision.clone(), "tui").await?;
         if let Some(identity) = identity_to_remember {
-            self.hitl_session.allowed.insert(identity);
+            self.approval_session.allowed.insert(identity);
         }
         match decision {
             HitlDecision::Approve if remember_exact_direct => {
@@ -361,9 +419,8 @@ impl TuiApp {
     /// `dequeue_and_send_next` uses so `run_loop` restarts the model call on
     /// its next tick.
     fn resume_turn_after_hitl(&mut self) {
-        self.pending_turn.continue_turn = true;
-        self.busy_state.active = true;
-        self.busy_state.phase = BusyPhase::Model;
+        self.pending_turn.request_continue();
+        self.busy_state.start(BusyPhase::Model);
         self.timing.started = Some(Instant::now());
         self.stream.preview.clear();
         self.stream.thinking.clear();
@@ -378,7 +435,7 @@ impl TuiApp {
         let identity = self.approval_identity_for_payload(&payload);
         let identity_allowed = identity
             .as_ref()
-            .is_some_and(|identity| self.hitl_session.allowed.contains(identity));
+            .is_some_and(|identity| self.approval_session.allowed.contains(identity));
         let pattern_allowed = self.pattern_allows(&payload);
         if !identity_allowed && !pattern_allowed {
             return Ok(());
@@ -393,7 +450,7 @@ impl TuiApp {
         self.resume_turn_after_hitl();
         // The card just disappeared under the user; drop back to the composer
         // rather than letting normalize_focus strand focus on a ghost block.
-        if self.focus.block == FocusBlock::Approval {
+        if self.focus.block() == FocusBlock::Approval {
             self.enter_chat_composer();
         }
         Ok(())

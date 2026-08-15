@@ -361,9 +361,9 @@ impl TuiApp {
                 // of Ctrl+C (`QuitOrInterrupt`) without its second-press quit
                 // escalation. Previously nothing bound Esc to this at all, so
                 // the only way to stop a stuck turn was to kill the whole app.
-                if self.busy_state.active {
-                    if !self.cancellation.requested {
-                        self.cancellation.requested = true;
+                if self.busy_state.is_active() {
+                    if !self.cancellation.is_requested() {
+                        self.cancellation.request();
                         self.push_toast("interrupt requested");
                     }
                 }
@@ -371,7 +371,7 @@ impl TuiApp {
                 // to the live draft at an edge, so this is the only way
                 // back to it — checked before the slash-clear branch since
                 // a recalled entry may itself start with '/'.
-                else if self.focus.block == FocusBlock::Composer && self.history.browsing() {
+                else if self.focus.block() == FocusBlock::Composer && self.history.browsing() {
                     if let Some(draft) = self.history.leave_browse() {
                         self.apply_history_text(draft);
                     }
@@ -381,7 +381,7 @@ impl TuiApp {
                 // keep composer focus, not silently move focus away while
                 // leaving the "/" text and dropdown rendered but orphaned
                 // (nothing left routes Backspace/Enter/Tab back to them).
-                else if self.focus.block == FocusBlock::Composer
+                else if self.focus.block() == FocusBlock::Composer
                     && self.input.text.starts_with('/')
                 {
                     self.input.clear();
@@ -403,7 +403,7 @@ impl TuiApp {
             SemanticCommand::ToggleFiles => self.toggle_files_panel(),
             SemanticCommand::CloseOverlay => {
                 self.dismiss_overlay();
-                self.explorer_dialog.current = None;
+                self.explorer_dialog.clear();
             }
             SemanticCommand::FocusComposer => self.enter_chat_composer(),
             SemanticCommand::FocusPane(block) => self.focus_block(block),
@@ -501,14 +501,12 @@ impl TuiApp {
             SemanticCommand::PasteClipboardImage => {
                 self.paste_clipboard_image();
             }
-            SemanticCommand::ToggleToolDetails => {
-                self.tool_detail.expanded = !self.tool_detail.expanded
-            }
+            SemanticCommand::ToggleToolDetails => self.tool_detail.toggle(),
             SemanticCommand::CyclePermissionMode => {
-                self.permission_mode = self.permission_mode.next();
-                self.session.apply_permission_mode(self.permission_mode);
+                let mode = self.session.permission_mode().next();
+                self.session.apply_permission_mode(mode);
                 self.save_ui_state();
-                let detail = match self.permission_mode {
+                let detail = match self.session.permission_mode() {
                     forge_governance::PermissionMode::AcceptEdits => {
                         forge_governance::Governance::accept_edits_toast_summary()
                     }
@@ -520,7 +518,7 @@ impl TuiApp {
                     FeedbackSeverity::Info,
                     format!(
                         "permission mode: {} — {detail}",
-                        self.permission_mode.label()
+                        self.session.permission_mode().label()
                     ),
                 );
             }
@@ -549,20 +547,18 @@ impl TuiApp {
                 self.resolve_selected_task_hitl(HitlDecision::Deny)
             }
             SemanticCommand::QuitOrInterrupt => {
-                if self.busy_state.active {
-                    if self.cancellation.requested {
-                        self.exit.requested = true;
-                        self.exit.code = ExitCode::Canceled;
+                if self.busy_state.is_active() {
+                    if self.cancellation.is_requested() {
+                        self.exit.request_with_code(ExitCode::Canceled);
                     } else {
-                        self.cancellation.requested = true;
+                        self.cancellation.request();
                         self.push_toast("interrupt requested · Ctrl+C again to quit");
                     }
                 } else {
-                    self.exit.requested = true;
-                    self.exit.code = ExitCode::Canceled;
+                    self.exit.request_with_code(ExitCode::Canceled);
                 }
             }
-            SemanticCommand::Quit => self.exit.requested = true,
+            SemanticCommand::Quit => self.exit.request(),
         }
         Ok(true)
     }
@@ -625,7 +621,7 @@ impl TuiApp {
                     );
                 }
                 Ok(SlashCommand::Quit) => {
-                    self.exit.requested = true;
+                    self.exit.request();
                     self.status_state.message = "quitting…".into();
                 }
                 Ok(SlashCommand::Compact) => {
@@ -677,14 +673,14 @@ impl TuiApp {
                             self.history.load_resumed(report.composer_lines);
                             self.overlay = None;
                             self.notice_state.items.clear();
-                            self.busy_state.active = false;
-                            self.busy_state.phase = BusyPhase::Idle;
-                            self.exit.code = match self.session.active_task.lifecycle {
-                                forge_types::TaskLifecycle::Failed => ExitCode::Failed,
-                                forge_types::TaskLifecycle::Waiting => ExitCode::AwaitingHitl,
-                                forge_types::TaskLifecycle::Cancelled => ExitCode::Canceled,
-                                _ => ExitCode::Success,
-                            };
+                            self.busy_state.stop();
+                            self.exit
+                                .set_code(match self.session.active_task.lifecycle {
+                                    forge_types::TaskLifecycle::Failed => ExitCode::Failed,
+                                    forge_types::TaskLifecycle::Waiting => ExitCode::AwaitingHitl,
+                                    forge_types::TaskLifecycle::Cancelled => ExitCode::Canceled,
+                                    _ => ExitCode::Success,
+                                });
                             // Stale Working with no live runtime becomes Interrupted.
                             if let Err(error) = self.session.mark_interrupted_if_stale().await {
                                 self.report_error(&error.to_string());
@@ -714,15 +710,14 @@ impl TuiApp {
                             // `resume_session` already restored the durable queue for
                             // the target session — do not clear it out from under
                             // that restoration.
-                            self.task_selection.queue = None;
+                            self.task_selection.clear_queue();
                             self.stream.preview.clear();
                             self.stream.thinking.clear();
                             self.conversation_view.message_start = 0;
                             self.conversation_view.event_start = 0;
                             self.conversation_view.scroll = 0;
                             self.conversation_view.follow = true;
-                            self.hitl_session.allowed.clear();
-                            self.hitl_session.pattern_allow.clear();
+                            self.clear_session_approvals();
                         }
                         Err(error) => {
                             self.report_error(&format!(
@@ -741,7 +736,7 @@ impl TuiApp {
                     self.clear_error_chrome();
                     self.feedback = FeedbackModel::default();
                     self.status_state.message.clear();
-                    self.toast.current = None;
+                    self.toast.clear();
                     self.conversation_view.scroll = 0;
                     self.conversation_view.follow = true;
                 }
@@ -787,7 +782,7 @@ impl TuiApp {
         // before the model call, and so stream deltas can redraw each frame.
         self.clear_error_chrome();
 
-        if !self.attachment.pending_images.is_empty() {
+        if self.attachment.has_images() {
             if !self.session.image_input_supported() {
                 self.input.set_text(line);
                 self.set_feedback(
@@ -815,7 +810,7 @@ impl TuiApp {
 
         // Build the final message text, prepending file context if attached.
         let mut final_line = line.to_string();
-        let attachment = self.attachment.pending.take();
+        let attachment = self.attachment.take_file();
         if let Some(ref att) = attachment {
             if let Some(p) = self.source_viewer.path.as_ref() {
                 match forge_workspace::file_context::build_attachment_text(
@@ -876,10 +871,9 @@ impl TuiApp {
             return Ok(());
         }
 
-        self.pending_turn.prompt = Some(final_line);
-        self.pending_turn.attachments = std::mem::take(&mut self.attachment.pending_images);
-        self.busy_state.active = true;
-        self.busy_state.phase = BusyPhase::Model;
+        self.pending_turn
+            .queue(final_line, self.attachment.take_images());
+        self.busy_state.start(BusyPhase::Model);
         self.timing.started = Some(Instant::now());
         // A new user turn should always follow the live conversation tail.
         // This also ensures its thinking block is visible after the user has
@@ -1082,7 +1076,7 @@ mod tests {
     async fn cycle_permission_mode_moves_through_manual_and_accept_edits_and_back() {
         let (_dir, mut app) = app().await;
         assert_eq!(
-            app.permission_mode,
+            app.session.permission_mode(),
             forge_governance::PermissionMode::AcceptEdits
         );
 
@@ -1090,7 +1084,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            app.permission_mode,
+            app.session.permission_mode(),
             forge_governance::PermissionMode::Manual
         );
 
@@ -1098,7 +1092,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            app.permission_mode,
+            app.session.permission_mode(),
             forge_governance::PermissionMode::AcceptEdits
         );
     }
@@ -1357,17 +1351,17 @@ mod tests {
     #[tokio::test]
     async fn quit_or_interrupt_requests_cancel_before_quitting_while_busy() {
         let (_d, mut app) = app().await;
-        app.busy_state.active = true;
-        assert!(!app.cancellation.requested);
+        app.busy_state.activate();
+        assert!(!app.cancellation.is_requested());
         app.execute_semantic_command(SemanticCommand::QuitOrInterrupt)
             .await
             .unwrap();
         assert!(
-            app.cancellation.requested,
+            app.cancellation.is_requested(),
             "first Ctrl+C while busy should request a graceful cancel, not quit"
         );
         assert!(
-            !app.exit.requested,
+            !app.exit.is_requested(),
             "first Ctrl+C while busy must not quit the whole app"
         );
 
@@ -1375,7 +1369,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            app.exit.requested,
+            app.exit.is_requested(),
             "second Ctrl+C while still busy and already cancel-requested should quit"
         );
     }
@@ -1383,18 +1377,18 @@ mod tests {
     #[tokio::test]
     async fn esc_requests_cancel_while_busy_instead_of_navigating_focus() {
         let (_d, mut app) = app().await;
-        app.busy_state.active = true;
-        app.focus.block = FocusBlock::Composer;
-        assert!(!app.cancellation.requested);
+        app.busy_state.activate();
+        app.focus.set_navigation(FocusBlock::Composer);
+        assert!(!app.cancellation.is_requested());
         app.execute_semantic_command(SemanticCommand::CancelCurrentInteraction)
             .await
             .unwrap();
         assert!(
-            app.cancellation.requested,
+            app.cancellation.is_requested(),
             "Esc while a turn is busy should request cancellation"
         );
         assert!(
-            !app.exit.requested,
+            !app.exit.is_requested(),
             "Esc must never quit the app, unlike a second Ctrl+C"
         );
     }
@@ -1402,8 +1396,8 @@ mod tests {
     #[tokio::test]
     async fn esc_clears_an_active_selection_before_interrupting_or_navigating() {
         let (_d, mut app) = app().await;
-        app.busy_state.active = true;
-        app.focus.block = FocusBlock::Composer;
+        app.busy_state.activate();
+        app.focus.set_navigation(FocusBlock::Composer);
         app.selection.start_in(
             crate::selection::CopyPane::Conversation,
             crate::selection::Cell { row: 1, col: 1 },
@@ -1421,11 +1415,11 @@ mod tests {
             "Esc's first job is to clear an active mouse selection"
         );
         assert!(
-            !app.cancellation.requested,
+            !app.cancellation.is_requested(),
             "Esc must not also interrupt a busy turn when it only cleared a selection"
         );
         assert_eq!(
-            app.focus.block,
+            app.focus.block(),
             FocusBlock::Composer,
             "Esc must not also navigate focus when it only cleared a selection"
         );
@@ -1486,10 +1480,10 @@ mod tests {
             },
         );
 
-        app.pending_turn.prompt = Some("push it".into());
+        app.pending_turn.queue("push it".into(), Vec::new());
         app.drain_pending_prompt(None).await.unwrap();
         assert!(
-            !app.busy_state.active,
+            !app.busy_state.is_active(),
             "drain_pending_prompt exits (busy=false) once a tool call needs approval"
         );
         assert!(app.session.pending_hitl().is_some());
@@ -1498,7 +1492,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            app.busy_state.active && app.pending_turn.continue_turn,
+            app.busy_state.is_active() && app.pending_turn.continue_requested(),
             "approving the tool call must re-arm the turn loop, not leave the session idle \
              while still displaying a busy/Working state"
         );
@@ -1506,7 +1500,7 @@ mod tests {
         // Mirrors `run_loop` noticing `pending_turn_continue` on its next tick.
         app.drain_pending_prompt(None).await.unwrap();
         assert!(
-            !app.busy_state.active,
+            !app.busy_state.is_active(),
             "the turn must reach a terminal state, not stay stuck on Working forever"
         );
         assert_ne!(

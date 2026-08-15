@@ -20,7 +20,7 @@ pub use builtins::{
 pub use invocation::tool_invocation;
 pub use registry::{ToolContext, ToolRegistry};
 pub use skills::{LoadSkillArgs, LoadSkillTool};
-pub use unified_exec::{ExecCommandTool, WriteStdinTool};
+pub use unified_exec::{unified_exec_tools, ExecCommandTool, WriteStdinTool};
 pub use validation::{validate_args, validation_error_signature, ValidationBudget};
 pub use view_image::{ViewImageArgs, ViewImageTool};
 pub use web_search::{should_register_web_search, web_search_tool, WebSearchArgs, WebSearchTool};

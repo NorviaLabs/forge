@@ -6,6 +6,7 @@
 //! verbatim.
 
 use super::*;
+use forge_storage::{LocalRuntimeStorage, RuntimeDataKind, RuntimeStorage};
 use std::io::Write;
 
 use super::util::{rebase_path, relative_display};
@@ -32,7 +33,7 @@ impl TuiApp {
                 .disk_conflicts_with(&path, baseline.as_bytes())
             {
                 Ok(true) => {
-                    self.explorer_dialog.current = Some(ExplorerDialog::SaveConflict);
+                    self.explorer_dialog.show(ExplorerDialog::SaveConflict);
                     return;
                 }
                 Err(error) => {
@@ -307,7 +308,7 @@ impl TuiApp {
                 .is_some_and(|editor| editor.is_dirty())
         {
             self.pending_editor_path = Some(path.to_path_buf());
-            self.explorer_dialog.current = Some(ExplorerDialog::DirtySwitch {
+            self.explorer_dialog.show(ExplorerDialog::DirtySwitch {
                 path: path.to_path_buf(),
             });
             return;
@@ -354,7 +355,7 @@ impl TuiApp {
         } else {
             (None, String::new())
         };
-        self.explorer_dialog.current = Some(ExplorerDialog::Name {
+        self.explorer_dialog.show(ExplorerDialog::Name {
             action,
             parent,
             source,
@@ -394,7 +395,7 @@ impl TuiApp {
                 return;
             }
         };
-        self.explorer_dialog.current = Some(ExplorerDialog::ConfirmDelete {
+        self.explorer_dialog.show(ExplorerDialog::ConfirmDelete {
             source: node.path.clone(),
             name: node.display_name.clone(),
             kind,
@@ -478,7 +479,7 @@ impl TuiApp {
                         .file_ops()
                         .and_then(|ops| ops.is_non_empty_directory(&node.path))
                         .unwrap_or(false);
-                    self.explorer_dialog.current = Some(ExplorerDialog::ConfirmDelete {
+                    self.explorer_dialog.show(ExplorerDialog::ConfirmDelete {
                         source: node.path.clone(),
                         name: node.display_name.clone(),
                         kind,
@@ -544,7 +545,7 @@ impl TuiApp {
                     .reconcile_renamed_path(&root, &open_path, &rebased);
             }
         }
-        if let Some(att) = self.attachment.pending.as_mut() {
+        if let Some(att) = self.attachment.file_mut() {
             let abs = root.join(&att.rel_path);
             if let Some(rebased) = rebase_path(&abs, old_path, new_path) {
                 att.rel_path = relative_display(&root, &rebased);
@@ -563,19 +564,19 @@ impl TuiApp {
                 self.source_viewer.reconcile_deleted_path(&open_path);
             }
         }
-        if self.attachment.pending.as_ref().is_some_and(|att| {
+        if self.attachment.file().is_some_and(|att| {
             let abs = root.join(&att.rel_path);
             abs == deleted_path || abs.starts_with(deleted_path)
         }) {
-            self.attachment.pending = None;
+            self.attachment.clear_file();
         }
         self.workspace_files.explorer.refresh_git_status();
     }
 
     /// Toggle attachment of the current source-viewer file to the next message.
     pub(super) fn toggle_file_attachment(&mut self) {
-        if self.attachment.pending.is_some() {
-            self.attachment.pending = None;
+        if self.attachment.file().is_some() {
+            self.attachment.clear_file();
             self.set_feedback(FeedbackSeverity::Info, "Attachment removed");
             return;
         }
@@ -601,11 +602,12 @@ impl TuiApp {
         };
 
         let cursor_line = self.source_viewer.current_line;
-        self.attachment.pending = Some(forge_workspace::file_context::FileAttachment::new(
-            rel_path,
-            cursor_line,
-        ));
-        if let Some(ref att) = self.attachment.pending {
+        self.attachment
+            .set_file(forge_workspace::file_context::FileAttachment::new(
+                rel_path,
+                cursor_line,
+            ));
+        if let Some(att) = self.attachment.file() {
             self.set_feedback(
                 FeedbackSeverity::Info,
                 format!("File attached · {}", att.label()),
@@ -624,7 +626,7 @@ impl TuiApp {
         match self.store_pasted_image(bytes) {
             Ok(image) => {
                 let label = image_chip_label(&image);
-                self.attachment.pending_images.push(image);
+                self.attachment.push_image(image);
                 self.set_feedback(FeedbackSeverity::Info, format!("image attached · {label}"));
             }
             Err(err) => self.set_feedback(FeedbackSeverity::Warn, err),
@@ -632,7 +634,7 @@ impl TuiApp {
     }
 
     pub(super) fn dismiss_last_image_chip(&mut self) -> bool {
-        self.attachment.pending_images.pop().is_some()
+        self.attachment.pop_image().is_some()
     }
 
     fn store_pasted_image(&self, bytes: &[u8]) -> Result<forge_types::ImageRef, String> {
@@ -644,30 +646,38 @@ impl TuiApp {
             "image/webp" => "webp",
             _ => "img",
         };
-        let dir = self.session.workspace_root().join(".forge/local/pasted");
-        std::fs::create_dir_all(&dir).map_err(|err| format!("cannot write pasted image: {err}"))?;
+        let workspace = self.session.workspace_root();
+        let dir = LocalRuntimeStorage::new(workspace)
+            .path_for(RuntimeDataKind::Attachment)
+            .map_err(|err| format!("cannot initialize pasted-image storage: {err}"))?;
         let name = format!(
             "{}-{}.{}",
             chrono::Utc::now().format("%Y%m%dT%H%M%S"),
-            self.attachment.pending_images.len() + 1,
+            self.attachment.image_count() + 1,
             ext
         );
         let abs = dir.join(&name);
         std::fs::write(&abs, bytes).map_err(|err| format!("cannot write pasted image: {err}"))?;
-        let rel = format!(".forge/local/pasted/{name}");
+        // Repository-local storage remains a workspace-relative reference so
+        // persisted messages stay portable. The application-data fallback is
+        // outside the workspace and therefore must retain its absolute path.
+        let path = abs
+            .strip_prefix(workspace)
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| abs.to_string_lossy().into_owned());
         Ok(
-            forge_types::ImageRef::new(rel, meta.mime, bytes.len() as u64)
+            forge_types::ImageRef::new(path, meta.mime, bytes.len() as u64)
                 .with_dimensions(meta.width, meta.height),
         )
     }
 
     pub(super) fn pending_image_label(&self) -> Option<String> {
-        if self.attachment.pending_images.is_empty() {
+        if !self.attachment.has_images() {
             return None;
         }
         Some(
             self.attachment
-                .pending_images
+                .images()
                 .iter()
                 .map(image_chip_label)
                 .collect::<Vec<_>>()
