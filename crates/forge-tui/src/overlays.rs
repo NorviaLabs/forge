@@ -1,8 +1,7 @@
 //! Overlays: HITL, slash palette, model picker (TUI-04).
 
 use crate::{effort::ReasoningEffort, theme, theme_registry};
-use forge_governance::suggest_pattern;
-use forge_types::{HitlPayload, ToolCall};
+use forge_types::HitlPayload;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Modifier;
@@ -380,16 +379,7 @@ pub struct ApprovalOverlayState {
     pub shell_command: Option<String>,
     pub working_directory: String,
     pub environment_delta: String,
-    pub remember_eligible: bool,
-    /// Whether "allow this pattern going forward" is offered. Unlike
-    /// `remember_eligible` this isn't Direct-mode-only — a command *prefix*
-    /// pattern is exactly what makes sense for Shell-mode calls, where an
-    /// exact-invocation remember doesn't (every command differs in its
-    /// trailing arguments).
     pub pattern_allow_eligible: bool,
-    /// The literal pattern `AllowPattern` would add, generalized from this
-    /// call — shown for confirmation before it's persisted.
-    pub suggested_pattern: String,
 }
 
 impl ApprovalOverlayState {
@@ -436,14 +426,7 @@ impl ApprovalOverlayState {
             .filter(|value| !value.is_empty());
         let environment_delta = approval_environment_delta(&payload.args_redacted);
         let redacted = contains_redacted_value(&payload.args_redacted);
-        let remember_eligible =
-            mode == ApprovalExecutionMode::Direct && !redacted && environment_delta != "[REDACTED]";
         let pattern_allow_eligible = !redacted && environment_delta != "[REDACTED]";
-        let suggested_pattern = suggest_pattern(&ToolCall {
-            id: payload.call_id.clone(),
-            name: payload.tool.clone(),
-            arguments: payload.args_redacted.clone(),
-        });
 
         Self {
             mode,
@@ -455,9 +438,7 @@ impl ApprovalOverlayState {
                 fallback_working_directory,
             ),
             environment_delta,
-            remember_eligible,
             pattern_allow_eligible,
-            suggested_pattern,
         }
     }
 }

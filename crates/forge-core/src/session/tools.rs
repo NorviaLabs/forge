@@ -443,7 +443,14 @@ impl AgentSession {
             .unwrap_or(SideEffectClass::Meta);
 
         if self.enable_gov {
-            let decision = self.governance.authorize(call, class);
+            let mut decision = self.governance.authorize(call, class);
+            if decision == PolicyDecision::Hitl
+                && self
+                    .governance
+                    .allows_session_exact(call, self.workspace_root())
+            {
+                decision = PolicyDecision::Allow;
+            }
             let redacted = self.governance.redact_args(&call.arguments);
             self.governance.record_audit(AuditEvent {
                 session_id: self.session_id.to_string(),
