@@ -20,7 +20,7 @@ use forge_connect::{
     handle_connect_action, loaded_registry, models_for_picker, needs_tui_api_key_prompt,
     needs_tui_oauth, runnable_models_for_picker, ConnectAction, ConnectError, ConnectRegistry,
     ConnectService, CredentialStore, ModelCatalogCache, ModelSelection, OauthPending,
-    PreferenceStore, OPENAI_CODEX_PROFILE_ID,
+    PreferenceStore,
 };
 use forge_core::{
     merge_streamed_response, observe_stream_event, AgentSession, ApplyOutcome, LoopError,
@@ -75,9 +75,6 @@ use forge_workspace::file_ops::{
 use crate::ExitCode;
 
 mod approvals;
-// `TuiApp` holds a set of these and the overlay renderer reads their labels,
-// so the type is named here even though it lives with the approval logic.
-use approvals::ApprovalIdentity;
 mod chrome;
 mod commands;
 mod connect;
@@ -96,11 +93,12 @@ mod persist;
 mod render;
 mod shell;
 mod turn;
+mod types;
+pub(crate) use types::*;
+pub use types::{ExitSummary, TuiApp, TuiError, TuiRuntimeConfig};
 mod util;
 mod watch;
 mod workspace;
-
-include!("types.inc.rs");
 
 pub(crate) use chrome::format_exit_token_usage;
 pub(crate) use chrome::recent_resume_sessions;

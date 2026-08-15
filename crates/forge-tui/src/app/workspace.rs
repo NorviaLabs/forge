@@ -9,7 +9,7 @@ use super::*;
 impl TuiApp {
     pub(super) fn current_workspace_is_file(&self) -> bool {
         matches!(
-            self.workspace_navigation.current,
+            self.workspace_navigation.current(),
             Some(WorkspaceView::File(_))
         )
     }
@@ -25,7 +25,7 @@ impl TuiApp {
         self.normalize_focus();
     }
 
-    pub(super) fn workspace_view_is_valid(&self, view: &WorkspaceView) -> bool {
+    pub(super) fn workspace_view_is_valid(view: &WorkspaceView) -> bool {
         match view {
             WorkspaceView::File(path) => path.is_file() || path.is_symlink(),
         }
@@ -62,7 +62,7 @@ impl TuiApp {
             .is_some_and(|editor| editor.is_dirty())
         {
             self.pending_editor_home = true;
-            self.explorer_dialog.current = Some(ExplorerDialog::DirtyExit);
+            self.explorer_dialog.show(ExplorerDialog::DirtyExit);
             return;
         }
         self.pending_editor_home = false;
@@ -85,17 +85,12 @@ impl TuiApp {
             .as_ref()
             .is_some_and(|editor| editor.is_dirty())
         {
-            self.explorer_dialog.current = Some(ExplorerDialog::DirtyExit);
+            self.explorer_dialog.show(ExplorerDialog::DirtyExit);
             return;
         }
-        let mut next = None;
-        while let Some(candidate) = self.workspace_navigation.history.pop() {
-            if self.workspace_view_is_valid(&candidate) {
-                next = Some(candidate);
-                break;
-            }
-        }
-        self.workspace_navigation.current = next.clone();
+        let next = self
+            .workspace_navigation
+            .pop_previous_valid(Self::workspace_view_is_valid);
         match &next {
             Some(view) => self.apply_workspace_view(view),
             None => self.normalize_focus(),

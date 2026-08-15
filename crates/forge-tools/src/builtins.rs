@@ -200,8 +200,10 @@ pub async fn run_shell_command(
     workspace_root: &Path,
 ) -> Result<ToolOutput, ToolError> {
     let mut shell = Command::new("bash");
+    // Do not use a login shell: `bash -l` sources profile files, which can
+    // re-export credentials after the explicit removals below.
     shell
-        .arg("-lc")
+        .arg("-c")
         .arg(command)
         .current_dir(workspace_root)
         .stdout(Stdio::piped())
@@ -1264,6 +1266,7 @@ impl Tool for GitTool {
 /// Phase 1 workspace tools only (no web_search). Prefer
 /// [`default_builtins_with_web_search`] when config is available.
 pub fn default_builtins() -> Vec<std::sync::Arc<dyn Tool>> {
+    let (exec_command, write_stdin) = crate::unified_exec_tools();
     let mut tools: Vec<std::sync::Arc<dyn Tool>> = vec![
         std::sync::Arc::new(ReadFileTool),
         std::sync::Arc::new(crate::ViewImageTool),
@@ -1272,8 +1275,8 @@ pub fn default_builtins() -> Vec<std::sync::Arc<dyn Tool>> {
         std::sync::Arc::new(BashTool),
         std::sync::Arc::new(GitTool),
         std::sync::Arc::new(BackgroundRunTool),
-        std::sync::Arc::new(crate::ExecCommandTool),
-        std::sync::Arc::new(crate::WriteStdinTool),
+        std::sync::Arc::new(exec_command),
+        std::sync::Arc::new(write_stdin),
         std::sync::Arc::new(UpdatePlanTool),
         std::sync::Arc::new(crate::skills::LoadSkillTool),
     ];

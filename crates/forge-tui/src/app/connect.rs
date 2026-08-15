@@ -11,7 +11,12 @@ use super::*;
 /// active profile selection, and in-flight xAI OAuth polling. #19 phase 3 —
 /// the first extracted sub-model; grouped verbatim from six `TuiApp` fields,
 /// no behavior change.
-pub(super) struct ConnectionModel {
+struct ModelCostCache {
+    model: String,
+    cost: Option<forge_connect::CatalogCost>,
+}
+
+pub(crate) struct ConnectionModel {
     pub(super) registry: ConnectRegistry,
     pub(super) store: CredentialStore,
     /// Non-secret interactive selections, in their own file.
@@ -32,6 +37,7 @@ pub(super) struct ConnectionModel {
     /// connects or disconnects — which invalidates it explicitly — or when the
     /// file is edited outside Forge, which the TTL catches.
     pub(super) connected: Option<(std::time::Instant, bool)>,
+    model_cost_cache: Option<ModelCostCache>,
 }
 
 impl ConnectionModel {
@@ -45,6 +51,7 @@ impl ConnectionModel {
             oauth_pending: None,
             oauth_last_poll: None,
             connected: None,
+            model_cost_cache: None,
         }
     }
 }
@@ -111,6 +118,17 @@ impl TuiApp {
         let live = self.credentials_live_for(&id);
         self.connect.connected = Some((std::time::Instant::now(), live));
         live
+    }
+
+    /// Read the connection status populated by the event-loop tick. This must
+    /// remain side-effect free because status construction is part of drawing.
+    pub(super) fn provider_connected_cached(&self) -> bool {
+        self.is_mock_provider()
+            || (self.connect.profile.is_some()
+                && self
+                    .connect
+                    .connected
+                    .is_some_and(|(_, connected)| connected))
     }
 
     /// Drop the cached answer after anything that could change it.
@@ -211,23 +229,20 @@ impl TuiApp {
         self.session.clear_provider_env();
         self.connect.oauth_pending = None;
         self.connect.oauth_last_poll = None;
-        self.pending_turn.prompt = None;
-        self.pending_turn.attachments.clear();
-        self.pending_interaction.hitl_decision = None;
-        self.pending_interaction.context_reset = false;
+        self.pending_turn.clear();
+        self.pending_interaction.clear();
         // The future-task queue is durable session state (owned by
         // `AgentSession`, not the TUI) — a provider disconnect must not
         // silently drop queued instructions.
-        self.task_selection.queue = None;
+        self.task_selection.clear_queue();
         self.stream.preview.clear();
         self.stream.thinking.clear();
         self.timing.started = None;
         self.timing.thinking_started = None;
         self.timing.thought_secs = None;
-        self.cancellation.requested = false;
-        self.busy_state.active = false;
-        self.busy_state.phase = BusyPhase::Idle;
-        self.tool_detail.expanded = false;
+        self.cancellation.clear();
+        self.busy_state.stop();
+        self.tool_detail.collapse();
         self.conversation_view.follow = true;
         self.conversation_view.scroll = 0;
         self.connect.profile = None;
@@ -1280,14 +1295,20 @@ impl TuiApp {
 
     #[allow(dead_code)]
     fn active_model_cost(&mut self) -> Option<forge_connect::CatalogCost> {
+        self.connect.active_model_cost(&self.runtime.model_label)
+    }
+}
+
+impl ConnectionModel {
+    fn active_model_cost(&mut self, model: &str) -> Option<forge_connect::CatalogCost> {
         if let Some(cache) = &self.model_cost_cache {
-            if cache.model == self.runtime.model_label {
+            if cache.model == model {
                 return cache.cost;
             }
         }
-        let cost = ModelCatalogCache::user_default().get_registry_cost(&self.runtime.model_label);
-        self.model_cost_cache = Some(ModelCostState {
-            model: self.runtime.model_label.clone(),
+        let cost = ModelCatalogCache::user_default().get_registry_cost(model);
+        self.model_cost_cache = Some(ModelCostCache {
+            model: model.to_string(),
             cost,
         });
         cost

@@ -7,16 +7,17 @@ use super::*;
 
 impl TuiApp {
     pub(super) fn queue_context_reset(&mut self) {
-        if self.busy_state.active
-            || self.pending_turn.prompt.is_some()
-            || self.pending_interaction.hitl_decision.is_some()
-            || self.pending_interaction.context_reset
+        if self.busy_state.is_active()
+            || self.pending_turn.has_prompt()
+            || self.pending_interaction.has_hitl_decision()
+            || self.pending_interaction.context_reset_pending()
         {
             self.set_feedback(FeedbackSeverity::Warn, "busy — wait before /compact");
             return;
         }
-        self.pending_interaction.context_reset = true;
-        self.busy_state.phase = BusyPhase::Other("context reset".into());
+        self.pending_interaction.request_context_reset();
+        self.busy_state
+            .set_phase(BusyPhase::Other("context reset".into()));
         self.status_state.message = "resetting context…".into();
         self.set_feedback(FeedbackSeverity::Info, "resetting context…");
     }
@@ -25,10 +26,9 @@ impl TuiApp {
         &mut self,
         mut terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
     ) -> Result<(), TuiError> {
-        if !self.pending_interaction.context_reset {
+        if !self.pending_interaction.take_context_reset() {
             return Ok(());
         }
-        self.pending_interaction.context_reset = false;
         if let Some(term) = terminal.as_deref_mut() {
             let _ = term.draw(|f| self.draw(f));
         }
@@ -63,7 +63,7 @@ impl TuiApp {
         );
         self.status_state.message = "Continuing in a fresh context".into();
         self.notice_state.items.clear();
-        self.busy_state.phase = BusyPhase::Idle;
+        self.busy_state.set_phase(BusyPhase::Idle);
         if let Some(term) = terminal {
             let _ = term.draw(|f| self.draw(f));
         }
@@ -101,7 +101,7 @@ impl TuiApp {
         };
 
         // 2. Guard: no unsafe write-active tool.
-        if matches!(self.busy_state.phase, BusyPhase::Tool { .. }) {
+        if matches!(self.busy_state.phase(), BusyPhase::Tool { .. }) {
             self.set_feedback(
                 FeedbackSeverity::Warn,
                 "External editor unavailable while Forge is writing files.\n\n\

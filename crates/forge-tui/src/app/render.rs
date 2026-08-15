@@ -29,18 +29,9 @@ impl TuiApp {
         // `self.session.*` reads it replaces cost one capture instead.
         self.session_view = SessionSnapshot::capture(&self.session);
         self.transcript_view.refresh(&self.session);
-        if crate::theme::refresh_system() {
-            self.render_cache.conversation = None;
-        }
-        let _ = self.workspace_files.explorer.git_status.poll();
-        // Advance the off-thread repo-header refresh. Cheap (a `try_recv` plus an
-        // elapsed check); every draw path funnels through here, including the
-        // streaming and `drain_pending_*` loops that bypass `run_loop`'s polls.
-        self.poll_repo_header();
         let area = frame.area();
         if is_too_small(area) {
-            self.focus.block = FocusBlock::Workspace;
-            self.focus.mode = FocusMode::Navigation;
+            self.focus.reset_to_workspace();
             self.workspace_files.explorer.focused = false;
             self.bottom_panel.focused = false;
             self.source_viewer.focused = false;
@@ -61,9 +52,8 @@ impl TuiApp {
         };
         let panel_h = if self.bottom_panel.open { 16 } else { 0 };
         let contextual_hint = self.contextual_hint();
-        // Cached: deciding this reads the credential file once per registered
-        // profile, which is not work for a frame.
-        let connected = self.connected_cached();
+        // The event-loop tick refreshes this cache; drawing only reads it.
+        let connected = self.provider_connected_cached();
         let (vendor_label, _route_label) = self
             .connect
             .profile
@@ -80,7 +70,7 @@ impl TuiApp {
         // (home / empty) expands conversation into that pane and there is
         // no Workspace block to focus.
         let expand_conversation = !matches!(
-            self.workspace_navigation.current,
+            self.workspace_navigation.current(),
             Some(WorkspaceView::File(_))
         );
         let regions = if expand_conversation {
@@ -134,13 +124,11 @@ impl TuiApp {
                 regions.bottom_panel.height.saturating_sub(1),
             );
         }
-        if !available.contains(self.focus.block) {
-            self.focus.block = FocusBlock::Workspace;
-            self.focus.mode = FocusMode::Navigation;
+        if !available.contains(self.focus.block()) {
+            self.focus.reset_to_workspace();
         }
-        if expand_conversation && self.focus.block == FocusBlock::Workspace {
-            self.focus.block = FocusBlock::Sidebar;
-            self.focus.mode = FocusMode::Navigation;
+        if expand_conversation && self.focus.block() == FocusBlock::Workspace {
+            self.focus.set_navigation(FocusBlock::Sidebar);
         }
         self.normalize_focus();
         let status = self.refresh_status_model_with_connected(connected);
@@ -149,13 +137,13 @@ impl TuiApp {
             frame.render_widget(
                 FileExplorerWidget {
                     explorer: &mut self.workspace_files.explorer,
-                    focused: matches!(self.focus.block, FocusBlock::Files | FocusBlock::Search),
-                    search_active: self.focus.block == FocusBlock::Search,
+                    focused: matches!(self.focus.block(), FocusBlock::Files | FocusBlock::Search),
+                    search_active: self.focus.block() == FocusBlock::Search,
                 },
                 files,
             );
         }
-        let stream_wait = if self.busy_state.active && self.pending_turn.prompt.is_none() {
+        let stream_wait = if self.busy_state.is_active() && !self.pending_turn.has_prompt() {
             let elapsed = if !self.stream.thinking.is_empty() {
                 // Thinking timer runs from first thinking token
                 self.timing
@@ -181,9 +169,9 @@ impl TuiApp {
             None
         };
         let opts = ConversationViewOpts {
-            busy: self.busy_state.active,
+            busy: self.busy_state.is_active(),
             // Don't force-expand finished thinking just because busy (answer may be streaming)
-            tool_expanded: self.tool_detail.expanded,
+            tool_expanded: self.tool_detail.is_expanded(),
             compact: false,
             stream_wait,
             stream_thought_secs: self.timing.thought_secs,
@@ -228,12 +216,12 @@ impl TuiApp {
             last_event_detail: visible_events.last().map_or(0, |event| event.detail.len()),
             banners: self.banner_state.items.len(),
             queue: self.session_view.queue_len,
-            queue_selected: self.task_selection.queue,
+            queue_selected: self.task_selection.queue(),
             chat_message_start: self.conversation_view.message_start,
             chat_event_start: self.conversation_view.event_start,
             keep_from_end,
             activity_summary: activity_summary_key,
-            tool_expanded: self.tool_detail.expanded,
+            tool_expanded: self.tool_detail.is_expanded(),
             splash_dismissed: self.conversation_view.splash_dismissed,
             slash_mode,
             status: self.session_view.lifecycle,
@@ -242,8 +230,8 @@ impl TuiApp {
                 .session
                 .pending_hitl()
                 .map(|payload| payload.call_id.clone()),
-            approval_menu_selected: self.hitl_session.menu.selected,
-            approval_focused: self.focus.block == FocusBlock::Approval,
+            approval_menu_selected: self.approval_menu_selected(),
+            approval_focused: self.focus.block() == FocusBlock::Approval,
         };
         if self
             .render_cache
@@ -283,13 +271,13 @@ impl TuiApp {
                     .visible()
                     .map(|item| item.text.clone())
                     .collect::<Vec<_>>(),
-                self.task_selection.queue,
+                self.task_selection.queue(),
             );
             self.sync_approval_menu();
             if let Some(payload) = self.session_view.pending_hitl.clone() {
                 let rows = self.approval_menu_rows();
-                let selected = self.hitl_session.menu.selected;
-                let approval_focused = self.focus.block == FocusBlock::Approval;
+                let selected = self.approval_menu_selected();
+                let approval_focused = self.focus.block() == FocusBlock::Approval;
                 let cwd = self.session_view.workspace_root().display().to_string();
                 let request = crate::overlays::ApprovalOverlayState::request_view(&payload, cwd);
                 conv = conv.with_pending_approval(request, rows, selected, approval_focused);
@@ -305,7 +293,7 @@ impl TuiApp {
         // (and re-highlights its code blocks), so it is rate-limited rather than
         // run once per streaming frame: at token rate it is O(n^2) over a turn.
         const STREAM_PREVIEW_RENDER_INTERVAL: Duration = Duration::from_millis(150);
-        let live_lines = if self.busy_state.active && self.pending_turn.prompt.is_none() {
+        let live_lines = if self.busy_state.is_active() && !self.pending_turn.has_prompt() {
             let key = (
                 width as u16,
                 self.stream.thinking.len(),
@@ -359,7 +347,7 @@ impl TuiApp {
         // center pane shows — it's no longer one of the `WorkspaceView`
         // options.
         if let Some(sidebar) = regions.sidebar {
-            let sidebar_focused = self.focus.block == FocusBlock::Sidebar;
+            let sidebar_focused = self.focus.block() == FocusBlock::Sidebar;
             let sidebar_block = Block::default()
                 .borders(Borders::ALL)
                 .padding(ratatui::widgets::Padding::horizontal(1))
@@ -403,7 +391,7 @@ impl TuiApp {
         // height — no docked card carving out a strip at its bottom.
         if !expand_conversation {
             let chat_area = regions.chat;
-            match self.workspace_navigation.current.clone() {
+            match self.workspace_navigation.current().clone() {
                 None => {
                     self.render_empty_workspace(chat_area, frame.buffer_mut());
                 }
@@ -412,7 +400,7 @@ impl TuiApp {
                     frame.render_widget(
                         SourceViewerWidget {
                             viewer: &mut self.source_viewer,
-                            focused: self.focus.block == FocusBlock::Workspace,
+                            focused: self.focus.block() == FocusBlock::Workspace,
                             editor: self.editor_session.as_mut(),
                             editor_command: self.editor_command.as_deref(),
                             editor_message: self.editor_message.as_deref(),
@@ -465,14 +453,14 @@ impl TuiApp {
             BottomPanel {
                 model: BottomPanelModel {
                     state: &self.bottom_panel,
-                    busy_phase: &self.busy_state.phase,
+                    busy_phase: &self.busy_state.phase(),
                     activity: &self.activity,
                     terminal_content: interactive_terminal_output.unwrap_or(""),
                     terminal_running: interactive_terminal.is_some_and(|terminal| terminal.running),
                     terminal_shell: interactive_terminal.map(|terminal| terminal.shell.as_str()),
                     terminal_cursor: interactive_terminal.map(InteractiveTerminal::cursor_position),
                 },
-                focused: self.focus.block == FocusBlock::BottomPanel,
+                focused: self.focus.block() == FocusBlock::BottomPanel,
             },
             regions.bottom_panel,
         );
@@ -579,7 +567,7 @@ impl TuiApp {
         }
 
         let attachment_label = {
-            let file = self.attachment.pending.as_ref().map(|a| a.label());
+            let file = self.attachment.file().map(|a| a.label());
             let images = self.pending_image_label();
             match (file, images) {
                 (Some(file), Some(images)) => Some(format!("{file} · {images}")),
@@ -633,18 +621,18 @@ impl TuiApp {
             }
         } else {
             self.composer_area = Some(regions.input);
-            let composer_focused = self.focus.mode == FocusMode::Navigation
-                && self.focus.block == FocusBlock::Composer;
+            let composer_focused = self.focus.mode() == FocusMode::Navigation
+                && self.focus.block() == FocusBlock::Composer;
             frame.render_widget(
                 InputBar {
                     model: &self.input,
                     attachment: attachment_label.as_deref(),
-                    dimmed: (self.busy_state.active && self.input.text.is_empty())
+                    dimmed: (self.busy_state.is_active() && self.input.text.is_empty())
                         || self.session_view.is_awaiting_approval(),
                     not_connected: !connected,
                     focused: composer_focused,
                     waiting: self.session_view.is_awaiting_approval(),
-                    permission_mode: self.permission_mode,
+                    permission_mode: self.session.permission_mode(),
                 },
                 regions.input,
             );
@@ -664,12 +652,12 @@ impl TuiApp {
             // The footer's own per-chip hint shares the row; every other
             // hint source (HITL/dialog/transient) is blocking and takes the
             // whole row.
-            hint_replaces_row: !(self.focus.mode == FocusMode::Navigation
-                && self.focus.block == FocusBlock::Footer),
+            hint_replaces_row: !(self.focus.mode() == FocusMode::Navigation
+                && self.focus.block() == FocusBlock::Footer),
             llm_label,
             llm_connected: connected,
             effort_label,
-            mode_label: self.permission_mode.label().to_string(),
+            mode_label: self.session.permission_mode().label().to_string(),
             focus: self.composer_chip_focus.map(|idx| match idx {
                 0 => FooterFocus::Llm,
                 1 => FooterFocus::Effort,
@@ -682,7 +670,7 @@ impl TuiApp {
         };
         frame.render_widget(FooterBar { model: &footer }, regions.footer);
 
-        if let Some(ref dialog) = self.explorer_dialog.current {
+        if let Some(dialog) = self.explorer_dialog.current() {
             self.render_explorer_dialog(dialog, area, frame.buffer_mut());
         } else if let Some(ref ov) = self.overlay {
             match ov {
@@ -728,7 +716,7 @@ impl TuiApp {
         }
     }
 
-    /// Center-pane placeholder for when nothing is open — `workspace_navigation.current`
+    /// Center-pane placeholder for when nothing is open — `workspace_navigation.current()`
     /// is `None`, since conversation no longer fills this pane by default.
     fn render_empty_workspace(
         &self,

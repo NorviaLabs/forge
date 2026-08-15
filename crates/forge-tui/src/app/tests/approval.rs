@@ -2,6 +2,7 @@
 //! per-theme render tests. Decisions are made only through the card's menu
 //! (↑↓ Enter Esc) while it holds focus; typed answers were removed.
 
+use super::super::approvals::ApprovalMenuKind;
 use super::prelude::*;
 
 fn bash_hitl_payload(call_id: &str, command: &str) -> HitlPayload {
@@ -29,14 +30,14 @@ async fn press_down_to(app: &mut TuiApp, label: &str) {
         .iter()
         .position(|row| row.label == label)
         .unwrap_or_else(|| panic!("no approval row {label:?} in {rows:?}"));
-    let current = app.hitl_session.menu.selected;
+    let current = app.approval_menu_selected();
     let steps = (target + rows.len() - current) % rows.len();
     for _ in 0..steps {
         app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
             .await
             .unwrap();
     }
-    assert_eq!(app.hitl_session.menu.selected, target);
+    assert_eq!(app.approval_menu_selected(), target);
 }
 
 #[tokio::test]
@@ -98,7 +99,7 @@ async fn approval_leaves_underlying_workspace_untouched() {
     assert_eq!(app.workspace_navigation, before);
     assert!(app.activity_summary().is_none());
     assert_eq!(
-        app.workspace_navigation.current,
+        app.workspace_navigation.current(),
         Some(WorkspaceView::File(path))
     );
 }
@@ -114,7 +115,7 @@ async fn menu_allow_once_approves_without_remembering() {
         .unwrap();
 
     assert!(app.session.pending_hitl().is_none());
-    assert!(app.hitl_session.allowed.is_empty());
+    assert!(app.remembered_approval_count() == 0);
     assert!(app
         .session
         .messages
@@ -135,8 +136,8 @@ async fn menu_remember_approves_and_matches_exact_identity() {
         .unwrap();
 
     let identity = app.approval_identity_for_payload(&payload).unwrap();
-    assert!(app.hitl_session.allowed.contains(&identity));
-    assert!(!app.hitl_session.allowed.contains(
+    assert!(app.is_approval_remembered(&identity));
+    assert!(!app.is_approval_remembered(
         &app.approval_identity_for_payload(&direct_hitl_payload("arg", "other.txt"))
             .unwrap()
     ));
@@ -145,26 +146,19 @@ async fn menu_remember_approves_and_matches_exact_identity() {
         args_redacted: json!({"path": "remember.txt", "env": {"RUST_LOG": "debug"}}),
         ..direct_hitl_payload("env", "remember.txt")
     };
-    assert!(!app
-        .hitl_session
-        .allowed
-        .contains(&app.approval_identity_for_payload(&env_payload).unwrap()));
+    assert!(!app.is_approval_remembered(&app.approval_identity_for_payload(&env_payload).unwrap()));
 
     let cwd_payload = HitlPayload {
         args_redacted: json!({"path": "remember.txt", "cwd": "nested"}),
         ..direct_hitl_payload("cwd", "remember.txt")
     };
-    assert!(!app
-        .hitl_session
-        .allowed
-        .contains(&app.approval_identity_for_payload(&cwd_payload).unwrap()));
+    assert!(!app.is_approval_remembered(&app.approval_identity_for_payload(&cwd_payload).unwrap()));
 
     let (other_dir, other_app) = focus_test_app().await;
     fs::write(other_dir.path().join("remember.txt"), "ok").unwrap();
-    assert!(!app
-        .hitl_session
-        .allowed
-        .contains(&other_app.approval_identity_for_payload(&payload).unwrap()));
+    assert!(
+        !app.is_approval_remembered(&other_app.approval_identity_for_payload(&payload).unwrap())
+    );
 }
 
 #[tokio::test]
@@ -193,7 +187,7 @@ async fn remembered_approval_expires_with_session() {
         },
     );
 
-    assert!(next_app.hitl_session.allowed.is_empty());
+    assert!(next_app.remembered_approval_count() == 0);
     assert_ne!(
         app.approval_identity_for_payload(&payload),
         next_app.approval_identity_for_payload(&payload)
@@ -285,8 +279,8 @@ async fn menu_allow_pattern_persists_and_auto_allows_matching_calls() {
         .unwrap();
 
     assert!(app.session.pending_hitl().is_none());
-    assert_eq!(app.hitl_session.pattern_allow.len(), 1);
-    assert_eq!(app.hitl_session.pattern_allow[0].raw, "bash(cargo test *)");
+    assert_eq!(app.session_pattern_count(), 1);
+    assert_eq!(app.session_pattern_raw(0).unwrap(), "bash(cargo test *)");
     let persisted = forge_config::user_permissions_path()
         .and_then(|p| std::fs::read_to_string(p).ok())
         .expect("pattern should be persisted to the redirected personal permissions file");
@@ -312,13 +306,13 @@ async fn menu_enter_on_allow_once_approves() {
     let (_dir, mut app) = focus_test_app().await;
     set_pending_approval(&mut app, bash_hitl_payload("m1", "ls"));
     app.sync_approval_menu();
-    assert_eq!(app.hitl_session.menu.selected, 0);
+    assert_eq!(app.approval_menu_selected(), 0);
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
     assert!(app.session.pending_hitl().is_none());
     // Allow once must not surface a second (pattern) confirmation.
-    assert!(app.hitl_session.pattern_allow.is_empty());
+    assert!(app.session_pattern_count() == 0);
 }
 
 #[tokio::test]
@@ -334,12 +328,12 @@ async fn menu_down_to_allow_pattern_and_enter() {
     app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.hitl_session.menu.selected, 1);
+    assert_eq!(app.approval_menu_selected(), 1);
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
     assert!(app.session.pending_hitl().is_none());
-    assert_eq!(app.hitl_session.pattern_allow.len(), 1);
+    assert_eq!(app.session_pattern_count(), 1);
 }
 
 #[tokio::test]
@@ -371,49 +365,49 @@ async fn new_approval_resets_menu_selection_but_same_call_id_keeps_it() {
     app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.hitl_session.menu.selected, 1);
+    assert_eq!(app.approval_menu_selected(), 1);
 
     // A render-tick sync for the same call_id must not reset the choice.
     app.sync_approval_menu();
-    assert_eq!(app.hitl_session.menu.selected, 1);
+    assert_eq!(app.approval_menu_selected(), 1);
 
     // A genuinely new approval resets to the top row.
     set_pending_hitl(&mut app, bash_hitl_payload("two", "cargo fmt"));
     app.sync_approval_menu();
     app.sync_approval_focus();
-    assert_eq!(app.hitl_session.menu.selected, 0);
+    assert_eq!(app.approval_menu_selected(), 0);
 }
 
 #[tokio::test]
 async fn tab_away_from_approval_keeps_it_pending() {
     let (_dir, mut app) = focus_test_app().await;
     set_pending_approval(&mut app, bash_hitl_payload("t1", "ls"));
-    assert_eq!(app.focus.block, FocusBlock::Approval);
+    assert_eq!(app.focus.block(), FocusBlock::Approval);
     app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.hitl_session.menu.selected, 1);
+    assert_eq!(app.approval_menu_selected(), 1);
 
     // Tab off the card: approval stays pending and menu keys stop routing.
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_ne!(app.focus.block, FocusBlock::Approval);
+    assert_ne!(app.focus.block(), FocusBlock::Approval);
     assert!(app.session.pending_hitl().is_some());
     app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.hitl_session.menu.selected, 1);
+    assert_eq!(app.approval_menu_selected(), 1);
 
     // Esc from the composer returns to the card; menu keys work again.
     app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.focus.block, FocusBlock::Approval);
+    assert_eq!(app.focus.block(), FocusBlock::Approval);
     app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.hitl_session.menu.selected, 2);
+    assert_eq!(app.approval_menu_selected(), 2);
 }
 
 #[tokio::test]

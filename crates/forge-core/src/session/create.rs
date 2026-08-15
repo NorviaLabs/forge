@@ -266,4 +266,9 @@ impl AgentSession {
     pub fn apply_permission_mode(&mut self, mode: forge_governance::PermissionMode) {
         self.governance.apply_mode(mode);
     }
+
+    /// The active named permission mode, owned by the governance policy.
+    pub fn permission_mode(&self) -> forge_governance::PermissionMode {
+        self.governance.permission_mode()
+    }
 }

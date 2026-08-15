@@ -22,7 +22,7 @@ async fn explorer_search_accepts_shortcut_initials_without_opening_dialogs() {
     }
 
     assert_eq!(app.workspace_files.explorer.search_query, "docsNRX");
-    assert!(app.explorer_dialog.current.is_none());
+    assert!(!app.explorer_dialog.is_open());
     assert!(app.input.text.is_empty());
 }
 
@@ -38,7 +38,7 @@ async fn explorer_files_focus_treats_shortcut_keys_as_tree_commands() {
         .unwrap();
 
     assert!(matches!(
-        app.explorer_dialog.current,
+        app.explorer_dialog.current(),
         Some(ExplorerDialog::Name {
             action: ExplorerNameAction::CreateDirectory,
             ..
@@ -56,13 +56,13 @@ async fn explorer_tab_from_search_moves_to_files_focus() {
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.focus.block, FocusBlock::Files);
+    assert_eq!(app.focus.block(), FocusBlock::Files);
     assert!(!app.workspace_files.explorer.search_focused);
 
     app.handle_key(press(KeyCode::BackTab, KeyModifiers::SHIFT))
         .await
         .unwrap();
-    assert_eq!(app.focus.block, FocusBlock::Search);
+    assert_eq!(app.focus.block(), FocusBlock::Search);
     assert!(app.workspace_files.explorer.search_focused);
 }
 
@@ -83,7 +83,7 @@ async fn explorer_new_file_dialog_owns_printable_input_and_selects_created_file(
     }
     assert!(app.input.text.is_empty());
     assert!(matches!(
-        app.explorer_dialog.current,
+        app.explorer_dialog.current(),
         Some(ExplorerDialog::Name { .. })
     ));
 
@@ -91,7 +91,7 @@ async fn explorer_new_file_dialog_owns_printable_input_and_selects_created_file(
         .await
         .unwrap();
     assert!(matches!(
-        app.explorer_dialog.current,
+        app.explorer_dialog.current(),
         Some(ExplorerDialog::ConfirmCreate { .. })
     ));
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
@@ -104,7 +104,7 @@ async fn explorer_new_file_dialog_owns_printable_input_and_selects_created_file(
         app.workspace_files.explorer.selected_path.as_deref(),
         Some(created.as_path())
     );
-    assert_eq!(app.focus.block, FocusBlock::Workspace);
+    assert_eq!(app.focus.block(), FocusBlock::Workspace);
     assert_eq!(app.editor_session.as_ref().unwrap().text(), "");
     assert_eq!(
         app.editor_session.as_ref().unwrap().mode(),
@@ -128,8 +128,8 @@ async fn explorer_name_escape_cancels_without_focus_change_or_composer_input() {
         .await
         .unwrap();
 
-    assert!(app.explorer_dialog.current.is_none());
-    assert_eq!(app.focus.block, FocusBlock::Files);
+    assert!(!app.explorer_dialog.is_open());
+    assert_eq!(app.focus.block(), FocusBlock::Files);
     assert!(app.input.text.is_empty());
 }
 
@@ -151,7 +151,7 @@ async fn explorer_rename_prepopulates_and_updates_open_child_file() {
     app.handle_key(press(KeyCode::Char('R'), KeyModifiers::SHIFT))
         .await
         .unwrap();
-    match app.explorer_dialog.current.as_mut() {
+    match app.explorer_dialog.current_mut() {
         Some(ExplorerDialog::Name { input, .. }) => {
             assert_eq!(input, "src");
             *input = "Source".into();
@@ -176,7 +176,7 @@ async fn explorer_rename_prepopulates_and_updates_open_child_file() {
         app.workspace_files.explorer.selected_path.as_deref(),
         Some(renamed_dir.as_path())
     );
-    assert_eq!(app.focus.block, FocusBlock::Workspace);
+    assert_eq!(app.focus.block(), FocusBlock::Workspace);
     assert!(app.input.text.is_empty());
 }
 
@@ -193,7 +193,7 @@ async fn explorer_rename_collision_keeps_name_dialog_with_error() {
     app.focus_block(FocusBlock::Files);
 
     app.open_explorer_name_dialog(ExplorerNameAction::Rename);
-    match app.explorer_dialog.current.as_mut() {
+    match app.explorer_dialog.current_mut() {
         Some(ExplorerDialog::Name { input, .. }) => *input = "existing.rs".into(),
         other => panic!("unexpected dialog: {other:?}"),
     }
@@ -201,7 +201,7 @@ async fn explorer_rename_collision_keeps_name_dialog_with_error() {
         .await
         .unwrap();
 
-    match app.explorer_dialog.current {
+    match app.explorer_dialog.current() {
         Some(ExplorerDialog::Name {
             error: Some(error), ..
         }) => {
@@ -228,7 +228,7 @@ async fn explorer_delete_non_empty_folder_requires_stronger_confirmation() {
         .await
         .unwrap();
     assert!(matches!(
-        app.explorer_dialog.current,
+        app.explorer_dialog.current(),
         Some(ExplorerDialog::ConfirmDelete {
             non_empty: true,
             permanent: false,
@@ -240,7 +240,7 @@ async fn explorer_delete_non_empty_folder_requires_stronger_confirmation() {
         .await
         .unwrap();
     assert!(folder.exists());
-    assert!(app.explorer_dialog.current.is_some());
+    assert!(app.explorer_dialog.is_open());
 }
 
 #[tokio::test]
