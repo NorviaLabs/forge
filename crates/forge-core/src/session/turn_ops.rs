@@ -57,7 +57,10 @@ impl AgentSession {
     /// Build the next model request from current transcript + tools.
     pub fn build_model_request(&self) -> ModelRequest {
         let tools = self.tools_for_model();
-        let mut messages = self.messages.clone();
+        // Requests share the transcript in the usual case. Image availability is
+        // checked at request time, so only requests with missing attachments pay
+        // the copy-on-write cost needed to add the model-visible fallback note.
+        let mut messages = self.messages.shared();
         if messages
             .iter()
             .any(|message| !message.attachments.is_empty())
@@ -483,7 +486,7 @@ impl AgentSession {
                     json!({ "progress": doc, "messages": msgs }),
                 )
                 .await?;
-            self.messages = msgs;
+            self.messages = msgs.into();
             self.events.push(TurnEvent {
                 kind: "context_reset".into(),
                 detail: "threshold".into(),
@@ -533,7 +536,7 @@ impl AgentSession {
                 json!({ "progress": doc, "workspace_ref": ws_ref, "messages": msgs }),
             )
             .await?;
-        self.messages = msgs;
+        self.messages = msgs.into();
         self.events.push(TurnEvent {
             kind: "context_reset".into(),
             detail: "handoff written".into(),

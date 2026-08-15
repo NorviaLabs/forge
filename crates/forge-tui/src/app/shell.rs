@@ -191,6 +191,13 @@ async fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut TuiApp,
 ) -> Result<(), TuiError> {
+    // Rendering a large transcript is materially more expensive than polling
+    // the event queue. Keep animation/streaming responsive, but avoid
+    // rebuilding the entire frame five times a second while the UI is idle.
+    const IDLE_REDRAW_INTERVAL: Duration = Duration::from_secs(1);
+    let mut frame_dirty = true;
+    let mut last_idle_draw = std::time::Instant::now();
+
     while !app.exit.is_requested() {
         app.poll_file_changes();
         app.poll_interactive_terminal();
@@ -206,7 +213,12 @@ async fn run_loop(
         app.sync_approval_focus();
         // Grok-style device-code: poll token endpoint while overlay is open
         app.poll_oauth_tick();
-        terminal.draw(|f| app.draw(f))?;
+        let is_animating = app.busy_state.is_active() || app.interactive_terminal.is_some();
+        if frame_dirty || is_animating || last_idle_draw.elapsed() >= IDLE_REDRAW_INTERVAL {
+            terminal.draw(|f| app.draw(f))?;
+            frame_dirty = false;
+            last_idle_draw = std::time::Instant::now();
+        }
 
         // Drain queued user prompt with streaming redraws (YOU paints before first token)
         if app.pending_turn.has_prompt() {
@@ -236,6 +248,9 @@ async fn run_loop(
             event::poll(Duration::from_millis(200))?
         };
         if input_ready {
+            // Any terminal input changes state directly or through the drained
+            // queue; force the next frame rather than waiting for idle cadence.
+            frame_dirty = true;
             // Read the ready event, then drain the rest of the queue so a paste
             // of a long API key is not truncated to a handful of characters.
             match event::read()? {

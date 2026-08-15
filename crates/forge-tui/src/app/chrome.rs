@@ -212,14 +212,30 @@ impl TuiApp {
         if crate::theme::refresh_system() {
             self.render_cache.conversation = None;
         }
-        let _ = self.workspace_files.explorer.git_status.poll();
+        let _ = self.workspace_files.explorer.poll_git();
         self.poll_repo_header();
         self.connected_cached();
         self.refresh_progress_state();
     }
 
     fn refresh_progress_state(&mut self) {
+        // The event loop ticks every 200 ms to keep input responsive. Avoid a
+        // metadata syscall on every tick when nothing is changing; this is a
+        // fallback for progress writers outside Forge, not an animation clock.
+        const PROGRESS_POLL_INTERVAL: Duration = Duration::from_secs(1);
+
         let path = self.runtime.cwd.join(".forge/progress.json");
+        let now = Instant::now();
+        if self.progress_state.path.as_ref() == Some(&path)
+            && self
+                .progress_state
+                .last_checked
+                .is_some_and(|last| now.duration_since(last) < PROGRESS_POLL_INTERVAL)
+        {
+            return;
+        }
+        self.progress_state.last_checked = Some(now);
+
         let modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
         if self.progress_state.path.as_ref() == Some(&path)
             && modified == self.progress_state.modified

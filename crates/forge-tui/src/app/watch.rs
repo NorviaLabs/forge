@@ -22,13 +22,26 @@ impl TuiApp {
                         event.kind,
                         EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)
                     ) {
+                        // Ordinary data/metadata writes can affect source and Git
+                        // status, but cannot alter the explorer's path structure.
+                        let tree_changed = !matches!(
+                            event.kind,
+                            EventKind::Modify(
+                                notify::event::ModifyKind::Data(_)
+                                    | notify::event::ModifyKind::Metadata(_)
+                            )
+                        );
                         for path in event.paths {
                             // Runtime state and Git internals churn during refreshes
                             // and must not retrigger the Files tree refresh.
                             if path_is_ignored_by_file_watcher(&path) {
                                 continue;
                             }
-                            let _ = tx.send(FileChangeEvent { path });
+                            let _ = tx.send(FileChangeEvent {
+                                path,
+                                tree_changed,
+                                immediate: false,
+                            });
                         }
                     }
                 }
@@ -43,19 +56,16 @@ impl TuiApp {
     }
 
     pub(super) fn poll_file_changes(&mut self) {
-        let mut active_file_changed = false;
-        let mut workspace_changed = false;
-        while let Ok(change_path) = self.file_watch.try_recv() {
-            workspace_changed = true;
-            if let Some(path) = &self.source_viewer.path {
-                if same_file_identity(&change_path, path) {
-                    active_file_changed = true;
-                }
-            }
-        }
-        if workspace_changed {
-            self.refresh_after_filesystem_change(active_file_changed);
-        }
+        let Some(batch) = self.file_watch.take_ready_batch() else {
+            return;
+        };
+        let active_file_changed = self.source_viewer.path.as_ref().is_some_and(|open_path| {
+            batch
+                .paths
+                .iter()
+                .any(|change_path| same_file_identity(change_path, open_path))
+        });
+        self.refresh_after_filesystem_change(active_file_changed, batch.tree_changed);
     }
 
     pub(super) fn note_workspace_changed(&mut self) {
@@ -86,7 +96,11 @@ impl TuiApp {
         }
     }
 
-    pub(super) fn refresh_after_filesystem_change(&mut self, active_file_changed: bool) {
+    pub(super) fn refresh_after_filesystem_change(
+        &mut self,
+        active_file_changed: bool,
+        tree_changed: bool,
+    ) {
         let renamed_open_file = self.reconcile_open_file_external_rename();
         let renamed_notice = renamed_open_file.then(|| "File renamed externally".to_string());
         if active_file_changed {
@@ -107,12 +121,14 @@ impl TuiApp {
         } else if renamed_open_file {
             self.notice_state.items.clear();
         }
-        if matches!(self.focus.block(), FocusBlock::Files | FocusBlock::Search)
-            && self.focus.mode() == FocusMode::Navigation
-        {
-            self.workspace_files.explorer.refresh_git_status();
-        } else {
+        let files_are_active = matches!(self.focus.block(), FocusBlock::Files | FocusBlock::Search)
+            && self.focus.mode() == FocusMode::Navigation;
+        if tree_changed && !files_are_active {
             self.note_workspace_changed();
+        } else {
+            // Content writes and changes while the user is navigating files do
+            // not justify recursively refreshing every loaded directory.
+            self.workspace_files.explorer.refresh_git_status();
         }
         if let Some(notice) = renamed_notice {
             self.source_viewer.notice = Some(notice);

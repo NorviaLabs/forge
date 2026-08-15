@@ -74,15 +74,69 @@ pub fn observe_stream_event(
     }
 }
 
-fn drain_stream_rx(
-    rx: &mut tokio::sync::mpsc::UnboundedReceiver<ModelStreamEvent>,
+/// Maximum number of provider events allowed between the blocking relay and
+/// the async agent loop. The provider-facing `std::sync::mpsc` API cannot be
+/// made bounded here, but this prevents an unbounded Tokio queue in the core.
+const STREAM_EVENT_BUFFER_CAPACITY: usize = 64;
+
+/// Combine adjacent text/thinking deltas for presentation. This does not alter
+/// the session accumulator or durable turn events: those still observe every
+/// provider event in order. All non-delta events remain distinct, including
+/// usage, tool calls, and message boundaries.
+fn coalesce_forward_events(events: Vec<ModelStreamEvent>) -> Vec<ModelStreamEvent> {
+    let mut coalesced = Vec::with_capacity(events.len());
+    for event in events {
+        match (coalesced.last_mut(), event) {
+            (
+                Some(ModelStreamEvent::TextDelta { text: previous }),
+                ModelStreamEvent::TextDelta { text },
+            ) => previous.push_str(&text),
+            (
+                Some(ModelStreamEvent::ThinkingDelta { text: previous }),
+                ModelStreamEvent::ThinkingDelta { text },
+            ) => previous.push_str(&text),
+            (_, event) => coalesced.push(event),
+        }
+    }
+    coalesced
+}
+
+/// Observe every event in `events`, then forward a coalesced presentation view.
+fn observe_stream_events(
+    session: &mut AgentSession,
+    events: Vec<ModelStreamEvent>,
+    forward: Option<&StreamEventTx>,
+    acc: &mut ModelStepAccumulator,
+) {
+    for event in &events {
+        accumulate_stream_event(acc, event);
+        if let Some(turn) = stream_turn_event(event) {
+            session.events.push(turn);
+        }
+    }
+    if let Some(tx) = forward {
+        for event in coalesce_forward_events(events) {
+            let _ = tx.send(event);
+        }
+    }
+}
+
+/// Drain at most one bounded queue's worth of immediately ready events.
+fn drain_ready_stream_events(
+    rx: &mut tokio::sync::mpsc::Receiver<ModelStreamEvent>,
+    first: ModelStreamEvent,
     session: &mut AgentSession,
     forward: Option<&StreamEventTx>,
     acc: &mut ModelStepAccumulator,
 ) {
-    while let Ok(event) = rx.try_recv() {
-        observe_stream_event(session, &event, forward, acc);
+    let mut events = vec![first];
+    while events.len() < STREAM_EVENT_BUFFER_CAPACITY {
+        let Ok(event) = rx.try_recv() else {
+            break;
+        };
+        events.push(event);
     }
+    observe_stream_events(session, events, forward, acc);
 }
 
 impl AgentSession {
@@ -94,10 +148,14 @@ impl AgentSession {
     ) -> Result<ModelResponse, LoopError> {
         let req = self.prepare_model_step(turn).await?;
         let (tx, std_rx) = std::sync::mpsc::channel();
-        let (async_tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (async_tx, mut rx) = tokio::sync::mpsc::channel(STREAM_EVENT_BUFFER_CAPACITY);
         let relay = tokio::task::spawn_blocking(move || {
             while let Ok(event) = std_rx.recv() {
-                if async_tx.send(event).is_err() {
+                // `blocking_send` applies backpressure to the relay without
+                // blocking Tokio's worker threads. It returns when cancellation
+                // drops the receiver, so the relay cannot keep a cancelled step
+                // alive.
+                if async_tx.blocking_send(event).is_err() {
                     break;
                 }
             }
@@ -115,7 +173,13 @@ impl AgentSession {
             tokio::select! {
                 event = rx.recv() => {
                     if let Some(event) = event {
-                        observe_stream_event(self, &event, forward.as_ref(), &mut acc);
+                        drain_ready_stream_events(
+                            &mut rx,
+                            event,
+                            self,
+                            forward.as_ref(),
+                            &mut acc,
+                        );
                     }
                 }
                 result = &mut handle => {
@@ -135,19 +199,18 @@ impl AgentSession {
                 }
             }
         };
-        // Join the relay *before* draining. `drain_stream_rx` is `try_recv`, so
-        // draining first only sees what the relay has already forwarded — and
-        // when the model returns fast (any mock, a cached or very short
-        // response) `select!` breaks on the model handle while the relay still
-        // holds events in the std channel. Those events then arrive in `rx`
-        // with nobody left to read them, silently losing streamed deltas plus
-        // the accumulated thinking and usage merged in below. The model task
-        // has finished by this point, so its sender is dropped and the relay is
-        // already terminating; awaiting it cannot deadlock.
+        // The relay may be blocked in `blocking_send` because the bounded
+        // channel is full. Drain until it closes *before* joining it: joining
+        // first would deadlock precisely when a fast model finishes after a
+        // large stream burst. Once the model task has returned its sender is
+        // dropped, so the relay eventually closes `rx` after preserving every
+        // pending provider event.
+        while let Some(event) = rx.recv().await {
+            drain_ready_stream_events(&mut rx, event, self, forward.as_ref(), &mut acc);
+        }
         relay
             .await
             .map_err(|error| LoopError::Other(format!("stream relay join: {error}")))?;
-        drain_stream_rx(&mut rx, self, forward.as_ref(), &mut acc);
         Ok(merge_streamed_response(response, &acc))
     }
 }
@@ -190,5 +253,39 @@ mod tests {
         .unwrap();
         assert_eq!(event.kind, "tool_stream");
         assert!(event.detail.contains("bash"));
+    }
+
+    #[test]
+    fn coalescing_combines_only_adjacent_display_deltas() {
+        let events = coalesce_forward_events(vec![
+            ModelStreamEvent::TextDelta {
+                text: "one ".into(),
+            },
+            ModelStreamEvent::TextDelta { text: "two".into() },
+            ModelStreamEvent::Usage {
+                usage: Usage::default(),
+            },
+            ModelStreamEvent::TextDelta {
+                text: "three".into(),
+            },
+            ModelStreamEvent::ThinkingDelta { text: "a".into() },
+            ModelStreamEvent::ThinkingDelta { text: "b".into() },
+            ModelStreamEvent::MessageEnd,
+        ]);
+
+        assert!(matches!(
+            &events[0],
+            ModelStreamEvent::TextDelta { text } if text == "one two"
+        ));
+        assert!(matches!(events[1], ModelStreamEvent::Usage { .. }));
+        assert!(matches!(
+            &events[2],
+            ModelStreamEvent::TextDelta { text } if text == "three"
+        ));
+        assert!(matches!(
+            &events[3],
+            ModelStreamEvent::ThinkingDelta { text } if text == "ab"
+        ));
+        assert!(matches!(events[4], ModelStreamEvent::MessageEnd));
     }
 }
