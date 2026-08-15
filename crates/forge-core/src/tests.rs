@@ -1588,16 +1588,17 @@ async fn hitl_approve_does_not_take_the_denial_path() {
 }
 
 #[tokio::test]
-async fn session_exact_allow_skips_hitl_for_the_same_argv() {
+async fn session_pattern_allow_skips_hitl_for_the_command_family() {
     let dir = tempdir().unwrap();
-    let command = json!({"command": "echo ok"});
+    let first = json!({"command": "git push -u origin main"});
+    let sibling = json!({"command": "git push origin feature"});
     let model = Arc::new(MockModelClient::script(vec![
         ModelResponse {
             text: "".into(),
             tool_calls: vec![ToolCall {
                 id: "1".into(),
                 name: "bash".into(),
-                arguments: command.clone(),
+                arguments: first.clone(),
             }],
             usage: None,
             thinking: None,
@@ -1613,7 +1614,7 @@ async fn session_exact_allow_skips_hitl_for_the_same_argv() {
             tool_calls: vec![ToolCall {
                 id: "2".into(),
                 name: "bash".into(),
-                arguments: command.clone(),
+                arguments: sibling,
             }],
             usage: None,
             thinking: None,
@@ -1630,19 +1631,19 @@ async fn session_exact_allow_skips_hitl_for_the_same_argv() {
         .unwrap();
     s.run_user_message("run it").await.unwrap();
     assert!(s.pending_hitl().is_some());
-    s.allow_exact_for_session(forge_governance::SessionExactAllow::from_call(
-        &ToolCall {
+    assert_eq!(
+        s.allow_suggested_pattern_for_session(&ToolCall {
             id: "remember".into(),
             name: "bash".into(),
-            arguments: command.clone(),
-        },
-        dir.path(),
-    ));
+            arguments: first,
+        }),
+        "bash(git push *)"
+    );
     s.resolve_hitl(HitlDecision::Approve, "test").await.unwrap();
     let _ = s.run_agent_turns(None).await.unwrap();
     assert!(
         s.pending_hitl().is_none(),
-        "the same argv must not prompt again after Allow pattern"
+        "a matching command family must not prompt again after Allow pattern"
     );
 }
 

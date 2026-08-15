@@ -75,23 +75,18 @@ impl TuiApp {
     }
 
     pub(super) fn remembered_approval_count(&self) -> usize {
-        self.session.session_exact_allow_count()
+        self.session.session_pattern_allow_count()
     }
 
     pub(super) fn clear_session_approvals(&mut self) {
-        self.session.clear_session_exact_allows();
+        self.session.clear_session_pattern_allows();
         self.approval_session.menu = ApprovalMenuState::default();
     }
 
     #[cfg(test)]
-    pub(super) fn is_approval_remembered(&self, identity: &ApprovalIdentity) -> bool {
+    pub(super) fn is_approval_pattern_remembered(&self, payload: &HitlPayload) -> bool {
         self.session
-            .session_exact_allows(&forge_governance::SessionExactAllow {
-                tool: identity.executable.clone(),
-                arguments: identity.raw_args.clone(),
-                working_directory: identity.working_directory.clone(),
-                environment_delta: identity.environment_delta.clone(),
-            })
+            .session_pattern_allows(&tool_call_for_payload(payload))
     }
 
     fn approval_state_for_payload(&self, payload: &HitlPayload) -> ApprovalOverlayState {
@@ -154,7 +149,7 @@ impl TuiApp {
         let Some(payload) = self.session.pending_hitl() else {
             return Vec::new();
         };
-        let remembered = forge_governance::exact_pattern(&tool_call_for_payload(payload));
+        let remembered = forge_governance::suggest_pattern(&tool_call_for_payload(payload));
         self.approval_menu_kinds()
             .into_iter()
             .map(|kind| match kind {
@@ -229,18 +224,15 @@ impl TuiApp {
         }
     }
 
-    fn session_exact_for_payload(
+    fn session_pattern_call_for_payload(
         &self,
         payload: &HitlPayload,
-    ) -> Option<forge_governance::SessionExactAllow> {
+    ) -> Option<forge_types::ToolCall> {
         let approval = self.approval_state_for_payload(payload);
         if !approval.pattern_allow_eligible {
             return None;
         }
-        Some(forge_governance::SessionExactAllow::from_call(
-            &tool_call_for_payload(payload),
-            self.session.workspace_root(),
-        ))
+        Some(tool_call_for_payload(payload))
     }
 
     pub(super) fn approval_identity_for_payload(
@@ -318,20 +310,22 @@ impl TuiApp {
         };
 
         if remember_exact_direct {
-            let Some(grant) = self.session_exact_for_payload(&payload) else {
+            let Some(call) = self.session_pattern_call_for_payload(&payload) else {
                 self.set_feedback(
                     FeedbackSeverity::Warn,
                     "this call has no session pattern to remember; use Allow once or Deny",
                 );
                 return Ok(());
             };
-            self.session.allow_exact_for_session(grant);
+            let pattern = self.session.allow_suggested_pattern_for_session(&call);
+            self.session.resolve_hitl(decision.clone(), "tui").await?;
+            self.push_toast(format!("allowed {pattern} for the session"));
+            self.resume_turn_after_hitl();
+            self.enter_chat_composer();
+            return Ok(());
         }
         self.session.resolve_hitl(decision.clone(), "tui").await?;
         match decision {
-            HitlDecision::Approve if remember_exact_direct => {
-                self.push_toast("allowed this command for the session");
-            }
             HitlDecision::Approve => self.push_toast("approved once"),
             HitlDecision::Deny => self.push_toast("denied"),
             // `HitlDecision` is `#[non_exhaustive]`; an unrecognised decision is denied.
@@ -361,7 +355,7 @@ impl TuiApp {
         self.stream.thinking.clear();
     }
 
-    /// Auto-approve HITL for exact invocations remembered this session.
+    /// Auto-approve HITL for pattern grants remembered this session.
     /// The session authorizer already skips a matching call; this covers
     /// a prompt that was already on screen when the grant was recorded.
     pub async fn drain_auto_hitl(&mut self) -> Result<(), TuiError> {
@@ -370,8 +364,8 @@ impl TuiApp {
         };
         let identity = self.approval_identity_for_payload(&payload);
         let identity_allowed = self
-            .session_exact_for_payload(&payload)
-            .is_some_and(|grant| self.session.session_exact_allows(&grant));
+            .session_pattern_call_for_payload(&payload)
+            .is_some_and(|call| self.session.session_pattern_allows(&call));
         if !identity_allowed {
             return Ok(());
         }
