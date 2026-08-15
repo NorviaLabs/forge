@@ -69,6 +69,38 @@ fn tool_call_for_payload(payload: &HitlPayload) -> forge_types::ToolCall {
     }
 }
 
+fn remember_help(call: &forge_types::ToolCall, pattern: &str) -> String {
+    let subject = readable_remember_subject(call);
+    format!("Would match: {subject}. Not written to permissions.toml. ({pattern})")
+}
+
+fn readable_remember_subject(call: &forge_types::ToolCall) -> String {
+    if forge_governance::is_shell_tool(&call.name) {
+        let command = call
+            .arguments
+            .get("command")
+            .or_else(|| call.arguments.get("cmd"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .split_whitespace()
+            .take(2)
+            .collect::<Vec<_>>()
+            .join(" ");
+        if command.is_empty() {
+            "similar shell commands".into()
+        } else {
+            format!("{command} …")
+        }
+    } else if let Some(path) = call.arguments.get("path").and_then(|value| value.as_str()) {
+        match path.rsplit_once('/') {
+            Some((dir, _)) if !dir.is_empty() => format!("files under {dir}/"),
+            _ => format!("{} on matching paths", call.name),
+        }
+    } else {
+        format!("similar {} calls", call.name)
+    }
+}
+
 impl TuiApp {
     pub(super) fn approval_menu_selected(&self) -> usize {
         self.approval_session.menu.selected
@@ -149,21 +181,25 @@ impl TuiApp {
         let Some(payload) = self.session.pending_hitl() else {
             return Vec::new();
         };
-        let remembered = forge_governance::suggest_pattern(&tool_call_for_payload(payload));
+        let call = tool_call_for_payload(payload);
+        let remembered = forge_governance::suggest_pattern(&call);
         self.approval_menu_kinds()
             .into_iter()
             .map(|kind| match kind {
                 ApprovalMenuKind::AllowOnce => crate::conversation::ApprovalMenuRow {
-                    label: "Allow once".into(),
+                    label: "Run once".into(),
                     detail: None,
+                    help: Some("Runs now. You will be asked again.".into()),
                 },
                 ApprovalMenuKind::AllowPattern => crate::conversation::ApprovalMenuRow {
-                    label: "Allow pattern".into(),
+                    label: "Remember similar commands this session".into(),
                     detail: Some(remembered.clone()),
+                    help: Some(remember_help(&call, &remembered)),
                 },
                 ApprovalMenuKind::Deny => crate::conversation::ApprovalMenuRow {
-                    label: "Deny".into(),
+                    label: "Don't run".into(),
                     detail: None,
+                    help: Some("The agent is told the command was denied.".into()),
                 },
             })
             .collect()
@@ -313,7 +349,7 @@ impl TuiApp {
             let Some(call) = self.session_pattern_call_for_payload(&payload) else {
                 self.set_feedback(
                     FeedbackSeverity::Warn,
-                    "this call has no session pattern to remember; use Allow once or Deny",
+                    "this call has no session pattern to remember; use Run once or Don't run",
                 );
                 return Ok(());
             };
