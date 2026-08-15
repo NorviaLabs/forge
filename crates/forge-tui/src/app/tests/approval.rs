@@ -69,6 +69,10 @@ async fn inline_approval_renders_full_payload_in_sidebar() {
     assert!(rendered.contains("inherited"), "{rendered}");
     assert!(rendered.contains("› Allow once"), "{rendered}");
     assert!(rendered.contains("Allow pattern"), "{rendered}");
+    assert!(
+        rendered.contains("bash(git push -u origin main)"),
+        "{rendered}"
+    );
     assert!(!rendered.contains("bash(git push *)"), "{rendered}");
     assert!(
         rendered.contains("↑↓ select · Enter confirm · Esc cancel"),
@@ -201,18 +205,38 @@ async fn shell_approval_can_be_remembered_exactly() {
     let (_dir, mut app) = focus_test_app().await;
     set_pending_approval(&mut app, bash_hitl_payload("shell", "git push origin main"));
 
-    let labels: Vec<String> = app
-        .approval_menu_rows()
-        .iter()
-        .map(|row| row.label.clone())
-        .collect();
+    let rows = app.approval_menu_rows();
+    let labels: Vec<String> = rows.iter().map(|row| row.label.clone()).collect();
     assert!(
         labels.iter().any(|label| label == "Allow pattern"),
         "{labels:?}"
     );
+    let pattern = rows
+        .iter()
+        .find(|row| row.label == "Allow pattern")
+        .and_then(|row| row.detail.as_deref());
+    assert_eq!(pattern, Some("bash(git push origin main)"));
     assert!(app
         .approval_identity_for_payload(app.session.pending_hitl().unwrap())
         .is_some());
+}
+
+#[tokio::test]
+async fn allow_pattern_row_shows_the_exact_file_pattern() {
+    let (dir, mut app) = focus_test_app().await;
+    fs::write(dir.path().join("remember.txt"), "ok").unwrap();
+    set_pending_approval(&mut app, direct_hitl_payload("file", "remember.txt"));
+
+    let pattern = app
+        .approval_menu_rows()
+        .into_iter()
+        .find(|row| row.label == "Allow pattern")
+        .and_then(|row| row.detail);
+    assert_eq!(pattern.as_deref(), Some("read_file(remember.txt)"));
+
+    let rendered = render_app_text(&mut app, 100, 30);
+    assert!(rendered.contains("Allow pattern"), "{rendered}");
+    assert!(rendered.contains("read_file(remember.txt)"), "{rendered}");
 }
 
 #[tokio::test]
