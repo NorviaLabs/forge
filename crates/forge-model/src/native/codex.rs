@@ -190,7 +190,7 @@ fn request_body(
         .filter(|message| message.role == MessageRole::Tool)
         .filter_map(|message| message.tool_call_id.as_deref())
         .collect();
-    for message in &req.messages {
+    for message in req.messages.iter() {
         match message.role {
             MessageRole::System => instructions.push(message.content.clone()),
             MessageRole::Tool => {
@@ -432,7 +432,7 @@ mod tests {
     fn request_with_tool(name: &str) -> ModelRequest {
         ModelRequest {
             workspace_root: std::path::PathBuf::new(),
-            messages: vec![],
+            messages: vec![].into(),
             tools: vec![ToolDescriptor {
                 name: name.into(),
                 description: "test".into(),
@@ -514,7 +514,8 @@ mod tests {
                 tool_calls: vec![],
                 attachments: Vec::new(),
             },
-        ];
+        ]
+        .into();
         let client = NativeModelClient::from_config(&Config::default()).unwrap();
         let _ = client;
         let aliases = tool_aliases(&request);
@@ -574,7 +575,8 @@ mod tests {
                 attachments: Vec::new(),
             },
             Message::new(MessageRole::User, "and now?"),
-        ];
+        ]
+        .into();
         let client = NativeModelClient::from_config(&Config::default()).unwrap();
         let aliases = tool_aliases(&request);
 
@@ -617,7 +619,8 @@ mod tests {
                 tool_calls: vec![],
                 attachments: Vec::new(),
             },
-        ];
+        ]
+        .into();
         let client = NativeModelClient::from_config(&Config::default()).unwrap();
         let aliases = tool_aliases(&request);
 
@@ -704,7 +707,7 @@ mod tests {
             workspace_root: std::path::PathBuf::new(),
             model: "openai-codex/gpt-test".into(),
             route_id: Some("openai-chatgpt".into()),
-            messages: vec![Message::new(MessageRole::User, "hello")],
+            messages: vec![Message::new(MessageRole::User, "hello")].into(),
             tools: vec![],
             reasoning_effort: None,
             prompt_cache: true,
@@ -731,7 +734,7 @@ mod tests {
             workspace_root: std::path::PathBuf::new(),
             model: "openai-codex/gpt-test".into(),
             route_id: Some("openai-chatgpt".into()),
-            messages: vec![Message::new(MessageRole::User, "hello")],
+            messages: vec![Message::new(MessageRole::User, "hello")].into(),
             tools: vec![],
             reasoning_effort: None,
             prompt_cache: true,

@@ -13,6 +13,12 @@ pub use normalize::{
     complete_result_from_value, forge_messages_to_wire, tools_to_openai_functions,
 };
 
+use std::ops::{Deref, DerefMut};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
+
 use async_trait::async_trait;
 use forge_config::{Config, ModelProviderKind};
 use forge_types::{Message, ModelResponse, ModelStreamEvent, ToolDescriptor};
@@ -102,9 +108,95 @@ impl ModelError {
     }
 }
 
+/// Copy-on-write conversation storage shared by the live session and model requests.
+/// Cloning it is O(1); mutation only copies when a request is still in flight.
+#[derive(Debug)]
+pub struct SharedMessages(Arc<SharedMessageStorage>);
+
+#[derive(Debug)]
+struct SharedMessageStorage {
+    id: u64,
+    messages: Vec<Message>,
+}
+
+impl Clone for SharedMessageStorage {
+    fn clone(&self) -> Self {
+        Self {
+            id: next_message_storage_id(),
+            messages: self.messages.clone(),
+        }
+    }
+}
+
+fn next_message_storage_id() -> u64 {
+    static NEXT_MESSAGE_STORAGE_ID: AtomicU64 = AtomicU64::new(1);
+    NEXT_MESSAGE_STORAGE_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+impl Clone for SharedMessages {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl Default for SharedMessages {
+    fn default() -> Self {
+        Vec::new().into()
+    }
+}
+
+impl SharedMessages {
+    pub fn shared(&self) -> Self {
+        self.clone()
+    }
+
+    pub fn shares_storage_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
+    /// Stable identity for a specific copy-on-write transcript allocation.
+    /// A mutation performed while a request shares the transcript gets a new
+    /// identity along with its cloned storage.
+    pub fn storage_id(&self) -> u64 {
+        self.0.id
+    }
+}
+
+impl From<Vec<Message>> for SharedMessages {
+    fn from(messages: Vec<Message>) -> Self {
+        Self(Arc::new(SharedMessageStorage {
+            id: next_message_storage_id(),
+            messages,
+        }))
+    }
+}
+
+impl Deref for SharedMessages {
+    type Target = Vec<Message>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0.messages
+    }
+}
+
+impl DerefMut for SharedMessages {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut Arc::make_mut(&mut self.0).messages
+    }
+}
+
+impl<'a> IntoIterator for &'a SharedMessages {
+    type Item = &'a Message;
+    type IntoIter = std::slice::Iter<'a, Message>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ModelRequest {
-    pub messages: Vec<Message>,
+    pub messages: SharedMessages,
     pub tools: Vec<ToolDescriptor>,
     pub model: String,
     /// Workspace used to re-read `ImageRef` paths at request-build time.
@@ -198,7 +290,8 @@ mod tests {
                     thinking_duration_secs: None,
                     tool_calls: vec![],
                     attachments: Vec::new(),
-                }],
+                }]
+                .into(),
                 tools: vec![],
                 model: "mock".into(),
                 route_id: None,
@@ -219,7 +312,7 @@ mod tests {
             .complete_with_stream(
                 ModelRequest {
                     workspace_root: std::path::PathBuf::new(),
-                    messages: vec![],
+                    messages: vec![].into(),
                     tools: vec![],
                     model: "mock".into(),
                     route_id: None,
@@ -256,7 +349,7 @@ mod tests {
         let resp = client
             .complete(ModelRequest {
                 workspace_root: std::path::PathBuf::new(),
-                messages: vec![],
+                messages: vec![].into(),
                 tools: vec![],
                 model: "mock".into(),
                 route_id: None,
@@ -290,7 +383,7 @@ mod tests {
             .complete_with_stream(
                 ModelRequest {
                     workspace_root: std::path::PathBuf::new(),
-                    messages: vec![],
+                    messages: vec![].into(),
                     tools: vec![],
                     model: "mock".into(),
                     route_id: None,

@@ -130,23 +130,39 @@ pub(crate) struct RepositoryUiState {
 #[derive(Debug, Clone)]
 pub(super) struct FileChangeEvent {
     pub(super) path: PathBuf,
+    /// Content-only modifications do not require rebuilding the explorer tree.
+    pub(super) tree_changed: bool,
+    /// Tests and explicit injections are already a complete logical event.
+    pub(super) immediate: bool,
 }
 
-/// Owns the watcher lifecycle and its event channel. Callers can consume paths,
-/// but cannot replace the watcher or inject arbitrary channel state.
+#[derive(Debug)]
+pub(super) struct FileChangeBatch {
+    pub(super) paths: Vec<PathBuf>,
+    pub(super) tree_changed: bool,
+}
+
+/// Owns the watcher lifecycle and coalesces notify's many low-level events into
+/// one logical workspace change. Callers cannot replace the channel state.
 pub(crate) struct FileWatchState {
     watcher: Option<RecommendedWatcher>,
     change_rx: Receiver<FileChangeEvent>,
     change_tx: Sender<FileChangeEvent>,
+    pending: std::collections::HashMap<PathBuf, bool>,
+    ready_at: Option<Instant>,
 }
 
 impl FileWatchState {
+    pub(super) const DEBOUNCE: Duration = Duration::from_millis(100);
+
     pub(crate) fn new() -> Self {
         let (change_tx, change_rx) = mpsc::channel();
         Self {
             watcher: None,
             change_rx,
             change_tx,
+            pending: std::collections::HashMap::new(),
+            ready_at: None,
         }
     }
 
@@ -154,14 +170,46 @@ impl FileWatchState {
         self.watcher = Some(watcher);
     }
 
-    pub(crate) fn try_recv(&self) -> Result<PathBuf, mpsc::TryRecvError> {
-        self.change_rx.try_recv().map(|event| event.path)
+    pub(super) fn take_ready_batch(&mut self) -> Option<FileChangeBatch> {
+        let mut immediate = false;
+        while let Ok(event) = self.change_rx.try_recv() {
+            self.pending
+                .entry(event.path)
+                .and_modify(|tree_changed| *tree_changed |= event.tree_changed)
+                .or_insert(event.tree_changed);
+            immediate |= event.immediate;
+            self.ready_at = Some(Instant::now() + Self::DEBOUNCE);
+        }
+        if self.pending.is_empty()
+            || (!immediate
+                && self
+                    .ready_at
+                    .is_some_and(|ready_at| Instant::now() < ready_at))
+        {
+            return None;
+        }
+        self.ready_at = None;
+        let tree_changed = self.pending.values().any(|changed| *changed);
+        let paths = self.pending.drain().map(|(path, _)| path).collect();
+        Some(FileChangeBatch {
+            paths,
+            tree_changed,
+        })
     }
 
     #[cfg(test)]
     pub(crate) fn inject_change(&self, path: PathBuf) {
+        self.inject_test_change(path, true, true);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_test_change(&self, path: PathBuf, tree_changed: bool, immediate: bool) {
         self.change_tx
-            .send(FileChangeEvent { path })
+            .send(FileChangeEvent {
+                path,
+                tree_changed,
+                immediate,
+            })
             .expect("file watcher receiver should remain available during a test");
     }
 
@@ -1138,6 +1186,10 @@ pub(crate) struct ProgressState {
     pub(crate) path: Option<PathBuf>,
     pub(crate) modified: Option<std::time::SystemTime>,
     pub(crate) description: Option<String>,
+    /// Last metadata poll. The event loop runs five times a second even while
+    /// idle; durable progress only needs a low-frequency fallback because the
+    /// workspace watcher refreshes all other UI state promptly.
+    pub(crate) last_checked: Option<Instant>,
 }
 
 /// Off-thread model-catalog refresh, matching `RepoHeaderState`'s

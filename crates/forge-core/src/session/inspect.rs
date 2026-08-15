@@ -68,21 +68,40 @@ impl AgentSession {
     }
 
     /// Estimated in-context tokens for `self.messages`, memoized across frames.
-    /// Keyed on length plus the last message's content/thinking sizes so a
-    /// growing tail (streaming commit) invalidates the sum.
+    ///
+    /// Agent turns normally append immutable messages. For that hot path, the
+    /// cache recognizes the same transcript allocation and estimates only the
+    /// appended suffix. Replacements, tail edits, and copy-on-write splits fall
+    /// back to a complete recount to preserve accuracy.
     fn context_tokens_estimate(&self) -> usize {
         let fingerprint = CtxTokensFingerprint::of(&self.messages);
         let mut cache = self
             .ctx_tokens_cache
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some((cached, total)) = *cache {
-            if cached == fingerprint {
+        if let Some(cached) = cache.as_ref() {
+            if cached.fingerprint == fingerprint {
+                return cached.total;
+            }
+            let is_same_transcript = cached.storage_id == self.messages.storage_id();
+            if is_same_transcript && cached.fingerprint.messages < fingerprint.messages {
+                let appended =
+                    estimate_messages_tokens(&self.messages[cached.fingerprint.messages..]);
+                let total = cached.total.saturating_add(appended);
+                *cache = Some(CtxTokensCache {
+                    storage_id: self.messages.storage_id(),
+                    fingerprint,
+                    total,
+                });
                 return total;
             }
         }
         let total = estimate_messages_tokens(&self.messages);
-        *cache = Some((fingerprint, total));
+        *cache = Some(CtxTokensCache {
+            storage_id: self.messages.storage_id(),
+            fingerprint,
+            total,
+        });
         total
     }
 

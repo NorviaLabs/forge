@@ -1,6 +1,5 @@
 //! Lightweight Git status cache for the file explorer.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -83,8 +82,23 @@ pub struct GitStatusCache {
     /// Last refresh error, if any.
     pub error: Option<String>,
     pending: Option<Receiver<Result<HashMap<PathBuf, PathStatus>, String>>>,
+    /// Latest refresh requested while `pending` is still running.
+    queued_refresh: Option<PathBuf>,
     revision: u64,
-    diff_cache: RefCell<HashMap<(u64, PathBuf), Result<String, String>>>,
+    diff_cache: HashMap<(u64, PathBuf), Result<String, String>>,
+    /// Whether an unstaged diff request is currently in flight.
+    pub diff_loading: bool,
+    /// Last unstaged diff request error, if any.
+    pub diff_error: Option<String>,
+    pending_diff: Option<PendingDiff>,
+    /// Latest diff requested while another diff is still running.
+    queued_diff: Option<(PathBuf, PathBuf)>,
+}
+
+#[derive(Debug)]
+struct PendingDiff {
+    key: (u64, PathBuf),
+    receiver: Receiver<Result<String, String>>,
 }
 
 impl Default for GitStatusCache {
@@ -101,22 +115,38 @@ impl GitStatusCache {
             loading: false,
             error: None,
             pending: None,
+            queued_refresh: None,
             revision: 0,
-            diff_cache: RefCell::new(HashMap::new()),
+            diff_cache: HashMap::new(),
+            diff_loading: false,
+            diff_error: None,
+            pending_diff: None,
+            queued_diff: None,
         }
     }
 
     /// Start a background refresh of the Git status for `root`.
-    /// This is fully non-blocking: any previous in-flight refresh is dropped
-    /// without waiting for its thread to finish. The previous `status` is
-    /// kept until the refresh resolves. Do not call this on folder expand —
-    /// status is whole-repo, and a refresh also bumps `revision` and clears
-    /// the diff cache.
+    /// This is fully non-blocking. If a refresh is already in flight, requests
+    /// are coalesced into one follow-up refresh for the most recently requested
+    /// root. The previous `status` is kept until a refresh resolves. Do not call
+    /// this on folder expand — status is whole-repo, and a refresh also bumps
+    /// `revision` and clears the diff cache.
     pub fn start_refresh(&mut self, root: PathBuf) {
-        self.loading = true;
         self.error = None;
         self.revision = self.revision.wrapping_add(1);
-        self.diff_cache.borrow_mut().clear();
+        self.diff_cache.clear();
+
+        if self.pending.is_some() {
+            self.queued_refresh = Some(root);
+            return;
+        }
+
+        self.spawn_refresh(root);
+    }
+
+    fn spawn_refresh(&mut self, root: PathBuf) {
+        self.loading = true;
+        self.error = None;
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let _ = tx.send(load_git_status(&root));
@@ -135,7 +165,7 @@ impl GitStatusCache {
         let Some(rx) = self.pending.take() else {
             return false;
         };
-        match rx.try_recv() {
+        let resolved = match rx.try_recv() {
             Ok(Ok(details)) => {
                 self.loading = false;
                 self.details = details;
@@ -160,7 +190,14 @@ impl GitStatusCache {
                 self.error = Some("Git status refresh disconnected".into());
                 true
             }
+        };
+
+        if resolved {
+            if let Some(root) = self.queued_refresh.take() {
+                self.spawn_refresh(root);
+            }
         }
+        resolved
     }
 
     pub fn get(&self, path: &Path) -> Option<GitStatusKind> {
@@ -204,15 +241,75 @@ impl GitStatusCache {
         self.revision
     }
 
-    /// Returns the unstaged unified diff for one path.
-    pub fn get_unstaged_diff(&self, root: &Path, path: &Path) -> Result<String, String> {
-        let key = (self.revision, path.to_path_buf());
-        if let Some(diff) = self.diff_cache.borrow().get(&key) {
-            return diff.clone();
+    /// Request the unstaged unified diff for `path` without blocking.
+    ///
+    /// Results remain cached for the current status revision. Requests made
+    /// while a worker is running are coalesced to the latest path; call
+    /// [`Self::poll_diff`] from the render loop to collect completed work.
+    pub fn request_unstaged_diff(&mut self, root: PathBuf, path: PathBuf) {
+        let key = (self.revision, path.clone());
+        if self.diff_cache.contains_key(&key) {
+            return;
         }
-        let diff = load_unstaged_diff(root, path);
-        self.diff_cache.borrow_mut().insert(key, diff.clone());
-        diff
+        if self.pending_diff.is_some() {
+            self.queued_diff = Some((root, path));
+            return;
+        }
+        self.spawn_diff(root, path);
+    }
+
+    fn spawn_diff(&mut self, root: PathBuf, path: PathBuf) {
+        self.diff_loading = true;
+        self.diff_error = None;
+        let key = (self.revision, path.clone());
+        let (tx, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(load_unstaged_diff(&root, &path));
+        });
+        self.pending_diff = Some(PendingDiff { key, receiver });
+    }
+
+    /// Collect a completed unstaged diff without blocking.
+    ///
+    /// Returns `true` only when a request resolves. A stale response from an
+    /// earlier status revision is discarded rather than repopulating the cache.
+    pub fn poll_diff(&mut self) -> bool {
+        let Some(pending) = self.pending_diff.take() else {
+            return false;
+        };
+        let resolved = match pending.receiver.try_recv() {
+            Ok(result) => {
+                self.diff_loading = false;
+                if pending.key.0 == self.revision {
+                    self.diff_error = result.as_ref().err().cloned();
+                    self.diff_cache.insert(pending.key, result);
+                }
+                true
+            }
+            Err(TryRecvError::Empty) => {
+                self.pending_diff = Some(pending);
+                false
+            }
+            Err(TryRecvError::Disconnected) => {
+                self.diff_loading = false;
+                self.diff_error = Some("Git diff request disconnected".into());
+                true
+            }
+        };
+
+        if resolved {
+            if let Some((root, path)) = self.queued_diff.take() {
+                self.spawn_diff(root, path);
+            }
+        }
+        resolved
+    }
+
+    /// Return a completed diff for the current status revision, if available.
+    pub fn get_unstaged_diff(&self, path: &Path) -> Option<Result<String, String>> {
+        self.diff_cache
+            .get(&(self.revision, path.to_path_buf()))
+            .cloned()
     }
 }
 
@@ -540,6 +637,46 @@ mod tests {
         assert!(cache.error.is_none());
     }
 
+    #[test]
+    fn in_flight_refresh_requests_keep_worker_and_coalesce_latest_root() {
+        let first = tempfile::tempdir().unwrap();
+        let latest = tempfile::tempdir().unwrap();
+        Command::new("git")
+            .arg("init")
+            .current_dir(latest.path())
+            .output()
+            .unwrap();
+        std::fs::write(latest.path().join("latest.txt"), "x").unwrap();
+
+        // Install a controllable in-flight worker so this test can prove that
+        // start_refresh neither drops its receiver nor starts a replacement.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut cache = GitStatusCache::new();
+        cache.loading = true;
+        cache.pending = Some(rx);
+
+        cache.start_refresh(first.path().to_path_buf());
+        cache.start_refresh(latest.path().to_path_buf());
+
+        assert_eq!(cache.queued_refresh.as_deref(), Some(latest.path()));
+        assert!(tx.send(Ok(HashMap::new())).is_ok());
+        assert!(cache.poll());
+        assert!(
+            cache.loading,
+            "the coalesced follow-up should now be running"
+        );
+        assert!(cache.queued_refresh.is_none());
+
+        while cache.loading {
+            cache.poll();
+        }
+        assert_eq!(
+            cache.get(Path::new("latest.txt")),
+            Some(GitStatusKind::Untracked)
+        );
+        assert!(cache.error.is_none());
+    }
+
     #[tokio::test]
     async fn load_git_status_reports_git_failure() {
         let root = tempfile::tempdir().unwrap();
@@ -606,26 +743,95 @@ mod tests {
     #[test]
     fn diff_cache_is_keyed_by_revision_and_path() {
         let root = tempfile::tempdir().unwrap();
+        let path = PathBuf::from("cached.txt");
+        let key = (0, path.clone());
+        let mut cache = GitStatusCache::new();
+        cache.diff_cache.insert(key, Ok("cached diff".to_string()));
+
+        assert_eq!(
+            cache.get_unstaged_diff(&path).unwrap().unwrap(),
+            "cached diff"
+        );
+
+        cache.start_refresh(root.path().to_path_buf());
+        assert!(cache.get_unstaged_diff(&path).is_none());
+    }
+
+    #[test]
+    fn diff_request_is_non_blocking_and_poll_caches_its_result() {
+        let root = tempfile::tempdir().unwrap();
         Command::new("git")
             .arg("init")
             .current_dir(root.path())
             .output()
             .unwrap();
-        let path = PathBuf::from("cached.txt");
-        let key = (0, path.clone());
+        let path = PathBuf::from("missing.txt");
         let mut cache = GitStatusCache::new();
-        cache
-            .diff_cache
-            .borrow_mut()
-            .insert(key, Ok("cached diff".to_string()));
 
+        cache.request_unstaged_diff(root.path().to_path_buf(), path.clone());
+        assert!(cache.diff_loading);
+        assert!(cache.get_unstaged_diff(&path).is_none());
+
+        while cache.diff_loading {
+            cache.poll_diff();
+        }
+        assert_eq!(cache.get_unstaged_diff(&path), Some(Ok(String::new())));
+        assert!(cache.diff_error.is_none());
+    }
+
+    #[test]
+    fn diff_requests_coalesce_to_the_latest_path() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let first = PathBuf::from("first.txt");
+        let latest = PathBuf::from("latest.txt");
+        let root = tempfile::tempdir().unwrap();
+        Command::new("git")
+            .arg("init")
+            .current_dir(root.path())
+            .output()
+            .unwrap();
+        let mut cache = GitStatusCache::new();
+        cache.diff_loading = true;
+        cache.pending_diff = Some(PendingDiff {
+            key: (0, first.clone()),
+            receiver: rx,
+        });
+
+        cache.request_unstaged_diff(root.path().to_path_buf(), latest.clone());
         assert_eq!(
-            cache.get_unstaged_diff(root.path(), &path).unwrap(),
-            "cached diff"
+            cache.queued_diff.as_ref().map(|(_, path)| path),
+            Some(&latest)
+        );
+        tx.send(Ok("first diff".into())).unwrap();
+        assert!(cache.poll_diff());
+        assert!(
+            cache.diff_loading,
+            "the coalesced request should be running"
         );
 
-        cache.start_refresh(root.path().to_path_buf());
-        assert_eq!(cache.get_unstaged_diff(root.path(), &path).unwrap(), "");
+        while cache.diff_loading {
+            cache.poll_diff();
+        }
+        assert_eq!(cache.get_unstaged_diff(&latest), Some(Ok(String::new())));
+    }
+
+    #[test]
+    fn diff_poll_reports_a_dropped_worker() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        drop(tx);
+        let mut cache = GitStatusCache::new();
+        cache.diff_loading = true;
+        cache.pending_diff = Some(PendingDiff {
+            key: (0, PathBuf::from("a.txt")),
+            receiver: rx,
+        });
+
+        assert!(cache.poll_diff());
+        assert!(!cache.diff_loading);
+        assert_eq!(
+            cache.diff_error.as_deref(),
+            Some("Git diff request disconnected")
+        );
     }
 
     #[test]

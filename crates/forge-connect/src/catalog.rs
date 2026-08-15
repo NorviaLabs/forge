@@ -4,6 +4,7 @@
 //! A models.dev registry supplies durable public metadata; provider catalogs remain
 //! account-specific availability signals.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -169,13 +170,19 @@ struct CatalogFile {
 pub struct ModelCatalogCache {
     path: PathBuf,
     ttl_secs: u64,
+    /// Parsed once per cache instance. Picker construction asks several catalog
+    /// questions in succession; re-reading and re-parsing TOML for each one
+    /// made opening it scale with catalog size and filesystem latency.
+    file: RefCell<CatalogFile>,
 }
 
 impl ModelCatalogCache {
     pub fn new(path: PathBuf) -> Self {
+        let file = Self::read_file(&path);
         Self {
             path,
             ttl_secs: DEFAULT_TTL_SECS,
+            file: RefCell::new(file),
         }
     }
 
@@ -196,14 +203,15 @@ impl ModelCatalogCache {
         self
     }
 
-    fn load(&self) -> CatalogFile {
-        if !self.path.exists() {
-            return CatalogFile::default();
-        }
-        fs::read_to_string(&self.path)
+    fn read_file(path: &Path) -> CatalogFile {
+        fs::read_to_string(path)
             .ok()
-            .and_then(|t| toml::from_str(&t).ok())
+            .and_then(|text| toml::from_str(&text).ok())
             .unwrap_or_default()
+    }
+
+    fn load(&self) -> CatalogFile {
+        self.file.borrow().clone()
     }
 
     fn save(&self, file: &CatalogFile) -> Result<(), CatalogError> {
@@ -212,6 +220,7 @@ impl ModelCatalogCache {
         }
         let text = toml::to_string_pretty(file)?;
         fs::write(&self.path, text)?;
+        *self.file.borrow_mut() = file.clone();
         Ok(())
     }
 
@@ -1180,6 +1189,26 @@ mod tests {
             .unwrap();
         assert_eq!(cache.get_cached("openai").len(), 2);
         assert!(cache.is_fresh("openai"));
+    }
+
+    #[test]
+    fn cache_keeps_an_in_memory_snapshot_until_reopened() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("catalog.toml");
+        let cache = ModelCatalogCache::new(path.clone());
+        cache.put("openai", vec!["openai/first".into()]).unwrap();
+
+        fs::write(
+            &path,
+            "[models]\nopenai = [\"openai/external\"]\n\n[fetched_at]\nopenai = 1\n",
+        )
+        .unwrap();
+
+        assert_eq!(cache.get_cached("openai"), vec!["openai/first"]);
+        assert_eq!(
+            ModelCatalogCache::new(path).get_cached("openai"),
+            vec!["openai/external"]
+        );
     }
 
     #[test]

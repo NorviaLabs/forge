@@ -275,8 +275,11 @@ impl TuiApp {
         } else {
             "Viewing file (readonly)".into()
         };
-        // Keep the file explorer in sync with the active file.
+        // Keep the file explorer in sync with the active file and begin any
+        // changed-file diff off the event loop. The cache coalesces rapid file
+        // switches, so opening a large changed file never blocks the TUI.
         self.workspace_files.explorer.selected_path = Some(path.to_path_buf());
+        self.workspace_files.explorer.request_unstaged_diff(path);
     }
 
     pub(super) fn open_file_in_editor(&mut self, path: &Path) {

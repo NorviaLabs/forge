@@ -498,6 +498,11 @@ impl TuiApp {
                 tokio::spawn(async move { model.complete_with_stream(req, Some(tx)).await });
 
             let mut step_acc = ModelStepAccumulator::default();
+            // A provider can outpace terminal rendering. Bound normal-tick
+            // processing so a large burst cannot starve input, cancellation,
+            // or the next paint; the completion path below still drains every
+            // remaining event before the final response is applied.
+            const MAX_STREAM_EVENTS_PER_TICK: usize = 256;
             // Pump stream events + redraw until the model call finishes
             loop {
                 if self.cancellation.is_requested() {
@@ -508,7 +513,10 @@ impl TuiApp {
                     outcome_err = Some("cancelled".into());
                     break 'turns;
                 }
-                while let Ok(ev) = rx.try_recv() {
+                for _ in 0..MAX_STREAM_EVENTS_PER_TICK {
+                    let Ok(ev) = rx.try_recv() else {
+                        break;
+                    };
                     if let Some(message) = self.handle_stream_event(&ev, &mut step_acc) {
                         handle.abort();
                         outcome_err = Some(message);
