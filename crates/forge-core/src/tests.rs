@@ -341,7 +341,7 @@ async fn appending_messages_updates_the_context_estimate_from_the_tail() {
 }
 
 #[tokio::test]
-async fn session_registers_web_search_with_default_config() {
+async fn session_omits_mock_web_search_with_default_config() {
     let dir = tempdir().unwrap();
     let model = Arc::new(MockModelClient::script(vec![ModelResponse {
         text: "ok".into(),
@@ -354,8 +354,8 @@ async fn session_registers_web_search_with_default_config() {
         .unwrap();
     let names = s.list_tools();
     assert!(
-        names.iter().any(|n| n == "web_search"),
-        "expected web_search in {names:?}"
+        !names.iter().any(|n| n == "web_search"),
+        "mock web_search must not be advertised, got {names:?}"
     );
 }
 

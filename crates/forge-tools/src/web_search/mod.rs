@@ -1,5 +1,9 @@
 //! Phase 9 — `web_search` built-in (WEB-01).
 //!
+//! The mock backend is test-only: [`web_search_tool`] refuses to register it.
+//! Tests construct a tool with [`web_search_tool_for_tests`] or
+//! [`WebSearchTool::new_for_tests`].
+//!
 //! Backend selection and the `SearchBackend` extension point are documented in
 //! `docs/architecture.md`; the design doc this used to reference was deleted.
 
@@ -191,8 +195,19 @@ pub fn should_register_web_search(cfg: &WebSearchConfig) -> bool {
 }
 
 /// Optionally produce a registered `web_search` tool from config.
+///
+/// Returns `None` for the mock provider. Production sessions must not see
+/// fabricated results.
 pub fn web_search_tool(cfg: &WebSearchConfig) -> Option<Arc<dyn Tool>> {
     WebSearchTool::try_new(cfg).map(|t| Arc::new(t) as Arc<dyn Tool>)
+}
+
+/// Mock-backed `web_search` for tests. Never used by session startup.
+pub fn web_search_tool_for_tests() -> Arc<dyn Tool> {
+    Arc::new(WebSearchTool::new_for_tests(
+        WebSearchConfig::default(),
+        Arc::new(MockSearchBackend),
+    ))
 }
 
 #[cfg(test)]
@@ -202,18 +217,21 @@ mod tests {
     use crate::ToolRegistry;
     use crate::ValidationBudget;
     use serde_json::json;
+
+    fn test_tool() -> WebSearchTool {
+        WebSearchTool::new_for_tests(WebSearchConfig::default(), Arc::new(MockSearchBackend))
+    }
+
     #[test]
     fn schema_rejects_missing_query() {
-        let cfg = WebSearchConfig::default();
-        let tool = WebSearchTool::try_new(&cfg).expect("mock registers");
+        let tool = test_tool();
         let err = validate_args("web_search", &tool.input_schema(), &json!({})).unwrap_err();
         assert_eq!(err.tool, "web_search");
     }
 
     #[test]
     fn schema_accepts_query() {
-        let cfg = WebSearchConfig::default();
-        let tool = WebSearchTool::try_new(&cfg).unwrap();
+        let tool = test_tool();
         validate_args(
             "web_search",
             &tool.input_schema(),
@@ -231,10 +249,15 @@ mod tests {
         assert!(WebSearchTool::try_new(&cfg).is_none());
     }
 
+    #[test]
+    fn try_new_none_for_default_mock() {
+        assert!(WebSearchTool::try_new(&WebSearchConfig::default()).is_none());
+        assert!(web_search_tool(&WebSearchConfig::default()).is_none());
+    }
+
     #[tokio::test]
     async fn mock_search_returns_hits() {
-        let cfg = WebSearchConfig::default();
-        let tool = WebSearchTool::try_new(&cfg).unwrap();
+        let tool = test_tool();
         let ctx = ToolContext::new(std::env::current_dir().unwrap());
         let out = tool
             .call(
@@ -254,8 +277,7 @@ mod tests {
     #[tokio::test]
     async fn empty_query_is_error_after_validation_bypass() {
         // Empty string passes schemars string type but tool rejects.
-        let cfg = WebSearchConfig::default();
-        let tool = WebSearchTool::try_new(&cfg).unwrap();
+        let tool = test_tool();
         let ctx = ToolContext::new(std::env::current_dir().unwrap());
         let out = tool.call(&ctx, json!({"query": "   "})).await.unwrap();
         assert!(out.is_error);
@@ -263,9 +285,8 @@ mod tests {
 
     #[tokio::test]
     async fn registry_call_validates_then_executes() {
-        let cfg = WebSearchConfig::default();
         let mut reg = ToolRegistry::new();
-        reg.register(web_search_tool(&cfg).unwrap());
+        reg.register(web_search_tool_for_tests());
         let ctx = ToolContext::new(std::env::current_dir().unwrap());
         let mut budget = ValidationBudget::with_default_max();
         let out = reg
@@ -283,9 +304,8 @@ mod tests {
 
     #[tokio::test]
     async fn registry_blocks_invalid_args() {
-        let cfg = WebSearchConfig::default();
         let mut reg = ToolRegistry::new();
-        reg.register(web_search_tool(&cfg).unwrap());
+        reg.register(web_search_tool_for_tests());
         let ctx = ToolContext::new(std::env::current_dir().unwrap());
         let mut budget = ValidationBudget::with_default_max();
         let err = reg
@@ -297,7 +317,7 @@ mod tests {
 
     #[test]
     fn side_effect_is_network() {
-        let tool = WebSearchTool::try_new(&WebSearchConfig::default()).unwrap();
+        let tool = test_tool();
         assert_eq!(tool.side_effect_class(), SideEffectClass::Network);
         assert!(tool.idempotent());
     }
@@ -324,7 +344,7 @@ mod tests {
 
     #[test]
     fn describes_itself() {
-        let tool = WebSearchTool::try_new(&WebSearchConfig::default()).unwrap();
+        let tool = test_tool();
         assert!(tool.description().contains("Search the public web"));
     }
 
@@ -349,8 +369,7 @@ mod tests {
 
     #[tokio::test]
     async fn site_filter_is_appended_to_the_query() {
-        let cfg = WebSearchConfig::default();
-        let tool = WebSearchTool::try_new(&cfg).unwrap();
+        let tool = test_tool();
         let ctx = ToolContext::new(std::env::current_dir().unwrap());
         let out = tool
             .call(
@@ -369,8 +388,7 @@ mod tests {
 
     #[tokio::test]
     async fn site_filter_is_not_duplicated_when_query_already_has_one() {
-        let cfg = WebSearchConfig::default();
-        let tool = WebSearchTool::try_new(&cfg).unwrap();
+        let tool = test_tool();
         let ctx = ToolContext::new(std::env::current_dir().unwrap());
         let out = tool
             .call(
@@ -385,8 +403,7 @@ mod tests {
 
     #[tokio::test]
     async fn blank_site_filter_is_ignored() {
-        let cfg = WebSearchConfig::default();
-        let tool = WebSearchTool::try_new(&cfg).unwrap();
+        let tool = test_tool();
         let ctx = ToolContext::new(std::env::current_dir().unwrap());
         let out = tool
             .call(&ctx, json!({"query": "plain query", "site": "   "}))
@@ -400,8 +417,7 @@ mod tests {
     async fn call_reports_internal_deserialize_failure() {
         // Bypasses schema validation to exercise the defensive internal
         // deserialize error path directly.
-        let cfg = WebSearchConfig::default();
-        let tool = WebSearchTool::try_new(&cfg).unwrap();
+        let tool = test_tool();
         let ctx = ToolContext::new(std::env::current_dir().unwrap());
         let err = tool.call(&ctx, json!({"query": 12345})).await.unwrap_err();
         assert!(err.to_string().contains("internal deserialize"), "{err}");
@@ -409,7 +425,7 @@ mod tests {
 
     #[test]
     fn should_register_web_search_matches_config() {
-        assert!(should_register_web_search(&WebSearchConfig::default()));
+        assert!(!should_register_web_search(&WebSearchConfig::default()));
         let disabled = WebSearchConfig {
             enabled: false,
             ..Default::default()

@@ -1718,12 +1718,16 @@ Use `ls`, `glob`, `grep`, `read_file`, or `git` instead."
     }
 
     #[test]
-    fn default_builtins_with_web_search_includes_mock() {
+    fn default_builtins_with_web_search_omits_mock() {
         let cfg = forge_config::WebSearchConfig::default();
         let tools = default_builtins_with_web_search(&cfg);
-        assert!(tools.iter().any(|t| t.name() == "web_search"));
+        assert!(
+            !tools.iter().any(|t| t.name() == "web_search"),
+            "mock web_search must not be advertised"
+        );
         assert!(tools.iter().any(|t| t.name() == "read_file"));
         assert!(tools.iter().any(|t| t.name() == "git"));
+        assert_eq!(tools.len(), default_builtins().len());
     }
 
     #[test]

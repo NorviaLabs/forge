@@ -2,7 +2,7 @@ use async_trait::async_trait;
 
 use super::backend::{SearchBackend, SearchError, SearchHit, SearchRequest, SearchSecrets};
 
-/// Deterministic offline backend for CI and default installs.
+/// Deterministic offline backend for tests. Never registered for users.
 pub struct MockSearchBackend;
 
 #[async_trait]
