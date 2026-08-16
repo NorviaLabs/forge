@@ -1491,6 +1491,14 @@ mod tests {
         app.resolve_hitl_overlay(HitlDecision::Approve, false)
             .await
             .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while app.pending_approved_tool.is_some() {
+            if Instant::now() > deadline {
+                panic!("approved tool did not finish");
+            }
+            app.poll_approved_hitl().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         assert!(
             app.busy_state.is_active() && app.pending_turn.continue_requested(),
             "approving the tool call must re-arm the turn loop, not leave the session idle \

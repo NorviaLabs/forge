@@ -1110,6 +1110,9 @@ pub struct TuiApp {
     pub(crate) pending_interaction: PendingInteractionState,
     /// External-editor request queued for the event loop (terminal suspend/resume).
     pub(crate) external_editor: ExternalEditorState,
+    /// Approved HITL tool running off the event loop so frames keep painting.
+    pub(crate) pending_approved_tool:
+        Option<tokio::task::JoinHandle<forge_core::CompletedHitlExecution>>,
     pub(crate) attachment: AttachmentState,
     /// Selected queued row for keyboard cancellation.
     pub(crate) task_selection: TaskSelectionState,

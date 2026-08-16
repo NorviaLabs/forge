@@ -42,6 +42,14 @@ async fn press_down_to(app: &mut TuiApp, label: &str) {
 
 async fn flush_queued_hitl(app: &mut TuiApp) {
     app.drain_pending_hitl(None).await.unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while app.pending_approved_tool.is_some() {
+        if std::time::Instant::now() > deadline {
+            panic!("approved tool did not finish");
+        }
+        app.poll_approved_hitl().await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
 }
 
 #[tokio::test]
@@ -359,6 +367,7 @@ async fn approval_duplicate_confirmation_is_idempotent() {
     app.resolve_approval_line(ApprovalMenuKind::AllowOnce)
         .await
         .unwrap();
+    flush_queued_hitl(&mut app).await;
 
     let successful_tool_messages = app
         .session
@@ -488,14 +497,9 @@ async fn approving_a_slow_command_returns_before_the_command_finishes() {
     let (_dir, mut app) = focus_test_app().await;
     set_pending_approval(&mut app, bash_hitl_payload("slow", "sleep 5"));
 
-    let started = std::time::Instant::now();
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert!(
-        started.elapsed() < std::time::Duration::from_millis(500),
-        "granting approval must not wait for the approved command"
-    );
     assert!(
         app.session.pending_hitl().is_some(),
         "the command should still be pending until the event loop drains it"
@@ -503,5 +507,66 @@ async fn approving_a_slow_command_returns_before_the_command_finishes() {
     assert!(
         app.pending_interaction.has_hitl_decision(),
         "the event loop should have a queued HITL decision to drain"
+    );
+
+    let started = std::time::Instant::now();
+    app.drain_pending_hitl(None).await.unwrap();
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(500),
+        "draining approval must not wait for the approved command"
+    );
+    assert!(
+        app.session.pending_hitl().is_none(),
+        "the approval card must clear as soon as the operator decides"
+    );
+    let rendered = render_app_text(&mut app, 100, 30);
+    assert!(
+        !rendered.contains("Forge wants to run a shell command."),
+        "stale approval chrome must not linger after the decision:\n{rendered}"
+    );
+    assert!(
+        app.pending_approved_tool.is_some(),
+        "the approved command should keep running off the event loop"
+    );
+    assert!(
+        !app.pending_turn.continue_requested(),
+        "the follow-up model call must wait until the approved command finishes"
+    );
+}
+
+#[tokio::test]
+async fn interrupting_an_approved_command_clears_the_card_and_recovers() {
+    let (_dir, mut app) = focus_test_app().await;
+    set_pending_approval(&mut app, bash_hitl_payload("slow-cancel", "sleep 5"));
+
+    app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.drain_pending_hitl(None).await.unwrap();
+    assert!(app.pending_approved_tool.is_some());
+
+    app.cancellation.request();
+    app.poll_approved_hitl().await.unwrap();
+
+    assert!(
+        app.pending_approved_tool.is_none(),
+        "interrupt must abort the approved command"
+    );
+    assert!(
+        app.session.pending_hitl().is_none(),
+        "the approval card must not stay pending after interrupt"
+    );
+    assert!(
+        !app.pending_turn.continue_requested(),
+        "a cancelled command must not resume the model turn"
+    );
+    assert!(
+        !app.busy_state.is_active(),
+        "interrupt must return the composer to an idle state"
+    );
+    let rendered = render_app_text(&mut app, 100, 30);
+    assert!(
+        !rendered.contains("Forge wants to run a shell command."),
+        "{rendered}"
     );
 }

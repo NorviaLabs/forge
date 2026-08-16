@@ -231,6 +231,9 @@ impl TuiApp {
         self.connect.oauth_last_poll = None;
         self.pending_turn.clear();
         self.pending_interaction.clear();
+        if let Some(handle) = self.pending_approved_tool.take() {
+            handle.abort();
+        }
         // The future-task queue is durable session state (owned by
         // `AgentSession`, not the TUI) — a provider disconnect must not
         // silently drop queued instructions.

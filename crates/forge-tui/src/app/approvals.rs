@@ -413,12 +413,56 @@ impl TuiApp {
 
     async fn apply_approved_hitl(
         &mut self,
-        terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
+        _terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
     ) -> Result<(), TuiError> {
         let pending = self.session.prepare_approved_hitl("tui").await?;
         if let Some(pending) = pending {
-            self.execute_hitl_application(pending, terminal).await?;
+            self.start_approved_hitl(pending);
+            return Ok(());
         }
+        self.resume_turn_after_hitl();
+        self.enter_chat_composer();
+        Ok(())
+    }
+
+    fn start_approved_hitl(&mut self, pending: PendingHitlExecution) {
+        let tool_name = pending.tool_name().to_string();
+        self.busy_state.start(BusyPhase::Tool { name: tool_name });
+        self.enter_chat_composer();
+        if let Some(handle) = self.pending_approved_tool.take() {
+            handle.abort();
+        }
+        self.pending_approved_tool = Some(tokio::spawn(pending.execute()));
+    }
+
+    pub(super) async fn poll_approved_hitl(&mut self) -> Result<(), TuiError> {
+        if self.pending_approved_tool.is_none() {
+            return Ok(());
+        }
+        if self.cancellation.take_requested() || self.exit.is_requested() {
+            if let Some(handle) = self.pending_approved_tool.take() {
+                handle.abort();
+            }
+            if !self.exit.is_requested() {
+                self.session.mark_cancelled().await?;
+                self.busy_state.stop();
+                self.enter_chat_composer();
+            }
+            return Ok(());
+        }
+        let Some(handle) = self.pending_approved_tool.as_ref() else {
+            return Ok(());
+        };
+        if !handle.is_finished() {
+            return Ok(());
+        }
+        let Some(handle) = self.pending_approved_tool.take() else {
+            return Ok(());
+        };
+        let completed = handle
+            .await
+            .map_err(|error| LoopError::Other(format!("tool task join: {error}")))?;
+        self.session.finish_hitl_execution(completed).await?;
         self.resume_turn_after_hitl();
         self.enter_chat_composer();
         Ok(())
@@ -472,5 +516,13 @@ impl TuiApp {
             self.enter_chat_composer();
         }
         Ok(())
+    }
+}
+
+impl Drop for TuiApp {
+    fn drop(&mut self) {
+        if let Some(handle) = self.pending_approved_tool.take() {
+            handle.abort();
+        }
     }
 }

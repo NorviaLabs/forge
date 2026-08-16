@@ -205,6 +205,7 @@ async fn run_loop(
         app.warm_catalog_once_connected();
         app.poll_catalog_refresh();
         app.poll_background_tasks().await?;
+        app.poll_approved_hitl().await?;
         app.tick_toast();
         app.tick_feedback();
         app.tick_notices();
@@ -213,7 +214,9 @@ async fn run_loop(
         app.sync_approval_focus();
         // Grok-style device-code: poll token endpoint while overlay is open
         app.poll_oauth_tick();
-        let is_animating = app.busy_state.is_active() || app.interactive_terminal.is_some();
+        let is_animating = app.busy_state.is_active()
+            || app.pending_approved_tool.is_some()
+            || app.interactive_terminal.is_some();
         if frame_dirty || is_animating || last_idle_draw.elapsed() >= IDLE_REDRAW_INTERVAL {
             terminal.draw(|f| app.draw(f))?;
             frame_dirty = false;

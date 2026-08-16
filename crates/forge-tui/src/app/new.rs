@@ -75,6 +75,7 @@ impl TuiApp {
             pending_turn: PendingTurnState::default(),
             pending_interaction: PendingInteractionState::default(),
             external_editor: ExternalEditorState { requested: false },
+            pending_approved_tool: None,
             attachment: AttachmentState::default(),
             task_selection: TaskSelectionState::default(),
             stream: StreamState {
