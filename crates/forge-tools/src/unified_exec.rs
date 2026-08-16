@@ -181,26 +181,31 @@ async fn start(
             "exec_command tty mode is not supported yet".into(),
         ));
     }
+    // Login shells source profile files, which can re-export provider
+    // credentials after the explicit removals below.
+    if args.login {
+        return Err(ToolError::Execution(
+            "exec_command login shells are not supported".into(),
+        ));
+    }
     let mut command = if let Some(shell) = args.shell.as_deref() {
         let mut command = Command::new(shell);
-        if args.login {
-            command.arg("-l");
-        }
         command.args(["-c", &args.cmd]);
         command
     } else {
         let mut command = Command::new("sh");
-        if args.login {
-            command.arg("-l");
-        }
         command.args(["-c", &args.cmd]);
         command
     };
+    for name in crate::builtins::PROVIDER_CREDENTIAL_ENV {
+        command.env_remove(name);
+    }
     let mut child = command
         .current_dir(&ctx.workspace_root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .kill_on_drop(true)
         .spawn()?;
     let session = Session {
         command: args.cmd.clone(),
@@ -449,5 +454,50 @@ mod tests {
             .await
             .unwrap();
         assert!(completed.content.contains("got:input"));
+    }
+
+    #[tokio::test]
+    async fn refuses_login_shells() {
+        let dir = tempdir().unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let (exec_command, _) = unified_exec_tools();
+        let error = exec_command
+            .call(&ctx, json!({"cmd": "true", "login": true}))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("login"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn does_not_inherit_provider_credentials() {
+        const VAR: &str = "OPENCODE_ZEN_API_KEY";
+        let previous = std::env::var(VAR).ok();
+        std::env::set_var(VAR, "sk-must-not-reach-the-child");
+        struct Guard(Option<String>);
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(value) => std::env::set_var("OPENCODE_ZEN_API_KEY", value),
+                    None => std::env::remove_var("OPENCODE_ZEN_API_KEY"),
+                }
+            }
+        }
+        let _guard = Guard(previous);
+
+        let dir = tempdir().unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let (exec_command, _) = unified_exec_tools();
+        let out = exec_command
+            .call(
+                &ctx,
+                json!({"cmd": "printf '[%s]' \"$OPENCODE_ZEN_API_KEY\"", "yield_time_ms": 1000}),
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.content.contains("[]"),
+            "credential reached the child: {}",
+            out.content
+        );
     }
 }
